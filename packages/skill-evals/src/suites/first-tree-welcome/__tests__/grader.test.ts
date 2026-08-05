@@ -985,6 +985,153 @@ describe("first-tree-welcome grader", () => {
         null,
       );
 
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(metrics.forbiddenActionHits).toContain("early-pr-setup");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(
+    FIRST_TREE_WELCOME_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.expected.action === "offer_single_select_microtasks",
+    ).map((evalCase) => [evalCase.id, evalCase] as const),
+  )("rejects a structured pull request option across first-menu row %s", (_caseId, evalCase) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-structured-pr-matrix-"));
+    try {
+      const body =
+        "I read the checkout README and package manifest from the repo. src/auth/session.ts is the clearest focused starting point.\n\nChoose one microtask, or type a different task.";
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "-F",
+              "onboarding-choice.md",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Return a read-only microtask tracing checkout session flow with repo evidence.",
+                  label: "Trace session flow",
+                },
+                {
+                  description: "Prepare the current changes for review.",
+                  label: "Draft PR",
+                },
+              ]),
+            ],
+            body,
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenActionHits).toContain("early-pr-setup");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(
+    FIRST_TREE_WELCOME_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.expected.action === "offer_single_select_microtasks",
+    ).map((evalCase) => [evalCase.id, evalCase] as const),
+  )("rejects a body pull request option across first-menu row %s", (_caseId, evalCase) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-body-pr-matrix-"));
+    try {
+      const body = `I read the checkout README and package manifest from the repo. src/auth/session.ts is the clearest focused starting point.
+
+Choose one microtask, or type a different task.
+
+1. Trace session flow — Return a read-only microtask tracing checkout session flow with repo evidence.
+2. Draft PR — Prepare the current changes for review.`;
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "ask", "baixiaohang", "-F", "onboarding-choice.md"],
+            body,
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.readOnlyOptionCount).toBe(1);
+      expect(metrics.forbiddenActionHits).toContain("early-pr-setup");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each(
+    FIRST_TREE_WELCOME_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.expected.action === "offer_single_select_microtasks",
+    ).map((evalCase) => [evalCase.id, evalCase] as const),
+  )("rejects a recommended pull request option across first-menu row %s", (_caseId, evalCase) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-recommended-pr-matrix-"));
+    try {
+      const body = `I read the checkout README and package manifest from the repo. src/auth/session.ts is the clearest focused starting point.
+
+I recommend a read-only microtask tracing checkout session flow with repo evidence.
+
+I recommend Draft PR to prepare the current changes for review.
+
+Type a different task if you prefer.`;
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "ask", "baixiaohang", "-F", "onboarding-choice.md"],
+            body,
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.microtaskOptionCount).toBe(2);
+      expect(metrics.readOnlyOptionCount).toBe(1);
       expect(metrics.forbiddenActionHits).toContain("early-pr-setup");
       expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {

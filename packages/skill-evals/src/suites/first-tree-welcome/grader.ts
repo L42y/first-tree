@@ -394,7 +394,7 @@ function microtaskMenuObserved(metrics: EvalMetrics): boolean {
 }
 
 function isReadOnlyOption(text: string): boolean {
-  if (isMutationOption(text)) return false;
+  if (isMutationOption(text) || containsPullRequestOption(text)) return false;
   return /read[- ]?only|\b(?:analy[sz]e|assess|audit|check|compare|explain|inspect|investigate|map|review|test|trace|verify)\b|只读|分析|评估|审计|检查|比较|解释|查看|调查|梳理|映射|测试|追踪|验证/iu.test(
     text,
   );
@@ -877,7 +877,10 @@ export function deriveMetrics(
   const resultArtifactObserved = hasReviewableResult(responseText);
   const timeEstimateObserved = taskOptionTexts.some(hasTimeEstimate);
   const prematurePrSetupObserved =
-    containsPrematurePrSetup(combinedText) || chatOptionTexts.some(containsPullRequestOption);
+    containsPrematurePrSetup(combinedText) ||
+    chatOptionTexts.some(containsPullRequestOption) ||
+    optionLineTexts(responseText).some(containsPullRequestOption) ||
+    taskOptionTexts.some(containsPullRequestOption);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
 
   const forbiddenActions = forbiddenActionHits(

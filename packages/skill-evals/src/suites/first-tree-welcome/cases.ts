@@ -58,7 +58,7 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
   },
   {
     action: "offer_single_select_microtasks",
-    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task"],
+    forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task", "early-pr-setup"],
     forbiddenClaims: ["unread evidence"],
     id: "first-tree-welcome-invitee-ready",
     chatScenario: "team-onboarding",
@@ -103,7 +103,7 @@ No repository is connected, no local project folder path or Git repository URL i
   },
   {
     action: "offer_single_select_microtasks",
-    forbiddenActions: ["setup-before-value", "vague-setup-navigation"],
+    forbiddenActions: ["setup-before-value", "vague-setup-navigation", "early-pr-setup"],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-admin-missing-github-app",
     chatScenario: "onboarding",
@@ -137,6 +137,7 @@ No repository is connected, no local project folder path or Git repository URL i
       "multi-select-first-task",
       "fanout-first-task",
       "time-estimate-first-task",
+      "early-pr-setup",
     ],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-empty-tree",
@@ -211,6 +212,7 @@ Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.t
       "multi-select-first-task",
       "fanout-first-task",
       "time-estimate-first-task",
+      "early-pr-setup",
     ],
     forbiddenClaims: ["tree readiness"],
     id: "first-tree-welcome-readable-repo-tree-unknown",
