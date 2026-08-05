@@ -3,7 +3,11 @@ import { join, resolve, sep } from "node:path";
 
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
-import { type ShellConnector, shellCommandSegmentsWithConnectors, shellWords } from "../../core/shell.js";
+import {
+  type ShellConnector,
+  shellCommandSegmentsWithConnectors,
+  shellWordsWithoutRedirections,
+} from "../../core/shell.js";
 import type { RunPaths } from "../../core/types.js";
 import type { EvalMetrics, FirstTreeWelcomeEvalCase, FixtureValidation, WelcomeExpectedAction } from "./types.js";
 
@@ -742,9 +746,75 @@ function commandUsesInformationalMode(program: string, words: readonly string[])
   return false;
 }
 
+function shellProgram(word: string | undefined): string {
+  return (word ?? "").split("/").at(-1) ?? "";
+}
+
+function isShellAssignment(word: string | undefined): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word ?? "");
+}
+
+function effectiveCommandWords(words: readonly string[]): string[] {
+  let index = 0;
+  while (isShellAssignment(words[index])) index += 1;
+
+  while (index < words.length) {
+    const prefixIndex = index;
+    const program = shellProgram(words[index]);
+    if (program === "command") {
+      index += 1;
+      while (index < words.length) {
+        const option = words[index] ?? "";
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (/^-[p]+$/u.test(option)) {
+          index += 1;
+          continue;
+        }
+        if (/^-[p]*[vV]/u.test(option)) return words.slice(prefixIndex);
+        break;
+      }
+      continue;
+    }
+    if (program === "env") {
+      index += 1;
+      while (index < words.length) {
+        const option = words[index] ?? "";
+        if (isShellAssignment(option)) {
+          index += 1;
+          continue;
+        }
+        if (option === "--") {
+          index += 1;
+          break;
+        }
+        if (option === "--help" || option === "--version") return words.slice(prefixIndex);
+        if (["-i", "--ignore-environment", "-0", "--null", "-v", "--debug"].includes(option)) {
+          index += 1;
+          continue;
+        }
+        if (/^-(?:u|C|P|S).+/u.test(option) || /^--(?:unset|chdir|split-string)=/u.test(option)) {
+          index += 1;
+          continue;
+        }
+        if (["-u", "-C", "-P", "-S", "--unset", "--chdir", "--split-string"].includes(option)) {
+          index += 2;
+          continue;
+        }
+        break;
+      }
+      continue;
+    }
+    break;
+  }
+  return words.slice(index);
+}
+
 function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope, cwd: string): boolean {
-  const words = shellWords(segment);
-  const program = (words[0] ?? "").split("/").at(-1) ?? "";
+  const words = effectiveCommandWords(shellWordsWithoutRedirections(segment));
+  const program = shellProgram(words[0]);
   if (commandUsesInformationalMode(program, words)) return false;
   const cwdIsSourceRepo = cwdScope !== "outside";
   const relativeRootOperand = words.some((word) => word === "." || word === "./");
@@ -814,7 +884,7 @@ function segmentOutcomeStates(state: ShellState, segmentText: string): ShellStat
     commandText = commandText.slice(0, -1).trimEnd();
     remainingClosures -= 1;
   }
-  const program = (shellWords(commandText)[0] ?? "").split("/").at(-1) ?? "";
+  const program = shellProgram(effectiveCommandWords(shellWordsWithoutRedirections(commandText))[0]);
   if (program === "true") {
     return [applySubshellClosures({ ...state, status: "success" }, segmentText)];
   }

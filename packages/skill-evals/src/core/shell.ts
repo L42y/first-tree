@@ -124,3 +124,88 @@ export function shellWords(segment: string): string[] {
   push();
   return words;
 }
+
+// Redirections affect the shell process, not the argv seen by the command.
+// Keep quoted redirect characters as data while removing both attached and
+// separated redirect targets from the argument list used by graders.
+export function shellWordsWithoutRedirections(segment: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  const push = (): void => {
+    if (current.length > 0) words.push(current);
+    current = "";
+  };
+
+  for (let index = 0; index < segment.length; index += 1) {
+    const character = segment[index] ?? "";
+    if (escaped) {
+      current += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else current += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    const ampersandRedirect = character === "&" && segment[index + 1] === ">";
+    if (character === ">" || character === "<" || ampersandRedirect) {
+      if (/^\d+$/u.test(current)) current = "";
+      else push();
+
+      let targetStart = index + (ampersandRedirect ? 2 : 1);
+      const next = segment[targetStart] ?? "";
+      if (
+        (character === "<" && (next === "<" || next === ">" || next === "&")) ||
+        ((character === ">" || ampersandRedirect) && (next === ">" || next === "&" || next === "|"))
+      ) {
+        targetStart += 1;
+        if (character === "<" && next === "<" && segment[targetStart] === "<") targetStart += 1;
+      }
+      while (/\s/u.test(segment[targetStart] ?? "")) targetStart += 1;
+
+      let targetQuote: '"' | "'" | null = null;
+      let targetEscaped = false;
+      let targetEnd = targetStart;
+      for (; targetEnd < segment.length; targetEnd += 1) {
+        const targetCharacter = segment[targetEnd] ?? "";
+        if (targetEscaped) {
+          targetEscaped = false;
+          continue;
+        }
+        if (targetCharacter === "\\" && targetQuote !== "'") {
+          targetEscaped = true;
+          continue;
+        }
+        if (targetQuote !== null) {
+          if (targetCharacter === targetQuote) targetQuote = null;
+          continue;
+        }
+        if (targetCharacter === '"' || targetCharacter === "'") {
+          targetQuote = targetCharacter;
+          continue;
+        }
+        if (/\s/u.test(targetCharacter)) break;
+      }
+      index = targetEnd - 1;
+      continue;
+    }
+    if (/\s/u.test(character)) {
+      push();
+      continue;
+    }
+    current += character;
+  }
+  push();
+  return words;
+}
