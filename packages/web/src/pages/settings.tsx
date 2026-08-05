@@ -52,7 +52,7 @@ const REPOSITORIES_ITEM: Item = {
 const CONTEXT_TREE_ITEM: Item = {
   to: "/settings/context",
   label: "Context Tree",
-  description: "Manage shared context, automatic review, and coding-agent access for this Team.",
+  description: "Manage shared context, automatic review, and coding agent setup for this Team.",
 };
 const RESOURCES_ITEM: Item = {
   to: "/settings/resources",
