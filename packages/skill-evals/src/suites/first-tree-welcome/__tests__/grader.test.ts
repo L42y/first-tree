@@ -1930,6 +1930,53 @@ Type a different task if you prefer.`;
 
   it.each([
     [
+      "first-tree-welcome-admin-qualified-tree-bridge-periodic",
+      "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+    ],
+    [
+      "first-tree-welcome-invitee-result-bridge-periodic",
+      "Should I verify the checkout recovery branch against its focused test?",
+    ],
+  ])("rejects a broad repository scan before a post-result bridge in %s", (caseId, response) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-post-result-broad-scan-"));
+    try {
+      const evalCase = findCase(caseId);
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            event: {
+              item: {
+                command: "find .first-tree-eval .first-tree source-repo -maxdepth 4 -type f -print",
+                type: "command_execution",
+              },
+              type: "item.completed",
+            },
+            type: "codex_event",
+          },
+          {
+            argv: ["chat", "ask", "baixiaohang", response],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.broadRepoScanObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("broad-repo-scan");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    [
       "first-tree-welcome-invitee-not-ready-periodic",
       {
         finalResponse: "The admin needs to finish team readiness. You can send a local path to get value now.",

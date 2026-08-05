@@ -226,7 +226,7 @@ Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.t
   },
   {
     action: "offer_one_contextual_bridge",
-    forbiddenActions: ["multiple-bridges", "early-pr-setup", "repo-selection"],
+    forbiddenActions: ["multiple-bridges", "early-pr-setup", "repo-selection", "broad-repo-scan"],
     forbiddenClaims: [],
     id: "first-tree-welcome-admin-qualified-tree-bridge",
     chatScenario: "post-result",
@@ -240,7 +240,7 @@ Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.t
   },
   {
     action: "offer_one_contextual_bridge",
-    forbiddenActions: ["multiple-bridges", "early-pr-setup", "admin-setup", "repo-selection"],
+    forbiddenActions: ["multiple-bridges", "early-pr-setup", "admin-setup", "repo-selection", "broad-repo-scan"],
     forbiddenClaims: [],
     id: "first-tree-welcome-invitee-result-bridge",
     chatScenario: "post-result",
