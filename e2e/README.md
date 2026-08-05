@@ -92,7 +92,7 @@ the local stack and the local tests do not touch staging.
 | Test | Env | Covers |
 | --- | --- | --- |
 | `registration-new-user.test.yaml` | local | A brand-new account is created and lands on onboarding step 1 |
-| `onboarding-complete-setup.test.yaml` | local | The whole first-run journey: sign up → create team → connect a computer → create the first agent → start the kickoff chat → land in the workspace |
+| `onboarding-complete-setup.test.yaml` | local | The whole first-run journey: sign up → create team → connect a computer → create the first agent → start the kickoff chat → land in the workspace → open the Team-scoped own-agent setup path |
 | `dev-cloud-sign-in-available.test.yaml` | first-tree-dev-cloud | Staging serves the landing page and offers Google + GitHub sign-in |
 
 `modules/sign-up-fresh-user.module.yaml` holds the shared sign-up flow. Each run

@@ -43,6 +43,17 @@ steps:
       whose first message asks the user's new assistant agent for help getting
       started, and a message composer addressed to that agent is available
 
+  # ── Team switcher — external-agent entry stays Team-scoped ────────────────
+  - click: current team selector in the header
+  - assert: the open team menu shows Use your own agent in the Current team
+      section, keeps Create team under Add team, and has no Join with invite
+      link action
+  - click: Use your own agent menu item
+  - waitForUrl: /settings/context#coding-agent-access
+  - assert: the Context Tree settings page is open at the Coding-agent access
+      section, where the new Team cannot configure personal coding-agent access
+      until it has a valid Context Tree binding
+
   # ── Settings — the permanent readiness overview keeps its stable route ────
   - click: Settings link in the top navigation
   - waitForUrl: /settings/account

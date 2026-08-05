@@ -1540,7 +1540,7 @@ describe("web DOM interaction coverage", () => {
     await unmountRoot(plain.root);
   });
 
-  it("switches orgs and opens setup actions from the TeamSwitcher, and signs out from the UserMenu", async () => {
+  it("switches orgs and exposes focused setup actions from the TeamSwitcher, and signs out from the UserMenu", async () => {
     clientApiMocks.post.mockResolvedValue({});
     const { TeamSwitcher } = await import("../../components/team-switcher.js");
     const { UserMenu } = await import("../../components/user-menu.js");
@@ -1580,12 +1580,8 @@ describe("web DOM interaction coverage", () => {
     await waitForText("Create", document.body);
 
     await click(switcher.container.querySelector('button[aria-haspopup="menu"]'));
-    await click(
-      [...switcher.container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Join with invite link"),
-      ) ?? null,
-    );
-    await waitForText("Join", document.body);
+    expect(switcher.container.textContent).toContain("Use your own agent");
+    expect(switcher.container.textContent).not.toContain("Join with invite link");
 
     // The avatar menu is account-only: no team rows, with a permanent mobile
     // handoff alongside account settings and sign-out.
