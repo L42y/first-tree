@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Play, RotateCcw } from "lucide-react";
+import { Check, Play, RotateCcw } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { cn } from "../../lib/utils.js";
 import { Button } from "../ui/button.js";
@@ -155,13 +155,20 @@ export function OnboardingOrientation({
       style={{ borderRadius: "var(--radius-panel)" }}
     >
       <header className="flex flex-col" style={{ gap: "var(--sp-1)", padding: "var(--sp-4)" }}>
-        <div className="flex flex-wrap items-baseline justify-between" style={{ gap: "var(--sp-2)" }}>
+        <div className="flex flex-wrap items-center justify-between" style={{ gap: "var(--sp-2)" }}>
           <p id={titleId} className="text-title font-semibold text-balance">
             Get to know First Tree
           </p>
-          <p className="mono text-caption shrink-0 text-muted-foreground">
-            Optional · {formatTotalDuration(TOTAL_DURATION_IN_SECONDS)}
-          </p>
+          <div className="flex shrink-0 items-center" style={{ gap: "var(--sp-2)" }}>
+            <p className="mono text-caption text-muted-foreground">
+              Optional · {formatTotalDuration(TOTAL_DURATION_IN_SECONDS)}
+            </p>
+            {!completed ? (
+              <Button type="button" variant="ghost" size="sm" disabled={continuing} onClick={() => void onContinue()}>
+                Skip
+              </Button>
+            ) : null}
+          </div>
         </div>
         <p className="text-body max-w-[65ch] text-muted-foreground text-pretty">
           Watch the short tours, or continue when you’re ready.
@@ -204,27 +211,25 @@ export function OnboardingOrientation({
           </video>
           {videoError ? (
             <div
-              className="absolute inset-0 flex flex-col items-center justify-center bg-background/95 p-6 text-center"
+              className="absolute inset-0 flex flex-col overflow-auto bg-background/95 text-left"
               role="alert"
-              style={{ gap: "var(--sp-3)" }}
+              style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}
             >
-              <div>
-                <p className="text-label font-medium">This video couldn’t load</p>
-                <p className="text-body mt-1 text-muted-foreground">
-                  Read the transcript below or try loading it again.
-                </p>
+              <div className="flex flex-wrap items-center justify-between" style={{ gap: "var(--sp-2)" }}>
+                <p className="text-label font-medium">This video couldn’t load — here’s the transcript</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setVideoError(false);
+                    videoRef.current?.load();
+                  }}
+                >
+                  Try again
+                </Button>
               </div>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setVideoError(false);
-                  videoRef.current?.load();
-                }}
-              >
-                Try again
-              </Button>
+              <p className="text-body max-w-[65ch] text-muted-foreground text-pretty">{selected.transcript}</p>
             </div>
           ) : null}
         </div>
@@ -294,14 +299,6 @@ export function OnboardingOrientation({
             </Button>
           </div>
         ) : null}
-
-        <details className="group mt-3 border-t border-border pt-3">
-          <summary className="text-label inline-flex min-h-11 cursor-pointer items-center font-medium">
-            Transcript
-            <ChevronDown className="ml-2 size-4 transition-transform group-open:rotate-180" aria-hidden="true" />
-          </summary>
-          <p className="text-body mt-2 max-w-[65ch] text-muted-foreground text-pretty">{selected.transcript}</p>
-        </details>
       </div>
     </section>
   );

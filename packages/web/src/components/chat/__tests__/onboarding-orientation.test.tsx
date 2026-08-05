@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("OnboardingOrientation", () => {
-  it("shows the selected video, persistent chapter list, and one continue action", async () => {
+  it("shows the selected video, persistent chapter list, and header skip plus continue actions", async () => {
     const onContinue = vi.fn();
     const { container } = await renderOrientation({ onContinue });
 
@@ -50,14 +50,40 @@ describe("OnboardingOrientation", () => {
     expect(container.textContent).toContain("Context Tree");
     expect(container.textContent).toContain("GitHub automation");
     expect(container.textContent).not.toContain("Video placeholder");
-    expect(container.textContent).toContain("Transcript");
+    expect(container.textContent).not.toContain("Transcript");
     expect(container.querySelector("video")?.autoplay).toBe(false);
+
+    const skipButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Skip",
+    );
+    await click(skipButton ?? null);
+    expect(onContinue).toHaveBeenCalledTimes(1);
 
     const continueButton = [...container.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "Continue with Nova",
     );
     await click(continueButton ?? null);
-    expect(onContinue).toHaveBeenCalledTimes(1);
+    expect(onContinue).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the transcript inside the failed-video overlay", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "load").mockImplementation(() => undefined);
+    const { container } = await renderOrientation();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    const video = container.querySelector("video");
+    await act(async () => {
+      video?.dispatchEvent(new Event("error"));
+    });
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("This video couldn’t load");
+    expect(alert?.textContent).toContain("Give one lead agent a clear software task");
+
+    const tryAgain = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Try again",
+    );
+    await click(tryAgain ?? null);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("plays a chapter when its persistent playlist item is clicked and marks it watched on completion", async () => {
@@ -76,7 +102,7 @@ describe("OnboardingOrientation", () => {
     expect(video?.getAttribute("poster")).toBe("/onboarding/orientation/stills/multi-agent-poster.png");
     expect(video?.querySelector("source")?.getAttribute("src")).toBe("/onboarding/orientation/multi-agent.mp4");
     expect(video?.querySelector("track")?.getAttribute("src")).toBe("/onboarding/orientation/multi-agent.vtt");
-    expect(container.textContent).toContain("Transcript");
+    expect(container.textContent).not.toContain("Transcript");
     expect(container.textContent).not.toContain("Choose another chapter");
 
     await act(async () => {
@@ -136,5 +162,6 @@ describe("OnboardingOrientation", () => {
     expect(container.querySelectorAll("[data-orientation-chapter]")).toHaveLength(3);
     expect(onContinue).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Continue with Nova");
+    expect(container.textContent).not.toContain("Skip");
   });
 });
