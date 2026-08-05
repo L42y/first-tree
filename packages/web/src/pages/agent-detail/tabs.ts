@@ -17,14 +17,62 @@ const TAB_LABELS: Record<string, string> = {
 };
 
 /**
+ * Inputs for whether the Responsibilities tab should appear. Hide only when
+ * both the public official Template catalog and the agent's adopted
+ * `templateIds` are confirmed empty. Loading and request failures must fail
+ * open (keep the tab) so uncertainty is never treated as "no data".
+ */
+export type ResponsibilitiesVisibilityInput = {
+  catalogFetched: boolean;
+  catalogError: boolean;
+  catalogCount: number;
+  agentResourcesFetched: boolean;
+  agentResourcesError: boolean;
+  agentTemplateIdCount: number;
+};
+
+/**
+ * Whether Agent Detail should expose the Responsibilities tab.
+ *
+ * - Humans never see it.
+ * - Non-humans see it whenever the public catalog has any templates, or the
+ *   agent already carries adopted Template ids (active / retired / missing
+ *   provenance still needs a home).
+ * - Hide only when both sides are confirmed empty.
+ * - When the agent's resources are still unknown, `assumeShowWhenAgentUnknown`
+ *   controls fail-open (page chrome) vs fail-closed (switcher path preservation
+ *   must not send the user into an entry that will immediately close).
+ */
+export function shouldShowResponsibilitiesTab(
+  isHuman: boolean,
+  input: ResponsibilitiesVisibilityInput | null,
+  opts?: { assumeShowWhenAgentUnknown?: boolean },
+): boolean {
+  if (isHuman) return false;
+  if (!input) return true;
+  if (!input.catalogFetched || input.catalogError) return true;
+  if (input.catalogCount > 0) return true;
+  // Catalog is confirmed empty — keep the tab only when this agent still has
+  // adopted Template responsibilities (including retired / missing provenance).
+  if (!input.agentResourcesFetched || input.agentResourcesError) {
+    return opts?.assumeShowWhenAgentUnknown ?? true;
+  }
+  return input.agentTemplateIdCount > 0;
+}
+
+/**
  * Single source of truth for WHICH tabs exist for an agent (key + path),
  * independent of label/order. `buildTabs` adds the display label on top, and the
  * agent switcher uses this to know whether a target agent supports the current
  * tab — so the two can never drift on tab availability.
  */
-export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: string; path: string }[] {
+export function tabKeysFor(
+  canEditConfig: boolean,
+  isHuman: boolean,
+  showResponsibilities: boolean = !isHuman,
+): { key: string; path: string }[] {
   const tabs: { key: string; path: string }[] = [{ key: "profile", path: "profile" }];
-  if (!isHuman) {
+  if (showResponsibilities) {
     tabs.push({ key: "responsibilities", path: "responsibilities" });
   }
   if (canEditConfig) {
@@ -49,8 +97,15 @@ export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: str
   return tabs;
 }
 
-export function buildTabs(canEditConfig: boolean, isHuman: boolean): TabDef[] {
-  return tabKeysFor(canEditConfig, isHuman).map((t) => ({ ...t, label: TAB_LABELS[t.key] ?? t.key }));
+export function buildTabs(
+  canEditConfig: boolean,
+  isHuman: boolean,
+  showResponsibilities: boolean = !isHuman,
+): TabDef[] {
+  return tabKeysFor(canEditConfig, isHuman, showResponsibilities).map((t) => ({
+    ...t,
+    label: TAB_LABELS[t.key] ?? t.key,
+  }));
 }
 
 /** Mirror of the shell's `canEditConfig` derivation, for any agent (e.g. switcher targets). */
@@ -68,7 +123,10 @@ export function resolveTabPath(
   memberId: string | null,
   role: string | null,
   currentPath: string,
+  showResponsibilities: boolean = agent.type !== "human",
 ): string {
-  const paths = tabKeysFor(canEditConfigFor(agent, memberId, role), agent.type === "human").map((t) => t.path);
+  const paths = tabKeysFor(canEditConfigFor(agent, memberId, role), agent.type === "human", showResponsibilities).map(
+    (t) => t.path,
+  );
   return paths.includes(currentPath) ? currentPath : "profile";
 }

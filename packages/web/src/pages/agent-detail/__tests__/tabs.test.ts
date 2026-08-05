@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { buildTabs, tabKeysFor } from "../tabs.js";
+import {
+  buildTabs,
+  type ResponsibilitiesVisibilityInput,
+  resolveTabPath,
+  shouldShowResponsibilitiesTab,
+  tabKeysFor,
+} from "../tabs.js";
+
+function visibility(overrides: Partial<ResponsibilitiesVisibilityInput> = {}): ResponsibilitiesVisibilityInput {
+  return {
+    catalogFetched: true,
+    catalogError: false,
+    catalogCount: 1,
+    agentResourcesFetched: true,
+    agentResourcesError: false,
+    agentTemplateIdCount: 0,
+    ...overrides,
+  };
+}
 
 describe("agent-detail tabs", () => {
   it("gives an editor the 7-tab set with Responsibilities after Profile", () => {
@@ -45,5 +63,116 @@ describe("agent-detail tabs", () => {
   it("gives a human agent only Profile", () => {
     // A human is always canEditConfig=false (it derives from type !== "human").
     expect(tabKeysFor(false, true).map((t) => t.key)).toEqual(["profile"]);
+  });
+
+  it("omits Responsibilities when the empty-catalog gate is closed", () => {
+    expect(tabKeysFor(true, false, false).map((t) => t.key)).toEqual([
+      "profile",
+      "runtime",
+      "prompt",
+      "capabilities",
+      "repositories",
+      "usage",
+    ]);
+    expect(tabKeysFor(false, false, false).map((t) => t.key)).toEqual(["profile", "capabilities", "usage"]);
+  });
+});
+
+describe("shouldShowResponsibilitiesTab", () => {
+  it("never shows for humans", () => {
+    expect(shouldShowResponsibilitiesTab(true, visibility({ catalogCount: 3, agentTemplateIdCount: 2 }))).toBe(false);
+  });
+
+  it("hides only when catalog and agent templateIds are both confirmed empty", () => {
+    expect(shouldShowResponsibilitiesTab(false, visibility({ catalogCount: 0, agentTemplateIdCount: 0 }))).toBe(false);
+  });
+
+  it("keeps the tab when the agent still has adopted templateIds even if the catalog is empty", () => {
+    expect(shouldShowResponsibilitiesTab(false, visibility({ catalogCount: 0, agentTemplateIdCount: 2 }))).toBe(true);
+  });
+
+  it("keeps the tab while the catalog is loading or errored", () => {
+    expect(
+      shouldShowResponsibilitiesTab(
+        false,
+        visibility({ catalogFetched: false, catalogCount: 0, agentTemplateIdCount: 0 }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowResponsibilitiesTab(
+        false,
+        visibility({ catalogError: true, catalogCount: 0, agentTemplateIdCount: 0 }),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the tab while agent resources are loading or errored (page fail-open)", () => {
+    expect(
+      shouldShowResponsibilitiesTab(
+        false,
+        visibility({
+          catalogCount: 0,
+          agentResourcesFetched: false,
+          agentTemplateIdCount: 0,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldShowResponsibilitiesTab(
+        false,
+        visibility({
+          catalogCount: 0,
+          agentResourcesError: true,
+          agentResourcesFetched: false,
+          agentTemplateIdCount: 0,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("fail-closes for the switcher when catalog is empty and agent resources are unknown", () => {
+    expect(
+      shouldShowResponsibilitiesTab(
+        false,
+        visibility({
+          catalogCount: 0,
+          agentResourcesFetched: false,
+          agentTemplateIdCount: 0,
+        }),
+        { assumeShowWhenAgentUnknown: false },
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("resolveTabPath responsibilities gate", () => {
+  const agent = {
+    uuid: "agent-1",
+    name: "vega",
+    displayName: "Vega",
+    type: "agent" as const,
+    managerId: "member-self",
+    visibility: "organization" as const,
+    avatarColorToken: null,
+    avatarImageUrl: null,
+    status: "active" as const,
+    organizationId: "org-1",
+    delegateMention: null,
+    inboxId: "inbox-1",
+    metadata: {},
+    source: "portal" as const,
+    clientId: "client-1",
+    runtimeProvider: "claude-code" as const,
+    runtimeState: "idle" as const,
+    createdAt: "2026-05-28T12:00:00.000Z",
+    updatedAt: "2026-05-28T12:00:00.000Z",
+  };
+
+  it("falls back to profile when Responsibilities is closed for the target", () => {
+    expect(resolveTabPath(agent, "member-self", "admin", "responsibilities", false)).toBe("profile");
+  });
+
+  it("preserves Responsibilities when the target still exposes it", () => {
+    expect(resolveTabPath(agent, "member-self", "admin", "responsibilities", true)).toBe("responsibilities");
   });
 });
