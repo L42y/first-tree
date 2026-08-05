@@ -1992,6 +1992,20 @@ Type a different task if you prefer.`;
             workdir: join(tempRoot, "source-repo"),
           }),
         ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg --encoding utf-8 TODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg -gfoo TODO README.md", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
       ];
       const repoRelativeDirectoryScan = broadScanSafetyResult(
         tempRoot,
@@ -2137,6 +2151,14 @@ Type a different task if you prefer.`;
         {
           event: commandExecutionEvent("rg -e --version .", { workdir: sourceRepoPath }),
           label: "relative rg version pattern",
+        },
+        {
+          event: commandExecutionEvent("rg --encoding utf-8 README.md", { workdir: sourceRepoPath }),
+          label: "relative rg value option",
+        },
+        {
+          event: commandExecutionEvent("rg -gfoo README.md", { workdir: sourceRepoPath }),
+          label: "relative rg attached glob",
         },
       ];
 

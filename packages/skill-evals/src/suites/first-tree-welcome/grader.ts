@@ -584,23 +584,6 @@ function sourceRepoCwdScope(cwd: string | null, workspacePath: string): SourceRe
   return resolvedCwd.startsWith(`${sourceRepoPath}${sep}`) ? "descendant" : "outside";
 }
 
-function rgFilesPathOperands(words: readonly string[]): string[] {
-  const filesIndex = words.indexOf("--files");
-  if (filesIndex < 0) return [];
-  const operands: string[] = [];
-  const optionsWithValues = new Set(["-g", "--glob", "-t", "--type", "--type-add"]);
-  for (let index = filesIndex + 1; index < words.length; index += 1) {
-    const word = words[index] ?? "";
-    if (optionsWithValues.has(word)) {
-      index += 1;
-      continue;
-    }
-    if (word.startsWith("-")) continue;
-    operands.push(word);
-  }
-  return operands;
-}
-
 function isDirectFileReference(operand: string, cwd: string): boolean {
   if (operand.endsWith("/")) return false;
   const candidate = resolve(cwd, operand);
@@ -624,61 +607,108 @@ function isDirectFileReference(operand: string, cwd: string): boolean {
   );
 }
 
-const RG_OPTIONS_WITH_VALUES = new Set([
-  "-A",
-  "-B",
-  "-C",
-  "-e",
+const RG_LONG_VALUE_OPTIONS = new Set([
+  "--after-context",
+  "--before-context",
+  "--color",
+  "--colors",
+  "--context",
+  "--context-separator",
+  "--dfa-size-limit",
+  "--encoding",
+  "--engine",
   "--file",
-  "-f",
-  "-g",
+  "--field-context-separator",
+  "--field-match-separator",
   "--glob",
+  "--hostname-bin",
+  "--hyperlink-format",
+  "--iglob",
+  "--ignore-file",
+  "--max-columns",
+  "--max-count",
+  "--max-depth",
+  "--max-filesize",
+  "--path-separator",
+  "--pre",
+  "--pre-glob",
   "--regexp",
-  "-t",
+  "--regex-size-limit",
+  "--replace",
+  "--sort",
+  "--sortr",
+  "--threads",
   "--type",
-  "-T",
+  "--type-add",
+  "--type-clear",
   "--type-not",
 ]);
-const RG_PATTERN_OPTIONS = new Set(["-e", "--regexp", "-f", "--file"]);
+const RG_PATTERN_LONG_OPTIONS = new Set(["--regexp", "--file"]);
+const RG_SHORT_VALUE_OPTIONS = new Set(["A", "B", "C", "E", "M", "T", "d", "e", "f", "g", "j", "m", "r", "t"]);
+const RG_PATTERN_SHORT_OPTIONS = new Set(["e", "f"]);
 
-function attachedRgPatternOption(word: string): { consumesNext: boolean } | null {
-  if (/^--(?:regexp|file)=/u.test(word)) return { consumesNext: false };
-  const shortMatch = word.match(/^-[A-Za-z]*[ef](.*)$/u);
-  if (!shortMatch) return null;
-  return { consumesNext: (shortMatch[1] ?? "").length === 0 };
-}
+type RgOptionEffect = {
+  consumesNext: boolean;
+  filesMode: boolean;
+  informational: boolean;
+  suppliesPattern: boolean;
+};
 
-function rgCommandUsesInformationalMode(words: readonly string[]): boolean {
-  for (let index = 1; index < words.length; index += 1) {
-    const word = words[index] ?? "";
-    if (word === "--") return false;
-    const attachedPattern = attachedRgPatternOption(word);
-    if (attachedPattern !== null) {
-      if (attachedPattern.consumesNext) index += 1;
-      continue;
+function rgOptionEffect(word: string): RgOptionEffect | null {
+  if (word.startsWith("--")) {
+    const equalsIndex = word.indexOf("=");
+    const name = equalsIndex < 0 ? word : word.slice(0, equalsIndex);
+    if (["--help", "--version", "--type-list", "--pcre2-version"].includes(name)) {
+      return { consumesNext: false, filesMode: false, informational: true, suppliesPattern: false };
     }
-    if (RG_OPTIONS_WITH_VALUES.has(word)) {
-      index += 1;
-      continue;
+    if (name === "--generate") {
+      return {
+        consumesNext: equalsIndex < 0,
+        filesMode: false,
+        informational: true,
+        suppliesPattern: false,
+      };
     }
-    if (["--help", "--version", "-h", "-V"].includes(word)) return true;
+    if (name === "--files") {
+      return { consumesNext: false, filesMode: true, informational: false, suppliesPattern: false };
+    }
+    if (RG_LONG_VALUE_OPTIONS.has(name)) {
+      return {
+        consumesNext: equalsIndex < 0,
+        filesMode: false,
+        informational: false,
+        suppliesPattern: RG_PATTERN_LONG_OPTIONS.has(name),
+      };
+    }
+    return { consumesNext: false, filesMode: false, informational: false, suppliesPattern: false };
   }
-  return false;
+  if (!/^-[^-]/u.test(word)) return null;
+
+  const cluster = word.slice(1);
+  let informational = false;
+  for (let index = 0; index < cluster.length; index += 1) {
+    const option = cluster[index] ?? "";
+    if (RG_SHORT_VALUE_OPTIONS.has(option)) {
+      return {
+        consumesNext: index === cluster.length - 1,
+        filesMode: false,
+        informational,
+        suppliesPattern: RG_PATTERN_SHORT_OPTIONS.has(option),
+      };
+    }
+    if (option === "h" || option === "V") informational = true;
+  }
+  return { consumesNext: false, filesMode: false, informational, suppliesPattern: false };
 }
 
-function commandUsesInformationalMode(program: string, words: readonly string[]): boolean {
-  if (program === "rg") return rgCommandUsesInformationalMode(words);
-  for (const word of words.slice(1)) {
-    if (word === "--") return false;
-    if (word === "--help" || word === "--version") return true;
-  }
-  return false;
-}
+type RgArguments = { informational: boolean; pathOperands: string[] };
 
-function rgSearchPathOperands(words: readonly string[]): string[] {
-  const operands: string[] = [];
-  let patternSeen = false;
+function parseRgArguments(words: readonly string[]): RgArguments {
+  const pathOperands: string[] = [];
+  let filesMode = false;
   let optionsEnded = false;
+  let patternSeen = false;
+
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
     if (!optionsEnded && word === "--") {
@@ -686,27 +716,31 @@ function rgSearchPathOperands(words: readonly string[]): string[] {
       continue;
     }
     if (!optionsEnded) {
-      const attachedPattern = attachedRgPatternOption(word);
-      if (attachedPattern !== null) {
-        patternSeen = true;
-        if (attachedPattern.consumesNext) index += 1;
+      const effect = rgOptionEffect(word);
+      if (effect !== null) {
+        if (effect.informational) return { informational: true, pathOperands: [] };
+        if (effect.filesMode) filesMode = true;
+        if (effect.suppliesPattern) patternSeen = true;
+        if (effect.consumesNext) index += 1;
         continue;
       }
-      if (/^(?:-g.+|--glob=.+|-t.+|--type=.+|-T.+|--type-not=.+)$/u.test(word)) continue;
-      if (RG_OPTIONS_WITH_VALUES.has(word)) {
-        if (RG_PATTERN_OPTIONS.has(word)) patternSeen = true;
-        index += 1;
-        continue;
-      }
-      if (word.startsWith("-")) continue;
     }
-    if (!patternSeen) {
+    if (!filesMode && !patternSeen) {
       patternSeen = true;
       continue;
     }
-    operands.push(word);
+    pathOperands.push(word);
   }
-  return operands;
+  return { informational: false, pathOperands };
+}
+
+function commandUsesInformationalMode(program: string, words: readonly string[]): boolean {
+  if (program === "rg") return parseRgArguments(words).informational;
+  for (const word of words.slice(1)) {
+    if (word === "--") return false;
+    if (word === "--help" || word === "--version") return true;
+  }
+  return false;
 }
 
 function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope, cwd: string): boolean {
@@ -716,23 +750,15 @@ function segmentUsesBroadRepoScan(segment: string, cwdScope: SourceRepoCwdScope,
   const cwdIsSourceRepo = cwdScope !== "outside";
   const relativeRootOperand = words.some((word) => word === "." || word === "./");
   const recursiveLs = program === "ls" && words.some((word) => /^-[A-Za-z]*R[A-Za-z]*$/u.test(word));
-  const rgSearchOperands = program === "rg" && !words.includes("--files") ? rgSearchPathOperands(words) : [];
+  const rgArguments = program === "rg" ? parseRgArguments(words) : null;
   const relativeRecursiveScan =
     cwdIsSourceRepo &&
     (program === "tree" ||
       recursiveLs ||
       (program === "rg" &&
-        !words.includes("--files") &&
-        (rgSearchOperands.length === 0 || rgSearchOperands.some((operand) => !isDirectFileReference(operand, cwd)))));
+        (rgArguments?.pathOperands.length === 0 ||
+          rgArguments?.pathOperands.some((operand) => !isDirectFileReference(operand, cwd)))));
   if (relativeRecursiveScan) return true;
-  const rgFilesOperands = program === "rg" ? rgFilesPathOperands(words) : [];
-  if (
-    cwdIsSourceRepo &&
-    words.includes("--files") &&
-    (rgFilesOperands.length === 0 || rgFilesOperands.some((operand) => !isDirectFileReference(operand, cwd)))
-  ) {
-    return true;
-  }
 
   const rootFind = /\bfind\s+(?:\.\/)?source-repo\b/iu.test(segment);
   const relativeFind = cwdIsSourceRepo && program === "find";
