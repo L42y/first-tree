@@ -122,21 +122,25 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).toMatch(/A follow failure does not\s+invalidate the MR/u);
     expect(skillMarkdown).toMatch(/report\s+only the First Tree chat attention gap/u);
     expect(skillMarkdown).toContain(
-      "do not call\n`first-tree github follow`, send the user to **Settings → Setup** for GitHub App",
+      "do not call\n`first-tree github follow`, send the user to **Settings → Getting Started** for GitHub App",
     );
     expect(skillMarkdown).toContain("Never substitute `first-tree github follow`");
     expect(skillMarkdown).not.toContain("A GitLab MR has no documented equivalent here");
   });
 
-  it("keeps capability setup milestone-gated, role-aware, and owned by Setup", () => {
+  it("keeps capability setup milestone-gated, role-aware, and owned by capability settings", () => {
     expect(skillMarkdown).toContain("After a pre-existing Context Tree milestone: guide Review setup once");
     expect(skillMarkdown).toContain("first-tree org context-tree review-config --json");
     expect(skillMarkdown).toContain("its default Team can differ from this Agent/chat's Team");
     expect(skillMarkdown).toContain("JSON `enabled` and `agentUuid` fields");
     expect(skillMarkdown).toMatch(
-      /\*\*Settings → Setup\*\* can select an eligible managed Review Agent\s+and enable Automatic Review/u,
+      /\*\*Settings → Getting Started\*\* can select an eligible managed Review Agent\s+and enable Automatic Review/u,
     );
-    expect(skillMarkdown).toContain("the Agent is already\n  selected");
+    expect(skillMarkdown).toMatch(
+      /\*\*Settings → Getting Started\*\* can enable Automatic Review; the Agent is already\s+selected/u,
+    );
+    expect(skillMarkdown).toMatch(/Settings → Context Tree owns Reviewer selection and health/u);
+    expect(skillMarkdown).toContain("Getting Started only summarizes\n  readiness and links to those surfaces");
     expect(skillMarkdown).toContain("launcher performs no Team mutation");
     expect(skillMarkdown).toContain("This is not a health or readiness check");
     expect(skillMarkdown).toMatch(/infer debt when the read is invalid, fails, or is\s+ambiguous/u);
@@ -148,8 +152,8 @@ describe("first-tree-welcome floor invariants", () => {
 
     const handoffRows = [
       "| GitHub value PR | Task chat reported missing App coverage | Summarize the blocked live updates; do not repeat its Setup handoff |",
-      "| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Hand off once to select and enable Automatic Review in Settings → Setup |",
-      "| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Hand off once to enable Automatic Review in Settings → Setup |",
+      "| Pre-existing populated tree after value | Confirmed admin; no selected Agent | Hand off once to select and enable Automatic Review in Settings → Getting Started |",
+      "| Pre-existing populated tree after value | Confirmed admin; Agent selected but Review off | Hand off once to enable Automatic Review in Settings → Getting Started |",
       "| Pre-existing populated tree after value | Review enabled, read failed/ambiguous, member, or unclear role | No Review setup handoff |",
       "| Dedicated tree task's first PR/MR | Any | Seed owns the handoff; consume its result and do not repeat |",
     ];
