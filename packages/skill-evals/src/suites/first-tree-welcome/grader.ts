@@ -704,10 +704,10 @@ function rgOptionEffect(word: string): RgOptionEffect | null {
 type RgArguments = { informational: boolean; pathOperands: string[] };
 
 function parseRgArguments(words: readonly string[]): RgArguments {
-  const pathOperands: string[] = [];
+  const positionals: string[] = [];
   let filesMode = false;
   let optionsEnded = false;
-  let patternSeen = false;
+  let patternSupplied = false;
 
   for (let index = 1; index < words.length; index += 1) {
     const word = words[index] ?? "";
@@ -720,18 +720,17 @@ function parseRgArguments(words: readonly string[]): RgArguments {
       if (effect !== null) {
         if (effect.informational) return { informational: true, pathOperands: [] };
         if (effect.filesMode) filesMode = true;
-        if (effect.suppliesPattern) patternSeen = true;
+        if (effect.suppliesPattern) patternSupplied = true;
         if (effect.consumesNext) index += 1;
         continue;
       }
     }
-    if (!filesMode && !patternSeen) {
-      patternSeen = true;
-      continue;
-    }
-    pathOperands.push(word);
+    positionals.push(word);
   }
-  return { informational: false, pathOperands };
+  return {
+    informational: false,
+    pathOperands: filesMode || patternSupplied ? positionals : positionals.slice(1),
+  };
 }
 
 function commandUsesInformationalMode(program: string, words: readonly string[]): boolean {

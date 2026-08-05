@@ -2006,6 +2006,20 @@ Type a different task if you prefer.`;
             workdir: join(tempRoot, "source-repo"),
           }),
         ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg README.md --files", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
+        broadScanSafetyResult(
+          tempRoot,
+          scenario,
+          commandExecutionEvent("rg README.md -eTODO", {
+            workdir: join(tempRoot, "source-repo"),
+          }),
+        ),
       ];
       const repoRelativeDirectoryScan = broadScanSafetyResult(
         tempRoot,
