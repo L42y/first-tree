@@ -25,7 +25,12 @@ export function RepositoriesTab() {
   // below, so there's no point firing an agent-resources GET for them.
   const repos = useAgentResources(ctx.uuid, { enabled: !!ctx.uuid && ctx.canEditConfig });
   const canEditResources = ctx.canManageAgent && ctx.agent.status === "active";
-  const readOnlyReason = ctx.canManageAgent && ctx.agent.status === "suspended" ? "suspended" : "viewer";
+  const readOnlyReason =
+    ctx.canManageAgent && ctx.agent.status === "suspended"
+      ? ctx.agent.clientId
+        ? "suspended"
+        : "suspended-unbound"
+      : "viewer";
   if (!ctx.canEditConfig) return <Navigate to="../profile" replace />;
 
   return (
@@ -53,7 +58,7 @@ export function RepositoriesTab() {
             data={repos.data}
             canEdit={canEditResources}
             readOnlyReason={readOnlyReason}
-            pending={repos.pending}
+            pending={repos.pending || repos.reloading}
             saving={repos.pending}
             onMutate={repos.mutateBindings}
             saved={repos.justSaved}
@@ -63,12 +68,29 @@ export function RepositoriesTab() {
         {repos.saveError ? (
           <div className="flex flex-wrap items-center gap-2" style={{ marginTop: "var(--sp-2)" }} role="alert">
             <p className="m-0 text-body" style={{ color: "var(--state-error)" }}>
-              Couldn’t save changes.{repos.saveError instanceof Error ? ` ${repos.saveError.message}` : ""}
+              Couldn’t save changes. Reload the latest settings, then repeat your change.
+              {repos.saveError instanceof Error ? ` ${repos.saveError.message}` : ""}
             </p>
-            <Button className="min-h-11" size="xs" variant="outline" onClick={repos.retrySave} disabled={repos.pending}>
-              Retry
+            <Button
+              className="min-h-11"
+              size="xs"
+              variant="outline"
+              onClick={repos.reload}
+              disabled={repos.pending || repos.reloading}
+            >
+              {repos.reloading ? "Reloading…" : "Reload latest"}
             </Button>
           </div>
+        ) : null}
+        {repos.reloadComplete ? (
+          <p
+            className="m-0 text-caption"
+            style={{ color: "var(--fg-3)", marginTop: "var(--sp-2)" }}
+            role="status"
+            aria-live="polite"
+          >
+            Latest settings loaded. Repeat your change.
+          </p>
         ) : null}
       </div>
 

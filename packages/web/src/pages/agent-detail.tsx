@@ -1,7 +1,7 @@
 import type { RuntimeProvider } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, Monitor } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { type HubClient, listClients } from "./../api/activity.js";
 import { type ClientStatusInfo, getAgentClientStatus, getAgentConfig } from "./../api/agent-config.js";
@@ -86,9 +86,9 @@ function AgentDetailPageView() {
     queryKey: ["agent-client-status", uuid],
     queryFn: () => getAgentClientStatus(uuid),
     enabled: !!uuid && agentQuery.data?.type !== "human",
-    // Drives `isUnclaimed` (`!clientStatus?.clientId`), `isOffline`'s
-    // bound-vs-unclaimed qualifier, and the "offline since {date}"
-    // subtitle. None of those are pushed through the admin WS, so match
+    // Supplies secondary computer detail such as offlineSince. Availability
+    // itself comes from the Agent read model, shared with Team, so this query
+    // cannot create a second online/offline authority. Match
     // the 10s polling cadence that `agentQuery` above (and the legacy
     // `/activity` poll) used.
     refetchInterval: 10_000,
@@ -108,6 +108,13 @@ function AgentDetailPageView() {
 
   const [dangerError, setDangerError] = useState<string | null>(null);
   const [reactivateError, setReactivateError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const current = agentQuery.data;
+    if (!current || current.status !== "suspended" || !current.clientId) {
+      setReactivateError(null);
+    }
+  }, [agentQuery.data?.clientId, agentQuery.data?.status]);
 
   const identityUpdateMutation = useMutation({
     mutationFn: (patch: Parameters<typeof updateAgent>[1]) => updateAgent(uuid, patch),
@@ -281,39 +288,21 @@ function AgentDetailPageView() {
   const runtimeSwitchClaim = readRuntimeSwitchClaim(agent.metadata);
 
   const clientStatus: ClientStatusInfo | undefined = clientStatusQuery.data;
-  const clientStatusInitialLoading = !isHuman && !clientStatus && clientStatusQuery.isLoading;
-  const clientStatusError =
-    clientStatusQuery.error instanceof Error
-      ? clientStatusQuery.error.message
-      : clientStatusQuery.error
-        ? "Unknown"
-        : null;
-  const isUnclaimed = !isHuman && clientStatusQuery.isSuccess && !clientStatus?.clientId;
+  const isUnclaimed = !isHuman && !agent.clientId;
 
   const shortId = agent.uuid.slice(0, 8);
 
-  const boundClientId = clientStatus?.clientId ?? null;
+  const boundClientId = agent.clientId ?? null;
   const boundClient: HubClient | null = boundClientId
     ? (allClientsQuery.data?.find((c) => c.id === boundClientId) ?? null)
     : null;
   const boundClientLabel: string | null =
     boundClientId && canEditConfig ? (boundClient?.hostname ?? boundClientId) : null;
 
-  const connectionState = clientStatus
-    ? clientStatus.online
-      ? "online"
-      : "offline"
-    : clientStatusQuery.error
-      ? agent.runtimeState != null
-        ? "online"
-        : "unknown"
-      : agent.runtimeState != null
-        ? "online"
-        : "checking";
   const availability = deriveAgentAvailability({
     status: agent.status,
-    clientId: clientStatus?.clientId ?? agent.clientId,
-    connection: connectionState,
+    clientId: agent.clientId,
+    connection: agent.runtimeState == null ? "offline" : "online",
     clientLabel: boundClientLabel,
     offlineSince: clientStatus?.offlineSince ?? agent.lastSeenAt,
   });
@@ -363,8 +352,6 @@ function AgentDetailPageView() {
     configError: cfgQuery.error,
     configSave,
     clientStatus,
-    clientStatusLoading: clientStatusInitialLoading,
-    clientStatusError,
     isUnclaimed,
     isOffline,
     boundClientLabel,
@@ -401,6 +388,8 @@ function AgentDetailPageView() {
   };
   const canReactivateFromHeader =
     agent.status === "suspended" && !!agent.clientId && canManageAgent && !runtimeSwitchClaim;
+  const canChooseRuntimeFromHeader =
+    agent.status === "suspended" && !agent.clientId && canManageAgent && !runtimeSwitchClaim;
   const canConnectFromHeader = agent.status === "active" && availability.kind === "needs-setup" && canEditConfig;
   const canStartChatFromHeader = agent.status === "active" && availability.kind !== "needs-setup" && !isHuman;
 
@@ -451,7 +440,8 @@ function AgentDetailPageView() {
             </div>
           </div>
 
-          {!isHuman && (canReactivateFromHeader || canConnectFromHeader || canStartChatFromHeader) ? (
+          {!isHuman &&
+          (canReactivateFromHeader || canChooseRuntimeFromHeader || canConnectFromHeader || canStartChatFromHeader) ? (
             <div className={cn("flex shrink-0 items-center gap-2", isNarrow && "w-full")}>
               {canReactivateFromHeader ? (
                 <Button
@@ -461,6 +451,15 @@ function AgentDetailPageView() {
                   disabled={reactivateMutation.isPending}
                 >
                   {reactivateMutation.isPending ? "Reactivating…" : "Reactivate agent"}
+                </Button>
+              ) : canChooseRuntimeFromHeader ? (
+                <Button
+                  size="sm"
+                  className={cn("min-h-11", isNarrow && "w-full")}
+                  onClick={openRuntimeSwitchDialog}
+                  disabled={runtimeSwitchMutation.isPending}
+                >
+                  Choose runtime
                 </Button>
               ) : canConnectFromHeader ? (
                 <Button
@@ -485,7 +484,7 @@ function AgentDetailPageView() {
             </div>
           ) : null}
         </div>
-        {reactivateError ? (
+        {reactivateError && canReactivateFromHeader ? (
           <div
             className={cn("flex flex-wrap items-center gap-2", !isNarrow && "justify-end")}
             style={{ marginTop: "var(--sp-2)" }}
@@ -1050,6 +1049,7 @@ function RuntimeSwitchControls({
                     opacity: disabled ? 0.62 : 1,
                   }}
                   disabled={disabled}
+                  aria-pressed={picked}
                   title={blocker ?? undefined}
                 >
                   <span
@@ -1106,6 +1106,7 @@ function RuntimeSwitchControls({
                   key={provider}
                   type="button"
                   onClick={() => onSelectProvider(provider)}
+                  aria-pressed={picked}
                   className="text-body"
                   style={{
                     border: "var(--hairline) solid var(--border)",

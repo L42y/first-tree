@@ -1,4 +1,4 @@
-import { CircleHelp, CircleMinus, LoaderCircle } from "lucide-react";
+import { CircleMinus } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AgentAvailabilityView } from "../../lib/agent-availability.js";
 import { cn } from "../../lib/utils.js";
@@ -17,10 +17,7 @@ function availabilityGlyph(view: AgentAvailabilityView): ReactNode {
   if (view.kind === "needs-setup") {
     return <CircleMinus className="h-3.5 w-3.5" aria-hidden />;
   }
-  if (view.kind === "checking") {
-    return <LoaderCircle className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" aria-hidden />;
-  }
-  return <CircleHelp className="h-3.5 w-3.5" aria-hidden />;
+  return <CircleMinus className="h-3.5 w-3.5" aria-hidden />;
 }
 
 function availabilityColor(kind: AgentAvailabilityView["kind"]): string {

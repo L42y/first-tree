@@ -55,8 +55,9 @@ export type AgentResourcesController = {
   saveError: unknown;
   /** True for ~2.5s after a successful immediate save (drives the "Saved" tag). */
   justSaved: boolean;
+  reloading: boolean;
+  reloadComplete: boolean;
   reload: () => void;
-  retrySave: () => void;
 };
 
 /**
@@ -68,8 +69,9 @@ export type AgentResourcesController = {
  *  - onSuccess cancels any in-flight GET before writing, so a stale response can't
  *    resolve afterwards and clobber the version just written (which would desync
  *    rows/badges and 409 the next mutation);
- *  - onError refetches on a 409 so a retry uses the latest version instead of
- *    dead-ending on the same stale expectedVersion.
+ *  - onError refetches on a 409 so the user can repeat the narrow control
+ *    action against current data. A rejected full replace-set is never replayed
+ *    automatically because doing so could delete a concurrent operator's work.
  */
 export function agentResourcesMutationHandlers(
   queryClient: QueryClient,
@@ -94,6 +96,8 @@ export function agentResourcesMutationHandlers(
 export function useAgentResources(uuid: string, opts: { enabled: boolean }): AgentResourcesController {
   const queryClient = useQueryClient();
   const { justSaved, markSaved } = useJustSaved();
+  const [reloading, setReloading] = useState(false);
+  const [reloadComplete, setReloadComplete] = useState(false);
   const resourcesQuery = useQuery({
     queryKey: ["agent-resources", uuid],
     queryFn: () => getAgentResources(uuid),
@@ -110,15 +114,25 @@ export function useAgentResources(uuid: string, opts: { enabled: boolean }): Age
     data: resourcesQuery.data,
     isLoading: resourcesQuery.isLoading,
     error: resourcesQuery.error,
-    mutateBindings: updateMut.mutate,
+    mutateBindings: (bindings) => {
+      setReloadComplete(false);
+      updateMut.mutate(bindings);
+    },
     pending: updateMut.isPending,
     saveError: updateMut.error,
     justSaved,
-    reload: () => {
-      resourcesQuery.refetch();
-    },
-    retrySave: () => {
-      if (updateMut.variables) updateMut.mutate(updateMut.variables);
+    reloading,
+    reloadComplete,
+    reload: async () => {
+      if (reloading) return;
+      setReloading(true);
+      setReloadComplete(false);
+      const result = await resourcesQuery.refetch();
+      if (!result.error) {
+        updateMut.reset();
+        setReloadComplete(true);
+      }
+      setReloading(false);
     },
   };
 }
@@ -132,7 +146,7 @@ export function ResourceTypeSection(props: {
   type: ResourceType;
   data: AgentResourcesOutput;
   canEdit: boolean;
-  readOnlyReason?: "suspended" | "viewer";
+  readOnlyReason?: "suspended" | "suspended-unbound" | "viewer";
   pending: boolean;
   saving?: boolean;
   onMutate: (bindings: AgentResourceBindingInput[]) => void;
@@ -255,7 +269,7 @@ export function ResourceTypeSection(props: {
 function CapabilityEmptyState(props: {
   type: ResourceType;
   canEdit: boolean;
-  readOnlyReason?: "suspended" | "viewer";
+  readOnlyReason?: "suspended" | "suspended-unbound" | "viewer";
   teamHasResources: boolean;
   action: ReactNode;
   onNavigateAway?: (to: string) => void;
@@ -288,13 +302,14 @@ function CapabilityEmptyState(props: {
     <div
       className={props.canEdit ? "flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between" : undefined}
       style={{
-        padding: "var(--sp-4) 0",
+        paddingTop: "var(--sp-4)",
+        paddingBottom: "var(--sp-4)",
+        paddingLeft: props.canEdit ? "var(--sp-4)" : 0,
+        paddingRight: props.canEdit ? "var(--sp-4)" : 0,
         ...(props.canEdit
           ? {
               border: "var(--hairline) solid var(--border)",
               borderRadius: "var(--radius-panel)",
-              paddingLeft: "var(--sp-4)",
-              paddingRight: "var(--sp-4)",
             }
           : null),
       }}
@@ -312,10 +327,14 @@ function CapabilityEmptyState(props: {
   );
 }
 
-function readOnlyCapabilityCopy(type: ResourceType, reason: "suspended" | "viewer" | undefined): string {
+function readOnlyCapabilityCopy(
+  type: ResourceType,
+  reason: "suspended" | "suspended-unbound" | "viewer" | undefined,
+): string {
   const noun = type === "mcp" ? "integrations" : emptyNoun(type);
+  if (reason === "suspended-unbound") return `Choose a runtime before changing ${noun}.`;
   if (reason === "suspended") return `Reactivate this agent to change ${noun}.`;
-  return `Team admins manage ${noun}.`;
+  return `This agent’s manager or a team admin manages ${noun}.`;
 }
 
 /**
@@ -364,6 +383,7 @@ function AddCapabilityMenu(props: {
             aria-label={label}
             title={label}
             onClick={toggle}
+            disabled={props.pending}
           >
             <Plus className="h-4 w-4" />
             {label}

@@ -63,6 +63,10 @@ const orgSettingsMocks = vi.hoisted(() => ({
   getContextTreeSetting: vi.fn(),
 }));
 
+const providerModelMocks = vi.hoisted(() => ({
+  getProviderModels: vi.fn(),
+}));
+
 vi.mock("../../../api/activity.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../api/activity.js")>()),
   listClients: activityMocks.listClients,
@@ -98,7 +102,7 @@ vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
 // catalog; `null` keeps these page tests on the curated-fallback control they
 // exercise (catalog rendering is covered in model-section-catalog.test.tsx).
 vi.mock("../../../api/provider-models.js", () => ({
-  getProviderModels: vi.fn(async () => null),
+  getProviderModels: providerModelMocks.getProviderModels,
 }));
 
 const NOW = "2026-05-28T12:00:00.000Z";
@@ -306,7 +310,10 @@ async function waitForCondition(predicate: () => boolean, message: string, timeo
   throw new Error(message);
 }
 
-async function renderDom(route: string, child: ReactElement): Promise<{ container: HTMLElement; root: Root }> {
+async function renderDom(
+  route: string,
+  child: ReactElement,
+): Promise<{ container: HTMLElement; root: Root; queryClient: QueryClient }> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -342,7 +349,7 @@ async function renderDom(route: string, child: ReactElement): Promise<{ containe
     );
   });
   await flush();
-  return { container, root };
+  return { container, root, queryClient };
 }
 
 function LocationEcho() {
@@ -402,6 +409,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
+  providerModelMocks.getProviderModels.mockResolvedValue(null);
   agentMocks.getAgent.mockResolvedValue(agent());
   // Cross-agent navigation helpers use the same agent list as the Team surface.
   const switcherAgents = {
@@ -487,11 +495,16 @@ describe("AgentDetailPage", () => {
     await act(async () => needsSetup.root.unmount());
 
     agentMocks.getAgent.mockResolvedValueOnce(agent({ runtimeState: null }));
-    agentConfigMocks.getAgentClientStatus.mockRejectedValueOnce(new Error("status endpoint unavailable"));
-    const unknown = await renderDom("/agents/agent-1/profile", <ProfileTab />);
-    await waitForText(unknown.container, "Status unavailable");
-    expect(unknown.container.textContent).toContain("Couldn’t check the computer connection.");
-    await act(async () => unknown.root.unmount());
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({
+      online: true,
+      clientId: "client-1",
+      offlineSince: null,
+    });
+    const recoveredPresence = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(recoveredPresence.container, "Offline");
+    expect(recoveredPresence.container.textContent).toContain("Computer connection unavailable.");
+    expect(recoveredPresence.container.textContent).not.toContain("Online");
+    await act(async () => recoveredPresence.root.unmount());
 
     agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
     const suspended = await renderDom("/agents/agent-1/profile", <ProfileTab />);
@@ -500,6 +513,17 @@ describe("AgentDetailPage", () => {
     expect(suspended.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
     expect(exactButtonByText(suspended.container, "Reactivate agent")).toBeTruthy();
     await act(async () => suspended.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", clientId: null, runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: false, clientId: null, offlineSince: null });
+    const suspendedUnbound = await renderDom("/agents/agent-1/capabilities", <ProfileTab />);
+    await waitForText(suspendedUnbound.container, "Choose runtime");
+    expect(exactButtonByText(suspendedUnbound.container, "Reactivate agent")).toBeNull();
+    await click(exactButtonByText(suspendedUnbound.container, "Choose runtime"));
+    await waitForText(document.body, "Switch runtime");
+    await click(buttonByText(document.body, "gandy-macbook"));
+    expect(document.body.querySelector('button[aria-pressed="true"]')).toBeTruthy();
+    await act(async () => suspendedUnbound.root.unmount());
   });
 
   it("uses a section selector instead of horizontal tabs on narrow web", async () => {
@@ -525,6 +549,33 @@ describe("AgentDetailPage", () => {
 
     await click(exactButtonByText(view.container, "Retry"));
     await waitForCondition(() => agentMocks.reactivateAgent.mock.calls.length === 2, "Expected reactivation retry");
+    await act(async () => view.root.unmount());
+  });
+
+  it("removes a stale reactivation retry after lifecycle recovery", async () => {
+    const { ResourcesTab } = await import("../resources-tab.js");
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    agentMocks.reactivateAgent.mockRejectedValueOnce(new Error("runtime is still unavailable"));
+
+    const view = await renderDom("/agents/agent-1/capabilities", <ResourcesTab />);
+    await waitForText(view.container, "Reactivate agent");
+    await click(exactButtonByText(view.container, "Reactivate agent"));
+    await waitForText(view.container, "Couldn’t reactivate this agent");
+
+    await act(async () => {
+      view.queryClient.setQueryData(["agent", "agent-1"], agent({ status: "active", runtimeState: "idle" }));
+    });
+    await flush();
+    await waitForText(view.container, "Online");
+    expect(view.container.textContent).not.toContain("Couldn’t reactivate this agent");
+    expect(exactButtonByText(view.container, "Retry")).toBeNull();
+
+    await act(async () => {
+      view.queryClient.setQueryData(["agent", "agent-1"], agent({ status: "suspended", runtimeState: null }));
+    });
+    await flush();
+    expect(view.container.textContent).not.toContain("Couldn’t reactivate this agent");
+    expect(exactButtonByText(view.container, "Retry")).toBeNull();
     await act(async () => view.root.unmount());
   });
 
@@ -1138,8 +1189,15 @@ describe("AgentDetailPage", () => {
 
   it("switches an agent runtime from the Runtime tab", async () => {
     const { RuntimeTab } = await import("../runtime-tab.js");
+    agentConfigMocks.getAgentClientStatus.mockRejectedValueOnce(new Error("status endpoint unavailable"));
     const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
     await waitForText(view.container, "Switch runtime");
+    expect(view.container.textContent).not.toContain("Could not verify computer binding");
+    await waitForCondition(
+      () => providerModelMocks.getProviderModels.mock.calls.length > 0,
+      "Expected model discovery to use the Agent route",
+    );
+    expect(providerModelMocks.getProviderModels).toHaveBeenCalledWith("client-1", "claude-code");
 
     await click(buttonByText(view.container, "Switch runtime"));
     await waitForText(document.body, "Switch runtime");

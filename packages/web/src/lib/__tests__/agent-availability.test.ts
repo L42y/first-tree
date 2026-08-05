@@ -26,14 +26,6 @@ describe("deriveAgentAvailability", () => {
     });
   });
 
-  it("keeps query failure distinct from offline", () => {
-    expect(deriveAgentAvailability({ status: "active", clientId: "client-1", connection: "unknown" })).toEqual({
-      kind: "unknown",
-      label: "Status unavailable",
-      detail: "Couldn’t check the computer connection.",
-    });
-  });
-
   it("adds human-readable connection context without creating a health claim", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-05T05:00:00.000Z"));

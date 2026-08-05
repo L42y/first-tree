@@ -36,8 +36,11 @@ axes as a health score.
 - Confirm **Needs setup** explains that no computer is assigned and offers a
   computer chooser. Confirm **Suspended** takes precedence over connection facts,
   removes the start-chat action, and offers reactivation only to an authorized
-  manager. Force reactivation to fail once and verify the error and Retry action
-  remain beside the header action.
+  manager when the agent still has a runtime route. For a suspended agent whose
+  route was cleared, confirm the header offers the supported runtime chooser
+  instead of an impossible Reactivate action. Force reactivation to fail once
+  and verify the error and Retry action remain beside the header action only
+  while the agent is still eligible for reactivation.
 - Confirm the canonical breadcrumb identifies Team and the current agent. On a
   wide viewport, use the sticky local section navigation; on a narrow Web
   viewport, use the section selector. Neither surface may restore the horizontal
@@ -48,9 +51,11 @@ axes as a health score.
   offline or suspended agent runnable.
 - As the admin, toggle or add an Agent-level capability and observe
   **Saving… → Saved**. Force a save failure, verify the attempted state remains
-  understandable, then Retry successfully. As the ordinary member, confirm the
-  effective configuration remains readable while management controls are absent
-  and the page identifies Team admins as the managers.
+  understandable, then reload the latest settings and repeat the narrow control
+  action. Confirm the rejected full binding set is never replayed after a
+  version conflict. As the ordinary member, confirm the effective configuration
+  remains readable while management controls are absent and the page identifies
+  the agent's manager or a Team admin as the people who can change it.
 - As the admin with a suspended agent, confirm the same controls are unavailable
   for a different stated reason: reactivate the agent to make changes. An empty
   Team catalog must route an authorized admin to the shared Settings resource

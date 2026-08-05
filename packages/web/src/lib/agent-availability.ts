@@ -1,7 +1,7 @@
 import type { Agent } from "@first-tree/shared";
 import { formatRelative } from "./utils.js";
 
-export type AgentAvailabilityKind = "online" | "offline" | "needs-setup" | "suspended" | "checking" | "unknown";
+export type AgentAvailabilityKind = "online" | "offline" | "needs-setup" | "suspended";
 
 export type AgentAvailabilityView = {
   kind: AgentAvailabilityKind;
@@ -9,7 +9,7 @@ export type AgentAvailabilityView = {
   detail: string | null;
 };
 
-export type AgentConnectionState = "online" | "offline" | "checking" | "unknown";
+export type AgentConnectionState = "online" | "offline";
 
 /**
  * Derive the one availability statement shown on Team and Agent Detail.
@@ -32,18 +32,6 @@ export function deriveAgentAvailability(input: {
 
   if (!input.clientId) {
     return { kind: "needs-setup", label: "Needs setup", detail: "No computer assigned." };
-  }
-
-  if (input.connection === "checking") {
-    return { kind: "checking", label: "Checking status…", detail: null };
-  }
-
-  if (input.connection === "unknown") {
-    return {
-      kind: "unknown",
-      label: "Status unavailable",
-      detail: "Couldn’t check the computer connection.",
-    };
   }
 
   if (input.connection === "online") {

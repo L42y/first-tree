@@ -38,7 +38,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     inboxId: overrides.inboxId ?? "inbox-1",
     metadata: overrides.metadata ?? {},
     source: overrides.source ?? "portal",
-    clientId: overrides.clientId ?? "client-1",
+    clientId: overrides.clientId === undefined ? "client-1" : overrides.clientId,
     runtimeProvider: overrides.runtimeProvider ?? "claude-code",
     runtimeState: overrides.runtimeState ?? "idle",
     createdAt: overrides.createdAt ?? NOW,
@@ -104,8 +104,6 @@ function context(overrides: Partial<AgentDetailContext> = {}): AgentDetailContex
       savedField: null,
     },
     clientStatus: undefined,
-    clientStatusLoading: false,
-    clientStatusError: null,
     isUnclaimed: false,
     isOffline: false,
     boundClientLabel: "gandy-macbook",
@@ -243,8 +241,8 @@ describe("ResourcesTab", () => {
     await waitForText(container, "Integrations");
     expect(container.textContent).toContain("Skills");
     expect(container.textContent).toContain("Integrations");
-    expect(container.textContent).toContain("Team admins manage skills.");
-    expect(container.textContent).toContain("Team admins manage integrations.");
+    expect(container.textContent).toContain("This agent’s manager or a team admin manages skills.");
+    expect(container.textContent).toContain("This agent’s manager or a team admin manages integrations.");
     // Code repositories moved to the Environment tab — not on Tools & skills.
     expect(container.textContent).not.toContain("Repositories");
     expect(container.textContent).not.toContain("Agent repo");
@@ -258,6 +256,21 @@ describe("ResourcesTab", () => {
     await waitForText(container, "Reactivate this agent to change skills.");
     expect(container.textContent).toContain("Reactivate this agent to change integrations.");
     expect(container.textContent).not.toContain("Team admins manage");
+
+    await act(async () => root?.unmount());
+    root = null;
+    document.body.innerHTML = "";
+
+    spy.mockReturnValue(
+      context({
+        agent: agent({ status: "suspended", clientId: null }),
+        canEditConfig: true,
+        canManageAgent: true,
+      }),
+    );
+    container = await renderWithContext(<ResourcesTab />);
+    await waitForText(container, "Choose a runtime before changing skills.");
+    expect(container.textContent).toContain("Choose a runtime before changing integrations.");
 
     await act(async () => root?.unmount());
     root = null;

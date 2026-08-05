@@ -69,8 +69,6 @@ function baseContext(overrides: Partial<AgentDetailContext> = {}): AgentDetailCo
     configError: null,
     configSave: {} as AgentDetailContext["configSave"],
     clientStatus: undefined,
-    clientStatusLoading: false,
-    clientStatusError: null,
     isUnclaimed: false,
     isOffline: false,
     boundClientLabel: null,

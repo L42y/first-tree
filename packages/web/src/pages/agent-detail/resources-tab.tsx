@@ -40,7 +40,12 @@ export function ResourcesTab() {
 
   const data = resources.data;
   const canEdit = ctx.canManageAgent && ctx.agent.status === "active";
-  const readOnlyReason = ctx.canManageAgent && ctx.agent.status === "suspended" ? "suspended" : "viewer";
+  const readOnlyReason =
+    ctx.canManageAgent && ctx.agent.status === "suspended"
+      ? ctx.agent.clientId
+        ? "suspended"
+        : "suspended-unbound"
+      : "viewer";
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
@@ -51,7 +56,7 @@ export function ResourcesTab() {
           data={data}
           canEdit={canEdit}
           readOnlyReason={readOnlyReason}
-          pending={resources.pending}
+          pending={resources.pending || resources.reloading}
           saving={resources.pending && lastSavedType === type}
           onMutate={(bindings) => {
             setLastSavedType(type);
@@ -64,19 +69,24 @@ export function ResourcesTab() {
       {resources.saveError ? (
         <div className="flex flex-wrap items-center gap-2" role="alert">
           <p className="m-0 text-body" style={{ color: "var(--state-error)" }}>
-            Couldn’t save changes.
+            Couldn’t save changes. Reload the latest settings, then repeat your change.
             {resources.saveError instanceof Error ? ` ${resources.saveError.message}` : ""}
           </p>
           <Button
             className="min-h-11"
             size="xs"
             variant="outline"
-            onClick={resources.retrySave}
-            disabled={resources.pending}
+            onClick={resources.reload}
+            disabled={resources.pending || resources.reloading}
           >
-            Retry
+            {resources.reloading ? "Reloading…" : "Reload latest"}
           </Button>
         </div>
+      ) : null}
+      {resources.reloadComplete ? (
+        <p className="m-0 text-caption" style={{ color: "var(--fg-3)" }} role="status" aria-live="polite">
+          Latest settings loaded. Repeat your change.
+        </p>
       ) : null}
     </div>
   );

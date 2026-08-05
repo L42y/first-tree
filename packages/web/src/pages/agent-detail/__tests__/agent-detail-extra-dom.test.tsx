@@ -13,6 +13,7 @@ import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../../api/client.js";
 import type { AgentDetailContext } from "../layout-context.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -142,8 +143,6 @@ function createContext(overrides: Partial<AgentDetailContext> = {}): AgentDetail
       savedField: null,
     },
     clientStatus: undefined,
-    clientStatusLoading: false,
-    clientStatusError: null,
     isUnclaimed: false,
     isOffline: false,
     boundClientLabel: "gandy-macbook",
@@ -833,19 +832,63 @@ describe("Resources and runtime extra sections", () => {
     if (loadErrorRoot) await act(async () => loadErrorRoot.unmount());
     document.body.innerHTML = "";
 
-    agentResourceMocks.getAgentResources.mockResolvedValue(
-      agentResources({
-        effective: { version: 9, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
-        availableTeamResources: [availableSkill()],
-      }),
-    );
-    agentResourceMocks.updateAgentResources.mockRejectedValue(new Error("resource save failed"));
+    const initialResources = agentResources({
+      effective: { version: 9, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+      availableTeamResources: [availableSkill()],
+    });
+    const concurrentBinding: AgentResourcesOutput["bindings"][number] = {
+      id: "concurrent-prompt",
+      type: "prompt",
+      mode: "include",
+      resourceId: null,
+      replacesResourceId: null,
+      inlinePromptBody: "Concurrent instruction",
+      order: 1,
+    };
+    const latestResources = agentResources({
+      version: 10,
+      effective: { version: 10, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+      bindings: [concurrentBinding],
+      availableTeamResources: [availableSkill()],
+    });
+    agentResourceMocks.getAgentResources.mockResolvedValueOnce(initialResources).mockResolvedValue(latestResources);
+    agentResourceMocks.updateAgentResources
+      .mockRejectedValueOnce(new ApiError(409, "resource save conflict"))
+      .mockImplementation(async (_uuid: string, input: { bindings: AgentResourceBindingInput[] }) =>
+        agentResources({
+          version: 11,
+          effective: { version: 11, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+          bindings: input.bindings,
+          availableTeamResources: [availableSkill()],
+        }),
+      );
 
     const saveError = await renderWithProviders(<ResourcesTab />, "/agents/agent-1/capabilities");
     await waitForText(saveError, "Skills");
     await click(saveError.querySelector('button[aria-label="Add skill"]'));
     await click(buttonByText(document.body, "Optional skill"));
-    await waitForText(saveError, "resource save failed");
+    await waitForText(saveError, "resource save conflict");
+    await waitForText(saveError, "Reload latest");
+    expect(agentResourceMocks.updateAgentResources).toHaveBeenCalledTimes(1);
+    await click(buttonByText(saveError, "Reload latest"));
+    await waitForText(saveError, "Latest settings loaded. Repeat your change.");
+    // PATCH replaces the complete binding set. Recovery must reload current
+    // data and let the user repeat the narrow action, never replay the stale
+    // rejected array under the newly fetched version.
+    expect(agentResourceMocks.updateAgentResources).toHaveBeenCalledTimes(1);
+    await click(saveError.querySelector('button[aria-label="Add skill"]'));
+    await click(buttonByText(document.body, "Optional skill"));
+    await waitForCondition(
+      () => agentResourceMocks.updateAgentResources.mock.calls.length === 2,
+      "Expected the repeated narrow action to save",
+    );
+    expect(agentResourceMocks.updateAgentResources).toHaveBeenNthCalledWith(2, "agent-1", {
+      expectedVersion: 10,
+      bindings: [
+        concurrentBinding,
+        { type: "skill", mode: "include", resourceId: "skill-available", order: 2 },
+      ],
+    });
   });
 
   it("renders runtime binding, switch, and recovery edge states", async () => {
