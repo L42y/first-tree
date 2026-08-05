@@ -884,10 +884,7 @@ describe("Resources and runtime extra sections", () => {
     );
     expect(agentResourceMocks.updateAgentResources).toHaveBeenNthCalledWith(2, "agent-1", {
       expectedVersion: 10,
-      bindings: [
-        concurrentBinding,
-        { type: "skill", mode: "include", resourceId: "skill-available", order: 2 },
-      ],
+      bindings: [concurrentBinding, { type: "skill", mode: "include", resourceId: "skill-available", order: 2 }],
     });
   });
 
@@ -978,6 +975,7 @@ describe("agent detail pure helpers", () => {
     );
     expect(resolveTabPath(agent(), "member-other", "member", "usage")).toBe("usage");
     expect(resolveTabPath(agent(), "member-other", "member", "responsibilities")).toBe("responsibilities");
+    expect(resolveTabPath(agent(), "member-other", "member", "responsibilities", false)).toBe("profile");
     expect(resolveTabPath(agent(), "member-other", "member", "runtime")).toBe("profile");
     expect(buildTabs(false, false).map((tab) => tab.path)).toEqual([
       "profile",
@@ -985,6 +983,7 @@ describe("agent detail pure helpers", () => {
       "capabilities",
       "usage",
     ]);
+    expect(buildTabs(false, false, false).map((tab) => tab.path)).toEqual(["profile", "capabilities", "usage"]);
 
     expect(isBindableClient({ status: "connected" })).toBe(true);
     expect(isBindableClient({ status: "retired" })).toBe(false);

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router";
 import { type HubClient, listClients } from "./../api/activity.js";
 import { type ClientStatusInfo, getAgentClientStatus, getAgentConfig } from "./../api/agent-config.js";
+import { listAgentTemplates } from "./../api/agent-templates.js";
 import {
   deleteAgent,
   getAgent,
@@ -35,8 +36,14 @@ import { invalidateDisplayNameQueries } from "./../lib/identity-cache.js";
 import { cn } from "./../lib/utils.js";
 import { canManageAgentDetail } from "./agent-detail/access.js";
 import { isBindableClient } from "./agent-detail/action-state.js";
+import { useAgentResources } from "./agent-detail/capability-section.js";
 import type { AgentDetailContext, RuntimeSwitchClaimView } from "./agent-detail/layout-context.js";
-import { buildTabs, type TabDef } from "./agent-detail/tabs.js";
+import {
+  buildTabs,
+  responsibilitiesSideFromQuery,
+  shouldShowResponsibilitiesTab,
+  type TabDef,
+} from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
@@ -66,7 +73,7 @@ function AgentDetailPageView() {
     queryKey: ["agent", uuid],
     queryFn: () => getAgent(uuid),
     enabled: !!uuid,
-    // The header `<PresenceChip>` derives from `agent.runtimeState` off this
+    // The header availability presentation derives from `agent.runtimeState` off this
     // query. No admin-WS frame invalidates `["agent"]` today, so without
     // polling an agent that goes offline / reconnects while the page stays
     // open would keep showing the cached value. Match the 10s cadence the
@@ -101,6 +108,22 @@ function AgentDetailPageView() {
     refetchInterval: 30_000,
   });
 
+  // Shared agent-resources cache feeds Responsibilities visibility from the
+  // adopted template IDs. Responsibilities, Tools & skills, and Repositories
+  // reuse the same query key, so their own observers read this cache.
+  const toolsResources = useAgentResources(uuid, { enabled: !!uuid && agentQuery.data?.type !== "human" });
+
+  // Public official Template catalog — same key as the Responsibilities editor
+  // so the shell and the edit dialog share one cache. Drives whether the
+  // Responsibilities exists when there are official starting points to adopt,
+  // or when this agent already has adopted Template provenance to explain.
+  const templateCatalogQuery = useQuery({
+    queryKey: ["agent-templates-catalog"],
+    queryFn: listAgentTemplates,
+    enabled: !!uuid && agentQuery.data?.type !== "human",
+    retry: 1,
+  });
+
   // Immediate-save controller for model / reasoning effort / env. Lives in the
   // shell (not the Runtime tab) so its "Saved" flash and pending state survive a
   // tab switch and a deferred Undo toast can still call `save`.
@@ -109,12 +132,13 @@ function AgentDetailPageView() {
   const [dangerError, setDangerError] = useState<string | null>(null);
   const [reactivateError, setReactivateError] = useState<string | null>(null);
 
+  const currentAgentStatus = agentQuery.data?.status;
+  const currentAgentClientId = agentQuery.data?.clientId;
   useEffect(() => {
-    const current = agentQuery.data;
-    if (!current || current.status !== "suspended" || !current.clientId) {
+    if (!currentAgentStatus || currentAgentStatus !== "suspended" || !currentAgentClientId) {
       setReactivateError(null);
     }
-  }, [agentQuery.data?.clientId, agentQuery.data?.status]);
+  }, [currentAgentClientId, currentAgentStatus]);
 
   const identityUpdateMutation = useMutation({
     mutationFn: (patch: Parameters<typeof updateAgent>[1]) => updateAgent(uuid, patch),
@@ -217,7 +241,34 @@ function AgentDetailPageView() {
 
   const isHumanLocal = agentQuery.data?.type === "human";
 
-  const tabs = useMemo(() => buildTabs(canEditConfig, isHumanLocal), [canEditConfig, isHumanLocal]);
+  const showResponsibilities = useMemo(
+    () =>
+      shouldShowResponsibilitiesTab(isHumanLocal, {
+        catalog: responsibilitiesSideFromQuery({
+          count: templateCatalogQuery.data ? templateCatalogQuery.data.templates.length : null,
+          isFetching: templateCatalogQuery.isFetching,
+          isError: templateCatalogQuery.isError,
+        }),
+        agentResources: responsibilitiesSideFromQuery({
+          count: toolsResources.data ? toolsResources.data.templateIds.length : null,
+          isFetching: toolsResources.isFetching,
+          isError: toolsResources.isError,
+        }),
+      }),
+    [
+      isHumanLocal,
+      templateCatalogQuery.data,
+      templateCatalogQuery.isFetching,
+      templateCatalogQuery.isError,
+      toolsResources.data,
+      toolsResources.isFetching,
+      toolsResources.isError,
+    ],
+  );
+  const tabs = useMemo(
+    () => buildTabs(canEditConfig, isHumanLocal, showResponsibilities),
+    [canEditConfig, isHumanLocal, showResponsibilities],
+  );
   const currentTabKey = useMemo(() => {
     const segments = location.pathname.split("/");
     const last = segments[segments.length - 1] ?? "";
@@ -751,7 +802,7 @@ function AgentSectionNavigation({
         </label>
         <Select
           id="agent-configuration-section"
-          aria-label="Agent configuration section"
+          aria-label="Agent section"
           value={currentTabKey}
           options={tabs.map((tab) => ({ value: tab.key, label: tab.label }))}
           onChange={(key) => {
@@ -767,7 +818,7 @@ function AgentSectionNavigation({
 
   return (
     <aside style={{ position: "sticky", top: "var(--sp-4)", alignSelf: "start" }}>
-      <nav aria-label="Agent configuration sections">
+      <nav aria-label="Agent sections">
         <ul className="m-0 flex list-none flex-col gap-1 p-0">
           {tabs.map((tab) => {
             const active = currentTabKey === tab.key;

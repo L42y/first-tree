@@ -1,5 +1,5 @@
-import type { Agent } from "@first-tree/shared";
-import { useQuery } from "@tanstack/react-query";
+import type { Agent, AgentResourcesOutput, AgentTemplatePublicList } from "@first-tree/shared";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { listAgents, listAllAgents } from "../../api/agents.js";
@@ -7,7 +7,7 @@ import { useAuth } from "../../auth/auth-context.js";
 import { Avatar } from "../../components/avatar.js";
 import { matchesAgentScope, readAgentFilterPreference } from "../team/agent-filter.js";
 import { fetchAllAgents } from "../team/index.js";
-import { resolveTabPath } from "./tabs.js";
+import { resolveTabPath, responsibilitiesSideFromQuery, shouldShowResponsibilitiesTab } from "./tabs.js";
 
 /**
  * Agent switcher (vertical-B): replaces the breadcrumb at the top of agent
@@ -33,6 +33,7 @@ export function AgentSwitcherStrip({
   onNavigate: (to: string) => void;
 }) {
   const { memberId, role } = useAuth();
+  const queryClient = useQueryClient();
   const isAdmin = role === "admin";
   // Read-on-mount (see header comment): the All/Mine toggle lives on the Team
   // page; while this strip is mounted the preference cannot change.
@@ -93,6 +94,31 @@ export function AgentSwitcherStrip({
     return () => ro.disconnect();
   }, [updateEdges]);
 
+  const tabPathFor = (target: Agent): string => {
+    // Prefer React Query cache already warmed by Agent Detail. Fall back to
+    // Profile only when the target's resources are confirmed empty (with an
+    // empty catalog). Unknown / loading / error for the target keeps the
+    // Responsibilities path; the destination page re-evaluates and redirects
+    // once it has a settled answer.
+    const catalogState = queryClient.getQueryState<AgentTemplatePublicList>(["agent-templates-catalog"]);
+    const catalog = queryClient.getQueryData<AgentTemplatePublicList>(["agent-templates-catalog"]);
+    const resourcesState = queryClient.getQueryState<AgentResourcesOutput>(["agent-resources", target.uuid]);
+    const resources = queryClient.getQueryData<AgentResourcesOutput>(["agent-resources", target.uuid]);
+    const showResponsibilities = shouldShowResponsibilitiesTab(target.type === "human", {
+      catalog: responsibilitiesSideFromQuery({
+        count: catalog ? catalog.templates.length : null,
+        isFetching: catalogState?.fetchStatus === "fetching",
+        isError: catalogState?.status === "error",
+      }),
+      agentResources: responsibilitiesSideFromQuery({
+        count: resources ? resources.templateIds.length : null,
+        isFetching: resourcesState?.fetchStatus === "fetching",
+        isError: resourcesState?.status === "error",
+      }),
+    });
+    return resolveTabPath(target, memberId, role, currentTabPath, showResponsibilities);
+  };
+
   return (
     // Pinned Team anchor + an independently-scrolling agent strip beside it.
     <div className="flex items-start" style={{ gap: "var(--sp-2)" }}>
@@ -132,11 +158,7 @@ export function AgentSwitcherStrip({
                 // Clicking the already-selected agent is a no-op — it isn't a
                 // "leave", so it must not trip the leave guard (which would offer to
                 // discard the draft for a navigation back to the same page).
-                onClick={
-                  selected
-                    ? undefined
-                    : () => onNavigate(`/agents/${a.uuid}/${resolveTabPath(a, memberId, role, currentTabPath)}`)
-                }
+                onClick={selected ? undefined : () => onNavigate(`/agents/${a.uuid}/${tabPathFor(a)}`)}
               >
                 {/* Demoted switcher (the page header's title row is the primary
                   identity, with a larger avatar): these nav avatars are deliberately

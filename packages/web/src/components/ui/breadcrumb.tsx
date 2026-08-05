@@ -1,11 +1,12 @@
 import type { HTMLAttributes, ReactNode } from "react";
 import { cn } from "../../lib/utils.js";
 
-type BreadcrumbProps = HTMLAttributes<HTMLDivElement>;
+type BreadcrumbProps = HTMLAttributes<HTMLElement>;
 
 export function Breadcrumb({ className, style, ...rest }: BreadcrumbProps) {
   return (
-    <div
+    <nav
+      aria-label="Breadcrumb"
       className={cn("flex items-center text-body", className)}
       style={{
         gap: 6,
@@ -43,12 +44,16 @@ export function BreadcrumbLink({ onClick, children, className }: BreadcrumbLinkP
 }
 
 export function BreadcrumbSep() {
-  return <span style={{ color: "var(--fg-4)" }}>/</span>;
+  return (
+    <span aria-hidden="true" style={{ color: "var(--fg-4)" }}>
+      /
+    </span>
+  );
 }
 
 export function BreadcrumbCurrent({ children, mono }: { children: ReactNode; mono?: boolean }) {
   return (
-    <span className={cn("font-medium", mono && "mono")} style={{ color: "var(--fg)" }}>
+    <span aria-current="page" className={cn("font-medium", mono && "mono")} style={{ color: "var(--fg)" }}>
       {children}
     </span>
   );

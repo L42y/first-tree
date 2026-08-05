@@ -42,6 +42,11 @@ const agentResourceMocks = vi.hoisted(() => ({
   updateAgentResources: vi.fn(),
 }));
 
+const templateMocks = vi.hoisted(() => ({
+  listAgentTemplates: vi.fn(),
+  updateAgentTemplates: vi.fn(),
+}));
+
 const sessionMocks = vi.hoisted(() => ({
   listAgentSessions: vi.fn(),
 }));
@@ -80,6 +85,8 @@ vi.mock("../../../api/agents.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../../api/agent-resources.js", () => agentResourceMocks);
+
+vi.mock("../../../api/agent-templates.js", () => templateMocks);
 
 vi.mock("../../../api/sessions.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../api/sessions.js")>()),
@@ -226,6 +233,26 @@ function adoptedTemplate(): AgentResourcesOutput["adoptedTemplates"][number] {
   };
 }
 
+function publicCatalogTemplate() {
+  const adopted = adoptedTemplate();
+  return {
+    id: adopted.id,
+    slug: "pr-engineer",
+    name: "PR Engineer",
+    status: "active" as const,
+    public: {
+      tagline: "Ship review-ready pull requests",
+      purpose: "Review and implement focused changes",
+      targetUsers: "Software teams",
+      userValue: "Move pull requests forward safely",
+      instructionsSummary: "Review, implement, and verify",
+      toolsAndSkillsSummary: "Code review and repository tools",
+    },
+    updatedAt: NOW,
+    replacement: null,
+  };
+}
+
 function client(overrides: Partial<HubClient> = {}): HubClient {
   return {
     id: overrides.id ?? "client-1",
@@ -313,6 +340,7 @@ async function waitForCondition(predicate: () => boolean, message: string, timeo
 async function renderDom(
   route: string,
   child: ReactElement,
+  setup?: (queryClient: QueryClient) => void | Promise<void>,
 ): Promise<{ container: HTMLElement; root: Root; queryClient: QueryClient }> {
   const container = document.createElement("div");
   document.body.appendChild(container);
@@ -323,6 +351,7 @@ async function renderDom(
       mutations: { retry: false },
     },
   });
+  await setup?.(queryClient);
   const { AgentDetailPage } = await import("../../agent-detail.js");
   await act(async () => {
     root.render(
@@ -384,6 +413,11 @@ function exactButtonByText(container: ParentNode, text: string): HTMLButtonEleme
   return [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === text) ?? null;
 }
 
+function agentSectionLabels(container: ParentNode): Array<string | undefined> {
+  const nav = container.querySelector('nav[aria-label="Agent sections"]');
+  return nav ? [...nav.querySelectorAll("button")].map((button) => button.textContent?.trim()) : [];
+}
+
 function menuItemByText(container: ParentNode, text: string): HTMLButtonElement | null {
   return (
     ([...container.querySelectorAll('[role="menuitem"]')] as HTMLButtonElement[]).find(
@@ -436,6 +470,10 @@ beforeEach(() => {
   // Keep the resource query stable across each mounted tab; the real GET is
   // idempotent, so per-test overrides below use the same persistent shape.
   agentResourceMocks.getAgentResources.mockResolvedValue(agentResources());
+  // Non-empty public catalog by default so Responsibilities stays visible even
+  // when the agent has zero adopted templateIds (the empty-entry gate needs
+  // both sides confirmed empty).
+  templateMocks.listAgentTemplates.mockResolvedValue({ templates: [publicCatalogTemplate()] });
   agentResourceMocks.updateAgentResources.mockImplementation(
     async (_agentId: string, body: { bindings: AgentResourcesOutput["bindings"] }) =>
       agentResources({ version: 8, bindings: body.bindings }),
@@ -489,6 +527,9 @@ describe("AgentDetailPage", () => {
     agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: false, clientId: null, offlineSince: null });
     const needsSetup = await renderDom("/agents/agent-1/profile", <ProfileTab />);
     await waitForText(needsSetup.container, "Needs setup");
+    const breadcrumb = needsSetup.container.querySelector('nav[aria-label="Breadcrumb"]');
+    expect(breadcrumb).toBeTruthy();
+    expect(breadcrumb?.querySelector('[aria-current="page"]')?.textContent).toBe("Vega");
     expect(needsSetup.container.textContent).toContain("No computer assigned.");
     expect(exactButtonByText(needsSetup.container, "Choose computer")).toBeTruthy();
     expect(needsSetup.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
@@ -531,8 +572,8 @@ describe("AgentDetailPage", () => {
     const { ProfileTab } = await import("../profile-tab.js");
     const view = await renderDom("/agents/agent-1/profile", <ProfileTab />);
     await waitForText(view.container, "Profile");
-    expect(view.container.querySelector('nav[aria-label="Agent configuration sections"]')).toBeNull();
-    expect(view.container.querySelector('[aria-label="Agent configuration section"]')).toBeTruthy();
+    expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
+    expect(view.container.querySelector('[aria-label="Agent section"]')).toBeTruthy();
     await act(async () => view.root.unmount());
   });
 
@@ -594,8 +635,8 @@ describe("AgentDetailPage", () => {
     expect([...profile.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).not.toContain(
       "Responsibilities",
     );
-    const profileNav = profile.container.querySelector('nav[aria-label="Agent configuration sections"]');
-    if (!profileNav) throw new Error("Expected Agent configuration navigation");
+    const profileNav = profile.container.querySelector('nav[aria-label="Agent sections"]');
+    if (!profileNav) throw new Error("Expected Agent navigation");
     expect([...profileNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
@@ -610,6 +651,12 @@ describe("AgentDetailPage", () => {
     const responsibilities = await renderDom("/agents/agent-1/responsibilities", <ProfileTab />);
     await waitForText(responsibilities.container, "PR Engineer");
     expect(responsibilities.container.querySelectorAll('[data-slot="template-responsibility-label"]')).toHaveLength(1);
+    expect(
+      [...responsibilities.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim()),
+    ).toContain("Responsibilities");
+    expect(
+      [...responsibilities.container.querySelectorAll("h3")].map((heading) => heading.textContent?.trim()),
+    ).not.toContain("Responsibilities");
     expect(responsibilities.container.textContent).toContain("Edit responsibilities");
     await act(async () => responsibilities.root.unmount());
   });
@@ -626,8 +673,8 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
     await waitForText(view.container, "PR Engineer");
-    const viewerNav = view.container.querySelector('nav[aria-label="Agent configuration sections"]');
-    if (!viewerNav) throw new Error("Expected Agent configuration navigation");
+    const viewerNav = view.container.querySelector('nav[aria-label="Agent sections"]');
+    if (!viewerNav) throw new Error("Expected Agent navigation");
     expect([...viewerNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
@@ -643,8 +690,153 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Human Profile route</div>);
     await waitForText(view.container, "Human Profile route");
-    expect(view.container.querySelector('nav[aria-label="Agent configuration sections"]')).toBeNull();
+    expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("hides Responsibilities when the public catalog and agent templateIds are both empty", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
+      "Expected the public template catalog to load",
+    );
+    expect(agentSectionLabels(view.container)).toEqual([
+      "Profile",
+      "Runtime",
+      "Instructions",
+      "Tools & skills",
+      "Repositories",
+      "Usage",
+    ]);
+    expect(view.container.textContent).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps Responsibilities when the catalog is empty but the agent still has adopted templates", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(
+      agentResources({
+        templateIds: [adoptedTemplate().id],
+        adoptedTemplates: [adoptedTemplate()],
+      }),
+    );
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
+    await waitForText(view.container, "PR Engineer");
+    expect(agentSectionLabels(view.container)).toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps Responsibilities while the catalog request is failing", async () => {
+    templateMocks.listAgentTemplates.mockRejectedValue(new Error("catalog down"));
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () => templateMocks.listAgentTemplates.mock.calls.length >= 1,
+      "Expected the catalog request to run",
+    );
+    expect(agentSectionLabels(view.container)).toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("redirects a Responsibilities deep link to Profile when the empty-catalog gate is closed", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
+    await waitForText(view.container, "Empty-gate Profile route");
+    expect(view.container.textContent).not.toContain("No template responsibilities are assigned to this agent.");
+    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps Responsibilities hidden when cached-empty agent-resources background refetch fails", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/responsibilities", <div>Empty-gate Profile route</div>);
+    await waitForText(view.container, "Empty-gate Profile route");
+    await waitForCondition(
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected Responsibilities to close after confirmed empty catalog + resources",
+    );
+
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("refetch boom"));
+    await act(async () => {
+      await view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
+    });
+    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("redirects a Responsibilities deep link when cached-empty data has a failing refetch", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("refetch boom"));
+
+    const view = await renderDom(
+      "/agents/agent-1/responsibilities",
+      <div>Must not redirect</div>,
+      async (queryClient) => {
+        queryClient.setQueryData(["agent-templates-catalog"], { templates: [] });
+        queryClient.setQueryData(
+          ["agent-resources", "agent-1"],
+          agentResources({ templateIds: [], adoptedTemplates: [] }),
+        );
+        // Leave the resources query in the retained-data + error state RQ produces
+        // after a background refetch failure, before the page mounts.
+        try {
+          await queryClient.fetchQuery({
+            queryKey: ["agent-resources", "agent-1"],
+            queryFn: () => agentResourceMocks.getAgentResources("agent-1"),
+          });
+        } catch {
+          // expected — keeps cached empty data with isError=true
+        }
+      },
+    );
+
+    await waitForText(view.container, "Must not redirect");
+    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps cached-empty Responsibilities visibility stable during a background refetch", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [] });
+    agentResourceMocks.getAgentResources.mockResolvedValue(agentResources({ templateIds: [], adoptedTemplates: [] }));
+
+    const view = await renderDom("/agents/agent-1/profile", <div>Profile route</div>);
+    await waitForText(view.container, "Profile route");
+    await waitForCondition(
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected Responsibilities to close after confirmed empty",
+    );
+
+    let releaseRefetch: ((value: ReturnType<typeof agentResources>) => void) | null = null;
+    agentResourceMocks.getAgentResources.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRefetch = resolve;
+        }),
+    );
+    await act(async () => {
+      void view.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
+    });
+    expect(agentSectionLabels(view.container)).not.toContain("Responsibilities");
+
+    await act(async () => {
+      releaseRefetch?.(agentResources({ templateIds: [], adoptedTemplates: [] }));
+    });
+    await waitForCondition(
+      () => !agentSectionLabels(view.container).includes("Responsibilities"),
+      "Expected Responsibilities to remain closed after settled empty refetch",
+    );
     await act(async () => view.root.unmount());
   });
 
@@ -681,8 +873,8 @@ describe("AgentDetailPage", () => {
     expect(container.textContent).toContain("Vega");
     expect(container.textContent).not.toContain("1 active");
     expect(container.textContent).toContain("Start chat");
-    const nav = container.querySelector('nav[aria-label="Agent configuration sections"]');
-    if (!nav) throw new Error("Expected Agent configuration navigation");
+    const nav = container.querySelector('nav[aria-label="Agent sections"]');
+    if (!nav) throw new Error("Expected Agent navigation");
     expect([...nav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",

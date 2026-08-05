@@ -1540,7 +1540,7 @@ describe("web DOM interaction coverage", () => {
     await unmountRoot(plain.root);
   });
 
-  it("switches orgs and opens setup actions from the TeamSwitcher, and signs out from the UserMenu", async () => {
+  it("switches orgs and exposes focused setup actions from the TeamSwitcher, and signs out from the UserMenu", async () => {
     clientApiMocks.post.mockResolvedValue({});
     const { TeamSwitcher } = await import("../../components/team-switcher.js");
     const { UserMenu } = await import("../../components/user-menu.js");
@@ -1580,12 +1580,8 @@ describe("web DOM interaction coverage", () => {
     await waitForText("Create", document.body);
 
     await click(switcher.container.querySelector('button[aria-haspopup="menu"]'));
-    await click(
-      [...switcher.container.querySelectorAll("button")].find((button) =>
-        button.textContent?.includes("Join with invite link"),
-      ) ?? null,
-    );
-    await waitForText("Join", document.body);
+    expect(switcher.container.textContent).toContain("Use your own agent");
+    expect(switcher.container.textContent).not.toContain("Join with invite link");
 
     // The avatar menu is account-only: no team rows, with a permanent mobile
     // handoff alongside account settings and sign-out.
@@ -2171,8 +2167,11 @@ describe("web DOM interaction coverage", () => {
       setTreeUrl,
       markTreeAutoDetectDone,
     });
-    await waitForText("Meet your agent", adminAutoDetect.container);
-    expect(markTreeAutoDetectDone).toHaveBeenCalled();
+    await waitForText("Meet Nova", adminAutoDetect.container);
+    await waitForCondition(
+      () => markTreeAutoDetectDone.mock.calls.length > 0,
+      "Expected the bound-tree probe to settle",
+    );
     expect(setTreeBindingPlan).toHaveBeenCalledWith("useBoundTree");
     expect(setTreeUrl).toHaveBeenCalledWith("https://github.com/acme/context-tree");
     await unmountRoot(adminAutoDetect.root);
@@ -2186,8 +2185,8 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Meet your agent", adminExisting.container);
-    await click(findButton(adminExisting.container, "Start exploring"));
+    await waitForText("You’ll open your first Chat and can start typing right away.", adminExisting.container);
+    await click(findButton(adminExisting.container, "Meet your agent"));
     await waitForText("Opening your first Chat", adminExisting.container);
     expect(agentApiMocks.listManagedAgents).toHaveBeenCalled();
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenCalledWith(
@@ -2215,15 +2214,15 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Meet your agent", adminNoProject.container);
+    await waitForText("Meet Nova", adminNoProject.container);
     expect(adminNoProject.container.textContent).toContain(
-      "Explore First Tree together, then choose what you’d like to try first.",
+      "Nova is ready to explore First Tree with you. Bring a question, a project, or a task you want to move forward.",
     );
     expect(adminNoProject.container.textContent).not.toContain("Stay connected");
     expect(adminNoProject.container.textContent).not.toContain("Mobile app");
     expect(adminNoProject.container.textContent).not.toContain("WeChat group");
     expect(adminNoProject.container.textContent).not.toContain("Discord");
-    await click(findButton(adminNoProject.container, "Start exploring"));
+    await click(findButton(adminNoProject.container, "Meet your agent"));
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenLastCalledWith(
       expect.objectContaining({ agentUuid: "agent-1", topic: "Get started with First Tree", orientation: 1 }),
     );
@@ -2236,11 +2235,12 @@ describe("web DOM interaction coverage", () => {
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     orgSettingsMocks.getContextTreeSetting.mockResolvedValueOnce({ repo: "", branch: null });
     const inviteeNoTree = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Meet your agent", inviteeNoTree.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", inviteeNoTree.container);
+    expect(inviteeNoTree.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeNoTree.container.textContent).not.toContain("View setup prompt");
     expect(inviteeNoTree.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    await click(findButton(inviteeNoTree.container, "Start exploring"));
+    await click(findButton(inviteeNoTree.container, "Meet your agent"));
     await waitForText("Opening your first Chat", inviteeNoTree.container);
     expect(inviteeNoTree.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoTree.root);
@@ -2259,7 +2259,8 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Meet your agent", inviteeNoRepo.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", inviteeNoRepo.container);
+    expect(inviteeNoRepo.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeNoRepo.container.textContent).not.toContain("View setup prompt");
     expect(inviteeNoRepo.container.textContent).not.toContain("Needs Admin");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
@@ -2279,11 +2280,12 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Meet your agent", inviteeNoInstall.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", inviteeNoInstall.container);
+    expect(inviteeNoInstall.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeNoInstall.container.textContent).not.toContain("View setup prompt");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     expect(findButton(inviteeNoInstall.container, "Start chat")).toBeNull();
-    await click(findButton(inviteeNoInstall.container, "Start exploring"));
+    await click(findButton(inviteeNoInstall.container, "Meet your agent"));
     expect(inviteeNoInstall.flow.completeAndEnterChat).toHaveBeenCalled();
     await unmountRoot(inviteeNoInstall.root);
 
@@ -2297,7 +2299,8 @@ describe("web DOM interaction coverage", () => {
       path: "invitee",
       activeStep: "start-chat",
     });
-    await waitForText("Meet your agent", inviteeProbeFail.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", inviteeProbeFail.container);
+    expect(inviteeProbeFail.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeProbeFail.container.textContent).not.toContain("View setup prompt");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
     expect(findButton(inviteeProbeFail.container, "Start chat")).toBeNull();
@@ -2307,10 +2310,11 @@ describe("web DOM interaction coverage", () => {
     // agent already inherits the team's recommended repos.
     contextEnablementMocks.getContextEnablementHandoff.mockClear();
     const inviteeReady = await renderOnboardingDom(<StepStartChat />, { path: "invitee", activeStep: "start-chat" });
-    await waitForText("Meet your agent", inviteeReady.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", inviteeReady.container);
+    expect(inviteeReady.container.textContent).not.toContain("Use with Claude Code or Codex");
     expect(inviteeReady.container.textContent).not.toContain("View setup prompt");
     expect(contextEnablementMocks.getContextEnablementHandoff).not.toHaveBeenCalled();
-    await click(findButton(inviteeReady.container, "Start exploring"));
+    await click(findButton(inviteeReady.container, "Meet your agent"));
     // Ready invitee also lands in a value-first work chat, not the tree setup
     // chat. The inherited team tree is context for orientation.
     expect(onboardingEventMocks.startOnboardingChat).toHaveBeenCalledWith(
@@ -2339,9 +2343,9 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "createBinding",
       treeUrl: "",
     });
-    await waitForText("Meet your agent", view.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", view.container);
     await click(
-      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
+      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Meet your agent")) ??
         null) as HTMLButtonElement | null,
     );
     await waitForText("Opening your first Chat", view.container);
@@ -2406,9 +2410,9 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Meet your agent", view.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", view.container);
     await click(
-      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
+      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Meet your agent")) ??
         null) as HTMLButtonElement | null,
     );
     await waitForText("Opening your first Chat", view.container);
@@ -2435,9 +2439,9 @@ describe("web DOM interaction coverage", () => {
       treeBindingPlan: "useBoundTree",
       treeUrl: "https://github.com/acme/context-tree",
     });
-    await waitForText("Meet your agent", view.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", view.container);
     await click(
-      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
+      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Meet your agent")) ??
         null) as HTMLButtonElement | null,
     );
     await waitForText("Couldn't check your repositories", view.container);
@@ -2491,9 +2495,9 @@ describe("web DOM interaction coverage", () => {
         );
       },
     );
-    await waitForText("Meet your agent", view.container);
+    await waitForText("You’ll open your first Chat and can start typing right away.", view.container);
     await click(
-      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Start")) ??
+      ([...view.container.querySelectorAll("button")].find((b) => b.textContent?.includes("Meet your agent")) ??
         null) as HTMLButtonElement | null,
     );
     await waitForText("Opening your first Chat", view.container);
