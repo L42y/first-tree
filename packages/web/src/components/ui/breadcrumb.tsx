@@ -20,14 +20,15 @@ export function Breadcrumb({ className, style, ...rest }: BreadcrumbProps) {
 type BreadcrumbLinkProps = {
   onClick?: () => void;
   children: ReactNode;
+  className?: string;
 };
 
-export function BreadcrumbLink({ onClick, children }: BreadcrumbLinkProps) {
+export function BreadcrumbLink({ onClick, children, className }: BreadcrumbLinkProps) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="bg-transparent border-0 p-0 cursor-pointer"
+      className={cn("bg-transparent border-0 p-0 cursor-pointer", className)}
       style={{ color: "var(--fg-3)", textDecoration: "none", font: "inherit" }}
       onMouseEnter={(e) => {
         e.currentTarget.style.color = "var(--fg)";

@@ -1,5 +1,6 @@
 import type { ResourceType } from "@first-tree/shared";
 import { useState } from "react";
+import { Button } from "../../components/ui/button.js";
 import { ResourceTypeSection, useAgentResources } from "./capability-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 
@@ -18,21 +19,28 @@ export function ResourcesTab() {
   if (ctx.isHuman) return null;
   if (resources.isLoading) {
     return (
-      <p className="text-body" style={{ color: "var(--fg-3)" }}>
-        Loading...
+      <p className="text-body" style={{ color: "var(--fg-3)" }} role="status">
+        Loading tools and skills…
       </p>
     );
   }
   if (resources.error || !resources.data) {
     return (
-      <p className="text-body" style={{ color: "var(--state-error)" }}>
-        {resources.error instanceof Error ? resources.error.message : "Failed to load resources"}
-      </p>
+      <div className="flex flex-wrap items-center gap-2" role="alert">
+        <p className="m-0 text-body" style={{ color: "var(--state-error)" }}>
+          Couldn’t load tools and skills.
+          {resources.error instanceof Error ? ` ${resources.error.message}` : ""}
+        </p>
+        <Button className="min-h-11" size="xs" variant="outline" onClick={resources.reload}>
+          Retry
+        </Button>
+      </div>
     );
   }
 
   const data = resources.data;
   const canEdit = ctx.canManageAgent && ctx.agent.status === "active";
+  const readOnlyReason = ctx.canManageAgent && ctx.agent.status === "suspended" ? "suspended" : "viewer";
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
@@ -42,7 +50,9 @@ export function ResourcesTab() {
           type={type}
           data={data}
           canEdit={canEdit}
+          readOnlyReason={readOnlyReason}
           pending={resources.pending}
+          saving={resources.pending && lastSavedType === type}
           onMutate={(bindings) => {
             setLastSavedType(type);
             resources.mutateBindings(bindings);
@@ -52,9 +62,21 @@ export function ResourcesTab() {
         />
       ))}
       {resources.saveError ? (
-        <p className="text-body" style={{ color: "var(--state-error)" }}>
-          {resources.saveError instanceof Error ? resources.saveError.message : "Failed to save resources"}
-        </p>
+        <div className="flex flex-wrap items-center gap-2" role="alert">
+          <p className="m-0 text-body" style={{ color: "var(--state-error)" }}>
+            Couldn’t save changes.
+            {resources.saveError instanceof Error ? ` ${resources.saveError.message}` : ""}
+          </p>
+          <Button
+            className="min-h-11"
+            size="xs"
+            variant="outline"
+            onClick={resources.retrySave}
+            disabled={resources.pending}
+          >
+            Retry
+          </Button>
+        </div>
       ) : null}
     </div>
   );

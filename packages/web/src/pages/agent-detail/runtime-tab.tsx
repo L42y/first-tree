@@ -76,7 +76,7 @@ export function RuntimeTab() {
 
       {config && (
         <div style={{ marginTop: "var(--sp-8)" }}>
-          <Section title={titleWithSemantics("Model settings", modelSettingsSaved)}>
+          <Section headingLevel={3} title={titleWithSemantics("Model settings", modelSettingsSaved)}>
             <ModelSection
               value={config.payload.model}
               onChange={(v) => configSave.save({ model: v }, { field: "model" })}

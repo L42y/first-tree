@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { Navigate } from "react-router";
 import { getContextTreeSetting } from "../../api/org-settings.js";
 import { useAuth } from "../../auth/auth-context.js";
+import { Button } from "../../components/ui/button.js";
 import { Section } from "../../components/ui/section.js";
 import { ResourceTypeSection, useAgentResources } from "./capability-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
@@ -24,6 +25,7 @@ export function RepositoriesTab() {
   // below, so there's no point firing an agent-resources GET for them.
   const repos = useAgentResources(ctx.uuid, { enabled: !!ctx.uuid && ctx.canEditConfig });
   const canEditResources = ctx.canManageAgent && ctx.agent.status === "active";
+  const readOnlyReason = ctx.canManageAgent && ctx.agent.status === "suspended" ? "suspended" : "viewer";
   if (!ctx.canEditConfig) return <Navigate to="../profile" replace />;
 
   return (
@@ -33,28 +35,40 @@ export function RepositoriesTab() {
           `["agent-resources", uuid]` cache keeps this in sync with Tools & skills. */}
       <div>
         {repos.isLoading ? (
-          <div className="text-body" style={{ color: "var(--fg-3)" }}>
+          <div className="text-body" style={{ color: "var(--fg-3)" }} role="status">
             Loading repositories…
           </div>
         ) : repos.error || !repos.data ? (
-          <div className="text-body" style={{ color: "var(--state-error)" }}>
-            {repos.error instanceof Error ? repos.error.message : "Failed to load repositories"}
+          <div className="flex flex-wrap items-center gap-2" role="alert">
+            <span className="text-body" style={{ color: "var(--state-error)" }}>
+              Couldn’t load repositories.{repos.error instanceof Error ? ` ${repos.error.message}` : ""}
+            </span>
+            <Button className="min-h-11" size="xs" variant="outline" onClick={repos.reload}>
+              Retry
+            </Button>
           </div>
         ) : (
           <ResourceTypeSection
             type="repo"
             data={repos.data}
             canEdit={canEditResources}
+            readOnlyReason={readOnlyReason}
             pending={repos.pending}
+            saving={repos.pending}
             onMutate={repos.mutateBindings}
             saved={repos.justSaved}
             onNavigateAway={ctx.navigateAway}
           />
         )}
         {repos.saveError ? (
-          <p className="text-body" style={{ color: "var(--state-error)", margin: "var(--sp-2) 0 0" }}>
-            {repos.saveError instanceof Error ? repos.saveError.message : "Failed to save repositories"}
-          </p>
+          <div className="flex flex-wrap items-center gap-2" style={{ marginTop: "var(--sp-2)" }} role="alert">
+            <p className="m-0 text-body" style={{ color: "var(--state-error)" }}>
+              Couldn’t save changes.{repos.saveError instanceof Error ? ` ${repos.saveError.message}` : ""}
+            </p>
+            <Button className="min-h-11" size="xs" variant="outline" onClick={repos.retrySave} disabled={repos.pending}>
+              Retry
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -103,5 +117,9 @@ function ContextTreeRow(): ReactNode {
     );
   }
 
-  return <Section title="Context tree">{row}</Section>;
+  return (
+    <Section headingLevel={3} title="Context tree">
+      {row}
+    </Section>
+  );
 }

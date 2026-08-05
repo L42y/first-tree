@@ -843,7 +843,7 @@ describe("Resources and runtime extra sections", () => {
 
     const saveError = await renderWithProviders(<ResourcesTab />, "/agents/agent-1/capabilities");
     await waitForText(saveError, "Skills");
-    await click(saveError.querySelector('button[aria-label="Add Skill"]'));
+    await click(saveError.querySelector('button[aria-label="Add skill"]'));
     await click(buttonByText(document.body, "Optional skill"));
     await waitForText(saveError, "resource save failed");
   });
@@ -863,8 +863,8 @@ describe("Resources and runtime extra sections", () => {
         onBindComputer={onBind}
       />,
     );
-    expect(binding.textContent).toContain("No computer bound");
-    const bindingButton = buttonByText(binding, "Binding");
+    expect(binding.textContent).toContain("No computer assigned");
+    const bindingButton = buttonByText(binding, "Assigning");
     expect(bindingButton?.disabled).toBe(true);
 
     const error = await renderPlain(
@@ -882,7 +882,7 @@ describe("Resources and runtime extra sections", () => {
     expect(error.textContent).toContain("Could not verify computer binding: lookup failed");
     // Catalog label for claude-code-tui — not the collapsed "Claude Code" alias.
     expect(error.textContent).toContain("Claude Code CLI");
-    expect(buttonByText(error, "Bind computer")).toBeNull();
+    expect(buttonByText(error, "Choose computer")).toBeNull();
     expect(buttonByText(error, "Switching")?.disabled).toBe(true);
 
     const recovery = await renderPlain(

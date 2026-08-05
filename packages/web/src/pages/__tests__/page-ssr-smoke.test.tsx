@@ -1010,7 +1010,7 @@ describe("page SSR smoke coverage", () => {
       ["/agents/agent-1/runtime", "Reasoning effort"],
       ["/agents/agent-1/repositories", "Team web"],
       ["/agents/agent-1/prompt", "Instructions"],
-      ["/agents/agent-1/resources", "Integrations (MCP)"],
+      ["/agents/agent-1/resources", "Integrations"],
     ] as const) {
       expect(
         renderPage(

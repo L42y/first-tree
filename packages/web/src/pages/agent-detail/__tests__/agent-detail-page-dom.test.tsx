@@ -145,7 +145,7 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     source: overrides.source ?? "portal",
     clientId: overrides.clientId === undefined ? "client-1" : overrides.clientId,
     runtimeProvider: overrides.runtimeProvider ?? "claude-code",
-    runtimeState: overrides.runtimeState ?? "idle",
+    runtimeState: overrides.runtimeState === undefined ? "idle" : overrides.runtimeState,
     createdAt: overrides.createdAt ?? NOW,
     updatedAt: overrides.updatedAt ?? NOW,
   };
@@ -258,11 +258,11 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
   };
 }
 
-function installBrowserStubs(): void {
+function installBrowserStubs(wide = true): void {
   Object.defineProperty(window, "matchMedia", {
     configurable: true,
     value: (query: string) => ({
-      matches: query.includes("80rem") || query.includes("48rem"),
+      matches: wide && (query.includes("80rem") || query.includes("48rem")),
       media: query,
       onchange: null,
       addEventListener: () => undefined,
@@ -327,6 +327,7 @@ async function renderDom(route: string, child: ReactElement): Promise<{ containe
                 <Route path="profile" element={child} />
                 <Route path="responsibilities" element={<ResponsibilitiesTab />} />
                 <Route path="prompt" element={child} />
+                <Route path="capabilities" element={child} />
                 <Route path="resources" element={<div>Resources route</div>} />
                 <Route path="runtime" element={child} />
                 <Route path="usage" element={<UsageTab />} />
@@ -402,8 +403,7 @@ beforeEach(() => {
   authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
   agentMocks.getAgent.mockResolvedValue(agent());
-  // Agent switcher list (admin → listAllAgents). Include a second agent so the
-  // switcher has a switch target.
+  // Cross-agent navigation helpers use the same agent list as the Team surface.
   const switcherAgents = {
     items: [agent(), agent({ uuid: "agent-2", name: "nova", displayName: "Nova" })],
     nextCursor: null,
@@ -425,12 +425,8 @@ beforeEach(() => {
       lastSeenAt: NOW,
     },
   });
-  // Use mockResolvedValue (persistent), not ...Once: the page shell now also
-  // observes agent-resources (to badge Tools & skills), so the query can be
-  // fetched more than once per render (a stale-time refetch fires when the tab's
-  // own observer mounts). The real GET is idempotent — every call returns the
-  // same state — so per-test overrides below also use mockResolvedValue; a
-  // one-shot mock with an empty fallback would clobber the cache on refetch.
+  // Keep the resource query stable across each mounted tab; the real GET is
+  // idempotent, so per-test overrides below use the same persistent shape.
   agentResourceMocks.getAgentResources.mockResolvedValue(agentResources());
   agentResourceMocks.updateAgentResources.mockImplementation(
     async (_agentId: string, body: { bindings: AgentResourcesOutput["bindings"] }) =>
@@ -478,6 +474,60 @@ afterEach(() => {
 });
 
 describe("AgentDetailPage", () => {
+  it("reduces precise runtime facts to one clear header status and action", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ clientId: null, runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({ online: false, clientId: null, offlineSince: null });
+    const needsSetup = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(needsSetup.container, "Needs setup");
+    expect(needsSetup.container.textContent).toContain("No computer assigned.");
+    expect(exactButtonByText(needsSetup.container, "Choose computer")).toBeTruthy();
+    expect(needsSetup.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    await act(async () => needsSetup.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ runtimeState: null }));
+    agentConfigMocks.getAgentClientStatus.mockRejectedValueOnce(new Error("status endpoint unavailable"));
+    const unknown = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(unknown.container, "Status unavailable");
+    expect(unknown.container.textContent).toContain("Couldn’t check the computer connection.");
+    await act(async () => unknown.root.unmount());
+
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    const suspended = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(suspended.container, "Suspended");
+    expect(suspended.container.textContent).toContain("Can’t receive new work.");
+    expect(suspended.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    expect(exactButtonByText(suspended.container, "Reactivate agent")).toBeTruthy();
+    await act(async () => suspended.root.unmount());
+  });
+
+  it("uses a section selector instead of horizontal tabs on narrow web", async () => {
+    installBrowserStubs(false);
+    const { ProfileTab } = await import("../profile-tab.js");
+    const view = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(view.container, "Profile");
+    expect(view.container.querySelector('nav[aria-label="Agent configuration sections"]')).toBeNull();
+    expect(view.container.querySelector('[aria-label="Agent configuration section"]')).toBeTruthy();
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps reactivation failures and retry beside the shared header action", async () => {
+    const { ResourcesTab } = await import("../resources-tab.js");
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
+    agentMocks.reactivateAgent.mockRejectedValueOnce(new Error("runtime is still unavailable"));
+
+    const view = await renderDom("/agents/agent-1/capabilities", <ResourcesTab />);
+    await waitForText(view.container, "Reactivate agent");
+    await click(exactButtonByText(view.container, "Reactivate agent"));
+    await waitForText(view.container, "Couldn’t reactivate this agent");
+    expect(view.container.querySelector('[role="alert"]')?.textContent).toContain("runtime is still unavailable");
+
+    await click(exactButtonByText(view.container, "Retry"));
+    await waitForCondition(() => agentMocks.reactivateAgent.mock.calls.length === 2, "Expected reactivation retry");
+    await act(async () => view.root.unmount());
+  });
+
   it("keeps Responsibilities out of Profile and renders the same section in its own tab", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(
@@ -493,9 +543,9 @@ describe("AgentDetailPage", () => {
     expect([...profile.container.querySelectorAll("h2")].map((heading) => heading.textContent?.trim())).not.toContain(
       "Responsibilities",
     );
-    const profileTabList = profile.container.querySelector('[role="tablist"]');
-    expect(profileTabList?.parentElement?.previousElementSibling?.getAttribute("aria-hidden")).toBe("true");
-    expect([...profile.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    const profileNav = profile.container.querySelector('nav[aria-label="Agent configuration sections"]');
+    if (!profileNav) throw new Error("Expected Agent configuration navigation");
+    expect([...profileNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Runtime",
@@ -525,7 +575,9 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Profile route</div>);
     await waitForText(view.container, "PR Engineer");
-    expect([...view.container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    const viewerNav = view.container.querySelector('nav[aria-label="Agent configuration sections"]');
+    if (!viewerNav) throw new Error("Expected Agent configuration navigation");
+    expect([...viewerNav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Tools & skills",
@@ -540,7 +592,7 @@ describe("AgentDetailPage", () => {
 
     const view = await renderDom("/agents/agent-1/responsibilities", <div>Human Profile route</div>);
     await waitForText(view.container, "Human Profile route");
-    expect(view.container.querySelector('[role="tablist"]')).toBeNull();
+    expect(view.container.querySelector('nav[aria-label="Agent configuration sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
     await act(async () => view.root.unmount());
   });
@@ -576,9 +628,11 @@ describe("AgentDetailPage", () => {
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
     await waitForText(container, "Team style guide");
     expect(container.textContent).toContain("Vega");
-    expect(container.textContent).toContain("1 active");
-    expect(container.textContent).toContain("Chat");
-    expect([...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent?.trim())).toEqual([
+    expect(container.textContent).not.toContain("1 active");
+    expect(container.textContent).toContain("Start chat");
+    const nav = container.querySelector('nav[aria-label="Agent configuration sections"]');
+    if (!nav) throw new Error("Expected Agent configuration navigation");
+    expect([...nav.querySelectorAll("button")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
       "Responsibilities",
       "Runtime",
@@ -591,15 +645,17 @@ describe("AgentDetailPage", () => {
     expect(container.textContent).toContain("All instructions");
     await waitForText(container, "Team style guide");
     expect(container.textContent).toContain("Team style guide");
-    expect(container.textContent).toContain("Added by you");
+    expect(container.textContent).toContain("Custom for this agent");
     // The merged block renders each contributed instruction as its own labelled
     // segment (not one blob): the team segment + the agent's own "Custom" segment.
     const effBlock = container.querySelector('[aria-label="All instructions"]');
     expect(effBlock).toBeTruthy();
     const segLabels = [...(effBlock?.querySelectorAll(".text-eyebrow") ?? [])].map((n) => n.textContent?.trim());
     // Each segment label is "<name> · <source>", aligned with the source rows.
-    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("From your team"))).toBe(true);
-    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Added by you"))).toBe(true);
+    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("Team default"))).toBe(true);
+    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Custom for this agent"))).toBe(
+      true,
+    );
     expect(effBlock?.textContent).toContain("Use the team house style.");
 
     // The custom prompt's edit action now lives in the row's ⋯ overflow menu.
@@ -682,7 +738,7 @@ describe("AgentDetailPage", () => {
 
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
     await waitForText(container, "Team style guide");
-    await waitForText(container, "Added by you");
+    await waitForText(container, "Custom for this agent");
     expect(container.textContent).toContain("No instructions yet.");
 
     await clickRowMenuItem(container, "More actions for Custom instructions", "Edit custom instructions");
@@ -1066,15 +1122,15 @@ describe("AgentDetailPage", () => {
     agentMocks.getAgent.mockResolvedValueOnce(unclaimedAgent);
 
     const first = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
-    await waitForText(first.container, "No computer bound");
+    await waitForText(first.container, "Execution");
     expect(first.container.textContent).toContain("Execution");
     expect(first.container.textContent).toContain("Model settings");
-    expect(first.container.textContent).toContain("No computer bound");
-    await click(buttonByText(first.container, "Bind computer"));
+    expect(first.container.textContent).toContain("No computer assigned");
+    await click(buttonByText(first.container, "Choose computer"));
     await waitForText(document.body, "gandy-macbook");
-    expect(document.body.textContent).toContain("Bind computer");
+    expect(document.body.textContent).toContain("Choose a computer");
     await click(buttonByText(document.body, "gandy-macbook"));
-    await click(exactButtonByText(document.body, "Bind"));
+    await click(exactButtonByText(document.body, "Assign"));
     await waitForCondition(() => agentMocks.updateAgent.mock.calls.length > 0, "Expected bind mutation");
     expect(agentMocks.updateAgent).toHaveBeenCalledWith("agent-1", { clientId: "client-1" });
     await act(async () => first.root.unmount());
@@ -1120,9 +1176,9 @@ describe("AgentDetailPage", () => {
     agentMocks.switchAgentRuntime.mockResolvedValue(agent({ clientId: "client-2", runtimeProvider: "codex" }));
 
     const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
-    await waitForText(view.container, "No computer bound");
+    await waitForText(view.container, "No computer assigned");
     await waitForText(view.container, "Switch runtime");
-    expect(buttonByText(view.container, "Bind computer")).toBeNull();
+    expect(buttonByText(view.container, "Choose computer")).toBeNull();
 
     await click(buttonByText(view.container, "Switch runtime"));
     await waitForText(document.body, "alice-linux");
@@ -1168,7 +1224,7 @@ describe("AgentDetailPage", () => {
     expect(active.container.textContent).toContain("Agent lifecycle");
     expect(active.container.textContent).not.toContain("Lifecycle changes save immediately.");
     expect(
-      [...active.container.querySelectorAll("section h2")].filter((heading) =>
+      [...active.container.querySelectorAll("section h3")].filter((heading) =>
         heading.textContent?.includes("Agent lifecycle"),
       ),
     ).toHaveLength(1);
@@ -1183,8 +1239,9 @@ describe("AgentDetailPage", () => {
 
     agentMocks.getAgent.mockResolvedValueOnce(agent({ status: "suspended", runtimeState: null }));
     const suspended = await renderDom("/agents/agent-1/profile", <ProfileTab />);
-    await waitForText(suspended.container, "Reactivate");
-    await click(exactButtonByText(suspended.container, "Reactivate"));
+    await waitForText(suspended.container, "Reactivate agent");
+    expect(suspended.container.querySelector('button[aria-label="Start chat"]')).toBeNull();
+    await click(exactButtonByText(suspended.container, "Reactivate agent"));
     await waitForCondition(() => agentMocks.reactivateAgent.mock.calls.length > 0, "Expected reactivate mutation");
     expect(agentMocks.reactivateAgent).toHaveBeenCalledWith("agent-1");
     await act(async () => suspended.root.unmount());

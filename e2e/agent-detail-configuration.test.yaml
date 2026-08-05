@@ -1,0 +1,22 @@
+fileType: momentic/test/v2
+id: agent-detail-configuration
+description: A Team admin can identify an agent, understand whether it can work, and inspect its effective tools
+defaultEnv: local
+steps:
+  # Create a disposable signed-in Team with one connected agent through the
+  # product's real onboarding flow and the shared local runtime fixtures.
+  - module:
+      path: ./modules/complete-first-run-onboarding.module.yaml
+
+  - click: Team link in the top navigation
+  - waitForUrl: /team
+  - assert: the Team directory shows one agent teammate with a single Online status
+  - click: the agent teammate row in the Public section
+  - assert: the Agent detail page has a Team breadcrumb, a compact identity header with one Online status
+      and connected-computer explanation, and a local section navigation instead of a horizontal tab bar
+  - click: Tools & skills in the Agent configuration sections navigation
+  - assert: Tools & skills is the current section and the content separately shows Skills and Integrations;
+      because neither is configured, each empty state explains the impact and offers a clear setup action
+  - click: Set up integration button in the Integrations empty state
+  - waitForUrl: /settings/resources
+  - assert: Team Settings opens on the shared Resources page where integrations are managed

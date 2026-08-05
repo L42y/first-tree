@@ -58,6 +58,7 @@ export function ResponsibilitiesSection({
 
   return (
     <Section
+      headingLevel={3}
       title="Responsibilities"
       action={
         <>

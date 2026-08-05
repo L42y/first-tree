@@ -1,7 +1,7 @@
 import type { Agent } from "@first-tree/shared";
 import { canManageAgentDetail } from "./access.js";
 
-export type TabDef = { key: string; label: string; path: string };
+export type TabDef = { key: string; label: string; path: string; description: string };
 
 // IA labels only. Routing `path` and the `key` (deep-link mapping) are kept
 // stable so existing URLs keep resolving. Responsibilities has its own stable
@@ -16,11 +16,20 @@ const TAB_LABELS: Record<string, string> = {
   usage: "Usage",
 };
 
+const TAB_DESCRIPTIONS: Record<string, string> = {
+  profile: "Identity, ownership, and lifecycle for this agent.",
+  responsibilities: "Starting responsibilities adopted from Agent Templates.",
+  runtime: "Where this agent runs and how it is configured.",
+  prompt: "Guidance that shapes how this agent behaves.",
+  capabilities: "Skills and integrations configured for this agent.",
+  repositories: "Code repositories and team context available in this agent’s workspace.",
+  usage: "Activity and turn history for this agent.",
+};
+
 /**
  * Single source of truth for WHICH tabs exist for an agent (key + path),
- * independent of label/order. `buildTabs` adds the display label on top, and the
- * agent switcher uses this to know whether a target agent supports the current
- * tab — so the two can never drift on tab availability.
+ * independent of label/order. `buildTabs` adds the display label on top, while
+ * `resolveTabPath` uses the same list when linking between agents.
  */
 export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: string; path: string }[] {
   const tabs: { key: string; path: string }[] = [{ key: "profile", path: "profile" }];
@@ -50,10 +59,14 @@ export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: str
 }
 
 export function buildTabs(canEditConfig: boolean, isHuman: boolean): TabDef[] {
-  return tabKeysFor(canEditConfig, isHuman).map((t) => ({ ...t, label: TAB_LABELS[t.key] ?? t.key }));
+  return tabKeysFor(canEditConfig, isHuman).map((t) => ({
+    ...t,
+    label: TAB_LABELS[t.key] ?? t.key,
+    description: TAB_DESCRIPTIONS[t.key] ?? "",
+  }));
 }
 
-/** Mirror of the shell's `canEditConfig` derivation, for any agent (e.g. switcher targets). */
+/** Mirror of the shell's `canEditConfig` derivation for another agent. */
 export function canEditConfigFor(agent: Agent, memberId: string | null, role: string | null): boolean {
   return agent.type !== "human" && canManageAgentDetail(agent, memberId, role);
 }
