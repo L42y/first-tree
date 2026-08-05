@@ -33,7 +33,10 @@ describe("Built-in Handlers", () => {
     registerBuiltinHandlers();
 
     const factory = getHandlerFactory("claude-code");
-    const handler = factory({ workspaceRoot: "/tmp/test" });
+    const handler = factory({
+      runtimeProvider: "codex",
+      workspaceRoot: "/tmp/test",
+    });
     expect(handler).toBeDefined();
     expect(typeof handler.start).toBe("function");
     expect(typeof handler.resume).toBe("function");
@@ -54,7 +57,10 @@ describe("Built-in Handlers", () => {
     registerBuiltinHandlers();
 
     const factory = getHandlerFactory("claude-code-tui");
-    const handler = factory({ workspaceRoot: "/tmp/test" });
+    const handler = factory({
+      runtimeProvider: "codex",
+      workspaceRoot: "/tmp/test",
+    });
     expect(handler).toBeDefined();
     expect(typeof handler.start).toBe("function");
     expect(typeof handler.resume).toBe("function");
@@ -76,7 +82,10 @@ describe("Built-in Handlers", () => {
 
     const factory = getHandlerFactory("cursor");
     expect(typeof factory).toBe("function");
-    const handler = factory({ workspaceRoot: "/tmp/test" });
+    const handler = factory({
+      runtimeProvider: "codex",
+      workspaceRoot: "/tmp/test",
+    });
     expect(typeof handler.start).toBe("function");
     expect(typeof handler.resume).toBe("function");
     expect(typeof handler.inject).toBe("function");
@@ -102,7 +111,10 @@ describe("Built-in Handlers", () => {
 
     const factory = getHandlerFactory("kimi-code");
     expect(typeof factory).toBe("function");
-    const handler = factory({ workspaceRoot: "/tmp/test" });
+    const handler = factory({
+      runtimeProvider: "codex",
+      workspaceRoot: "/tmp/test",
+    });
     expect(typeof handler.start).toBe("function");
     expect(typeof handler.resume).toBe("function");
     expect(typeof handler.inject).toBe("function");
@@ -140,7 +152,10 @@ describe("Built-in Handlers", () => {
     registerBuiltinHandlers();
 
     const factory = getHandlerFactory("codex");
-    const handler = factory({ workspaceRoot: "/tmp/test" });
+    const handler = factory({
+      runtimeProvider: "codex",
+      workspaceRoot: "/tmp/test",
+    });
     expect(handler).toBeDefined();
     expect(typeof handler.start).toBe("function");
     expect(typeof handler.resume).toBe("function");

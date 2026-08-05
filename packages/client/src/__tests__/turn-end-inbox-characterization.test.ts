@@ -117,8 +117,12 @@ describe("characterization — SessionManager turn-end wiring", () => {
 
   function handler(overrides: Partial<AgentHandler> = {}): AgentHandler {
     return {
-      start: vi.fn().mockResolvedValue("session-id"),
-      resume: vi.fn().mockResolvedValue("session-id"),
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } }),
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } }),
       inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
       suspend: vi.fn().mockResolvedValue(undefined),
       shutdown: vi.fn().mockResolvedValue(undefined),
@@ -200,7 +204,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
         handler({
           async start(_message, ctx) {
             captured = ctx;
-            return "char-session";
+            return { sessionId: "char-session", route: { kind: "owned" as const, mode: "queued" as const } };
           },
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "codex" },

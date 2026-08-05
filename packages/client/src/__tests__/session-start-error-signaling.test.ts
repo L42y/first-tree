@@ -113,8 +113,12 @@ function failingHandler(): AgentHandler {
 
 function workingHandler(sessionId = "session-after-recovery"): AgentHandler {
   return {
-    start: vi.fn().mockResolvedValue(sessionId),
-    resume: vi.fn().mockResolvedValue(sessionId),
+    start: vi
+      .fn()
+      .mockResolvedValue({ sessionId: sessionId, route: { kind: "owned" as const, mode: "queued" as const } }),
+    resume: vi
+      .fn()
+      .mockResolvedValue({ sessionId: sessionId, route: { kind: "owned" as const, mode: "queued" as const } }),
     inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
     suspend: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
@@ -565,7 +569,9 @@ describe("SessionManager: session-resume failure signalling (F2, resume path)", 
     let chatBContext: SessionContext | undefined;
     let chatBMessage: SessionMessage | undefined;
     const handlerA: AgentHandler = {
-      start: vi.fn().mockResolvedValue("session-A"),
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-A", route: { kind: "owned" as const, mode: "queued" as const } }),
       resume: vi.fn().mockRejectedValue(new FakeClientUserMismatchError("git mirror fetch failed: connection refused")),
       inject: vi.fn(),
       suspend: vi.fn().mockResolvedValue(undefined),
@@ -575,7 +581,7 @@ describe("SessionManager: session-resume failure signalling (F2, resume path)", 
     handlerB.start = vi.fn(async (message, ctx) => {
       chatBMessage = message;
       chatBContext = ctx;
-      return "session-B";
+      return { sessionId: "session-B", route: { kind: "owned" as const, mode: "queued" as const } };
     });
     const sm = makeSerializedManager({
       handlerQueue: [handlerA, handlerB],
@@ -636,7 +642,9 @@ describe("SessionManager: session-resume failure signalling (F2, resume path)", 
     let chatBContext: SessionContext | undefined;
     let chatBMessage: SessionMessage | undefined;
     const handlerA: AgentHandler = {
-      start: vi.fn().mockResolvedValue("session-A"),
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-A", route: { kind: "owned" as const, mode: "queued" as const } }),
       resume: vi.fn().mockRejectedValue(new FakeClientUserMismatchError("resume blew up")),
       inject: vi.fn(),
       suspend: vi.fn().mockResolvedValue(undefined),
@@ -646,7 +654,7 @@ describe("SessionManager: session-resume failure signalling (F2, resume path)", 
     handlerB.start = vi.fn(async (message, ctx) => {
       chatBMessage = message;
       chatBContext = ctx;
-      return "session-B";
+      return { sessionId: "session-B", route: { kind: "owned" as const, mode: "queued" as const } };
     });
     const handlerARecovery = workingHandler("session-A-fresh");
     const sm = makeSerializedManager({

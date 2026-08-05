@@ -1,11 +1,12 @@
 import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 import { registerBuiltinHandlers } from "../handlers/index.js";
 import { BUILTIN_PROVIDER_PROBES } from "../providers/builtin-probes.js";
 import { createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";
 import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import { probeCapabilities } from "../runtime/capabilities/index.js";
-import { getHandlerFactory, hasHandler, registerHandler } from "../runtime/handler.js";
+import { getHandlerFactory, type HandlerConfig, hasHandler, registerHandler } from "../runtime/handler.js";
 import { providerSkillRoot } from "../runtime/managed-skills.js";
 
 const HANDLER_METHODS = ["start", "resume", "inject", "suspend", "shutdown"] as const;
@@ -120,4 +121,40 @@ describe("builtin handler registry", () => {
     );
     expect(runtimeSource).not.toContain("installHandlers");
   });
+});
+
+describe("builtin handler factories fail closed on runtimeProvider", () => {
+  function factories() {
+    return createBuiltinHandlerRegistry({
+      resolveExecutable: () => ({ path: undefined, source: "default" }),
+    });
+  }
+
+  function config(overrides: Record<string, unknown>): HandlerConfig {
+    return { workspaceRoot: "/tmp/registry-fail-closed", ...overrides } as HandlerConfig;
+  }
+
+  for (const id of RUNTIME_PROVIDER_IDS) {
+    it(`${id} rejects a missing runtimeProvider at construction`, () => {
+      expect(() => factories()[id](config({}))).toThrow(ZodError);
+    });
+
+    it(`${id} rejects an invalid runtimeProvider at construction`, () => {
+      expect(() => factories()[id](config({ runtimeProvider: "not-a-provider" }))).toThrow(ZodError);
+    });
+  }
+
+  // Codex selects between app-server and SDK implementations; every engine must
+  // reject the same bad config so validation is not path-dependent.
+  for (const codexHandlerEngine of ["app-server", "sdk", "auto"] as const) {
+    it(`codex ${codexHandlerEngine} engine rejects an invalid runtimeProvider`, () => {
+      expect(() => factories().codex(config({ runtimeProvider: "not-a-provider", codexHandlerEngine }))).toThrow(
+        ZodError,
+      );
+    });
+
+    it(`codex ${codexHandlerEngine} engine rejects a missing runtimeProvider`, () => {
+      expect(() => factories().codex(config({ codexHandlerEngine }))).toThrow(ZodError);
+    });
+  }
 });

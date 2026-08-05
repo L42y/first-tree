@@ -135,8 +135,12 @@ function mockSdk(): FirstTreeHubSDK {
 
 function handler(overrides: Partial<AgentHandler> = {}): AgentHandler {
   return {
-    start: vi.fn().mockResolvedValue("session-id"),
-    resume: vi.fn().mockResolvedValue("session-id"),
+    start: vi
+      .fn()
+      .mockResolvedValue({ sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } }),
+    resume: vi
+      .fn()
+      .mockResolvedValue({ sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } }),
     inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
     suspend: vi.fn().mockResolvedValue(undefined),
     shutdown: vi.fn().mockResolvedValue(undefined),
@@ -406,7 +410,7 @@ describe("SessionManager edge coverage", () => {
   it("handles suspend, terminate, pending-queue cleanup, ack failures, and quiet-gate snapshots", async () => {
     const first = handler({
       async start() {
-        return "idle-log-session";
+        return { sessionId: "idle-log-session", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const ackEntry = vi
@@ -493,7 +497,12 @@ describe("SessionManager edge coverage", () => {
     };
     writeFileSync(registryPath, JSON.stringify({ version: 1, entries }), "utf-8");
 
-    const resumed = handler({ resume: vi.fn().mockResolvedValue("resumed-from-registry") });
+    const resumed = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "resumed-from-registry",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [resumed], registryPath, maxSessions: 501 });
 
     expect(sm.getEvictedChatIds()).not.toContain("chat-0");
@@ -530,7 +539,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "stale-session";
+        return { sessionId: "stale-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const first = makeManager({ handlers: [pendingHandler], registryPath });
@@ -559,7 +568,12 @@ describe("SessionManager edge coverage", () => {
     const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
     expect(persisted.entries).toEqual({});
 
-    const replacement = handler({ start: vi.fn().mockResolvedValue("replacement-session") });
+    const replacement = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "replacement-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const second = makeManager({ handlers: [replacement], registryPath });
     await second.dispatch(entry);
 
@@ -644,7 +658,7 @@ describe("SessionManager edge coverage", () => {
         captured = ctx;
         ctx.log("started");
         ctx.recordProviderActivity();
-        return "session-context";
+        return { sessionId: "session-context", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const sm = makeManager({
@@ -714,7 +728,7 @@ describe("SessionManager edge coverage", () => {
         handler({
           async start(_message, ctx) {
             captured = ctx;
-            return "session-empty-cache";
+            return { sessionId: "session-empty-cache", route: { kind: "owned" as const, mode: "queued" as const } };
           },
         }),
       ],
@@ -739,7 +753,7 @@ describe("SessionManager edge coverage", () => {
     const first = handler({
       async start(message) {
         seen = message;
-        return "session-no-entry-chat";
+        return { sessionId: "session-no-entry-chat", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const sm = makeManager({ handlers: [first] });
@@ -832,7 +846,9 @@ describe("SessionManager edge coverage", () => {
   });
 
   it("routes same-chat delivery after manual suspend without explicit resume", async () => {
-    const resume = vi.fn().mockResolvedValue("resumed-paused");
+    const resume = vi
+      .fn()
+      .mockResolvedValue({ sessionId: "resumed-paused", route: { kind: "owned" as const, mode: "queued" as const } });
     const paused = makeSessionRecord("chat-paused", {
       status: "suspended",
       claudeSessionId: "old-paused-session",
@@ -861,7 +877,7 @@ describe("SessionManager edge coverage", () => {
     const working = handler({
       async start(message, ctx) {
         ctx.markMessagesConsumed(message);
-        return "working-session";
+        return { sessionId: "working-session", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const recovered = handler();
@@ -891,7 +907,7 @@ describe("SessionManager edge coverage", () => {
     const working = handler({
       async start(message, ctx) {
         ctx.markMessagesConsumed(message);
-        return "working-session";
+        return { sessionId: "working-session", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const recovered = handler();
@@ -925,11 +941,14 @@ describe("SessionManager edge coverage", () => {
         async start(message, ctx) {
           lifecycles.push({ chatId: message.chatId, phase: "start" });
           if (message.chatId === "chat-working") ctx.markMessagesConsumed(message);
-          return `session-${message.chatId}`;
+          return { sessionId: `session-${message.chatId}`, route: { kind: "owned" as const, mode: "queued" as const } };
         },
         async resume(message) {
           lifecycles.push({ chatId: message?.chatId ?? "", phase: "resume" });
-          return `session-${message?.chatId ?? "unknown"}`;
+          return {
+            sessionId: `session-${message?.chatId ?? "unknown"}`,
+            route: { kind: "owned" as const, mode: "queued" as const },
+          };
         },
       });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
@@ -976,7 +995,7 @@ describe("SessionManager edge coverage", () => {
             firstMessage = message;
             firstContext = ctx;
             ctx.markMessagesConsumed(message);
-            return "session-chat-working";
+            return { sessionId: "session-chat-working", route: { kind: "owned" as const, mode: "queued" as const } };
           },
         });
       },
@@ -1001,8 +1020,18 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({
       concurrency: 1,
       handlers: [
-        handler({ start: vi.fn().mockResolvedValue("retry-empty-start") }),
-        handler({ resume: vi.fn().mockResolvedValue("retry-from-evicted") }),
+        handler({
+          start: vi.fn().mockResolvedValue({
+            sessionId: "retry-empty-start",
+            route: { kind: "owned" as const, mode: "queued" as const },
+          }),
+        }),
+        handler({
+          resume: vi.fn().mockResolvedValue({
+            sessionId: "retry-from-evicted",
+            route: { kind: "owned" as const, mode: "queued" as const },
+          }),
+        }),
       ],
       onSessionEvent: (_chatId, event) => events.push(event),
     });
@@ -1056,7 +1085,12 @@ describe("SessionManager edge coverage", () => {
 
   it("does not let runRetry bypass existing recovery debt", async () => {
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const recovered = handler({ start: vi.fn().mockResolvedValue("should-not-start") });
+    const recovered = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "should-not-start",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [recovered], recoverChat });
     const chatId = "chat-retry-debt";
     const inbox = internals(sm).inboxDelivery;
@@ -1083,7 +1117,11 @@ describe("SessionManager edge coverage", () => {
 
   it("keeps a message retry head out of the pending queue while a provider slot is busy", async () => {
     vi.useFakeTimers();
-    const recovered = handler({ resume: vi.fn().mockResolvedValue("resumed-once") });
+    const recovered = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "resumed-once", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({ handlers: [recovered], concurrency: 1 });
     const i = internals(sm);
     const chatId = "chat-retry-slot-message";
@@ -1127,7 +1165,12 @@ describe("SessionManager edge coverage", () => {
 
   it("keeps a control resume retry out of the pending queue while a provider slot is busy", async () => {
     vi.useFakeTimers();
-    const recovered = handler({ resume: vi.fn().mockResolvedValue("control-resumed-once") });
+    const recovered = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "control-resumed-once",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [recovered], concurrency: 1 });
     const i = internals(sm);
     const chatId = "chat-retry-slot-control";
@@ -1341,7 +1384,7 @@ describe("SessionManager edge coverage", () => {
           await token?.complete(message, { status: "success", terminal: true });
           await ctx.finishTurn(message, { status: "success", terminal: true });
         }
-        return "stale-session";
+        return { sessionId: "stale-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     let freshCtx: SessionContext | undefined;
@@ -1350,7 +1393,7 @@ describe("SessionManager edge coverage", () => {
       resume: vi.fn().mockImplementation(async (message, _sessionId, ctx) => {
         freshCtx = ctx;
         freshHead = message;
-        return "fresh-session";
+        return { sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
@@ -1440,7 +1483,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await pendingStart;
-        return "stale-start-session";
+        return { sessionId: "stale-start-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     let freshCtx: SessionContext | undefined;
@@ -1449,7 +1492,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async (message, ctx) => {
         freshCtx = ctx;
         freshHead = message;
-        return "fresh-start-session";
+        return { sessionId: "fresh-start-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
@@ -1534,10 +1577,15 @@ describe("SessionManager edge coverage", () => {
         token.processingStarted(message);
         signalStartStarted?.();
         await startGate;
-        return "stale-start-session";
+        return { sessionId: "stale-start-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
-    const replacement = handler({ start: vi.fn().mockResolvedValue("replacement-tail-session") });
+    const replacement = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "replacement-tail-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockImplementation(async () => {
       signalAckStarted?.();
       await ackGate;
@@ -1601,7 +1649,12 @@ describe("SessionManager edge coverage", () => {
   });
 
   it("does not create an empty resume mapping when LRU evicts a fresh-start retry window", async () => {
-    const replacement = handler({ start: vi.fn().mockResolvedValue("replacement-after-lru") });
+    const replacement = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "replacement-after-lru",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const sm = makeManager({
       handlers: [replacement],
@@ -1642,7 +1695,7 @@ describe("SessionManager edge coverage", () => {
   it("fences active inject tokens across suspend recovery and same-entry redelivery", async () => {
     let initialCtx: SessionContext | undefined;
     let initialHead: SessionMessage | undefined;
-    let staleToken: Parameters<AgentHandler["inject"]>[1];
+    let staleToken: Parameters<AgentHandler["inject"]>[1] | undefined;
     let signalWinningResumeStarted: (() => void) | undefined;
     let resolveWinningResume: (() => void) | undefined;
     const winningResumeStarted = new Promise<void>((resolve) => {
@@ -1657,7 +1710,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async (message, ctx) => {
         initialCtx = ctx;
         initialHead = message;
-        return "established-token-session";
+        return { sessionId: "established-token-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       inject: vi.fn().mockImplementation((_message, token) => {
         staleToken = token;
@@ -1668,7 +1721,7 @@ describe("SessionManager edge coverage", () => {
         winningHead = message;
         signalWinningResumeStarted?.();
         await winningResumeGate;
-        return "winning-token-session";
+        return { sessionId: "winning-token-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
@@ -1729,7 +1782,7 @@ describe("SessionManager edge coverage", () => {
   it("operator suspend does not sweep an unentered queued active-inject tail into the resolved prefix", async () => {
     let initialCtx: SessionContext | undefined;
     let initialHead: SessionMessage | undefined;
-    let enteredToken: Parameters<AgentHandler["inject"]>[1];
+    let enteredToken: Parameters<AgentHandler["inject"]>[1] | undefined;
     let enteredMessage: SessionMessage | undefined;
     let injectCount = 0;
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-inject-tail" });
@@ -1737,7 +1790,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async (message, ctx) => {
         initialCtx = ctx;
         initialHead = message;
-        return "active-inject-tail-session";
+        return { sessionId: "active-inject-tail-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       inject: vi.fn().mockImplementation((message, token) => {
         injectCount++;
@@ -1842,14 +1895,14 @@ describe("SessionManager edge coverage", () => {
   ] as const)("revokes a failed active inject token before %s recovery and same-entry redelivery", async (failureMode) => {
     let initialCtx: SessionContext | undefined;
     let initialHead: SessionMessage | undefined;
-    let staleToken: Parameters<AgentHandler["inject"]>[1];
-    let winningToken: Parameters<AgentHandler["inject"]>[1];
+    let staleToken: Parameters<AgentHandler["inject"]>[1] | undefined;
+    let winningToken: Parameters<AgentHandler["inject"]>[1] | undefined;
     let injectCount = 0;
     const activeHandler = handler({
       start: vi.fn().mockImplementation(async (message, ctx) => {
         initialCtx = ctx;
         initialHead = message;
-        return "active-attempt-session";
+        return { sessionId: "active-attempt-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       inject: vi.fn().mockImplementation((_message, token) => {
         injectCount++;
@@ -1927,9 +1980,12 @@ describe("SessionManager edge coverage", () => {
     const routedHandler = handler({
       start: vi.fn().mockImplementation(async (_message, ctx) => {
         oldCtx = ctx;
-        return "confirmed-event-session";
+        return { sessionId: "confirmed-event-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
-      resume: vi.fn().mockResolvedValue("confirmed-event-recovered-session"),
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "confirmed-event-recovered-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
     });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const sm = makeManager({
@@ -2002,11 +2058,11 @@ describe("SessionManager edge coverage", () => {
     const routedHandler = handler({
       start: vi.fn().mockImplementation(async (_message, _ctx, token) => {
         oldToken = token;
-        return "notice-session";
+        return { sessionId: "notice-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       resume: vi.fn().mockImplementation(async (_message, _sessionId, _ctx, token) => {
         winningToken = token;
-        return "notice-recovered-session";
+        return { sessionId: "notice-recovered-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
@@ -2096,7 +2152,7 @@ describe("SessionManager edge coverage", () => {
         await resumeGate;
         providerMaterialized = true;
         providerClosed = false;
-        return "late-materialized-session";
+        return { sessionId: "late-materialized-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       shutdown: vi.fn().mockImplementation(async () => {
         if (providerMaterialized) providerClosed = true;
@@ -2146,11 +2202,16 @@ describe("SessionManager edge coverage", () => {
       resume: vi.fn().mockImplementation(async () => {
         signalOldResumeStarted?.();
         await oldResumeGate;
-        return "stale-preempted-session";
+        return { sessionId: "stale-preempted-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
 
-    const requesterHandler = handler({ start: vi.fn().mockResolvedValue("requester-session") });
+    const requesterHandler = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "requester-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     let signalFreshResumeStarted: (() => void) | undefined;
     let resolveFreshResume: (() => void) | undefined;
     const freshResumeStarted = new Promise<void>((resolve) => {
@@ -2167,7 +2228,7 @@ describe("SessionManager edge coverage", () => {
         freshHead = message;
         signalFreshResumeStarted?.();
         await freshResumeGate;
-        return "fresh-preemption-session";
+        return { sessionId: "fresh-preemption-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
@@ -2259,7 +2320,10 @@ describe("SessionManager edge coverage", () => {
     const existingHandler = handler({
       resume: vi.fn().mockImplementation(() => {
         signalResumeStarted?.();
-        return pendingResume;
+        return pendingResume.then((sessionId) => ({
+          sessionId,
+          route: { kind: "owned" as const, mode: "queued" as const },
+        }));
       }),
     });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
@@ -2319,7 +2383,7 @@ describe("SessionManager edge coverage", () => {
       resume: vi.fn().mockImplementation(async () => {
         signalRetryStarted?.();
         await retryGate;
-        return "stale-retry-session";
+        return { sessionId: "stale-retry-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
@@ -3015,7 +3079,10 @@ describe("SessionManager edge coverage", () => {
     const boom = new Error("replacement shutdown failed");
     const retiredHandler = handler();
     const replacementHandler = handler({
-      resume: vi.fn().mockResolvedValue("replacement-session"),
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "replacement-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
       shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
     });
     const sm = makeManager({ handlers: [replacementHandler] });
@@ -3219,7 +3286,11 @@ describe("SessionManager edge coverage", () => {
       suspend: vi.fn().mockRejectedValue(suspendBoom),
       shutdown: vi.fn().mockRejectedValueOnce(stopBoom).mockResolvedValue(undefined),
     });
-    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("fresh-session") });
+    const freshHandler = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-resume-after-failed-suspend";
@@ -3618,7 +3689,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "session-id";
+        return { sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       shutdown: vi
         .fn()
@@ -3704,7 +3775,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "session-id";
+        return { sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       shutdown: vi
         .fn()
@@ -3771,7 +3842,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "session-id";
+        return { sessionId: "session-id", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       shutdown: vi
         .fn()
@@ -3829,7 +3900,12 @@ describe("SessionManager edge coverage", () => {
         })
         .mockResolvedValue(undefined),
     });
-    const sessionHandler = handler({ resume: vi.fn().mockResolvedValue("resumed-session") });
+    const sessionHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "resumed-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-route-waits-for-debt";
@@ -3859,7 +3935,12 @@ describe("SessionManager edge coverage", () => {
     const debtHandler = handler({
       shutdown: vi.fn().mockRejectedValueOnce(boom).mockResolvedValue(undefined),
     });
-    const sessionHandler = handler({ resume: vi.fn().mockResolvedValue("resumed-session") });
+    const sessionHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "resumed-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const sm = makeManager({ recoverChat });
     const i = internals(sm);
@@ -3951,7 +4032,11 @@ describe("SessionManager edge coverage", () => {
 
   it("installs the retry route after the debt settles when no terminate intervenes", async () => {
     const debtHandler = handler();
-    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("retry-session") });
+    const freshHandler = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "retry-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-after-debt-settle";
@@ -4040,10 +4125,15 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "stale-canceled-session";
+        return { sessionId: "stale-canceled-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
-    const freshHandler = handler({ start: vi.fn().mockResolvedValue("fresh-route-session") });
+    const freshHandler = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "fresh-route-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const sm = makeManager({ handlers: [canceledHandler, freshHandler], recoverChat });
     const i = internals(sm);
@@ -4102,7 +4192,12 @@ describe("SessionManager edge coverage", () => {
         })
         .mockResolvedValue(undefined),
     });
-    const sessionHandler = handler({ resume: vi.fn().mockResolvedValue("resumed-session") });
+    const sessionHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "resumed-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-concurrent-resumes";
@@ -4148,7 +4243,12 @@ describe("SessionManager edge coverage", () => {
         })
         .mockResolvedValue(undefined),
     });
-    const freshHandler = handler({ start: vi.fn().mockResolvedValue("started-session") });
+    const freshHandler = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: "started-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-concurrent-starts";
@@ -4194,7 +4294,12 @@ describe("SessionManager edge coverage", () => {
         })
         .mockResolvedValue(undefined),
     });
-    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("retry-route-session") });
+    const freshHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "retry-route-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-replace-stop";
@@ -4369,7 +4474,12 @@ describe("SessionManager edge coverage", () => {
         })
         .mockResolvedValue(undefined),
     });
-    const freshHandler = handler({ resume: vi.fn().mockResolvedValue("retry-route-session") });
+    const freshHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: "retry-route-session",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-overlapping-retries";
@@ -4689,8 +4799,16 @@ describe("SessionManager edge coverage", () => {
         await stopGateB;
       }),
     });
-    const freshA = handler({ resume: vi.fn().mockResolvedValue("session-a") });
-    const freshB = handler({ resume: vi.fn().mockResolvedValue("session-b") });
+    const freshA = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-a", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
+    const freshB = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "session-b", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({ handlers: [freshA, freshB], concurrency: 1 });
     const i = internals(sm);
     const entryA = makeSessionRecord("chat-cap-a", {
@@ -4758,7 +4876,11 @@ describe("SessionManager edge coverage", () => {
       }),
     });
     const freshA = handler();
-    const handlerC = handler({ start: vi.fn().mockResolvedValue("c-session") });
+    const handlerC = handler({
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "c-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({ handlers: [handlerC, freshA], concurrency: 1 });
     const i = internals(sm);
     const chatId = "chat-freed-slot-retry";
@@ -4843,7 +4965,7 @@ describe("SessionManager edge coverage", () => {
       start: vi.fn().mockImplementation(async () => {
         signalStartStarted?.();
         await startGate;
-        return "stale-session";
+        return { sessionId: "stale-session", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       shutdown: vi
         .fn()
@@ -4934,7 +5056,11 @@ describe("SessionManager edge coverage", () => {
 
     // A fresh manager over the same file reloads nothing, and the next real
     // dispatch starts a FRESH provider thread — no resume of the old one.
-    const freshHandler = handler({ start: vi.fn().mockResolvedValue("fresh-thread") });
+    const freshHandler = handler({
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "fresh-thread", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const reloaded = makeManager({ handlers: [freshHandler], registryPath });
     expect(reloaded.getEvictedChatIds()).toEqual([]);
     await reloaded.dispatch(mockEntry({ id: 151, chatId, messageId: "msg-after-reset" }));
@@ -6245,7 +6371,11 @@ describe("SessionManager edge coverage", () => {
     const terminalRetry = handler({
       resume: vi.fn().mockRejectedValue({ name: "ClientUserMismatchError", message: "wrong client" }),
     });
-    const replacement = handler({ start: vi.fn().mockResolvedValue("tail-session") });
+    const replacement = handler({
+      start: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "tail-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const sm = makeManager({
       handlers: [terminalRetry, replacement],
       confirmSessionEvent: vi.fn().mockImplementation(() => {
@@ -6392,7 +6522,11 @@ describe("SessionManager edge coverage", () => {
   it("uses retry-time config cache, clears existing retry timers, and catches retry-success emit failures", async () => {
     const cache = makeCache();
     const existingTimer = setTimeout(() => undefined, 60_000);
-    const successfulResume = handler({ resume: vi.fn().mockResolvedValue("retry-resumed") });
+    const successfulResume = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "retry-resumed", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
     const transientResume = handler({
       resume: vi.fn().mockRejectedValue({ status: 429, message: "still limited" }),
     });
@@ -6597,7 +6731,7 @@ describe("SessionManager edge coverage", () => {
           async start(message, ctx) {
             captured = ctx;
             ctx.markMessagesConsumed(message);
-            return "runtime-session";
+            return { sessionId: "runtime-session", route: { kind: "owned" as const, mode: "queued" as const } };
           },
         }),
       ],
@@ -6656,7 +6790,7 @@ describe("SessionManager edge coverage", () => {
       async start(message, ctx) {
         capturedMessage = message;
         captured = ctx;
-        return "idle-log-session";
+        return { sessionId: "idle-log-session", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const sm = new SessionManager({
@@ -6804,7 +6938,7 @@ describe("SessionManager edge coverage", () => {
       async start(message, _ctx, token) {
         capturedMessage = message;
         capturedToken = token;
-        return "runtime-notice-session";
+        return { sessionId: "runtime-notice-session", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
     const sm = makeManager({
@@ -6916,14 +7050,24 @@ describe("SessionManager edge coverage", () => {
     const makeOwnedReceipt = (sessionId: string) => ({ sessionId, route: { kind: "owned", mode: "queued" } as const });
     const loseOwnership: SessionManagerInternals["markRouteOwned"] = () => "lost";
 
-    const startHandler = handler({ start: vi.fn().mockResolvedValue(makeOwnedReceipt("start-lost")) });
+    const startHandler = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: makeOwnedReceipt("start-lost"),
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const startManager = makeManager({ handlers: [startHandler] });
     internals(startManager).markRouteOwned = loseOwnership;
     await internals(startManager).routeMessage("chat-start-lost", makeMessage("chat-start-lost"));
     expect(internals(startManager).sessions.has("chat-start-lost")).toBe(false);
     await startManager.shutdown();
 
-    const evictedHandler = handler({ resume: vi.fn().mockResolvedValue(makeOwnedReceipt("evicted-lost")) });
+    const evictedHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: makeOwnedReceipt("evicted-lost"),
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const evictedManager = makeManager({ handlers: [evictedHandler] });
     internals(evictedManager).evictedMappings.set("chat-evicted-lost", {
       claudeSessionId: "old-evicted",
@@ -6936,7 +7080,12 @@ describe("SessionManager edge coverage", () => {
 
     const suspendedRecord = makeSessionRecord("chat-resume-lost", {
       status: "suspended",
-      handler: handler({ resume: vi.fn().mockResolvedValue(makeOwnedReceipt("resume-lost")) }),
+      handler: handler({
+        resume: vi.fn().mockResolvedValue({
+          sessionId: makeOwnedReceipt("resume-lost"),
+          route: { kind: "owned" as const, mode: "queued" as const },
+        }),
+      }),
     });
     const resumeManager = makeManager();
     internals(resumeManager).sessions.set("chat-resume-lost", suspendedRecord);
@@ -6945,7 +7094,12 @@ describe("SessionManager edge coverage", () => {
     expect(internals(resumeManager).sessions.has("chat-resume-lost")).toBe(false);
     await resumeManager.shutdown();
 
-    const retryResumeHandler = handler({ resume: vi.fn().mockResolvedValue(makeOwnedReceipt("retry-resume-lost")) });
+    const retryResumeHandler = handler({
+      resume: vi.fn().mockResolvedValue({
+        sessionId: makeOwnedReceipt("retry-resume-lost"),
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const retryResumeManager = makeManager({ handlers: [retryResumeHandler] });
     internals(retryResumeManager).sessions.set(
       "chat-retry-resume-lost",
@@ -6961,7 +7115,12 @@ describe("SessionManager edge coverage", () => {
     expect(internals(retryResumeManager).sessions.has("chat-retry-resume-lost")).toBe(false);
     await retryResumeManager.shutdown();
 
-    const retryStartHandler = handler({ start: vi.fn().mockResolvedValue(makeOwnedReceipt("retry-start-lost")) });
+    const retryStartHandler = handler({
+      start: vi.fn().mockResolvedValue({
+        sessionId: makeOwnedReceipt("retry-start-lost"),
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+    });
     const retryStartManager = makeManager({ handlers: [retryStartHandler] });
     internals(retryStartManager).sessions.set(
       "chat-retry-start-lost",
@@ -7053,7 +7212,7 @@ describe("SessionManager edge coverage", () => {
         if (!message || !token) throw new Error("retry head token was not provided");
         token.processingStarted(message);
         await token.complete(message, { status: "success", terminal: true });
-        return "retry-resumed";
+        return { sessionId: "retry-resumed", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
       inject: vi.fn((message) => {
         if (message.id === "msg-deferred-first") {

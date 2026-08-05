@@ -95,14 +95,14 @@ export type StartReceipt = {
   route: Extract<HandlerRouteReceipt, { kind: "owned" }>;
 };
 
-export type StartResult = StartReceipt | string;
+export type StartResult = StartReceipt;
 
 export type ResumeReceipt = {
   sessionId: string;
   route: Extract<HandlerRouteReceipt, { kind: "owned" }> | null;
 };
 
-export type ResumeResult = ResumeReceipt | string;
+export type ResumeResult = ResumeReceipt;
 
 export type DeliveryToken = {
   processingStarted(messages: SessionMessage | readonly SessionMessage[]): void;
@@ -130,6 +130,14 @@ export type DeliveryToken = {
 export type DeliveryCompletionDisposition = "settled" | "retry";
 // biome-ignore lint/suspicious/noConfusingVoidType: legacy/test tokens intentionally resolve void.
 export type DeliveryCompletionResult = DeliveryCompletionDisposition | void;
+
+/** Fail closed when a messageful handler path is missing its DeliveryToken. */
+export function requireDeliveryToken(token: DeliveryToken | undefined, label: string): DeliveryToken {
+  if (token === undefined) {
+    throw new Error(`DeliveryToken required for ${label}`);
+  }
+  return token;
+}
 
 export function noopDeliveryToken(): DeliveryToken {
   return {
@@ -334,10 +342,11 @@ export type PrecedingMessage = {
  */
 export type AgentHandler = {
   /** First message in a new chat. Spawn query, start consumer loop. */
-  start(message: SessionMessage, ctx: SessionContext, token?: DeliveryToken): Promise<StartResult>;
+  start(message: SessionMessage, ctx: SessionContext, token: DeliveryToken): Promise<StartResult>;
 
   /** Message arrives for a suspended/evicted chat. Resume query from disk.
-   *  `message` is undefined for admin-triggered resume (no new user input). */
+   *  `message` is undefined for admin-triggered resume (no new user input).
+   *  Messageful resume requires a DeliveryToken; admin reclaim may omit it. */
   resume(
     message: SessionMessage | undefined,
     sessionId: string,
@@ -346,7 +355,7 @@ export type AgentHandler = {
   ): Promise<ResumeResult>;
 
   /** Message arrives while session is active. Push into provider-owned queue or reject. */
-  inject(message: SessionMessage, token?: DeliveryToken): HandlerRouteReceipt | undefined;
+  inject(message: SessionMessage, token: DeliveryToken): HandlerRouteReceipt | undefined;
 
   /**
    * Idle timeout / operator pause. Close query, preserve state for resume.
@@ -385,7 +394,7 @@ export type HandlerConfig = {
   /** Root directory for per-chat workspaces (`<dataDir>/workspaces/<agentName>`). */
   workspaceRoot: string;
   /** Runtime provider for this handler slot, used for structured status payloads. */
-  runtimeProvider?: RuntimeProvider;
+  runtimeProvider: RuntimeProvider;
   /** Additional handler-specific config. */
   [key: string]: unknown;
 };

@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type AgentRuntimeConfigPayload, DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD } from "@first-tree/shared";
+import {
+  type AgentRuntimeConfigPayload,
+  DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD,
+  runtimeProviderSchema,
+} from "@first-tree/shared";
 import { ensureAgentBootstrap } from "../../runtime/agent-bootstrap.js";
 import { buildAgentBriefing } from "../../runtime/agent-briefing.js";
 import type { AgentConfigCache } from "../../runtime/agent-config-cache.js";
@@ -9,14 +13,15 @@ import type { PredeclaredSourceRepo } from "../../runtime/bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../../runtime/chat-context.js";
 import { renderChatContextPrompt, renderRuntimeOutputContract } from "../../runtime/chat-context-section.js";
 import { createContextTreeGitWriteTracker } from "../../runtime/context-tree-git-status.js";
-import {
-  type AgentHandler,
-  type DeliveryToken,
-  deliveryTokenFromSessionContext,
-  type HandlerFactory,
-  type SessionContext,
-  type SessionMessage,
+import type {
+  AgentHandler,
+  DeliveryToken,
+  HandlerFactory,
+  SessionContext,
+  SessionMessage,
 } from "../../runtime/handler.js";
+import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/handler.js";
+
 import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../../runtime/managed-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../../runtime/source-repos.js";
 import { teamSkillBundleResolverFromSdk } from "../../runtime/team-skill-bundle-resolver.js";
@@ -134,7 +139,7 @@ async function orphanSweep(clientId: string): Promise<void> {
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
-  const runtimeProvider = "claude-code-tui" as const;
+  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
@@ -654,8 +659,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   return {
     async start(message, sessionCtx, token) {
       return lifecycleFence.run(async () => {
-        const hasExplicitDeliveryToken = token !== undefined;
-        const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+        const deliveryToken = token;
         // Hold turnRunning across the whole bootstrap so an inject arriving while
         // the session is still being prepared queues instead of racing pump()
         // into a second turn the instant startClaude sets tmuxSessionName.
@@ -704,13 +708,13 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           const sessionId = await startClaude({ sessionCtx, resumeSessionId: null, payload, providerEnv });
           if (lifecycleFence.stopRequested) {
             deliveryToken.retry(message, "tui_start_stopped_before_turn");
-            return hasExplicitDeliveryToken ? { sessionId, route: { kind: "owned", mode: "queued" } } : sessionId;
+            return { sessionId, route: { kind: "owned", mode: "queued" } };
           }
 
           const inputText = await sessionCtx.formatInboundContent(message);
           if (lifecycleFence.stopRequested) {
             deliveryToken.retry(message, "tui_start_stopped_before_turn");
-            return hasExplicitDeliveryToken ? { sessionId, route: { kind: "owned", mode: "queued" } } : sessionId;
+            return { sessionId, route: { kind: "owned", mode: "queued" } };
           }
           currentTurnPromise = runTurn(inputText, sessionCtx, [message], deliveryToken);
           try {
@@ -718,7 +722,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           } finally {
             currentTurnPromise = null;
           }
-          return hasExplicitDeliveryToken ? { sessionId, route: { kind: "owned", mode: "processing" } } : sessionId;
+          return { sessionId, route: { kind: "owned", mode: "processing" } };
         } finally {
           turnRunning = false;
           // Drain any messages injected during bootstrap / the first turn.
@@ -729,8 +733,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
 
     async resume(message, sessionId, sessionCtx, token) {
       return lifecycleFence.run(async () => {
-        const hasExplicitDeliveryToken = token !== undefined;
-        const deliveryToken = token ?? deliveryTokenFromSessionContext(sessionCtx);
+        const deliveryToken = message ? requireDeliveryToken(token, "messageful resume") : noopDeliveryToken();
         turnRunning = true;
         try {
           await orphanSweep(clientId);
@@ -774,16 +777,12 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           if (message) {
             if (lifecycleFence.stopRequested) {
               deliveryToken.retry(message, "tui_resume_stopped_before_turn");
-              return hasExplicitDeliveryToken
-                ? { sessionId: restartedId, route: { kind: "owned", mode: "queued" } }
-                : restartedId;
+              return { sessionId: restartedId, route: { kind: "owned", mode: "queued" } };
             }
             const inputText = await sessionCtx.formatInboundContent(message);
             if (lifecycleFence.stopRequested) {
               deliveryToken.retry(message, "tui_resume_stopped_before_turn");
-              return hasExplicitDeliveryToken
-                ? { sessionId: restartedId, route: { kind: "owned", mode: "queued" } }
-                : restartedId;
+              return { sessionId: restartedId, route: { kind: "owned", mode: "queued" } };
             }
             currentTurnPromise = runTurn(inputText, sessionCtx, [message], deliveryToken);
             try {
@@ -792,9 +791,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               currentTurnPromise = null;
             }
           }
-          return hasExplicitDeliveryToken
-            ? { sessionId: restartedId, route: message ? { kind: "owned", mode: "processing" } : null }
-            : restartedId;
+          return { sessionId: restartedId, route: message ? { kind: "owned", mode: "processing" } : null };
         } finally {
           turnRunning = false;
           setImmediate(pump);
@@ -808,7 +805,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
       // narrow window around turn completion / startup could either start a
       // second concurrent turn or be stranded with no drain scheduled.
       if (!ctx) return { kind: "rejected", reason: "tui_not_ready", retryable: true };
-      const deliveryToken = token ?? deliveryTokenFromSessionContext(ctx);
+      const deliveryToken = token;
       queuedMessages.push({ message, token: deliveryToken });
       setImmediate(pump);
       return { kind: "owned", mode: "queued" };
