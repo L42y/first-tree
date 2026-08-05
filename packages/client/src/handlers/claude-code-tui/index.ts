@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type AgentRuntimeConfigPayload, DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD } from "@first-tree/shared";
+import {
+  type AgentRuntimeConfigPayload,
+  DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD,
+  runtimeProviderSchema,
+} from "@first-tree/shared";
 import { ensureAgentBootstrap } from "../../runtime/agent-bootstrap.js";
 import { buildAgentBriefing } from "../../runtime/agent-briefing.js";
 import type { AgentConfigCache } from "../../runtime/agent-config-cache.js";
@@ -135,7 +139,7 @@ async function orphanSweep(clientId: string): Promise<void> {
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
-  const runtimeProvider = "claude-code-tui" as const;
+  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;

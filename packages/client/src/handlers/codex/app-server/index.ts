@@ -5,6 +5,7 @@ import {
   encodeProviderRetryEventMessage,
   isLandingCampaignTrialAgentMetadata,
   RUNTIME_NOTICE_METADATA_KEY,
+  runtimeProviderSchema,
   type SessionEvent,
   type ToolFileRef,
 } from "@first-tree/shared";
@@ -196,7 +197,7 @@ const CODEX_COMPACT_FAILURE_MESSAGE =
   "Codex failed to compact this thread before answering. Start a new thread or clear earlier history before retrying.";
 export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfig): AgentHandler => {
   const workspaceRoot = config.workspaceRoot as string;
-  const runtimeProvider = "codex" as const;
+  const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
