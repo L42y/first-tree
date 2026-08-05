@@ -128,8 +128,14 @@ export function shellWords(segment: string): string[] {
 // Redirections affect the shell process, not the argv seen by the command.
 // Keep quoted redirect characters as data while removing both attached and
 // separated redirect targets from the argument list used by graders.
-export function shellWordsWithoutRedirections(segment: string): string[] {
+export type ShellWordsWithRedirectsRemoved = {
+  inputFileRedirected: boolean;
+  words: string[];
+};
+
+export function shellWordsWithRedirectsRemoved(segment: string): ShellWordsWithRedirectsRemoved {
   const words: string[] = [];
+  let inputFileRedirected = false;
   let current = "";
   let quote: '"' | "'" | null = null;
   let escaped = false;
@@ -160,7 +166,12 @@ export function shellWordsWithoutRedirections(segment: string): string[] {
     }
     const ampersandRedirect = character === "&" && segment[index + 1] === ">";
     if (character === ">" || character === "<" || ampersandRedirect) {
-      if (/^\d+$/u.test(current)) current = "";
+      const descriptor = /^\d+$/u.test(current) ? current : null;
+      if (character === "<" && (descriptor === null || descriptor === "0")) {
+        const redirectSuffix = segment[index + 1] ?? "";
+        inputFileRedirected = redirectSuffix !== "<" && redirectSuffix !== ">" && redirectSuffix !== "&";
+      }
+      if (descriptor !== null) current = "";
       else push();
 
       let targetStart = index + (ampersandRedirect ? 2 : 1);
@@ -207,5 +218,5 @@ export function shellWordsWithoutRedirections(segment: string): string[] {
     current += character;
   }
   push();
-  return words;
+  return { inputFileRedirected, words };
 }
