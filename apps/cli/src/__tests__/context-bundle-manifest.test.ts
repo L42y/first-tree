@@ -176,6 +176,32 @@ describe("context integration bundle", () => {
     );
   });
 
+  it("emits the flattened Core Policy path used by portable app artifacts", () => {
+    const root = mkdtempSync(join(tmpdir(), "first-tree-portable-context-bundle-"));
+    roots.push(root);
+    const repoRoot = resolve(import.meta.dirname, "../../../..");
+    execFileSync(
+      process.execPath,
+      [
+        join(repoRoot, "scripts", "build-context-integration-bundle.mjs"),
+        "--out-dir",
+        root,
+        "--version",
+        "1.2.3",
+        "--channel",
+        "staging",
+        "--core-policy-path",
+        "runtime-assets/context-tree-policy.md",
+      ],
+      { stdio: "pipe" },
+    );
+
+    const manifest = contextIntegrationReleaseManifestSchema.parse(
+      JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8")),
+    );
+    expect(manifest.core.policy.path).toBe("runtime-assets/context-tree-policy.md");
+  });
+
   it("keeps adapter identity and bytes stable across a Core-only CLI release", () => {
     const firstRoot = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-first-"));
     const secondRoot = mkdtempSync(join(tmpdir(), "first-tree-context-bundle-second-"));

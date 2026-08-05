@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,7 +24,7 @@ function parseArgs(argv) {
     const value = argv[index + 1];
     if (!key?.startsWith("--") || value === undefined) {
       throw new Error(
-        "Usage: build-context-integration-bundle.mjs [--out-dir <path>] [--version <semver>] [--channel <prod|staging|dev>] [--core-root <path>]",
+        "Usage: build-context-integration-bundle.mjs [--out-dir <path>] [--version <semver>] [--channel <prod|staging|dev>] [--core-root <path>] [--core-policy-path <release-relative-path>]",
       );
     }
     args.set(key, value);
@@ -38,6 +38,7 @@ function parseArgs(argv) {
     version: args.get("--version") ?? packageJson.version,
     channel: args.get("--channel") ?? sourceChannel,
     coreRoot: resolve(args.get("--core-root") ?? REPO_ROOT),
+    corePolicyPath: args.get("--core-policy-path") ?? "dist/runtime-assets/context-tree-policy.md",
   };
 }
 
@@ -276,12 +277,16 @@ export function buildContextIntegrationBundle(rawOptions) {
     ...rawOptions,
     outDir: resolve(rawOptions.outDir),
     coreRoot: resolve(rawOptions.coreRoot ?? REPO_ROOT),
+    corePolicyPath: rawOptions.corePolicyPath ?? "dist/runtime-assets/context-tree-policy.md",
   };
   if (!["prod", "staging", "dev"].includes(options.channel)) {
     throw new Error(`Unsupported context integration channel: ${options.channel}`);
   }
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(options.version)) {
     throw new Error(`Context integration version must be SemVer: ${options.version}`);
+  }
+  if (isAbsolute(options.corePolicyPath) || options.corePolicyPath.split(/[\\/]/u).includes("..")) {
+    throw new Error(`Context integration Core Policy path must be release-relative: ${options.corePolicyPath}`);
   }
 
   rmSync(options.outDir, { recursive: true, force: true });
@@ -336,7 +341,7 @@ export function buildContextIntegrationBundle(rawOptions) {
     policyDigest,
     core: {
       digest: coreDigest,
-      policy: { path: "dist/runtime-assets/context-tree-policy.md", digest: policyDigest },
+      policy: { path: options.corePolicyPath, digest: policyDigest },
       skills: coreSkills,
     },
     providers,
