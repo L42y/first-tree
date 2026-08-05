@@ -1242,21 +1242,32 @@ The current agent displays the choices and waits for a new user reply, then
 runs only the selected choice's exact command. Apply must use the unchanged
 `planId`; identity drift forces a new plan. Global and directory install/update
 the shared Plugin and add one schema-v3 grant. Session-only verifies the
-release bundle, writes no grant, and returns only Read/Write Skills plus a
+release bundle, writes no grant, and returns only Read/Write loader entries plus a
 signed opaque candidate receipt.
 
-Successful apply returns `currentSessionHandoff` schema v2. It contains
+Successful apply returns `currentSessionHandoff` schema v3. It contains
 immutable provider/project identity, `consumerKind: byo`, activation scope,
-neutral standing routing context, and absolute payload-verified Skill paths.
+neutral standing routing context, and versioned exact-release loader commands.
 Persistent scope returns `first-tree`, `first-tree-read`, and
 `first-tree-write`; session scope returns Read/Write only. Human mode prints
 the full usable JSON handoff.
+
+Each new task invokes loader protocol v1. The loader verifies the current CLI
+release manifest and exact-version Skill/Policy digests, then returns contained
+`skillPath` and `policyPath` values. It does not return a mutable `current`
+symlink or materialize a second Core workflow under `$FIRST_TREE_HOME`.
 
 For persistent Codex setup, Hook consent remains provider-owned: open
 `/hooks`, enable and Trust **First Tree Context → SessionStart**, return to the
 same conversation, and reply `continue`. The same agent reruns apply and
 adopts the handoff. Session-only installs no Hook, so it needs no Trust.
-Claude Code consumes its handoff without a separate consent turn.
+Claude Code requires `/reload-plugins` after first thin-Plugin install, legacy
+full-Plugin migration, or adapter repair. Setup remains incomplete until the
+reloaded thin Plugin's `UserPromptSubmit` hook issues a session-bound opaque
+receipt and the same exact apply command consumes it. With no pending adoption
+obligation the hook is a pure no-op; it performs no provider probe, payload
+hash, receipt signing, or context injection. Later Core-only upgrades and
+additional Team grants require no reload or repeated Codex trust.
 
 `context.yaml` schema v3 stores zero or more global/directory grants keyed by
 provider, Team and exact scope. A legacy v2/v1 file is atomically backed up,
@@ -1282,17 +1293,24 @@ user choice from the validated set.
 After selection, the projected Skill uses:
 
 ```text
-first-tree --json context snapshot --candidate CANDIDATE --snapshot NEW_DIR
+first-tree --json context snapshot --candidate CANDIDATE
 first-tree --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
+first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed
+first-tree --json context write-status --team TEAM --plan-anchor DIGEST
+first-tree --json context write-finish --team TEAM --operation OPERATION
 ```
 
 These hidden commands do not accept Team ids. Read revalidates the exact
-binding and SCOPE commit before creating one detached task snapshot. Write
+binding and SCOPE commit before creating one detached task snapshot in a
+CLI-owned private temporary directory. Write
 requires that snapshot's opaque route receipt and returns
 `confirmationRequired: true` with an exact plan anchor. The BYO Skill must
 show Team, SCOPE match, source revision, target nodes and mutations, then wait
 for a new user reply before creating an authoring worktree or making any Tree
-mutation.
+mutation. The confirmed plan anchor also identifies one durable authoring
+result: retrying the same exact command or querying `write-status` recovers and
+returns the same operation after a crash or lost output. `write-finish` is
+idempotent and removes both the worktree journal and its plan receipt.
 
 `context status` reports provider, Plugin/payload, Hook, project identity and
 all applicable highest-priority Team grants independently.
@@ -1302,9 +1320,13 @@ stored root. Already-read model context is not revoked.
 
 `context activate`, `context route`, `context snapshot`, and `context write-preflight`
 are hidden provider bridges. SessionStart injects only the neutral router
-contract; it does not select or expose a Team before task routing. Any
-membership, binding, SCOPE, payload or authority failure is fail-closed for
-First Tree while ordinary provider work can continue.
+contract; it does not select or expose a Team before task routing. Persistent
+adapter payload health is checked once at `context route`, before the task gets
+an opaque candidate. Snapshot and Write boundaries then rely on that candidate,
+live membership/binding, exact snapshot identity and Write confirmation instead
+of repeatedly probing provider-owned Plugin state. Any applicable membership,
+binding, SCOPE, payload or authority failure is fail-closed for First Tree while
+ordinary provider work can continue.
 
 ---
 

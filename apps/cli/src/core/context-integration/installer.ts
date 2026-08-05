@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -10,6 +11,12 @@ import { defaultHome } from "@first-tree/shared/config";
 import semver from "semver";
 import { channelConfig } from "../channel.js";
 import { COMMAND_VERSION } from "../version.js";
+import { readActiveContextAccountClientId } from "./account-state-guard.js";
+import {
+  beginContextAdapterReloadObligation,
+  type ContextAdapterReloadObligationKind,
+  clearContextAdapterObservation,
+} from "./adapter-observation.js";
 import { withContextIntegrationLock } from "./context-binding-store.js";
 import {
   readContextIntegrationInstallManifest,
@@ -53,9 +60,9 @@ export function planContextIntegrationInstall(
   assertProviderCompatible(driver, probe, release.manifest.providers[driver.provider].minimumVersion);
   const expected = release.manifest.providers[driver.provider];
   const manifestMatches =
-    previous?.bundleDigest === release.manifest.bundleDigest &&
-    previous.policyDigest === release.manifest.policyDigest &&
+    previous?.adapterVersion === expected.adapterVersion &&
     previous.adapterDigest === expected.adapterDigest &&
+    previous.loaderProtocolVersion === 1 &&
     previous.channel === channelConfig.channel;
   const payloadIssues = inspectContextPluginPayload(
     probe,
@@ -63,6 +70,7 @@ export function planContextIntegrationInstall(
     release,
     driver.provider,
     previous?.materializedInvocation,
+    previous?.adoptionGeneration,
   );
   const incomplete = readContextIntegrationInstallJournal();
   const operation =
@@ -84,16 +92,18 @@ export function planContextIntegrationInstall(
 export function installContextIntegration(
   driver: ContextIntegrationProviderDriver,
   plan: ContextIntegrationInstallPlan,
+  options: { reloadObligationKind?: ContextAdapterReloadObligationKind } = {},
 ): {
   manifest: ContextIntegrationInstallManifest;
   probe: ProviderPluginProbe;
 } {
-  return withContextIntegrationLock(() => installContextIntegrationLocked(driver, plan));
+  return withContextIntegrationLock(() => installContextIntegrationLocked(driver, plan, options));
 }
 
 function installContextIntegrationLocked(
   driver: ContextIntegrationProviderDriver,
   plan: ContextIntegrationInstallPlan,
+  options: { reloadObligationKind?: ContextAdapterReloadObligationKind },
 ): {
   manifest: ContextIntegrationInstallManifest;
   probe: ProviderPluginProbe;
@@ -130,14 +140,25 @@ function installContextIntegrationLocked(
   let rollbackMarketplaceRoot: string | null = null;
   let providerMutationStarted = false;
   let marketplaceSourcePromoted = false;
+  let rollbackReloadObligation: (() => void) | null = null;
   const providerReleaseRoot = join(plan.release.root, driver.provider);
+  const adoptionGeneration = driver.provider === "claude-code" ? randomBytes(24).toString("hex") : undefined;
   try {
+    if (driver.provider === "claude-code" && options.reloadObligationKind) {
+      rollbackReloadObligation = beginContextAdapterReloadObligation(
+        plan.release.manifest,
+        options.reloadObligationKind,
+        adoptionGeneration ?? "",
+      );
+    }
     rollbackMarketplaceRoot =
       plan.previous && plan.probe.installed ? prepareRollbackMarketplace(stagingRoot, driver.provider, plan) : null;
     cpSync(providerReleaseRoot, stagedMarketplaceRoot, { recursive: true });
     const materializedInvocation = materializeContextPluginPayload(
       join(stagedMarketplaceRoot, "plugins", PLUGIN_NAME),
       plan.release.manifest.providers[driver.provider].adapterDigest,
+      undefined,
+      adoptionGeneration,
     );
     driver.validateMarketplace(stagedMarketplaceRoot);
     promoteMarketplaceSource(stagedMarketplaceRoot, stableMarketplaceRoot, previousMarketplaceSource);
@@ -154,24 +175,32 @@ function installContextIntegrationLocked(
       plan.release,
       driver.provider,
       materializedInvocation,
+      adoptionGeneration,
     );
     verifyProviderInstalledContextPlugin(probe, installedPayloadDigest);
     writeInstallJournal({ ...journal, phase: "provider_installed" });
     const manifest: ContextIntegrationInstallManifest = {
       schemaVersion: 1,
+      accountClientId: readActiveContextAccountClientId(),
       channel: channelConfig.channel,
       provider: driver.provider,
       firstTreeVersion: COMMAND_VERSION,
       bundleVersion: plan.release.manifest.version,
+      adapterVersion: plan.release.manifest.providers[driver.provider].adapterVersion,
+      loaderProtocolVersion: 1,
       bundleDigest: plan.release.manifest.bundleDigest,
       policyDigest: plan.release.manifest.policyDigest,
       adapterDigest: plan.release.manifest.providers[driver.provider].adapterDigest,
       marketplaceName: plan.marketplaceName,
       pluginName: PLUGIN_NAME,
+      adoptionGeneration,
       materializedInvocation,
+      materializedPayloadDigest: installedPayloadDigest,
+      materializedMarketplaceDigest: contextPluginTreeDigest(stableMarketplaceRoot),
       installedAt: new Date().toISOString(),
     };
     writeContextIntegrationInstallManifest(manifest);
+    clearContextAdapterObservation(driver.provider);
     removeInstallJournal();
     return { manifest, probe };
   } catch (error) {
@@ -217,6 +246,7 @@ function installContextIntegrationLocked(
         );
       }
     }
+    rollbackReloadObligation?.();
     throw error;
   } finally {
     rmSync(stagingRoot, { recursive: true, force: true });
@@ -245,7 +275,7 @@ function prepareRollbackMarketplace(
         {
           name: PLUGIN_NAME,
           source: "./plugins/first-tree-context",
-          version: plan.previous?.bundleVersion,
+          version: plan.previous?.adapterVersion ?? plan.previous?.bundleVersion,
         },
       ],
     });
@@ -298,6 +328,7 @@ function uninstallContextIntegrationLocked(driver: ContextIntegrationProviderDri
     });
     rmSync(contextIntegrationMarketplaceSourcePath(driver.provider), { recursive: true, force: true });
     if (manifest) removeContextIntegrationInstallManifest(driver.provider);
+    clearContextAdapterObservation(driver.provider, { includeReloadRequired: true });
     removeInstallJournal();
   } catch (error) {
     writeInstallJournal({ ...journal, phase: "uninstall_failed" });

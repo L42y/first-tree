@@ -53,9 +53,24 @@ same release contract.
 Global and directory choices install one user-scope provider Plugin and add one
 persistent Team grant. Installing another Team is expected: Plugin installation
 is idempotent and only the grant is added. Session-only installs no Plugin or
-Hook, writes no grant, and returns only the payload-verified Read/Write Skills
+Hook, writes no grant, and returns only verified Read/Write loader commands
 plus an opaque, signed candidate receipt. The receipt expires and cannot be
 changed into an arbitrary Team id.
+
+The persistent Plugin is a thin discovery adapter. It contains stable Skill
+descriptions, the SessionStart bridge, and loader calls, but no complete Core
+Read/Write workflow or Context Tree Policy. Its `adapterVersion` changes only
+when those adapter bytes or the loader protocol change; a CLI release that
+changes only Core Skills or Policy leaves the Plugin unchanged.
+
+A routine forward adapter update is discovered by the existing SessionStart
+bridge and handed to the coding agent as one exact, session-bound sync action.
+The Hook does not install anything inside its five-second deadline. The agent
+runs the transactional update during the normal turn. A verified protocol-v1
+adapter remains usable for the current task: Claude can optionally run
+`/reload-plugins` to adopt the update immediately, otherwise both providers use
+it next session. Only a missing, damaged, revoked, or incompatible adapter
+pauses First Tree operations.
 
 Persistent configuration is `config/context.yaml` schema v3. It stores a set
 of `provider + Team + activationScope` grants. A v2/v1 single-Team binding
@@ -65,12 +80,12 @@ pathless binding to global scope.
 
 ## Current-session handoff
 
-A successful apply returns `currentSessionHandoff` schema v2 with:
+A successful apply returns `currentSessionHandoff` schema v3 with:
 
 - immutable `provider` and `project` identity;
 - `consumerKind: byo` and the exact activation scope;
 - the neutral standing Context routing contract;
-- absolute, payload-verified Skill paths;
+- stable Skill descriptions and versioned loader commands;
 - for session-only, the opaque short-lived Server-signed session candidate receipt.
 
 Persistent handoffs expose `first-tree`, `first-tree-read`, and
@@ -78,7 +93,13 @@ Persistent handoffs expose `first-tree`, `first-tree-read`, and
 adopts the handoff immediately in the same conversation. It must not reconstruct
 a Team from cwd, Git remotes, Web state or remembered context.
 
-The Plugin and SessionStart Hook are only the future-session mechanism.
+Each new task calls loader protocol v1. The loader verifies the current CLI's
+exact-version release manifest and digests, then returns the canonical
+`skillPath` and `policyPath` from that immutable release root. It never returns
+a mutable `current` symlink and does not materialize a second Core bundle under
+`$FIRST_TREE_HOME`.
+
+The Plugin and SessionStart Hook are only the future-session discovery mechanism.
 SessionStart injects a neutral router contract when the provider has applicable
 grants. It does not preselect or inject a Team's full Context. SessionStart
 handles startup, resume, clear and compact, but session-only deliberately does
@@ -116,7 +137,7 @@ The user may choose only from the validated local candidates.
 
 Selection creates an opaque task candidate receipt. Hidden `context snapshot`
 revalidates the exact binding and exact SCOPE commit before materializing a
-detached snapshot. If the branch moves, binding changes, membership disappears,
+detached snapshot in a CLI-owned private temporary directory. If the branch moves, binding changes, membership disappears,
 or the receipt expires, the task must route again. Later operations preserve
 the Read result rather than reclassifying from a changed cwd.
 
@@ -124,6 +145,15 @@ the Read result rather than reclassifying from a changed cwd.
 
 Read does not depend on Context Reviewer readiness. It is fail-closed on live
 membership, binding, exact commit and snapshot integrity.
+
+BYO Git objects are cached at
+`$FIRST_TREE_HOME/data/byo/<organization-id>/context-tree.git`. Claude Code and
+Codex share that one bare repository for the same organization; different
+organizations remain physically isolated. One per-organization mutation lock
+covers clone, fetch/ref updates, worktree add/remove/prune, recovery, and
+repository rebind. Read snapshots remain temporary and detached. Confirmed
+writes receive an exclusive CLI-created worktree under the organization data
+root and must finish that operation before account switching.
 
 All BYO Context Tree writes require a second user confirmation, even when only
 one Team is authorized and even when the original request already asked for a
@@ -160,9 +190,21 @@ writes or bypasses trust:
 5. the same coding agent reruns the exact apply command and adopts the handoff.
 
 A previously trusted Hook skips the consent turn. Session-only never installs a
-Hook and therefore never asks for Trust. Claude Code has no corresponding
-manual consent turn. Neither provider requires a new conversation for the
-current-session handoff.
+Hook and therefore never asks for Trust. Claude Code requires
+`/reload-plugins` after first install, migration from a full legacy Plugin, or
+an adapter repair. Setup remains incomplete until the reloaded thin Plugin's
+lightweight `UserPromptSubmit` Hook receives Claude's session identity and
+returns a per-install adoption generation from the loaded Hook configuration
+plus a signed opaque receipt. The same exact apply consumes that receipt once
+and binds the pending setup plan to the current session. A Hook loaded before a
+same-version repair cannot reuse the new generation. When no install, migration,
+or repair adoption is pending, this Hook is a pure no-op: it does not probe the
+provider, hash Plugin payloads, sign a receipt, or inject additional context.
+Full payload health is checked by setup/status and once at each new task route;
+the exact routed snapshot and Write authority then own the rest of that task.
+The general Skill loader is read-only and never records reload state. Later
+Core-only CLI upgrades and additional Team grants require neither another
+reload nor repeated Codex trust.
 
 ## SCOPE governance and Reviewer authority
 
@@ -195,7 +237,10 @@ future BYO sessions.
 
 `context status` reports provider compatibility, Plugin payload, Hook state,
 the immutable project identity, every applicable highest-priority grant, and
-each grant's live Team activation separately.
+each grant's live Team activation separately. After a standalone Claude repair,
+it also reports the pending `/reload-plugins` adoption until the reloaded
+Plugin's `UserPromptSubmit` Hook verifies the session and consumes that repair
+obligation.
 
 `context disable --provider ... --team ... --scope ...` removes exactly one
 global or directory grant. Directory removal also requires its exact canonical
@@ -207,6 +252,19 @@ Repair retains the provider-owned installation lifecycle and portable CLI
 single-source invariant. Context mutation and local account switching share one
 machine-state lock and a durable recovery journal. Do not edit provider caches
 or Context state by hand.
+
+`data/byo` belongs to the active local Client. Account switching parks and
+restores it in the existing entry-level transaction; route, reload-observation,
+write-plan, and repository journals validate `accountClientId`. An active or
+incomplete BYO write blocks switching. `computer reset` and destructive purge
+remove BYO repositories and the new account-scoped receipts/recovery state.
+
+The Web bootstrap prompt keeps technical envelopes internal. It reports only
+checking, installing/updating, required user action, and completion. The coding
+agent may retry the same exact transient action a bounded number of times and
+may run an exact CLI-provided reversible repair, but scope selection, account
+switching, authentication/permission, Claude reload, Codex trust, destructive
+reset, and changed plans remain explicit human decisions.
 
 Activation failure never blocks ordinary Claude/Codex work and never falls back
 to a lower-priority grant, another Team or cached authority. Authentication,
@@ -239,6 +297,12 @@ record evidence for:
    movement;
 6. single- and multi-Team BYO writes with the mandatory new user confirmation;
 7. SCOPE admin approval, rejection, changed head/digest and manager demotion;
-8. v2 store backup and explicit reauthorization.
+8. v2 store backup and explicit reauthorization;
+9. legacy full Plugin migration with the Claude reload gate, followed by a
+   Core-only CLI upgrade that leaves adapter bytes and provider trust unchanged;
+10. same-organization cross-provider repo reuse, cross-organization isolation,
+    A→B→A Client switching, and active-write switch refusal;
+11. concise bootstrap progress, bounded typed-error recovery, and unchanged
+    human confirmation boundaries.
 
 Unit tests and mock QA do not replace these real-provider checks.

@@ -1,0 +1,58 @@
+import type { Command } from "commander";
+import {
+  AdapterSyncRejectedError,
+  hasKnownGoodCompatibleContextAdapter,
+  synchronizeContextAdapter,
+} from "../../core/context-integration/adapter-sync.js";
+import { print } from "../../core/output.js";
+import type { CommandContext, SubcommandModule } from "../types.js";
+import { createContextIntegrationDriver, parseContextProvider } from "./shared.js";
+
+type Options = { provider?: string; challenge?: string };
+
+function configure(command: Command): void {
+  command.requiredOption("--provider <provider>").requiredOption("--challenge <challenge>");
+}
+
+export function runContextAdapterSync(context: CommandContext): void {
+  const options = context.command.opts<Options>();
+  const provider = parseContextProvider(options.provider ?? "");
+  const driver = createContextIntegrationDriver(provider);
+  try {
+    const result = synchronizeContextAdapter(driver, options.challenge ?? "");
+    print.result({
+      ...result,
+      message:
+        provider === "claude-code"
+          ? "First Tree Context was updated. It will be used next session; /reload-plugins can adopt it now."
+          : "First Tree Context was updated. Review /hooks if Codex asks you to trust the updated Hook; otherwise it is guaranteed for the next session.",
+    });
+  } catch (error) {
+    if (!(error instanceof AdapterSyncRejectedError) && hasKnownGoodCompatibleContextAdapter(driver)) {
+      print.result({
+        updated: false,
+        provider,
+        currentAdapterUsable: true,
+        status: "update_deferred",
+        message: "First Tree Context is still available in this session; its update will be retried later.",
+      });
+      return;
+    }
+    if (error instanceof AdapterSyncRejectedError) {
+      print.fail(error.code, error.message, 2, {
+        nextActions: [`Run an explicit First Tree Context repair for ${provider}, then retry.`],
+      });
+    }
+    throw error;
+  }
+}
+
+export const contextAdapterSyncCommand: SubcommandModule = {
+  name: "adapter-sync",
+  hidden: true,
+  alias: "",
+  summary: "",
+  description: "Apply one exact session-bound Context adapter update action.",
+  configure,
+  action: runContextAdapterSync,
+};

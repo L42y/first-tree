@@ -64,10 +64,9 @@ export function inspectContextIntegrationRuntime(
     const expected = release.manifest.providers[driver.provider];
     if (
       install.channel !== channelConfig.channel ||
-      install.bundleVersion !== release.manifest.version ||
-      install.bundleDigest !== release.manifest.bundleDigest ||
-      install.policyDigest !== release.manifest.policyDigest ||
-      install.adapterDigest !== expected.adapterDigest
+      install.adapterVersion !== expected.adapterVersion ||
+      install.adapterDigest !== expected.adapterDigest ||
+      install.loaderProtocolVersion !== 1
     ) {
       issues.push("The installed Context Plugin does not match this First Tree release.");
     }
@@ -83,6 +82,7 @@ export function inspectContextIntegrationRuntime(
       release,
       driver.provider,
       install?.materializedInvocation,
+      install?.adoptionGeneration,
     )) {
       if (!issues.includes(issue)) issues.push(issue);
     }

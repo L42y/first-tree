@@ -121,7 +121,8 @@ export function ByoSetupPromptActions({ align = "start", preparePrompt, resetKey
           <DialogHeader>
             <DialogTitle>Setup prompt</DialogTitle>
             <DialogDescription style={{ color: "var(--fg-2)" }}>
-              Review the complete prompt, then copy and paste it into Claude Code or Codex.
+              Copy this into Claude Code or Codex. The coding agent will handle technical steps and ask only when
+              needed.
             </DialogDescription>
           </DialogHeader>
 

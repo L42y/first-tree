@@ -6,6 +6,14 @@ import {
   readActiveContextAccountClientId,
   withAccountStateMutationLockAsync,
 } from "../../core/context-integration/account-state-guard.js";
+import {
+  ContextReloadReceiptError,
+  consumeContextAdapterReloadReceipt,
+  consumeContextAdapterReloadRequiredMarker,
+  hasContextAdapterReloadRequiredMarker,
+  hasPendingContextAdapterReload,
+  registerPendingContextAdapterReload,
+} from "../../core/context-integration/adapter-observation.js";
 import { inspectContextSetupLocation } from "../../core/context-integration/client-preflight.js";
 import {
   assertContextGrantStoreFingerprint,
@@ -36,6 +44,7 @@ type EnableOptions = {
   yes?: boolean;
   projectRoot?: string;
   pathless?: boolean;
+  reloadReceipt?: string;
 };
 
 const setupPlanAccountClientId = Symbol("setupPlanAccountClientId");
@@ -56,6 +65,7 @@ type SetupPlanToken = {
   beforeFingerprint: string;
   globalAfterFingerprint: string;
   directoryAfterFingerprint: string | null;
+  planChallenge: string;
 };
 
 function configure(command: Command): void {
@@ -67,6 +77,7 @@ function configure(command: Command): void {
     .option("--plan-id <plan-id>", "exact plan id returned by --plan")
     .option("--project-root <directory>", "explicit provider directory")
     .option("--pathless", "provider session without a usable directory")
+    .option("--reload-receipt <receipt>", "opaque Claude session-loaded receipt")
     .option("--yes", "accept the selected activation change");
 }
 
@@ -118,10 +129,17 @@ export async function runContextEnable(context: CommandContext): Promise<void> {
   const result =
     activationScope.kind === "session"
       ? await applySessionOnly(provider, plan, activationScope, acceptedPlan.beforeFingerprint)
-      : await applyPersistent(provider, plan, activationScope, {
-          beforeFingerprint: acceptedPlan.beforeFingerprint,
-          afterFingerprint: requireAfterFingerprint(expectedAfterFingerprint),
-        });
+      : await applyPersistent(
+          provider,
+          plan,
+          activationScope,
+          {
+            beforeFingerprint: acceptedPlan.beforeFingerprint,
+            afterFingerprint: requireAfterFingerprint(expectedAfterFingerprint),
+          },
+          acceptedPlan.planChallenge,
+          options.reloadReceipt,
+        );
   if (context.options.json) {
     print.result(result);
     return;
@@ -162,9 +180,10 @@ async function buildSetupPlan(
   if (activation.outcome !== "connected") {
     print.fail(activation.reasonCode, activation.nextAction.message, 1);
   }
-  // Verify the release payload during planning. This is read-only and ensures
-  // session-only never exposes an unchecked Skill bundle.
-  resolveContextIntegrationRelease();
+  // Verify the exact immutable Core root during planning. Every apply rebuilds
+  // this plan, so an unusable loader is rejected before setup mutates state or
+  // returns a handoff that cannot load its canonical workflow.
+  resolvePinnedContextCoreRelease();
   const planIdentity = {
     schemaVersion: 1,
     provider,
@@ -187,13 +206,17 @@ async function buildSetupPlan(
         activationScope: { kind: "directory", root: location.directory },
       }
     : null;
-  const token: SetupPlanToken = {
+  const tokenWithoutChallenge = {
     identityFingerprint: createHash("sha256").update(JSON.stringify(planIdentity)).digest("hex"),
     beforeFingerprint: grantStore.fingerprint,
     globalAfterFingerprint: contextGrantStoreFingerprintAfterGrant(grantStore, globalGrant),
     directoryAfterFingerprint: directoryGrant
       ? contextGrantStoreFingerprintAfterGrant(grantStore, directoryGrant)
       : null,
+  };
+  const token: SetupPlanToken = {
+    ...tokenWithoutChallenge,
+    planChallenge: computePlanChallenge(tokenWithoutChallenge),
   };
   const planId = renderSetupPlanToken(token);
   return {
@@ -237,7 +260,7 @@ async function applySessionOnly(
     assertPlannedAccount(plan);
     assertContextGrantStoreFingerprint(expectedGrantStoreFingerprint);
     const finalActivation = await validateExactTeam(plan);
-    const release = resolveContextIntegrationRelease();
+    const release = resolvePinnedContextCoreRelease();
     const sessionCandidate = await createMemberSdk().issueMemberContextSessionCandidate(
       {
         schemaVersion: 1,
@@ -270,11 +293,30 @@ async function applySessionOnly(
   });
 }
 
+function resolvePinnedContextCoreRelease() {
+  try {
+    return resolveContextIntegrationRelease(undefined, { requirePinnedCoreRoot: true });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      Reflect.get(error, "code") === "CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED"
+    ) {
+      print.fail("CONTEXT_SKILL_RELEASE_ROOT_UNTRUSTED", error instanceof Error ? error.message : String(error), 2, {
+        nextActions: ["Install or use a version-pinned First Tree CLI release, then retry Context setup."],
+      });
+    }
+    throw error;
+  }
+}
+
 async function applyPersistent(
   provider: ContextIntegrationProvider,
   plan: SetupPlan,
   activationScope: Exclude<ContextActivationScope, { kind: "session" }>,
   expectedStore: { beforeFingerprint: string; afterFingerprint: string },
+  planChallenge: string,
+  reloadReceipt: string | undefined,
 ) {
   return withAccountStateMutationLockAsync(async () => {
     assertPlannedAccount(plan);
@@ -285,7 +327,9 @@ async function applyPersistent(
       organizationId: plan.team.organizationId,
       activationScope,
     };
-    enableContextIntegrationOperation(driver, installPlan, grant, expectedStore, plan[setupPlanAccountClientId]);
+    enableContextIntegrationOperation(driver, installPlan, grant, expectedStore, plan[setupPlanAccountClientId], {
+      reloadObligationKind: provider === "claude-code" && installPlan.operation !== "unchanged" ? "setup" : undefined,
+    });
     const health = inspectContextIntegrationRuntime(driver);
     const grantReady = readContextIntegrationConfig().grants.some(
       (candidate) =>
@@ -312,9 +356,51 @@ async function applyPersistent(
     }));
     assertPlannedAccount(plan);
     const pluginMissing = !health.healthy;
+    let claudeReloadRequired = false;
+    if (provider === "claude-code" && health.release !== null) {
+      const durableSetupMarker =
+        installPlan.operation !== "unchanged" ||
+        hasContextAdapterReloadRequiredMarker(health.release.manifest, "setup");
+      if (durableSetupMarker) {
+        registerPendingContextAdapterReload(planChallenge, health.release.manifest);
+        // Pending is durable before the setup marker is removed. A
+        // crash can therefore leave duplicate obligations, never no
+        // obligation. The next exact apply safely repeats this conversion.
+        consumeContextAdapterReloadRequiredMarker(health.release.manifest, "setup");
+        claudeReloadRequired = true;
+      } else if (hasPendingContextAdapterReload(planChallenge, health.release.manifest)) {
+        if (reloadReceipt) {
+          try {
+            consumeContextAdapterReloadReceipt({
+              planChallenge,
+              receipt: reloadReceipt,
+              release: health.release.manifest,
+            });
+          } catch (error) {
+            if (error instanceof ContextReloadReceiptError) {
+              print.fail(error.code, error.message, 2, {
+                nextActions: [
+                  "Run /reload-plugins, reply Continue in this Claude session, then retry the original exact apply.",
+                ],
+              });
+            }
+            throw error;
+          }
+        } else {
+          claudeReloadRequired = true;
+        }
+      } else if (reloadReceipt) {
+        print.fail(
+          "CONTEXT_RELOAD_RECEIPT_INVALID",
+          "This Claude reload proof does not belong to a pending exact setup plan.",
+          2,
+        );
+      }
+    }
     const authorityMissing = finalActivation.outcome !== "connected";
     const missingLayers = [
       ...(pluginMissing ? health.issues.map((issue) => `Plugin: ${issue}`) : []),
+      ...(claudeReloadRequired ? ["Claude Code must reload and observe the thin Context Plugin."] : []),
       ...(grantReady ? [] : ["Activation grant was not found after apply."]),
       ...(hookInspectionUnavailable
         ? hook.issues.length > 0
@@ -350,6 +436,11 @@ async function applyPersistent(
               ]),
           ...(authorityMissing
             ? ["Restore the reported Team membership/binding authority, create a fresh plan, and ask the user again."]
+            : []),
+          ...(!pluginMissing && claudeReloadRequired
+            ? [
+                "Run /reload-plugins in Claude Code, reply Continue, then rerun the original exact apply with the opaque reload receipt supplied by the new Plugin.",
+              ]
             : []),
           ...(!pluginMissing && hookInspectionUnavailable
             ? ["Restore Codex Hook inspection/provider API availability, then rerun the exact apply command."]
@@ -420,26 +511,37 @@ function renderScope(scope: ContextActivationScope): string {
 
 function renderSetupPlanToken(token: SetupPlanToken): string {
   return [
-    "v1",
+    "v2",
     token.identityFingerprint,
     token.beforeFingerprint,
     token.globalAfterFingerprint,
     token.directoryAfterFingerprint ?? "-",
+    token.planChallenge,
   ].join(".");
 }
 
 function parseSetupPlanToken(value: string): SetupPlanToken | null {
-  const [version, identityFingerprint, beforeFingerprint, globalAfterFingerprint, directoryAfter] = value.split(".");
+  const [version, identityFingerprint, beforeFingerprint, globalAfterFingerprint, directoryAfter, planChallenge] =
+    value.split(".");
   const digest = /^[0-9a-f]{64}$/u;
   if (
-    version !== "v1" ||
+    version !== "v2" ||
     !identityFingerprint ||
     !beforeFingerprint ||
     !globalAfterFingerprint ||
     !digest.test(identityFingerprint) ||
     !digest.test(beforeFingerprint) ||
     !digest.test(globalAfterFingerprint) ||
-    (directoryAfter !== "-" && (!directoryAfter || !digest.test(directoryAfter)))
+    (directoryAfter !== "-" && (!directoryAfter || !digest.test(directoryAfter))) ||
+    !planChallenge ||
+    !digest.test(planChallenge) ||
+    planChallenge !==
+      computePlanChallenge({
+        identityFingerprint,
+        beforeFingerprint,
+        globalAfterFingerprint,
+        directoryAfterFingerprint: directoryAfter === "-" ? null : directoryAfter,
+      })
   ) {
     return null;
   }
@@ -448,7 +550,14 @@ function parseSetupPlanToken(value: string): SetupPlanToken | null {
     beforeFingerprint,
     globalAfterFingerprint,
     directoryAfterFingerprint: directoryAfter === "-" ? null : directoryAfter,
+    planChallenge,
   };
+}
+
+function computePlanChallenge(token: Omit<SetupPlanToken, "planChallenge">): string {
+  return createHash("sha256")
+    .update(JSON.stringify({ ...token, purpose: "reload" }))
+    .digest("hex");
 }
 
 function requireAfterFingerprint(value: string | null | undefined): string {

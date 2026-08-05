@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
 import { quotePosixShellArg } from "../posix-shell.js";
 import { resolveCliInvocation } from "../supervisor/shared.js";
@@ -8,28 +8,40 @@ import type { ResolvedBinary } from "../supervisor/types.js";
 import type { ProviderPluginProbe } from "./provider-driver.js";
 import { type ContextIntegrationRelease, providerPluginRoot } from "./release.js";
 
-const LAUNCHER_PATH = "bin/context-session-start";
+const LAUNCHER_PATHS = ["bin/context-session-start", "bin/context-observe-loaded"] as const;
 const HOOK_PATH = "hooks/hooks.json";
 
 export function materializeContextPluginPayload(
   pluginRoot: string,
   adapterDigest: string,
   invocation: ResolvedBinary = resolveCliInvocation(),
+  adoptionGeneration?: string,
 ): string {
   const renderedInvocation = renderCliInvocation(invocation);
-  const launcherPath = join(pluginRoot, LAUNCHER_PATH);
-  writeFileSync(
-    launcherPath,
-    materializedFile(LAUNCHER_PATH, readFileSync(launcherPath), adapterDigest, renderedInvocation),
-    { mode: 0o700 },
-  );
-  chmodSync(launcherPath, 0o700);
+  for (const name of LAUNCHER_PATHS) {
+    const launcherPath = join(pluginRoot, name);
+    try {
+      writeFileSync(
+        launcherPath,
+        materializedFile(name, readFileSync(launcherPath), adapterDigest, renderedInvocation, adoptionGeneration),
+        {
+          mode: 0o700,
+        },
+      );
+      chmodSync(launcherPath, 0o700);
+    } catch (error) {
+      if (name === "bin/context-observe-loaded" && isMissing(error)) continue;
+      throw error;
+    }
+  }
 
   const hookPath = join(pluginRoot, HOOK_PATH);
   const temporary = `${hookPath}.tmp`;
-  writeFileSync(temporary, materializedFile(HOOK_PATH, readFileSync(hookPath), adapterDigest, renderedInvocation), {
-    mode: 0o600,
-  });
+  writeFileSync(
+    temporary,
+    materializedFile(HOOK_PATH, readFileSync(hookPath), adapterDigest, renderedInvocation, adoptionGeneration),
+    { mode: 0o600 },
+  );
   renameSync(temporary, hookPath);
 
   for (const skillPath of normalizedFiles(join(pluginRoot, "skills"))) {
@@ -41,6 +53,7 @@ export function materializeContextPluginPayload(
         readFileSync(skillPath),
         adapterDigest,
         renderedInvocation,
+        adoptionGeneration,
       ),
     );
   }
@@ -56,6 +69,7 @@ export function verifyMaterializedContextPlugin(
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
   renderedInvocation: string,
+  adoptionGeneration?: string,
 ): string {
   assertLauncherExecutable(pluginRoot);
   const releaseRoot = providerPluginRoot(release.root, provider);
@@ -70,7 +84,13 @@ export function verifyMaterializedContextPlugin(
   const adapterDigest = release.manifest.providers[provider].adapterDigest;
   for (let index = 0; index < releaseFiles.length; index += 1) {
     const name = releaseNames[index] ?? "";
-    const expected = materializedFile(name, readFileSync(releaseFiles[index] ?? ""), adapterDigest, renderedInvocation);
+    const expected = materializedFile(
+      name,
+      readFileSync(releaseFiles[index] ?? ""),
+      adapterDigest,
+      renderedInvocation,
+      adoptionGeneration,
+    );
     const actual = readFileSync(materializedFiles[index] ?? "");
     if (!actual.equals(expected)) {
       throw new Error(`The materialized Context Plugin payload differs from the current release at ${name}.`);
@@ -100,17 +120,51 @@ export function inspectContextPluginPayload(
   release: ContextIntegrationRelease,
   provider: ContextIntegrationProvider,
   renderedInvocation: string | undefined,
+  adoptionGeneration: string | undefined,
 ): string[] {
   if (!probe.installed || !probe.enabled) return [];
   if (!renderedInvocation) {
     return ["The Context Plugin install manifest does not record its materialized CLI invocation."];
   }
   try {
-    const expectedDigest = verifyMaterializedContextPlugin(stablePluginRoot, release, provider, renderedInvocation);
+    verifyStableAdapterMarketplace(stablePluginRoot, release, provider);
+    const expectedDigest = verifyMaterializedContextPlugin(
+      stablePluginRoot,
+      release,
+      provider,
+      renderedInvocation,
+      adoptionGeneration,
+    );
     verifyProviderInstalledContextPlugin(probe, expectedDigest);
     return [];
   } catch (error) {
     return [error instanceof Error ? error.message : String(error)];
+  }
+}
+
+function verifyStableAdapterMarketplace(
+  stablePluginRoot: string,
+  release: ContextIntegrationRelease,
+  provider: ContextIntegrationProvider,
+): void {
+  const stableRoot = dirname(dirname(stablePluginRoot));
+  const releaseRoot = join(release.root, provider);
+  const pluginPrefix = "plugins/first-tree-context/";
+  const releaseFiles = normalizedFiles(releaseRoot).filter(
+    (path) => !relative(releaseRoot, path).split("\\").join("/").startsWith(pluginPrefix),
+  );
+  const stableFiles = normalizedFiles(stableRoot).filter(
+    (path) => !relative(stableRoot, path).split("\\").join("/").startsWith(pluginPrefix),
+  );
+  const releaseNames = releaseFiles.map((path) => relative(releaseRoot, path).split("\\").join("/"));
+  const stableNames = stableFiles.map((path) => relative(stableRoot, path).split("\\").join("/"));
+  if (JSON.stringify(releaseNames) !== JSON.stringify(stableNames)) {
+    throw new Error("The stable Context adapter marketplace file set does not match the current release.");
+  }
+  for (let index = 0; index < releaseFiles.length; index += 1) {
+    if (!readFileSync(releaseFiles[index] ?? "").equals(readFileSync(stableFiles[index] ?? ""))) {
+      throw new Error(`The stable Context adapter marketplace differs at ${releaseNames[index] ?? "unknown"}.`);
+    }
   }
 }
 
@@ -130,15 +184,29 @@ export function contextPluginTreeDigest(root: string): string {
 }
 
 function assertLauncherExecutable(pluginRoot: string): void {
-  const launcherPath = join(pluginRoot, LAUNCHER_PATH);
-  const launcher = lstatSync(launcherPath);
-  if (!launcher.isFile() || launcher.isSymbolicLink() || (launcher.mode & 0o100) === 0) {
-    throw new Error(`Context Plugin SessionStart launcher is not an executable regular file: ${launcherPath}`);
+  for (const name of LAUNCHER_PATHS) {
+    const launcherPath = join(pluginRoot, name);
+    let launcher: ReturnType<typeof lstatSync>;
+    try {
+      launcher = lstatSync(launcherPath);
+    } catch (error) {
+      if (name === "bin/context-observe-loaded" && isMissing(error)) continue;
+      throw error;
+    }
+    if (!launcher.isFile() || launcher.isSymbolicLink() || (launcher.mode & 0o100) === 0) {
+      throw new Error(`Context Plugin launcher is not an executable regular file: ${launcherPath}`);
+    }
   }
 }
 
-function materializedFile(name: string, content: Buffer, adapterDigest: string, renderedInvocation: string): Buffer {
-  if (name === LAUNCHER_PATH) {
+function materializedFile(
+  name: string,
+  content: Buffer,
+  adapterDigest: string,
+  renderedInvocation: string,
+  adoptionGeneration?: string,
+): Buffer {
+  if ((LAUNCHER_PATHS as readonly string[]).includes(name)) {
     const rendered = content.toString("utf8").replace("__FIRST_TREE_INVOCATION__", renderedInvocation);
     if (rendered.includes("__FIRST_TREE_INVOCATION__")) {
       throw new Error("Context integration launcher contains an unresolved CLI placeholder.");
@@ -146,9 +214,15 @@ function materializedFile(name: string, content: Buffer, adapterDigest: string, 
     return Buffer.from(rendered);
   }
   if (name === HOOK_PATH) {
-    const rendered = content.toString("utf8").replaceAll("__RELEASE_DIGEST__", adapterDigest);
-    if (rendered.includes("__RELEASE_DIGEST__")) {
-      throw new Error("Context integration hook contains an unresolved release placeholder.");
+    const rendered = content
+      .toString("utf8")
+      .replaceAll("__ADAPTER_DIGEST__", adapterDigest)
+      .replaceAll("__ADOPTION_GENERATION__", adoptionGeneration ?? "");
+    if (rendered.includes("__ADAPTER_DIGEST__") || rendered.includes("__ADOPTION_GENERATION__")) {
+      throw new Error("Context integration hook contains an unresolved adapter identity placeholder.");
+    }
+    if (rendered.includes("--adoption-generation") && !/^[0-9a-f]{48}$/u.test(adoptionGeneration ?? "")) {
+      throw new Error("Claude Context integration requires an exact adoption generation.");
     }
     return Buffer.from(rendered);
   }
@@ -182,4 +256,8 @@ function normalizedFiles(root: string): string[] {
   };
   visit(root);
   return files;
+}
+
+function isMissing(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT";
 }
