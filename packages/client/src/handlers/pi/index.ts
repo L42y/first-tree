@@ -49,6 +49,7 @@ import {
   supportsDefaultProviderProcessSupervision,
 } from "../../runtime/provider-process-supervisor.js";
 import { isExhaustedCapacityPhrasing, maxProviderTurnRetryAttempts } from "../../runtime/provider-retry-policy.js";
+import { piProviderDetailBinaryMissingReasonCode } from "../../runtime/provider-support/binary-failure.js";
 import {
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
@@ -94,7 +95,10 @@ export function sanitizePiProviderDetail(raw: string): string {
   if (/timed out|timeout|etimedout/.test(lower)) return "pi_timeout";
   if (/unsupported version|not a supported pi|requires >=/.test(lower)) return "pi_unsupported_version";
   if (/not supported on windows/.test(lower)) return "pi_platform_unsupported";
-  if (/pi cli is missing|no pi binary|not (?:found|installed)/.test(lower)) return "pi_binary_missing";
+  // Single owner: Pi-detail binary-missing mapping lives in provider-support
+  // (broader than the generic taxonomy matcher; input is already Pi-scoped).
+  const binaryMissing = piProviderDetailBinaryMissingReasonCode(raw);
+  if (binaryMissing !== null) return binaryMissing;
   if (/managed mcp|mcp servers are not supported/.test(lower)) return "pi_mcp_unsupported";
   if (/model mismatch|thinkinglevel mismatch|model selector is invalid/.test(lower)) return "pi_model_mismatch";
   if (/session identity mismatch|get_state response missing|pi get_state failed/.test(lower)) {

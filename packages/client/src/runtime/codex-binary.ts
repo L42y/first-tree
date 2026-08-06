@@ -90,17 +90,10 @@ export class CodexBinaryVerifyTransientError extends Error {
   }
 }
 
-const CODEX_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
-  /codex runtime binary is missing/i,
-  /unable to locate codex cli binaries/i,
-  /findCodexPath/,
-  /missing optional dependency\s+@openai\/codex[-\w]*/i,
-];
+import { isCodexBinaryMissingError } from "./provider-support/binary-failure.js";
 
-export function isCodexBinaryMissingError(input: unknown): boolean {
-  const text = errorSearchText(input);
-  return CODEX_BINARY_MISSING_PATTERNS.some((pattern) => pattern.test(text));
-}
+/** Single-owner match rules live in provider-support; re-export for call sites. */
+export { isCodexBinaryMissingError };
 
 export function formatCodexBinaryMissingMessage(input: unknown): string {
   const original = errorText(input).trim();
@@ -267,11 +260,6 @@ function errorText(input: unknown): string {
     if (typeof maybe.message === "string") return maybe.message;
   }
   return String(input);
-}
-
-function errorSearchText(input: unknown): string {
-  if (input instanceof Error) return [input.message, input.stack].filter(Boolean).join("\n");
-  return errorText(input);
 }
 
 function readPathValue(env: Record<string, string | undefined>, platform = process.platform): string | undefined {

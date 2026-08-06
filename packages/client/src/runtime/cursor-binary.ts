@@ -68,15 +68,8 @@ export class CursorBinaryVerifyTransientError extends Error {
   }
 }
 
-const CURSOR_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
-  /cursor agent cli is missing/i,
-  /cursor-agent.*not (?:found|installed)/i,
-];
-
-export function isCursorBinaryMissingError(input: unknown): boolean {
-  const text = errorSearchText(input);
-  return CURSOR_BINARY_MISSING_PATTERNS.some((pattern) => pattern.test(text));
-}
+/** Single-owner match rules live in provider-support; re-export for call sites. */
+export { isCursorBinaryMissingError } from "./provider-support/binary-failure.js";
 
 export function formatCursorBinaryMissingMessage(input: unknown): string {
   const original = errorText(input).trim();
@@ -285,9 +278,4 @@ function errorText(input: unknown): string {
     if (typeof maybe.message === "string") return maybe.message;
   }
   return String(input);
-}
-
-function errorSearchText(input: unknown): string {
-  if (input instanceof Error) return `${input.name} ${input.message}`;
-  return errorText(input);
 }

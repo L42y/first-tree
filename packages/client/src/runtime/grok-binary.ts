@@ -73,15 +73,8 @@ export class GrokBinaryVerifyTransientError extends Error {
   }
 }
 
-const GROK_BINARY_MISSING_PATTERNS: readonly RegExp[] = [
-  /grok build cli is missing/i,
-  /grok.*not (?:found|installed)/i,
-];
-
-export function isGrokBinaryMissingError(input: unknown): boolean {
-  const text = errorSearchText(input);
-  return GROK_BINARY_MISSING_PATTERNS.some((pattern) => pattern.test(text));
-}
+/** Single-owner match rules live in provider-support; re-export for call sites. */
+export { isGrokBinaryMissingError } from "./provider-support/binary-failure.js";
 
 export function formatGrokBinaryMissingMessage(input: unknown): string {
   const original = errorText(input).trim();
@@ -341,9 +334,4 @@ function errorText(input: unknown): string {
     if (typeof maybe.message === "string") return maybe.message;
   }
   return String(input);
-}
-
-function errorSearchText(input: unknown): string {
-  if (input instanceof Error) return `${input.name} ${input.message}`;
-  return errorText(input);
 }

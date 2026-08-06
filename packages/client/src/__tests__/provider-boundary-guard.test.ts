@@ -47,8 +47,13 @@ const GUARDED_CLIENT_FILES = [
   "runtime/handler.ts",
   "runtime/runtime-notice.ts",
   "runtime/session-manager.ts",
+  "runtime/error-taxonomy.ts",
   "handlers/auth-error-hint.ts",
 ] as const;
+
+/** Concrete provider binary / handler implementation modules (not support seams). */
+const CONCRETE_PROVIDER_BINARY_IMPORT = /from ["']\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary\.js["']/;
+const CONCRETE_PROVIDER_HANDLER_IMPORT = /from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -147,19 +152,119 @@ describe("runtime provider architecture guard", () => {
         // a concrete runtime id (including the retired silent Claude-era default).
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not hard-code provider literal ${hit}`).toBeNull();
-        expect(source).not.toMatch(/from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/);
+        expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
         expect(source).toContain("runtimeProviderSchema");
         expect(source).toMatch(/runtimeProvider is required/);
         continue;
       }
 
-      expect(source).not.toMatch(/from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/);
+      if (relPosix === "runtime/error-taxonomy.ts") {
+        // Generic taxonomy consumes normalized binary-failure signals only.
+        expect(source).toContain("recognizeProviderBinaryFailure");
+        expect(source).toContain("provider-support/binary-failure");
+        expect(source).not.toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
+        expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+        expect(source).not.toMatch(/from ["']\.\/(?:codex|cursor|grok|pi)-binary/);
+        continue;
+      }
+
+      expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
       if (relPosix === "runtime/handler.ts" || relPosix === "runtime/runtime.ts") {
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not contain ${hit}`).toBeNull();
         expect(source).not.toContain("installHandlers");
       }
     }
+  });
+
+  it("keeps the provider-support binary-failure seam free of concrete provider implementations", () => {
+    const rel = "runtime/provider-support/binary-failure.ts";
+    const source = readFileSync(join(clientSrc, rel), "utf8");
+    expect(source).toContain("recognizeProviderBinaryFailure");
+    expect(source).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
+    expect(source).not.toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
+    expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+    expect(source).not.toMatch(/from ["']\.\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary/);
+    expect(source).not.toMatch(/from ["'].*handlers\//);
+    // Match rules are owned here — binary modules must re-export, not duplicate.
+    expect(source).toContain("isCodexBinaryMissingError");
+    expect(source).toContain("isCursorBinaryMissingError");
+    expect(source).toContain("isGrokBinaryMissingError");
+    expect(source).toContain("isPiBinaryMissingError");
+    expect(source).toContain("piProviderDetailBinaryMissingReasonCode");
+    // Contextual Pi-detail entry must compose the strict matcher, not copy its phrases.
+    expect(source).toMatch(
+      /export function piProviderDetailBinaryMissingReasonCode\([\s\S]*?isPiBinaryMissingError\(detail\)/,
+    );
+    const contextualFn = source.slice(source.indexOf("export function piProviderDetailBinaryMissingReasonCode"));
+    expect(contextualFn).not.toContain("pi cli is missing");
+    expect(contextualFn).not.toContain("no pi binary");
+    expect(contextualFn).toContain('includes("not found")');
+    expect(contextualFn).toContain('includes("not installed")');
+  });
+
+  it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {
+    for (const [file, symbol] of [
+      ["runtime/codex-binary.ts", "isCodexBinaryMissingError"],
+      ["runtime/cursor-binary.ts", "isCursorBinaryMissingError"],
+      ["runtime/grok-binary.ts", "isGrokBinaryMissingError"],
+      ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
+    ] as const) {
+      const source = readFileSync(join(clientSrc, file), "utf8");
+      expect(source, `${file} must re-export ${symbol} from provider-support`).toContain(
+        'from "./provider-support/binary-failure.js"',
+      );
+      expect(source).toContain(symbol);
+      // No second owner of the match tables / regexes.
+      expect(source).not.toMatch(/BINARY_MISSING_PATTERNS/);
+      expect(source).not.toMatch(/function is(?:Codex|Cursor|Grok|Pi)BinaryMissingError/);
+    }
+  });
+
+  it("keeps production handlers from owning a second binary-missing matcher or reason-code table", () => {
+    const handlersRoot = join(clientSrc, "handlers");
+    const productionFiles = listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts"));
+    // Local regex / phrase tables that re-recognize provider binary absence.
+    const secondOwnerMatchers = [
+      /pi cli is missing/i,
+      /no pi binary/i,
+      /BINARY_MISSING_PATTERNS/,
+      /codex runtime binary is missing/i,
+      /unable to locate codex cli binaries/i,
+      /cursor agent cli is missing/i,
+      /grok build cli is missing/i,
+    ] as const;
+    const reasonLiterals = [
+      '"codex_binary_missing"',
+      '"cursor_binary_missing"',
+      '"grok_binary_missing"',
+      '"pi_binary_missing"',
+      "'codex_binary_missing'",
+      "'cursor_binary_missing'",
+      "'grok_binary_missing'",
+      "'pi_binary_missing'",
+    ] as const;
+
+    for (const file of productionFiles) {
+      const source = readFileSync(file, "utf8");
+      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      for (const matcher of secondOwnerMatchers) {
+        expect(source, `${rel} must not re-own binary-missing recognition (${matcher})`).not.toMatch(matcher);
+      }
+      for (const literal of reasonLiterals) {
+        expect(
+          source,
+          `${rel} must not hard-code ${literal}; import PROVIDER_BINARY_FAILURE_REASON_CODES`,
+        ).not.toContain(literal);
+      }
+    }
+
+    // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
+    const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
+    expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
+    expect(piHandler).toContain("provider-support/binary-failure");
+    expect(piHandler).not.toContain("isPiBinaryMissingError");
+    expect(piHandler).not.toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
   });
 
   it("names only the concrete composition files as registration roots", () => {
