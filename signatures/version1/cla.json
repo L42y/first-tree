@@ -96,7 +96,9 @@
       "comment_id": 5205086463,
       "created_at": "2026-08-06T13:13:36Z",
       "repoId": 1186836943,
-      "pullRequestNo": 2202
+      "pullRequestNo": 2202,
+      "full_name": null,
+      "public_email": null
     }
   ]
 }
