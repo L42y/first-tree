@@ -5,7 +5,9 @@ import {
   readFirstChatOrientationChatState,
 } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
+import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
@@ -16,9 +18,33 @@ import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createAgent } from "../services/agent.js";
 import { addParticipant, removeParticipant } from "../services/chat.js";
+import { lockChatMembershipMutation, lockChatMembershipShared } from "../services/chat-membership-lock.js";
 import { pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
+import { appendTreeSetupRecoveryMessage } from "../services/onboarding-kickoff.js";
+import { addChatParticipants } from "../services/participant-mode.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
+}
 
 /**
  * Create a non-human agent in the admin's own org (managed by the admin) so it
@@ -1148,6 +1174,146 @@ describe("POST /me/onboarding/kickoff", () => {
       .where(eq(inboxEntries.messageId, chatMessages[1]?.id ?? ""));
     expect(recoveryDeliveries).toHaveLength(1);
     expect(recoveryDeliveries[0]?.notify).toBe(true);
+  });
+
+  it("tree setup recovery and addChatParticipants complete without chat-row/membership deadlock", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const agent = await createOrgAgent(app, admin);
+    const extra = await createOrgAgent(app, admin);
+    const open = await app.inject({
+      method: "POST",
+      url: treeKickoffUrl(admin.organizationId),
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { agentUuid: agent.uuid },
+    });
+    expect(open.statusCode).toBe(200);
+    const chatId = open.json<{ chatId: string }>().chatId;
+    const recovery = {
+      content: `recovery-${crypto.randomUUID()}`,
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    };
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for recovery/add lock test");
+    const other = await createOrgAgent(app, admin);
+
+    // Direction 1: recovery holds shared first → add waits on exclusive → recovery
+    // takes chat row + send → both finish. Old chat-row-first recovery would already
+    // hold the chat row and deadlock when add later tries FOR UPDATE.
+    {
+      const recoveryAppName = `tree_rec_sh_${crypto.randomUUID().slice(0, 8)}`;
+      const addAppName = `tree_add_ex_${crypto.randomUUID().slice(0, 8)}`;
+      const recoveryPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, recoveryAppName));
+      const addPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, addAppName));
+      const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+      try {
+        let addPromise!: Promise<unknown>;
+        await recoveryPool.transaction(async (tx) => {
+          await lockChatMembershipShared(tx as never, [chatId]);
+          addPromise = addPool.transaction(async (addTx) => {
+            await addChatParticipants(addTx as never, chatId, [{ agentId: extra.uuid, role: "member" }]);
+          });
+          await waitForPostgresLockWait(observer, addAppName);
+
+          const [chat] = await tx
+            .select({ id: chats.id })
+            .from(chats)
+            .where(eq(chats.id, chatId))
+            .for("update")
+            .limit(1);
+          expect(chat).toBeTruthy();
+          await sendMessage(
+            tx as never,
+            chatId,
+            admin.humanAgentUuid,
+            {
+              format: "text",
+              content: recovery.content,
+              metadata: { contextTreeRecoveryFingerprint: recovery.fingerprint },
+              source: "api",
+            },
+            { addressedToAgentIds: [agent.uuid], deferPostCommitEffects: true },
+          );
+        });
+        await Promise.race([
+          addPromise,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("recovery-shared-first vs add deadlock timeout")), 15_000);
+          }),
+        ]);
+      } finally {
+        await recoveryPool.end();
+        await addPool.end();
+        await observer.end();
+      }
+    }
+
+    // Direction 2: add holds exclusive first → real appendTreeSetupRecoveryMessage waits
+    // on shared → add takes chat row and finishes → recovery completes. Old recovery that
+    // took chat before shared would deadlock here.
+    {
+      const recoveryAppName = `tree_rec_w_${crypto.randomUUID().slice(0, 8)}`;
+      const addAppName = `tree_add_h_${crypto.randomUUID().slice(0, 8)}`;
+      const recoveryPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, recoveryAppName));
+      const addPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, addAppName));
+      const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+      try {
+        let recoveryPromise!: Promise<unknown>;
+        await addPool.transaction(async (tx) => {
+          await lockChatMembershipMutation(tx as never, [chatId]);
+          recoveryPromise = appendTreeSetupRecoveryMessage(recoveryPool, {
+            chatId,
+            humanAgentId: admin.humanAgentUuid,
+            targetAgentId: agent.uuid,
+            recovery: {
+              content: `recovery-b-${crypto.randomUUID()}`,
+              fingerprint: `fp-b-${crypto.randomUUID()}`,
+            },
+          });
+          await waitForPostgresLockWait(observer, recoveryAppName);
+
+          const [chat] = await tx
+            .select({ id: chats.id })
+            .from(chats)
+            .where(eq(chats.id, chatId))
+            .for("update")
+            .limit(1);
+          expect(chat).toBeTruthy();
+          await addChatParticipants(tx as never, chatId, [{ agentId: other.uuid, role: "member" }]);
+        });
+        await Promise.race([
+          recoveryPromise,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error("add-exclusive-first vs recovery deadlock timeout")), 15_000);
+          }),
+        ]);
+      } finally {
+        await recoveryPool.end();
+        await addPool.end();
+        await observer.end();
+      }
+    }
+
+    const recoveryMsgs = await app.db
+      .select({ id: messages.id, metadata: messages.metadata })
+      .from(messages)
+      .where(eq(messages.chatId, chatId));
+    const withFingerprint = recoveryMsgs.filter(
+      (row) => typeof row.metadata.contextTreeRecoveryFingerprint === "string",
+    );
+    expect(
+      withFingerprint.filter((row) => row.metadata.contextTreeRecoveryFingerprint === recovery.fingerprint),
+    ).toHaveLength(1);
+    expect(withFingerprint.length).toBe(2);
+
+    const speakers = await app.db
+      .select({ agentId: chatMembership.agentId })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.accessMode, "speaker")));
+    expect(new Set(speakers.map((row) => row.agentId))).toEqual(
+      new Set([admin.humanAgentUuid, agent.uuid, extra.uuid, other.uuid]),
+    );
   });
 
   it("safely re-keys and reuses a legacy org setup chat with the exact same private boundary", async () => {

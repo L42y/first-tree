@@ -17,6 +17,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { createChat } from "./chat.js";
+import { lockChatMembershipShared } from "./chat-membership-lock.js";
 import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./message.js";
 
 /** Shared idempotency key for a landing-campaign action launcher. */
@@ -169,7 +170,10 @@ export type TreeSetupRecoveryMessage = {
  * an established Phase 1/2 conversation must not silently navigate to stale
  * history.
  *
- * The chat row lock serializes concurrent CTA clicks. Only an immediately
+ * Membership shared comes first: `sendMessage` always takes the shared fence,
+ * and concurrent `addChatParticipants` is exclusive → chat row. Taking the chat
+ * row before shared would deadlock against that invite order. The chat row lock
+ * still serializes concurrent CTA clicks after the fence. Only an immediately
  * repeated identical recovery turn is suppressed; once either participant has
  * replied, the same underlying failure can be raised again as a fresh turn.
  */
@@ -184,6 +188,7 @@ export async function appendTreeSetupRecoveryMessage(
 ): Promise<{ recipients: string[]; messageId: string } | null> {
   const result = await db.transaction(async (tx) => {
     const txDb = tx as unknown as Database;
+    await lockChatMembershipShared(txDb, [args.chatId]);
     const [chat] = await txDb
       .select({ id: chats.id })
       .from(chats)

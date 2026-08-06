@@ -29,6 +29,7 @@ import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent, legac
 import { computeWorking } from "../agent-chat-status.js";
 import { pickDefaultMembership } from "../auth.js";
 import { createChat } from "../chat.js";
+import { lockChatMembershipShared } from "../chat-membership-lock.js";
 import { sendToClient } from "../connection-manager.js";
 import { MEMBER_STATUSES, reactivateMembership, syncCurrentUserDisplayName } from "../membership.js";
 import { sendMessage } from "../message.js";
@@ -432,6 +433,10 @@ async function ensureTrialChatAndBootstrap(
 
   let sent: { recipients: string[]; messageId: string } | undefined;
   await app.db.transaction(async (tx) => {
+    // Membership shared before the chat row: `sendMessage` takes shared, and any
+    // exclusive membership writer is exclusive → chat. Row-first would deadlock
+    // even though public invite is forbidden on landing trial chats.
+    await lockChatMembershipShared(tx as unknown as Database, [chatId]);
     const [chatRow] = await tx
       .select({ id: chats.id, metadata: chats.metadata })
       .from(chats)
