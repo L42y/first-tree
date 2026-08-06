@@ -464,7 +464,8 @@ export async function softTerminateRemovedAgentSession(input: {
       sendToAgent(input.agentId, { type: "session:terminate", chatId: input.chatId }),
     );
     if (localSent) return;
-    if (!input.notifier || !input.instanceId) return;
+    const notifier = input.notifier;
+    if (!notifier || !input.instanceId) return;
 
     await withLiveRemovedSessionFence(input.db, input.agentId, input.chatId, async (tx) => {
       const [route] = await tx
@@ -480,7 +481,7 @@ export async function softTerminateRemovedAgentSession(input: {
       if (!route?.clientId || !route.instanceId) return;
       if (route.instanceId === input.instanceId) return;
 
-      await input.notifier!.notifyDaemonClientCommand({
+      await notifier.notifyDaemonClientCommand({
         type: "session:evict",
         clientId: route.clientId,
         agentId: input.agentId,
