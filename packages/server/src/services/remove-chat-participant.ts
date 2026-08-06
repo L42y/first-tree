@@ -346,8 +346,9 @@ async function pauseCronJobsForRemovedSpeaker(
   }
 
   // Agent removed: pause every active job that wakes this agent in the chat.
-  // Owner-chat advisory is per owner; lock each distinct owner barrier first
-  // in stable order, then FOR UPDATE the job rows.
+  // Caller already holds exclusive chat membership; keep lock order
+  // membership → owner-chat barrier → cron FOR UPDATE (scheduler/create/resume
+  // take membership shared before cron so this cannot deadlock).
   const ownerRows = await db
     .selectDistinct({ ownerMemberId: cronJobs.ownerMemberId })
     .from(cronJobs)

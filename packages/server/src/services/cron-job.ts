@@ -21,6 +21,7 @@ import { messages } from "../db/schema/messages.js";
 import { AppError } from "../errors.js";
 import { createLogger } from "../observability/index.js";
 import { uuidv7 } from "../uuid.js";
+import { lockChatMembershipShared } from "./chat-membership-lock.js";
 import { assertSchedulable, InvalidCronScheduleError, previewOccurrences } from "./cron-schedule.js";
 
 const log = createLogger("CronJob");
@@ -304,8 +305,11 @@ export async function createCronJob(
   return db.transaction(async (tx) => {
     const txDb = tx as unknown as Database;
 
-    // Class D global order: member→agent→speakers → advisory → engagement
-    // recheck → cron/insert. Advisory serializes with setChatEngagement(deleted).
+    // Class D global order: member→agent→membership shared→speakers →
+    // owner-chat advisory → engagement recheck → cron/insert.
+    // Membership shared must precede any cron row lock so removal
+    // (exclusive membership → cron) cannot deadlock, and so a concurrent
+    // create cannot insert an active job after removal's pause scan.
     let ownerMemberId: string;
     if (input.callerMemberId && input.callerHumanAgentId) {
       await assertCronAgentRouteAccess(txDb, {
@@ -326,6 +330,7 @@ export async function createCronJob(
         throw new CronJobAppError(403, "CRON_JOB_FORBIDDEN", "Agent is not eligible to create scheduled jobs");
       }
       ownerMemberId = agent.managerId;
+      await lockChatMembershipShared(txDb, [input.controlChatId]);
       await lockOwnerChatCronBarrier(txDb, input.controlChatId, ownerMemberId);
     }
 
@@ -492,6 +497,9 @@ export async function updateCronJob(
         callerHumanAgentId: input.callerHumanAgentId,
       });
     } else if (body.state === "active") {
+      // Resume materializes an active nextRunAt — take membership shared
+      // before owner-chat barrier / cron FOR UPDATE (same order as create).
+      await lockChatMembershipShared(txDb, [peek.controlChatId]);
       await lockOwnerChatCronBarrier(txDb, peek.controlChatId, peek.ownerMemberId);
     }
 
@@ -734,7 +742,13 @@ export async function pauseActiveJobsForOwnerChatDelete(
  * Lock order (must stay ahead of owner-chat advisory + engagement recheck + cron):
  *   1. caller member row
  *   2. agent row
- *   3. chat_membership speaker rows (`agent_id` ASC)
+ *   3. chat membership shared advisory (before speaker row locks / cron)
+ *   4. chat_membership speaker rows (`agent_id` ASC)
+ *
+ * The shared membership fence must precede speaker FOR UPDATE so concurrent
+ * removal (exclusive membership → speaker delete → cron pause) cannot form
+ * `speakers→membership` / `membership→speakers` cycles, and so create/resume
+ * cannot insert an active job after removal's pause scan.
  *
  * Engagement is intentionally *not* locked here — `setChatEngagement(deleted)`
  * takes the owner-chat advisory before upserting `chat_user_state`, so Class D
@@ -773,6 +787,8 @@ export async function assertCronAgentRouteAccess(
       "Only the managing human may manage scheduled jobs for this agent",
     );
   }
+
+  await lockChatMembershipShared(db, [input.chatId]);
 
   const speakerAgentIds = [input.callerHumanAgentId, input.agentId].slice().sort((a, b) => a.localeCompare(b));
   for (const speakerAgentId of speakerAgentIds) {

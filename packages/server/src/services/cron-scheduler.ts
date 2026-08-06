@@ -14,6 +14,7 @@ import { clients } from "../db/schema/clients.js";
 import { type CronJobRow, cronJobs } from "../db/schema/cron-jobs.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createLogger } from "../observability/index.js";
+import { lockChatMembershipShared } from "./chat-membership-lock.js";
 import { databaseNow, loadOutstanding, revalidateOwnerChatAgent } from "./cron-job.js";
 import { firstOccurrenceStrictlyAfter, InvalidCronScheduleError } from "./cron-schedule.js";
 import {
@@ -232,11 +233,33 @@ async function claimAndProcessOne(
     if (hooks?.beforeClaimForTest) {
       await hooks.beforeClaimForTest();
     }
-    const claimed = await txDb
-      .select()
+
+    // Lock order (must match removal exclusive membership → cron, and
+    // sendMessage's shared membership fence): never hold a cron row lock
+    // while waiting for chat membership. Peek unlocked, take shared
+    // membership on the control chat, then re-claim with the full due
+    // predicate under SKIP LOCKED.
+    const peeked = await txDb
+      .select({ id: cronJobs.id, controlChatId: cronJobs.controlChatId })
       .from(cronJobs)
       .where(and(eq(cronJobs.state, "active"), lte(cronJobs.nextRunAt, sql`clock_timestamp()`)))
       .orderBy(asc(cronJobs.nextRunAt), asc(cronJobs.id))
+      .limit(1);
+    const candidate = peeked[0];
+    if (!candidate) return { kind: "none" as const };
+
+    await lockChatMembershipShared(txDb, [candidate.controlChatId]);
+
+    const claimed = await txDb
+      .select()
+      .from(cronJobs)
+      .where(
+        and(
+          eq(cronJobs.id, candidate.id),
+          eq(cronJobs.state, "active"),
+          lte(cronJobs.nextRunAt, sql`clock_timestamp()`),
+        ),
+      )
       .limit(1)
       .for("update", { skipLocked: true });
 

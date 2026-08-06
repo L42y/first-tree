@@ -1,18 +1,86 @@
-import { REMOVE_PARTICIPANT_OPEN_REQUEST_CODE } from "@first-tree/shared";
+import { CRON_TRIGGER_METADATA_KEY, REMOVE_PARTICIPANT_OPEN_REQUEST_CODE } from "@first-tree/shared";
 import { and, eq, inArray } from "drizzle-orm";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
+import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
+import { agentPresence } from "../db/schema/agent-presence.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
+import { clients } from "../db/schema/clients.js";
 import { cronJobs } from "../db/schema/cron-jobs.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
+import { serverInstances } from "../db/schema/server-instances.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { upsertSessionState } from "../services/activity.js";
 import { createChat, removeParticipant } from "../services/chat.js";
+import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { sendMessage } from "../services/message.js";
 import { appendLiveEvent } from "../services/session-event.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
+}
+
+async function seedDispatchRoute(
+  app: ReturnType<ReturnType<typeof useTestApp>>,
+  agentId: string,
+  clientId: string,
+): Promise<void> {
+  const now = new Date();
+  const instanceId = app.config.instanceId;
+  await app.db
+    .update(clients)
+    .set({ status: "connected", instanceId, lastSeenAt: now, pausedReason: null })
+    .where(eq(clients.id, clientId));
+  await app.db
+    .insert(agentPresence)
+    .values({
+      agentId,
+      status: "online",
+      clientId,
+      instanceId,
+      lastSeenAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [agentPresence.agentId],
+      set: { status: "online", clientId, instanceId, lastSeenAt: now },
+    });
+  await app.db
+    .insert(serverInstances)
+    .values({ instanceId, lastHeartbeat: now })
+    .onConflictDoUpdate({
+      target: [serverInstances.instanceId],
+      set: { lastHeartbeat: now },
+    });
+}
+
+function cronTriggerMessages(rows: Array<{ metadata: unknown }>, jobId: string) {
+  return rows.filter((row) => {
+    const meta = row.metadata as Record<string, unknown>;
+    const trigger = meta?.[CRON_TRIGGER_METADATA_KEY] as { jobId?: string } | undefined;
+    return trigger?.jobId === jobId;
+  });
+}
 
 describe("remove chat participant — canonical mutation + Web Class C", () => {
   const getApp = useTestApp();
@@ -361,5 +429,115 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
         ),
       );
     expect(rows.some((r) => r.status === "cancelled")).toBe(true);
+  });
+
+  it("remove vs due cron sweep: membership-before-cron lock order — no deadlock, no post-remove trigger", async () => {
+    const app = getApp();
+    // Same managing human owns the cron job and the chat speakers (matches
+    // revalidateOwnerChatAgent); avoids incidental agent_manager_changed pauses.
+    const runtime = await createTestAgent(app, { name: `rm-lock-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+    await seedDispatchRoute(app, runtime.agent.uuid, runtime.clientId);
+
+    const jobId = crypto.randomUUID();
+    await app.db.insert(cronJobs).values({
+      id: jobId,
+      ownerMemberId: runtime.memberId,
+      controlChatId: chatId,
+      agentId: runtime.agent.uuid,
+      name: `rm-lock-${jobId.slice(0, 6)}`,
+      chatMode: "reuse_control_chat",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      prompt: "wake after remove race",
+      state: "active",
+      stateReason: null,
+      nextRunAt: new Date(Date.now() - 5_000),
+      revision: 1,
+    });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the lock-order concurrency test");
+
+    const sweepAppName = `rm_cron_sw_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `rm_cron_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const sweepPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, sweepAppName));
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseClaim!: () => void;
+      const claimHeld = new Promise<void>((resolve) => {
+        releaseClaim = resolve;
+      });
+      let claimReady!: () => void;
+      const claimReadyP = new Promise<void>((resolve) => {
+        claimReady = resolve;
+      });
+
+      const staleSeconds = app.config.runtime.presenceCleanupSeconds;
+      const sweepPromise = sweepCronJobs(sweepPool, app.notifier, {
+        staleSeconds,
+        afterClaimForTest: async () => {
+          claimReady();
+          await claimHeld;
+        },
+      });
+
+      await Promise.race([
+        claimReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("cron claim barrier timeout")), 10_000);
+        }),
+      ]);
+
+      // Sweep holds membership shared + cron row. Start removal on another
+      // connection — it must block on exclusive membership (not deadlock by
+      // taking cron first).
+      const removePromise = removeParticipant(removePool, chatId, runtime.humanAgentUuid, runtime.agent.uuid);
+      await waitForPostgresLockWait(observer, removeAppName);
+
+      releaseClaim();
+
+      await Promise.race([
+        Promise.all([sweepPromise, removePromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("remove-vs-cron-sweep deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      const [job] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
+      expect(job?.state).toBe("paused");
+      expect(job?.stateReason).toBe("agent_not_speaker");
+      expect(job?.nextRunAt).toBeNull();
+
+      const triggersAfterRace = cronTriggerMessages(
+        await app.db.select().from(messages).where(eq(messages.chatId, chatId)),
+        jobId,
+      );
+      // At most one accept from the in-flight sweep; never a live pending wake.
+      expect(triggersAfterRace.length).toBeLessThanOrEqual(1);
+      const wakeRows = await app.db
+        .select({ status: inboxEntries.status })
+        .from(inboxEntries)
+        .where(and(eq(inboxEntries.inboxId, runtime.agent.inboxId), eq(inboxEntries.chatId, chatId)));
+      expect(wakeRows.some((r) => r.status === "pending" || r.status === "delivered")).toBe(false);
+
+      // Post-remove sweep must not rematerialize while the agent is detached.
+      await sweepCronJobs(app.db, app.notifier, { staleSeconds });
+      const triggersAfterSweep = cronTriggerMessages(
+        await app.db.select().from(messages).where(eq(messages.chatId, chatId)),
+        jobId,
+      );
+      expect(triggersAfterSweep.length).toBe(triggersAfterRace.length);
+    } finally {
+      await sweepPool.end();
+      await removePool.end();
+      await observer.end();
+    }
   });
 });
