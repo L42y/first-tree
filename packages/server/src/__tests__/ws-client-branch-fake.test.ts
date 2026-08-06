@@ -10,6 +10,7 @@ import * as clientService from "../services/client.js";
 import * as inboxService from "../services/inbox.js";
 import * as notificationService from "../services/notification.js";
 import * as presenceService from "../services/presence.js";
+import * as removeChatParticipant from "../services/remove-chat-participant.js";
 import * as runtimeLivenessService from "../services/runtime-liveness.js";
 import * as sessionEventService from "../services/session-event.js";
 
@@ -72,8 +73,23 @@ function throwingSelectDb(error: unknown): unknown {
   };
 }
 
-function routeHarness(db: unknown): { handler: WsHandler; notifier: Record<string, unknown> } {
+function routeHarness(db: unknown): {
+  handler: WsHandler;
+  notifier: Record<string, unknown>;
+  log: {
+    debug: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+  };
+} {
   let handler: WsHandler | null = null;
+  const log = {
+    debug: vi.fn(),
+    error: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+  };
   const notifier = {
     onAgentRouteChange: vi.fn(),
     onDaemonClientCommand: vi.fn(),
@@ -93,16 +109,11 @@ function routeHarness(db: unknown): { handler: WsHandler; notifier: Record<strin
     get: vi.fn((_path: string, _options: unknown, routeHandler: WsHandler) => {
       handler = routeHandler;
     }),
-    log: {
-      debug: vi.fn(),
-      error: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-    },
+    log,
   };
   void clientWsRoutes(notifier as never, "fake-instance")(app as never);
   if (!handler) throw new Error("WS route handler was not registered");
-  return { handler, notifier };
+  return { handler, notifier, log };
 }
 
 async function signAccess(payload: Record<string, unknown> = {}): Promise<string> {
@@ -466,6 +477,56 @@ describe("Agent client WS branch fakes", () => {
       ref: "bind-client-user-missing",
       reason: "not_owned",
     });
+  });
+
+  it("absorbs session:evict fence rejections without an unhandled rejection", async () => {
+    mockSuccessfulBindServices();
+    vi.spyOn(removeChatParticipant, "withLiveRemovedSessionFence").mockRejectedValueOnce(
+      new Error("fence lock failed"),
+    );
+    const { handler, notifier, log } = routeHarness(
+      queuedDb([
+        [{ id: "user_1", status: "active" }],
+        [{ userId: "user_1", retiredAt: null }],
+        [activeAgentRow()],
+        [activeAgentRow()],
+      ]),
+    );
+    const socket = new FakeSocket();
+    await bindAgent(socket, handler, "bind-evict-catch");
+
+    const daemonHandler = (notifier.onDaemonClientCommand as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as
+      | ((payload: Record<string, unknown>) => void)
+      | undefined;
+    expect(daemonHandler).toBeTypeOf("function");
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      daemonHandler?.({
+        type: "session:evict",
+        clientId: "client_fake1234",
+        agentId: "agent_1",
+        chatId: "chat_1",
+        targetInstanceId: "fake-instance",
+      });
+      await waitUntil(() => log.warn.mock.calls.length > 0);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: expect.any(Error),
+          clientId: "client_fake1234",
+          agentId: "agent_1",
+          chatId: "chat_1",
+        }),
+        "session evict fence delivery failed",
+      );
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   it("binds an agent and drains backlog through the fake inbox push path", async () => {

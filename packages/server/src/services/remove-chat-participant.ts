@@ -173,8 +173,11 @@ export async function removeChatParticipant(
     }
 
     // Cancel undelivered / unacked inbox rows for this target in this chat.
+    // Collect cancelled message ids so cron outstanding pointers that pointed
+    // at those deliveries can be cleared in the same txn (any job state).
+    let cancelledMessageIds: string[] = [];
     if (targetAgent.inboxId) {
-      await tx
+      const cancelled = await tx
         .update(inboxEntries)
         .set({ status: "cancelled" })
         .where(
@@ -182,6 +185,21 @@ export async function removeChatParticipant(
             eq(inboxEntries.inboxId, targetAgent.inboxId),
             eq(inboxEntries.chatId, chatId),
             inArray(inboxEntries.status, ["pending", "delivered"]),
+          ),
+        )
+        .returning({ messageId: inboxEntries.messageId });
+      cancelledMessageIds = [...new Set(cancelled.map((row) => row.messageId))];
+    }
+
+    if (cancelledMessageIds.length > 0) {
+      await tx
+        .update(cronJobs)
+        .set({ lastTriggerMessageId: null })
+        .where(
+          and(
+            eq(cronJobs.controlChatId, chatId),
+            eq(cronJobs.agentId, targetAgentId),
+            inArray(cronJobs.lastTriggerMessageId, cancelledMessageIds),
           ),
         );
     }

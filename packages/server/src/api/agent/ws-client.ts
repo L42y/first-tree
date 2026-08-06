@@ -341,6 +341,11 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
             agentId: payload.agentId,
             chatId: payload.chatId,
           });
+        }).catch((err) => {
+          app.log.warn(
+            { err, clientId: payload.clientId, agentId: payload.agentId, chatId: payload.chatId },
+            "session evict fence delivery failed",
+          );
         });
         return;
       }

@@ -76,9 +76,11 @@ export async function loadOutstanding(
       ),
     )
     .limit(1);
-  // No delivery row means nothing outstanding (row may have been cancelled then
-  // GC'd / cleared on re-add). `acked` and `cancelled` are terminal the same way.
-  if (!entry || entry.status === "acked" || entry.status === "cancelled") return null;
+  if (!entry) return "missing";
+  // Terminal delivery states: nothing outstanding. Removal cancels pending/
+  // delivered triggers and clears lastTriggerMessageId in the same txn so a
+  // later GC of cancelled rows cannot be mistaken for corruption.
+  if (entry.status === "acked" || entry.status === "cancelled") return null;
   if (entry.status === "pending" || entry.status === "delivered") {
     return { messageId: job.lastTriggerMessageId, status: entry.status };
   }
