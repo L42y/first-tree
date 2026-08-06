@@ -127,29 +127,6 @@ export function isPiBinaryMissingError(input: unknown): boolean {
   return afterPi.includes("not found") || afterPi.includes("not installed");
 }
 
-const BINARY_MISSING_CHECKS = [
-  {
-    match: isCodexBinaryMissingError,
-    reasonCode: PROVIDER_BINARY_FAILURE_REASON_CODES.CODEX_BINARY_MISSING,
-    defaultMessage: "Codex runtime binary missing",
-  },
-  {
-    match: isCursorBinaryMissingError,
-    reasonCode: PROVIDER_BINARY_FAILURE_REASON_CODES.CURSOR_BINARY_MISSING,
-    defaultMessage: "Cursor Agent CLI binary missing",
-  },
-  {
-    match: isGrokBinaryMissingError,
-    reasonCode: PROVIDER_BINARY_FAILURE_REASON_CODES.GROK_BINARY_MISSING,
-    defaultMessage: "Grok Build CLI binary missing",
-  },
-  {
-    match: isPiBinaryMissingError,
-    reasonCode: PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING,
-    defaultMessage: "Pi CLI binary missing",
-  },
-] as const;
-
 function readErrorName(err: unknown): string | undefined {
   if (err instanceof Error) return err.name;
   if (err && typeof err === "object") {
@@ -159,31 +136,68 @@ function readErrorName(err: unknown): string | undefined {
   return undefined;
 }
 
+function verifyTransientSignal(
+  err: unknown,
+  errorName: keyof typeof VERIFY_TRANSIENT_BY_NAME,
+): ProviderBinaryFailureSignal | null {
+  if (readErrorName(err) !== errorName) return null;
+  const entry = VERIFY_TRANSIENT_BY_NAME[errorName];
+  return {
+    outcome: "verify_transient",
+    reasonCode: entry.reasonCode,
+    defaultMessage: entry.defaultMessage,
+  };
+}
+
+function missingSignal(
+  match: (input: unknown) => boolean,
+  reasonCode: ProviderBinaryFailureReasonCode,
+  defaultMessage: string,
+  err: unknown,
+): ProviderBinaryFailureSignal | null {
+  if (!match(err)) return null;
+  return { outcome: "binary_missing", reasonCode, defaultMessage };
+}
+
 /**
  * Normalize a thrown value into a binary-failure signal, or `null` when the
- * error is unrelated. Verify-transient names win over missing-binary patterns
- * so a busy-host smoke flake never masquerades as an uninstalled provider.
+ * error is unrelated.
+ *
+ * Order matches the historical `error-taxonomy` classifier exactly — per
+ * provider interleaved as verify-transient then missing, walking Codex →
+ * Cursor → Grok → Pi. "Verify beats missing" is only within the same provider;
+ * a later provider's verify name must not preempt an earlier provider's missing
+ * match (cross-provider ambiguity keeps the earlier provider's outcome).
  */
 export function recognizeProviderBinaryFailure(err: unknown): ProviderBinaryFailureSignal | null {
-  const name = readErrorName(err);
-  if (name && Object.hasOwn(VERIFY_TRANSIENT_BY_NAME, name)) {
-    const entry = VERIFY_TRANSIENT_BY_NAME[name as keyof typeof VERIFY_TRANSIENT_BY_NAME];
-    return {
-      outcome: "verify_transient",
-      reasonCode: entry.reasonCode,
-      defaultMessage: entry.defaultMessage,
-    };
-  }
-
-  for (const check of BINARY_MISSING_CHECKS) {
-    if (check.match(err)) {
-      return {
-        outcome: "binary_missing",
-        reasonCode: check.reasonCode,
-        defaultMessage: check.defaultMessage,
-      };
-    }
-  }
-
-  return null;
+  return (
+    verifyTransientSignal(err, "CodexBinaryVerifyTransientError") ??
+    missingSignal(
+      isCodexBinaryMissingError,
+      PROVIDER_BINARY_FAILURE_REASON_CODES.CODEX_BINARY_MISSING,
+      "Codex runtime binary missing",
+      err,
+    ) ??
+    verifyTransientSignal(err, "CursorBinaryVerifyTransientError") ??
+    missingSignal(
+      isCursorBinaryMissingError,
+      PROVIDER_BINARY_FAILURE_REASON_CODES.CURSOR_BINARY_MISSING,
+      "Cursor Agent CLI binary missing",
+      err,
+    ) ??
+    verifyTransientSignal(err, "GrokBinaryVerifyTransientError") ??
+    missingSignal(
+      isGrokBinaryMissingError,
+      PROVIDER_BINARY_FAILURE_REASON_CODES.GROK_BINARY_MISSING,
+      "Grok Build CLI binary missing",
+      err,
+    ) ??
+    verifyTransientSignal(err, "PiBinaryVerifyTransientError") ??
+    missingSignal(
+      isPiBinaryMissingError,
+      PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING,
+      "Pi CLI binary missing",
+      err,
+    )
+  );
 }
