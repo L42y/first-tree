@@ -2,12 +2,13 @@ import { generateKeyPairSync } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import { readOAuthStateNonce } from "../api/auth/oauth-cookie.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { findInstallationByGithubId, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import { ensureMembership } from "../services/membership.js";
-import { STATE_NONCE_COOKIE_NAME, signOAuthState } from "../services/oauth-state.js";
+import { STATE_NONCE_COOKIE_NAME, signOAuthState, verifyOAuthState } from "../services/oauth-state.js";
 import { resolveDefaultOrgId } from "../services/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -131,6 +132,168 @@ async function seedGithubIdentity(
 describe("/auth/github/callback honors targetOrganizationId in the state (codex P1-3)", () => {
   const getApp = useTestApp({ githubAppPrivateKeyPem: TEST_APP_PRIVATE_KEY_PEM });
 
+  it("continues a matching install identity preflight into the GitHub installation picker", async () => {
+    const app = getApp();
+    const githubId = 770_000;
+    const login = `preflight-match-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "identity",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+    const restore = stubGithub({ githubId, login, installationIds: [] });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=devcode&state=${token}`,
+        headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+      });
+
+      expect(res.statusCode).toBe(302);
+      const installUrl = new URL(res.headers.location ?? "");
+      expect(installUrl.origin).toBe("https://github.com");
+      expect(installUrl.pathname).toBe("/apps/test-app-slug/installations/new");
+      const installState = installUrl.searchParams.get("state") ?? "";
+      const installNonce = readOAuthStateNonce(
+        res.headers["set-cookie"],
+        STATE_NONCE_COOKIE_NAME,
+        app.config.secrets.encryptionKey,
+      );
+      expect(await verifyOAuthState(TEST_JWT_SECRET, installState, installNonce)).toMatchObject({
+        next: "/settings/github",
+        intent: "install",
+        installPhase: "installation",
+        provider: "github",
+        targetOrganizationId: admin.organizationId,
+        kickoffUserId: admin.userId,
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("stops a mismatched install identity preflight before creating an account or installation request", async () => {
+    const app = getApp();
+    const linkedGithubId = 770_010;
+    const strangerGithubId = 770_011;
+    const login = `preflight-mismatch-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, linkedGithubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "identity",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+    const restore = stubGithub({ githubId: strangerGithubId, login: `${login}-stranger`, installationIds: [] });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=devcode&state=${token}`,
+        headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toContain("error=install-not-verified");
+      expect(res.headers.location).toContain(`expectedGithubLogin=${encodeURIComponent(login)}`);
+      expect(res.headers.location).not.toContain("/installations/new");
+      const strangerIdentities = await app.db
+        .select({ id: authIdentities.id })
+        .from(authIdentities)
+        .where(eq(authIdentities.identifier, String(strangerGithubId)));
+      expect(strangerIdentities).toHaveLength(0);
+    } finally {
+      restore();
+    }
+  });
+
+  it("stops the identity preflight if the kickoff admin loses the role before the callback", async () => {
+    const app = getApp();
+    const githubId = 770_012;
+    const login = `preflight-revoked-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "identity",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+    await app.db.update(members).set({ role: "member" }).where(eq(members.userId, admin.userId));
+    const restore = stubGithub({ githubId, login, installationIds: [] });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=devcode&state=${token}`,
+        headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toContain("error=install-not-admin");
+      expect(res.headers.location).toContain("next=%2Fsettings%2Fgithub");
+      expect(res.headers.location).not.toContain("/installations/new");
+    } finally {
+      restore();
+    }
+  });
+
+  it("does not treat an identity-preflight callback without an OAuth code as an installation request landing", async () => {
+    const app = getApp();
+    const githubId = 770_013;
+    const login = `preflight-no-code-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "identity",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/callback?state=${token}&setup_action=request`,
+      headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain("error=install-not-verified");
+    expect(res.headers.location).toContain(`expectedGithubLogin=${encodeURIComponent(login)}`);
+    expect(res.headers.location).not.toBe("/settings/github");
+  });
+
+  it("returns a canceled identity preflight to the stable GitHub Settings panel", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `preflight-cancel-${uuidv7().slice(0, 6)}` });
+    await seedGithubIdentity(app, admin.userId, 770_014, "preflight-cancel");
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/onboarding/connected", {
+      intent: "install",
+      installPhase: "identity",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/callback?error=access_denied&state=${token}`,
+      headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+    });
+
+    expect(res.statusCode).toBe(302);
+    const fragment = new URLSearchParams(res.headers.location?.split("#")[1] ?? "");
+    expect(fragment.get("error")).toBe("provider-denied");
+    expect(fragment.get("callbackIntent")).toBe("install");
+    expect(fragment.get("next")).toBe("/settings/github");
+  });
+
   it("resolves + pins the target org (not the user's primary org) when the kickoff admin matches", async () => {
     const app = getApp();
     const githubId = 770_001;
@@ -160,6 +323,7 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
 
     const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
       intent: "install",
+      installPhase: "installation",
       provider: "github",
       targetOrganizationId: orgBId,
       kickoffUserId: admin.userId,
@@ -328,6 +492,7 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
       expect(res.statusCode).toBe(302);
       expect(res.headers.location).toContain("/auth/github/complete#");
       expect(res.headers.location).toContain("error=install-not-verified");
+      expect(res.headers.location).toContain(`expectedGithubLogin=${encodeURIComponent(login)}`);
       expect(res.headers.location).not.toContain("access=");
     } finally {
       restore();
@@ -335,6 +500,11 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
 
     // Nothing bound (and nothing upserted) by the callback.
     expect(await findInstallationByGithubId(app.db, installationId)).toBeNull();
+    const strangerIdentities = await app.db
+      .select({ id: authIdentities.id })
+      .from(authIdentities)
+      .where(eq(authIdentities.identifier, String(strangerGithubId)));
+    expect(strangerIdentities).toHaveLength(0);
   });
 
   it("does NOT bind when a matching installation row exists but the callback identity mismatches", async () => {
@@ -426,12 +596,10 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
       expect(res.headers.location).toContain("/auth/github/complete#");
       expect(res.headers.location).toContain("error=install-not-verified");
       expect(res.headers.location).not.toContain("access=");
-      // Review finding round 2: the error page renders `next` as its "Back
-      // to First Tree" link — it must NOT point at the auto-close
-      // "Connected" sentinel, or the error page offers a false-success
-      // escape hatch. The onboarding popup path normalizes to /onboarding.
+      // The install popup's error escape returns to the stable Team GitHub
+      // panel, never the auto-close success sentinel.
       const fragment = new URLSearchParams(res.headers.location?.split("#")[1] ?? "");
-      expect(fragment.get("next")).toBe("/onboarding");
+      expect(fragment.get("next")).toBe("/settings/github");
     } finally {
       restore();
     }
@@ -495,11 +663,16 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
     // back WITHOUT an OAuth code. The browser goes back to `next` (the
     // panel), whose polling picks the installation up once approved.
     const app = getApp();
+    const githubId = 770_020;
+    const login = `request-landing-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
     const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
       intent: "install",
+      installPhase: "installation",
       provider: "github",
-      targetOrganizationId: uuidv7(),
-      kickoffUserId: uuidv7(),
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
     });
     const res = await app.inject({
       method: "GET",
@@ -508,6 +681,58 @@ describe("/auth/github/callback honors targetOrganizationId in the state (codex 
     });
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("/settings/github");
+  });
+
+  it("rejects an approval-request landing after the kickoff user loses Team admin authority", async () => {
+    const app = getApp();
+    const githubId = 770_021;
+    const login = `request-revoked-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "installation",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+    await app.db.update(members).set({ role: "member" }).where(eq(members.userId, admin.userId));
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/callback?state=${token}&setup_action=request`,
+      headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain("error=install-not-admin");
+    expect(res.headers.location).toContain("callbackIntent=install");
+  });
+
+  it("rejects an approval-request landing after the kickoff user unlinks GitHub", async () => {
+    const app = getApp();
+    const githubId = 770_022;
+    const login = `request-unlinked-${uuidv7().slice(0, 6)}`;
+    const admin = await createTestAdmin(app, { username: `${login}-u` });
+    await seedGithubIdentity(app, admin.userId, githubId, login);
+    const { token, nonce } = await signOAuthState(TEST_JWT_SECRET, "/settings/github", {
+      intent: "install",
+      installPhase: "installation",
+      provider: "github",
+      targetOrganizationId: admin.organizationId,
+      kickoffUserId: admin.userId,
+    });
+    await app.db.delete(authIdentities).where(eq(authIdentities.identifier, String(githubId)));
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/callback?state=${token}&setup_action=request`,
+      headers: { cookie: `${STATE_NONCE_COOKIE_NAME}=${nonce}` },
+    });
+
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toContain("error=install-not-verified");
+    expect(res.headers.location).toContain("callbackIntent=install");
   });
 
   it("ignores a targetOrganizationId naming an org the user isn't a member of", async () => {

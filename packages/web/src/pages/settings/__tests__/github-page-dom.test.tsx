@@ -18,8 +18,13 @@ const teamAgentMocks = vi.hoisted(() => ({
   putTeamAgentAssignment: vi.fn(),
 }));
 const authMock = vi.hoisted(() => ({
-  value: { role: "admin" as string | null, organizationId: "org-1" as string | null },
+  value: {
+    role: "admin" as string | null,
+    organizationId: "org-1" as string | null,
+    selectOrganization: vi.fn<(organizationId: string) => Promise<void>>(),
+  },
 }));
+const panelMock = vi.hoisted(() => ({ props: vi.fn() }));
 let originalScrollIntoView: typeof HTMLElement.prototype.scrollIntoView;
 let scrollIntoView: ReturnType<typeof vi.fn>;
 
@@ -31,7 +36,10 @@ vi.mock("../../../api/setup-capabilities.js", () => ({
 }));
 vi.mock("../../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
 vi.mock("../../github-app-installation-panel.js", () => ({
-  GithubAppInstallationPanel: () => <div data-testid="panel-stub">panel</div>,
+  GithubAppInstallationPanel: (props: unknown) => {
+    panelMock.props(props);
+    return <div data-testid="panel-stub">panel</div>;
+  },
 }));
 
 function createClient(): QueryClient {
@@ -89,7 +97,12 @@ async function waitForSelector<T extends Element>(
 beforeEach(() => {
   document.body.innerHTML = "";
   vi.clearAllMocks();
-  authMock.value = { role: "admin", organizationId: "org-1" };
+  window.sessionStorage.clear();
+  authMock.value = {
+    role: "admin",
+    organizationId: "org-1",
+    selectOrganization: vi.fn(async () => undefined),
+  };
   originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
   scrollIntoView = vi.fn();
   HTMLElement.prototype.scrollIntoView = scrollIntoView;
@@ -162,6 +175,119 @@ describe("SettingsGithubPage — Context round-trip return", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("reopens and focuses Connection after a GitHub account-link return", async () => {
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt("/settings/github?connection=github-linked", <SettingsGithubPage />);
+    const connection = await waitForSelector<HTMLElement>(container, "#connection");
+
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ readOnly: false, initiallyOpen: true, accountLinkError: null }),
+    );
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(document.activeElement).toBe(connection);
+
+    await act(async () => root.unmount());
+  });
+
+  it("restores the Team that started account linking before reopening Connection", async () => {
+    const { rememberGithubAccountLinkReturn } = await import("../../../lib/github-account-link-return.js");
+    rememberGithubAccountLinkReturn("org-original");
+    authMock.value.organizationId = "org-other";
+    authMock.value.selectOrganization.mockImplementation(async (organizationId) => {
+      authMock.value.organizationId = organizationId;
+    });
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt("/settings/github?connection=github-linked", <SettingsGithubPage />);
+
+    await waitForText(container, "panel");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ initiallyOpen: true, accountLinkError: null }),
+    );
+    expect(window.sessionStorage.getItem("settings:github:account-link-return")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("restores the Team that started a failed install before reopening Connection", async () => {
+    const { rememberGithubInstallAttempt } = await import("../../../lib/github-install-attempt.js");
+    rememberGithubInstallAttempt("org-original");
+    authMock.value.organizationId = "org-other";
+    authMock.value.selectOrganization.mockImplementation(async (organizationId) => {
+      authMock.value.organizationId = organizationId;
+    });
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt(
+      "/settings/github?error=install-not-verified&flow=install",
+      <SettingsGithubPage />,
+    );
+
+    await waitForText(container, "panel");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ initiallyOpen: true, accountLinkError: "install-not-verified" }),
+    );
+    expect(window.sessionStorage.getItem("settings:github:install-attempt")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("reopens the current Team's waiting panel after a full-page install return", async () => {
+    const { rememberGithubInstallAttempt } = await import("../../../lib/github-install-attempt.js");
+    rememberGithubInstallAttempt("org-1");
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+    const connection = await waitForSelector<HTMLElement>(container, "#connection");
+
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ initiallyOpen: true, accountLinkError: null }),
+    );
+    expect(window.sessionStorage.getItem("settings:github:install-attempt")).not.toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+    expect(document.activeElement).toBe(connection);
+
+    await act(async () => root.unmount());
+  });
+
+  it("restores the Team that started a full-page install before showing its waiting panel", async () => {
+    const { rememberGithubInstallAttempt } = await import("../../../lib/github-install-attempt.js");
+    rememberGithubInstallAttempt("org-original");
+    authMock.value.organizationId = "org-other";
+    authMock.value.selectOrganization.mockImplementation(async (organizationId) => {
+      authMock.value.organizationId = organizationId;
+    });
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+
+    await waitForText(container, "panel");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ initiallyOpen: true, accountLinkError: null }),
+    );
+    expect(window.sessionStorage.getItem("settings:github:install-attempt")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a failed cross-Team return recoverable without applying the marker to the current Team", async () => {
+    const { rememberGithubInstallAttempt } = await import("../../../lib/github-install-attempt.js");
+    rememberGithubInstallAttempt("org-original");
+    authMock.value.organizationId = "org-other";
+    authMock.value.selectOrganization.mockRejectedValueOnce(new Error("membership changed"));
+    const { SettingsGithubPage } = await import("../github.js");
+    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+
+    await waitForText(container, "We couldn't return to the Team where you started");
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
+    expect(panelMock.props).toHaveBeenLastCalledWith(
+      expect.objectContaining({ initiallyOpen: false, accountLinkError: null }),
+    );
+    expect(window.sessionStorage.getItem("settings:github:install-attempt")).not.toBeNull();
+
+    await act(async () => root.unmount());
+  });
 });
 
 describe("SettingsGithubPage — task routing", () => {
@@ -210,7 +336,11 @@ describe("SettingsGithubPage — task routing", () => {
   });
 
   it("shows members the configured Agent without exposing assignment controls", async () => {
-    authMock.value = { role: "member", organizationId: "org-1" };
+    authMock.value = {
+      role: "member",
+      organizationId: "org-1",
+      selectOrganization: vi.fn(async () => undefined),
+    };
     orgSettingsMocks.getGithubFeaturesSetting.mockResolvedValue({
       teamAgent: {
         agentUuid: "dev-agent-1",
