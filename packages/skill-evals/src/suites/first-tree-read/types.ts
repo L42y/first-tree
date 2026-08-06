@@ -5,6 +5,7 @@ import type { CommandResult } from "../../core/types.js";
 export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree";
 export type BriefingMode = "minimal" | "runtime-generated";
 export type ReadMode = "byo" | "managed";
+export type ManagedTransport = "ask" | "send";
 
 export type ImpactNoteEffect = "conflicted" | "confirmed" | "constrained" | "redirected";
 export type ImpactNoteLanguage = "en" | "zh";
@@ -33,6 +34,7 @@ export type FirstTreeReadEvalCase = {
   expectedTrigger: boolean;
   id: string;
   impactNote: ImpactNoteExpectation;
+  managedTransport: ManagedTransport | null;
   prompt: string;
   promptAlternates: readonly string[];
   readMode: ReadMode;
@@ -93,6 +95,7 @@ export type EvalMetrics = {
   byoSnapshotDetached: boolean;
   byoSnapshotExactHeadConsistent: boolean;
   managedFinalTransportOk: boolean;
+  legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;
   readActivationSucceeded: boolean;

@@ -5,6 +5,7 @@ import type {
   ImpactNoteEffect,
   ImpactNoteExpectation,
   ImpactNoteLanguage,
+  ManagedTransport,
   ReadMode,
 } from "./types.js";
 
@@ -352,6 +353,11 @@ function isReadActivationArgv(argv: readonly string[]): boolean {
   return command[0] === "context" && command[1] === "snapshot";
 }
 
+function isLegacyReadActivationArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "tree" && command[1] === "read" && !command.includes("--help") && !command.includes("-h");
+}
+
 function isTreeTreeArgv(argv: readonly string[]): boolean {
   const command = commandArgv(argv);
   return command[0] === "tree" && command[1] === "tree";
@@ -544,9 +550,11 @@ export function deriveMetrics(
   runnerExitCode: number | null,
   expectedFacts: readonly string[],
   impactNoteExpectation: ImpactNoteExpectation = { mode: "absent" },
+  managedTransportExpectation: ManagedTransport | null = null,
 ): EvalMetrics {
   let firstTreeCalls = 0;
   let helpCalls = 0;
+  let legacyReadActivationCalls = 0;
   let readActivationCalls = 0;
   let readRouteCalls = 0;
   let skillFileReadObserved = false;
@@ -601,6 +609,9 @@ export function deriveMetrics(
         }
         if (isReadActivationArgv(argv)) {
           readActivationCalls += 1;
+        }
+        if (isLegacyReadActivationArgv(argv)) {
+          legacyReadActivationCalls += 1;
         }
         if (isReadRouteArgv(argv)) {
           readRouteCalls += 1;
@@ -669,6 +680,7 @@ export function deriveMetrics(
     .map((argv, index) => (isTreeSelectorArgv(argv) ? index : -1))
     .filter((index) => index >= 0);
   const byoReadSequenceOk =
+    legacyReadActivationCalls === 0 &&
     readRouteIndex >= 0 &&
     readActivationIndex > readRouteIndex &&
     hierarchyHelpIndex > readActivationIndex &&
@@ -687,10 +699,8 @@ export function deriveMetrics(
   const modelFirstTreeCommandsOk = firstTreeCommandResults.every((result) => result.exitCode === 0);
   const selectedExactCommit = exactCommit ?? selectorSnapshotResults.at(-1)?.actualHead ?? null;
   const finalAuthoringKind = chatAuthoringKind(successfulAuthoringCalls.at(-1)?.argv ?? []);
-  const expectedAuthoringKind =
-    impactNoteExpectation.mode === "present" && impactNoteExpectation.effect === "conflicted" ? "ask" : "send";
   const managedFinalTransportOk =
-    impactNoteExpectation.mode === "absent" || finalAuthoringKind === expectedAuthoringKind;
+    managedTransportExpectation === null || finalAuthoringKind === managedTransportExpectation;
   const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation, {
     contextDecisionMetadataPresent,
     selectedExactCommit,
@@ -712,6 +722,7 @@ export function deriveMetrics(
     byoSelectorsNoPull,
     byoSnapshotDetached,
     byoSnapshotExactHeadConsistent,
+    legacyReadActivationCalls,
     modelFirstTreeCommandsOk,
     managedFinalTransportOk,
     readActivationCalls,

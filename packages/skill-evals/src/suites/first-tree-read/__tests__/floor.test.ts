@@ -20,6 +20,17 @@ describe("first-tree-read floor contract", () => {
       expect.arrayContaining(["tree-navigation-no-impact", "tree-conflict-chinese", "tree-readable-multi-source-note"]),
     );
     expect(FIRST_TREE_READ_CASES.every((evalCase) => evalCase.impactNote.mode !== undefined)).toBe(true);
+    expect(
+      FIRST_TREE_READ_CASES.filter((evalCase) => evalCase.expectedTrigger && evalCase.readMode === "managed").every(
+        (evalCase) => evalCase.managedTransport !== null,
+      ),
+    ).toBe(true);
+    expect(
+      FIRST_TREE_READ_CASES.find((evalCase) => evalCase.id === "tree-navigation-no-impact")?.managedTransport,
+    ).toBe("send");
+    expect(FIRST_TREE_READ_CASES.find((evalCase) => evalCase.id === "tree-conflict-chinese")?.managedTransport).toBe(
+      "ask",
+    );
   });
 
   it("states the fail-closed, SCOPE-routed exact-snapshot BYO boundary", () => {

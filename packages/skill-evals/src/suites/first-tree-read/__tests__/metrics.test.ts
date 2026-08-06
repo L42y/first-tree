@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { gradingFailureMessages } from "../../../core/grading.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
 import { buildGrading } from "../summary.js";
-import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation } from "../types.js";
+import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport } from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const SELECTOR_ARGV = ["tree", "tree", "/domains/payments"];
@@ -17,15 +17,7 @@ const BYO_ROUTE_ARGV = [
   "--session-candidate",
   "eval-receipt",
 ];
-const BYO_ACTIVATION_ARGV = [
-  "--json",
-  "context",
-  "snapshot",
-  "--candidate",
-  "candidate-byo-read-eval",
-  "--snapshot",
-  "/tmp/read-task/context-tree",
-];
+const BYO_ACTIVATION_ARGV = ["--json", "context", "snapshot", "--candidate", "candidate-byo-read-eval"];
 const LEGACY_BYO_ACTIVATION_ARGV = [
   "--json",
   "tree",
@@ -116,16 +108,20 @@ function managedStatus(body: string): unknown[] {
 }
 
 function metrics(events: readonly unknown[]): EvalMetrics {
-  return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT]);
+  return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT], { mode: "absent" }, "send");
 }
 
-function impactMetrics(events: readonly unknown[], expectation: ImpactNoteExpectation): EvalMetrics {
-  return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT], expectation);
+function impactMetrics(
+  events: readonly unknown[],
+  expectation: ImpactNoteExpectation,
+  managedTransport: ManagedTransport = "send",
+): EvalMetrics {
+  return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT], expectation, managedTransport);
 }
 
 describe("first-tree-read metrics pass criteria", () => {
   it("passes trigger cases only when skill read, facts, help, selector, and command results are all OK", () => {
-    const result = metrics([
+    const nativeOnly = metrics([
       skillReadEvent(),
       firstTreeCall(HELP_ARGV),
       firstTreeResult(HELP_ARGV, 0),
@@ -133,12 +129,23 @@ describe("first-tree-read metrics pass criteria", () => {
       firstTreeResult(SELECTOR_ARGV, 0),
       assistantTextEvent(`The tree says ${EXPECTED_FACT}.`),
     ]);
+    const result = metrics([
+      skillReadEvent(),
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      firstTreeCall(SELECTOR_ARGV),
+      firstTreeResult(SELECTOR_ARGV, 0),
+      ...managedMessage(`The tree says ${EXPECTED_FACT}.`),
+    ]);
 
     expect(result.skillFileReadObserved).toBe(true);
     expect(result.expectedFactsObserved).toBe(true);
     expect(result.helpSucceeded).toBe(true);
     expect(result.selectionSucceeded).toBe(true);
     expect(result.modelFirstTreeCommandsOk).toBe(true);
+    expect(nativeOnly.managedFinalTransportOk).toBe(false);
+    expect(casePassed(true, nativeOnly)).toBe(false);
+    expect(result.managedFinalTransportOk).toBe(true);
     expect(casePassed(true, result)).toBe(true);
   });
 
@@ -204,6 +211,30 @@ describe("first-tree-read metrics pass criteria", () => {
 
     expect(result.readRouteSucceeded).toBe(false);
     expect(result.readActivationSucceeded).toBe(false);
+    expect(result.legacyReadActivationCalls).toBe(1);
+    expect(result.byoReadSequenceOk).toBe(false);
+    expect(casePassed(true, result, "byo")).toBe(false);
+  });
+
+  it("rejects a legacy tree read activation even when the current BYO sequence also succeeds", () => {
+    const result = metrics([
+      skillReadEvent(),
+      firstTreeCall(LEGACY_BYO_ACTIVATION_ARGV),
+      firstTreeResult(LEGACY_BYO_ACTIVATION_ARGV, 0, { exactCommit: EXACT_COMMIT }),
+      firstTreeCall(BYO_ROUTE_ARGV),
+      firstTreeResult(BYO_ROUTE_ARGV, 0),
+      firstTreeCall(BYO_ACTIVATION_ARGV),
+      firstTreeResult(BYO_ACTIVATION_ARGV, 0, { exactCommit: EXACT_COMMIT }),
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      firstTreeCall(BYO_SELECTOR_ARGV),
+      firstTreeResult(BYO_SELECTOR_ARGV, 0, { actualHead: EXACT_COMMIT, detachedHead: true }),
+      assistantTextEvent(`The tree says ${EXPECTED_FACT}.`),
+    ]);
+
+    expect(result.readRouteSucceeded).toBe(true);
+    expect(result.readActivationSucceeded).toBe(true);
+    expect(result.legacyReadActivationCalls).toBe(1);
     expect(result.byoReadSequenceOk).toBe(false);
     expect(casePassed(true, result, "byo")).toBe(false);
   });
@@ -264,7 +295,7 @@ describe("first-tree-read metrics pass criteria", () => {
         firstTreeResult(HELP_ARGV, 0),
         firstTreeCall(["tree", "tree", "systems/server/auth"]),
         firstTreeResult(["tree", "tree", "systems/server/auth"], 0),
-        assistantTextEvent(`JWT auth routes 要遵守这些约束：
+        ...managedMessage(`JWT auth routes 要遵守这些约束：
 - User JWT 是统一授权面。
 - Route scopes 必须结合当前 live organization membership checks。
 - HTTP routes 和 multi-org 改动必须遵循 docs/development/http-path-conventions.md。`),
@@ -272,6 +303,8 @@ describe("first-tree-read metrics pass criteria", () => {
       VALID_FIXTURE,
       0,
       JWT_EXPECTED_FACTS,
+      { mode: "absent" },
+      "send",
     );
 
     expect(result.expectedFactHits).toEqual([...JWT_EXPECTED_FACTS]);
@@ -622,7 +655,7 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(currentStateDuplicate.impactNoteBehaviorOk).toBe(false);
   });
 
-  it("requires an unresolved conflict to use a blocking managed ask", () => {
+  it("uses the case transport contract rather than deriving transport from the impact effect", () => {
     const body = `需要你决定如何处理冲突。
 
 > **Context Tree 影响 · 发现约束冲突**\\
@@ -635,13 +668,20 @@ describe("first-tree-read metrics pass criteria", () => {
       sourceAuthority: TEST_SOURCE_AUTHORITY,
       sourceCount: { max: 1, min: 1 },
     };
-    const sent = impactMetrics(managedMessage(body), expectation);
-    const asked = impactMetrics(managedMessage(body, ["chat", "ask", "gandy2025", "-F", "question.md"]), expectation);
+    const sentForBlockingCase = impactMetrics(managedMessage(body), expectation, "ask");
+    const askedForBlockingCase = impactMetrics(
+      managedMessage(body, ["chat", "ask", "gandy2025", "-F", "question.md"]),
+      expectation,
+      "ask",
+    );
+    const sentForTerminalCase = impactMetrics(managedMessage(body), expectation, "send");
 
-    expect(sent.impactNoteBehaviorOk).toBe(true);
-    expect(sent.managedFinalTransportOk).toBe(false);
-    expect(asked.impactNoteBehaviorOk).toBe(true);
-    expect(asked.managedFinalTransportOk).toBe(true);
+    expect(sentForBlockingCase.impactNoteBehaviorOk).toBe(true);
+    expect(sentForBlockingCase.managedFinalTransportOk).toBe(false);
+    expect(askedForBlockingCase.impactNoteBehaviorOk).toBe(true);
+    expect(askedForBlockingCase.managedFinalTransportOk).toBe(true);
+    expect(sentForTerminalCase.impactNoteBehaviorOk).toBe(true);
+    expect(sentForTerminalCase.managedFinalTransportOk).toBe(true);
   });
 
   it("counts identical impact notes from separate BYO assistant messages", () => {

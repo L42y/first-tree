@@ -38,6 +38,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
     expectedTrigger: false,
     id: "blank-casual-no-trigger",
     impactNote: { mode: "absent" },
+    managedTransport: null,
     prompt: "Please explain the Pomodoro technique in one sentence.",
     promptAlternates: ["How is your day going?"],
     readMode: "managed",
@@ -59,6 +60,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       sourceCount: { max: 3, min: 1 },
       summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
+    managedTransport: "send",
     prompt: "For this project, what constraints should JWT auth routes follow?",
     promptAlternates: ["Analyze server route naming and multi-org permission boundaries for this project."],
     readMode: "managed",
@@ -80,6 +82,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       sourceCount: { max: 3, min: 1 },
       summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
+    managedTransport: null,
     prompt:
       "For this BYO Context Tree task, use the locally authorized SCOPE router and answer: what constraints should JWT auth routes follow?",
     promptAlternates: [
@@ -94,6 +97,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
     expectedTrigger: false,
     id: "tree-nonsoftware-no-trigger",
     impactNote: { mode: "absent" },
+    managedTransport: null,
     prompt: "Recommend a weekend cooking menu.",
     promptAlternates: ["Write a short poem about summer."],
     readMode: "managed",
@@ -105,6 +109,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
     expectedTrigger: true,
     id: "tree-navigation-no-impact",
     impactNote: { mode: "absent" },
+    managedTransport: "send",
     prompt:
       "Browse this Context Tree and list only its three top-level domain names. Do not make a design or implementation choice.",
     promptAlternates: ["What are the three top-level domains in this Context Tree? Return only their names."],
@@ -129,6 +134,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       summaryConcepts: [["发布日期", "发布日"], ["安全审计"], ["仍待", "尚未", "需要决定", "需升级"]],
       summaryForbidden: ["已调整", "已解决", "已排除", "已完成取舍"],
     },
+    managedTransport: "ask",
     prompt:
       "发布日期已固定为 8 月 20 日且不能移动，但现在没有足够时间完成新的安全审计。请根据 Context Tree 判断能否直接发布；不要替我更改日期或跳过审计，若冲突未决就明确指出。",
     promptAlternates: [
@@ -158,6 +164,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       sourceCount: { max: 3, min: 3 },
       summaryConcepts: [["rollout"], ["reviewable scope"], ["audit"], ["billing"]],
     },
+    managedTransport: "send",
     prompt:
       "Plan a production billing rollout. Apply the Context Tree's root rollout-scope rule, release security gate, and billing ordering constraint, and explain the resulting implementation boundary.",
     promptAlternates: [
@@ -186,6 +193,7 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
       sourceCount: { max: 3, min: 1 },
       summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
+    managedTransport: "send",
     prompt:
       "Use this workspace's current Context Tree to answer: what constraints should JWT auth routes follow for this project?",
     promptAlternates: ["Use the current Context Tree before answering: how should multi-org JWT route scopes work?"],

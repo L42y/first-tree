@@ -86,7 +86,14 @@ describe("first-tree-read source provenance fixtures", () => {
       const candidateId = routeEnvelope.data.candidates[0]?.candidateId;
       if (!candidateId) throw new Error("expected a routed BYO candidate");
 
-      const activationArgv = ["--json", "context", "snapshot", "--candidate", candidateId, "--snapshot", snapshotPath];
+      const activationArgv = ["--json", "context", "snapshot", "--candidate", candidateId];
+      const obsoleteSnapshotOption = spawnSync(firstTree, [...activationArgv, "--snapshot", snapshotPath], {
+        cwd: paths.workspacePath,
+        encoding: "utf8",
+        env,
+      });
+      expect(obsoleteSnapshotOption.status).toBe(2);
+      expect(existsSync(snapshotPath)).toBe(false);
       const activation = spawnSync(firstTree, activationArgv, {
         cwd: paths.workspacePath,
         encoding: "utf8",
@@ -97,23 +104,28 @@ describe("first-tree-read source provenance fixtures", () => {
         data: { binding: { repo: string }; commit: string; snapshotPath: string; teamId: string };
       };
       const receipt = envelope.data;
-      expect(receipt).toMatchObject({ snapshotPath, teamId: "team-byo-read-eval" });
+      expect(receipt).toMatchObject({ teamId: "team-byo-read-eval" });
+      expect(receipt.snapshotPath).not.toBe(snapshotPath);
+      expect(receipt.snapshotPath).toContain(paths.runRoot);
       expect(receipt.binding.repo).toBe("https://github.com/example/context-tree.git");
 
-      const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: snapshotPath, encoding: "utf8" });
-      const symbolic = spawnSync("git", ["symbolic-ref", "-q", "HEAD"], { cwd: snapshotPath, encoding: "utf8" });
-      const remotes = spawnSync("git", ["remote"], { cwd: snapshotPath, encoding: "utf8" });
+      const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: receipt.snapshotPath, encoding: "utf8" });
+      const symbolic = spawnSync("git", ["symbolic-ref", "-q", "HEAD"], {
+        cwd: receipt.snapshotPath,
+        encoding: "utf8",
+      });
+      const remotes = spawnSync("git", ["remote"], { cwd: receipt.snapshotPath, encoding: "utf8" });
       expect(head.stdout.trim()).toBe(receipt.commit);
       expect(symbolic.status).not.toBe(0);
       expect(remotes.stdout.trim()).toBe("");
 
       const hierarchyHelp = spawnSync(firstTree, ["tree", "tree", "--help"], {
-        cwd: snapshotPath,
+        cwd: receipt.snapshotPath,
         encoding: "utf8",
         env,
       });
       const selector = spawnSync(firstTree, ["tree", "tree", "--no-pull", "systems/server/auth"], {
-        cwd: snapshotPath,
+        cwd: receipt.snapshotPath,
         encoding: "utf8",
         env,
       });
@@ -126,6 +138,7 @@ describe("first-tree-read source provenance fixtures", () => {
           typeof event === "object" &&
           event !== null &&
           (event as { type?: string }).type === "first_tree_result" &&
+          (event as { exitCode?: number }).exitCode === 0 &&
           (event as { argv?: string[] }).argv?.includes("snapshot") &&
           (event as { argv?: string[] }).argv?.includes("context") &&
           !(event as { argv?: string[] }).argv?.includes("--help"),
