@@ -1,4 +1,5 @@
 import {
+  AGENT_TYPES,
   type AttachmentRef,
   attachmentRefsFromMetadata,
   type CapabilityEntry,
@@ -20,6 +21,7 @@ import {
   type RequestResolution,
   type RuntimeAuthProvider,
   readAskAgentMessageMetadata,
+  readContextDecisionMetadata,
   readFirstChatOrientationChatState,
   readFirstChatOrientationMessageMetadata,
   statusReasonFromProviderRetryEvent,
@@ -95,6 +97,7 @@ import { sendAskAnswer } from "../../../components/chat/ask-answer-transport.js"
 import { type AskAnswer, AskTakeover, clearAskTakeoverDraft } from "../../../components/chat/ask-takeover.js";
 import { awaitedAgentsFromMessage, ChatOfflineNotice } from "../../../components/chat/chat-offline-notice.js";
 import { ComposeStatusBar } from "../../../components/chat/compose-status-bar.js";
+import { ContextDecisionReceipt } from "../../../components/chat/context-decision-receipt.js";
 import {
   GITHUB_SYSTEM_SENDER_NAME,
   GithubEventCardMessage,
@@ -580,6 +583,8 @@ type MessageRowProps = {
   agentAvatarFn: (id: string) => string | null;
   agentColorTokenFn: (id: string) => string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  /** See `MessageBodyProps.senderIsAgent`. */
+  senderIsAgent: boolean;
   /** Trial surface: render sender avatar/name as plain identity, without the
    *  AgentHovercard whose actions ("View profile" → /agents/:id, "New chat" →
    *  /?c=draft) would navigate out of the controlled trial conversation. */
@@ -597,6 +602,19 @@ type MessageBodyProps = {
   requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  /**
+   * True only when this row's sender is a speaker of this chat POSITIVELY typed
+   * as an agent. Gates the agent-attributed Context Tree receipt, and is
+   * deliberately a positive test rather than "not a known human": the
+   * participant list holds current speakers only and its `type` is a loose wire
+   * string, so a removed human's historical row, a row painted from cache before
+   * `chatDetail` resolves, and a legacy or unrecognised type all read as
+   * non-human under a negative test — and a receipt forged before the
+   * server-side guard would surface. Failing closed hides the receipt on every
+   * unresolved sender instead: a departed agent's receipt is lost, a forged one
+   * never renders.
+   */
+  senderIsAgent: boolean;
 };
 
 type MessageMarkdownProps = {
@@ -663,6 +681,7 @@ const MessageBody = memo(function MessageBody({
   requestTagAgentId,
   myAgentId,
   mentionParticipants,
+  senderIsAgent,
 }: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -706,6 +725,13 @@ const MessageBody = memo(function MessageBody({
     );
   }, [msg.metadata, msg.content]);
   const failedDocMentions = useMemo(() => failedDocMentionsFromMetadata(msg.metadata), [msg.metadata]);
+  // The agent's own record of how team context shaped THIS reply. Strictly
+  // parsed (unknown version / malformed payload -> null -> nothing renders),
+  // and shown only for a positively identified agent sender.
+  const contextDecision = useMemo(
+    () => (senderIsAgent ? readContextDecisionMetadata(msg.metadata) : null),
+    [msg.metadata, senderIsAgent],
+  );
   // Resolve a visible label only when this token's persisted mention ID still
   // identifies the current owner of the canonical handle. System-level
   // addressedAgentIds can include recipients unrelated to a particular token
@@ -950,6 +976,9 @@ const MessageBody = memo(function MessageBody({
           ))}
         </div>
       )}
+      {contextDecision ? (
+        <ContextDecisionReceipt receipt={contextDecision} gitlabInstanceOrigin={gitlabInstanceOrigin} />
+      ) : null}
     </div>
   );
 }, areMessageBodyPropsEqual);
@@ -962,6 +991,7 @@ const MessageRow = memo(function MessageRow({
   agentAvatarFn,
   agentColorTokenFn,
   mentionParticipants,
+  senderIsAgent,
   isTrial,
   orientationCompleted,
   orientationHidden,
@@ -1090,6 +1120,7 @@ const MessageRow = memo(function MessageRow({
           requestTagAgentId={requestTagAgentId}
           myAgentId={myAgentId}
           mentionParticipants={mentionParticipants}
+          senderIsAgent={senderIsAgent}
         />
       </div>
     </div>
@@ -1104,6 +1135,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
     prev.agentNameFn === next.agentNameFn &&
     prev.agentAvatarFn === next.agentAvatarFn &&
     prev.agentColorTokenFn === next.agentColorTokenFn &&
+    prev.senderIsAgent === next.senderIsAgent &&
     prev.isTrial === next.isTrial &&
     prev.orientationCompleted === next.orientationCompleted &&
     prev.orientationHidden === next.orientationHidden &&
@@ -1118,6 +1150,7 @@ function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps
     messageBodyFieldsEqual(prev.msg, next.msg) &&
     prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
+    prev.senderIsAgent === next.senderIsAgent &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
 }
@@ -1444,6 +1477,8 @@ type ChatTimelineProps = {
   /** Non-human agent participants — drives the inline offline notice. */
   agents: ChatParticipantDetail[];
   mentionParticipants: RenderedMentionParticipant[];
+  /** Non-human speakers in this chat — see `MessageBodyProps.senderIsAgent`. */
+  agentParticipantIds: ReadonlySet<string>;
   dockRequestId: string | undefined;
   gapAfterMessageId: string | null;
   firstNewItemIdx: number;
@@ -1477,6 +1512,7 @@ const ChatTimeline = memo(function ChatTimeline({
   chatId,
   agents,
   mentionParticipants,
+  agentParticipantIds,
   dockRequestId,
   gapAfterMessageId,
   firstNewItemIdx,
@@ -1583,6 +1619,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     agentAvatarFn={agentAvatarFn}
                     agentColorTokenFn={agentColorTokenFn}
                     mentionParticipants={mentionParticipants}
+                    senderIsAgent={agentParticipantIds.has(msg.senderId)}
                     isTrial={isTrial}
                     orientationCompleted={completedOrientationMessageIds.has(msg.id)}
                     orientationHidden={orientationHidden}
@@ -2877,6 +2914,17 @@ export function ChatView({
   // agent I am talking to", and the viewer is the human side of the pair.
   const humanParticipantIds = useMemo(
     () => new Set((chatDetail?.participants ?? []).filter((p) => p.type === "human").map((p) => p.agentId)),
+    [chatDetail?.participants],
+  );
+  // Speakers of THIS chat that are POSITIVELY typed as agents. The wire schema
+  // keeps `type` a loose string so legacy and unrecognised DB values flow
+  // through, so `!== "human"` would quietly admit a missing, legacy, or
+  // future-unknown type — and under version skew a cached human row could pass
+  // the receipt gate again. Matching the known agent value instead keeps every
+  // unresolved type out, and the set is empty while `chatDetail` loads, which is
+  // the same fail-closed direction (see `MessageBodyProps.senderIsAgent`).
+  const agentParticipantIds = useMemo(
+    () => new Set((chatDetail?.participants ?? []).filter((p) => p.type === AGENT_TYPES.AGENT).map((p) => p.agentId)),
     [chatDetail?.participants],
   );
   // The exact condition under which filtering on `agentId` keeps EVERY
@@ -4411,6 +4459,12 @@ export function ChatView({
                   imageId: ref.attachmentId,
                   filename: ref.filename,
                 }))}
+                contextDecision={
+                  agentParticipantIds.has(dockRequest.senderId)
+                    ? readContextDecisionMetadata(dockRequest.metadata)
+                    : null
+                }
+                gitlabInstanceOrigin={gitlabInstanceOrigin}
                 payload={dockPayload}
                 askerName={chatScopedAgentName(dockRequest.senderId)}
                 sending={askBusy}
@@ -4952,6 +5006,7 @@ export function ChatView({
             chatId={chatId}
             agents={(chatDetail?.participants ?? []).filter((p) => p.type !== "human")}
             mentionParticipants={renderMentionParticipants}
+            agentParticipantIds={agentParticipantIds}
             dockRequestId={dockRequestId}
             gapAfterMessageId={gapAfterMessageId}
             firstNewItemIdx={firstNewItemIdx}

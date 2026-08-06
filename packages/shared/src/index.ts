@@ -464,6 +464,19 @@ export {
   legacyContextActivationResponseSchema,
 } from "./schemas/context-activation.js";
 export {
+  CONTEXT_DECISION_METADATA_KEY,
+  type ContextDecision,
+  type ContextDecisionEffect,
+  type ContextDecisionEvidence,
+  contextDecisionEffectSchema,
+  contextDecisionEvidenceSchema,
+  contextDecisionSchema,
+  MAX_CONTEXT_DECISION_EVIDENCE,
+  MAX_CONTEXT_DECISION_REPO_URL_LENGTH,
+  MAX_CONTEXT_DECISION_SUMMARY_LENGTH,
+  readContextDecisionMetadata,
+} from "./schemas/context-decision.js";
+export {
   CONTEXT_ACTIVATION_SCOPE_KINDS,
   CONTEXT_INTEGRATION_PROVIDERS,
   CONTEXT_SKILL_LOADER_NAMES,
