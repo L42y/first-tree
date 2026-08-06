@@ -25,6 +25,8 @@ const mocks = vi.hoisted(() => ({
   inspectLocation: vi.fn(),
   inspectRuntime: vi.fn(),
   inspectStore: vi.fn(),
+  fetchScope: vi.fn(),
+  getBinding: vi.fn(),
   issueSession: vi.fn(),
   planInstall: vi.fn(),
   readAccount: vi.fn(() => "client-1"),
@@ -75,9 +77,13 @@ vi.mock("../core/context-integration/release.js", () => ({
 vi.mock("../core/context-integration/runtime-health.js", () => ({
   inspectContextIntegrationRuntime: mocks.inspectRuntime,
 }));
+vi.mock("../core/context-integration/context-route.js", () => ({
+  fetchExactScope: mocks.fetchScope,
+}));
 vi.mock("../commands/_shared/member.js", () => ({
   createMemberSdk: () => ({
     validateMemberContextActivation: mocks.validateActivation,
+    getMemberContextTreeSetting: mocks.getBinding,
     issueMemberContextSessionCandidate: mocks.issueSession,
   }),
 }));
@@ -113,6 +119,15 @@ beforeEach(() => {
   });
   mocks.resolveRelease.mockReturnValue({ root: "/release", manifest: { release: "manifest" } });
   mocks.validateActivation.mockResolvedValue({ schemaVersion: 2, outcome: "connected", team });
+  mocks.getBinding.mockResolvedValue({
+    provider: "github",
+    repo: "https://github.com/acme/context-tree.git",
+    branch: "main",
+  });
+  mocks.fetchScope.mockReturnValue({
+    commit: "c".repeat(40),
+    scope: { schemaVersion: 1, relatedRepositories: [], body: "Team A context." },
+  });
   mocks.issueSession.mockResolvedValue({ receipt: "signed-session" });
   mocks.buildHandoff.mockReturnValue({ schemaVersion: 3, consumerKind: "byo", provider: "codex", project });
   mocks.readConfig.mockReturnValue({
@@ -160,6 +175,98 @@ describe("context enable v3 command", () => {
     expect(mocks.enableOperation).not.toHaveBeenCalled();
     expect(mocks.issueSession).not.toHaveBeenCalled();
     expect(mocks.assertFingerprint).not.toHaveBeenCalled();
+    expect(mocks.getBinding).toHaveBeenCalledWith("org-a", { retry: false });
+    expect(mocks.fetchScope).toHaveBeenCalledWith({
+      provider: "github",
+      repo: "https://github.com/acme/context-tree.git",
+      branch: "main",
+    });
+  });
+
+  it("rejects a missing or non-regular root SCOPE before any setup mutation", async () => {
+    mocks.fetchScope.mockImplementationOnce(() => {
+      throw new Error("Root SCOPE.md is missing or is not a regular file.");
+    });
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_SCOPE_MISSING",
+    });
+    expect(output.fail).toHaveBeenCalledWith(
+      "CONTEXT_ENABLE_SCOPE_MISSING",
+      expect.stringContaining("must contain root SCOPE.md as a regular file"),
+      1,
+      { status: "scope" },
+    );
+    expectNoSetupMutation();
+  });
+
+  it.each([
+    ["schema-invalid", new Error("SCOPE.md must contain YAML frontmatter.")],
+    ["non-UTF-8", new Error("Root SCOPE.md is not valid UTF-8.")],
+  ])("rejects %s root SCOPE before any setup mutation", async (_label, scopeError) => {
+    mocks.fetchScope.mockImplementationOnce(() => {
+      throw scopeError;
+    });
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_SCOPE_INVALID",
+    });
+    expect(output.fail).toHaveBeenCalledWith(
+      "CONTEXT_ENABLE_SCOPE_INVALID",
+      expect.stringContaining("valid UTF-8 and satisfy SCOPE schema version 1"),
+      1,
+      { status: "scope" },
+    );
+    expectNoSetupMutation();
+  });
+
+  it("rejects an unreadable binding before any setup mutation", async () => {
+    mocks.getBinding.mockResolvedValueOnce({ branch: "main" });
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_BINDING_UNREADABLE",
+    });
+    expect(mocks.fetchScope).not.toHaveBeenCalled();
+    expectNoSetupMutation();
+  });
+
+  it("rejects a root SCOPE fetch failure before any setup mutation", async () => {
+    mocks.fetchScope.mockImplementationOnce(() => {
+      throw new Error("git fetch failed with private upstream details");
+    });
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_SCOPE_FETCH_FAILED",
+    });
+    expect(output.fail.mock.calls[0]?.[1]).not.toContain("private upstream details");
+    expectNoSetupMutation();
+  });
+
+  it("returns a stable authentication error before any setup mutation", async () => {
+    mocks.getBinding.mockRejectedValueOnce(Object.assign(new Error("private credential detail"), { statusCode: 401 }));
+
+    await expect(runContextEnable(context({ plan: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_SCOPE_AUTHENTICATION_REQUIRED",
+    });
+    expect(output.fail.mock.calls[0]?.[1]).not.toContain("private credential detail");
+    expect(mocks.fetchScope).not.toHaveBeenCalled();
+    expectNoSetupMutation();
+  });
+
+  it.each([
+    "global",
+    "session",
+  ] as const)("rechecks root SCOPE on apply before %s setup can mutate state", async (scope) => {
+    const planId = await createPlanId();
+    mocks.fetchScope.mockImplementationOnce(() => {
+      throw new Error("Root SCOPE.md is missing or is not a regular file.");
+    });
+
+    await expect(runContextEnable(context({ scope, planId, yes: true }))).rejects.toMatchObject({
+      code: "CONTEXT_ENABLE_SCOPE_MISSING",
+    });
+    expect(mocks.fetchScope).toHaveBeenCalledTimes(2);
+    expectNoSetupMutation();
   });
 
   it("rejects setup before planning when the Core loader root is mutable", async () => {
@@ -517,6 +624,16 @@ async function createPlanId(): Promise<string> {
   output.result.mockClear();
   await runContextEnable(context({ plan: true }));
   return (output.result.mock.calls[0]?.[0] as { plan: { planId: string } }).plan.planId;
+}
+
+function expectNoSetupMutation(): void {
+  expect(mocks.enableOperation).not.toHaveBeenCalled();
+  expect(mocks.issueSession).not.toHaveBeenCalled();
+  expect(mocks.assertFingerprint).not.toHaveBeenCalled();
+  expect(mocks.createDriver).not.toHaveBeenCalled();
+  expect(mocks.registerPendingReload).not.toHaveBeenCalled();
+  expect(mocks.consumeReload).not.toHaveBeenCalled();
+  expect(mocks.buildHandoff).not.toHaveBeenCalled();
 }
 
 function readApplyCommand(kind: "global" | "directory" | "session"): string {

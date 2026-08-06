@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { ContextActivationScope, ContextIntegrationGrant, ContextIntegrationProvider } from "@first-tree/shared";
+import {
+  type ContextActivationScope,
+  type ContextIntegrationGrant,
+  type ContextIntegrationProvider,
+  contextTreeActiveBindingSchema,
+} from "@first-tree/shared";
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
 import {
@@ -21,6 +26,7 @@ import {
   inspectContextGrantStore,
   readContextIntegrationConfig,
 } from "../../core/context-integration/context-binding-store.js";
+import { fetchExactScope } from "../../core/context-integration/context-route.js";
 import {
   buildCurrentSessionHandoff,
   type CurrentSessionHandoff,
@@ -30,6 +36,7 @@ import { enableContextIntegrationOperation } from "../../core/context-integratio
 import { providerPluginRoot, resolveContextIntegrationRelease } from "../../core/context-integration/release.js";
 import { inspectContextIntegrationRuntime } from "../../core/context-integration/runtime-health.js";
 import { buildContextSetupChoices, type ContextSetupChoice } from "../../core/context-integration/setup-plan.js";
+import { classifyContextTreeReadError } from "../../core/context-tree-binding.js";
 import { print } from "../../core/output.js";
 import { createMemberSdk } from "../_shared/member.js";
 import type { CommandContext, SubcommandModule } from "../types.js";
@@ -180,6 +187,7 @@ async function buildSetupPlan(
   if (activation.outcome !== "connected") {
     print.fail(activation.reasonCode, activation.nextAction.message, 1);
   }
+  await verifyRootScopeReadiness(sdk, activation.team.organizationId);
   // Verify the exact immutable Core root during planning. Every apply rebuilds
   // this plan, so an unusable loader is rejected before setup mutates state or
   // returns a handoff that cannot load its canonical workflow.
@@ -233,6 +241,76 @@ async function buildSetupPlan(
     }),
     [setupPlanAccountClientId]: accountClientId,
   };
+}
+
+async function verifyRootScopeReadiness(
+  sdk: ReturnType<typeof createMemberSdk>,
+  organizationId: string,
+): Promise<void> {
+  let rawBinding: unknown;
+  try {
+    rawBinding = await sdk.getMemberContextTreeSetting(organizationId, { retry: false });
+  } catch (error) {
+    const classified = classifyContextTreeReadError(error);
+    if (classified.category === "authentication") {
+      print.fail(
+        "CONTEXT_ENABLE_SCOPE_AUTHENTICATION_REQUIRED",
+        "Authentication failed while checking the selected Team's Context Tree readiness. Sign in again and retry.",
+        3,
+        { status: "authority" },
+      );
+    }
+    print.fail(
+      "CONTEXT_ENABLE_BINDING_UNREADABLE",
+      "The selected Team's current Context Tree binding could not be read online. Confirm active membership and repair the binding before retrying.",
+      classified.exitCode,
+      { status: "binding" },
+    );
+  }
+
+  const binding = contextTreeActiveBindingSchema.safeParse(rawBinding);
+  const currentBinding = binding.data;
+  if (currentBinding === undefined) {
+    print.fail(
+      "CONTEXT_ENABLE_BINDING_UNREADABLE",
+      "The selected Team does not have a readable current Context Tree binding. Repair the binding before retrying.",
+      1,
+      { status: "binding" },
+    );
+    throw new Error("unreachable");
+  }
+
+  try {
+    fetchExactScope(currentBinding);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (errorMessage === "Root SCOPE.md is missing or is not a regular file.") {
+      print.fail(
+        "CONTEXT_ENABLE_SCOPE_MISSING",
+        "The selected Team's binding branch must contain root SCOPE.md as a regular file before Context setup can continue.",
+        1,
+        { status: "scope" },
+      );
+    }
+    if (
+      errorMessage === "Root SCOPE.md is not valid UTF-8." ||
+      errorMessage.startsWith("SCOPE.md ") ||
+      (typeof error === "object" && error !== null && Reflect.get(error, "name") === "ZodError")
+    ) {
+      print.fail(
+        "CONTEXT_ENABLE_SCOPE_INVALID",
+        "The selected Team's root SCOPE.md must be valid UTF-8 and satisfy SCOPE schema version 1. Repair it and retry Context setup.",
+        1,
+        { status: "scope" },
+      );
+    }
+    print.fail(
+      "CONTEXT_ENABLE_SCOPE_FETCH_FAILED",
+      "Could not fetch root SCOPE.md from the selected Team's current binding. Confirm repository access, network connectivity, and the bound branch, then retry.",
+      6,
+      { status: "fetch" },
+    );
+  }
 }
 
 function parseActivationScope(scope: string, plan: SetupPlan): ContextActivationScope {
