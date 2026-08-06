@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildProbeScript,
@@ -192,6 +192,58 @@ describe("getLoginShellPathDirs", () => {
     expect(dirs).toEqual([join(home, "safe", "bin")]);
   });
 
+  // The macOS filesystem is case-insensitive by default, so `~/documents/bin`
+  // IS `~/Documents/bin`. A case-sensitive guard would wave it through and the
+  // walk would go on to read the protected path.
+  it("matches protected roots regardless of case", () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", "/Users/tester");
+    expect(
+      getLoginShellPathDirs(() =>
+        wrap([
+          "/Users/tester/documents/bin",
+          "/Users/tester/DOWNLOADS/bin",
+          "/Users/tester/Library/mobile documents/bin",
+          "/opt/homebrew/bin",
+        ]),
+      ),
+    ).toEqual(["/opt/homebrew/bin"]);
+  });
+
+  // The ordering guarantee — check a component against the protected roots
+  // BEFORE touching it — is what makes the whole thing work, so assert it
+  // directly on the only syscall resolution is allowed to make.
+  it.skipIf(process.platform === "win32")("never passes a protected path to readlink", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-touch-")));
+    const home = join(root, "home");
+    mkdirSync(join(home, "Documents", "real", "bin"), { recursive: true });
+    mkdirSync(join(home, "deep"), { recursive: true });
+    symlinkSync(join(home, "Documents", "real"), join(home, "bin"));
+    symlinkSync(join(home, "Documents"), join(home, "deep", "mid"));
+
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    const touched: string[] = [];
+    const readLink = (path: string): string => {
+      touched.push(path);
+      return readlinkSync(path);
+    };
+
+    getLoginShellPathDirs(
+      () =>
+        wrap([
+          join(home, "Documents", "bin"),
+          join(home, "documents", "bin"),
+          join(home, "bin", "bin"),
+          join(home, "deep", "mid", "real", "bin"),
+        ]),
+      readLink,
+    );
+
+    expect(touched.length).toBeGreaterThan(0);
+    expect(touched.filter((path) => path.toLowerCase().startsWith(join(home, "documents")))).toEqual([]);
+  });
+
   it.skipIf(process.platform === "win32")("does not loop forever on a symlink cycle", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-cycle-")));
     symlinkSync(join(root, "b"), join(root, "a"));
@@ -257,32 +309,35 @@ describe("probe script (real execution)", () => {
     for (const dir of dirs) expect(dir.startsWith("/")).toBe(true);
   });
 
-  // End-to-end over the real shell AND the real parse: a `$PATH` whose entries
-  // reach a protected root by spelling, by symlinked entry, and by symlinked
-  // ANCESTOR must produce no protected dir — while the fnm / nvm multishell
-  // case (a symlink under a temp root) still gets canonicalized in-shell,
-  // because that symlink is gone by the time the parse runs.
+  // End-to-end over the real shell AND the real parse. A `$PATH` entry can reach
+  // a protected root four ways — by spelling, as a symlink, through a symlinked
+  // ANCESTOR, and while wearing a spelling an earlier revision trusted (the fnm
+  // multishell name) — and none of them may be entered or returned.
   it.skipIf(process.platform === "win32")("never yields a protected dir, however the entry reaches one", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-probe-")));
     const home = join(root, "home");
-    const multishellTarget = join(root, "fnm-install", "bin");
-    // The real fnm shape: a per-session symlink under a `fnm_multishells` dir.
-    const multishellLink = join(root, "fnm_multishells", "1234_567", "bin");
+    const safeTarget = join(root, "fnm-install", "bin");
+    // A link carrying the fnm multishell NAME but pointing at Documents — the
+    // spelling that an earlier revision treated as inherently safe.
+    const multishellIntoProtected = join(root, "fnm_multishells", "9999_000", "bin");
+    const multishellSafe = join(root, "fnm_multishells", "1234_567", "bin");
     mkdirSync(join(home, "Documents", "real", "bin"), { recursive: true });
     mkdirSync(join(home, "deep"), { recursive: true });
     mkdirSync(join(root, "tools", "bin"), { recursive: true });
-    mkdirSync(multishellTarget, { recursive: true });
+    mkdirSync(safeTarget, { recursive: true });
     mkdirSync(join(root, "fnm_multishells", "1234_567"), { recursive: true });
+    mkdirSync(join(root, "fnm_multishells", "9999_000"), { recursive: true });
     // Lexically innocent, resolves into Documents: as the entry, and via ancestor.
     symlinkSync(join(home, "Documents", "real"), join(home, "bin"));
     symlinkSync(join(home, "Documents"), join(home, "deep", "mid"));
-    // The multishell shape: a symlink under a temp root, torn down with the shell.
-    symlinkSync(multishellTarget, multishellLink);
+    symlinkSync(join(home, "Documents", "real", "bin"), multishellIntoProtected);
+    symlinkSync(safeTarget, multishellSafe);
 
-    const protectedEntries = [
+    const mustNotLeak = [
       join(home, "Documents", "bin"),
       join(home, "bin", "bin"),
       join(home, "deep", "mid", "real", "bin"),
+      multishellIntoProtected,
     ];
     const r = spawnSync("/bin/sh", ["-c", buildProbeScript("darwin")], {
       encoding: "utf-8",
@@ -291,34 +346,36 @@ describe("probe script (real execution)", () => {
       env: {
         ...process.env,
         HOME: home,
-        PATH: [...protectedEntries, join(root, "tools", "bin"), multishellLink].join(":"),
+        PATH: [...mustNotLeak, join(root, "tools", "bin"), multishellSafe].join(":"),
       },
     });
     expect(r.error).toBeUndefined();
     expect(r.status).toBe(0);
 
-    // The shell never entered any of them: had `cd` resolved one, its RESOLVED
-    // path would be here, and every resolved path passes through Documents.
+    // The shell resolved nothing. Byte-identical echo is the proof: four of
+    // these entries are symlinks whose resolved spelling differs from what was
+    // written, so any `cd` — and therefore any traversal into the protected
+    // target — would show up as a changed line here.
     const raw = parseDirs(typeof r.stdout === "string" ? r.stdout : "");
-    expect(raw.filter((dir) => dir.includes(`${sep}Documents${sep}`))).toEqual([]);
-    // The multishell entry is canonicalized while its symlink is still alive.
-    expect(raw).toContain(multishellTarget);
-    expect(raw).not.toContain(multishellLink);
+    expect(raw).toEqual([...mustNotLeak, join(root, "tools", "bin"), multishellSafe]);
 
-    // And the parse drops the ones the shell could only pass through verbatim.
+    // The parse then drops every route into a protected root and resolves the rest.
     Object.defineProperty(process, "platform", { value: "darwin" });
     vi.stubEnv("HOME", home);
     const dirs = getLoginShellPathDirs(() => (typeof r.stdout === "string" ? r.stdout : null));
-    for (const entry of protectedEntries) expect(dirs).not.toContain(entry);
-    expect(dirs.filter((dir) => dir.includes(`${sep}Documents${sep}`))).toEqual([]);
-    expect(dirs).toContain(join(root, "tools", "bin"));
-    expect(dirs).toContain(multishellTarget);
+    expect(dirs).toEqual([join(root, "tools", "bin"), safeTarget]);
   });
 
-  it("emits the unguarded script on non-macOS platforms", () => {
+  it("emits a script with no filesystem access on macOS", () => {
+    const darwin = buildProbeScript("darwin");
+    expect(darwin).not.toContain("cd ");
+    expect(darwin).not.toContain("pwd");
+    expect(darwin).not.toContain("readlink");
+  });
+
+  it("keeps the shell canonicalization on non-macOS platforms", () => {
     const linux = buildProbeScript("linux");
-    expect(linux).not.toContain("case ");
-    expect(linux).not.toContain("$HOME");
+    expect(linux).toContain('(cd "$d" 2>/dev/null && pwd -P)');
     expect(buildProbeScript("win32")).toBe(linux);
   });
 });
