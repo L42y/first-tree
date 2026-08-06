@@ -560,9 +560,12 @@ describe("removeParticipantFromChat", () => {
     });
 
     // `workspace-leave` downgrades a departing owner to watcher and keeps
-    // `role='owner'`, so the owner row is not necessarily a speaker. The
-    // authority snapshot has to lock that agent row anyway — it is still the
-    // row the owner-side decision is read from.
+    // `role='owner'`, so the owner row is not necessarily a speaker. This
+    // pins the FUNCTIONAL rule for that shape only. It says nothing about
+    // whether the owner's agent row is locked: locking is a concurrency
+    // property, and a sequential assertion passes either way. The
+    // deterministic manager-reassignment race belongs with the ordering
+    // work — see the PR discussion.
     await leaveMeChat(app.db, chatId, owner.humanAgentUuid);
     expect(await membershipOf(app, chatId, owner.humanAgentUuid)).toEqual({
       accessMode: "watcher",
