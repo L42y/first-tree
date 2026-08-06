@@ -444,6 +444,45 @@ async function pauseCronJobsForRemovedSpeaker(
 }
 
 /**
+ * Hold shared membership across a live `inbox:deliver` socket send so removal
+ * cannot cancel the row (and soft-terminate) between claim-commit and
+ * `socket.send`. Caller already claimed `delivered`; we re-check speaker +
+ * status under the fence. Returns `undefined` when the frame must be skipped
+ * (removed speaker, cancelled/acked/reset row). `chatId`-less entries must not
+ * use this helper — they stay on the unfenced drain path.
+ */
+export async function withLiveInboxDeliveryFence<T>(
+  db: Database,
+  input: {
+    agentId: string;
+    chatId: string;
+    entryId: number;
+    inboxId: string;
+  },
+  action: (tx: Database) => Promise<T>,
+): Promise<T | undefined> {
+  return db.transaction(async (rawTx) => {
+    const tx = rawTx as unknown as Database;
+    await lockChatMembershipShared(tx, [input.chatId]);
+    if (!(await isChatSpeaker(tx, input.chatId, input.agentId))) return undefined;
+    const [entry] = await tx
+      .select({ id: inboxEntries.id })
+      .from(inboxEntries)
+      .where(
+        and(
+          eq(inboxEntries.id, input.entryId),
+          eq(inboxEntries.inboxId, input.inboxId),
+          eq(inboxEntries.chatId, input.chatId),
+          eq(inboxEntries.status, "delivered"),
+        ),
+      )
+      .limit(1);
+    if (!entry) return undefined;
+    return action(tx);
+  });
+}
+
+/**
  * Soft terminate is only live while the removal fence still holds: the agent
  * is not a speaker and the durable `(agent, chat)` session row is still
  * `evicted`. Hold the shared membership advisory for the entire `action` so

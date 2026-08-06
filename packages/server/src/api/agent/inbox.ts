@@ -7,6 +7,10 @@ import * as inboxService from "../../services/inbox.js";
 // drains entries via the WS `inbox:deliver` data plane and acks them with the
 // `inbox:ack` frame, so the HTTP write endpoints (`/ack`, `/renew`) have been
 // removed. See proposal hub-inbox-ws-data-plane §六.1.
+//
+// Phase-1 remove closes the WS claim→send race with membership shared fencing.
+// HTTP GET remains a debug surface: once a poll response is returned, that
+// payload cannot be recalled if membership changes afterward.
 export async function agentInboxRoutes(app: FastifyInstance): Promise<void> {
   app.get("/", async (request) => {
     const identity = requireAgent(request);

@@ -371,6 +371,9 @@ describe("Agent client WS branch fakes", () => {
     vi.spyOn(inboxService, "resetDeliveredForInboxes").mockResolvedValue(1);
     vi.spyOn(inboxService, "claimBacklogForPushFair").mockResolvedValue([]);
     vi.spyOn(inboxService, "claimBacklogForPushForChat").mockResolvedValue([]);
+    vi.spyOn(removeChatParticipant, "withLiveInboxDeliveryFence").mockImplementation(async (_db, _input, action) =>
+      action(_db as never),
+    );
     vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValue({ resetEntryIds: [] });
     vi.spyOn(inboxService, "countUnackedForScope").mockResolvedValue(0);
     vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValue({

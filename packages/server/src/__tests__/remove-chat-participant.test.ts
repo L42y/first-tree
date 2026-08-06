@@ -30,7 +30,11 @@ import { createCronJob, loadOutstanding, lockOwnerChatCronBarrier, updateCronJob
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
-import { softTerminateRemovedAgentSession, withLiveRemovedSessionFence } from "../services/remove-chat-participant.js";
+import {
+  softTerminateRemovedAgentSession,
+  withLiveInboxDeliveryFence,
+  withLiveRemovedSessionFence,
+} from "../services/remove-chat-participant.js";
 import { lockAndValidateScmPersonnelPlacement } from "../services/scm-target-chat-policy.js";
 import { resumeSuspendedSession } from "../services/session.js";
 import { appendLiveEvent } from "../services/session-event.js";
@@ -1196,6 +1200,145 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       sendSpy.mockRestore();
       await fencePool.end();
       await readdPool.end();
+      await observer.end();
+    }
+  });
+
+  it("inbox delivery fence skips stale claims after remove and holds shared until send completes", async () => {
+    const { app, owner, agent, chatId, ownerHeaders } = await setupGroup();
+    const sent = await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "deliver fence wake",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+    const [claimed] = await app.db
+      .update(inboxEntries)
+      .set({ status: "delivered" })
+      .where(
+        and(
+          eq(inboxEntries.inboxId, agent.agent.inboxId),
+          eq(inboxEntries.messageId, sent.message.id),
+          eq(inboxEntries.chatId, chatId),
+        ),
+      )
+      .returning({ id: inboxEntries.id, inboxId: inboxEntries.inboxId, chatId: inboxEntries.chatId });
+    expect(claimed?.chatId).toBe(chatId);
+
+    // Direction 1: claim already delivered → remove commits first → fence skips action.
+    {
+      const remove = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+        headers: ownerHeaders,
+      });
+      expect(remove.statusCode).toBe(200);
+      let actionRan = false;
+      const skipped = await withLiveInboxDeliveryFence(
+        app.db,
+        {
+          agentId: agent.agent.uuid,
+          chatId,
+          entryId: claimed!.id,
+          inboxId: agent.agent.inboxId,
+        },
+        async () => {
+          actionRan = true;
+          return true;
+        },
+      );
+      expect(skipped).toBeUndefined();
+      expect(actionRan).toBe(false);
+      const [row] = await app.db
+        .select({ status: inboxEntries.status })
+        .from(inboxEntries)
+        .where(eq(inboxEntries.id, claimed!.id));
+      expect(row?.status).toBe("cancelled");
+    }
+
+    // Re-add and seed a fresh delivered claim for the reverse barrier.
+    await ensureParticipant(app.db, chatId, agent.agent.uuid);
+    const sent2 = await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "deliver fence hold",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+    const [claimed2] = await app.db
+      .update(inboxEntries)
+      .set({ status: "delivered" })
+      .where(
+        and(
+          eq(inboxEntries.inboxId, agent.agent.inboxId),
+          eq(inboxEntries.messageId, sent2.message.id),
+          eq(inboxEntries.chatId, chatId),
+        ),
+      )
+      .returning({ id: inboxEntries.id });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for inbox delivery fence test");
+    const fenceAppName = `rm_inbox_f_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `rm_inbox_r_${crypto.randomUUID().slice(0, 8)}`;
+    const fencePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, fenceAppName));
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseAction!: () => void;
+      const actionHeld = new Promise<void>((resolve) => {
+        releaseAction = resolve;
+      });
+      let fenceReady!: () => void;
+      const fenceReadyP = new Promise<void>((resolve) => {
+        fenceReady = resolve;
+      });
+      let actionRan = false;
+
+      // Direction 2: fence holds shared → remove waits → action runs → remove cancels.
+      const fencePromise = withLiveInboxDeliveryFence(
+        fencePool,
+        {
+          agentId: agent.agent.uuid,
+          chatId,
+          entryId: claimed2!.id,
+          inboxId: agent.agent.inboxId,
+        },
+        async () => {
+          fenceReady();
+          await actionHeld;
+          actionRan = true;
+          return true;
+        },
+      );
+
+      await Promise.race([
+        fenceReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("inbox delivery fence barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const removePromise = removeParticipant(removePool, chatId, owner.humanAgentUuid, agent.agent.uuid);
+      await waitForPostgresLockWait(observer, removeAppName);
+
+      releaseAction();
+      await Promise.race([
+        Promise.all([fencePromise, removePromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("inbox fence vs remove deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      expect(actionRan).toBe(true);
+      const [row] = await app.db
+        .select({ status: inboxEntries.status })
+        .from(inboxEntries)
+        .where(eq(inboxEntries.id, claimed2!.id));
+      expect(row?.status).toBe("cancelled");
+    } finally {
+      await fencePool.end();
+      await removePool.end();
       await observer.end();
     }
   });

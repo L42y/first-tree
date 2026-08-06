@@ -62,7 +62,7 @@ import * as notificationService from "../../services/notification.js";
 import type { InboxPushHandler, Notifier } from "../../services/notifier.js";
 import * as presenceService from "../../services/presence.js";
 import { readModelCatalogRpcResult, storeModelCatalogRpcResult } from "../../services/provider-models-rpc.js";
-import { withLiveRemovedSessionFence } from "../../services/remove-chat-participant.js";
+import { withLiveInboxDeliveryFence, withLiveRemovedSessionFence } from "../../services/remove-chat-participant.js";
 import * as runtimeLivenessService from "../../services/runtime-liveness.js";
 import {
   agentRoutedTo,
@@ -874,12 +874,39 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         }
 
         for (const entry of entries) {
-          addInboxInFlight(agentId, entry.chatId, entry.id);
-          if (!sendInboxDeliverFrame(entry)) {
+          // chatId-less rows are not speaker-scoped; keep the historical
+          // claim→send path. Chat-scoped rows must re-check speaker +
+          // delivered under shared membership so remove cannot cancel and
+          // terminate between claim-commit and socket.send.
+          if (entry.chatId == null) {
+            addInboxInFlight(agentId, entry.chatId, entry.id);
+            if (!sendInboxDeliverFrame(entry)) {
+              removeInboxInFlight([entry.id]);
+              return;
+            }
+            continue;
+          }
+
+          const sent = await withLiveInboxDeliveryFence(
+            app.db,
+            {
+              agentId,
+              chatId: entry.chatId,
+              entryId: entry.id,
+              inboxId: entry.inboxId,
+            },
+            async () => {
+              if (socket.readyState !== socket.OPEN) return false;
+              addInboxInFlight(agentId, entry.chatId, entry.id);
+              return sendInboxDeliverFrame(entry);
+            },
+          );
+          if (sent === undefined) {
+            // Stale claim: cancelled / deleted / agent no longer speaker.
+            continue;
+          }
+          if (!sent) {
             removeInboxInFlight([entry.id]);
-            // Socket gone mid-drain — stop pushing. Remaining entries stay
-            // 'delivered'; the next bind from this client resets them and
-            // re-drains.
             return;
           }
         }
