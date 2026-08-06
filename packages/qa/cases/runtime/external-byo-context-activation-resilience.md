@@ -49,10 +49,14 @@ together.
   guidance, and leave any next-session obligation untouched. A different
   session or digest must not reuse that record. Interleave two old sessions'
   sync actions; the first global Plugin update must preserve both sessions and
-  make the second action idempotent. Inject an exit after the provider update
-  commits but before the sync command returns; the prewritten compatibility
-  fact must make both retry and the next lifecycle event usable without repair
-  guidance. For Codex,
+  make the second action idempotent. Issue a third action after the first sync
+  has scanned existing receipts but before provider mutation; issuance itself
+  must have already persisted its inert fact and recoverable action. Inject an
+  exit after the provider update commits but before the sync command returns;
+  the prewritten compatibility fact must make both retry and the next lifecycle
+  event usable without repair guidance. Repeat an already successful Claude
+  challenge and confirm its TTL-bound terminal result remains idempotently
+  successful. For Codex,
   require `/hooks` trust only when the provider reports a changed Hook identity.
   Both providers must use the updated adapter on the next session.
 - Independently tamper one stable stub, one provider-cache file, and one partial

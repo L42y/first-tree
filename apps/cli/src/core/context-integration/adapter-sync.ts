@@ -114,6 +114,7 @@ export function issueAdapterSyncAction(
     targetAdapterDigest: target.adapterDigest,
     expiresAt: new Date(Date.now() + SYNC_TTL_MS).toISOString(),
   };
+  if (input.provider === "claude-code") prepareCompatibleAdapterSession(receipt);
   writeReceipt(receipt);
   return {
     code: "adapter_sync_required",
@@ -156,9 +157,8 @@ export function synchronizeContextAdapter(
         adapterVersion: target.adapterVersion,
         adapterDigest: target.adapterDigest,
       });
-      if (driver.provider === "claude-code") writeCompatibleAdapterSession(receipt);
+      if (driver.provider === "claude-code") prepareCompatibleAdapterSession(receipt);
       rmSync(receiptPath(driver.provider, challenge), { force: true });
-      rmSync(receiptBackupPath(challenge), { force: true });
       return {
         updated: true as const,
         provider: driver.provider,
@@ -215,7 +215,6 @@ export function synchronizeContextAdapter(
       }
     }
     rmSync(receiptPath(driver.provider, challenge), { force: true });
-    if (driver.provider === "claude-code") rmSync(receiptBackupPath(challenge), { force: true });
     return {
       updated: true as const,
       provider: driver.provider,
@@ -242,8 +241,11 @@ function collectMatchingClaudeSyncReceipts(current: AdapterSyncReceipt): Adapter
     receiptNames = readdirSync(root, { withFileTypes: true })
       .filter((entry) => entry.isFile() && /^([0-9a-f]{48})\.json$/u.test(entry.name))
       .map((entry) => entry.name);
-  } catch {
-    return [current];
+  } catch (error) {
+    if (isMissing(error)) return [current];
+    throw new AdapterSyncRejectedError(
+      `The concurrent Claude Context update actions could not be inspected safely: ${message(error)}`,
+    );
   }
   const receipts = new Map<string, AdapterSyncReceipt>([[current.challenge, current]]);
   for (const receiptName of receiptNames) {
