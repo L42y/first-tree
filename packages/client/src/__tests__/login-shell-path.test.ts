@@ -366,6 +366,35 @@ describe("probe script (real execution)", () => {
     expect(dirs).toEqual([join(root, "tools", "bin"), safeTarget]);
   });
 
+  // Unquoted `$PATH` also undergoes PATHNAME expansion, so a wildcard entry
+  // makes the shell enumerate that directory — a protected-folder read, and one
+  // that leaks its entry names into the result — with no `cd` in sight. Both
+  // platforms split the same way, so both are covered.
+  it.skipIf(process.platform === "win32").each(["darwin", "linux"] as const)(
+    "echoes a wildcard PATH entry literally instead of expanding it (%s)",
+    (platform) => {
+      const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-glob-")));
+      mkdirSync(join(root, "Documents", "secret-a"), { recursive: true });
+      mkdirSync(join(root, "Documents", "secret-b"), { recursive: true });
+      const wildcard = join(root, "Documents", "*");
+
+      const r = spawnSync("/bin/sh", ["-c", buildProbeScript(platform)], {
+        encoding: "utf-8",
+        timeout: 4_000,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PATH: wildcard },
+      });
+      expect(r.error).toBeUndefined();
+
+      const raw = parseDirs(typeof r.stdout === "string" ? r.stdout : "");
+      expect(raw).not.toContain(join(root, "Documents", "secret-a"));
+      expect(raw).not.toContain(join(root, "Documents", "secret-b"));
+      // On darwin the literal entry is echoed; on linux `cd` fails on it and
+      // drops it. Either way the directory is never enumerated.
+      expect(raw).toEqual(platform === "darwin" ? [wildcard] : []);
+    },
+  );
+
   it("emits a script with no filesystem access on macOS", () => {
     const darwin = buildProbeScript("darwin");
     expect(darwin).not.toContain("cd ");

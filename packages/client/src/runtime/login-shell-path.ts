@@ -211,10 +211,16 @@ export function buildProbeScript(platform: NodeJS.Platform = process.platform): 
   // POSIX body run by the nested `sh`; uses only double quotes so the whole
   // string can be wrapped in single quotes for `/bin/sh -c '…'`. DELIM is a bare
   // word (letters + underscores), safe unquoted.
+  //
+  // `set -f` is load-bearing, not hygiene. Unquoted `$PATH` undergoes field
+  // splitting AND pathname expansion, so an entry spelled `$HOME/Documents/*`
+  // makes the shell ENUMERATE that directory — reading a protected folder and
+  // pulling its entry names into the result — before any of the code below
+  // runs. Disabling globbing keeps the split while leaving each entry literal.
   const body = platform === "darwin" ? 'printf "%s\\n" "$d"' : '(cd "$d" 2>/dev/null && pwd -P)';
   const posix =
     `printf %s ${DELIM}; ` +
-    `IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${body}; done; ` +
+    `set -f; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${body}; done; ` +
     `printf %s ${DELIM}`;
   return `/bin/sh -c '${posix}'`;
 }

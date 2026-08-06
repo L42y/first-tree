@@ -25,8 +25,12 @@ Codex external-Context project classifier.
 
 - Run on macOS, in the isolated QA run cell selected by the plan, under a user account whose TCC decisions for the
   runtime binary have not already been granted. A machine that previously approved these folders cannot answer property 1.
-- Install one provider so that it is reachable ONLY from the interactive login shell — e.g. `npm i -g` under nvm, with the
-  nvm init line in `~/.zshrc` and not in the daemon's service `PATH`.
+- Install one provider so that it is reachable ONLY from the interactive login shell — e.g. `npm i -g` under nvm or fnm,
+  with the version-manager init line in `~/.zshrc` and not in the daemon's service `PATH`. Prefer fnm with
+  `--use-on-cd`, because that puts a per-session symlink on `$PATH` that disappears with the shell: discovery must come
+  from the version manager's stable install dir, not from that link.
+- Put a wildcard entry on the login-shell `PATH` too (for example `$HOME/Documents/*`), since an unquoted expansion can
+  enumerate a protected folder without any explicit directory access.
 - Add protected directories to the login-shell `PATH` in all three ways they can be reached, because a guard can close
   one and leave the others open:
   - by spelling — `$HOME/Documents/bin`;
