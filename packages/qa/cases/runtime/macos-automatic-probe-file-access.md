@@ -27,8 +27,11 @@ Codex external-Context project classifier.
   runtime binary have not already been granted. A machine that previously approved these folders cannot answer property 1.
 - Install one provider so that it is reachable ONLY from the interactive login shell — e.g. `npm i -g` under nvm, with the
   nvm init line in `~/.zshrc` and not in the daemon's service `PATH`.
-- Add at least one protected directory to the login-shell `PATH` (for example `$HOME/Documents/bin`) so the probe has a
-  reason to touch it if the guard regresses.
+- Add protected directories to the login-shell `PATH` in all three ways they can be reached, because a guard can close
+  one and leave the others open:
+  - by spelling — `$HOME/Documents/bin`;
+  - as a symlinked entry — `$HOME/bin` symlinked to `$HOME/Documents/bin`;
+  - through a symlinked ancestor — `$HOME/deep/mid/bin`, where `$HOME/deep/mid` is symlinked to `$HOME/Documents`.
 
 ## Operate
 

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve, sep } from "node:path";
 
 /**
  * Unique marker that brackets the canonical dir list in the probe output so we
@@ -68,9 +69,11 @@ let failedAttempts = 0;
  * be gone. Resolving the symlink to the stable underlying install dir while the
  * shell lives hands back a path that still exists at search time.
  *
- * On macOS, entries under a TCC-protected root are skipped rather than
- * canonicalized, and any that survive canonicalization are dropped from the
- * result — see {@link MACOS_PROTECTED_HOME_SUBPATHS}.
+ * On macOS the shell canonicalizes only the per-session multishell dirs;
+ * everything else is
+ * canonicalized here by {@link resolveOutsideProtectedRoots}, which walks the
+ * path with `readlink` so a dir that resolves into a TCC-protected root is
+ * dropped WITHOUT ever being entered — see {@link MACOS_PROTECTED_HOME_SUBPATHS}.
  *
  * Properties:
  *   - **Memoized on success**: a probe that ran the shell, exited 0, and parsed a
@@ -97,7 +100,13 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell): str
   }
   const dirs = probe(runShell);
   if (dirs) {
-    memo = { dirs: dirs.filter((dir) => !protectedOnThisHost(dir)) };
+    const roots = protectedRootsOnThisHost();
+    memo = {
+      dirs:
+        roots.length === 0
+          ? dirs
+          : dirs.map((dir) => resolveOutsideProtectedRoots(dir, roots)).filter((dir): dir is string => dir !== null),
+    };
     return memo.dirs;
   }
   // Probe failed (spawn error / timeout / non-zero exit / parse miss). Don't
@@ -163,12 +172,18 @@ function probe(runShell: RunShell): string[] | null {
  * Verified end to end under bash, zsh, and sh; fish is covered by the
  * runtime-env-qa `DW7_fish_frozen` scenario.
  *
- * On macOS a `case` guard skips entries under a TCC-protected root
- * ({@link MACOS_PROTECTED_HOME_SUBPATHS}) instead of `cd`-ing into them, so this
- * automatic probe never triggers a Files & Folders consent prompt. `$HOME` is
- * read inside the shell rather than interpolated from Node so a home path
- * containing a quote can never break out of the `'…'` wrapper. On every other
- * platform the emitted script is byte-for-byte what it has always been.
+ * On macOS `cd` is NOT safe to run over arbitrary entries: `cd` resolves the
+ * whole path, so an entry that is a symlink into a protected root — or that has
+ * a symlinked ancestor — enters that root even though its spelling looks
+ * harmless. A lexical guard alone cannot see through either. So on macOS the
+ * shell canonicalizes ONLY the per-session multishell dirs that genuinely
+ * require in-shell resolution ({@link multishellCasePatterns}); every other
+ * entry is emitted verbatim, with no filesystem access at all, and
+ * {@link getLoginShellPathDirs} resolves it with `readlink` instead — see
+ * {@link resolveOutsideProtectedRoots}. `$HOME` is read
+ * inside the shell rather than interpolated from Node so a home path containing
+ * a quote can never break out of the `'…'` wrapper. On every other platform the
+ * emitted script is byte-for-byte what it has always been.
  *
  * @param platform test seam / platform selector for the protected-root guard.
  */
@@ -176,10 +191,15 @@ export function buildProbeScript(platform: NodeJS.Platform = process.platform): 
   // POSIX body run by the nested `sh`; uses only double quotes so the whole
   // string can be wrapped in single quotes for `/bin/sh -c '…'`. DELIM is a bare
   // word (letters + underscores), safe unquoted.
-  const skipProtected = platform === "darwin" ? `case "$d" in ${protectedCasePatterns()}) continue;; esac; ` : "";
+  const canonicalize = '(cd "$d" 2>/dev/null && pwd -P)';
+  const body =
+    platform === "darwin"
+      ? `case "$d" in ${protectedCasePatterns()}) continue;; ${multishellCasePatterns()}) ${canonicalize};; ` +
+        `*) printf "%s\\n" "$d";; esac`
+      : canonicalize;
   const posix =
     `printf %s ${DELIM}; ` +
-    `IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${skipProtected}(cd "$d" 2>/dev/null && pwd -P); done; ` +
+    `IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${body}; done; ` +
     `printf %s ${DELIM}`;
   return `/bin/sh -c '${posix}'`;
 }
@@ -196,6 +216,25 @@ function protectedCasePatterns(): string {
 }
 
 /**
+ * `case` alternatives for the per-session multishell dirs — the ONLY entries
+ * that must be canonicalized while the probe shell is alive, because their
+ * symlink is torn down when it exits and Node could no longer follow it.
+ *
+ * Matched by the tool-specific directory name rather than by "somewhere under a
+ * temp root". A temp root is not a safety guarantee: `$HOME` itself can sit
+ * under one, and then a broad temp pattern would re-admit exactly the symlink
+ * traversal this guard exists to close. These names are created by fnm / nvm,
+ * never by a user pointing at their own folders.
+ *
+ * A per-session symlink dir from some other tool is not canonicalized in-shell
+ * and will simply not resolve after the probe exits — the deliberate trade for
+ * not entering paths we cannot vet first.
+ */
+function multishellCasePatterns(): string {
+  return ["*/fnm_multishells/*", "*/nvm_multishells/*"].join("|");
+}
+
+/**
  * Escape a literal path fragment for use inside a `case` pattern: whitespace
  * would end the pattern word ("Library/Mobile Documents"), and glob
  * metacharacters would make it match more than the literal path.
@@ -204,14 +243,66 @@ function escapeCasePattern(literal: string): string {
   return literal.replace(/[\s\\*?[\]]/gu, (char) => `\\${char}`);
 }
 
-/** Is `dir` inside a TCC-protected root of this host's home? Non-macOS: never. */
-function protectedOnThisHost(dir: string): boolean {
-  if (process.platform !== "darwin") return false;
+/** This host's absolute TCC-protected roots. Empty off macOS, where none apply. */
+function protectedRootsOnThisHost(): string[] {
+  if (process.platform !== "darwin") return [];
   const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
-  return MACOS_PROTECTED_HOME_SUBPATHS.some((sub) => {
-    const root = join(home, sub);
-    return dir === root || dir.startsWith(`${root}/`);
-  });
+  return MACOS_PROTECTED_HOME_SUBPATHS.map((sub) => join(home, sub));
+}
+
+function insideAny(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => path === root || path.startsWith(`${root}${sep}`));
+}
+
+/** Give up rather than loop forever on a symlink cycle. */
+const MAX_SYMLINK_HOPS = 32;
+
+/**
+ * Canonicalize `dir`, or return `null` if doing so would mean reaching into a
+ * protected root.
+ *
+ * This exists because neither a lexical check nor `cd` can do the job alone. A
+ * lexical check cannot see that `~/bin` is a symlink to `~/Documents/bin`, and
+ * `cd` (or `realpath`, or `existsSync`) finds that out only by entering the
+ * protected directory — which is the access we are trying to avoid, not a way
+ * to detect it.
+ *
+ * So the path is walked one component at a time from the root. Each component
+ * is checked against the protected roots BEFORE it is touched, and the only
+ * syscall performed on it is `readlink`, which reads the link's own target and
+ * never follows it. A component that is not a symlink is simply appended.
+ * Because a symlink's target is re-walked from the root, an expansion that
+ * lands in a protected root is caught on the next iteration, before anything
+ * inside it is read — which covers the symlinked-ancestor case as well as a
+ * symlinked entry.
+ */
+function resolveOutsideProtectedRoots(dir: string, roots: readonly string[]): string | null {
+  let pending = resolve(dir).split(sep).filter(Boolean);
+  let resolved: string = sep;
+  let hops = 0;
+  while (pending.length > 0) {
+    const [head = "", ...rest] = pending;
+    const candidate = join(resolved, head);
+    if (insideAny(candidate, roots)) return null;
+    let target: string | null = null;
+    try {
+      target = readlinkSync(candidate);
+    } catch {
+      // Not a symlink, missing, or unreadable — nothing to follow either way.
+      // A missing dir stays in the result and simply fails the caller's
+      // existence check, exactly as an uncanonicalized entry did before.
+    }
+    if (target === null) {
+      resolved = candidate;
+      pending = rest;
+      continue;
+    }
+    if (++hops > MAX_SYMLINK_HOPS) return null;
+    const expanded = isAbsolute(target) ? target : join(resolved, target);
+    pending = [...resolve(expanded).split(sep).filter(Boolean), ...rest];
+    resolved = sep;
+  }
+  return resolved;
 }
 
 /** Spawn the user's interactive login shell to run the probe; raw stdout or null. */

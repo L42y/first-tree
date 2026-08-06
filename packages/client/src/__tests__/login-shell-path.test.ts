@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join, sep } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildProbeScript,
   getLoginShellPathDirs,
@@ -31,6 +31,14 @@ function wrap(dirs: string[]): string {
 }
 
 describe("getLoginShellPathDirs", () => {
+  // Pin a non-macOS baseline so the parsing tests never depend on the host: on
+  // macOS the result goes through protected-root resolution, which follows real
+  // symlinks (`/home` is a firmlink there) and would rewrite synthetic paths.
+  // The macOS tests opt in explicitly.
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+
   afterEach(() => {
     resetLoginShellPathDirsCache();
     vi.unstubAllEnvs();
@@ -134,10 +142,6 @@ describe("getLoginShellPathDirs", () => {
     expect(runShell).not.toHaveBeenCalled();
   });
 
-  // A dir the shell canonicalized INTO a protected root (e.g. `~/bin` symlinked
-  // to `~/Documents/bin`) survives the script's `case` guard, so the parsed
-  // result is filtered too — otherwise each provider resolver would go on to
-  // `existsSync` inside Documents.
   it("drops macOS TCC-protected dirs from a successful probe", () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
     vi.stubEnv("HOME", "/Users/tester");
@@ -159,6 +163,43 @@ describe("getLoginShellPathDirs", () => {
       "/Users/tester/.nvm/versions/node/v22.0.0/bin",
       "/Users/tester/Documents-archive/bin",
     ]);
+  });
+
+  // The spelling of a `$PATH` entry says nothing about where it lands: `~/bin`
+  // can be a symlink to `~/Documents/bin`, and `~/deep/mid/bin` can reach the
+  // same place through a symlinked ANCESTOR. Resolution therefore has to reject
+  // these without entering them — `readlink` reads the link itself, `cd` /
+  // `realpath` / `existsSync` would already be the protected access.
+  it.skipIf(process.platform === "win32")("rejects symlinks into a protected root without entering them", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-symlink-")));
+    const home = join(root, "home");
+    mkdirSync(join(home, "Documents", "real", "bin"), { recursive: true });
+    mkdirSync(join(home, "deep"), { recursive: true });
+    mkdirSync(join(home, "safe", "bin"), { recursive: true });
+    // `~/bin` -> `~/Documents/real`, so `~/bin/bin` is a protected target.
+    symlinkSync(join(home, "Documents", "real"), join(home, "bin"));
+    // `~/deep/mid` -> `~/Documents`, so the protected root is an ANCESTOR.
+    symlinkSync(join(home, "Documents"), join(home, "deep", "mid"));
+    // A symlink that stays outside must still resolve, and to its target.
+    symlinkSync(join(home, "safe", "bin"), join(home, "safe-link"));
+
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    const dirs = getLoginShellPathDirs(() =>
+      wrap([join(home, "bin", "bin"), join(home, "deep", "mid", "real", "bin"), join(home, "safe-link")]),
+    );
+
+    expect(dirs).toEqual([join(home, "safe", "bin")]);
+  });
+
+  it.skipIf(process.platform === "win32")("does not loop forever on a symlink cycle", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-cycle-")));
+    symlinkSync(join(root, "b"), join(root, "a"));
+    symlinkSync(join(root, "a"), join(root, "b"));
+
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", root);
+    expect(getLoginShellPathDirs(() => wrap([join(root, "a")]))).toEqual([]);
   });
 
   it("keeps protected-looking dirs on non-macOS hosts", () => {
@@ -216,20 +257,33 @@ describe("probe script (real execution)", () => {
     for (const dir of dirs) expect(dir.startsWith("/")).toBe(true);
   });
 
-  // The macOS guard must drop TCC-protected `$PATH` entries WITHOUT weakening
-  // the canonicalization the fnm / nvm multishell dirs depend on — that pairing
-  // is the whole point of the change, so it is asserted in one real shell run.
-  it.skipIf(process.platform === "win32")("skips macOS protected roots while still canonicalizing the rest", () => {
+  // End-to-end over the real shell AND the real parse: a `$PATH` whose entries
+  // reach a protected root by spelling, by symlinked entry, and by symlinked
+  // ANCESTOR must produce no protected dir — while the fnm / nvm multishell
+  // case (a symlink under a temp root) still gets canonicalized in-shell,
+  // because that symlink is gone by the time the parse runs.
+  it.skipIf(process.platform === "win32")("never yields a protected dir, however the entry reaches one", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-probe-")));
     const home = join(root, "home");
-    const multishellTarget = join(root, "multishell-target", "bin");
-    const multishellLink = join(root, "multishell-link");
-    mkdirSync(join(home, "Documents", "bin"), { recursive: true });
-    mkdirSync(join(home, "Library", "Mobile Documents", "bin"), { recursive: true });
+    const multishellTarget = join(root, "fnm-install", "bin");
+    // The real fnm shape: a per-session symlink under a `fnm_multishells` dir.
+    const multishellLink = join(root, "fnm_multishells", "1234_567", "bin");
+    mkdirSync(join(home, "Documents", "real", "bin"), { recursive: true });
+    mkdirSync(join(home, "deep"), { recursive: true });
     mkdirSync(join(root, "tools", "bin"), { recursive: true });
     mkdirSync(multishellTarget, { recursive: true });
+    mkdirSync(join(root, "fnm_multishells", "1234_567"), { recursive: true });
+    // Lexically innocent, resolves into Documents: as the entry, and via ancestor.
+    symlinkSync(join(home, "Documents", "real"), join(home, "bin"));
+    symlinkSync(join(home, "Documents"), join(home, "deep", "mid"));
+    // The multishell shape: a symlink under a temp root, torn down with the shell.
     symlinkSync(multishellTarget, multishellLink);
 
+    const protectedEntries = [
+      join(home, "Documents", "bin"),
+      join(home, "bin", "bin"),
+      join(home, "deep", "mid", "real", "bin"),
+    ];
     const r = spawnSync("/bin/sh", ["-c", buildProbeScript("darwin")], {
       encoding: "utf-8",
       timeout: 4_000,
@@ -237,25 +291,28 @@ describe("probe script (real execution)", () => {
       env: {
         ...process.env,
         HOME: home,
-        PATH: [
-          join(home, "Documents", "bin"),
-          join(home, "Library", "Mobile Documents", "bin"),
-          join(root, "tools", "bin"),
-          multishellLink,
-        ].join(":"),
+        PATH: [...protectedEntries, join(root, "tools", "bin"), multishellLink].join(":"),
       },
     });
     expect(r.error).toBeUndefined();
     expect(r.status).toBe(0);
 
-    const dirs = parseDirs(typeof r.stdout === "string" ? r.stdout : "");
-    // Protected roots never reached — not even a `cd`.
-    expect(dirs).not.toContain(join(home, "Documents", "bin"));
-    expect(dirs).not.toContain(join(home, "Library", "Mobile Documents", "bin"));
-    // Everything else keeps today's behavior, symlink canonicalization included.
+    // The shell never entered any of them: had `cd` resolved one, its RESOLVED
+    // path would be here, and every resolved path passes through Documents.
+    const raw = parseDirs(typeof r.stdout === "string" ? r.stdout : "");
+    expect(raw.filter((dir) => dir.includes(`${sep}Documents${sep}`))).toEqual([]);
+    // The multishell entry is canonicalized while its symlink is still alive.
+    expect(raw).toContain(multishellTarget);
+    expect(raw).not.toContain(multishellLink);
+
+    // And the parse drops the ones the shell could only pass through verbatim.
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    const dirs = getLoginShellPathDirs(() => (typeof r.stdout === "string" ? r.stdout : null));
+    for (const entry of protectedEntries) expect(dirs).not.toContain(entry);
+    expect(dirs.filter((dir) => dir.includes(`${sep}Documents${sep}`))).toEqual([]);
     expect(dirs).toContain(join(root, "tools", "bin"));
     expect(dirs).toContain(multishellTarget);
-    expect(dirs).not.toContain(multishellLink);
   });
 
   it("emits the unguarded script on non-macOS platforms", () => {
