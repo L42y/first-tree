@@ -51,7 +51,8 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { BadRequestError, CallerNotSpeakerError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatSpeakerAndAgentSnapshot } from "./chat-membership-lock.js";
+import { lockChatMembershipMutation, lockChatSpeakerAndAgentSnapshot } from "./chat-membership-lock.js";
+import { openRequestPredicate } from "./need-you.js";
 import { recomputeChatWatchers } from "./participant-mode.js";
 
 export type RemoveParticipantArgs = {
@@ -120,34 +121,22 @@ async function keepsMembershipAfterRemoval(
   return Boolean(rows[0]?.anchored);
 }
 
-/**
- * An unresolved `format='request'` message addressed to `agentId`. Mirrors
- * `need-you.ts::openRequestPredicate` — same request/resolution authority the
- * review queue and `open_request_count` derive from.
- */
-function openRequestForTarget(agentId: string) {
-  return and(
-    eq(messages.format, "request"),
-    sql`${messages.metadata} -> 'mentions' @> jsonb_build_array(${agentId}::text)`,
-    sql`NOT EXISTS (
-      SELECT 1 FROM ${messages} AS resolver
-      WHERE resolver.chat_id = ${messages.chatId}
-        AND resolver.metadata -> 'resolves' ->> 'request' = ${messages.id}::text
-        AND resolver.metadata -> 'resolves' ->> 'kind' IN ('answered', 'closed')
-        AND resolver.sender_id IN (${messages.senderId}, ${agentId})
-    )`,
-  );
-}
-
 /** The owning member behind the chat's `role='owner'` row, if the chat still has one. */
-async function loadChatOwnerMemberId(db: Database, chatId: string): Promise<string | null> {
+async function loadChatOwnerAgentId(db: Database, chatId: string): Promise<string | null> {
+  // Deliberately unfiltered on access_mode: `leaveAsParticipant` flips a
+  // departing owner to `watcher` while preserving `role`, so the owner row
+  // is not necessarily a speaker.
   const [row] = await db
-    .select({ ownerMemberId: agents.managerId })
+    .select({ agentId: chatMembership.agentId })
     .from(chatMembership)
-    .innerJoin(agents, eq(agents.uuid, chatMembership.agentId))
     .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.role, "owner")))
     .limit(1);
-  return row?.ownerMemberId ?? null;
+  return row?.agentId ?? null;
+}
+
+async function loadOwningMember(db: Database, agentId: string): Promise<string | null> {
+  const [row] = await db.select({ managerId: agents.managerId }).from(agents).where(eq(agents.uuid, agentId)).limit(1);
+  return row?.managerId ?? null;
 }
 
 /**
@@ -170,7 +159,20 @@ export async function removeParticipantFromChat(
     // exists for exactly that — it locks the chat, its speaker rows, and the
     // named agent rows FOR UPDATE in one UUID-sorted set, so manager
     // transfers cannot invalidate owner authority mid-transaction.
-    await lockChatSpeakerAndAgentSnapshot(tx, [chatId], [callerAgentId, targetAgentId]);
+    // Take the membership fence first so the owner row cannot move, read who
+    // the owner is, then lock the full authority set — caller, target AND the
+    // owner's agent row. The snapshot helper only locks `access_mode='speaker'`
+    // memberships plus the ids handed to it, and a `role='owner'` row is not
+    // necessarily a speaker (`workspace-leave` downgrades an owner to watcher
+    // while preserving the role), so the owner id has to be passed explicitly
+    // or its `manager_id` stays free to change under the decision below.
+    await lockChatMembershipMutation(tx, [chatId]);
+    const chatOwnerAgentId = await loadChatOwnerAgentId(tx, chatId);
+    await lockChatSpeakerAndAgentSnapshot(
+      tx,
+      [chatId],
+      chatOwnerAgentId ? [callerAgentId, targetAgentId, chatOwnerAgentId] : [callerAgentId, targetAgentId],
+    );
 
     const [chat] = await tx
       .select({ id: chats.id, metadata: chats.metadata })
@@ -204,7 +206,7 @@ export async function removeParticipantFromChat(
       throw new ForbiddenError("The chat owner cannot be removed from their own chat");
     }
 
-    const chatOwnerMemberId = await loadChatOwnerMemberId(tx, chatId);
+    const chatOwnerMemberId = chatOwnerAgentId ? await loadOwningMember(tx, chatOwnerAgentId) : null;
     const callerIsOwnerSide =
       caller.role === "owner" || (chatOwnerMemberId !== null && chatOwnerMemberId === caller.ownerMemberId);
     const targetIsCallersOwnAgent = target.type !== "human" && target.ownerMemberId === caller.ownerMemberId;
@@ -226,7 +228,7 @@ export async function removeParticipantFromChat(
       const [openRequest] = await tx
         .select({ id: messages.id })
         .from(messages)
-        .where(and(eq(messages.chatId, chatId), openRequestForTarget(targetAgentId)))
+        .where(and(eq(messages.chatId, chatId), openRequestPredicate(targetAgentId)))
         .limit(1);
       if (openRequest) {
         throw new ConflictError(

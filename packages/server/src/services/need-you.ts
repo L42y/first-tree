@@ -38,7 +38,7 @@ function parseNeedYouCursor(cursor: string): { createdAt: Date; id: string } {
   return { createdAt, id };
 }
 
-function openRequestPredicate(viewerAgentId: string) {
+export function openRequestPredicate(viewerAgentId: string) {
   return and(
     eq(messages.format, MESSAGE_FORMATS.REQUEST),
     sql`${messages.metadata} -> 'mentions' @> jsonb_build_array(${viewerAgentId}::text)`,

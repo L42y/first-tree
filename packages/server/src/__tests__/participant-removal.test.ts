@@ -17,7 +17,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat, leaveMeChat } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import { removeParticipantFromChat } from "../services/participant-removal.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
@@ -546,6 +546,38 @@ describe("removeParticipantFromChat", () => {
     });
 
     expect((await membershipOf(app, chatId, other.humanAgentUuid))?.accessMode).toBe("watcher");
+  });
+
+  it("still resolves owner-side when the chat owner is a watcher, not a speaker", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const ownerAgent = await ownedAgent(app, owner.memberId, owner.organizationId, "ownerbot");
+    const guestOwner = await createTestAdmin(app);
+    const guest = await ownedAgent(app, guestOwner.memberId, guestOwner.organizationId, "guestbot");
+
+    const { chatId } = await createMeChat(app.db, owner.humanAgentUuid, owner.organizationId, {
+      participantIds: [ownerAgent.uuid, guest.uuid],
+    });
+
+    // `workspace-leave` downgrades a departing owner to watcher and keeps
+    // `role='owner'`, so the owner row is not necessarily a speaker. The
+    // authority snapshot has to lock that agent row anyway — it is still the
+    // row the owner-side decision is read from.
+    await leaveMeChat(app.db, chatId, owner.humanAgentUuid);
+    expect(await membershipOf(app, chatId, owner.humanAgentUuid)).toEqual({
+      accessMode: "watcher",
+      role: "owner",
+    });
+
+    // The owner's own agent is still a speaker and shares their owning
+    // member, so it counts as owner-side and may remove the guest.
+    await removeParticipantFromChat(app.db, {
+      chatId,
+      callerAgentId: ownerAgent.uuid,
+      targetAgentId: guest.uuid,
+    });
+
+    expect(await membershipOf(app, chatId, guest.uuid)).toBeNull();
   });
 
   it("does not resurrect the removed agent through the watcher recompute", async () => {
