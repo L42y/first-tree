@@ -47,8 +47,13 @@ const GUARDED_CLIENT_FILES = [
   "runtime/handler.ts",
   "runtime/runtime-notice.ts",
   "runtime/session-manager.ts",
+  "runtime/error-taxonomy.ts",
   "handlers/auth-error-hint.ts",
 ] as const;
+
+/** Concrete provider binary / handler implementation modules (not support seams). */
+const CONCRETE_PROVIDER_BINARY_IMPORT = /from ["']\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary\.js["']/;
+const CONCRETE_PROVIDER_HANDLER_IMPORT = /from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -147,18 +152,62 @@ describe("runtime provider architecture guard", () => {
         // a concrete runtime id (including the retired silent Claude-era default).
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not hard-code provider literal ${hit}`).toBeNull();
-        expect(source).not.toMatch(/from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/);
+        expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
         expect(source).toContain("runtimeProviderSchema");
         expect(source).toMatch(/runtimeProvider is required/);
         continue;
       }
 
-      expect(source).not.toMatch(/from ["'].*handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)/);
+      if (relPosix === "runtime/error-taxonomy.ts") {
+        // Generic taxonomy consumes normalized binary-failure signals only.
+        expect(source).toContain("recognizeProviderBinaryFailure");
+        expect(source).toContain("provider-support/binary-failure");
+        expect(source).not.toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
+        expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+        expect(source).not.toMatch(/from ["']\.\/(?:codex|cursor|grok|pi)-binary/);
+        continue;
+      }
+
+      expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
       if (relPosix === "runtime/handler.ts" || relPosix === "runtime/runtime.ts") {
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not contain ${hit}`).toBeNull();
         expect(source).not.toContain("installHandlers");
       }
+    }
+  });
+
+  it("keeps the provider-support binary-failure seam free of concrete provider implementations", () => {
+    const rel = "runtime/provider-support/binary-failure.ts";
+    const source = readFileSync(join(clientSrc, rel), "utf8");
+    expect(source).toContain("recognizeProviderBinaryFailure");
+    expect(source).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
+    expect(source).not.toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
+    expect(source).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+    expect(source).not.toMatch(/from ["']\.\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary/);
+    expect(source).not.toMatch(/from ["'].*handlers\//);
+    // Match rules are owned here — binary modules must re-export, not duplicate.
+    expect(source).toContain("isCodexBinaryMissingError");
+    expect(source).toContain("isCursorBinaryMissingError");
+    expect(source).toContain("isGrokBinaryMissingError");
+    expect(source).toContain("isPiBinaryMissingError");
+  });
+
+  it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {
+    for (const [file, symbol] of [
+      ["runtime/codex-binary.ts", "isCodexBinaryMissingError"],
+      ["runtime/cursor-binary.ts", "isCursorBinaryMissingError"],
+      ["runtime/grok-binary.ts", "isGrokBinaryMissingError"],
+      ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
+    ] as const) {
+      const source = readFileSync(join(clientSrc, file), "utf8");
+      expect(source, `${file} must re-export ${symbol} from provider-support`).toContain(
+        'from "./provider-support/binary-failure.js"',
+      );
+      expect(source).toContain(symbol);
+      // No second owner of the match tables / regexes.
+      expect(source).not.toMatch(/BINARY_MISSING_PATTERNS/);
+      expect(source).not.toMatch(/function is(?:Codex|Cursor|Grok|Pi)BinaryMissingError/);
     }
   });
 
