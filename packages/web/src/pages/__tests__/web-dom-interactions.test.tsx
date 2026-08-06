@@ -1438,6 +1438,7 @@ describe("web DOM interaction coverage", () => {
   it("renders friendly copy for callback error fragments", async () => {
     const { OAuthCompletePage } = await import("../oauth-complete.js");
     const { beginAuthAttempt } = await import("../../auth/auth-analytics.js");
+    const { rememberGithubAccountLinkReturn } = await import("../../lib/github-account-link-return.js");
     const replaceState = vi.fn();
     Object.defineProperty(window, "history", { configurable: true, value: { replaceState } });
 
@@ -1451,10 +1452,11 @@ describe("web DOM interaction coverage", () => {
         pathname: "/auth/github/complete",
       },
     });
+    rememberGithubAccountLinkReturn("org-1");
     const expired = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("took too long or was already used", expired.container);
     const back = expired.container.querySelector<HTMLAnchorElement>("a");
-    expect(back?.getAttribute("href")).toBe("/settings/github");
+    expect(back?.getAttribute("href")).toBe("/settings/github?error=state-expired&flow=link");
     await unmountRoot(expired.root);
 
     // Provider cancellation closes the paired sign-in attempt with a fixed,
@@ -1483,6 +1485,41 @@ describe("web DOM interaction coverage", () => {
     // No `next` in the fragment → the way out defaults to the app root.
     expect(notAdmin.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe("/");
     await unmountRoot(notAdmin.root);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        hash: "#error=install-not-verified&next=/settings/github&expectedGithubLogin=linked-user&callbackIntent=install",
+        pathname: "/auth/github/complete",
+      },
+    });
+    const mismatch = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
+    await waitForText("Use @linked-user, then try again", mismatch.container);
+    expect(mismatch.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
+      "/settings/github?error=install-not-verified&flow=install",
+    );
+    await unmountRoot(mismatch.root);
+
+    const { hasGithubInstallAttempt, rememberGithubInstallAttempt } = await import(
+      "../../lib/github-install-attempt.js"
+    );
+    rememberGithubInstallAttempt("org-original");
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        hash: "#error=state-expired",
+        pathname: "/auth/github/complete",
+      },
+    });
+    const expiredInstall = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
+    await waitForText("took too long or was already used", expiredInstall.container);
+    expect(expiredInstall.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
+      "/settings/github?error=state-expired&flow=install",
+    );
+    expect(hasGithubInstallAttempt()).toBe(true);
+    await unmountRoot(expiredInstall.root);
   });
 
   it("activates the callback org only when the server pins it", async () => {
