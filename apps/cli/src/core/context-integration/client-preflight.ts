@@ -414,7 +414,7 @@ function validCachedResolution(value: unknown): value is CachedSessionProject["r
       typeof project === "object" &&
       project !== null &&
       Reflect.get(project, "kind") === "pathless" &&
-      (source === "codex_documents_v1" || source === "explicit_pathless")
+      (source === "claude_project_dir_unavailable" || source === "codex_documents_v1" || source === "explicit_pathless")
     );
   }
   return (

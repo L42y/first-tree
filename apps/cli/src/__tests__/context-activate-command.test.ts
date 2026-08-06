@@ -197,12 +197,13 @@ describe("context activate command", () => {
     });
 
     await runContextActivate(context({ provider: "claude-code", adapterDigest: "sha256:current" }), {
-      readHookInput: () => ({ session_id: "session-new", cwd: "/work" }),
+      readHookInput: () => ({ session_id: "session-new", cwd: "/work", source: "startup" }),
     });
 
     expect(mocks.consumeNextSession).toHaveBeenCalledWith({
       provider: "claude-code",
       adapterDigest: "sha256:current",
+      sessionStartSource: "startup",
     });
     expect(mocks.resolveProject).toHaveBeenCalledAfter(mocks.consumeNextSession);
     expect(mocks.activateExternal).toHaveBeenCalledOnce();

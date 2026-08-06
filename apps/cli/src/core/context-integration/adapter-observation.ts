@@ -48,19 +48,16 @@ export function inspectContextAdapterNextSessionObligation(): ContextAdapterNext
   return readNextSessionRequiredMarker()?.kind ?? null;
 }
 
-/**
- * A Claude SessionStart from the current deterministic adapter is the adoption
- * boundary. The session may be a fresh task or another provider lifecycle
- * start, but it can never be an event from the pre-repair adapter.
- */
+/** A fresh Claude startup from the current deterministic adapter is the adoption boundary. */
 export function consumeContextAdapterNextSessionObligation(
   input: {
     provider: ContextIntegrationProvider;
     adapterDigest: string;
+    sessionStartSource?: string;
   },
   options: { releaseRoot?: string; coreRoot?: string } = {},
 ): ContextAdapterNextSessionObligationKind | null {
-  if (input.provider !== "claude-code") return null;
+  if (input.provider !== "claude-code" || input.sessionStartSource !== "startup") return null;
   return withAccountStateMutationLock(() => {
     const release = resolveContextIntegrationRelease(options.releaseRoot, { coreRoot: options.coreRoot });
     const install = readContextIntegrationInstallManifest("claude-code");

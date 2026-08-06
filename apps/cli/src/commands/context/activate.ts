@@ -126,7 +126,11 @@ export async function runContextActivate(
       });
       return;
     }
-    consumeContextAdapterNextSessionObligation({ provider, adapterDigest: suppliedAdapterDigest });
+    consumeContextAdapterNextSessionObligation({
+      provider,
+      adapterDigest: suppliedAdapterDigest,
+      sessionStartSource: hookInput.source,
+    });
     const resolution = resolveSessionContextProject(
       provider,
       { cwd: hookInput.cwd, sessionId: hookInput.session_id },
@@ -156,14 +160,15 @@ export async function runContextActivate(
   }
 }
 
-function readHookInput(): { cwd?: string; session_id?: string } {
+function readHookInput(): { cwd?: string; session_id?: string; source?: string } {
   const input = readFileSync(0, "utf8");
   if (Buffer.byteLength(input) > 64 * 1024) throw new Error("hook input is too large");
   if (!input.trim()) return {};
-  const parsed = JSON.parse(input) as { cwd?: unknown; session_id?: unknown };
+  const parsed = JSON.parse(input) as { cwd?: unknown; session_id?: unknown; source?: unknown };
   return {
     ...(typeof parsed.cwd === "string" && parsed.cwd.length > 0 ? { cwd: parsed.cwd } : {}),
     ...(typeof parsed.session_id === "string" && parsed.session_id.length > 0 ? { session_id: parsed.session_id } : {}),
+    ...(typeof parsed.source === "string" && parsed.source.length > 0 ? { source: parsed.source } : {}),
   };
 }
 

@@ -51,7 +51,11 @@ describe("Claude next-session adapter adoption", () => {
     );
     expect(
       consumeContextAdapterNextSessionObligation(
-        { provider: "claude-code", adapterDigest: `sha256:${"0".repeat(64)}` },
+        {
+          provider: "claude-code",
+          adapterDigest: `sha256:${"0".repeat(64)}`,
+          sessionStartSource: "startup",
+        },
         { releaseRoot, coreRoot },
       ),
     ).toBeNull();
@@ -59,12 +63,34 @@ describe("Claude next-session adapter adoption", () => {
 
     expect(
       consumeContextAdapterNextSessionObligation(
-        { provider: "claude-code", adapterDigest: target.adapterDigest },
+        { provider: "claude-code", adapterDigest: target.adapterDigest, sessionStartSource: "startup" },
         { releaseRoot, coreRoot },
       ),
     ).toBe("standalone_repair");
     expect(inspectContextAdapterNextSessionObligation()).toBeNull();
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).not.toThrow();
+  });
+
+  it.each([
+    "resume",
+    "clear",
+    "compact",
+    undefined,
+  ])("does not consume the repair marker for an existing-session lifecycle source (%s)", (sessionStartSource) => {
+    const release = installCurrentAdapter();
+    const target = release.manifest.providers["claude-code"];
+    beginContextAdapterNextSessionObligation(release.manifest, "standalone_repair");
+
+    expect(
+      consumeContextAdapterNextSessionObligation(
+        { provider: "claude-code", adapterDigest: target.adapterDigest, sessionStartSource },
+        { releaseRoot, coreRoot },
+      ),
+    ).toBeNull();
+    expect(inspectContextAdapterNextSessionObligation()).toBe("standalone_repair");
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
+      "Start a new session",
+    );
   });
 
   it("restores the previous marker if provider installation fails", () => {
