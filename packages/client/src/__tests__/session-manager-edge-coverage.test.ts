@@ -3326,37 +3326,114 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
-  it("retires a handler whose operator suspend times out and lets later input resume", async () => {
+  it("establishes inbox recovery debt before resuming after an operator suspend timeout", async () => {
     vi.useFakeTimers();
+    let initialCtx: SessionContext | undefined;
+    let initialHead: SessionMessage | undefined;
     const oldHandler = handler({
+      start: vi.fn().mockImplementation((message, ctx, token) => {
+        initialCtx = ctx;
+        initialHead = message;
+        token?.processingStarted(message);
+        return new Promise<never>(() => {});
+      }),
+      inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" } as const),
       suspend: vi.fn(() => new Promise<void>(() => {})),
-      shutdown: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn(() => new Promise<void>(() => {})),
     });
+    let freshCtx: SessionContext | undefined;
+    let freshMessage: SessionMessage | undefined;
     const freshHandler = handler({
-      resume: vi
-        .fn()
-        .mockResolvedValue({ sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+      start: vi.fn().mockImplementation(async (message, ctx) => {
+        freshCtx = ctx;
+        freshMessage = message;
+        return { sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
     });
-    const sm = makeManager({ handlers: [freshHandler] });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sm = makeManager({ handlers: [oldHandler, freshHandler], ackEntry, recoverChat });
     const i = internals(sm);
-    const chatId = "chat-resume-after-suspend-timeout";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
-    i._activeCount = 1;
+    const chatId = "chat-timeout-recovery-before-resume";
+    const headEntry = mockEntry({ id: 9100, chatId, messageId: "msg-timeout-head" });
+    const queuedTailEntry = mockEntry({ id: 9101, chatId, messageId: "msg-timeout-queued-tail" });
+
+    const initialDispatch = sm.dispatch(headEntry);
+    void initialDispatch;
+    await vi.waitFor(() => expect(oldHandler.start).toHaveBeenCalledTimes(1));
+    if (!initialCtx || !initialHead) throw new Error("initial route was not captured");
+    await sm.dispatch(queuedTailEntry);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const laterDispatch = sm.dispatch(mockEntry({ id: 9101, chatId, messageId: "msg-after-timeout" }));
+    const laterDispatch = sm.dispatch(mockEntry({ id: 9102, chatId, messageId: "msg-after-timeout" }));
 
     await vi.advanceTimersByTimeAsync(29_999);
-    expect(freshHandler.resume).not.toHaveBeenCalled();
+    expect(freshHandler.start).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
     await laterDispatch;
 
-    expect(i.sessions.get(chatId)?.suspending).toBeNull();
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
-    expect(freshHandler.resume).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(oldHandler.shutdown).toHaveBeenCalledTimes(1));
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(ackEntry).toHaveBeenCalledWith(9100);
+    expect(ackEntry).not.toHaveBeenCalledWith(9101);
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(freshHandler.start).not.toHaveBeenCalled();
 
+    await sm.dispatch(queuedTailEntry);
+
+    const recoveryOrder = recoverChat.mock.invocationCallOrder[0];
+    const resumeOrder = vi.mocked(freshHandler.start).mock.invocationCallOrder[0];
+    expect(recoveryOrder).toBeDefined();
+    expect(resumeOrder).toBeDefined();
+    expect(Number(recoveryOrder)).toBeLessThan(Number(resumeOrder));
+    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(freshHandler.start).toHaveBeenCalledTimes(1);
+    if (!freshCtx || !freshMessage) throw new Error("fresh route was not captured");
+    await freshCtx.finishTurn(freshMessage, { status: "success", terminal: true });
+
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toThrow(
+      "timed-out route producer is not confirmed settled",
+    );
+    await sm.shutdown();
+  });
+
+  it("keeps an abandoned suspend teardown from blocking later resumes or manager shutdown", async () => {
+    vi.useFakeTimers();
+    const oldHandler = handler({
+      suspend: vi.fn(() => new Promise<void>(() => {})),
+      shutdown: vi.fn(() => new Promise<void>(() => {})),
+    });
+    let freshCtx: SessionContext | undefined;
+    let freshMessage: SessionMessage | undefined;
+    const freshHandler = handler({
+      resume: vi.fn().mockImplementation(async (message, _sessionId, ctx) => {
+        freshCtx = ctx;
+        freshMessage = message;
+        return { sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+    });
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-abandoned-suspend-teardown";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const firstDispatch = sm.dispatch(mockEntry({ id: 9110, chatId, messageId: "msg-first-resume" }));
+    await vi.advanceTimersByTimeAsync(30_000);
+    await firstDispatch;
+
+    expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
+    expect(freshHandler.resume).toHaveBeenCalledTimes(1);
+    if (!freshCtx || !freshMessage) throw new Error("first fresh resume was not captured");
+    await freshCtx.finishTurn(freshMessage, { status: "success", terminal: true });
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await i.sessions.get(chatId)?.suspending;
+    await sm.dispatch(mockEntry({ id: 9111, chatId, messageId: "msg-second-resume" }));
+
+    expect(freshHandler.resume).toHaveBeenCalledTimes(2);
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toThrow("not confirmed stopped");
     await sm.shutdown();
   });
 

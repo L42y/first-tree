@@ -671,12 +671,20 @@ export class SessionManager {
    * Per-chat teardown debt: handlers detached from their SessionEntry (LRU
    * eviction, failSessionForRecovery, abortUnownedRoute, terminal cleanup,
    * canceled fresh-start, resume/retry handler replacement) without a
-   * CONFIRMED stop. A ref'd terminate joins/strictly tears down every
-   * pending handler of the chat before it may ack; confirmed stops drop out
-   * of the set. Entries are registered at the detach point (see
+   * CONFIRMED stop. A ref'd terminate joins/strictly tears down ordinary
+   * pending handlers before it may ack; an abandoned suspend handler makes
+   * that terminate fail closed without joining the lost callback. Confirmed
+   * stops drop out of the set. Entries are registered at the detach point (see
    * `detachHandlerWithPendingTeardown` / `registerPendingTeardown`).
    */
   private readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
+  /**
+   * A manual suspend request whose completion timed out has lost its
+   * trustworthy join boundary. The handler remains retired and tracked as
+   * teardown debt, but ordinary route admission must not join that same raw
+   * callback forever. Reset still fails closed while the stop is unconfirmed.
+   */
+  private readonly abandonedSuspendHandlers = new WeakSet<AgentHandler>();
   /**
    * In-flight route producers (start/resume/retry provider calls), per chat.
    * Tracked from `beginRouteTransition` until the route settles: a canceled
@@ -684,9 +692,12 @@ export class SessionManager {
    * its pre-materialization shutdown ran as a no-op), and only the
    * producer's settle funnels that materialization into
    * `discardStaleRouteTransition` → teardown debt. Terminate and manager
-   * shutdown join these before they may ack/return.
+   * shutdown join these before they may ack/return, except for a producer
+   * explicitly abandoned by the timed-out suspend generation boundary.
    */
   private readonly routeProducers = new Map<string, Set<Promise<void>>>();
+  /** Producer joins invalidated by the same generation boundary as a timed-out manual suspend. */
+  private readonly abandonedRouteProducers = new WeakSet<Promise<void>>();
   /**
    * Per-chat single-flight registry for `runRetry` executions. An
    * overlapping trigger (timer fire + immediate delivery trigger) joins the
@@ -1132,6 +1143,12 @@ export class SessionManager {
           session != null &&
           session.handlerStoppedBySuspend !== session.handler &&
           (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
+        if (session && this.abandonedSuspendHandlers.has(session.handler)) {
+          throw asTerminateError(
+            "teardown",
+            new Error(`timed-out suspend handler is not confirmed stopped for chat ${chatId}`),
+          );
+        }
         if (session && needsTeardown) {
           try {
             await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
@@ -1147,6 +1164,14 @@ export class SessionManager {
         // `discardStaleRouteTransition` → fresh teardown debt. The drain
         // below must see that complete debt, so this quiesce runs first.
         await this.quiesceRouteProducers(chatId);
+        if (
+          [...(this.routeProducers.get(chatId) ?? [])].some((producer) => this.abandonedRouteProducers.has(producer))
+        ) {
+          throw asTerminateError(
+            "teardown",
+            new Error(`timed-out route producer is not confirmed settled for chat ${chatId}`),
+          );
+        }
 
         // Settle every pending teardown debt for this chat: handlers detached
         // from their entry (eviction / recovery / abort / terminal cleanup /
@@ -1163,6 +1188,12 @@ export class SessionManager {
           const pendingTeardown = this.pendingTeardowns.get(chatId);
           if (!pendingTeardown || pendingTeardown.size === 0) break;
           for (const pendingHandler of [...pendingTeardown]) {
+            if (this.abandonedSuspendHandlers.has(pendingHandler)) {
+              throw asTerminateError(
+                "teardown",
+                new Error(`timed-out suspend handler is not confirmed stopped for chat ${chatId}`),
+              );
+            }
             try {
               await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
               this.dropPendingTeardown(chatId, pendingHandler);
@@ -1374,6 +1405,10 @@ export class SessionManager {
       if (!session.activeSlotHeld && session.suspending === null && !stopUnconfirmedAfterFailedBoundary) {
         return Promise.resolve();
       }
+      // A timed-out suspend already has a best-effort shutdown in flight.
+      // Joining its untrustworthy raw callback would make daemon shutdown
+      // unbounded again.
+      if (this.abandonedSuspendHandlers.has(session.handler)) return Promise.resolve();
       attemptedHandlers.add(session.handler);
       return this.shutdownHandler(session.handler, reason ?? "manager_shutdown", {
         ...(session.activeSlotHeld ? { settleProviderEntered: true } : {}),
@@ -1399,6 +1434,7 @@ export class SessionManager {
       }
     }
     for (const [pendingHandler, chatIds] of debtChatsByHandler) {
+      if (this.abandonedSuspendHandlers.has(pendingHandler)) continue;
       if (attemptedHandlers.has(pendingHandler)) continue;
       attemptedHandlers.add(pendingHandler);
       shutdowns.push(
@@ -1436,11 +1472,14 @@ export class SessionManager {
       ...[...this.sessions.values()]
         .map((session) => session.suspending)
         .filter((pending): pending is Promise<void> => pending !== null),
-      ...[...this.routeProducers.values()].flatMap((producers) => [...producers]),
+      ...[...this.routeProducers.values()].flatMap((producers) =>
+        [...producers].filter((producer) => !this.abandonedRouteProducers.has(producer)),
+      ),
     ]);
     const retriedHandlers = new Set<AgentHandler>();
     for (const pending of this.pendingTeardowns.values()) {
       for (const pendingHandler of [...pending]) {
+        if (this.abandonedSuspendHandlers.has(pendingHandler)) continue;
         if (retriedHandlers.has(pendingHandler)) continue;
         retriedHandlers.add(pendingHandler);
         // Each attempt joins a still in-flight shutdown when one exists; a
@@ -2231,18 +2270,21 @@ export class SessionManager {
     for (;;) {
       const producers = this.routeProducers.get(chatId);
       if (!producers || producers.size === 0) return;
-      await Promise.allSettled([...producers]);
+      const joinable = [...producers].filter((producer) => !this.abandonedRouteProducers.has(producer));
+      if (joinable.length === 0) return;
+      await Promise.allSettled(joinable);
     }
   }
 
   /**
    * Route admission fence: before a chat may create a new provider route,
-   * its teardown authority must be clean — otherwise the chat could run
-   * "old handler never confirmed stopped + new provider route started".
-   * Settles every pending handler strictly (coalescing joins in-flight
-   * shutdowns). Returns false when a stop fails: the debt stays registered
-   * and the caller must keep the delivery's recovery/retry custody instead
-   * of routing.
+   * its teardown authority must normally be clean — otherwise the chat could
+   * run "old handler never confirmed stopped + new provider route started".
+   * The sole exception is an operator suspend generation whose completion
+   * already exceeded its bound: late output is generation-fenced, its stop
+   * remains Reset-failing debt, and ordinary routes skip the lost join.
+   * Other pending handlers settle strictly. Returns false when a strict stop
+   * fails so the caller keeps recovery/retry custody instead of routing.
    */
   private async settleTeardownDebtBeforeRoute(chatId: string): Promise<boolean> {
     // Quiesce in-flight route producers FIRST: a canceled start/resume can
@@ -2257,8 +2299,12 @@ export class SessionManager {
     for (;;) {
       const pending = this.pendingTeardowns.get(chatId);
       if (!pending || pending.size === 0) return true;
+      const routeBlockingHandlers = [...pending].filter(
+        (pendingHandler) => !this.abandonedSuspendHandlers.has(pendingHandler),
+      );
+      if (routeBlockingHandlers.length === 0) return true;
       let settled = true;
-      for (const pendingHandler of [...pending]) {
+      for (const pendingHandler of routeBlockingHandlers) {
         try {
           await this.shutdownHandler(pendingHandler, "route_admission_teardown", { observeFailure: true });
           this.dropPendingTeardown(chatId, pendingHandler);
@@ -2282,9 +2328,33 @@ export class SessionManager {
   private detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void {
     this.registerPendingTeardown(chatId, handler);
     void this.shutdownHandler(handler, reason, { observeFailure: true }).then(
-      () => this.dropPendingTeardown(chatId, handler),
+      () => {
+        this.dropPendingTeardown(chatId, handler);
+        this.abandonedSuspendHandlers.delete(handler);
+      },
       () => {
         // Failure keeps the debt — a later ref'd terminate strictly retries.
+      },
+    );
+  }
+
+  private abandonTimedOutSuspendHandler(entry: SessionEntry): void {
+    const handler = entry.handler;
+    this.retiredHandlers.add(handler);
+    this.abandonedSuspendHandlers.add(handler);
+    for (const producer of this.routeProducers.get(entry.chatId) ?? []) {
+      this.abandonedRouteProducers.add(producer);
+    }
+    this.registerPendingTeardown(entry.chatId, handler);
+    void this.shutdownHandler(handler, "operator_suspend_timeout", { observeFailure: true }).then(
+      () => {
+        this.dropPendingTeardown(entry.chatId, handler);
+        this.abandonedSuspendHandlers.delete(handler);
+        if (entry.handler === handler) entry.handlerStoppedBySuspend = handler;
+      },
+      () => {
+        // Keep the abandoned debt as fail-closed Reset proof. Ordinary routes
+        // rely on the retired generation fence instead of joining it.
       },
     );
   }
@@ -3152,18 +3222,17 @@ export class SessionManager {
     // never observed. Retire that handler and let the existing route
     // generation + teardown-debt fences contain any late completion instead
     // of waiting on the same callback forever.
-    if (entry.suspendError && entry.handlerStoppedBySuspend !== entry.handler) {
-      if (entry.suspendError.error instanceof HandlerSuspendTimeoutError) {
-        // The suspend request was issued but its completion never arrived.
-        // Retire this handler so the resumed delivery
-        // gets a fresh instance instead of waiting on the same lost callback.
-        // handlerForRouteTransition keeps the old handler as teardown debt,
-        // while the route generation fence rejects all of its late output.
-        this.retiredHandlers.add(entry.handler);
-      } else {
-        await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
-        entry.handlerStoppedBySuspend = entry.handler;
-        this.retiredHandlers.add(entry.handler);
+    if (entry.suspendError) {
+      if (entry.handlerStoppedBySuspend !== entry.handler) {
+        if (entry.suspendError.error instanceof HandlerSuspendTimeoutError) {
+          // The timed-out handler was already retired and moved to the
+          // non-route-blocking teardown set by suspendSession().
+          this.retiredHandlers.add(entry.handler);
+        } else {
+          await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+          entry.handlerStoppedBySuspend = entry.handler;
+          this.retiredHandlers.add(entry.handler);
+        }
       }
       entry.suspendError = null;
     }
@@ -4168,6 +4237,7 @@ export class SessionManager {
       this.recomputeRuntimeState();
       entry.suspending = (async () => {
         let settled = false;
+        let timedOut = false;
         try {
           // settleProviderEntered keeps already-issued DeliveryTokens on the
           // settlement lease (including active/deferred inject) so they can
@@ -4184,10 +4254,13 @@ export class SessionManager {
           }
           settled = true;
         } catch (err) {
-          // Settle failure leaves the handler joinable for a strict terminate /
-          // resume stop — do not start teardown here or suspend will hang on a
-          // gated shutdown the terminate owns.
+          // An ordinary settle failure leaves the handler joinable for a
+          // strict terminate/resume stop. A timeout has lost that join
+          // boundary, so start only a non-blocking best-effort teardown and
+          // retain fail-closed Reset debt.
           entry.suspendError = { error: err };
+          timedOut = err instanceof HandlerSuspendTimeoutError;
+          if (timedOut) this.abandonTimedOutSuspendHandler(entry);
           try {
             this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend settlement error");
           } catch (logErr) {
@@ -4204,7 +4277,7 @@ export class SessionManager {
           this.retiredHandlers.add(inFlightTransition.handler);
         }
 
-        if (!settled) {
+        if (!settled && !timedOut) {
           entry.suspending = null;
           if (unestablishedStart) {
             if (entry.handlerStoppedBySuspend !== entry.handler) {
@@ -4219,7 +4292,7 @@ export class SessionManager {
         }
 
         const stopPromise =
-          inFlightTransition || !this.retiredHandlers.has(entry.handler)
+          settled && (inFlightTransition || !this.retiredHandlers.has(entry.handler))
             ? this.shutdownHandler(target, opts.reason, { observeFailure: true })
             : Promise.resolve();
 
@@ -4231,7 +4304,7 @@ export class SessionManager {
           await Promise.resolve();
           await this.inboxDelivery.prepareOperatorSuspend(entry.chatId);
           await stopPromise;
-          if (target === entry.handler) {
+          if (settled && target === entry.handler) {
             entry.handlerStoppedBySuspend = entry.handler;
           }
         } catch (err) {
