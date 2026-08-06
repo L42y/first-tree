@@ -134,7 +134,7 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       summaryConcepts: [["发布日期", "发布日"], ["安全审计"], ["仍待", "尚未", "需要决定", "需升级"]],
       summaryForbidden: ["已调整", "已解决", "已排除", "已完成取舍"],
     },
-    managedTransport: "ask",
+    managedTransport: "send",
     prompt:
       "发布日期已固定为 8 月 20 日且不能移动，但现在没有足够时间完成新的安全审计。请根据 Context Tree 判断能否直接发布；不要替我更改日期或跳过审计，若冲突未决就明确指出。",
     promptAlternates: [

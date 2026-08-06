@@ -29,7 +29,7 @@ describe("first-tree-read floor contract", () => {
       FIRST_TREE_READ_CASES.find((evalCase) => evalCase.id === "tree-navigation-no-impact")?.managedTransport,
     ).toBe("send");
     expect(FIRST_TREE_READ_CASES.find((evalCase) => evalCase.id === "tree-conflict-chinese")?.managedTransport).toBe(
-      "ask",
+      "send",
     );
   });
 
