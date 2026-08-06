@@ -1,4 +1,7 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildProbeScript,
@@ -8,6 +11,16 @@ import {
 } from "../runtime/login-shell-path.js";
 
 const DELIM = "__FT_SHELL_PATH__";
+
+/** Extract the delimited dir list from raw probe stdout. */
+function parseDirs(stdout: string): string[] {
+  const start = stdout.indexOf(DELIM);
+  const end = stdout.indexOf(DELIM, start + DELIM.length);
+  return stdout
+    .slice(start + DELIM.length, end)
+    .split("\n")
+    .filter((line) => line.length > 0);
+}
 
 /**
  * Simulate the probe stdout: the canonical dirs the login shell prints (one per
@@ -20,6 +33,7 @@ function wrap(dirs: string[]): string {
 describe("getLoginShellPathDirs", () => {
   afterEach(() => {
     resetLoginShellPathDirsCache();
+    vi.unstubAllEnvs();
     Object.defineProperty(process, "platform", { value: "linux" });
   });
 
@@ -119,6 +133,42 @@ describe("getLoginShellPathDirs", () => {
     expect(getLoginShellPathDirs(runShell)).toEqual([]);
     expect(runShell).not.toHaveBeenCalled();
   });
+
+  // A dir the shell canonicalized INTO a protected root (e.g. `~/bin` symlinked
+  // to `~/Documents/bin`) survives the script's `case` guard, so the parsed
+  // result is filtered too — otherwise each provider resolver would go on to
+  // `existsSync` inside Documents.
+  it("drops macOS TCC-protected dirs from a successful probe", () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", "/Users/tester");
+    const dirs = getLoginShellPathDirs(() =>
+      wrap([
+        "/opt/homebrew/bin",
+        "/Users/tester/Documents/bin",
+        "/Users/tester/Desktop",
+        "/Users/tester/Downloads/tools/bin",
+        "/Users/tester/Library/Mobile Documents/com~apple~CloudDocs/bin",
+        "/Users/tester/Library/CloudStorage/OneDrive/bin",
+        "/Users/tester/.nvm/versions/node/v22.0.0/bin",
+        // Not protected: a sibling whose name merely starts with a protected one.
+        "/Users/tester/Documents-archive/bin",
+      ]),
+    );
+    expect(dirs).toEqual([
+      "/opt/homebrew/bin",
+      "/Users/tester/.nvm/versions/node/v22.0.0/bin",
+      "/Users/tester/Documents-archive/bin",
+    ]);
+  });
+
+  it("keeps protected-looking dirs on non-macOS hosts", () => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.stubEnv("HOME", "/home/tester");
+    expect(getLoginShellPathDirs(() => wrap(["/home/tester/Documents/bin", "/usr/local/bin"]))).toEqual([
+      "/home/tester/Documents/bin",
+      "/usr/local/bin",
+    ]);
+  });
 });
 
 /**
@@ -164,5 +214,54 @@ describe("probe script (real execution)", () => {
     const dirs = getLoginShellPathDirs();
     expect(Array.isArray(dirs)).toBe(true);
     for (const dir of dirs) expect(dir.startsWith("/")).toBe(true);
+  });
+
+  // The macOS guard must drop TCC-protected `$PATH` entries WITHOUT weakening
+  // the canonicalization the fnm / nvm multishell dirs depend on — that pairing
+  // is the whole point of the change, so it is asserted in one real shell run.
+  it.skipIf(process.platform === "win32")("skips macOS protected roots while still canonicalizing the rest", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-probe-")));
+    const home = join(root, "home");
+    const multishellTarget = join(root, "multishell-target", "bin");
+    const multishellLink = join(root, "multishell-link");
+    mkdirSync(join(home, "Documents", "bin"), { recursive: true });
+    mkdirSync(join(home, "Library", "Mobile Documents", "bin"), { recursive: true });
+    mkdirSync(join(root, "tools", "bin"), { recursive: true });
+    mkdirSync(multishellTarget, { recursive: true });
+    symlinkSync(multishellTarget, multishellLink);
+
+    const r = spawnSync("/bin/sh", ["-c", buildProbeScript("darwin")], {
+      encoding: "utf-8",
+      timeout: 4_000,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: [
+          join(home, "Documents", "bin"),
+          join(home, "Library", "Mobile Documents", "bin"),
+          join(root, "tools", "bin"),
+          multishellLink,
+        ].join(":"),
+      },
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.status).toBe(0);
+
+    const dirs = parseDirs(typeof r.stdout === "string" ? r.stdout : "");
+    // Protected roots never reached — not even a `cd`.
+    expect(dirs).not.toContain(join(home, "Documents", "bin"));
+    expect(dirs).not.toContain(join(home, "Library", "Mobile Documents", "bin"));
+    // Everything else keeps today's behavior, symlink canonicalization included.
+    expect(dirs).toContain(join(root, "tools", "bin"));
+    expect(dirs).toContain(multishellTarget);
+    expect(dirs).not.toContain(multishellLink);
+  });
+
+  it("emits the unguarded script on non-macOS platforms", () => {
+    const linux = buildProbeScript("linux");
+    expect(linux).not.toContain("case ");
+    expect(linux).not.toContain("$HOME");
+    expect(buildProbeScript("win32")).toBe(linux);
   });
 });

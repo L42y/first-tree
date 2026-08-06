@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   classifyCodexManagedWorktreePath,
   classifyCodexProjectlessPath,
@@ -10,6 +10,15 @@ import {
   resolveProviderProject,
   resolveSessionContextProject,
 } from "../core/context-integration/client-preflight.js";
+
+/**
+ * A recording canonicalization seam, so a test can assert exactly which paths
+ * the classifier touches. Resolving each path to itself keeps the synthetic
+ * (non-existent) roots below comparable without going near the filesystem.
+ */
+function recordingRealpath() {
+  return vi.fn((path: string) => path);
+}
 
 describe("Context project resolver", () => {
   it.each([
@@ -137,6 +146,40 @@ describe("Context project resolver", () => {
         },
       ),
     ).toMatchObject({ kind: "pathless", source: "codex_documents_v1" });
+  });
+
+  // On macOS `~/Documents` sits behind a TCC prompt, so classifying an ordinary
+  // project must not touch it. The base is only canonicalized when the caller's
+  // original cwd is already lexically inside it (a redirected base, above).
+  it("never canonicalizes the Documents base for a cwd outside it", () => {
+    const realpath = recordingRealpath();
+    const home = "/Users/alice";
+
+    expect(
+      classifyCodexProjectlessPath(
+        "/Users/alice/code/app",
+        {},
+        { platform: "darwin", home, realpath, rawCwd: "/Users/alice/code/app" },
+      ),
+    ).toBe(false);
+    expect(realpath).not.toHaveBeenCalled();
+
+    expect(
+      classifyCodexProjectlessPath(
+        "/Users/alice/Documents/Codex/2026-07-30/scratch",
+        {},
+        { platform: "darwin", home, realpath, rawCwd: "/Users/alice/Documents/Codex/2026-07-30/scratch" },
+      ),
+    ).toBe(true);
+    expect(realpath).toHaveBeenCalledWith("/Users/alice/Documents/Codex");
+  });
+
+  it("still canonicalizes the base when the original cwd is unknown", () => {
+    const realpath = recordingRealpath();
+    expect(
+      classifyCodexProjectlessPath("/Users/alice/code/app", {}, { platform: "darwin", home: "/Users/alice", realpath }),
+    ).toBe(false);
+    expect(realpath).toHaveBeenCalledWith("/Users/alice/Documents/Codex");
   });
 
   it("accepts only readable directories as path projects", () => {

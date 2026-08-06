@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Unique marker that brackets the canonical dir list in the probe output so we
@@ -6,6 +8,30 @@ import { spawnSync } from "node:child_process";
  * prints. Chosen to be vanishingly unlikely to appear in a real PATH entry.
  */
 const DELIM = "__FT_SHELL_PATH__";
+
+/**
+ * Home-relative roots macOS puts behind a TCC "Files & Folders" consent prompt.
+ *
+ * The daemon runs this probe automatically at startup / reconnect, before the
+ * user has chosen anything, so it must never be the reason macOS asks for
+ * Desktop / Documents / Downloads / iCloud access. Both the shell script (which
+ * would otherwise `cd` into every `$PATH` entry) and the parsed result (whose
+ * dirs are later `existsSync`-checked by each provider resolver) skip these.
+ *
+ * The cost is bounded and deliberate: a provider binary whose `$PATH` entry
+ * lives inside one of these roots is not auto-discovered. Every ordinary
+ * install location — Homebrew, `~/.local/bin`, npm-global, pnpm, bun, and the
+ * nvm / fnm / volta / mise / asdf shims this probe exists for — is unaffected.
+ */
+const MACOS_PROTECTED_HOME_SUBPATHS = [
+  "Desktop",
+  "Documents",
+  "Downloads",
+  // iCloud Drive, including the "Desktop & Documents Folders" sync target.
+  "Library/Mobile Documents",
+  // File Provider mounts: OneDrive, Dropbox, Google Drive, Box, …
+  "Library/CloudStorage",
+] as const;
 
 /** Injectable seam for hermetic tests — returns the raw shell stdout, or null on failure. */
 export type RunShell = () => string | null;
@@ -42,6 +68,10 @@ let failedAttempts = 0;
  * be gone. Resolving the symlink to the stable underlying install dir while the
  * shell lives hands back a path that still exists at search time.
  *
+ * On macOS, entries under a TCC-protected root are skipped rather than
+ * canonicalized, and any that survive canonicalization are dropped from the
+ * result — see {@link MACOS_PROTECTED_HOME_SUBPATHS}.
+ *
  * Properties:
  *   - **Memoized on success**: a probe that ran the shell, exited 0, and parsed a
  *     PATH is cached for the process — detection runs on a background poll, so we
@@ -67,8 +97,8 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell): str
   }
   const dirs = probe(runShell);
   if (dirs) {
-    memo = { dirs };
-    return dirs;
+    memo = { dirs: dirs.filter((dir) => !protectedOnThisHost(dir)) };
+    return memo.dirs;
   }
   // Probe failed (spawn error / timeout / non-zero exit / parse miss). Don't
   // cache a transient failure — allow a later call to re-probe — but stop once
@@ -132,16 +162,56 @@ function probe(runShell: RunShell): string[] | null {
  * `$PATH`, which is colon-delimited regardless of how the outer shell stores it.
  * Verified end to end under bash, zsh, and sh; fish is covered by the
  * runtime-env-qa `DW7_fish_frozen` scenario.
+ *
+ * On macOS a `case` guard skips entries under a TCC-protected root
+ * ({@link MACOS_PROTECTED_HOME_SUBPATHS}) instead of `cd`-ing into them, so this
+ * automatic probe never triggers a Files & Folders consent prompt. `$HOME` is
+ * read inside the shell rather than interpolated from Node so a home path
+ * containing a quote can never break out of the `'…'` wrapper. On every other
+ * platform the emitted script is byte-for-byte what it has always been.
+ *
+ * @param platform test seam / platform selector for the protected-root guard.
  */
-export function buildProbeScript(): string {
+export function buildProbeScript(platform: NodeJS.Platform = process.platform): string {
   // POSIX body run by the nested `sh`; uses only double quotes so the whole
   // string can be wrapped in single quotes for `/bin/sh -c '…'`. DELIM is a bare
   // word (letters + underscores), safe unquoted.
+  const skipProtected = platform === "darwin" ? `case "$d" in ${protectedCasePatterns()}) continue;; esac; ` : "";
   const posix =
     `printf %s ${DELIM}; ` +
-    `IFS=:; for d in $PATH; do [ -n "$d" ] && (cd "$d" 2>/dev/null && pwd -P); done; ` +
+    `IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${skipProtected}(cd "$d" 2>/dev/null && pwd -P); done; ` +
     `printf %s ${DELIM}`;
   return `/bin/sh -c '${posix}'`;
+}
+
+/**
+ * `case` alternatives matching each protected root and everything beneath it.
+ * Only double quotes are used so the result stays embeddable in `sh -c '…'`.
+ */
+function protectedCasePatterns(): string {
+  return MACOS_PROTECTED_HOME_SUBPATHS.flatMap((sub) => {
+    const root = `"$HOME"/${escapeCasePattern(sub)}`;
+    return [root, `${root}/*`];
+  }).join("|");
+}
+
+/**
+ * Escape a literal path fragment for use inside a `case` pattern: whitespace
+ * would end the pattern word ("Library/Mobile Documents"), and glob
+ * metacharacters would make it match more than the literal path.
+ */
+function escapeCasePattern(literal: string): string {
+  return literal.replace(/[\s\\*?[\]]/gu, (char) => `\\${char}`);
+}
+
+/** Is `dir` inside a TCC-protected root of this host's home? Non-macOS: never. */
+function protectedOnThisHost(dir: string): boolean {
+  if (process.platform !== "darwin") return false;
+  const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
+  return MACOS_PROTECTED_HOME_SUBPATHS.some((sub) => {
+    const root = join(home, sub);
+    return dir === root || dir.startsWith(`${root}/`);
+  });
 }
 
 /** Spawn the user's interactive login shell to run the probe; raw stdout or null. */
