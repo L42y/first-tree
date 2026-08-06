@@ -7,8 +7,26 @@ import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation } from "../t
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const SELECTOR_ARGV = ["tree", "tree", "/domains/payments"];
-const BYO_READ_HELP_ARGV = ["tree", "read", "--help"];
+const BYO_ROUTE_ARGV = [
+  "--json",
+  "context",
+  "route",
+  "--provider",
+  "codex",
+  "--pathless",
+  "--session-candidate",
+  "eval-receipt",
+];
 const BYO_ACTIVATION_ARGV = [
+  "--json",
+  "context",
+  "snapshot",
+  "--candidate",
+  "candidate-byo-read-eval",
+  "--snapshot",
+  "/tmp/read-task/context-tree",
+];
+const LEGACY_BYO_ACTIVATION_ARGV = [
   "--json",
   "tree",
   "read",
@@ -92,6 +110,11 @@ function managedMessage(
   return [firstTreeCall(argv, { body }), firstTreeResult(argv, 0)];
 }
 
+function managedStatus(body: string): unknown[] {
+  const argv = ["chat", "update", "--description", "-"];
+  return [firstTreeCall(argv, { body }), firstTreeResult(argv, 0)];
+}
+
 function metrics(events: readonly unknown[]): EvalMetrics {
   return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT]);
 }
@@ -119,11 +142,11 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(casePassed(true, result)).toBe(true);
   });
 
-  it("passes explicit-Team BYO cases only for one ordered activation and exact detached no-pull selectors", () => {
+  it("passes BYO cases only for one ordered SCOPE route and exact detached no-pull snapshot", () => {
     const result = metrics([
       skillReadEvent(),
-      firstTreeCall(BYO_READ_HELP_ARGV),
-      firstTreeResult(BYO_READ_HELP_ARGV, 0),
+      firstTreeCall(BYO_ROUTE_ARGV),
+      firstTreeResult(BYO_ROUTE_ARGV, 0),
       firstTreeCall(BYO_ACTIVATION_ARGV),
       firstTreeResult(BYO_ACTIVATION_ARGV, 0, { exactCommit: EXACT_COMMIT }),
       firstTreeCall(HELP_ARGV),
@@ -133,7 +156,8 @@ describe("first-tree-read metrics pass criteria", () => {
       assistantTextEvent(`The tree says ${EXPECTED_FACT}.`),
     ]);
 
-    expect(result.readHelpSucceeded).toBe(true);
+    expect(result.readRouteCalls).toBe(1);
+    expect(result.readRouteSucceeded).toBe(true);
     expect(result.readActivationCalls).toBe(1);
     expect(result.readActivationSucceeded).toBe(true);
     expect(result.byoReadSequenceOk).toBe(true);
@@ -147,8 +171,8 @@ describe("first-tree-read metrics pass criteria", () => {
     const mutableSelector = ["tree", "tree", "systems/server/auth"];
     const result = metrics([
       skillReadEvent(),
-      firstTreeCall(BYO_READ_HELP_ARGV),
-      firstTreeResult(BYO_READ_HELP_ARGV, 0),
+      firstTreeCall(BYO_ROUTE_ARGV),
+      firstTreeResult(BYO_ROUTE_ARGV, 0),
       firstTreeCall(BYO_ACTIVATION_ARGV),
       firstTreeResult(BYO_ACTIVATION_ARGV, 0, { exactCommit: EXACT_COMMIT }),
       firstTreeCall(BYO_ACTIVATION_ARGV),
@@ -163,6 +187,24 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(result.readActivationCalls).toBe(2);
     expect(result.readActivationSucceeded).toBe(false);
     expect(result.byoSelectorsNoPull).toBe(false);
+    expect(casePassed(true, result, "byo")).toBe(false);
+  });
+
+  it("rejects the legacy tree read activation sequence for BYO cases", () => {
+    const result = metrics([
+      skillReadEvent(),
+      firstTreeCall(LEGACY_BYO_ACTIVATION_ARGV),
+      firstTreeResult(LEGACY_BYO_ACTIVATION_ARGV, 0, { exactCommit: EXACT_COMMIT }),
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      firstTreeCall(BYO_SELECTOR_ARGV),
+      firstTreeResult(BYO_SELECTOR_ARGV, 0, { actualHead: EXACT_COMMIT, detachedHead: true }),
+      assistantTextEvent(`The tree says ${EXPECTED_FACT}.`),
+    ]);
+
+    expect(result.readRouteSucceeded).toBe(false);
+    expect(result.readActivationSucceeded).toBe(false);
+    expect(result.byoReadSequenceOk).toBe(false);
     expect(casePassed(true, result, "byo")).toBe(false);
   });
 
@@ -378,6 +420,7 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(result.impactNoteSummaryObjectiveOk).toBe(true);
     expect(result.impactNoteSourceLabels).toEqual(["Organization isolation"]);
     expect(result.impactNoteMetadataFree).toBe(true);
+    expect(result.managedFinalTransportOk).toBe(true);
   });
 
   it("makes material trigger cases fail until the final visible note satisfies the behavior contract", () => {
@@ -401,12 +444,23 @@ describe("first-tree-read metrics pass criteria", () => {
 > **Context Tree impact · Options narrowed**\\
 > The payment rule narrowed the implementation boundary.\\
 > **Source** · [Payments](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/domains/payments/NODE.md)`;
-    const withoutNote = impactMetrics(baseEvents, expectation);
-    const withNote = impactMetrics([...baseEvents, assistantTextEvent(note)], expectation);
+    const withoutNote = impactMetrics(
+      [...baseEvents, ...managedMessage(`The tree says ${EXPECTED_FACT}. Final answer without the note.`)],
+      expectation,
+    );
+    const nativeOnly = impactMetrics([...baseEvents, assistantTextEvent(note)], expectation);
+    const withNote = impactMetrics(
+      [...baseEvents, ...managedMessage(`The tree says ${EXPECTED_FACT}.\n\n${note}`)],
+      expectation,
+    );
 
     expect(withoutNote.impactNoteBehaviorOk).toBe(false);
     expect(casePassed(true, withoutNote)).toBe(false);
+    expect(nativeOnly.impactNoteBehaviorOk).toBe(true);
+    expect(nativeOnly.managedFinalTransportOk).toBe(false);
+    expect(casePassed(true, nativeOnly)).toBe(false);
     expect(withNote.impactNoteBehaviorOk).toBe(true);
+    expect(withNote.managedFinalTransportOk).toBe(true);
     expect(casePassed(true, withNote)).toBe(true);
   });
 
@@ -547,6 +601,14 @@ describe("first-tree-read metrics pass criteria", () => {
       [...managedMessage("Progress without the note."), ...managedMessage(`Final answer.\n\n${note}`)],
       expectation,
     );
+    const modelProgressDuplicate = impactMetrics(
+      [assistantTextEvent(`Progress.\n\n${note}`), ...managedMessage(`Final answer.\n\n${note}`)],
+      expectation,
+    );
+    const currentStateDuplicate = impactMetrics(
+      [...managedStatus(`Progress.\n\n${note}`), ...managedMessage(`Final answer.\n\n${note}`)],
+      expectation,
+    );
 
     expect(trailingProse.impactNoteAtFinalEnd).toBe(false);
     expect(trailingProse.impactNoteBehaviorOk).toBe(false);
@@ -554,6 +616,32 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(progressOnly.impactNoteBehaviorOk).toBe(false);
     expect(finalOnly.impactNoteAtFinalEnd).toBe(true);
     expect(finalOnly.impactNoteBehaviorOk).toBe(true);
+    expect(modelProgressDuplicate.impactNoteCount).toBe(2);
+    expect(modelProgressDuplicate.impactNoteBehaviorOk).toBe(false);
+    expect(currentStateDuplicate.impactNoteCount).toBe(2);
+    expect(currentStateDuplicate.impactNoteBehaviorOk).toBe(false);
+  });
+
+  it("requires an unresolved conflict to use a blocking managed ask", () => {
+    const body = `需要你决定如何处理冲突。
+
+> **Context Tree 影响 · 发现约束冲突**\\
+> 固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\
+> **来源** · [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`;
+    const expectation: ImpactNoteExpectation = {
+      effect: "conflicted",
+      language: "zh",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    };
+    const sent = impactMetrics(managedMessage(body), expectation);
+    const asked = impactMetrics(managedMessage(body, ["chat", "ask", "gandy2025", "-F", "question.md"]), expectation);
+
+    expect(sent.impactNoteBehaviorOk).toBe(true);
+    expect(sent.managedFinalTransportOk).toBe(false);
+    expect(asked.impactNoteBehaviorOk).toBe(true);
+    expect(asked.managedFinalTransportOk).toBe(true);
   });
 
   it("counts identical impact notes from separate BYO assistant messages", () => {

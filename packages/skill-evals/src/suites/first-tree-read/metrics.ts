@@ -9,7 +9,6 @@ import type {
 } from "./types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
-const READ_HELP_ARGV = ["tree", "read", "--help"];
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 
 type FactMatcher = {
@@ -343,13 +342,14 @@ function isHelpArgv(argv: readonly string[]): boolean {
   return argvEquals(commandArgv(argv), HELP_ARGV);
 }
 
-function isReadHelpArgv(argv: readonly string[]): boolean {
-  return argvEquals(commandArgv(argv), READ_HELP_ARGV);
+function isReadRouteArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "context" && command[1] === "route";
 }
 
 function isReadActivationArgv(argv: readonly string[]): boolean {
   const command = commandArgv(argv);
-  return command[0] === "tree" && command[1] === "read" && !isReadHelpArgv(argv);
+  return command[0] === "context" && command[1] === "snapshot";
 }
 
 function isTreeTreeArgv(argv: readonly string[]): boolean {
@@ -364,6 +364,16 @@ function isTreeSelectorArgv(argv: readonly string[]): boolean {
 function isChatAuthoringArgv(argv: readonly string[]): boolean {
   const command = commandArgv(argv);
   return command[0] === "chat" && (command[1] === "send" || command[1] === "ask");
+}
+
+function isChatProgressArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "chat" && command[1] === "update";
+}
+
+function chatAuthoringKind(argv: readonly string[]): "ask" | "send" | null {
+  const command = commandArgv(argv);
+  return command[0] === "chat" && (command[1] === "ask" || command[1] === "send") ? command[1] : null;
 }
 
 function metadataOptionValues(argv: readonly string[]): readonly string[] {
@@ -538,6 +548,7 @@ export function deriveMetrics(
   let firstTreeCalls = 0;
   let helpCalls = 0;
   let readActivationCalls = 0;
+  let readRouteCalls = 0;
   let skillFileReadObserved = false;
   const authoringCalls: Array<{
     argv: string[];
@@ -545,12 +556,13 @@ export function deriveMetrics(
     contextDecisionMetadataPresent: boolean;
     exitCode: number | null;
   }> = [];
+  const progressCalls: Array<{ argv: string[]; body: string; exitCode: number | null }> = [];
   const firstTreeArgv: string[][] = [];
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const helpExitCodes: number[] = [];
   const modelOutputTexts: string[] = [];
   const readActivationResults: Array<{ exactCommit: string | null; exitCode: number }> = [];
-  const readHelpExitCodes: number[] = [];
+  const readRouteExitCodes: number[] = [];
   const selectorSnapshotResults: Array<{ actualHead: string | null; detachedHead: boolean }> = [];
 
   for (const event of events) {
@@ -577,11 +589,21 @@ export function deriveMetrics(
             exitCode: null,
           });
         }
+        if (isChatProgressArgv(argv)) {
+          progressCalls.push({
+            argv: [...argv],
+            body: typeof event.body === "string" ? event.body : "",
+            exitCode: null,
+          });
+        }
         if (isHelpArgv(argv)) {
           helpCalls += 1;
         }
         if (isReadActivationArgv(argv)) {
           readActivationCalls += 1;
+        }
+        if (isReadRouteArgv(argv)) {
+          readRouteCalls += 1;
         }
       }
 
@@ -591,11 +613,15 @@ export function deriveMetrics(
           const pendingCall = authoringCalls.find((call) => call.exitCode === null && argvEquals(call.argv, argv));
           if (pendingCall) pendingCall.exitCode = event.exitCode;
         }
+        if (isChatProgressArgv(argv)) {
+          const pendingCall = progressCalls.find((call) => call.exitCode === null && argvEquals(call.argv, argv));
+          if (pendingCall) pendingCall.exitCode = event.exitCode;
+        }
         if (isHelpArgv(argv)) {
           helpExitCodes.push(event.exitCode);
         }
-        if (isReadHelpArgv(argv)) {
-          readHelpExitCodes.push(event.exitCode);
+        if (isReadRouteArgv(argv)) {
+          readRouteExitCodes.push(event.exitCode);
         }
         if (isReadActivationArgv(argv)) {
           readActivationResults.push({
@@ -614,11 +640,16 @@ export function deriveMetrics(
   }
 
   const successfulAuthoringCalls = authoringCalls.filter((call) => call.exitCode === 0);
+  const successfulProgressCalls = progressCalls.filter((call) => call.exitCode === 0);
+  const authoredOutputTexts = successfulAuthoringCalls.map((call) => call.body);
+  const factOutputTexts = authoringCalls.length > 0 ? authoredOutputTexts : modelOutputTexts;
   const visibleOutputTexts =
-    authoringCalls.length > 0 ? successfulAuthoringCalls.map((call) => call.body) : modelOutputTexts;
+    authoringCalls.length > 0 || progressCalls.length > 0
+      ? [...modelOutputTexts, ...successfulProgressCalls.map((call) => call.body), ...authoredOutputTexts]
+      : modelOutputTexts;
   const contextDecisionMetadataPresent = successfulAuthoringCalls.some((call) => call.contextDecisionMetadataPresent);
   const facts = uniqueStrings(expectedFacts);
-  const factHits = expectedFactHits(visibleOutputTexts.join("\n"), facts);
+  const factHits = expectedFactHits(factOutputTexts.join("\n"), facts);
   const helpSucceeded = firstTreeCommandResults.some((result) => isHelpArgv(result.argv) && result.exitCode === 0);
   const selectionSucceeded = firstTreeCommandResults.some(
     (result) => isTreeSelectorArgv(result.argv) && result.exitCode === 0,
@@ -628,18 +659,18 @@ export function deriveMetrics(
     readActivationResults.length === 1 &&
     readActivationResults[0]?.exitCode === 0 &&
     readActivationResults[0]?.exactCommit !== null;
-  const readHelpSucceeded = readHelpExitCodes.some((exitCode) => exitCode === 0);
+  const readRouteSucceeded = readRouteCalls === 1 && readRouteExitCodes.length === 1 && readRouteExitCodes[0] === 0;
   const selectorCalls = firstTreeArgv.filter(isTreeSelectorArgv);
   const byoSelectorsNoPull = selectorCalls.length > 0 && selectorCalls.every((argv) => argv.includes("--no-pull"));
-  const readHelpIndex = firstTreeArgv.findIndex(isReadHelpArgv);
+  const readRouteIndex = firstTreeArgv.findIndex(isReadRouteArgv);
   const readActivationIndex = firstTreeArgv.findIndex(isReadActivationArgv);
   const hierarchyHelpIndex = firstTreeArgv.findIndex(isHelpArgv);
   const selectorIndexes = firstTreeArgv
     .map((argv, index) => (isTreeSelectorArgv(argv) ? index : -1))
     .filter((index) => index >= 0);
   const byoReadSequenceOk =
-    readHelpIndex >= 0 &&
-    readActivationIndex > readHelpIndex &&
+    readRouteIndex >= 0 &&
+    readActivationIndex > readRouteIndex &&
     hierarchyHelpIndex > readActivationIndex &&
     selectorIndexes.length > 0 &&
     selectorIndexes.every((index) => index > hierarchyHelpIndex);
@@ -655,6 +686,11 @@ export function deriveMetrics(
     selectorSnapshotResults.every((result) => result.detachedHead);
   const modelFirstTreeCommandsOk = firstTreeCommandResults.every((result) => result.exitCode === 0);
   const selectedExactCommit = exactCommit ?? selectorSnapshotResults.at(-1)?.actualHead ?? null;
+  const finalAuthoringKind = chatAuthoringKind(successfulAuthoringCalls.at(-1)?.argv ?? []);
+  const expectedAuthoringKind =
+    impactNoteExpectation.mode === "present" && impactNoteExpectation.effect === "conflicted" ? "ask" : "send";
+  const managedFinalTransportOk =
+    impactNoteExpectation.mode === "absent" || finalAuthoringKind === expectedAuthoringKind;
   const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation, {
     contextDecisionMetadataPresent,
     selectedExactCommit,
@@ -677,9 +713,11 @@ export function deriveMetrics(
     byoSnapshotDetached,
     byoSnapshotExactHeadConsistent,
     modelFirstTreeCommandsOk,
+    managedFinalTransportOk,
     readActivationCalls,
     readActivationSucceeded,
-    readHelpSucceeded,
+    readRouteCalls,
+    readRouteSucceeded,
     runnerExitCode,
     selectionSucceeded,
     skillFileReadObserved,
@@ -694,7 +732,7 @@ export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readM
   if (expectedTrigger) {
     const readModePassed =
       readMode === "managed" ||
-      (metrics.readHelpSucceeded &&
+      (metrics.readRouteSucceeded &&
         metrics.readActivationSucceeded &&
         metrics.byoReadSequenceOk &&
         metrics.byoSelectorsNoPull &&
@@ -707,6 +745,7 @@ export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readM
       metrics.helpSucceeded &&
       metrics.selectionSucceeded &&
       metrics.modelFirstTreeCommandsOk &&
+      (readMode === "byo" || metrics.managedFinalTransportOk) &&
       readModePassed
     );
   }

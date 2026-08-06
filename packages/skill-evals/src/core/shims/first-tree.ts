@@ -476,6 +476,20 @@ function bodyFromFileOption(argv) {
   }
 }
 
+function chatBody(argv) {
+  if (argv[0] === "chat" && argv[1] === "update") {
+    const description = optionValueWithEquals(argv, "--description");
+    if (description === null) return "";
+    if (description !== "-") return description;
+    try {
+      return readFileSync(0, "utf8");
+    } catch {
+      return "";
+    }
+  }
+  return bodyFromFileOption(argv);
+}
+
 function runTreeVerify(argv, phase) {
   const root = resolve(process.cwd(), optionValue(argv, "--tree-path") || ".");
   const errors = [];
@@ -515,7 +529,7 @@ function runTreeVerify(argv, phase) {
 const argv = process.argv.slice(2);
 const phase = process.env.FIRST_TREE_EVAL_PHASE || "model";
 const recordedChatBody =
-  argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] || "") ? bodyFromFileOption(argv) : "";
+  argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] || "") ? chatBody(argv) : "";
 append({
   type: "first_tree_call",
   phase,

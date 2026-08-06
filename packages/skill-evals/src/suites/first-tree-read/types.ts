@@ -92,10 +92,12 @@ export type EvalMetrics = {
   byoSelectorsNoPull: boolean;
   byoSnapshotDetached: boolean;
   byoSnapshotExactHeadConsistent: boolean;
+  managedFinalTransportOk: boolean;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;
   readActivationSucceeded: boolean;
-  readHelpSucceeded: boolean;
+  readRouteCalls: number;
+  readRouteSucceeded: boolean;
   runnerExitCode: number | null;
   selectionSucceeded: boolean;
   skillFileReadObserved: boolean;

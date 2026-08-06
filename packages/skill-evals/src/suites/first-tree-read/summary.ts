@@ -79,17 +79,27 @@ export function driftNote(
   }
 
   if (expectedTrigger && readMode === "byo") {
-    if (!metrics.readHelpSucceeded) notes.push("Required first-tree tree read --help command did not succeed.");
+    if (!metrics.readRouteSucceeded) {
+      notes.push(
+        `BYO Read required exactly one successful context route command; observed calls=${metrics.readRouteCalls}.`,
+      );
+    }
     if (!metrics.readActivationSucceeded) {
       notes.push(`BYO Read required exactly one successful activation; observed calls=${metrics.readActivationCalls}.`);
     }
     if (!metrics.byoReadSequenceOk) {
-      notes.push("BYO Read commands did not follow read help → activation → hierarchy help → selector order.");
+      notes.push(
+        "BYO Read commands did not follow context route → context snapshot → hierarchy help → selector order.",
+      );
     }
     if (!metrics.byoSelectorsNoPull) notes.push("Every BYO hierarchy selector must include --no-pull.");
     if (!metrics.byoSnapshotDetached || !metrics.byoSnapshotExactHeadConsistent) {
       notes.push("BYO selectors did not all observe the activation's exact detached snapshot head.");
     }
+  }
+
+  if (expectedTrigger && readMode === "managed" && !metrics.managedFinalTransportOk) {
+    notes.push("The impact note was not delivered through the required final managed chat send or blocking chat ask.");
   }
 
   if (expectedTrigger && !metrics.expectedFactsObserved) {
@@ -123,18 +133,20 @@ export function buildGrading(
   const routingPass = expectedTrigger ? metrics.skillFileReadObserved : !unexpectedReadUse;
   const byoProcessPassed =
     readMode === "managed" ||
-    (metrics.readHelpSucceeded &&
+    (metrics.readRouteSucceeded &&
       metrics.readActivationSucceeded &&
       metrics.byoReadSequenceOk &&
       metrics.byoSelectorsNoPull &&
       metrics.byoSnapshotDetached &&
       metrics.byoSnapshotExactHeadConsistent);
+  const managedTransportPassed = readMode === "byo" || metrics.managedFinalTransportOk;
   const processPass = expectedTrigger
     ? metrics.fixtureValidationOk &&
       metrics.runnerExitCode === 0 &&
       metrics.helpSucceeded &&
       metrics.selectionSucceeded &&
       metrics.modelFirstTreeCommandsOk &&
+      managedTransportPassed &&
       byoProcessPassed
     : metrics.fixtureValidationOk &&
       metrics.runnerExitCode === 0 &&
@@ -159,7 +171,7 @@ export function buildGrading(
       evidence(
         "process_pass",
         expectedTrigger
-          ? `fixture ok=${metrics.fixtureValidationOk}; runner exit=${metrics.runnerExitCode}; read mode=${readMode}; read help succeeded=${metrics.readHelpSucceeded}; activation calls=${metrics.readActivationCalls}; activation succeeded=${metrics.readActivationSucceeded}; sequence ok=${metrics.byoReadSequenceOk}; selectors no-pull=${metrics.byoSelectorsNoPull}; detached=${metrics.byoSnapshotDetached}; exact head consistent=${metrics.byoSnapshotExactHeadConsistent}; hierarchy help succeeded=${metrics.helpSucceeded}; selector succeeded=${metrics.selectionSucceeded}; first-tree commands ok=${metrics.modelFirstTreeCommandsOk}`
+          ? `fixture ok=${metrics.fixtureValidationOk}; runner exit=${metrics.runnerExitCode}; read mode=${readMode}; route calls=${metrics.readRouteCalls}; route succeeded=${metrics.readRouteSucceeded}; activation calls=${metrics.readActivationCalls}; activation succeeded=${metrics.readActivationSucceeded}; sequence ok=${metrics.byoReadSequenceOk}; selectors no-pull=${metrics.byoSelectorsNoPull}; detached=${metrics.byoSnapshotDetached}; exact head consistent=${metrics.byoSnapshotExactHeadConsistent}; managed final transport ok=${metrics.managedFinalTransportOk}; hierarchy help succeeded=${metrics.helpSucceeded}; selector succeeded=${metrics.selectionSucceeded}; first-tree commands ok=${metrics.modelFirstTreeCommandsOk}`
           : `fixture ok=${metrics.fixtureValidationOk}; runner exit=${metrics.runnerExitCode}; model first-tree calls=${metrics.firstTreeCalls}; first-tree results=${metrics.firstTreeCommandResults.length}`,
       ),
       evidence(
@@ -246,13 +258,15 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - impactNoteVisibleUrlsCredentialFree: ${markdownBool(summary.metrics.impactNoteVisibleUrlsCredentialFree)}
 - helpSucceeded: ${markdownBool(summary.metrics.helpSucceeded)}
 - selectionSucceeded: ${markdownBool(summary.metrics.selectionSucceeded)}
-- readHelpSucceeded: ${markdownBool(summary.metrics.readHelpSucceeded)}
+- readRouteCalls: ${summary.metrics.readRouteCalls}
+- readRouteSucceeded: ${markdownBool(summary.metrics.readRouteSucceeded)}
 - readActivationCalls: ${summary.metrics.readActivationCalls}
 - readActivationSucceeded: ${markdownBool(summary.metrics.readActivationSucceeded)}
 - byoReadSequenceOk: ${markdownBool(summary.metrics.byoReadSequenceOk)}
 - byoSelectorsNoPull: ${markdownBool(summary.metrics.byoSelectorsNoPull)}
 - byoSnapshotDetached: ${markdownBool(summary.metrics.byoSnapshotDetached)}
 - byoSnapshotExactHeadConsistent: ${markdownBool(summary.metrics.byoSnapshotExactHeadConsistent)}
+- managedFinalTransportOk: ${markdownBool(summary.metrics.managedFinalTransportOk)}
 - modelFirstTreeCommandsOk: ${markdownBool(summary.metrics.modelFirstTreeCommandsOk)}
 - firstTreeCalls: ${summary.metrics.firstTreeCalls}
 - runnerExitCode: ${summary.metrics.runnerExitCode === null ? "n/a" : summary.metrics.runnerExitCode}
