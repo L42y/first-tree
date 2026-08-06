@@ -192,6 +192,15 @@ describe("runtime provider architecture guard", () => {
     expect(source).toContain("isGrokBinaryMissingError");
     expect(source).toContain("isPiBinaryMissingError");
     expect(source).toContain("piProviderDetailBinaryMissingReasonCode");
+    // Contextual Pi-detail entry must compose the strict matcher, not copy its phrases.
+    expect(source).toMatch(
+      /export function piProviderDetailBinaryMissingReasonCode\([\s\S]*?isPiBinaryMissingError\(detail\)/,
+    );
+    const contextualFn = source.slice(source.indexOf("export function piProviderDetailBinaryMissingReasonCode"));
+    expect(contextualFn).not.toContain("pi cli is missing");
+    expect(contextualFn).not.toContain("no pi binary");
+    expect(contextualFn).toContain('includes("not found")');
+    expect(contextualFn).toContain('includes("not installed")');
   });
 
   it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {

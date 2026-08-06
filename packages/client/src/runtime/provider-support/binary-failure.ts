@@ -134,24 +134,22 @@ export function isPiBinaryMissingError(input: unknown): boolean {
  * Pi-provider-detail context only. Callers must already have scoped `detail`
  * to Pi provider diagnostics (e.g. {@link sanitizePiProviderDetail}).
  *
- * Preserves the historical sanitizer mapping, which is intentionally broader
- * than {@link isPiBinaryMissingError}: once the subject is known to be Pi,
- * bare `not found` / `not installed` still map to {@link PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING}.
- * Generic taxonomy must keep using {@link isPiBinaryMissingError} so unscoped
- * text cannot be misclassified as a missing binary.
+ * Composes {@link isPiBinaryMissingError} for the shared Pi-specific phrases,
+ * then adds only the historical sanitizer extras that are safe once the
+ * subject is known to be Pi: bare `not found` / `not installed`. Generic
+ * taxonomy must keep using {@link isPiBinaryMissingError} so unscoped text
+ * cannot inherit that breadth.
  */
 export function piProviderDetailBinaryMissingReasonCode(
   detail: string,
 ): (typeof PROVIDER_BINARY_FAILURE_REASON_CODES)["PI_BINARY_MISSING"] | null {
+  if (isPiBinaryMissingError(detail)) {
+    return PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING;
+  }
   const lower = detail.trim().toLowerCase();
   if (!lower) return null;
-  // Historical sanitizer: /pi cli is missing|no pi binary|not (?:found|installed)/
-  if (
-    lower.includes("pi cli is missing") ||
-    lower.includes("no pi binary") ||
-    lower.includes("not found") ||
-    lower.includes("not installed")
-  ) {
+  // Pi-scoped sanitizer extras only — do not duplicate the strict matcher phrases.
+  if (lower.includes("not found") || lower.includes("not installed")) {
     return PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING;
   }
   return null;
