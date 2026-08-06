@@ -1,4 +1,4 @@
-import { MENTION_REGEX, type SessionState, stripCode } from "@first-tree/shared";
+import { MENTION_REGEX, type SessionState, sessionStateSchema, stripCode } from "@first-tree/shared";
 import { and, desc, eq, inArray, lt, ne, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
@@ -283,13 +283,21 @@ export async function getSession(db: Database, agentId: string, chatId: string):
  * shared fence so a concurrent remove cannot slip between a stale suspended
  * read and the resume command (which would re-wake a provider after terminate).
  */
+export type ResumeSuspendedSessionResult = {
+  agentId: string;
+  chatId: string;
+  state: SessionState;
+  transitioned: false;
+  delivered: boolean;
+};
+
 export async function resumeSuspendedSession(
   db: Database,
   agentId: string,
   chatId: string,
   options?: { afterMembershipFenceForTest?: () => Promise<void> },
-): Promise<{ agentId: string; chatId: string; state: SessionState; transitioned: false; delivered: boolean }> {
-  return db.transaction(async (rawTx) => {
+): Promise<ResumeSuspendedSessionResult> {
+  return db.transaction(async (rawTx): Promise<ResumeSuspendedSessionResult> => {
     const tx = rawTx as unknown as Database;
     await lockChatMembershipShared(tx, [chatId]);
     if (!(await isChatSpeaker(tx, chatId, agentId))) {
@@ -312,8 +320,8 @@ export async function resumeSuspendedSession(
     return {
       agentId,
       chatId,
-      state: session.state,
-      transitioned: false as const,
+      state: sessionStateSchema.parse(session.state),
+      transitioned: false,
       delivered,
     };
   });

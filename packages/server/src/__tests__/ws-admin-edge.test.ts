@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 import { orgWsRoutes } from "../api/orgs/ws.js";
 import type { Database } from "../db/connection.js";
-import type { Notifier } from "../services/notifier.js";
+import type { MeChatsChangedHandler, Notifier } from "../services/notifier.js";
 
 const JWT_SECRET = "test-jwt-secret-key-for-vitest";
 
@@ -15,7 +15,7 @@ type CapturedHandlers = {
   sessionRuntime?: (payload: { agentId: string; chatId: string; organizationId: string }) => void;
   chatMessage?: (payload: { chatId: string; messageId: string }) => void;
   chatUpdated?: (payload: { chatId: string }) => void;
-  meChatsChanged?: (payload: { humanAgentId: string; organizationId: string }) => void;
+  meChatsChanged?: MeChatsChangedHandler;
 };
 
 function makeNotifier(handlers: CapturedHandlers): Notifier {
