@@ -573,6 +573,13 @@ export class SessionManager {
    * Value is the tail promise of the adoption chain for that chat.
    */
   private readonly resumeGenerationAdoptions = new Map<string, Promise<void>>();
+  /**
+   * Highest resume generation requested for a chat while adoption work is
+   * queued or in flight. Updated synchronously BEFORE awaiting the FIFO lock
+   * so an older caller's post-teardown check can see that a newer generation
+   * was already waiting and must drop.
+   */
+  private readonly pendingResumeGenerations = new Map<string, number>();
   private readonly config: SessionManagerConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
   /** Last lazy Context-Tree re-resolution attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
@@ -4950,6 +4957,26 @@ export class SessionManager {
     return this.resumeGenerations.get(chatId) ?? 0;
   }
 
+  private getPendingResumeGeneration(chatId: string): number {
+    return this.pendingResumeGenerations.get(chatId) ?? this.getLocalResumeGeneration(chatId);
+  }
+
+  /**
+   * Synchronously record that `incoming` has been requested for this chat
+   * before any await. A queued newer generation must be visible to an older
+   * caller whose teardown is still in flight.
+   */
+  private notePendingResumeGeneration(chatId: string, incoming: number): number {
+    const committed = this.getLocalResumeGeneration(chatId);
+    const previous = this.pendingResumeGenerations.get(chatId) ?? committed;
+    const next = Math.max(previous, incoming);
+    if (next > previous) {
+      this.pendingResumeGenerations.set(chatId, next);
+      if (next > committed) this.invalidateDeliveryAdmission(chatId);
+    }
+    return this.pendingResumeGenerations.get(chatId) ?? committed;
+  }
+
   /**
    * Serialize resume-generation adoption per chat. Waiters chain onto the
    * current tail so two concurrent dispatches cannot both observe the same
@@ -4982,26 +5009,48 @@ export class SessionManager {
    * Reuses Reset's quiesce → teardown → delete mapping + nonce → flushOrThrow
    * path when generation advances; never rolls back a newer local generation.
    * The new generation stays non-admissible until the tombstone flush commits.
+   *
+   * Pending/requested generations are noted synchronously before the FIFO
+   * lock so a delayed older adoption can see that a newer generation was
+   * already queued and must drop rather than return `proceed`.
    */
   private async ensureResumeGenerationAdmission(
     chatId: string,
     incoming: number,
   ): Promise<"proceed" | "drop" | "retry"> {
+    this.notePendingResumeGeneration(chatId, incoming);
+
     const outcome = await this.withResumeGenerationAdoptionLock(chatId, async () => {
-      const local = this.getLocalResumeGeneration(chatId);
-      if (incoming < local) return "drop" as const;
-      if (incoming === local) return "proceed" as const;
-      return this.adoptResumeGeneration(chatId, incoming);
+      // Adopt up to the highest generation requested while we held/waited —
+      // not merely `incoming` — then drop if our envelope is below that watermark.
+      for (;;) {
+        const local = this.getLocalResumeGeneration(chatId);
+        const highest = this.getPendingResumeGeneration(chatId);
+        if (highest <= local) break;
+        const adopted = await this.adoptResumeGeneration(chatId, highest);
+        if (adopted === "retry") return "retry" as const;
+        if (adopted === "drop") return "drop" as const;
+        // Loop: another waiter may have raised pending during our adopt.
+      }
+
+      const committed = this.getLocalResumeGeneration(chatId);
+      if (committed >= this.getPendingResumeGeneration(chatId)) {
+        this.pendingResumeGenerations.delete(chatId);
+      }
+      if (incoming < committed) return "drop" as const;
+      if (incoming > committed) return "retry" as const;
+      // Still-queued higher pending means we are not the authority for admit.
+      if (incoming < this.getPendingResumeGeneration(chatId)) return "drop" as const;
+      return "proceed" as const;
     });
-    // Re-read after the exclusive section: a waiter that adopted a newer
-    // generation while we were queued (or after we committed) must drop us.
+
+    // Final authority check after releasing the lock: a newer waiter may have
+    // raised pending or committed while our continuation was scheduled.
     const committed = this.getLocalResumeGeneration(chatId);
-    if (incoming < committed) return "drop";
-    if (incoming > committed) {
-      // Flush failure left generation non-admissible — surface retry, or a
-      // lost race needs another adopt attempt.
+    const pending = this.getPendingResumeGeneration(chatId);
+    if (incoming < committed || incoming < pending) return "drop";
+    if (incoming > committed)
       return outcome === "retry" ? "retry" : this.ensureResumeGenerationAdmission(chatId, incoming);
-    }
     return outcome === "retry" ? "retry" : "proceed";
   }
 

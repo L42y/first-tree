@@ -4234,15 +4234,20 @@ describe("SessionManager resume generation admission", () => {
 
       const g1 = sm.dispatch(mockEntry({ id: 2, chatId: "chat-race", messageId: "msg-g1", resumeGeneration: 1 }));
       await vi.waitFor(() => expect(shutdownEntered).toBeGreaterThan(0));
+      // Starting g2 synchronously notes pending generation 2 before its first
+      // await, so g1's still-in-flight adoption must observe the higher watermark.
       const g2 = sm.dispatch(mockEntry({ id: 3, chatId: "chat-race", messageId: "msg-g2", resumeGeneration: 2 }));
       releaseShutdown();
       await Promise.all([g1, g2]);
 
-      // g1 must not enter provider once g2 has committed; g2 fresh-starts once.
+      // g1 must drop (ACK) once g2 was queued; only g2 may fresh-start.
       expect(resume).not.toHaveBeenCalled();
       expect(inject).not.toHaveBeenCalled();
       expect(start).toHaveBeenCalledTimes(1);
+      const startCalls = start.mock.calls as unknown as Array<[{ id?: string }?, ...unknown[]]>;
+      expect(startCalls[0]?.[0]?.id).toBe("msg-g2");
       expect(ackEntry).toHaveBeenCalledWith(2);
+      expect(ackEntry).not.toHaveBeenCalledWith(3);
 
       const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as {
         resumeGenerations?: Record<string, number>;
