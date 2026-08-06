@@ -353,9 +353,32 @@ describe("runtime provider architecture guard", () => {
 
     const cleanCommand = readFileSync(join(repoRoot, "apps/cli/src/commands/agent/workspace/clean.ts"), "utf8");
     expect(cleanCommand).toContain("cleanAgentWorkspaces");
+    const clientImport = cleanCommand.match(/import\s*\{([^}]*)\}\s*from\s*["']@first-tree\/client["']/);
+    expect(clientImport?.[1]?.replace(/\s+/g, " ").trim()).toBe("cleanAgentWorkspaces");
+    expect(cleanCommand).toMatch(/const DEFAULT_WORKSPACE_TTL_MS = 7 \* 24 \* 60 \* 60 \* 1000/);
     expect(cleanCommand).not.toMatch(/\bfrom ["']node:fs["']/);
     expect(cleanCommand).not.toMatch(/\bfrom ["']node:path["']/);
     expect(cleanCommand).not.toContain("defaultDataDir");
+
+    const maintenance = readFileSync(join(clientSrc, "runtime/workspace-maintenance.ts"), "utf8");
+    const optionsMatch = maintenance.match(/export type CleanAgentWorkspacesOptions = \{([\s\S]*?)\n\};/);
+    expect(optionsMatch?.[1], "CleanAgentWorkspacesOptions must be declared").toBeTruthy();
+    const optionsBody = optionsMatch?.[1] ?? "";
+    expect(optionsBody).toMatch(/\bagentName\?:/);
+    expect(optionsBody).toMatch(/\bttlMs:/);
+    expect(optionsBody).not.toMatch(/\bdataDir\b/);
+    expect(optionsBody).not.toMatch(/\bcleanWorkspacesFn\b/);
+    for (const [label, source] of [
+      ["packages/client/src/index.ts", rootIndex],
+      ["packages/client/src/runtime/index.ts", runtimeIndex],
+    ] as const) {
+      expect(source, `${label} must not re-export cleanAgentWorkspacesWithDeps`).not.toMatch(
+        /\bcleanAgentWorkspacesWithDeps\b/,
+      );
+      expect(source, `${label} must not re-export CleanAgentWorkspacesTestDeps`).not.toMatch(
+        /\bCleanAgentWorkspacesTestDeps\b/,
+      );
+    }
 
     const cliRuntime = readFileSync(join(repoRoot, "apps/cli/src/core/client-runtime.ts"), "utf8");
     expect(cliRuntime).toMatch(/resolveHandlerFactory[\s\S]*Object\.hasOwn/);

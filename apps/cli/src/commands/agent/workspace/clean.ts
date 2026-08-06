@@ -1,6 +1,9 @@
-import { cleanAgentWorkspaces, DEFAULT_WORKSPACE_TTL_MS } from "@first-tree/client";
+import { cleanAgentWorkspaces } from "@first-tree/client";
 import type { Command } from "commander";
 import { print } from "../../../core/output.js";
+
+/** Presentation default for `--ttl` (days). Kept local so CLI Client mocks need not know it. */
+const DEFAULT_WORKSPACE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export function registerAgentWorkspaceCleanCommand(workspace: Command): void {
   workspace

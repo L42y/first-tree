@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanAgentWorkspaces } from "../runtime/workspace-maintenance.js";
+import {
+  type CleanAgentWorkspacesOptions,
+  cleanAgentWorkspaces,
+  cleanAgentWorkspacesWithDeps,
+} from "../runtime/workspace-maintenance.js";
 
 function writeRegistry(
   dataDir: string,
@@ -36,9 +40,20 @@ describe("cleanAgentWorkspaces", () => {
     vi.restoreAllMocks();
   });
 
+  it("locks the public option surface to agentName and ttlMs only", () => {
+    type PublicKeys = keyof CleanAgentWorkspacesOptions;
+    const keys: PublicKeys[] = ["agentName", "ttlMs"];
+    expect(keys).toEqual(["agentName", "ttlMs"]);
+    // Structural: no other declared public keys.
+    const sample: CleanAgentWorkspacesOptions = { ttlMs: 0 };
+    expect(Object.keys(sample).sort()).toEqual(["ttlMs"]);
+    const withAgent: CleanAgentWorkspacesOptions = { agentName: "nova", ttlMs: 1 };
+    expect(Object.keys(withAgent).sort()).toEqual(["agentName", "ttlMs"]);
+  });
+
   it("returns missing-root when the workspaces directory does not exist", () => {
     dataDir = mkdtempSync(join(tmpdir(), "ft-clean-missing-"));
-    const result = cleanAgentWorkspaces({ dataDir, ttlMs: 0 });
+    const result = cleanAgentWorkspacesWithDeps({ ttlMs: 0 }, { dataDir });
     expect(result).toEqual({ kind: "missing-root" });
   });
 
@@ -66,11 +81,10 @@ describe("cleanAgentWorkspaces", () => {
       return [];
     });
 
-    const result = cleanAgentWorkspaces({
-      dataDir,
-      ttlMs: 3 * 24 * 60 * 60 * 1000,
-      cleanWorkspacesFn: cleanFn,
-    });
+    const result = cleanAgentWorkspacesWithDeps(
+      { ttlMs: 3 * 24 * 60 * 60 * 1000 },
+      { dataDir, cleanWorkspacesFn: cleanFn },
+    );
 
     expect(result).toEqual({
       kind: "cleaned",
@@ -89,12 +103,10 @@ describe("cleanAgentWorkspaces", () => {
     const cleanFn = vi.fn((_workspaceRoot: string, _activeChatIds: Set<string>, _ttlMs: number): string[] => [
       "chat-stale",
     ]);
-    const result = cleanAgentWorkspaces({
-      agentName: "nova",
-      dataDir,
-      ttlMs: 7 * 24 * 60 * 60 * 1000,
-      cleanWorkspacesFn: cleanFn,
-    });
+    const result = cleanAgentWorkspacesWithDeps(
+      { agentName: "nova", ttlMs: 7 * 24 * 60 * 60 * 1000 },
+      { dataDir, cleanWorkspacesFn: cleanFn },
+    );
 
     expect(cleanFn).toHaveBeenCalledTimes(1);
     expect(cleanFn.mock.calls[0]?.[0]).toBe(join(dataDir, "workspaces", "nova"));
@@ -108,17 +120,15 @@ describe("cleanAgentWorkspaces", () => {
     dataDir = mkdtempSync(join(tmpdir(), "ft-clean-skip-"));
     mkdirSync(join(dataDir, "workspaces"), { recursive: true });
     const cleanFn = vi.fn(() => ["should-not-run"]);
-    const result = cleanAgentWorkspaces({
-      agentName: "missing",
-      dataDir,
-      ttlMs: 0,
-      cleanWorkspacesFn: cleanFn,
-    });
+    const result = cleanAgentWorkspacesWithDeps(
+      { agentName: "missing", ttlMs: 0 },
+      { dataDir, cleanWorkspacesFn: cleanFn },
+    );
     expect(cleanFn).not.toHaveBeenCalled();
     expect(result).toEqual({ kind: "cleaned", removed: [] });
   });
 
-  it("never mutates on-disk files when the low-level cleaner is the zero-deletion no-op", () => {
+  it("never mutates on-disk files when the production wrapper uses the zero-deletion no-op", () => {
     dataDir = mkdtempSync(join(tmpdir(), "ft-clean-zero-"));
     const agentHome = join(dataDir, "workspaces", "nova");
     mkdirSync(agentHome, { recursive: true });
@@ -126,10 +136,17 @@ describe("cleanAgentWorkspaces", () => {
     writeFileSync(marker, "intact", "utf-8");
     writeRegistry(dataDir, "nova", {});
 
-    // Production path: no cleanWorkspacesFn inject → real no-op cleaner.
-    const result = cleanAgentWorkspaces({ dataDir, ttlMs: 0 });
+    // Production wrapper path via deps seam with real cleanWorkspaces omitted →
+    // same zero-deletion no-op the public API binds.
+    const result = cleanAgentWorkspacesWithDeps({ ttlMs: 0 }, { dataDir });
     expect(result).toEqual({ kind: "cleaned", removed: [] });
     expect(readFileSync(marker, "utf-8")).toBe("intact");
     expect(readFileSync(join(dataDir, "sessions", "nova.json"), "utf-8")).toContain('"version":1');
+  });
+
+  it("public cleanAgentWorkspaces only accepts agentName and ttlMs at the call site", () => {
+    // Compile-time + runtime smoke: public entry is the thin channel-bound wrapper.
+    expect(typeof cleanAgentWorkspaces).toBe("function");
+    expect(cleanAgentWorkspaces.length).toBe(1);
   });
 });

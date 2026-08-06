@@ -52,7 +52,6 @@ const coreMocks = vi.hoisted(() => ({
 
 const clientMocks = vi.hoisted(() => ({
   cleanAgentWorkspaces: vi.fn(),
-  DEFAULT_WORKSPACE_TTL_MS: 7 * 24 * 60 * 60 * 1000,
 }));
 
 const localAgentMocks = vi.hoisted(() => ({

@@ -2,23 +2,17 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { defaultDataDir } from "@first-tree/shared/config";
 import { SessionRegistry } from "./session-registry.js";
-import { cleanWorkspaces, DEFAULT_WORKSPACE_TTL_MS } from "./workspace.js";
+import { cleanWorkspaces } from "./workspace.js";
 
+/**
+ * Public options for {@link cleanAgentWorkspaces}.
+ * Channel data-root and the low-level cleaner stay inside Client — not package API.
+ */
 export type CleanAgentWorkspacesOptions = {
   /** When set, clean only this agent home. When omitted, enumerate every agent under workspaces/. */
   agentName?: string;
   /** TTL forwarded to the low-level cleaner (currently a no-op). */
   ttlMs: number;
-  /**
-   * Override the Client data directory. Production callers omit this and use
-   * `defaultDataDir()`; tests inject a temp root.
-   */
-  dataDir?: string;
-  /**
-   * Test seam for the low-level cleaner. Production uses {@link cleanWorkspaces}.
-   * Kept minimal so orchestration (paths, registry, active-set) stays owned here.
-   */
-  cleanWorkspacesFn?: (workspaceRoot: string, activeChatIds: Set<string>, ttlMs: number) => string[];
 };
 
 export type CleanedWorkspaceEntry = {
@@ -29,6 +23,16 @@ export type CleanedWorkspaceEntry = {
 export type CleanAgentWorkspacesResult =
   | { kind: "missing-root" }
   | { kind: "cleaned"; removed: CleanedWorkspaceEntry[] };
+
+/**
+ * @internal Test-only dependency seam. Not re-exported from package barrels.
+ * Production {@link cleanAgentWorkspaces} always binds channel `defaultDataDir()`
+ * and the real zero-deletion {@link cleanWorkspaces}.
+ */
+export type CleanAgentWorkspacesTestDeps = {
+  dataDir: string;
+  cleanWorkspacesFn?: (workspaceRoot: string, activeChatIds: Set<string>, ttlMs: number) => string[];
+};
 
 /**
  * High-level agent-workspace maintenance for the CLI `agent workspace clean`
@@ -44,9 +48,23 @@ export type CleanAgentWorkspacesResult =
  * never auto-deletes agent homes, clones, worktrees, or legacy chat dirs.
  */
 export function cleanAgentWorkspaces(options: CleanAgentWorkspacesOptions): CleanAgentWorkspacesResult {
-  const dataDir = options.dataDir ?? defaultDataDir();
+  return cleanAgentWorkspacesWithDeps(options, {
+    dataDir: defaultDataDir(),
+    cleanWorkspacesFn: cleanWorkspaces,
+  });
+}
+
+/**
+ * @internal Orchestration core with injectable data-root / cleaner for tests.
+ * Import only via the module path — never from `@first-tree/client` barrels.
+ */
+export function cleanAgentWorkspacesWithDeps(
+  options: CleanAgentWorkspacesOptions,
+  deps: CleanAgentWorkspacesTestDeps,
+): CleanAgentWorkspacesResult {
+  const dataDir = deps.dataDir;
   const ttlMs = options.ttlMs;
-  const cleanFn = options.cleanWorkspacesFn ?? cleanWorkspaces;
+  const cleanFn = deps.cleanWorkspacesFn ?? cleanWorkspaces;
   const workspacesDir = join(dataDir, "workspaces");
 
   if (!existsSync(workspacesDir)) {
@@ -78,5 +96,3 @@ export function cleanAgentWorkspaces(options: CleanAgentWorkspacesOptions): Clea
 
   return { kind: "cleaned", removed };
 }
-
-export { DEFAULT_WORKSPACE_TTL_MS };

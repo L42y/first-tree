@@ -10,6 +10,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(api.AgentSlot).toBeDefined();
     expect(api.AgentRuntime).toBeDefined();
     expect(api.cleanAgentWorkspaces).toBeDefined();
+    expect(api).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
     expect(api).not.toHaveProperty("SessionManager");
     expect(api).not.toHaveProperty("SessionRegistry");
     expect(api.createBuiltinHandlerRegistry).toBeDefined();
@@ -26,6 +27,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(runtime.AgentSlot).toBeDefined();
     expect(runtime.AgentRuntime).toBeDefined();
     expect(runtime.cleanAgentWorkspaces).toBeDefined();
+    expect(runtime).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
     expect(runtime).not.toHaveProperty("SessionManager");
     expect(runtime).not.toHaveProperty("SessionRegistry");
     expect(runtime.resolveAgentContextTreeBinding).toBeDefined();
