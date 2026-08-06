@@ -112,8 +112,6 @@ describe("composeScmAudience", () => {
       kind: "provider_task_target",
       humanAgentId: "human-h",
       wakeAgentId: "agent-b",
-      reason: "mentioned",
-      externalUsername: "provider-app",
       providerContext: { capability: "reply-run" },
     };
     const composed = composeScmAudience({

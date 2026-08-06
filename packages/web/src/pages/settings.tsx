@@ -63,7 +63,8 @@ const RESOURCES_ITEM: Item = {
 const INTEGRATIONS_ITEM: Item = {
   to: "/settings/integrations",
   label: "GitHub & GitLab",
-  description: "Connect GitHub and GitLab for repository events and identity. GitHub also supports task routing.",
+  description:
+    "Connect GitHub and GitLab for repository events and identity. GitHub can automatically assign Issue and pull request activity to an Agent.",
 };
 const ITEMS: Item[] = [
   ACCOUNT_ITEM,

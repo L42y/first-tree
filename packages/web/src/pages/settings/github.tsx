@@ -86,12 +86,12 @@ export function SettingsGithubPage() {
         ref={taskRoutingRef}
         id={TASK_ROUTING_HASH.slice(1)}
         tabIndex={-1}
-        aria-label="GitHub task routing"
+        aria-label="GitHub automatic handling"
         style={{ scrollMarginTop: "var(--sp-4)" }}
       >
         <Section
-          title="Task routing"
-          description="Choose who handles requests sent directly to the First Tree GitHub App."
+          title="Automatic handling"
+          description="Choose an Agent to handle Issue and pull request activity from connected GitHub repositories."
         >
           <GithubTaskAgentControls />
         </Section>

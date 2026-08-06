@@ -373,10 +373,7 @@ describe("GitHub/GitLab semantic webhook conformance", () => {
     const project = <TProviderContext>(targets: ScmAudienceTarget<TProviderContext>[]) =>
       targets.map((target) => ({
         kind: target.entry.kind,
-        reason:
-          target.entry.kind === "personnel_target" || target.entry.kind === "provider_task_target"
-            ? target.entry.reason
-            : target.directedContext?.reason,
+        reason: target.entry.kind === "personnel_target" ? target.entry.reason : target.directedContext?.reason,
         requiresPersistentLine:
           target.entry.kind === "personnel_target"
             ? target.entry.requiresPersistentLine

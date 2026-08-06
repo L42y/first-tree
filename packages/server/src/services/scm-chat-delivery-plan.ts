@@ -80,12 +80,13 @@ function addScmDeliveryEntry<TProviderContext>(
   const senderAgentId = scmTargetSenderAgentId(target);
   const humanAgentId = scmTargetHumanAgentId(target);
   const wakeAgentId = scmTargetWakeAgentId(target);
+  // Only personnel evidence carries card context. A provider task contributes
+  // its wake and capability, leaving the card to read `subscribed` with the
+  // event's real kind unless a real person is also routed to this chat.
   const involveReason =
-    target.entry.kind === "personnel_target" || target.entry.kind === "provider_task_target"
-      ? target.entry.reason
-      : (target.directedContext?.reason ?? null);
+    target.entry.kind === "personnel_target" ? target.entry.reason : (target.directedContext?.reason ?? null);
   const involveLogin =
-    target.entry.kind === "personnel_target" || target.entry.kind === "provider_task_target"
+    target.entry.kind === "personnel_target"
       ? target.entry.externalUsername
       : (target.directedContext?.externalUsername ?? null);
   const providerContext = target.entry.kind === "provider_task_target" ? target.entry.providerContext : null;
