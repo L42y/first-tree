@@ -26,11 +26,13 @@ import {
   sendToAgent,
   setClientConnection,
 } from "../services/connection-manager.js";
-import { loadOutstanding, updateCronJob } from "../services/cron-job.js";
+import { assertCronAgentRouteAccess, loadOutstanding, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
+import { setChatEngagement } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import { softTerminateRemovedAgentSession, withLiveRemovedSessionFence } from "../services/remove-chat-participant.js";
+import { lockAndValidateScmPersonnelPlacement } from "../services/scm-target-chat-policy.js";
 import { resumeSuspendedSession } from "../services/session.js";
 import { appendLiveEvent } from "../services/session-event.js";
 import { createAdminContext, createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
@@ -760,6 +762,135 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       removeClientConnection(runtime.clientId, ws as unknown as WebSocket);
       await exclusivePool.end();
       await resumePool.end();
+      await observer.end();
+    }
+  });
+
+  it("outstanding-pointer remove and owner engagement delete complete without deadlock", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-eng-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+    const sent = await sendMessage(app.db, chatId, runtime.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "outstanding for lock-order",
+      metadata: { mentions: [runtime.agent.uuid] },
+    });
+    const jobId = crypto.randomUUID();
+    await app.db.insert(cronJobs).values({
+      id: jobId,
+      ownerMemberId: runtime.memberId,
+      controlChatId: chatId,
+      agentId: runtime.agent.uuid,
+      name: `rm-eng-${jobId.slice(0, 6)}`,
+      chatMode: "reuse_control_chat",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      prompt: "ping",
+      state: "paused",
+      stateReason: "user_paused",
+      nextRunAt: null,
+      lastTriggerMessageId: sent.message.id,
+      revision: 1,
+    });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for engagement/remove lock test");
+    const removeAppName = `rm_eng_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const engAppName = `rm_eng_de_${crypto.randomUUID().slice(0, 8)}`;
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const engPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, engAppName));
+
+    try {
+      await Promise.race([
+        Promise.all([
+          removeParticipant(removePool, chatId, runtime.humanAgentUuid, runtime.agent.uuid),
+          setChatEngagement(engPool, chatId, runtime.humanAgentUuid, "deleted"),
+        ]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("remove vs engagement-delete deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      const [job] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
+      expect(job?.lastTriggerMessageId).toBeNull();
+    } finally {
+      await removePool.end();
+      await engPool.end();
+    }
+  });
+
+  it("cron auth membership-first does not deadlock against SCM exclusive placement", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-scm-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for cron/SCM lock test");
+    const cronAppName = `rm_scm_cr_${crypto.randomUUID().slice(0, 8)}`;
+    const scmAppName = `rm_scm_sc_${crypto.randomUUID().slice(0, 8)}`;
+    const cronPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, cronAppName));
+    const scmPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, scmAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseCron!: () => void;
+      const cronHeld = new Promise<void>((resolve) => {
+        releaseCron = resolve;
+      });
+      let cronReady!: () => void;
+      const cronReadyP = new Promise<void>((resolve) => {
+        cronReady = resolve;
+      });
+
+      const cronAuthPromise = cronPool.transaction(async (tx) => {
+        await assertCronAgentRouteAccess(tx as never, {
+          chatId,
+          agentId: runtime.agent.uuid,
+          callerMemberId: runtime.memberId,
+          callerHumanAgentId: runtime.humanAgentUuid,
+          afterChatMembershipSharedForTest: async () => {
+            cronReady();
+            await cronHeld;
+          },
+        });
+      });
+
+      await Promise.race([
+        cronReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("cron auth shared barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const scmPromise = lockAndValidateScmPersonnelPlacement(scmPool, {
+        humanAgentId: runtime.humanAgentUuid,
+        wakeAgentId: runtime.agent.uuid,
+        candidateChatIds: [chatId],
+      });
+      await waitForPostgresLockWait(observer, scmAppName);
+      releaseCron();
+
+      const results = await Promise.race([
+        Promise.all([cronAuthPromise, scmPromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("cron auth vs SCM placement deadlock timeout")), 15_000);
+        }),
+      ]);
+      // Authorization path completed under contention; placement may be null when
+      // the chat is not an SCM personnel candidate, which is fine for this lock test.
+      expect(results).toHaveLength(2);
+    } finally {
+      await cronPool.end();
+      await scmPool.end();
       await observer.end();
     }
   });

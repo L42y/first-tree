@@ -10,7 +10,7 @@ import {
   REMOVE_PARTICIPANT_OPEN_REQUEST_CODE,
   type RemoveChatParticipantResponse,
 } from "@first-tree/shared";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
@@ -173,8 +173,8 @@ export async function removeChatParticipant(
     }
 
     // Cancel undelivered / unacked inbox rows for this target in this chat.
-    // Collect cancelled message ids so cron outstanding pointers that pointed
-    // at those deliveries can be cleared in the same txn (any job state).
+    // Cancelled message ids feed the canonical cron pause/pointer phase below
+    // (barriers before any cron UPDATE) so outstanding pointers clear safely.
     let cancelledMessageIds: string[] = [];
     if (targetAgent.inboxId) {
       const cancelled = await tx
@@ -189,19 +189,6 @@ export async function removeChatParticipant(
         )
         .returning({ messageId: inboxEntries.messageId });
       cancelledMessageIds = [...new Set(cancelled.map((row) => row.messageId))];
-    }
-
-    if (cancelledMessageIds.length > 0) {
-      await tx
-        .update(cronJobs)
-        .set({ lastTriggerMessageId: null })
-        .where(
-          and(
-            eq(cronJobs.controlChatId, chatId),
-            eq(cronJobs.agentId, targetAgentId),
-            inArray(cronJobs.lastTriggerMessageId, cancelledMessageIds),
-          ),
-        );
     }
 
     // Non-human: force an evicted fence even when no prior session row exists,
@@ -262,6 +249,7 @@ export async function removeChatParticipant(
       chatId,
       targetAgentId,
       targetType: targetAgent.type,
+      cancelledMessageIds,
     });
 
     await recomputeChatWatchers(tx, chatId);
@@ -343,7 +331,12 @@ async function listWatcherHumanAgentIds(db: Database, chatId: string): Promise<s
 
 async function pauseCronJobsForRemovedSpeaker(
   db: Database,
-  input: { chatId: string; targetAgentId: string; targetType: string },
+  input: {
+    chatId: string;
+    targetAgentId: string;
+    targetType: string;
+    cancelledMessageIds: string[];
+  },
 ): Promise<void> {
   if (input.targetType === "human") {
     const [ownerMember] = await db
@@ -385,20 +378,31 @@ async function pauseCronJobsForRemovedSpeaker(
     return;
   }
 
-  // Agent removed: pause every active job that wakes this agent in the chat.
-  // Caller already holds exclusive chat membership; keep lock order
-  // membership → owner-chat barrier → cron FOR UPDATE (scheduler/create/resume
-  // take membership shared before cron so this cannot deadlock).
+  // Agent removed: one canonical cron phase under membership exclusive.
+  // Lock order must match engagement delete (`pauseActiveJobsForOwnerChatDelete`):
+  //   owner-chat barriers (stable owner order) → cron FOR UPDATE → pause/clear.
+  // Include owners of already-paused jobs whose outstanding pointer matches a
+  // cancelled delivery — clearing those rows still needs the barrier first.
+  const cancelledIds = input.cancelledMessageIds;
+  const activeMatch = and(
+    eq(cronJobs.controlChatId, input.chatId),
+    eq(cronJobs.agentId, input.targetAgentId),
+    eq(cronJobs.state, "active"),
+  );
+  const pointerMatch =
+    cancelledIds.length > 0
+      ? and(
+          eq(cronJobs.controlChatId, input.chatId),
+          eq(cronJobs.agentId, input.targetAgentId),
+          inArray(cronJobs.lastTriggerMessageId, cancelledIds),
+        )
+      : undefined;
+  const affectedWhere = pointerMatch ? or(activeMatch, pointerMatch) : activeMatch;
+
   const ownerRows = await db
     .selectDistinct({ ownerMemberId: cronJobs.ownerMemberId })
     .from(cronJobs)
-    .where(
-      and(
-        eq(cronJobs.controlChatId, input.chatId),
-        eq(cronJobs.agentId, input.targetAgentId),
-        eq(cronJobs.state, "active"),
-      ),
-    )
+    .where(affectedWhere)
     .orderBy(asc(cronJobs.ownerMemberId));
 
   for (const row of ownerRows) {
@@ -406,34 +410,37 @@ async function pauseCronJobsForRemovedSpeaker(
   }
 
   const locked = await db
-    .select({ id: cronJobs.id })
+    .select({
+      id: cronJobs.id,
+      state: cronJobs.state,
+      lastTriggerMessageId: cronJobs.lastTriggerMessageId,
+    })
     .from(cronJobs)
-    .where(
-      and(
-        eq(cronJobs.controlChatId, input.chatId),
-        eq(cronJobs.agentId, input.targetAgentId),
-        eq(cronJobs.state, "active"),
-      ),
-    )
+    .where(affectedWhere)
     .orderBy(asc(cronJobs.id))
     .for("update");
   if (locked.length === 0) return;
 
-  await db
-    .update(cronJobs)
-    .set({
-      state: "paused",
-      stateReason: "agent_not_speaker",
-      nextRunAt: null,
-      revision: sql`${cronJobs.revision} + 1`,
-    })
-    .where(
-      and(
-        eq(cronJobs.controlChatId, input.chatId),
-        eq(cronJobs.agentId, input.targetAgentId),
-        eq(cronJobs.state, "active"),
-      ),
-    );
+  const activeIds = locked.filter((row) => row.state === "active").map((row) => row.id);
+  const pointerClearIds = locked
+    .filter((row) => row.lastTriggerMessageId != null && cancelledIds.includes(row.lastTriggerMessageId))
+    .map((row) => row.id);
+
+  if (activeIds.length > 0) {
+    await db
+      .update(cronJobs)
+      .set({
+        state: "paused",
+        stateReason: "agent_not_speaker",
+        nextRunAt: null,
+        revision: sql`${cronJobs.revision} + 1`,
+      })
+      .where(inArray(cronJobs.id, activeIds));
+  }
+
+  if (pointerClearIds.length > 0) {
+    await db.update(cronJobs).set({ lastTriggerMessageId: null }).where(inArray(cronJobs.id, pointerClearIds));
+  }
 }
 
 /**

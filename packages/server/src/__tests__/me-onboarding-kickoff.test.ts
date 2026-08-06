@@ -16,7 +16,7 @@ import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createAgent } from "../services/agent.js";
 import { addParticipant, removeParticipant } from "../services/chat.js";
-import { pollInbox } from "../services/inbox.js";
+import { pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -679,6 +679,169 @@ describe("POST /me/onboarding/kickoff", () => {
         message: expect.objectContaining({ content: "Please inspect /projects/acme." }),
       }),
     );
+  });
+
+  it("remove → GC → legacy kickoff retry does not revive notify delivery for a removed agent", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const agent = await createOrgAgent(app, admin);
+    const basePayload = {
+      organizationId: admin.organizationId,
+      agentUuid: agent.uuid,
+      bootstrap: "Please help me get started with First Tree.",
+      topic: "Get started with First Tree",
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { ...basePayload, orientation: 1 },
+    });
+    expect(first.statusCode).toBe(200);
+    const chatId = first.json<{ chatId: string }>().chatId;
+    const [opening] = await app.db.select().from(messages).where(eq(messages.chatId, chatId)).limit(1);
+    expect(opening).toBeTruthy();
+
+    await removeParticipant(app.db, chatId, admin.humanAgentUuid, agent.uuid);
+    const pruned = await pruneStaleSilentEntries(app.db);
+    expect(pruned.cancelledDeleted).toBeGreaterThan(0);
+
+    const legacyRetry = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: basePayload,
+    });
+    expect(legacyRetry.statusCode).toBe(200);
+    expect(legacyRetry.json<{ chatId: string; sent?: unknown }>().chatId).toBe(chatId);
+    expect(legacyRetry.json<{ sent?: unknown }>().sent).toBeUndefined();
+
+    const deliveries = await app.db
+      .select({ status: inboxEntries.status, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(
+        and(
+          eq(inboxEntries.inboxId, agent.inboxId),
+          eq(inboxEntries.messageId, opening!.id),
+          eq(inboxEntries.chatId, chatId),
+        ),
+      );
+    expect(deliveries.every((row) => row.status !== "pending" && row.status !== "delivered")).toBe(true);
+    expect(deliveries.some((row) => row.notify && (row.status === "pending" || row.status === "delivered"))).toBe(
+      false,
+    );
+  });
+
+  it("legacy kickoff promote holding speaker FOR SHARE blocks remove until promote returns null-safe", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const agent = await createOrgAgent(app, admin);
+    const basePayload = {
+      organizationId: admin.organizationId,
+      agentUuid: agent.uuid,
+      bootstrap: "Please help me get started with First Tree.",
+      topic: "Get started with First Tree",
+    };
+
+    const first = await app.inject({
+      method: "POST",
+      url: KICKOFF_URL,
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+      payload: { ...basePayload, orientation: 1 },
+    });
+    const chatId = first.json<{ chatId: string }>().chatId;
+
+    const { kickoffOnboarding } = await import("../services/onboarding-kickoff.js");
+    const { connectDatabase, sslOptions } = await import("../db/connection.js");
+    const postgres = (await import("postgres")).default;
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for kickoff/remove barrier test");
+
+    const promoteAppName = `ko_prom_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `ko_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const promoteUrl = new URL(databaseUrl);
+    promoteUrl.searchParams.set("application_name", promoteAppName);
+    const removeUrl = new URL(databaseUrl);
+    removeUrl.searchParams.set("application_name", removeAppName);
+    const promotePool = connectDatabase(promoteUrl.toString());
+    const removePool = connectDatabase(removeUrl.toString());
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releasePromote!: () => void;
+      const promoteHeld = new Promise<void>((resolve) => {
+        releasePromote = resolve;
+      });
+      let promoteReady!: () => void;
+      const promoteReadyP = new Promise<void>((resolve) => {
+        promoteReady = resolve;
+      });
+
+      const promotePromise = kickoffOnboarding(promotePool, {
+        memberId: admin.memberId,
+        humanAgentId: admin.humanAgentUuid,
+        organizationId: admin.organizationId,
+        targetAgentId: agent.uuid,
+        bootstrap: basePayload.bootstrap,
+        topic: basePayload.topic,
+        kickoffKey: `${admin.humanAgentUuid}:${agent.uuid}:onboarding`,
+        stamp: "none",
+        afterSpeakerShareForTest: async () => {
+          promoteReady();
+          await promoteHeld;
+        },
+      });
+
+      await Promise.race([
+        promoteReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("kickoff speaker-share barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const removePromise = removeParticipant(removePool, chatId, admin.humanAgentUuid, agent.uuid);
+      const deadline = Date.now() + 5_000;
+      let sawLock = false;
+      while (Date.now() < deadline) {
+        const rows = await observer<{ wait_event_type: string | null }[]>`
+          SELECT wait_event_type
+          FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND application_name = ${removeAppName}
+        `;
+        if (rows.some((row) => row.wait_event_type === "Lock")) {
+          sawLock = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(sawLock).toBe(true);
+
+      releasePromote();
+      const [promoteResult] = await Promise.race([
+        Promise.all([promotePromise, removePromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("kickoff promote vs remove deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      // Promote may have inserted then remove cancelled, or promote lost the race
+      // after release — either way no live pending/delivered wake may remain.
+      const live = await app.db
+        .select({ status: inboxEntries.status })
+        .from(inboxEntries)
+        .where(
+          and(eq(inboxEntries.inboxId, agent.inboxId), eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true)),
+        );
+      expect(live.every((row) => row.status === "cancelled" || row.status === "acked")).toBe(true);
+      expect(promoteResult.chatId).toBe(chatId);
+    } finally {
+      await promotePool.end();
+      await removePool.end();
+      await observer.end();
+    }
   });
 
   it("does not promote the Orientation bootstrap after a visible continuation owns the wake", async () => {

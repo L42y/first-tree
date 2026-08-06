@@ -145,6 +145,8 @@ export type KickoffOnboardingArgs = {
    * before the chat is rejected.
    */
   onChatReady?: () => Promise<void>;
+  /** Test-only: runs after speaker FOR SHARE proof, before delivery promote. */
+  afterSpeakerShareForTest?: () => Promise<void>;
 };
 
 export type KickoffOnboardingResult = {
@@ -332,6 +334,27 @@ async function promoteOrientationBootstrapForLegacyReuse(
     .where(eq(agents.uuid, args.targetAgentId))
     .limit(1);
   if (!target || target.status !== "active") return null;
+
+  // Keyed create already holds this chat row FOR UPDATE. Prove the target is
+  // still a speaker with a row lock that serializes against DELETE/update of
+  // that membership row — do not take the membership advisory here (that
+  // would invert add/re-add's membership → chat-row order).
+  const [speaker] = await db
+    .select({ agentId: chatMembership.agentId })
+    .from(chatMembership)
+    .where(
+      and(
+        eq(chatMembership.chatId, context.chat.id),
+        eq(chatMembership.agentId, args.targetAgentId),
+        eq(chatMembership.accessMode, "speaker"),
+      ),
+    )
+    .for("share")
+    .limit(1);
+  if (!speaker) return null;
+  if (args.afterSpeakerShareForTest) {
+    await args.afterSpeakerShareForTest();
+  }
 
   const [delivery] = await db
     .select()

@@ -308,9 +308,10 @@ export async function createCronJob(
   return db.transaction(async (tx) => {
     const txDb = tx as unknown as Database;
 
-    // Class D global order: member→agent→membership shared→speakers →
+    // Class D global order: membership shared → member → agent → speakers →
     // owner-chat advisory → engagement recheck → cron/insert.
-    // Membership shared must precede any cron row lock so removal
+    // Membership shared must precede any member/agent/cron row lock so SCM
+    // placement (exclusive membership → member → agents) and removal
     // (exclusive membership → cron) cannot deadlock, and so a concurrent
     // create cannot insert an active job after removal's pause scan.
     let ownerMemberId: string;
@@ -456,8 +457,8 @@ export async function updateCronJob(
     const txDb = tx as unknown as Database;
     const body = input.body;
 
-    // Peek identity without row locks so Class D auth can take member→agent
-    // locks before the owner-chat advisory / cron FOR UPDATE locks.
+    // Peek identity without row locks so Class D auth can take membership
+    // shared → member → agent locks before the owner-chat advisory / cron FOR UPDATE locks.
     const [peek] = await txDb
       .select({
         controlChatId: cronJobs.controlChatId,
@@ -693,8 +694,9 @@ export async function deleteCronJob(
  * Pause all active jobs for an owner on a control chat. Caller must hold or
  * be about to take the chat_user_state write. Lock order: owner-chat advisory
  * barrier, then cron rows FOR UPDATE ORDER BY id, then engagement UPSERT in
- * `setChatEngagement`. Class D mutations use member→agent→speakers→advisory→
- * engagement recheck→cron so both paths share advisory-before-engagement.
+ * `setChatEngagement`. Class D mutations use membership shared→member→agent→
+ * speakers→advisory→engagement recheck→cron so both paths share
+ * advisory-before-engagement.
  */
 export async function pauseActiveJobsForOwnerChatDelete(
   db: Database,
@@ -743,12 +745,16 @@ export async function pauseActiveJobsForOwnerChatDelete(
  * Class D manager/speaker authorization held until commit.
  *
  * Lock order (must stay ahead of owner-chat advisory + engagement recheck + cron):
- *   1. caller member row
- *   2. agent row
- *   3. chat membership shared advisory (before speaker row locks / cron)
+ *   1. chat membership shared advisory (before member / agent / speaker rows)
+ *   2. caller member row FOR UPDATE
+ *   3. agent row FOR UPDATE
  *   4. chat_membership speaker rows (`agent_id` ASC)
  *
- * The shared membership fence must precede speaker FOR UPDATE so concurrent
+ * Membership-first matches exclusive writers (`lockAndValidateScmPersonnelPlacement`:
+ * membership exclusive → member → agents). Taking member/agent before membership
+ * shared deadlocks against those writers.
+ *
+ * The shared membership fence must also precede speaker FOR UPDATE so concurrent
  * removal (exclusive membership → speaker delete → cron pause) cannot form
  * `speakers→membership` / `membership→speakers` cycles, and so create/resume
  * cannot insert an active job after removal's pause scan.
@@ -761,8 +767,19 @@ export async function pauseActiveJobsForOwnerChatDelete(
  */
 export async function assertCronAgentRouteAccess(
   db: Database,
-  input: { chatId: string; agentId: string; callerMemberId: string; callerHumanAgentId: string },
+  input: {
+    chatId: string;
+    agentId: string;
+    callerMemberId: string;
+    callerHumanAgentId: string;
+    afterChatMembershipSharedForTest?: () => Promise<void>;
+  },
 ): Promise<void> {
+  await lockChatMembershipShared(db, [input.chatId]);
+  if (input.afterChatMembershipSharedForTest) {
+    await input.afterChatMembershipSharedForTest();
+  }
+
   const [callerMember] = await db
     .select({ id: members.id })
     .from(members)
@@ -790,8 +807,6 @@ export async function assertCronAgentRouteAccess(
       "Only the managing human may manage scheduled jobs for this agent",
     );
   }
-
-  await lockChatMembershipShared(db, [input.chatId]);
 
   const speakerAgentIds = [input.callerHumanAgentId, input.agentId].slice().sort((a, b) => a.localeCompare(b));
   for (const speakerAgentId of speakerAgentIds) {
