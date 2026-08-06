@@ -446,10 +446,11 @@ async function pauseCronJobsForRemovedSpeaker(
 /**
  * Hold shared membership across a live `inbox:deliver` socket send so removal
  * cannot cancel the row (and soft-terminate) between claim-commit and
- * `socket.send`. Caller already claimed `delivered`; we re-check speaker +
- * status under the fence. Returns `undefined` when the frame must be skipped
- * (removed speaker, cancelled/acked/reset row). `chatId`-less entries must not
- * use this helper — they stay on the unfenced drain path.
+ * `socket.send`. Re-check speaker + status with `FOR SHARE` on the entry row
+ * and hold both locks through `action`, so recovery reset/ACK cannot flip
+ * status after the SELECT and before send. Returns `undefined` when the frame
+ * must be skipped (removed speaker, cancelled/acked/reset row). `chatId`-less
+ * entries must not use this helper — they stay on the unfenced drain path.
  */
 export async function withLiveInboxDeliveryFence<T>(
   db: Database,
@@ -476,6 +477,7 @@ export async function withLiveInboxDeliveryFence<T>(
           eq(inboxEntries.status, "delivered"),
         ),
       )
+      .for("share")
       .limit(1);
     if (!entry) return undefined;
     return action(tx);

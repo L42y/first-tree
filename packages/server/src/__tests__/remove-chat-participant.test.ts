@@ -1341,6 +1341,98 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       await removePool.end();
       await observer.end();
     }
+
+    // Direction 3: FOR SHARE on the delivery row blocks concurrent status writers
+    // (ACK / recovery reset) until action completes — membership shared alone cannot.
+    await ensureParticipant(app.db, chatId, agent.agent.uuid);
+    const sent3 = await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "deliver fence row lock",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+    const [claimed3] = await app.db
+      .update(inboxEntries)
+      .set({ status: "delivered" })
+      .where(
+        and(
+          eq(inboxEntries.inboxId, agent.agent.inboxId),
+          eq(inboxEntries.messageId, sent3.message.id),
+          eq(inboxEntries.chatId, chatId),
+        ),
+      )
+      .returning({ id: inboxEntries.id });
+
+    const databaseUrl3 = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl3) throw new Error("DATABASE_URL is required for inbox row-lock fence test");
+    const fenceAppName3 = `rm_inbox_fs_${crypto.randomUUID().slice(0, 8)}`;
+    const ackAppName = `rm_inbox_ack_${crypto.randomUUID().slice(0, 8)}`;
+    const fencePool3 = connectDatabase(databaseUrlWithApplicationName(databaseUrl3, fenceAppName3));
+    const ackPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl3, ackAppName));
+    const observer3 = postgres(databaseUrl3, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl3) ?? {}) });
+    try {
+      let releaseAction!: () => void;
+      const actionHeld = new Promise<void>((resolve) => {
+        releaseAction = resolve;
+      });
+      let fenceReady!: () => void;
+      const fenceReadyP = new Promise<void>((resolve) => {
+        fenceReady = resolve;
+      });
+      let sawDeliveredUnderFence = false;
+
+      const fencePromise = withLiveInboxDeliveryFence(
+        fencePool3,
+        {
+          agentId: agent.agent.uuid,
+          chatId,
+          entryId: claimed3!.id,
+          inboxId: agent.agent.inboxId,
+        },
+        async (tx) => {
+          const [under] = await tx
+            .select({ status: inboxEntries.status })
+            .from(inboxEntries)
+            .where(eq(inboxEntries.id, claimed3!.id))
+            .limit(1);
+          sawDeliveredUnderFence = under?.status === "delivered";
+          fenceReady();
+          await actionHeld;
+          return true;
+        },
+      );
+
+      await Promise.race([
+        fenceReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("inbox row-lock fence barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const ackPromise = ackPool.transaction(async (tx) => {
+        await tx.update(inboxEntries).set({ status: "acked" }).where(eq(inboxEntries.id, claimed3!.id));
+      });
+      await waitForPostgresLockWait(observer3, ackAppName);
+
+      releaseAction();
+      await Promise.race([
+        Promise.all([fencePromise, ackPromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("inbox fence vs ack deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      expect(sawDeliveredUnderFence).toBe(true);
+      const [after] = await app.db
+        .select({ status: inboxEntries.status })
+        .from(inboxEntries)
+        .where(eq(inboxEntries.id, claimed3!.id));
+      expect(after?.status).toBe("acked");
+    } finally {
+      await fencePool3.end();
+      await ackPool.end();
+      await observer3.end();
+    }
   });
 
   it("still-evicted soft terminate delivers; softTerminate helper uses the held fence", async () => {
