@@ -3437,6 +3437,32 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("lets Reset strictly retry an abandoned suspend teardown after its first shutdown rejects", async () => {
+    vi.useFakeTimers();
+    const oldHandler = handler({
+      suspend: vi.fn(() => new Promise<void>(() => {})),
+      shutdown: vi.fn().mockRejectedValueOnce(new Error("transient shutdown failure")).mockResolvedValueOnce(undefined),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-abandoned-suspend-reset-retry";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await i.sessions.get(chatId)?.suspending;
+    await vi.waitFor(() => expect(oldHandler.shutdown).toHaveBeenCalledTimes(1));
+    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+
+    await expect(sm.handleCommand(chatId, "session:terminate")).resolves.toBeUndefined();
+
+    expect(oldHandler.shutdown).toHaveBeenCalledTimes(2);
+    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    await sm.shutdown();
+  });
+
   it("retains teardown proof when a canceled fresh-start shutdown fails, and converges on terminate", async () => {
     const boom = new Error("start-cancel shutdown failed");
     const startHandler = handler({

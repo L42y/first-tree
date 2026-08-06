@@ -682,7 +682,8 @@ export class SessionManager {
    * A manual suspend request whose completion timed out has lost its
    * trustworthy join boundary. The handler remains retired and tracked as
    * teardown debt, but ordinary route admission must not join that same raw
-   * callback forever. Reset still fails closed while the stop is unconfirmed.
+   * callback forever. Reset fails closed while the raw attempt is pending and
+   * may strictly retry only after a failed attempt has settled.
    */
   private readonly abandonedSuspendHandlers = new WeakSet<AgentHandler>();
   /**
@@ -1139,16 +1140,19 @@ export class SessionManager {
         // entry (boxed: rejections can be falsey) so a genuine retry
         // re-attempts it instead of turning into a false success; on success
         // the entry is deleted below, retiring the recorded errors with it.
+        if (session && this.abandonedSuspendHandlers.has(session.handler)) {
+          try {
+            await this.retryAbandonedSuspendTeardownForTerminate(chatId, session.handler);
+            session.handlerStoppedBySuspend = session.handler;
+          } catch (err) {
+            session.teardownError = { error: err };
+            throw asTerminateError("teardown", err);
+          }
+        }
         const needsTeardown =
           session != null &&
           session.handlerStoppedBySuspend !== session.handler &&
           (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
-        if (session && this.abandonedSuspendHandlers.has(session.handler)) {
-          throw asTerminateError(
-            "teardown",
-            new Error(`timed-out suspend handler is not confirmed stopped for chat ${chatId}`),
-          );
-        }
         if (session && needsTeardown) {
           try {
             await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
@@ -1189,10 +1193,12 @@ export class SessionManager {
           if (!pendingTeardown || pendingTeardown.size === 0) break;
           for (const pendingHandler of [...pendingTeardown]) {
             if (this.abandonedSuspendHandlers.has(pendingHandler)) {
-              throw asTerminateError(
-                "teardown",
-                new Error(`timed-out suspend handler is not confirmed stopped for chat ${chatId}`),
-              );
+              try {
+                await this.retryAbandonedSuspendTeardownForTerminate(chatId, pendingHandler);
+              } catch (err) {
+                throw asTerminateError("teardown", err);
+              }
+              continue;
             }
             try {
               await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
@@ -2357,6 +2363,22 @@ export class SessionManager {
         // rely on the retired generation fence instead of joining it.
       },
     );
+  }
+
+  /**
+   * Reset may retry an abandoned suspend teardown only after the previous raw
+   * shutdown attempt has settled. A still-registered attempt is the lost
+   * callback that made the generation abandoned, so joining it would hang the
+   * Reset. Once a rejection has settled, a fresh strict attempt is safe and
+   * restores the ordinary retry-to-convergence contract.
+   */
+  private async retryAbandonedSuspendTeardownForTerminate(chatId: string, handler: AgentHandler): Promise<void> {
+    if (this.handlerShutdowns.has(handler)) {
+      throw new Error(`timed-out suspend handler is not confirmed stopped for chat ${chatId}`);
+    }
+    await this.shutdownHandler(handler, "session_terminated", { observeFailure: true });
+    this.dropPendingTeardown(chatId, handler);
+    this.abandonedSuspendHandlers.delete(handler);
   }
 
   private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
