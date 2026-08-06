@@ -336,7 +336,7 @@ describe("version-manager discovery after a multishell teardown", () => {
   // appended fallback would prove nothing here — the raw `$PATH` lists it, so
   // the resolver would skip the dead entry and launch nvm. Missing is the
   // correct answer: the live shell had selected fnm.
-  it("resolves nothing rather than nvm when both managers were reported", () => {
+  it("resolves nothing rather than nvm when both managers were reported (macOS)", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-dual-")));
     const home = join(root, "home");
     const nvmBin = join(home, ".nvm", "versions", "node", "v22.2.0", "bin");
@@ -349,15 +349,62 @@ describe("version-manager discovery after a multishell teardown", () => {
     writeFileSync(nvmCodex, "#!/bin/sh\n");
     chmodSync(nvmCodex, 0o755);
 
+    // macOS is the platform that resolves after the shell exits, so this is the
+    // only one where the capture can arrive with a dead first entry.
+    Object.defineProperty(process, "platform", { value: "darwin" });
     vi.stubEnv("HOME", home);
     resetLoginShellPathDirsCache();
     const dirs = getLoginShellPathDirs(
       () =>
-        `__FT_SHELL_PATH__${multishell}\n${nvmBin}__FT_SHELL_PATH__${"__FT_SHELL_ENV__"}${fnmDir}\n${nvmBin}${"__FT_SHELL_ENV__"}`,
+        `__FT_SHELL_PATH__${multishell}\n${nvmBin}__FT_SHELL_PATH____FT_SHELL_ENV__${fnmDir}\n${nvmBin}__FT_SHELL_ENV__`,
     );
     resetLoginShellPathDirsCache();
 
     expect(dirs).not.toContain(nvmBin);
+    expect(
+      findCodexExecutableOnPath(
+        { HOME: home, PATH: "" },
+        {
+          platform: "darwin",
+          pathDelimiter: ":",
+          loginShellPathDirs: () => dirs,
+          wellKnownDirs: () => [],
+          desktopAppDirs: () => [],
+        },
+      ),
+    ).toBeNull();
+  });
+
+  // Off macOS the shell canonicalizes while it is still alive, so the returned
+  // order already establishes which manager `$PATH` had selected. Dropping both
+  // trees there would discard a correctly discovered provider for no reason.
+  it("keeps a dual-manager PATH intact where the shell already canonicalized it", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-dual-linux-")));
+    const home = join(root, "home");
+    const fnmDir = join(root, "custom-fnm");
+    const fnmTarget = join(fnmDir, "node-versions", "v20.11.0", "installation", "bin");
+    const nvmBin = join(home, ".nvm", "versions", "node", "v22.2.0", "bin");
+    mkdirSync(fnmTarget, { recursive: true });
+    mkdirSync(nvmBin, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    for (const bin of [fnmTarget, nvmBin]) {
+      const codex = join(bin, "codex");
+      writeFileSync(codex, "#!/bin/sh\n");
+      chmodSync(codex, 0o755);
+    }
+
+    Object.defineProperty(process, "platform", { value: "linux" });
+    vi.stubEnv("HOME", home);
+    resetLoginShellPathDirsCache();
+    // What a live `cd`/`pwd -P` yields: the multishell entry already resolved to
+    // its stable target, still ahead of nvm.
+    const dirs = getLoginShellPathDirs(
+      () =>
+        `__FT_SHELL_PATH__${fnmTarget}\n${nvmBin}__FT_SHELL_PATH____FT_SHELL_ENV__${fnmDir}\n${nvmBin}__FT_SHELL_ENV__`,
+    );
+    resetLoginShellPathDirsCache();
+
+    expect(dirs.slice(0, 2)).toEqual([fnmTarget, nvmBin]);
     expect(
       findCodexExecutableOnPath(
         { HOME: home, PATH: "" },
@@ -369,7 +416,7 @@ describe("version-manager discovery after a multishell teardown", () => {
           desktopAppDirs: () => [],
         },
       ),
-    ).toBeNull();
+    ).toBe(join(fnmTarget, "codex"));
   });
 
   // The precedence the fallback must not disturb. With two versions installed

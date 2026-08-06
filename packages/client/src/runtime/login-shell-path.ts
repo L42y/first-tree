@@ -106,15 +106,21 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell, read
     const roots = protectedRootsOnThisHost();
     const vet = (dir: string): string | null =>
       roots.length === 0 ? dir : resolveOutsideProtectedRoots(dir, roots, readLink);
-    // When the shell reported two version managers, neither one's tree can be
-    // trusted to hold the selection — and withholding it only from the appended
-    // fallback would achieve nothing, because the raw `$PATH` already lists it.
-    // A capture ordered `[dead fnm multishell, $NVM_BIN]` would otherwise skip
-    // the dead entry and launch nvm, which is precisely the substitution the
-    // ambiguity rule exists to prevent. So the decision applies to the whole
-    // returned list, not just the part this function appends.
+    // The ambiguity is a consequence of resolving AFTER the shell exits, which
+    // only macOS does. Elsewhere `buildProbeScript` still canonicalizes while
+    // the shell is alive, so a `$PATH` ordered `[fnm multishell, $NVM_BIN]`
+    // comes back as the stable fnm target followed by nvm — that ordering IS
+    // the selection, and dropping both trees there would turn a correctly
+    // discovered provider into a miss.
+    //
+    // On macOS the same capture arrives raw, and its first entry may already be
+    // gone. Withholding the answer only from the appended fallback achieves
+    // nothing then, because the raw `$PATH` still lists `$NVM_BIN` and every
+    // resolver would skip the dead entry and launch it. So there — and only
+    // there — the decision applies to the whole returned list.
+    const resolutionDeferredPastShellExit = process.platform === "darwin";
     const untrusted =
-      probed.env.nvmBin !== undefined && probed.env.fnmDir !== undefined
+      resolutionDeferredPastShellExit && probed.env.nvmBin !== undefined && probed.env.fnmDir !== undefined
         ? [probed.env.nvmBin, probed.env.fnmDir].map(vet).filter((dir): dir is string => dir !== null)
         : [];
     const trusted = (dir: string): boolean =>
