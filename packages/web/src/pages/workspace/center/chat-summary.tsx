@@ -1,6 +1,16 @@
 import { ChevronDown } from "lucide-react";
-import type { RefObject } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Children,
+  type HTMLAttributes,
+  isValidElement,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { Markdown } from "../../../components/ui/markdown.js";
 import { stripInlineMarkdown } from "../../../lib/strip-inline-markdown.js";
@@ -14,8 +24,9 @@ import { formatRelative } from "../../../lib/utils.js";
  * deliberately NO edit affordance anywhere here (correcting it means telling an
  * agent in chat). The component preserves the description's authored markdown
  * without inventing sections, fields, or a "stage". When the description follows
- * the current-state contract, its first prose block is promoted into a readable
- * lead and the remaining markdown stays as supporting copy. The description is
+ * the current-state contract, its first physical line is promoted into a readable
+ * lead and the remaining markdown stays as supporting copy — including when
+ * `remarkBreaks` keeps soft-break lines inside one `<p>`. The description is
  * always rendered as one markdown document so document-scoped syntax (reference
  * links, multiline constructs, and definitions) keeps working. Complex
  * block-first markdown falls back to the faithful full-document presentation.
@@ -185,6 +196,96 @@ function findDescriptionLead(description: string): DescriptionLead | null {
 
 export function descriptionFirstLine(description: string): string {
   return findDescriptionLead(description)?.preview ?? "";
+}
+
+function isBreakElement(node: ReactNode): boolean {
+  return isValidElement(node) && node.type === "br";
+}
+
+/** Split a paragraph's React children on soft-break `<br>` nodes. */
+function splitChildrenByBreak(children: ReactNode): ReactNode[][] {
+  const segments: ReactNode[][] = [[]];
+  Children.forEach(children, (child) => {
+    if (isBreakElement(child)) {
+      segments.push([]);
+      return;
+    }
+    const current = segments[segments.length - 1];
+    if (current) current.push(child);
+  });
+  return segments;
+}
+
+/** Join soft-break segments without inventing list keys for stable source order. */
+function joinSoftBreakSegments(segments: ReactNode[][]): ReactNode {
+  return segments.reduce<ReactNode>((acc, segment, index) => {
+    if (index === 0) return <>{segment}</>;
+    return (
+      <>
+        {acc}
+        <br />
+        {segment}
+      </>
+    );
+  }, null);
+}
+
+/**
+ * Promote only the first physical line of the first prose paragraph. Soft breaks
+ * from the writing contract (`line\nline`) stay in one Markdown `<p>`; styling
+ * the whole paragraph would bold the entire brief. Blank-line paragraphs still
+ * promote the whole first `<p>` when it has no soft breaks.
+ */
+function LeadAwareParagraph({
+  children,
+  promoteLead,
+  ...props
+}: HTMLAttributes<HTMLParagraphElement> & {
+  children?: ReactNode;
+  promoteLead: boolean;
+}) {
+  if (!promoteLead) {
+    return <p {...props}>{children}</p>;
+  }
+  const segments = splitChildrenByBreak(children);
+  const nonEmpty = segments.filter((segment) =>
+    segment.some((node) => {
+      if (typeof node === "string") return node.trim().length > 0;
+      return node != null && node !== false;
+    }),
+  );
+  if (nonEmpty.length <= 1) {
+    return (
+      <p
+        {...props}
+        data-summary-part="lead"
+        className={["text-subtitle mt-0 mb-[var(--sp-3)]", props.className].filter(Boolean).join(" ")}
+        style={{
+          ...(typeof props.style === "object" && props.style ? props.style : {}),
+          color: "var(--fg)",
+        }}
+      >
+        {children}
+      </p>
+    );
+  }
+  const [lead, ...rest] = nonEmpty;
+  return (
+    <p {...props}>
+      <span
+        data-summary-part="lead"
+        className="text-subtitle"
+        style={{
+          display: "block",
+          color: "var(--fg)",
+          marginBottom: "var(--sp-3)",
+        }}
+      >
+        {lead}
+      </span>
+      {joinSoftBreakSegments(rest)}
+    </p>
+  );
 }
 
 export function ChatSummary({
@@ -513,7 +614,11 @@ export function ChatSummary({
                 position: "absolute",
                 top: 0,
                 left: 0,
-                right: 0,
+                // Constrain the raised card itself (not only inner copy) so the
+                // surface and text share one readable edge. `width: 100%` keeps
+                // narrow message areas responsive under the rem max.
+                width: "100%",
+                maxWidth: "var(--chat-summary-readable-rail)",
                 background: amberActive ? "var(--bg-warn-soft)" : "var(--bg-raised)",
                 border: `var(--hairline) solid ${amberActive ? "var(--state-blocked-border)" : "var(--border)"}`,
                 borderRadius: "var(--radius-dialog)",
@@ -524,26 +629,44 @@ export function ChatSummary({
                 overscrollBehavior: "contain",
               }}
             >
-              <div style={{ maxWidth: "var(--chat-summary-readable-rail)" }}>
-                <div
-                  data-summary-part="document"
-                  data-summary-layout={promotesHeadline ? "lead" : "faithful"}
-                  className="text-body"
-                  style={{ color: promotesHeadline ? "var(--fg-2)" : "var(--fg)" }}
+              <div
+                data-summary-part="document"
+                data-summary-layout={promotesHeadline ? "lead" : "faithful"}
+                className="text-body"
+                style={{ color: promotesHeadline ? "var(--fg-2)" : "var(--fg)" }}
+              >
+                {/* Keep one markdown tree so reference definitions and other
+                    document-scoped syntax remain available to every block.
+                    The current-state contract promotes the first physical line;
+                    a custom first paragraph styles only that line when soft
+                    breaks stay inside one <p>. Legacy block-first markdown
+                    stays faithful. */}
+                <Markdown
+                  className={
+                    "[&_p]:text-body [&_li]:text-body [&_:is(h1,h2,h3,h4,h5,h6)]:text-[length:1em] [&_:is(h1,h2,h3,h4,h5,h6)]:font-semibold [&_:is(h1,h2,h3,h4,h5,h6)]:leading-snug [&_:is(h1,h2,h3,h4,h5,h6)]:mt-3.5 [&_:is(h1,h2,h3,h4,h5,h6)]:mb-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:pl-4 [&_ol]:pl-4"
+                  }
+                  components={
+                    promotesHeadline
+                      ? (() => {
+                          let leadApplied = false;
+                          return {
+                            p: ({ node, children, ...props }) => {
+                              void node;
+                              const promoteThis = !leadApplied;
+                              if (promoteThis) leadApplied = true;
+                              return (
+                                <LeadAwareParagraph promoteLead={promoteThis} {...props}>
+                                  {children}
+                                </LeadAwareParagraph>
+                              );
+                            },
+                          };
+                        })()
+                      : undefined
+                  }
                 >
-                  {/* Keep one markdown tree so reference definitions and other
-                      document-scoped syntax remain available to every block.
-                      The current-state contract makes the first top-level prose
-                      block the lead; legacy block-first markdown stays faithful. */}
-                  <Markdown
-                    className={
-                      `${promotesHeadline ? "[&>p:first-of-type]:text-subtitle [&>p:first-of-type]:text-[color:var(--fg)] [&>p:first-of-type]:mt-0 [&>p:first-of-type]:mb-[var(--sp-3)] " : ""}` +
-                      "[&_p]:text-body [&_li]:text-body [&_:is(h1,h2,h3,h4,h5,h6)]:text-[length:1em] [&_:is(h1,h2,h3,h4,h5,h6)]:font-semibold [&_:is(h1,h2,h3,h4,h5,h6)]:leading-snug [&_:is(h1,h2,h3,h4,h5,h6)]:mt-3.5 [&_:is(h1,h2,h3,h4,h5,h6)]:mb-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:pl-4 [&_ol]:pl-4"
-                    }
-                  >
-                    {markdownDescription}
-                  </Markdown>
-                </div>
+                  {markdownDescription}
+                </Markdown>
               </div>
             </section>,
             overlayEl,

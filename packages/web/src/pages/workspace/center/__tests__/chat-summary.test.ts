@@ -179,15 +179,52 @@ describe("ChatSummary", () => {
 
     const card = overlayEl.querySelector<HTMLElement>('section[aria-label="Current state"]');
     const summaryDocument = card?.querySelector<HTMLElement>('[data-summary-part="document"]');
+    const lead = summaryDocument?.querySelector<HTMLElement>('[data-summary-part="lead"]');
     const paragraphs = summaryDocument?.querySelectorAll("p");
     expect(summaryDocument?.dataset.summaryLayout).toBe("lead");
-    expect(paragraphs?.[0]?.textContent).toContain("The current result is ready for readers.");
-    expect(paragraphs?.[0]?.querySelector("strong")?.textContent).toBe("current result");
+    expect(lead?.textContent).toContain("The current result is ready for readers.");
+    expect(lead?.className).toContain("text-subtitle");
+    expect(lead?.querySelector("strong")?.textContent).toBe("current result");
     expect(paragraphs?.[1]?.textContent).toContain("Supporting context is secondary.");
     expect(paragraphs?.[2]?.textContent).toContain("Next: Observe usage.");
     expect(summaryDocument?.style.color).toBe("var(--fg-2)");
-    expect(summaryDocument?.firstElementChild?.className).toContain("[&>p:first-of-type]:text-subtitle");
-    expect(card?.firstElementChild?.getAttribute("style")).toContain("var(--chat-summary-readable-rail)");
+    expect(card?.getAttribute("style")).toContain("var(--chat-summary-readable-rail)");
+    expect(card?.getAttribute("style")).toContain("max-width");
+    // Card is the constrained surface — no nested full-bleed wrapper.
+    expect(card?.firstElementChild?.getAttribute("data-summary-part")).toBe("document");
+
+    await act(async () => root.unmount());
+    container.remove();
+    overlayEl.remove();
+  });
+
+  it("promotes only the first physical line when the writing contract uses soft breaks", async () => {
+    localStorage.clear();
+    const scrollEl = document.createElement("div");
+    const { container, overlayEl, root } = await renderSummary(scrollEl, {
+      description: [
+        "Chat Summary V1 已上线，后续摘要会优先展示用户可行动的当前状态。",
+        "旧摘要会在下一次实质进展时重写；用户无需关注 PR、CI 或版本号。",
+        "**下一步**：观察真实 Chat 切换反馈，再决定是否继续调整展示。",
+      ].join("\n"),
+      descriptionUpdatedAt: unreadVersionAt,
+      lastReadAt: readRecentlyAt,
+    });
+
+    const summaryDocument = overlayEl.querySelector<HTMLElement>('[data-summary-part="document"]');
+    const lead = summaryDocument?.querySelector<HTMLElement>('[data-summary-part="lead"]');
+    const paragraphs = summaryDocument?.querySelectorAll("p");
+    expect(summaryDocument?.dataset.summaryLayout).toBe("lead");
+    // Soft breaks stay in one paragraph under remark-breaks.
+    expect(paragraphs?.length).toBe(1);
+    expect(lead?.tagName).toBe("SPAN");
+    expect(lead?.textContent).toBe("Chat Summary V1 已上线，后续摘要会优先展示用户可行动的当前状态。");
+    expect(lead?.className).toContain("text-subtitle");
+    // Supporting soft-break lines remain in the same <p> but outside the lead.
+    expect(paragraphs?.[0]?.textContent).toContain("旧摘要会在下一次实质进展时重写");
+    expect(paragraphs?.[0]?.textContent).toContain("下一步");
+    expect(lead?.textContent).not.toContain("旧摘要会在下一次实质进展时重写");
+    expect(lead?.textContent).not.toContain("下一步");
 
     await act(async () => root.unmount());
     container.remove();
