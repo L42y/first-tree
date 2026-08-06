@@ -1,4 +1,5 @@
 import {
+  AGENT_TYPES,
   type AttachmentRef,
   attachmentRefsFromMetadata,
   type CapabilityEntry,
@@ -602,14 +603,16 @@ type MessageBodyProps = {
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
   /**
-   * True only when this row's sender is a KNOWN non-human speaker of this chat.
-   * Gates the agent-attributed Context Tree receipt, and is deliberately a
-   * positive test rather than "not a known human": the participant list holds
-   * current speakers only, so a removed human's historical row and every row
-   * rendered from cache before `chatDetail` resolves both look non-human under
-   * a negative test, and a receipt forged before the server-side guard would
-   * surface. Failing closed hides the receipt on those unknown rows instead —
-   * a departed agent's receipt is lost, a forged one never renders.
+   * True only when this row's sender is a speaker of this chat POSITIVELY typed
+   * as an agent. Gates the agent-attributed Context Tree receipt, and is
+   * deliberately a positive test rather than "not a known human": the
+   * participant list holds current speakers only and its `type` is a loose wire
+   * string, so a removed human's historical row, a row painted from cache before
+   * `chatDetail` resolves, and a legacy or unrecognised type all read as
+   * non-human under a negative test — and a receipt forged before the
+   * server-side guard would surface. Failing closed hides the receipt on every
+   * unresolved sender instead: a departed agent's receipt is lost, a forged one
+   * never renders.
    */
   senderIsAgent: boolean;
 };
@@ -2913,12 +2916,15 @@ export function ChatView({
     () => new Set((chatDetail?.participants ?? []).filter((p) => p.type === "human").map((p) => p.agentId)),
     [chatDetail?.participants],
   );
-  // Non-human speakers of THIS chat, resolved from the loaded participant list.
-  // Empty while `chatDetail` is still loading, which is the point: a sender this
-  // set does not name is not treated as an agent (see
-  // `MessageBodyProps.senderIsAgent`).
+  // Speakers of THIS chat that are POSITIVELY typed as agents. The wire schema
+  // keeps `type` a loose string so legacy and unrecognised DB values flow
+  // through, so `!== "human"` would quietly admit a missing, legacy, or
+  // future-unknown type — and under version skew a cached human row could pass
+  // the receipt gate again. Matching the known agent value instead keeps every
+  // unresolved type out, and the set is empty while `chatDetail` loads, which is
+  // the same fail-closed direction (see `MessageBodyProps.senderIsAgent`).
   const agentParticipantIds = useMemo(
-    () => new Set((chatDetail?.participants ?? []).filter((p) => p.type !== "human").map((p) => p.agentId)),
+    () => new Set((chatDetail?.participants ?? []).filter((p) => p.type === AGENT_TYPES.AGENT).map((p) => p.agentId)),
     [chatDetail?.participants],
   );
   // The exact condition under which filtering on `agentId` keeps EVERY

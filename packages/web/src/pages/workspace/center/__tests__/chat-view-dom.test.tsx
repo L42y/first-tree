@@ -5229,6 +5229,52 @@ describe("ChatView Context Tree decision receipt", () => {
     await act(async () => root.unmount());
   });
 
+  // `chatParticipantDetailSchema.type` is a loose wire string so legacy and
+  // unrecognised values flow through. Under version skew a `!== "human"` set
+  // would readmit exactly the forged human row the gate exists to stop.
+  it("hides a receipt from a sender whose participant type is unknown, in both timeline and ask", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const skewedChat = chatDetail({
+      participants: [
+        ...PARTICIPANTS,
+        participant({ agentId: "agent-legacy", type: "autonomous_agent", name: "legacy", displayName: "Legacy" }),
+        participant({ agentId: "agent-untyped", type: "", name: "untyped", displayName: "Untyped" }),
+      ],
+    });
+    const ask = withReceipt({
+      id: "ask-unknown-type",
+      senderId: "agent-untyped",
+      format: "request",
+      content: "Question from a sender with no resolved type?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:59:00.000Z",
+    });
+    const history = messages([
+      withReceipt({
+        id: "msg-legacy-type",
+        senderId: "agent-legacy",
+        content: "Reply from a legacy participant type.",
+        source: "cli",
+      }),
+      ask,
+    ]);
+    chatMocks.listChatMessages.mockResolvedValue(history);
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [ask] });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={skewedChat} />,
+      (client) => {
+        seedChat(client, skewedChat, history);
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [ask] });
+      },
+      "/",
+    );
+
+    await waitForText(container, "Question from a sender with no resolved type?");
+    expect(container.textContent).not.toContain("Context Tree in action");
+
+    await act(async () => root.unmount());
+  });
+
   it("shows the asking agent's receipt inside the blocking ask, above the answer controls", async () => {
     const { ChatView } = await import("../chat-view.js");
     const ask = withReceipt({
