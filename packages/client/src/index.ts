@@ -200,8 +200,6 @@ export {
   type LoginOutcome,
   stripAnsi,
 } from "./runtime/runtime-login.js";
-export { SessionManager } from "./runtime/session-manager.js";
-export { SessionRegistry } from "./runtime/session-registry.js";
 // Skills (slash-command discovery)
 export { discoverClaudeCodeSkills } from "./runtime/skills/index.js";
 export type {
@@ -226,6 +224,12 @@ export {
   INIT_COMPLETE_SENTINEL_REL,
   markWorkspaceInitComplete,
 } from "./runtime/workspace.js";
+export type {
+  CleanAgentWorkspacesOptions,
+  CleanAgentWorkspacesResult,
+  CleanedWorkspaceEntry,
+} from "./runtime/workspace-maintenance.js";
+export { cleanAgentWorkspaces } from "./runtime/workspace-maintenance.js";
 export type {
   AccessTokenProvider,
   ContextReviewRuntimeConfig,

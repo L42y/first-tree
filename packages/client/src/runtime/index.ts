@@ -22,5 +22,9 @@ export type { ReplayFenceEntry, ReplayFenceWriter } from "./replay-fence.js";
 export { ReplayFenceError, ReplayFenceStore } from "./replay-fence.js";
 export type { AgentRuntimeOptions } from "./runtime.js";
 export { AgentRuntime } from "./runtime.js";
-export { SessionManager } from "./session-manager.js";
-export { SessionRegistry } from "./session-registry.js";
+export type {
+  CleanAgentWorkspacesOptions,
+  CleanAgentWorkspacesResult,
+  CleanedWorkspaceEntry,
+} from "./workspace-maintenance.js";
+export { cleanAgentWorkspaces } from "./workspace-maintenance.js";

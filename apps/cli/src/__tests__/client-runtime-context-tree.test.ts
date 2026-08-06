@@ -1320,4 +1320,40 @@ describe("ClientRuntime context-tree wiring", () => {
     expect(close).toHaveBeenCalled();
     await rt.stop();
   });
+
+  for (const prototypeKey of ["toString", "constructor", "__proto__"] as const) {
+    it(`resolveHandlerFactory rejects Object.prototype key ${prototypeKey} without constructing AgentSlot`, async () => {
+      const { ClientRuntime } = await import("../core/client-runtime.js");
+      const rt = new ClientRuntime("https://first-tree.test", "client-test");
+      const before = slotInstances.length;
+
+      expect(() =>
+        (
+          rt as unknown as {
+            resolveHandlerFactory: (type: string) => unknown;
+          }
+        ).resolveHandlerFactory(prototypeKey),
+      ).toThrow(new RegExp(`Unknown handler type "${prototypeKey}".*Available:`));
+      expect(slotInstances.length).toBe(before);
+
+      expect(() =>
+        (
+          rt as unknown as {
+            createAgentSlot: (
+              name: string,
+              config: { runtime: string; agentId: string; session: object; concurrency: number },
+            ) => unknown;
+          }
+        ).createAgentSlot("poisoned", {
+          agentId: "agent-poisoned",
+          runtime: prototypeKey,
+          session: { idle_timeout: 300, max_sessions: 4, working_grace_seconds: 3600 },
+          concurrency: 1,
+        }),
+      ).toThrow(new RegExp(`Unknown handler type "${prototypeKey}"`));
+      expect(slotInstances.length).toBe(before);
+
+      await rt.stop();
+    });
+  }
 });
