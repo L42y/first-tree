@@ -82,4 +82,19 @@ describe("context adapter-sync command", () => {
     expect(mocks.hasKnownGood).not.toHaveBeenCalled();
     expect(mocks.result).not.toHaveBeenCalled();
   });
+
+  it("does not misclassify a non-busy lock I/O failure as next-session recovery", () => {
+    const ioError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    mocks.synchronize.mockImplementation(() => {
+      throw ioError;
+    });
+    mocks.inspectNextSession.mockReturnValue(null);
+
+    expect(() => runContextAdapterSync(context())).not.toThrow();
+    expect(mocks.fail).not.toHaveBeenCalled();
+    expect(mocks.hasKnownGood).toHaveBeenCalledWith(mocks.driver);
+    expect(mocks.result).toHaveBeenCalledWith(
+      expect.objectContaining({ updated: false, currentAdapterUsable: true, status: "update_deferred" }),
+    );
+  });
 });

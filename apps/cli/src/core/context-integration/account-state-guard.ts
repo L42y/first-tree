@@ -114,7 +114,8 @@ function acquireAccountStateMutationLock(home: string): () => void {
   try {
     descriptor = openSync(path, "wx", 0o600);
   } catch (error) {
-    throw new AccountStateMutationBusyError({ cause: error });
+    if (errorCode(error) === "EEXIST") throw new AccountStateMutationBusyError({ cause: error });
+    throw error;
   }
   heldAccountLocks.add(path);
   writeFileSync(descriptor, `${process.pid}\n`, "utf8");
@@ -142,7 +143,11 @@ function removeStalePidLock(path: string): void {
 }
 
 function isMissing(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT";
+  return errorCode(error) === "ENOENT";
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "code" in error ? Reflect.get(error, "code") : undefined;
 }
 
 function readBlockingJournalProvider(path: string) {
