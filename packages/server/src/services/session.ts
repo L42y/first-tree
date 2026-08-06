@@ -9,7 +9,9 @@ import { chats } from "../db/schema/chats.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { sessionEvents } from "../db/schema/session-events.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
+import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError } from "../errors.js";
+import { isChatSpeaker, lockChatMembershipShared } from "./chat-membership-lock.js";
+import { sendToAgent } from "./connection-manager.js";
 import type { Notifier } from "./notifier.js";
 import { agentRouteGuardSql } from "./session-command-rpc.js";
 import * as sessionEventService from "./session-event.js";
@@ -272,6 +274,49 @@ export async function getSession(db: Database, agentId: string, chatId: string):
     summary,
     topic: row.chatTopic ?? null,
   };
+}
+
+/**
+ * Deliver `session:resume` only while the agent is still a speaker of the chat.
+ *
+ * Speaker check, session read, and the optional WS send share one membership
+ * shared fence so a concurrent remove cannot slip between a stale suspended
+ * read and the resume command (which would re-wake a provider after terminate).
+ */
+export async function resumeSuspendedSession(
+  db: Database,
+  agentId: string,
+  chatId: string,
+  options?: { afterMembershipFenceForTest?: () => Promise<void> },
+): Promise<{ agentId: string; chatId: string; state: SessionState; transitioned: false; delivered: boolean }> {
+  return db.transaction(async (rawTx) => {
+    const tx = rawTx as unknown as Database;
+    await lockChatMembershipShared(tx, [chatId]);
+    if (!(await isChatSpeaker(tx, chatId, agentId))) {
+      throw new ConflictError("Cannot resume session: agent is not a speaker of this chat");
+    }
+
+    const session = await getSession(tx, agentId, chatId);
+    if (options?.afterMembershipFenceForTest) {
+      await options.afterMembershipFenceForTest();
+    }
+
+    let delivered = true;
+    if (session.state === "suspended") {
+      delivered = sendToAgent(agentId, { type: "session:resume", chatId });
+      if (!delivered) {
+        throw new ServiceUnavailableError("Resume command was not delivered because the agent client is disconnected");
+      }
+    }
+
+    return {
+      agentId,
+      chatId,
+      state: session.state,
+      transitioned: false as const,
+      delivered,
+    };
+  });
 }
 
 /**

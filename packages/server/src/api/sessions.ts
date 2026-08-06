@@ -81,18 +81,13 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { uuid: string; chatId: string } }>("/:uuid/sessions/:chatId/resume", async (request, reply) => {
     const { agent } = await requireAgentAccess(request, app.db, "manage");
-    const session = await sessionService.getSession(app.db, agent.uuid, request.params.chatId);
-    if (session.state === "suspended") {
-      const delivered = sendToAgent(agent.uuid, { type: "session:resume", chatId: request.params.chatId });
-      if (!delivered) {
-        throw new ServiceUnavailableError("Resume command was not delivered because the agent client is disconnected");
-      }
-    }
+    const result = await sessionService.resumeSuspendedSession(app.db, agent.uuid, request.params.chatId);
     return reply.status(200).send({
-      agentId: agent.uuid,
-      chatId: request.params.chatId,
-      state: session.state,
-      transitioned: false,
+      agentId: result.agentId,
+      chatId: result.chatId,
+      state: result.state,
+      transitioned: result.transitioned,
+      delivered: result.delivered,
     });
   });
 

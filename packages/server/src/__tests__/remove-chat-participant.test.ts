@@ -2,6 +2,7 @@ import { CRON_TRIGGER_METADATA_KEY, REMOVE_PARTICIPANT_OPEN_REQUEST_CODE } from 
 import { and, eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 import { describe, expect, it, vi } from "vitest";
+import type { WebSocket } from "ws";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
@@ -13,16 +14,24 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { sessionEvents } from "../db/schema/session-events.js";
+import { ConflictError } from "../errors.js";
 import { upsertSessionState } from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import { createChat, ensureParticipant, removeParticipant } from "../services/chat.js";
+import { lockChatMembershipMutation } from "../services/chat-membership-lock.js";
 import * as connectionManager from "../services/connection-manager.js";
-import { sendToAgent } from "../services/connection-manager.js";
+import {
+  bindAgentToClient,
+  removeClientConnection,
+  sendToAgent,
+  setClientConnection,
+} from "../services/connection-manager.js";
 import { loadOutstanding, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
 import { softTerminateRemovedAgentSession, withLiveRemovedSessionFence } from "../services/remove-chat-participant.js";
+import { resumeSuspendedSession } from "../services/session.js";
 import { appendLiveEvent } from "../services/session-event.js";
 import { createAdminContext, createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
@@ -573,6 +582,186 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
         ),
       );
     expect(await loadOutstanding(app.db, jobBase)).toBe("missing");
+  });
+
+  it("resume after remove returns 409 and never sends session:resume", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-res-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    await app.db
+      .insert(agentChatSessions)
+      .values({ agentId: runtime.agent.uuid, chatId: chat.id, state: "suspended" })
+      .onConflictDoUpdate({
+        target: [agentChatSessions.agentId, agentChatSessions.chatId],
+        set: { state: "suspended", updatedAt: new Date() },
+      });
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(runtime.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(runtime.clientId, runtime.agent.uuid);
+    try {
+      await removeParticipant(app.db, chat.id, runtime.humanAgentUuid, runtime.agent.uuid);
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/agents/${runtime.agent.uuid}/sessions/${chat.id}/resume`,
+        headers: { authorization: `Bearer ${runtime.accessToken}` },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(ws.send).not.toHaveBeenCalledWith(
+        JSON.stringify({ type: "session:resume", chatId: chat.id, agentId: runtime.agent.uuid }),
+      );
+    } finally {
+      removeClientConnection(runtime.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("resume shared fence blocks remove until resume finishes; terminate is the last wake", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-rsf-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+    await app.db
+      .insert(agentChatSessions)
+      .values({ agentId: runtime.agent.uuid, chatId, state: "suspended" })
+      .onConflictDoUpdate({
+        target: [agentChatSessions.agentId, agentChatSessions.chatId],
+        set: { state: "suspended", updatedAt: new Date() },
+      });
+    await seedDispatchRoute(app, runtime.agent.uuid, runtime.clientId);
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(runtime.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(runtime.clientId, runtime.agent.uuid);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for resume/remove concurrency test");
+
+    const resumeAppName = `rm_res_sh_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `rm_res_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const resumePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, resumeAppName));
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseResume!: () => void;
+      const resumeHeld = new Promise<void>((resolve) => {
+        releaseResume = resolve;
+      });
+      let resumeReady!: () => void;
+      const resumeReadyP = new Promise<void>((resolve) => {
+        resumeReady = resolve;
+      });
+
+      const resumePromise = resumeSuspendedSession(resumePool, runtime.agent.uuid, chatId, {
+        afterMembershipFenceForTest: async () => {
+          resumeReady();
+          await resumeHeld;
+        },
+      });
+
+      await Promise.race([
+        resumeReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("resume fence barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const removePromise = removeParticipant(removePool, chatId, runtime.humanAgentUuid, runtime.agent.uuid);
+      await waitForPostgresLockWait(observer, removeAppName);
+
+      releaseResume();
+      const [resumeResult] = await Promise.race([
+        Promise.all([resumePromise, removePromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("resume-vs-remove deadlock timeout")), 15_000);
+        }),
+      ]);
+      expect(resumeResult.delivered).toBe(true);
+      expect(resumeResult.state).toBe("suspended");
+
+      // remove's soft terminate is post-commit `void`; drive it explicitly so the
+      // wake ordering assertion is deterministic.
+      await softTerminateRemovedAgentSession({
+        db: app.db,
+        agentId: runtime.agent.uuid,
+        chatId,
+      });
+
+      const frames = ws.send.mock.calls.map((call) => JSON.parse(String(call[0])) as { type: string });
+      const resumeIdx = frames.findIndex((f) => f.type === "session:resume");
+      const terminateIdx = frames.findIndex((f) => f.type === "session:terminate");
+      expect(resumeIdx).toBeGreaterThanOrEqual(0);
+      expect(terminateIdx).toBeGreaterThanOrEqual(0);
+      // Resume delivered while it still held shared; terminate must be last wake.
+      expect(resumeIdx).toBeLessThan(terminateIdx);
+      expect(frames.filter((f) => f.type === "session:resume").length).toBe(1);
+    } finally {
+      removeClientConnection(runtime.clientId, ws as unknown as WebSocket);
+      await resumePool.end();
+      await removePool.end();
+      await observer.end();
+    }
+  });
+
+  it("exclusive remove ahead of resume: blocked resume sees non-speaker and skips resume send", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-rex-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+    await app.db
+      .insert(agentChatSessions)
+      .values({ agentId: runtime.agent.uuid, chatId, state: "suspended" })
+      .onConflictDoUpdate({
+        target: [agentChatSessions.agentId, agentChatSessions.chatId],
+        set: { state: "suspended", updatedAt: new Date() },
+      });
+
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(runtime.clientId, ws as unknown as WebSocket);
+    bindAgentToClient(runtime.clientId, runtime.agent.uuid);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for exclusive-remove resume test");
+
+    const exclusiveAppName = `rm_ex_hold_${crypto.randomUUID().slice(0, 8)}`;
+    const resumeAppName = `rm_ex_res_${crypto.randomUUID().slice(0, 8)}`;
+    const exclusivePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, exclusiveAppName));
+    const resumePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, resumeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let resumePromise!: ReturnType<typeof resumeSuspendedSession>;
+      await exclusivePool.transaction(async (tx) => {
+        await lockChatMembershipMutation(tx as never, [chatId]);
+
+        resumePromise = resumeSuspendedSession(resumePool, runtime.agent.uuid, chatId);
+        await waitForPostgresLockWait(observer, resumeAppName);
+
+        // Commit speaker detach under the exclusive fence while resume waits.
+        // Same durable membership outcome remove uses before soft terminate.
+        await tx
+          .delete(chatMembership)
+          .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.agentId, runtime.agent.uuid)));
+      });
+
+      await expect(resumePromise).rejects.toBeInstanceOf(ConflictError);
+      expect(ws.send).not.toHaveBeenCalled();
+    } finally {
+      removeClientConnection(runtime.clientId, ws as unknown as WebSocket);
+      await exclusivePool.end();
+      await resumePool.end();
+      await observer.end();
+    }
   });
 
   it("keeps agent DELETE 204 contract while sharing the mutation", async () => {
