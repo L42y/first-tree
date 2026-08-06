@@ -35,7 +35,7 @@ import {
 } from "./message.js";
 import { WIRE_RECIPIENT_MODE } from "./message-dispatcher.js";
 import { inviteParticipantsToChat, rejectedPrivateTargets } from "./participant-invite.js";
-import { addChatParticipants, applyMembershipWrite, recomputeChatWatchers } from "./participant-mode.js";
+import { addChatParticipants, recomputeChatWatchers } from "./participant-mode.js";
 import { extractSummary } from "./session.js";
 import { leaveAsParticipant } from "./watcher.js";
 
@@ -1093,55 +1093,6 @@ export async function isParticipant(db: Database, chatId: string, agentId: strin
     )
     .limit(1);
   return Boolean(row);
-}
-
-/**
- * Idempotent "ensure this agent is a speaker of this chat" admit.
- *
-
- * **Caller-responsibility contract — read before using.** This helper does
- * NO authorisation. It is a Layer-1.5 wrapper for `applyMembershipWrite`
- * whose only job is the short-circuit "already a speaker → return without
- * opening a tx". Use it only when the caller has already verified that the
- * given agent has a legitimate reason to be in the chat.
- *
- * **This is a membership WRITE, never an access check.** It previously ran
- * on the `api/chats.ts` human write routes on the reasoning that
- * `requireChatAccess` had "already gated" the request. That reasoning was
- * wrong: `requireChatAccess` deliberately admits watchers (and supervisors
- * with no membership row at all), so calling this from a request path
- * silently promoted any watcher who typed into a speaker — bypassing
- * `ensureCanJoin`, the guard the dedicated join route applies to exactly
- * that transition. Request paths gate with `assertParticipant`; watchers
- * become speakers only through `joinAsParticipant`.
- *
- * It has no production caller today. Do NOT reintroduce one from a request
- * handler.
- *
- * Do NOT call this from new code paths to "lightly join" an agent — for
- * speaker-invokes-invite use `inviteParticipantsToChat`; for manager
- * self-join use `joinAsParticipant`. Adding a new legitimate caller? Append
- * it to the list above and document the external authorisation step in your
- * PR — reviewers should see it.
- *
- * Behaviour:
- *   - If already a speaker → 1-SELECT short-circuit, no tx opened. This is
- *     the hot path for the IM bridge (every inbound message hits this).
- *   - Otherwise → `applyMembershipWrite`, which encloses backfill, watcher
- *     recompute, and post-commit audience invalidation.
- */
-export async function ensureParticipant(db: Database, chatId: string, agentId: string): Promise<void> {
-  // Short-circuit if already a speaker. Read outside the tx — if a race
-  // adds this agent concurrently, the UPSERT inside `applyMembershipWrite`
-  // is the authoritative dedupe.
-  const [existing] = await db
-    .select({ accessMode: chatMembership.accessMode })
-    .from(chatMembership)
-    .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.agentId, agentId)))
-    .limit(1);
-  if (existing?.accessMode === "speaker") return;
-
-  await applyMembershipWrite(db, chatId, [{ agentId }], { upgradeWatcherToSpeaker: true });
 }
 
 /**

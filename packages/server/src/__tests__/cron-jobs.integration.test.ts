@@ -11,12 +11,13 @@ import { cronJobs } from "../db/schema/cron-jobs.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
-import { createChat, ensureParticipant } from "../services/chat.js";
+import { createChat } from "../services/chat.js";
 import { createCronJob, deleteCronJob, updateCronJob } from "../services/cron-job.js";
 import { computeDueToCommitMs, createCronScheduler, sweepCronJobs } from "../services/cron-scheduler.js";
 import { setChatEngagement } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import { createNotifier } from "../services/notifier.js";
+import { applyMembershipWrite } from "../services/participant-mode.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 function databaseUrlWithApplicationName(url: string, applicationName: string): string {
@@ -841,7 +842,7 @@ describe("cron jobs integration", () => {
     expect(job.prompt).toBe("owner A schedule");
 
     const newMgr = await createTestAgent(app, { name: `cron-newmgr-${crypto.randomUUID().slice(0, 6)}` });
-    await ensureParticipant(app.db, chatId, newMgr.humanAgentUuid);
+    await applyMembershipWrite(app.db, chatId, [{ agentId: newMgr.humanAgentUuid }], { upgradeWatcherToSpeaker: true });
     await app.db.update(agents).set({ managerId: newMgr.memberId }).where(eq(agents.uuid, runtime.agent.uuid));
 
     // New manager passes current-manager+speaker auth but is not the schedule owner.
@@ -884,7 +885,7 @@ describe("cron jobs integration", () => {
     const job = createRes.json() as { id: string; revision: number };
 
     const newMgr = await createTestAgent(app, { name: `cron-race-b-${crypto.randomUUID().slice(0, 6)}` });
-    await ensureParticipant(app.db, chatId, newMgr.humanAgentUuid);
+    await applyMembershipWrite(app.db, chatId, [{ agentId: newMgr.humanAgentUuid }], { upgradeWatcherToSpeaker: true });
     await app.db.update(agents).set({ managerId: newMgr.memberId }).where(eq(agents.uuid, runtime.agent.uuid));
 
     // B's mutate must fail on owner identity before taking (chat, A) advisory;

@@ -27,7 +27,7 @@
  * A small caller-side bundle `applyMembershipWrite` is also exported here:
  * it wraps the canonical "open tx → write rows → commit → invalidate
  * audience cache" sequence so service entrypoints (`inviteParticipantsToChat`,
- * `ensureParticipant`, `joinAsParticipant`, …) don't each have to spell it
+ * `joinAsParticipant`, …) don't each have to spell it
  * out and risk drifting on tx-boundary correctness.
  *
  * v2 change (proposals/hub-chat-message-v2-simplify-mode.20260520.md):
@@ -325,7 +325,7 @@ export async function recomputeChatWatchers(db: DbLike, chatId: string): Promise
  * of N repeated decisions at each service entrypoint.
  *
  * Use this from service entrypoints that do not need to compose membership
- * with another write (`ensureParticipant`, the rebuild path of
+ * with another write (the rebuild path of
  * `joinAsParticipant`). `inviteParticipantsToChat` owns an equivalent
  * transaction-aware bundle so SCM routing can atomically add membership and
  * persist its attention line.

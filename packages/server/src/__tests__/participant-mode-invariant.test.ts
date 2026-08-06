@@ -2,9 +2,9 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { createAgent } from "../services/agent.js";
-import { addParticipant, createChat, ensureParticipant } from "../services/chat.js";
+import { addParticipant, createChat } from "../services/chat.js";
 import { createMeChat } from "../services/me-chat.js";
-import { addChatParticipants } from "../services/participant-mode.js";
+import { addChatParticipants, applyMembershipWrite } from "../services/participant-mode.js";
 import { createAdminContext, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
@@ -150,7 +150,7 @@ describe("v2 invariant: chat_membership.mode is the constant 'mention_only'", ()
     expect(await loadMode(app, chatId, ag2.uuid)).toBe("mention_only");
   });
 
-  it("ensureParticipant on a group chat seeds the new speaker as 'mention_only'", async () => {
+  it("applyMembershipWrite on a group chat seeds the new speaker as 'mention_only'", async () => {
     const app = getApp();
     const humanCtx = await createTestAgent(app, { type: "human" });
     const { agent: ag1 } = await createTestAgent(app, { type: "agent" });
@@ -162,7 +162,7 @@ describe("v2 invariant: chat_membership.mode is the constant 'mention_only'", ()
       participantIds: [ag1.uuid, ag2.uuid],
     });
 
-    await ensureParticipant(app.db, chat.id, late.uuid);
+    await applyMembershipWrite(app.db, chat.id, [{ agentId: late.uuid }], { upgradeWatcherToSpeaker: true });
 
     expect(await loadMode(app, chat.id, late.uuid)).toBe("mention_only");
   });

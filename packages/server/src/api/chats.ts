@@ -620,12 +620,12 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
 
     // Speaker-gated, NOT a membership write. `requireChatAccess` deliberately
     // admits watchers (they need read-cursor / join reachability), so the
-    // write side has to refuse them here. This used to call
-    // `ensureParticipant`, which upserts the caller to `access_mode='speaker'`
-    // — that silently promoted any watcher who typed, bypassing
-    // `ensureCanJoin` on the dedicated join route. The web console already
-    // renders a read-only banner plus "Join to reply" for watchers instead of
-    // a composer; this keeps the server honest to that same contract.
+    // write side has to refuse them here. This used to run a membership
+    // writer instead, which upserted the caller to `access_mode='speaker'` —
+    // silently promoting any watcher who typed and bypassing `ensureCanJoin`
+    // on the dedicated join route. The web console already renders a
+    // read-only banner plus "Join to reply" for watchers instead of a
+    // composer; this keeps the server honest to that same contract.
     await assertParticipant(app.db, request.params.chatId, scope.humanAgentId);
 
     // Explicit-recipient enforcement is the default in `sendMessage()`; this

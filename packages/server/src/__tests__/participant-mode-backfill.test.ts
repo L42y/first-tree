@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createChat, ensureParticipant } from "../services/chat.js";
+import { createChat } from "../services/chat.js";
 import { PRECEDING_CONTEXT_MAX_ENTRIES } from "../services/inbox.js";
 import { addMeChatParticipants } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
-import { addChatParticipants } from "../services/participant-mode.js";
+import { addChatParticipants, applyMembershipWrite } from "../services/participant-mode.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
@@ -233,12 +233,10 @@ describe("backfill invariant — service entrypoints (regression: PR #393 follow
     expect(await countSilentEntries(app.db, newcomer.agent.inboxId, chat.id)).toBe(6);
   });
 
-  it("ensureParticipant backfills the joiner on first call", async () => {
-    // ensureParticipant promotes a missing/watcher row to speaker on the
-    // first call — that crossing must backfill. Subsequent calls
-    // short-circuit (already a speaker) and must not re-backfill.
-    // (No longer reachable from the HTTP send path, which is speaker-gated;
-    // this pins the membership-write seam itself.)
+  it("applyMembershipWrite backfills the joiner on first call", async () => {
+    // The write promotes a missing/watcher row to speaker on the first
+    // call — that crossing must backfill. A repeat call finds an existing
+    // speaker and must not re-backfill.
     const app = getApp();
     const owner = await createTestAgent(app, { type: "human" });
     const peer = await createTestAgent(app, { type: "agent" });
@@ -260,11 +258,11 @@ describe("backfill invariant — service entrypoints (regression: PR #393 follow
       );
     }
 
-    await ensureParticipant(app.db, chat.id, newcomer.agent.uuid);
+    await applyMembershipWrite(app.db, chat.id, [{ agentId: newcomer.agent.uuid }], { upgradeWatcherToSpeaker: true });
     expect(await countSilentEntries(app.db, newcomer.agent.inboxId, chat.id)).toBe(5);
 
     // Idempotent: a second call (e.g. the next IM message) must not double up.
-    await ensureParticipant(app.db, chat.id, newcomer.agent.uuid);
+    await applyMembershipWrite(app.db, chat.id, [{ agentId: newcomer.agent.uuid }], { upgradeWatcherToSpeaker: true });
     expect(await countSilentEntries(app.db, newcomer.agent.inboxId, chat.id)).toBe(5);
   });
 

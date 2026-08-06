@@ -1004,7 +1004,6 @@ describe("service branch defaults", () => {
       () => chatService.assertParticipant(db, "chat_1", "agent_1"),
       () => chatService.assertOwner(db, "chat_1", "agent_1"),
       () => chatService.isParticipant(db, "chat_1", "agent_1"),
-      () => chatService.ensureParticipant(db, "chat_1", "agent_1"),
       () => chatService.listChatsForMember(db, "member_1", "human_1"),
       () => chatService.leaveChat(db, "chat_1", "human_1"),
       () => documentService.getDocumentRow(db, "doc_1"),

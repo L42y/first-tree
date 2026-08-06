@@ -2,15 +2,16 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
-import { addParticipant, createChat, ensureParticipant } from "../services/chat.js";
+import { addParticipant, createChat } from "../services/chat.js";
 import { joinMeChat } from "../services/me-chat.js";
+import { applyMembershipWrite } from "../services/participant-mode.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
  * Validates `addChatParticipants` invariants under v2:
  *
  *   - `chat_membership.mode` is decision-inert; every speaker row written
- *     through `createChat` / `addParticipant` / `ensureParticipant` /
+ *     through `createChat` / `addParticipant` / `applyMembershipWrite` /
  *     `joinMeChat` (watcher → speaker upgrade) lands as the constant
  *     `'mention_only'`. There is no longer a chat-type re-grade pass —
  *     `chats.type` is locked to `'group'` (first-tree-context PR #465) and
@@ -141,14 +142,14 @@ describe("chat upgrade — direct to group", () => {
     expect((await loadParticipant(chat.id, a4.uuid))?.mode).toBe("mention_only");
   });
 
-  it("upgrades when a third participant is admitted via ensureParticipant", async () => {
-    // `ensureParticipant` is the idempotent membership-write seam. It once
-    // also ran on the web console's send handler as an implicit auto-join;
-    // that call is gone (the send route is speaker-gated now), but the
-    // write itself still has to run the direct→group upgrade. This pins
-    // that invariant: skipping it left b1+tester in `full` mode when a
-    // human entered an existing direct chat — the exact shape that kept
-    // producing emoji echo loops in local testing.
+  it("upgrades when a third participant is admitted via applyMembershipWrite", async () => {
+    // `applyMembershipWrite` is the canonical membership-write bundle. The
+    // web console's send handler once funnelled through a thin wrapper over
+    // it as an implicit auto-join; that wrapper is gone (the send route is
+    // speaker-gated now), but the write itself still has to run the
+    // direct→group upgrade. This pins that invariant: skipping it left
+    // b1+tester in `full` mode when a human entered an existing direct
+    // chat — the exact shape that kept producing emoji echo loops.
     const app = getApp();
     const uid = crypto.randomUUID().slice(0, 6);
     const a1 = await createTestAgent(app, { name: `ensure-a1-${uid}` });
@@ -160,37 +161,12 @@ describe("chat upgrade — direct to group", () => {
       participantIds: [a2.uuid],
     });
 
-    await ensureParticipant(app.db, chat.id, human.uuid);
+    await applyMembershipWrite(app.db, chat.id, [{ agentId: human.uuid }], { upgradeWatcherToSpeaker: true });
 
     expect(await loadChatType(chat.id)).toBe("group");
     // v2: all speakers written as the constant `'mention_only'`.
     expect((await loadParticipant(chat.id, a1.agent.uuid))?.mode).toBe("mention_only");
     expect((await loadParticipant(chat.id, a2.uuid))?.mode).toBe("mention_only");
     expect((await loadParticipant(chat.id, human.uuid))?.mode).toBe("mention_only");
-  });
-
-  it("is idempotent — ensureParticipant for an existing participant does not re-flip modes", async () => {
-    // Admin sending multiple messages must not re-run the upgrade on every
-    // call. We pin existing members to specific modes and assert they're
-    // untouched when a repeat ensureParticipant fires.
-    const app = getApp();
-    const uid = crypto.randomUUID().slice(0, 6);
-    const a1 = await createTestAgent(app, { name: `idem-a1-${uid}` });
-    const { agent: a2 } = await createTestAgent(app, { name: `idem-a2-${uid}` });
-    const { agent: a3 } = await createTestAgent(app, { name: `idem-a3-${uid}` });
-
-    const chat = await createChat(app.db, a1.agent.uuid, {
-      type: "group",
-      participantIds: [a2.uuid, a3.uuid],
-    });
-    // Pin a1 to a distinct mode so any inadvertent re-upgrade is visible.
-    await app.db
-      .update(chatMembership)
-      .set({ mode: "full" })
-      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, a1.agent.uuid)));
-
-    await ensureParticipant(app.db, chat.id, a1.agent.uuid);
-
-    expect((await loadParticipant(chat.id, a1.agent.uuid))?.mode).toBe("full");
   });
 });
