@@ -469,6 +469,35 @@ type SessionManagerConfig = {
 const MAX_EVICTED_MAPPINGS = 500;
 
 /**
+ * A provider abort is best-effort and its completion callback can disappear
+ * across host sleep or transport loss. Do not let that callback permanently
+ * fence later inbox delivery for the chat.
+ */
+const OPERATOR_SUSPEND_TIMEOUT_MS = 30_000;
+
+class HandlerSuspendTimeoutError extends Error {
+  constructor(chatId: string) {
+    super(`handler suspend timed out after ${OPERATOR_SUSPEND_TIMEOUT_MS}ms for chat ${chatId}`);
+    this.name = "HandlerSuspendTimeoutError";
+  }
+}
+
+async function waitForHandlerSuspend(chatId: string, suspend: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    await Promise.race([
+      Promise.resolve().then(suspend),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new HandlerSuspendTimeoutError(chatId)), OPERATOR_SUSPEND_TIMEOUT_MS);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
  * Minimum spacing between gate-triggered replay-fence reconciliations for
  * one chat. Withheld dispatches retry the server-truth readback so a
  * transient readback/clear failure converges without a process restart,
@@ -3117,20 +3146,26 @@ export class SessionManager {
       return;
     }
 
-    // A failed suspend left the current handler never confirmed stopped.
-    // Stop it strictly (joining any in-flight shutdown's raw face) BEFORE
-    // the route below reuses or replaces the reference — reusing or
-    // overwriting an unconfirmed-stop handler loses the teardown authority
-    // while the old run may still be alive. A teardown failure propagates
-    // into resume's existing error semantics (routeMessage retries the
-    // delivery / operator resume logs the command error); it must not
-    // silently continue. On success the handler is retired so the route
-    // installs a fresh one, and the recorded suspend failure is cleared.
+    // A failed suspend normally leaves the current handler unconfirmed, so
+    // stop it strictly before installing a replacement. A suspend timeout is
+    // different: the suspend request was dispatched, but its completion was
+    // never observed. Retire that handler and let the existing route
+    // generation + teardown-debt fences contain any late completion instead
+    // of waiting on the same callback forever.
     if (entry.suspendError && entry.handlerStoppedBySuspend !== entry.handler) {
-      await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
-      entry.handlerStoppedBySuspend = entry.handler;
+      if (entry.suspendError.error instanceof HandlerSuspendTimeoutError) {
+        // The suspend request was issued but its completion never arrived.
+        // Retire this handler so the resumed delivery
+        // gets a fresh instance instead of waiting on the same lost callback.
+        // handlerForRouteTransition keeps the old handler as teardown debt,
+        // while the route generation fence rejects all of its late output.
+        this.retiredHandlers.add(entry.handler);
+      } else {
+        await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+        entry.handlerStoppedBySuspend = entry.handler;
+        this.retiredHandlers.add(entry.handler);
+      }
       entry.suspendError = null;
-      this.retiredHandlers.add(entry.handler);
     }
 
     // Route admission fence: settle this chat's teardown authority before
@@ -4137,7 +4172,9 @@ export class SessionManager {
           // settleProviderEntered keeps already-issued DeliveryTokens on the
           // settlement lease (including active/deferred inject) so they can
           // post durable notice+ACK before prepareOperatorSuspend runs.
-          await entry.handler.suspend(opts.reason, { settleProviderEntered: true });
+          await waitForHandlerSuspend(entry.chatId, () =>
+            entry.handler.suspend(opts.reason, { settleProviderEntered: true }),
+          );
           // If settle captured a terminal notice but could not persist it (or
           // could not claim token settlement), transfer the obligation onto
           // the inbox ledger so prepareOperatorSuspend / recovery cannot ACK

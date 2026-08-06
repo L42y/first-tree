@@ -3326,6 +3326,40 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("retires a handler whose operator suspend times out and lets later input resume", async () => {
+    vi.useFakeTimers();
+    const oldHandler = handler({
+      suspend: vi.fn(() => new Promise<void>(() => {})),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    });
+    const freshHandler = handler({
+      resume: vi
+        .fn()
+        .mockResolvedValue({ sessionId: "fresh-session", route: { kind: "owned" as const, mode: "queued" as const } }),
+    });
+    const sm = makeManager({ handlers: [freshHandler] });
+    const i = internals(sm);
+    const chatId = "chat-resume-after-suspend-timeout";
+    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i._activeCount = 1;
+
+    await sm.handleCommand(chatId, "session:suspend");
+    const laterDispatch = sm.dispatch(mockEntry({ id: 9101, chatId, messageId: "msg-after-timeout" }));
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(freshHandler.resume).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    await laterDispatch;
+
+    expect(i.sessions.get(chatId)?.suspending).toBeNull();
+    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(freshHandler.resume).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(oldHandler.shutdown).toHaveBeenCalledTimes(1));
+
+    await sm.shutdown();
+  });
+
   it("retains teardown proof when a canceled fresh-start shutdown fails, and converges on terminate", async () => {
     const boom = new Error("start-cancel shutdown failed");
     const startHandler = handler({
