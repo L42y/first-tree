@@ -85,7 +85,13 @@ export class AgentRuntime {
     this.clientConnection.on("error", (err) => this.logger.error({ err }, "client connection error"));
 
     for (const [name, agentConfig] of Object.entries(this.config.agents)) {
-      const handlerFactory = options.handlerFactories[agentConfig.type];
+      // Own-key only: a plain `{}` map still inherits Object.prototype, so
+      // direct indexing of `toString` / `constructor` / `__proto__` would
+      // return truthy prototype values and bypass fail-closed unknown-type
+      // handling (Map.get returned undefined for those keys).
+      const handlerFactory = Object.hasOwn(options.handlerFactories, agentConfig.type)
+        ? options.handlerFactories[agentConfig.type]
+        : undefined;
       if (!handlerFactory) {
         const available = Object.keys(options.handlerFactories).join(", ") || "(none)";
         throw new Error(`Unknown handler type "${agentConfig.type}". Available: ${available}`);

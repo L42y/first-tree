@@ -431,4 +431,39 @@ describe("AgentRuntime", () => {
         }),
     ).toThrow("Available: (none)");
   });
+
+  for (const prototypeKey of ["toString", "constructor", "__proto__"] as const) {
+    it(`rejects empty-map own-key miss for Object.prototype key ${prototypeKey}`, async () => {
+      const state = installRuntimeMocks();
+      const { AgentRuntime } = await import("../runtime/runtime.js");
+      const config: RuntimeConfig = {
+        server: "http://first-tree.test",
+        agents: {
+          poisoned: {
+            agentId: "agent-poisoned",
+            type: prototypeKey,
+            session: {
+              idle_timeout: 300,
+              max_sessions: 10,
+              working_grace_seconds: 3600,
+              reconcile_interval_seconds: 300,
+            },
+            concurrency: 1,
+          },
+        },
+      };
+
+      expect(
+        () =>
+          new AgentRuntime({
+            config,
+            getAccessToken: async () => "token",
+            // Plain object still inherits Object.prototype; direct indexing
+            // would see truthy toString/constructor/__proto__ values.
+            handlerFactories: {},
+          }),
+      ).toThrow(new RegExp(`Unknown handler type "${prototypeKey}".*Available: \\(none\\)`));
+      expect(state.slots).toHaveLength(0);
+    });
+  }
 });
