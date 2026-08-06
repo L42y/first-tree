@@ -272,10 +272,10 @@ export function classify(err: unknown, context?: { source?: ErrorSource }): Clas
     };
   }
   // Provider binary missing / verify-transient: consume the normalized signal
-  // from provider-support. That seam owns the match rules and reason codes so
-  // this generic taxonomy never imports concrete *-binary modules. Verify-
-  // transient wins over missing so a busy-host smoke flake never masquerades
-  // as an uninstalled provider.
+  // from provider-support. That seam owns the match rules, reason codes, and
+  // the historical interleaved order (Codex→Cursor→Grok→Pi, verify-then-missing
+  // within each provider) so this generic taxonomy never imports concrete
+  // *-binary modules. Cross-provider ambiguity keeps the earlier provider.
   const binaryFailure = recognizeProviderBinaryFailure(err);
   if (binaryFailure) {
     if (binaryFailure.outcome === "verify_transient") {
