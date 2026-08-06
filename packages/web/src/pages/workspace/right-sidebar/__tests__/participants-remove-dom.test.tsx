@@ -148,6 +148,24 @@ describe("ParticipantsSection remove affordance", () => {
     expect(writable.container.querySelector('[aria-label="Actions for Me"]')).toBeNull();
     expect(writable.container.querySelector('[aria-label="Actions for Other"]')).not.toBeNull();
     expect(writable.container.querySelector('[aria-label="Actions for Nova"]')).not.toBeNull();
+    act(() => writable.root.unmount());
+    writable.container.remove();
+
+    // Supervisor / admin-without-membership: selfAgentId set but not in speaker roster.
+    authMock.agentId = "human-supervisor";
+    const outsider = render(
+      <ParticipantsSection
+        chatId="chat-1"
+        participants={roster}
+        participantsLoading={false}
+        managedByMe={new Map()}
+        onAdded={() => undefined}
+        readOnly={false}
+      />,
+    );
+    mounted = outsider;
+    expect(outsider.container.querySelector('[aria-label="Actions for Other"]')).toBeNull();
+    expect(outsider.container.querySelector('[aria-label="Actions for Nova"]')).toBeNull();
   });
 
   it("shows confirm copy, submits once, and toasts watching vs detached", async () => {
@@ -182,7 +200,9 @@ describe("ParticipantsSection remove affordance", () => {
 
     expect(document.body.textContent).toContain("Remove Other?");
     expect(document.body.textContent).toContain("Message history is kept");
-    expect(document.body.textContent).toContain("no longer be able to send, receive, or be @mentioned");
+    expect(document.body.textContent).toContain("no longer be able to send messages or be");
+    expect(document.body.textContent).toContain("may continue to observe as a watcher");
+    expect(document.body.textContent).not.toContain("no longer be able to send, receive, or be @mentioned");
 
     const confirm = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Remove");
     await act(async () => {

@@ -14,6 +14,7 @@ import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { upsertSessionState } from "../services/activity.js";
+import { createAgent } from "../services/agent.js";
 import { createChat, ensureParticipant, removeParticipant } from "../services/chat.js";
 import * as connectionManager from "../services/connection-manager.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
@@ -23,7 +24,7 @@ import {
   softTerminateRemovedAgentSession,
 } from "../services/remove-chat-participant.js";
 import { appendLiveEvent } from "../services/session-event.js";
-import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
+import { createAdminContext, createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 function databaseUrlWithApplicationName(url: string, applicationName: string): string {
   const parsed = new URL(url);
@@ -598,7 +599,7 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
   });
 
   it("detaches Human with me-chats:changed(chatId) and notifies audience only once", async () => {
-    const { app, owner, peer, chatId, ownerHeaders } = await setupGroup();
+    const { app, peer, chatId, ownerHeaders } = await setupGroup();
     const audienceSpy = vi.spyOn(app.notifier, "notifyChatAudience");
     const meChatsSpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
 
@@ -619,6 +620,91 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     expect(audienceSpy).toHaveBeenCalledWith(chatId);
 
     audienceSpy.mockRestore();
+    meChatsSpy.mockRestore();
+  });
+
+  it("kicks me-chats for a manager who loses their last watcher anchor when an agent is removed", async () => {
+    const app = getApp();
+    const owner = await createAdminContext(app, { username: `rm-own-${crypto.randomUUID().slice(0, 6)}` });
+    const manager = await createAdminContext(app, { username: `rm-mgr-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `rm-only-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      managerId: manager.memberId,
+      clientId: manager.clientId,
+      organizationId: manager.organizationId,
+    });
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [agent.uuid],
+    });
+    // createChat recomputes watchers → manager is watcher-only (not a speaker).
+    const [watcherBefore] = await app.db
+      .select({ accessMode: chatMembership.accessMode })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, manager.humanAgentUuid)))
+      .limit(1);
+    expect(watcherBefore?.accessMode).toBe("watcher");
+
+    const meChatsSpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chat.id}/participants/${agent.uuid}`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [watcherAfter] = await app.db
+      .select({ accessMode: chatMembership.accessMode })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, manager.humanAgentUuid)))
+      .limit(1);
+    expect(watcherAfter).toBeUndefined();
+
+    await vi.waitFor(() => {
+      expect(meChatsSpy).toHaveBeenCalledWith(manager.humanAgentUuid, manager.organizationId, chat.id);
+    });
+    meChatsSpy.mockRestore();
+  });
+
+  it("keeps a manager watcher (and does not kick me-chats) when another managed agent remains", async () => {
+    const app = getApp();
+    const owner = await createAdminContext(app, { username: `rm-own2-${crypto.randomUUID().slice(0, 6)}` });
+    const manager = await createAdminContext(app, { username: `rm-mgr2-${crypto.randomUUID().slice(0, 6)}` });
+    const agentA = await createAgent(app.db, {
+      name: `rm-a-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      managerId: manager.memberId,
+      clientId: manager.clientId,
+      organizationId: manager.organizationId,
+    });
+    const agentB = await createAgent(app.db, {
+      name: `rm-b-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      managerId: manager.memberId,
+      clientId: manager.clientId,
+      organizationId: manager.organizationId,
+    });
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [agentA.uuid, agentB.uuid],
+    });
+
+    const meChatsSpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chat.id}/participants/${agentA.uuid}`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const [watcher] = await app.db
+      .select({ accessMode: chatMembership.accessMode })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, manager.humanAgentUuid)))
+      .limit(1);
+    expect(watcher?.accessMode).toBe("watcher");
+    expect(meChatsSpy).not.toHaveBeenCalledWith(manager.humanAgentUuid, manager.organizationId, chat.id);
     meChatsSpy.mockRestore();
   });
 });

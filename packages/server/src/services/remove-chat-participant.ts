@@ -42,8 +42,11 @@ type TxOutcome = RemoveChatParticipantResponse & {
   organizationId: string;
   targetType: string;
   targetInboxId: string | null;
-  /** When the target fully detached as a Human, kick their private me-chats. */
-  detachedHumanAgentId: string | null;
+  /**
+   * Humans who lost every membership row this remove (target detach and/or
+   * watcher rows dropped by recompute). Each gets a targeted me-chats kick.
+   */
+  detachedHumanAgentIds: string[];
   /** Non-human targets always get a soft terminate attempt after commit. */
   terminateAgentId: string | null;
 };
@@ -127,6 +130,8 @@ export async function removeChatParticipant(
 
     let membershipKind: "watching" | null = null;
     let detachedHumanAgentId: string | null = null;
+
+    const watcherHumansBefore = await listWatcherHumanAgentIds(tx, chatId);
 
     if (targetAgent.type === "human") {
       // Same visibility rule as leaveAsParticipant: still manage a non-human
@@ -243,6 +248,9 @@ export async function removeChatParticipant(
 
     await recomputeChatWatchers(tx, chatId);
 
+    const watcherHumansAfter = new Set(await listWatcherHumanAgentIds(tx, chatId));
+    const detachedByRecompute = watcherHumansBefore.filter((id) => !watcherHumansAfter.has(id));
+
     // After recompute, confirm Human watcher outcome from durable rows so the
     // response matches the post-recompute truth (recompute may re-attach).
     if (targetAgent.type === "human") {
@@ -260,6 +268,10 @@ export async function removeChatParticipant(
       }
     }
 
+    const detachedHumanAgentIds = [
+      ...new Set([...detachedByRecompute, ...(detachedHumanAgentId ? [detachedHumanAgentId] : [])]),
+    ];
+
     const result: TxOutcome = {
       chatId,
       targetAgentId,
@@ -267,7 +279,7 @@ export async function removeChatParticipant(
       organizationId: chat.organizationId,
       targetType: targetAgent.type,
       targetInboxId: targetAgent.inboxId,
-      detachedHumanAgentId,
+      detachedHumanAgentIds,
       terminateAgentId: targetAgent.type !== "human" ? targetAgentId : null,
     };
     return result;
@@ -280,8 +292,8 @@ export async function removeChatParticipant(
     // `invalidateChatAudience` already fans `notifyChatAudience` via the
     // boot-registered dispatcher — do not call it again here.
     void notifier.notifyChatUpdated(chatId);
-    if (outcome.detachedHumanAgentId) {
-      void notifier.notifyMeChatsChanged(outcome.detachedHumanAgentId, outcome.organizationId, chatId);
+    for (const humanAgentId of outcome.detachedHumanAgentIds) {
+      void notifier.notifyMeChatsChanged(humanAgentId, outcome.organizationId, chatId);
     }
   }
 
@@ -300,6 +312,15 @@ export async function removeChatParticipant(
     targetAgentId: outcome.targetAgentId,
     membershipKind: outcome.membershipKind,
   };
+}
+
+async function listWatcherHumanAgentIds(db: Database, chatId: string): Promise<string[]> {
+  const rows = await db
+    .select({ agentId: chatMembership.agentId })
+    .from(chatMembership)
+    .innerJoin(agents, eq(agents.uuid, chatMembership.agentId))
+    .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.accessMode, "watcher"), eq(agents.type, "human")));
+  return rows.map((row) => row.agentId);
 }
 
 async function pauseCronJobsForRemovedSpeaker(

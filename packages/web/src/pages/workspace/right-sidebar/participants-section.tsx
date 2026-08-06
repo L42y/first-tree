@@ -82,7 +82,10 @@ export function ParticipantsSection({
   const [pendingRemove, setPendingRemove] = useState<ChatParticipantDetail | null>(null);
 
   const isAdmin = role === "admin";
-  const canRemoveSpeakers = !readOnly && Boolean(selfAgentId);
+  // Chat detail participants are speakers-only. Supervisors who can open the
+  // chat without membership must not see Remove — the server still 403s them.
+  const selfIsSpeaker = Boolean(selfAgentId && participants.some((p) => p.agentId === selfAgentId));
+  const canRemoveSpeakers = !readOnly && selfIsSpeaker;
   const { total, visibleAgents, visibleHumans, hiddenCount } = useMemo(
     () => partitionRoster(participants, showAll),
     [participants, showAll],
@@ -104,7 +107,7 @@ export function ParticipantsSection({
       } else {
         addToast({
           title: "Participant removed",
-          description: `${target.displayName} can no longer send, receive, or be mentioned in this chat.`,
+          description: `${target.displayName} can no longer send messages or be @mentioned in this chat.`,
         });
       }
       onAdded();
@@ -279,8 +282,9 @@ export function RemoveParticipantConfirmDialog({
         <DialogHeader>
           <DialogTitle>Remove {label}?</DialogTitle>
           <DialogDescription>
-            They will be removed from this chat only. They will no longer be able to send, receive, or be @mentioned
-            here. Message history is kept.
+            They will be removed as a participant of this chat only. They will no longer be able to send messages or be
+            @mentioned here. If they still manage an agent in this chat, they may continue to observe as a watcher.
+            Message history is kept.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
