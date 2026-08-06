@@ -392,7 +392,7 @@ first-tree chat
 │     --agent <name>                                 #   selected agent must participate in the target chat
 ├── update                                           # update topic and/or description (each independently)
 │     --topic <text> / --clear-topic                 #   set/clear the short display label
-│     --description <text> / --clear-description      #   set/clear the work summary + status report (Markdown; `-` = read from stdin/heredoc)
+│     --description <text> / --clear-description      #   set/clear the Summary — the chat's current-state brief (Markdown; `-` = read from stdin/heredoc)
 │     --chat <chatId> / --agent <name>               #   target another chat / the named agent
 ├── set-topic [topic]                                # [DEPRECATED — use `update`] hidden alias
 └── open <agent-name>                                # interactive REPL
@@ -563,19 +563,26 @@ first-tree chat archive
 first-tree chat send alice "Done — I’m archiving this conversation now."
 first-tree chat archive
 
-# Self-description: a short topic label + a work summary + status report,
-# updated independently through `chat update` (topic and description each on
-# their own). The description carries task background + plan + progress, renders
-# as Markdown, and shows at the top of the chat's right sidebar; agents also read
-# it via `chat list` to self-locate (see the agent briefing's "Chat Topic &
-# Description"). Keep blockers / decisions OUT of it — raise `chat ask <human>`
-# for those. Owner-gated: the chat's creator may update it, and when
+# Self-description: a short topic label + a Summary, updated independently
+# through `chat update` (topic and description each on their own). The
+# description is the chat's current-state brief — rewritten in place from blank
+# each time, first line standing alone as the current result plus what it means
+# for the reader, then only the context needed to trust it (in flight: the one
+# most recent next step; blocked: what it waits on; done: the conclusion and at
+# most one deliverable). Default 2–4 short sentences; 1500 chars is a ceiling,
+# not a target. Leave out stage history, plan/progress lists, implementation
+# detail, and process metadata (SHAs, test counts, reviewers, sub-agents, CI
+# jobs, commands). It renders as Markdown at the top of the chat's right
+# sidebar; agents also read it via `chat list` to self-locate (see the agent
+# briefing's "Chat Topic & Description" for the full authoring contract). Keep
+# human decisions OUT of it — raise `chat ask <human>` for those. Owner-gated:
+# the chat's creator may update it, and when
 # no agent owner is present (human-created chats — Web / GitHub-sourced — or the
 # creator left) every worker agent counts as the owner; a non-owner agent in a
 # chat whose agent creator is still present is refused with 403.
 first-tree chat update --topic "review PR #916"
-first-tree chat update --description "Reviewing PR #916. **Plan:** address review findings, re-verify. **Progress:** 2/3 findings fixed."
-first-tree chat update --topic "ship plan" --description "Drafting; next: hand to QA."
+first-tree chat update --description "PR #916 is ready to merge — no blocking findings left. Next: hand it back to the author for the squash merge."
+first-tree chat update --topic "ship plan" --description "Ship plan drafted and ready for QA to check. Next: hand it to QA."
 first-tree chat update --clear-description
 # A one-line --description whose newlines are written as literal `\n` is rejected
 # before the write: shell quotes do not expand `\n`, so it would persist and
@@ -583,10 +590,10 @@ first-tree chat update --clear-description
 # pass real newlines — either an ANSI-C $'...' string, or `--description -` to
 # read it from stdin/heredoc:
 cat <<'EOF' | first-tree chat update --description -
-Reviewing PR #916.
+PR #916 still has one blocking finding, so it cannot merge yet.
 
-**Plan:** address review findings, re-verify.
-**Progress:** 2/3 findings fixed.
+The retry path drops the last message when the socket closes mid-send.
+Next: fix that path and re-request review.
 EOF
 # `chat set-topic` still works as a deprecated alias.
 

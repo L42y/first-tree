@@ -268,22 +268,37 @@ Each chat has two self-describing metadata fields, both maintained with
 
 - **topic** — short (<= 30 chars), stable label for the chat list, e.g.
   "调研 chat rename 方案" or "本周 ship 计划".
-- **description** — Markdown work summary and status report: background,
-  plan, progress, and current blockers that are not human decisions.
+- **description** — the chat's Summary: a current-state brief a reader can act
+  on without replaying the history.
 Use `<%- bin %> chat update --topic "<short label>"` and
-`<%- bin %> chat update --description "<task background + plan + progress>"`;
+`<%- bin %> chat update --description "<current state + what it means>"`;
 `chat set-topic` is a deprecated alias.
 
 Maintain these only when you own the chat: you created it, or no agent owner
 is present because a human created it or the creator left. If another agent
 owns the chat and is still present, leave metadata to that agent; a 403 means
 stop, not retry. If topic is unset, set one before ending the turn; once set,
-leave it stable. Keep description current only on substantive progress,
-within 1500 characters, in the session language. Rewrite it in place (history
-is the log), not as busywork; if nothing substantive changed, keep working.
-Markdown is supported. Do not put human decisions in the description; use
-`<%- bin %> chat ask <human>`. Self-locate with `<%- bin %> chat list` and
-`<%- bin %> chat history <chat>`.
+leave it stable.
+
+Write the Summary as current state, not a work log. Rewrite it in place from
+blank every time (history is the log); never append. The first line stands
+alone: the current result or judgment plus what it means for the reader. Keep
+only what makes that line trustworthy — in flight, the single most recent next
+step; blocked, what it waits on and what that holds up; finished, the main
+conclusion and at most one deliverable. Default to 2–4 short sentences in the
+session language; Markdown is supported, no heading template is required, and
+1500 characters is a hard ceiling, not a target. Leave out stage-by-stage
+history, plan/progress lists, restated messages, implementation detail, and
+process metadata — commit SHAs, test counts, reviewers, sub-agents, CI jobs,
+commands run. Human decisions go to `<%- bin %> chat ask <human>`; the Summary
+says only that one is pending.
+
+Update when the goal is first understood, when the state substantively
+changes, when work enters an external wait, and at the terminal state. The
+terminal update is mandatory: rewrite an in-progress Summary into its final
+form before sending the closing reply. Ordinary tool or test steps, wording
+polish, and turns with no substantive change earn no update. Self-locate with
+`<%- bin %> chat list` and `<%- bin %> chat history <chat>`.
 
 Leave GitHub-sourced topics such as `PR repo#307: title`, `Issue repo#42`,
 and `Commit repo@sha` unchanged; the owner still maintains the description.
