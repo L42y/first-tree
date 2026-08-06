@@ -124,6 +124,15 @@ describe("contextDecisionSourceHref", () => {
     expect(contextDecisionSourceHref(evidence(repo), null)).toBeNull();
   });
 
+  // SSH bindings are valid receipt sources, so their links must resolve too.
+  it("links an SSH-form GitHub source to the same web blob URL", () => {
+    for (const repoUrl of ["git@github.com:example/tree.git", "ssh://git@github.com/example/tree.git"]) {
+      expect(contextDecisionSourceHref(evidence(repoUrl), null), repoUrl).toBe(
+        `https://github.com/example/tree/blob/${COMMIT}/a/b.md`,
+      );
+    }
+  });
+
   it("escapes path segments so a source link cannot be broken by the path", () => {
     const href = contextDecisionSourceHref(evidence("https://github.com/example/tree", "a b/c?d.md"), null);
     expect(href).toBe(`https://github.com/example/tree/blob/${COMMIT}/a%20b/c%3Fd.md`);
