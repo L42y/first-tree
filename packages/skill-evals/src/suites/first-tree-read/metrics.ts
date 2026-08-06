@@ -218,7 +218,9 @@ function visibleUrlsCredentialFree(texts: readonly string[]): boolean {
   return urls.every((value) => {
     try {
       const url = new URL(value);
-      return url.username === "" && url.password === "";
+      // SSH commonly carries the transport identity as `git@host`; that
+      // username is part of the repository contract, not a credential.
+      return url.password === "" && (url.protocol === "ssh:" || url.username === "");
     } catch {
       return false;
     }

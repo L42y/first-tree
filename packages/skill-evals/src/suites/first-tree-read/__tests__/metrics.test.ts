@@ -606,11 +606,21 @@ ${source}`),
           assistantTextEvent(`See ${url}.
 
 > **Context Tree impact · Options narrowed**\\
-> The organization-isolation rule ruled out a global shared index.\\
+> The organization isolation rule ruled out a global shared index.\\
 ${source}`),
         ],
         expectation,
       ),
+    );
+    const legalSshUsername = impactMetrics(
+      [
+        assistantTextEvent(`The binding clone identity is ssh://git@github.com/example/context-tree.git.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization isolation rule ruled out a global shared index.\\
+${source}`),
+      ],
+      expectation,
     );
 
     expect(generic.impactNoteSummaryConceptsOk).toBe(false);
@@ -619,6 +629,8 @@ ${source}`),
       expect(result.impactNoteVisibleUrlsCredentialFree).toBe(false);
       expect(result.impactNoteBehaviorOk).toBe(false);
     }
+    expect(legalSshUsername.impactNoteVisibleUrlsCredentialFree).toBe(true);
+    expect(legalSshUsername.impactNoteBehaviorOk).toBe(true);
   });
 
   it("accepts the complete Chinese conflict template only when the tradeoff remains unresolved", () => {
