@@ -421,25 +421,28 @@ async function pauseCronJobsForRemovedSpeaker(
 /**
  * Soft terminate is only live while the removal fence still holds: the agent
  * is not a speaker and the durable `(agent, chat)` session row is still
- * `evicted`. Re-add takes exclusive membership and clears that fence, so a
- * delayed local send or cross-replica `session:evict` must re-check under the
- * shared membership advisory before delivering `session:terminate`.
+ * `evicted`. Hold the shared membership advisory for the entire `action` so
+ * re-add (exclusive membership) cannot commit between the check and delivery
+ * — local `sendToAgent` / remote `sendToClient` / publish must run inside
+ * `action` while the lock is still held.
  */
-export async function isRemovedSessionSoftTerminateLive(
+export async function withLiveRemovedSessionFence<T>(
   db: Database,
   agentId: string,
   chatId: string,
-): Promise<boolean> {
+  action: (tx: Database) => Promise<T>,
+): Promise<T | undefined> {
   return db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
     await lockChatMembershipShared(tx, [chatId]);
-    if (await isChatSpeaker(tx, chatId, agentId)) return false;
+    if (await isChatSpeaker(tx, chatId, agentId)) return undefined;
     const [session] = await tx
       .select({ state: agentChatSessions.state })
       .from(agentChatSessions)
       .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
       .limit(1);
-    return session?.state === "evicted";
+    if (session?.state !== "evicted") return undefined;
+    return action(tx);
   });
 }
 
@@ -447,8 +450,7 @@ export async function isRemovedSessionSoftTerminateLive(
  * Best-effort ordinary `session:terminate` (no Reset apply-ack). Local first;
  * when the agent's socket lives on another replica, fan a soft evict command.
  * Failures never surface to the DELETE caller — DB eviction is authoritative.
- * Re-validates the removal fence immediately before each delivery attempt so
- * a delayed wake cannot kill a session after re-add.
+ * Delivery and remote publish run inside the shared removal fence.
  */
 export async function softTerminateRemovedAgentSession(input: {
   db: Database;
@@ -458,39 +460,33 @@ export async function softTerminateRemovedAgentSession(input: {
   instanceId?: string;
 }): Promise<void> {
   try {
-    if (!(await isRemovedSessionSoftTerminateLive(input.db, input.agentId, input.chatId))) {
-      return;
-    }
-    if (sendToAgent(input.agentId, { type: "session:terminate", chatId: input.chatId })) {
-      return;
-    }
+    const localSent = await withLiveRemovedSessionFence(input.db, input.agentId, input.chatId, async () =>
+      sendToAgent(input.agentId, { type: "session:terminate", chatId: input.chatId }),
+    );
+    if (localSent) return;
     if (!input.notifier || !input.instanceId) return;
 
-    // Re-check after the local miss: re-add may have won between the first
-    // fence read and the remote publish.
-    if (!(await isRemovedSessionSoftTerminateLive(input.db, input.agentId, input.chatId))) {
-      return;
-    }
+    await withLiveRemovedSessionFence(input.db, input.agentId, input.chatId, async (tx) => {
+      const [route] = await tx
+        .select({
+          clientId: agents.clientId,
+          instanceId: clients.instanceId,
+        })
+        .from(agents)
+        .leftJoin(clients, eq(clients.id, agents.clientId))
+        .where(eq(agents.uuid, input.agentId))
+        .limit(1);
 
-    const [route] = await input.db
-      .select({
-        clientId: agents.clientId,
-        instanceId: clients.instanceId,
-      })
-      .from(agents)
-      .leftJoin(clients, eq(clients.id, agents.clientId))
-      .where(eq(agents.uuid, input.agentId))
-      .limit(1);
+      if (!route?.clientId || !route.instanceId) return;
+      if (route.instanceId === input.instanceId) return;
 
-    if (!route?.clientId || !route.instanceId) return;
-    if (route.instanceId === input.instanceId) return;
-
-    await input.notifier.notifyDaemonClientCommand({
-      type: "session:evict",
-      clientId: route.clientId,
-      agentId: input.agentId,
-      chatId: input.chatId,
-      targetInstanceId: route.instanceId,
+      await input.notifier!.notifyDaemonClientCommand({
+        type: "session:evict",
+        clientId: route.clientId,
+        agentId: input.agentId,
+        chatId: input.chatId,
+        targetInstanceId: route.instanceId,
+      });
     });
   } catch {
     // best-effort

@@ -73,10 +73,15 @@ export const PRECEDING_CONTEXT_WINDOW_SECONDS = 24 * 60 * 60;
  *     rollback of `addParticipant` rolls the backfill back too.
  *   - **Quiet on chats with no prior history**: a chat with zero messages
  *     produces zero backfill rows; no error, no INSERT.
- *   - **Idempotent**: collides cleanly on the
+ *   - **Membership-removal recovery**: before inserting, deletes every
+ *     `cancelled` envelope for each `(inboxId, chatId)` so prior remove
+ *     cannot block silent backfill (`uq_inbox_delivery`) or poison
+ *     ACK-through prefixes with cancelled notify=true rows. Fresh silent
+ *     rows get new entry ids.
+ *   - **Idempotent for live rows**: collides cleanly on the
  *     `(inbox_id, message_id, chat_id)` unique key via
- *     `ON CONFLICT DO NOTHING`. This matters when a watcher → speaker
- *     promotion already had inbox rows for some of these messages.
+ *     `ON CONFLICT DO NOTHING` when a watcher → speaker promotion already
+ *     had non-cancelled inbox rows for some of these messages.
  *
  * Pure data write — no PG NOTIFY, no participant-mode logic, no watcher
  * recompute. Callers stay responsible for those.
@@ -95,6 +100,17 @@ export async function backfillSilentContextForNewParticipants(
   newParticipants: ReadonlyArray<{ inboxId: string }>,
 ): Promise<void> {
   if (newParticipants.length === 0) return;
+
+  const inboxIds = [...new Set(newParticipants.map((p) => p.inboxId))];
+  await tx
+    .delete(inboxEntries)
+    .where(
+      and(
+        inArray(inboxEntries.inboxId, inboxIds),
+        eq(inboxEntries.chatId, chatId),
+        eq(inboxEntries.status, "cancelled"),
+      ),
+    );
 
   const recent = await tx
     .select({ id: messages.id })
@@ -822,32 +838,34 @@ export async function resetDeliveredForInboxes(db: Database, inboxIds: string[])
 export const SILENT_ROW_GC_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 /**
- * Garbage-collect silent inbox rows so the table doesn't grow forever in
- * chats where a `mention_only` agent is never @mentioned.
+ * Garbage-collect silent / cancelled inbox rows so the table doesn't grow
+ * forever and terminal removal rows cannot block re-add forever:
  *
- * Two cleanup paths:
+ *   1. `notify=false AND status='acked'` of any age — fully consumed after a
+ *      notify trigger commits; leaving them blocks retries via
+ *      `uq_inbox_delivery`.
  *
- *   1. `notify=false AND status='acked'` of any age — these are fully
- *      consumed by ACK-through after a notify trigger commits); keep them only as long as
- *      the corresponding message rows we link to. The unique constraint
- *      `(inbox_id, message_id, chat_id)` means leaving them around blocks
- *      legitimate retries with the same key.
+ *   2. `status='cancelled'` of any age (silent or notify) — membership
+ *      removal terminals. Crossing into speaker deletes them eagerly for that
+ *      chat; this sweep clears leftovers for agents that never rejoin.
  *
- *   2. `notify=false AND status='pending' AND createdAt < NOW() - maxAge` —
- *      stale silent rows that no trigger ever caught up with. After 30
- *      days they're useless as preceding context (the @mention almost
- *      certainly already happened or the chat went dormant).
+ *   3. `notify=false AND status='pending' AND createdAt < NOW() - maxAge` —
+ *      stale silent rows that no trigger ever caught up with.
  *
- * Returns the number of rows deleted in each bucket so the background task
- * can log meaningful counts.
+ * Returns deleted counts per bucket for the background task log.
  */
 export async function pruneStaleSilentEntries(
   db: Database,
   maxAgeSeconds = SILENT_ROW_GC_MAX_AGE_SECONDS,
-): Promise<{ ackedDeleted: number; stalePendingDeleted: number }> {
+): Promise<{ ackedDeleted: number; cancelledDeleted: number; stalePendingDeleted: number }> {
   const ackedDeleted = await db
     .delete(inboxEntries)
     .where(and(eq(inboxEntries.notify, false), eq(inboxEntries.status, "acked")))
+    .returning({ id: inboxEntries.id });
+
+  const cancelledDeleted = await db
+    .delete(inboxEntries)
+    .where(eq(inboxEntries.status, "cancelled"))
     .returning({ id: inboxEntries.id });
 
   const stalePendingDeleted = await db
@@ -861,7 +879,11 @@ export async function pruneStaleSilentEntries(
     )
     .returning({ id: inboxEntries.id });
 
-  return { ackedDeleted: ackedDeleted.length, stalePendingDeleted: stalePendingDeleted.length };
+  return {
+    ackedDeleted: ackedDeleted.length,
+    cancelledDeleted: cancelledDeleted.length,
+    stalePendingDeleted: stalePendingDeleted.length,
+  };
 }
 
 export async function assertInboxOwner(inboxId: string, agentInboxId: string): Promise<void> {

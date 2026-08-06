@@ -37,9 +37,13 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
       inboxTimer = setInterval(async () => {
         try {
           const pruned = await inboxService.pruneStaleSilentEntries(app.db);
-          if (pruned.ackedDeleted > 0 || pruned.stalePendingDeleted > 0) {
+          if (pruned.ackedDeleted > 0 || pruned.cancelledDeleted > 0 || pruned.stalePendingDeleted > 0) {
             log.debug(
-              { ackedDeleted: pruned.ackedDeleted, stalePendingDeleted: pruned.stalePendingDeleted },
+              {
+                ackedDeleted: pruned.ackedDeleted,
+                cancelledDeleted: pruned.cancelledDeleted,
+                stalePendingDeleted: pruned.stalePendingDeleted,
+              },
               "pruned silent inbox rows",
             );
           }

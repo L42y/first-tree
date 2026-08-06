@@ -401,6 +401,7 @@ describe("inbox same-socket chat recovery", () => {
 
     await expect(inboxService.pruneStaleSilentEntries(app.db, 60)).resolves.toEqual({
       ackedDeleted: 1,
+      cancelledDeleted: 0,
       stalePendingDeleted: 1,
     });
   });

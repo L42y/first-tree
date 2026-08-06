@@ -62,7 +62,7 @@ import * as notificationService from "../../services/notification.js";
 import type { InboxPushHandler, Notifier } from "../../services/notifier.js";
 import * as presenceService from "../../services/presence.js";
 import { readModelCatalogRpcResult, storeModelCatalogRpcResult } from "../../services/provider-models-rpc.js";
-import { isRemovedSessionSoftTerminateLive } from "../../services/remove-chat-participant.js";
+import { withLiveRemovedSessionFence } from "../../services/remove-chat-participant.js";
 import * as runtimeLivenessService from "../../services/runtime-liveness.js";
 import {
   agentRoutedTo,
@@ -331,20 +331,17 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
       }
       if (payload.type === "session:evict") {
         // Membership-removal soft terminate: ordinary frame, no Reset ref /
-        // capability gate. Re-check the live binding and the durable removal
-        // fence so a delayed NOTIFY cannot terminate a session after re-add.
+        // capability gate. Deliver only while the shared removal fence still
+        // holds so a delayed NOTIFY cannot terminate a session after re-add.
         if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
-        void (async () => {
-          if (!(await isRemovedSessionSoftTerminateLive(app.db, payload.agentId, payload.chatId))) {
-            return;
-          }
+        void withLiveRemovedSessionFence(app.db, payload.agentId, payload.chatId, async () => {
           if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
           connectionManager.sendToClient(payload.clientId, {
             type: "session:terminate",
             agentId: payload.agentId,
             chatId: payload.chatId,
           });
-        })();
+        });
         return;
       }
       if (payload.type === "session:command:finalized" || payload.type === "session:command:aborted") {

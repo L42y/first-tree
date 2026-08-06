@@ -17,12 +17,11 @@ import { upsertSessionState } from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
 import { createChat, ensureParticipant, removeParticipant } from "../services/chat.js";
 import * as connectionManager from "../services/connection-manager.js";
+import { sendToAgent } from "../services/connection-manager.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
+import { ackThroughEntryIdForBoundAgents, pollInbox } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
-import {
-  isRemovedSessionSoftTerminateLive,
-  softTerminateRemovedAgentSession,
-} from "../services/remove-chat-participant.js";
+import { softTerminateRemovedAgentSession, withLiveRemovedSessionFence } from "../services/remove-chat-participant.js";
 import { appendLiveEvent } from "../services/session-event.js";
 import { createAdminContext, createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
@@ -547,21 +546,95 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     }
   });
 
-  it("delayed soft terminate after re-add does not kill the new session; still-evicted does", async () => {
+  it("holds shared removal fence across soft-terminate action so concurrent re-add blocks", async () => {
     const { app, agent, chatId, ownerHeaders } = await setupGroup();
     await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
-
     const res = await app.inject({
       method: "DELETE",
       url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
       headers: ownerHeaders,
     });
     expect(res.statusCode).toBe(200);
-    expect(await isRemovedSessionSoftTerminateLive(app.db, agent.agent.uuid, chatId)).toBe(true);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the fence concurrency test");
+
+    const fenceAppName = `rm_fence_${crypto.randomUUID().slice(0, 8)}`;
+    const readdAppName = `rm_readd_${crypto.randomUUID().slice(0, 8)}`;
+    const fencePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, fenceAppName));
+    const readdPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, readdAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
     const sendSpy = vi.spyOn(connectionManager, "sendToAgent").mockReturnValue(true);
     try {
-      // Still removed + evicted → terminate delivers.
+      let releaseAction!: () => void;
+      const actionHeld = new Promise<void>((resolve) => {
+        releaseAction = resolve;
+      });
+      let fenceReady!: () => void;
+      const fenceReadyP = new Promise<void>((resolve) => {
+        fenceReady = resolve;
+      });
+      let actionRan = false;
+
+      const terminatePromise = withLiveRemovedSessionFence(fencePool, agent.agent.uuid, chatId, async () => {
+        fenceReady();
+        await actionHeld;
+        actionRan = true;
+        return sendToAgent(agent.agent.uuid, { type: "session:terminate", chatId });
+      });
+
+      await Promise.race([
+        fenceReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("fence barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const readdPromise = ensureParticipant(readdPool, chatId, agent.agent.uuid);
+      await waitForPostgresLockWait(observer, readdAppName);
+
+      releaseAction();
+      await Promise.race([
+        Promise.all([terminatePromise, readdPromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("fence-vs-readd deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      expect(actionRan).toBe(true);
+      expect(sendSpy).toHaveBeenCalled();
+
+      // Reverse order: after re-add committed, a delayed fence must skip action.
+      sendSpy.mockClear();
+      await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
+      let skippedAction = false;
+      const skipped = await withLiveRemovedSessionFence(app.db, agent.agent.uuid, chatId, async () => {
+        skippedAction = true;
+        return sendToAgent(agent.agent.uuid, { type: "session:terminate", chatId });
+      });
+      expect(skipped).toBeUndefined();
+      expect(skippedAction).toBe(false);
+      expect(sendSpy).not.toHaveBeenCalled();
+    } finally {
+      sendSpy.mockRestore();
+      await fencePool.end();
+      await readdPool.end();
+      await observer.end();
+    }
+  });
+
+  it("still-evicted soft terminate delivers; softTerminate helper uses the held fence", async () => {
+    const { app, agent, chatId, ownerHeaders } = await setupGroup();
+    await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
+    await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+
+    const sendSpy = vi.spyOn(connectionManager, "sendToAgent").mockReturnValue(true);
+    try {
       await softTerminateRemovedAgentSession({
         db: app.db,
         agentId: agent.agent.uuid,
@@ -571,31 +644,77 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
         type: "session:terminate",
         chatId,
       });
-      sendSpy.mockClear();
-
-      // Re-add as speaker and revive session — delayed terminate must no-op.
-      await ensureParticipant(app.db, chatId, agent.agent.uuid);
-      await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
-      expect(await isRemovedSessionSoftTerminateLive(app.db, agent.agent.uuid, chatId)).toBe(false);
-
-      await softTerminateRemovedAgentSession({
-        db: app.db,
-        agentId: agent.agent.uuid,
-        chatId,
-        notifier: app.notifier,
-        instanceId: "other-replica",
-      });
-      expect(sendSpy).not.toHaveBeenCalled();
-
-      const [session] = await app.db
-        .select({ state: agentChatSessions.state })
-        .from(agentChatSessions)
-        .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
-        .limit(1);
-      expect(session?.state).toBe("active");
     } finally {
       sendSpy.mockRestore();
     }
+  });
+
+  it("remove → re-add clears cancelled envelopes, reseeds silent context, and allows ACK-through", async () => {
+    const { app, owner, agent, chatId, ownerHeaders } = await setupGroup();
+    for (let i = 0; i < 3; i++) {
+      await sendMessage(
+        app.db,
+        chatId,
+        owner.humanAgentUuid,
+        { source: "api", format: "markdown", content: `ctx-${i}` },
+        { allowRecipientlessSend: true },
+      );
+    }
+    await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "wake before remove",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+
+    const beforeRemove = await app.db
+      .select({ id: inboxEntries.id, status: inboxEntries.status, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.inboxId, agent.agent.inboxId), eq(inboxEntries.chatId, chatId)));
+    expect(beforeRemove.length).toBeGreaterThan(0);
+    const oldIds = new Set(beforeRemove.map((r) => r.id));
+
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+    expect(del.statusCode).toBe(200);
+
+    const cancelled = await app.db
+      .select({ id: inboxEntries.id, status: inboxEntries.status })
+      .from(inboxEntries)
+      .where(
+        and(
+          eq(inboxEntries.inboxId, agent.agent.inboxId),
+          eq(inboxEntries.chatId, chatId),
+          eq(inboxEntries.status, "cancelled"),
+        ),
+      );
+    expect(cancelled.length).toBeGreaterThan(0);
+
+    await ensureParticipant(app.db, chatId, agent.agent.uuid);
+
+    const afterReadd = await app.db
+      .select({ id: inboxEntries.id, status: inboxEntries.status, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.inboxId, agent.agent.inboxId), eq(inboxEntries.chatId, chatId)));
+    expect(afterReadd.every((r) => r.status !== "cancelled")).toBe(true);
+    const silent = afterReadd.filter((r) => r.notify === false && r.status === "pending");
+    expect(silent.length).toBeGreaterThan(0);
+    expect(silent.every((r) => !oldIds.has(r.id))).toBe(true);
+
+    await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "wake after re-add",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+    const delivered = await pollInbox(app.db, agent.agent.inboxId, 10);
+    const wake = delivered.find((e) => e.message.content === "wake after re-add");
+    expect(wake).toBeTruthy();
+    const ack = await ackThroughEntryIdForBoundAgents(app.db, wake!.id, [agent.agent.inboxId]);
+    expect(ack).toMatchObject({ ok: true });
   });
 
   it("detaches Human with me-chats:changed(chatId) and notifies audience only once", async () => {

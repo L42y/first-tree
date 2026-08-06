@@ -83,7 +83,11 @@ beforeEach(() => {
   serviceMocks.heartbeatInstance.mockResolvedValue(undefined);
   serviceMocks.markStaleAgents.mockResolvedValue([]);
   serviceMocks.notifyAgentEvent.mockResolvedValue(undefined);
-  serviceMocks.pruneStaleSilentEntries.mockResolvedValue({ ackedDeleted: 0, stalePendingDeleted: 0 });
+  serviceMocks.pruneStaleSilentEntries.mockResolvedValue({
+    ackedDeleted: 0,
+    cancelledDeleted: 0,
+    stalePendingDeleted: 0,
+  });
   serviceMocks.sweepChatArchive.mockResolvedValue({ mappedRowsArchived: 0, unmappedRowsArchived: 0 });
 });
 
@@ -98,7 +102,11 @@ afterEach(() => {
 describe("createBackgroundTasks", () => {
   it("runs heartbeat, inbox prune, archive sweep, and stale-agent notification intervals", async () => {
     const { createBackgroundTasks } = await import("../services/background-tasks.js");
-    serviceMocks.pruneStaleSilentEntries.mockResolvedValue({ ackedDeleted: 2, stalePendingDeleted: 1 });
+    serviceMocks.pruneStaleSilentEntries.mockResolvedValue({
+      ackedDeleted: 2,
+      cancelledDeleted: 3,
+      stalePendingDeleted: 1,
+    });
     serviceMocks.markStaleAgents.mockResolvedValue(["agent_1", "agent_2"]);
     serviceMocks.sweepChatArchive.mockResolvedValue({ mappedRowsArchived: 1, unmappedRowsArchived: 1 });
     const app = makeApp(30);
@@ -117,7 +125,7 @@ describe("createBackgroundTasks", () => {
     expect(serviceMocks.notifyAgentEvent).toHaveBeenCalledWith(app.db, "agent_1", "agent_stale", "medium");
     expect(serviceMocks.notifyAgentEvent).toHaveBeenCalledWith(app.db, "agent_2", "agent_stale", "medium");
     expect(loggerMocks.debug).toHaveBeenCalledWith(
-      { ackedDeleted: 2, stalePendingDeleted: 1 },
+      { ackedDeleted: 2, cancelledDeleted: 3, stalePendingDeleted: 1 },
       "pruned silent inbox rows",
     );
     expect(loggerMocks.info).toHaveBeenCalledWith(
