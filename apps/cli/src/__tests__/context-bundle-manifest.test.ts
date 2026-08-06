@@ -150,7 +150,7 @@ describe("context integration bundle", () => {
       const readSkill = readFileSync(join(pluginRoot, "skills", "first-tree-read", "SKILL.md"), "utf8");
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
       const manualSkill = readFileSync(join(pluginRoot, "skills", "first-tree", "SKILL.md"), "utf8");
-      expect(manifest.providers[provider as "claude-code" | "codex"].adapterVersion).toBe("1.0.0");
+      expect(manifest.providers[provider as "claude-code" | "codex"].adapterVersion).toBe("1.0.1");
       expect(hook).toContain('"timeout": 5');
       expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
       expect(hook).toContain("--adapter-digest __ADAPTER_DIGEST__");
@@ -165,6 +165,30 @@ describe("context integration bundle", () => {
       expect(readSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-read`);
       expect(writeSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-write`);
       expect(manualSkill).toContain(`context skill load --protocol 1 --provider ${provider} --name first-tree-read`);
+      for (const [skill, name] of [
+        [readSkill, "first-tree-read"],
+        [writeSkill, "first-tree-write"],
+        [manualSkill, "first-tree-read"],
+      ] as const) {
+        expect(skill).toContain("For every new First Tree Context task");
+        expect(skill).toContain(`exact \`(${name}, skillDigest)\` pair`);
+        expect(skill).toContain("exact `policyDigest`");
+        expect(skill).toContain("still directly available in the current provider context");
+        expect(skill).toContain("Read and Write may share only this Policy reuse");
+        expect(skill).toContain("matching path, Skill name, release version, or summary");
+        expect(skill).toContain("startup, resume, clear, or compact as a cache miss");
+        expect(skill).toContain("Do not create a persistent Core cache");
+        expect(skill).toContain("do not run an independent `sha256sum`");
+      }
+      expect(readSkill).toContain(
+        `description: Load the current First Tree release's canonical task-scoped Context reader for ${provider}.`,
+      );
+      expect(writeSkill).toContain(
+        `description: Load the current First Tree release's canonical source-backed Context writer for ${provider}.`,
+      );
+      expect(manualSkill).toContain(
+        `description: Manually activate First Tree Team Context for the current ${provider} project, including pathless sessions. Use when the user asks to enable, activate, or use First Tree Context in the current session.`,
+      );
       expect(readSkill).not.toContain("context route");
       expect(writeSkill).not.toContain("context write-preflight");
       expect(readdirSync(join(pluginRoot, "skills", "first-tree-read"))).toEqual(["SKILL.md"]);

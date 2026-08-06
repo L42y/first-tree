@@ -1268,6 +1268,16 @@ release manifest and exact-version Skill/Policy digests, then returns contained
 `skillPath` and `policyPath` values. It does not return a mutable `current`
 symlink or materialize a second Core workflow under `$FIRST_TREE_HOME`.
 
+The loader runs again for every new task, but content already read in full may
+be reused in the current provider context when its exact content identity still
+matches: `(name, skillDigest)` for a Skill and `policyDigest` for the Policy.
+Read and Write have separate Skill identities and may share only an identical
+Policy. A digest change, missing full text after a provider lifecycle boundary,
+summary-only evidence, or any uncertainty requires reading the corresponding
+path from the latest loader response again. Paths, names, and release versions
+do not authorize reuse. The agent does not independently hash Core files or
+persist a Core cache; invalid loader output remains fail-closed.
+
 For persistent Codex setup, Hook consent remains provider-owned: open
 `/hooks`, enable and Trust **First Tree Context → SessionStart**, return to the
 same conversation, and reply `continue`. The same agent reruns apply and

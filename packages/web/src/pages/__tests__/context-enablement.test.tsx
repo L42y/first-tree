@@ -152,6 +152,10 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("adopt its `activationContext`");
     expect(copiedPrompt).toContain("immutable activation receipt");
     expect(copiedPrompt).toContain("even if cwd changes later");
+    expect(copiedPrompt).toContain("For every new Context task, run the loader again");
+    expect(copiedPrompt).toContain("`name` plus `skillDigest`");
+    expect(copiedPrompt).toContain("full text is still directly available");
+    expect(copiedPrompt).toContain("Do not run an independent hash check or persist a Core cache");
     expect(copiedPrompt).toContain("Claude `/reload-plugins`");
     expect(copiedPrompt).toContain("Codex Hook trust");
     expect(copiedPrompt).toContain("at most twice");
@@ -393,6 +397,9 @@ describe("personal Context access", () => {
     expect(prompt).toContain("current-session handoff uses schema version 3");
     expect(prompt).toContain("immutable activation receipt");
     expect(prompt).toContain("even if cwd changes later");
+    expect(prompt).toContain("For every new Context task, run the loader again");
+    expect(prompt).toContain("`policyDigest` for the Policy");
+    expect(prompt).toContain("A matching path, Skill name, release version, or summary is not enough");
     expect(prompt).not.toContain("run the SCOPE router");
     expect(prompt).not.toContain("Never derive Team from cwd");
   });

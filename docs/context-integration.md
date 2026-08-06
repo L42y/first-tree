@@ -99,6 +99,17 @@ exact-version release manifest and digests, then returns the canonical
 a mutable `current` symlink and does not materialize a second Core bundle under
 `$FIRST_TREE_HOME`.
 
+The loader still runs for every new task. After a valid response, canonical
+content already read in full may be reused within the current provider context
+only by its content identity: `(name, skillDigest)` for a Skill and
+`policyDigest` for the Policy. Read and Write therefore keep distinct Skill
+identities while sharing an identical Policy. The agent reads only the changed
+or unavailable item from the paths returned by the latest loader; it does not
+run a separate hash command. A matching path, name, release version, or summary
+is insufficient. Digest mismatch, uncertainty, or full text no longer directly
+available after a provider lifecycle boundary is a cache miss. No persistent
+Core cache is created, and loader failure remains fail-closed.
+
 The Plugin and SessionStart Hook are only the future-session discovery mechanism.
 SessionStart injects a neutral router contract when the provider has applicable
 grants. It does not preselect or inject a Team's full Context. SessionStart

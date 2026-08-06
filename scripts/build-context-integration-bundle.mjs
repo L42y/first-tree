@@ -15,7 +15,7 @@ if (!Number.isSafeInteger(CONTEXT_INTEGRATION_LIMITS.byoAdditionalContextLimit))
 const EXTERNAL_SKILLS = ["first-tree-read", "first-tree-write"];
 const PLUGIN_NAME = "first-tree-context";
 const PROVIDERS = ["claude-code", "codex"];
-const ADAPTER_VERSION = "1.0.0";
+const ADAPTER_VERSION = "1.0.1";
 
 function parseArgs(argv) {
   const args = new Map();
@@ -84,6 +84,10 @@ function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+function renderCoreLoaderContract(provider, name) {
+  return `1. For every new First Tree Context task, run the current loader:\n\n\`\`\`sh\n__FIRST_TREE_SKILL_INVOCATION__ --json context skill load --protocol 1 --provider ${provider} --name ${name}\n\`\`\`\n\n2. Require a valid protocol-v1 response for \`consumerKind: byo\`, provider \`${provider}\`, Skill \`${name}\`, and both \`skillDigest\` and \`policyDigest\`. The loader is the only authority that validates the exact release, contained paths, and actual file digests; do not run an independent \`sha256sum\`.\n3. Resolve the returned Skill and Policy independently:\n   - Reuse Skill content only when the exact \`(${name}, skillDigest)\` pair was previously read in full and that full text is still directly available in the current provider context.\n   - Reuse Policy content only when the exact \`policyDigest\` was previously read in full and that full text is still directly available in the current provider context. Read and Write may share only this Policy reuse.\n   - Otherwise read the corresponding current \`skillPath\` or \`policyPath\` completely. A matching path, Skill name, release version, or summary that content was loaded is not evidence that the full text remains available. Treat uncertainty, digest changes, and unavailable content after startup, resume, clear, or compact as a cache miss.\n4. Follow the canonical workflow validated by this latest loader response. Do not create a persistent Core cache. Missing, invalid, or rejected loader output means First Tree Context is unavailable; do not fall back to a copied or legacy workflow.`;
+}
+
 function writeThinSkills(pluginRoot, provider) {
   const target = join(pluginRoot, "skills");
   mkdirSync(target, { recursive: true });
@@ -96,7 +100,7 @@ function writeThinSkills(pluginRoot, provider) {
         : `Load the current First Tree release's canonical source-backed Context writer for ${provider}.`;
     writeFileSync(
       join(skillTarget, "SKILL.md"),
-      `---\nname: ${name}\ndescription: ${description}\n---\n\n# First Tree Context loader\n\n1. Run this command once for the current task:\n\n\`\`\`sh\n__FIRST_TREE_SKILL_INVOCATION__ --json context skill load --protocol 1 --provider ${provider} --name ${name}\n\`\`\`\n\n2. Read the returned \`policyPath\` and \`skillPath\` completely, verify the reported digests are present, then follow that canonical workflow.\n3. Do not cache either path for another task. Missing, invalid, or rejected loader output means First Tree Context is unavailable; do not fall back to a copied or legacy workflow.\n`,
+      `---\nname: ${name}\ndescription: ${description}\n---\n\n# First Tree Context loader\n\n${renderCoreLoaderContract(provider, name)}\n`,
     );
   }
   writeManualActivationSkill(pluginRoot, provider);
@@ -114,19 +118,18 @@ description: Manually activate First Tree Team Context for the current ${provide
 
 # Activate First Tree Context
 
-1. Load the current canonical reader and follow the returned workflow:
+## Load canonical Core
 
-\`\`\`sh
-__FIRST_TREE_SKILL_INVOCATION__ --json context skill load --protocol 1 --provider ${provider} --name first-tree-read
-\`\`\`
+${renderCoreLoaderContract(provider, "first-tree-read")}
 
-2. Preserve the current session's original project identity even if shell cwd has changed:
+## Preserve project identity
+
+Preserve the current session's original project identity even if shell cwd has changed:
 ${
   provider === "claude-code"
     ? '   - Use `--project-root "<host-confirmed-Claude-project-root>"` for an attached Claude Code project, or `--pathless` only when the Claude host confirms the session is pathless. Never derive the root from shell `pwd`/cwd or assume `CLAUDE_PROJECT_DIR` exists in an ordinary shell command.'
     : '   - Use `--pathless` when the current Codex App session is projectless; otherwise use `--project-root "<original-attached-project-root>"`. Do not reclassify from the current shell cwd and do not copy or reproduce the Codex scratch-path heuristic; the CLI remains the only classifier used by setup and Hook activation.'
 }
-3. Do not reuse a previously returned Core path for a new task and do not execute a copied legacy workflow.
 `,
   );
 }

@@ -47,19 +47,27 @@ CLI upgrade needs no Plugin reinstall, Claude reload, or repeated Codex trust.
    no-op with no provider probe, receipt, or additional Context injection.
 5. Install Codex, complete `/hooks` trust in the same conversation, then rerun
    the same apply command. Repeat with an already trusted Hook.
-6. Inspect the complete schema-v3 handoff. Trigger Read and Write separately;
-   each task must run its loader command anew and read the returned exact
-   release `policyPath` and `skillPath`. Change cwd before first Read and prove
-   the immutable provider/project receipt still governs routing.
-7. Upgrade to a CLI release whose Core Skill or Policy bytes differ while
-   adapter bytes and `adapterVersion` are unchanged. In a new task, confirm the
-   loader returns the new exact release paths and digest. Do not reinstall or
-   reload the Plugin; Codex trust must remain trusted.
+6. Inspect the complete schema-v3 handoff. Trigger two Read tasks and then a
+   Write task. Every task must run its loader anew. With unchanged digests,
+   confirm the second Read does not reread either full Core file, and the first
+   Write reads its distinct Skill once while reusing the already-read Policy.
+   Confirm there is no independent hash command or persistent Core cache.
+   Change cwd before first Read and prove the immutable provider/project receipt
+   still governs routing.
+7. Upgrade to CLI releases that change only the Core Skill digest and only the
+   Policy digest while adapter bytes and `adapterVersion` are unchanged. In each
+   new task, confirm the loader returns the new exact release paths and digests
+   and only the changed or unavailable content is reread. Simulate startup,
+   resume, clear, or compact without the previous full text and confirm both
+   items are reread. A matching path, name, release version, or summary must not
+   authorize reuse. Do not reinstall or reload the Plugin; Codex trust remains
+   trusted.
 8. Invoke the legacy full Plugin's retired `context read` against the new CLI.
    Confirm typed `CONTEXT_PLUGIN_RELOAD_REQUIRED` and no Tree read. Tamper a
    Core file, symlink a Core path outside the exact release, and remove an old
    exact release; each must fail closed without a HOME Core cache fallback.
-9. Upgrade only the thin adapter while keeping its loader protocol compatible.
+9. Upgrade only the thin adapter to `adapterVersion` 1.0.1 while keeping loader
+   protocol v1 compatible.
    Confirm SessionStart returns one exact sync action within five seconds and
    does not install. The agent syncs in the normal turn while the old adapter
    continues the current task. Claude reload is optional for immediate adoption;
@@ -88,7 +96,10 @@ CLI upgrade needs no Plugin reinstall, Claude reload, or repeated Codex trust.
   observation state and does not promise future-session activation.
 - The current conversation adopts `activationContext`, loader catalog, scope,
   and immutable provider/project receipt. It never reclassifies from changed
-  cwd or reuses a Core path for another task.
+  cwd. Every task still runs the loader; reuse requires the exact Skill or
+  Policy digest plus full content that remains directly available in the
+  current provider context. It never relies on a path or summary, independently
+  hashes Core files, or persists a Core cache.
 - Human confirmation boundaries remain unchanged under recovery. No recovery
   path chooses scope, changes account, authenticates, grants permission,
   reloads/trusts a provider, resets state, or accepts a changed plan.
@@ -97,12 +108,15 @@ CLI upgrade needs no Plugin reinstall, Claude reload, or repeated Codex trust.
 
 `PASS`: both providers complete in the original conversation; first migration
 uses the required provider lifecycle; later Core-only releases load on the next
-task with stable adapter identity; recovery is bounded, concise, and preserves
+task with stable adapter identity; unchanged Core content is reused only by
+digest while changed or unavailable content is reread; adapter 1.0.1 is adopted
+through the compatible update path; recovery is bounded, concise, and preserves
 every human boundary; all tamper and legacy paths fail closed.
 
 `FAIL`: a legacy workflow reads Tree data, Claude completes before observation,
 a Core-only release repairs/reloads/retrusts the Plugin, loader escapes or uses
-a mutable path/HOME cache, setup leaks internal envelopes by default, or safe
+a mutable path/HOME cache, a task skips the loader, Core reuse relies on a path,
+name, release, or summary, setup leaks internal envelopes by default, or safe
 recovery crosses a human boundary.
 
 `BLOCKED`: disposable real providers, staging identity/Team, exact-version
