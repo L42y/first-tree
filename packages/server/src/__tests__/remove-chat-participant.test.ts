@@ -26,7 +26,7 @@ import {
   sendToAgent,
   setClientConnection,
 } from "../services/connection-manager.js";
-import { assertCronAgentRouteAccess, loadOutstanding, updateCronJob } from "../services/cron-job.js";
+import { assertCronAgentRouteAccess, createCronJob, loadOutstanding, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
 import { setChatEngagement } from "../services/me-chat.js";
@@ -824,7 +824,7 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     }
   });
 
-  it("cron auth membership-first does not deadlock against SCM exclusive placement", async () => {
+  it("cron create membership-first (Class D and no-caller) does not deadlock against SCM exclusive placement", async () => {
     const app = getApp();
     const runtime = await createTestAgent(app, { name: `rm-scm-${crypto.randomUUID().slice(0, 6)}` });
     const chat = await createChat(app.db, runtime.humanAgentUuid, {
@@ -835,64 +835,83 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
 
     const databaseUrl = process.env.DATABASE_URL ?? "";
     if (!databaseUrl) throw new Error("DATABASE_URL is required for cron/SCM lock test");
-    const cronAppName = `rm_scm_cr_${crypto.randomUUID().slice(0, 8)}`;
-    const scmAppName = `rm_scm_sc_${crypto.randomUUID().slice(0, 8)}`;
-    const cronPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, cronAppName));
-    const scmPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, scmAppName));
-    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
-    try {
-      let releaseCron!: () => void;
-      const cronHeld = new Promise<void>((resolve) => {
-        releaseCron = resolve;
-      });
-      let cronReady!: () => void;
-      const cronReadyP = new Promise<void>((resolve) => {
-        cronReady = resolve;
-      });
+    async function contendCreatePath(label: string, withCaller: boolean): Promise<void> {
+      const cronAppName = `rm_scm_${label}_${crypto.randomUUID().slice(0, 6)}`;
+      const scmAppName = `rm_scm_${label}_s_${crypto.randomUUID().slice(0, 6)}`;
+      const cronPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, cronAppName));
+      const scmPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, scmAppName));
+      const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
-      const cronAuthPromise = cronPool.transaction(async (tx) => {
-        await assertCronAgentRouteAccess(tx as never, {
-          chatId,
-          agentId: runtime.agent.uuid,
-          callerMemberId: runtime.memberId,
-          callerHumanAgentId: runtime.humanAgentUuid,
-          afterChatMembershipSharedForTest: async () => {
-            cronReady();
-            await cronHeld;
-          },
+      try {
+        let releaseCron!: () => void;
+        const cronHeld = new Promise<void>((resolve) => {
+          releaseCron = resolve;
         });
-      });
+        let cronReady!: () => void;
+        const cronReadyP = new Promise<void>((resolve) => {
+          cronReady = resolve;
+        });
 
-      await Promise.race([
-        cronReadyP,
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("cron auth shared barrier timeout")), 10_000);
-        }),
-      ]);
+        const cronPromise = withCaller
+          ? cronPool.transaction(async (tx) => {
+              await assertCronAgentRouteAccess(tx as never, {
+                chatId,
+                agentId: runtime.agent.uuid,
+                callerMemberId: runtime.memberId,
+                callerHumanAgentId: runtime.humanAgentUuid,
+                afterChatMembershipSharedForTest: async () => {
+                  cronReady();
+                  await cronHeld;
+                },
+              });
+            })
+          : createCronJob(cronPool, {
+              controlChatId: chatId,
+              agentId: runtime.agent.uuid,
+              body: {
+                name: `rm-scm-${label}-${crypto.randomUUID().slice(0, 6)}`,
+                schedule: "0 3 * * *",
+                timezone: "UTC",
+                prompt: "lock order",
+              },
+              afterChatMembershipSharedForTest: async () => {
+                cronReady();
+                await cronHeld;
+              },
+            });
 
-      const scmPromise = lockAndValidateScmPersonnelPlacement(scmPool, {
-        humanAgentId: runtime.humanAgentUuid,
-        wakeAgentId: runtime.agent.uuid,
-        candidateChatIds: [chatId],
-      });
-      await waitForPostgresLockWait(observer, scmAppName);
-      releaseCron();
+        await Promise.race([
+          cronReadyP,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`${label}: cron shared barrier timeout`)), 10_000);
+          }),
+        ]);
 
-      const results = await Promise.race([
-        Promise.all([cronAuthPromise, scmPromise]),
-        new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("cron auth vs SCM placement deadlock timeout")), 15_000);
-        }),
-      ]);
-      // Authorization path completed under contention; placement may be null when
-      // the chat is not an SCM personnel candidate, which is fine for this lock test.
-      expect(results).toHaveLength(2);
-    } finally {
-      await cronPool.end();
-      await scmPool.end();
-      await observer.end();
+        const scmPromise = lockAndValidateScmPersonnelPlacement(scmPool, {
+          humanAgentId: runtime.humanAgentUuid,
+          wakeAgentId: runtime.agent.uuid,
+          candidateChatIds: [chatId],
+        });
+        await waitForPostgresLockWait(observer, scmAppName);
+        releaseCron();
+
+        const results = await Promise.race([
+          Promise.all([cronPromise, scmPromise]),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new Error(`${label}: cron vs SCM deadlock timeout`)), 15_000);
+          }),
+        ]);
+        expect(results).toHaveLength(2);
+      } finally {
+        await cronPool.end();
+        await scmPool.end();
+        await observer.end();
+      }
     }
+
+    await contendCreatePath("d", true);
+    await contendCreatePath("n", false);
   });
 
   it("keeps agent DELETE 204 contract while sharing the mutation", async () => {

@@ -292,6 +292,8 @@ export async function createCronJob(
     /** Class D: authenticated managing member; revalidated inside the txn. */
     callerMemberId?: string;
     callerHumanAgentId?: string;
+    /** Test-only: after membership shared, before member/agent row locks. */
+    afterChatMembershipSharedForTest?: () => Promise<void>;
   },
 ): Promise<CronJob> {
   const now = await databaseNow(db);
@@ -308,12 +310,10 @@ export async function createCronJob(
   return db.transaction(async (tx) => {
     const txDb = tx as unknown as Database;
 
-    // Class D global order: membership shared → member → agent → speakers →
-    // owner-chat advisory → engagement recheck → cron/insert.
-    // Membership shared must precede any member/agent/cron row lock so SCM
-    // placement (exclusive membership → member → agents) and removal
-    // (exclusive membership → cron) cannot deadlock, and so a concurrent
-    // create cannot insert an active job after removal's pause scan.
+    // Both create paths: membership shared before any agent/member/cron row lock
+    // so SCM placement (exclusive membership → member → agents) cannot deadlock.
+    // Class D: membership shared → member → agent → speakers → barrier → …
+    // No-caller: membership shared → agent → barrier → …
     let ownerMemberId: string;
     if (input.callerMemberId && input.callerHumanAgentId) {
       await assertCronAgentRouteAccess(txDb, {
@@ -321,6 +321,7 @@ export async function createCronJob(
         agentId: input.agentId,
         callerMemberId: input.callerMemberId,
         callerHumanAgentId: input.callerHumanAgentId,
+        afterChatMembershipSharedForTest: input.afterChatMembershipSharedForTest,
       });
       ownerMemberId = input.callerMemberId;
       await lockOwnerChatCronBarrier(txDb, input.controlChatId, ownerMemberId);
@@ -329,12 +330,15 @@ export async function createCronJob(
         callerHumanAgentId: input.callerHumanAgentId,
       });
     } else {
+      await lockChatMembershipShared(txDb, [input.controlChatId]);
+      if (input.afterChatMembershipSharedForTest) {
+        await input.afterChatMembershipSharedForTest();
+      }
       const [agent] = await txDb.select().from(agents).where(eq(agents.uuid, input.agentId)).for("update").limit(1);
       if (!agent || agent.status !== "active") {
         throw new CronJobAppError(403, "CRON_JOB_FORBIDDEN", "Agent is not eligible to create scheduled jobs");
       }
       ownerMemberId = agent.managerId;
-      await lockChatMembershipShared(txDb, [input.controlChatId]);
       await lockOwnerChatCronBarrier(txDb, input.controlChatId, ownerMemberId);
     }
 
