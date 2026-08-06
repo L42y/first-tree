@@ -1,4 +1,5 @@
 import type { Command } from "commander";
+import { AccountStateMutationBusyError } from "../../core/context-integration/account-state-guard.js";
 import { inspectContextAdapterNextSessionObligation } from "../../core/context-integration/adapter-observation.js";
 import {
   AdapterNextSessionRequiredError,
@@ -32,7 +33,8 @@ export function runContextAdapterSync(context: CommandContext): void {
   } catch (error) {
     if (
       error instanceof AdapterNextSessionRequiredError ||
-      (provider === "claude-code" && inspectContextAdapterNextSessionObligation() !== null)
+      (provider === "claude-code" &&
+        (error instanceof AccountStateMutationBusyError || inspectContextAdapterNextSessionObligation() !== null))
     ) {
       print.fail(
         "CONTEXT_PLUGIN_RELOAD_REQUIRED",

@@ -340,14 +340,11 @@ describe("v3 grant operation", () => {
     const providerRoot = join(home, "state", "context", "providers", "claude-code");
     const oldPending = join(providerRoot, "reload-pending", `${"a".repeat(64)}.json`);
     const oldConsumed = join(providerRoot, "reload-consumed", `${"b".repeat(48)}.json`);
-    const oldCompatible = join(providerRoot, "compatible-sessions", `${"c".repeat(64)}.json`);
     const oldNextSession = join(providerRoot, "next-session-required.json");
     mkdirSync(join(oldPending, ".."), { recursive: true });
     mkdirSync(join(oldConsumed, ".."), { recursive: true });
-    mkdirSync(join(oldCompatible, ".."), { recursive: true });
     writeFileSync(oldPending, "old pending\n");
     writeFileSync(oldConsumed, "old consumed\n");
-    writeFileSync(oldCompatible, "old compatible\n");
     writeFileSync(oldNextSession, "old next session\n");
     const claudeDriver = testClaudeDriver();
     const target = {
@@ -377,7 +374,6 @@ describe("v3 grant operation", () => {
           install: () => {
             rmSync(join(providerRoot, "reload-pending"), { recursive: true, force: true });
             rmSync(join(providerRoot, "reload-consumed"), { recursive: true, force: true });
-            rmSync(join(providerRoot, "compatible-sessions"), { recursive: true, force: true });
             writeFileSync(join(providerRoot, "reload-required.json"), "new marker\n");
             writeFileSync(join(providerRoot, "next-session-required.json"), "new next session\n");
             const manifest = {
@@ -398,7 +394,6 @@ describe("v3 grant operation", () => {
 
     expect(readFileSync(oldPending, "utf8")).toBe("old pending\n");
     expect(readFileSync(oldConsumed, "utf8")).toBe("old consumed\n");
-    expect(readFileSync(oldCompatible, "utf8")).toBe("old compatible\n");
     expect(readFileSync(oldNextSession, "utf8")).toBe("old next session\n");
     expect(existsSync(join(providerRoot, "reload-required.json"))).toBe(false);
   });

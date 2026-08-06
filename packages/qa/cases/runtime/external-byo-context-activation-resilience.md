@@ -58,7 +58,13 @@ together.
   challenge and confirm its TTL-bound terminal result remains idempotently
   successful. Then issue an old-adapter action before a separate repair creates
   a next-session obligation; replay and lock-busy fallback must require a new
-  Claude session rather than report `currentAdapterUsable=true`. For Codex,
+  Claude session rather than report `currentAdapterUsable=true`. Hold the
+  account-state lock before the repair has written its obligation and confirm
+  that lock acquisition failure alone remains fail closed. Issue another Claude
+  action after an operation snapshot, force the provider
+  update to roll back, and confirm snapshot restoration does not erase the
+  action's fact or TTL backup; its original challenge must still retry safely.
+  For Codex,
   require `/hooks` trust only when the provider reports a changed Hook identity.
   Both providers must use the updated adapter on the next session.
 - Independently tamper one stable stub, one provider-cache file, and one partial

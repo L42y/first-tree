@@ -18,6 +18,7 @@ import {
   readContextIntegrationInstallManifest,
   writeContextIntegrationInstallManifest,
 } from "../core/context-integration/manifest.js";
+import { repairContextIntegrationOperation } from "../core/context-integration/operation.js";
 import { contextPluginTreeDigest } from "../core/context-integration/payload-integrity.js";
 import type { ContextIntegrationProviderDriver } from "../core/context-integration/provider-driver.js";
 import { resolveContextIntegrationRelease } from "../core/context-integration/release.js";
@@ -267,6 +268,67 @@ describe("lazy Context adapter sync", () => {
         { releaseRoot, driver: driver("claude-code") },
       ),
     ).toBe(false);
+  });
+
+  it("preserves an action issued after the operation snapshot when the provider update rolls back", () => {
+    const fixture = prepareOldCompatibleInstall();
+    const first = issueAdapterSyncAction(
+      { provider: "claude-code", sessionId: "session-a", suppliedAdapterDigest: fixture.previous.adapterDigest },
+      { releaseRoot, driver: driver("claude-code") },
+    );
+    let concurrent: ReturnType<typeof issueAdapterSyncAction> | undefined;
+    const rollbackDriver = driver("claude-code");
+    rollbackDriver.install = () => rollbackDriver.probe("first-tree-dev", "first-tree-context");
+
+    expect(() =>
+      synchronizeContextAdapter(rollbackDriver, first.challenge, {
+        releaseRoot,
+        planInstall: () => fixture.plan,
+        repairOperation: (providerDriver, plan) =>
+          repairContextIntegrationOperation(providerDriver, plan, {
+            install: () => {
+              concurrent = issueAdapterSyncAction(
+                {
+                  provider: "claude-code",
+                  sessionId: "session-after-snapshot",
+                  suppliedAdapterDigest: fixture.previous.adapterDigest,
+                },
+                { releaseRoot, driver: rollbackDriver },
+              );
+              throw new Error("provider update failed after concurrent issuance");
+            },
+          }),
+      }),
+    ).toThrow("provider update failed after concurrent issuance");
+
+    const concurrentAction = concurrent;
+    expect(concurrentAction).toBeDefined();
+    if (!concurrentAction) throw new Error("concurrent action was not issued");
+    expect(readContextIntegrationInstallManifest("claude-code")?.adapterDigest).toBe(fixture.previous.adapterDigest);
+
+    expect(
+      synchronizeContextAdapter(driver("claude-code"), concurrentAction.challenge, {
+        releaseRoot,
+        planInstall: () => fixture.plan,
+        repairOperation: () => {
+          writeContextIntegrationInstallManifest({
+            ...fixture.previous,
+            adapterVersion: fixture.target.adapterVersion,
+            adapterDigest: fixture.target.adapterDigest,
+          });
+        },
+      }),
+    ).toMatchObject({ updated: true, currentSessionAdoption: "next_session" });
+    expect(
+      hasKnownCompatibleContextAdapterSession(
+        {
+          provider: "claude-code",
+          sessionId: "session-after-snapshot",
+          suppliedAdapterDigest: fixture.previous.adapterDigest,
+        },
+        { releaseRoot, driver: driver("claude-code") },
+      ),
+    ).toBe(true);
   });
 
   it("activates the prepared session fact if the process exits after the provider update commits", () => {

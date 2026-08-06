@@ -29,6 +29,7 @@ vi.mock("../commands/context/shared.js", () => ({
 }));
 
 import { runContextAdapterSync } from "../commands/context/adapter-sync.js";
+import { AccountStateMutationBusyError } from "../core/context-integration/account-state-guard.js";
 
 function context(): CommandContext {
   return {
@@ -55,6 +56,23 @@ describe("context adapter-sync command", () => {
     expect(() => runContextAdapterSync(context())).toThrow(
       "This Claude session cannot use the repaired First Tree Context Plugin",
     );
+    expect(mocks.fail).toHaveBeenCalledWith(
+      "CONTEXT_PLUGIN_RELOAD_REQUIRED",
+      expect.stringContaining("Start a new Claude session"),
+      2,
+      { nextActions: [expect.stringContaining("Start a new Claude session")] },
+    );
+    expect(mocks.hasKnownGood).not.toHaveBeenCalled();
+    expect(mocks.result).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when repair holds the account lock before writing its next-session obligation", () => {
+    mocks.synchronize.mockImplementation(() => {
+      throw new AccountStateMutationBusyError();
+    });
+    mocks.inspectNextSession.mockReturnValue(null);
+
+    expect(() => runContextAdapterSync(context())).toThrow("Start a new Claude session");
     expect(mocks.fail).toHaveBeenCalledWith(
       "CONTEXT_PLUGIN_RELOAD_REQUIRED",
       expect.stringContaining("Start a new Claude session"),

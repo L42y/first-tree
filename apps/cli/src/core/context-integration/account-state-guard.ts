@@ -13,6 +13,13 @@ import { contextRepairCommand } from "./repair-guidance.js";
 
 const heldAccountLocks = new Set<string>();
 
+export class AccountStateMutationBusyError extends Error {
+  constructor(options?: ErrorOptions) {
+    super("Another First Tree account or Context state change is already running.", options);
+    this.name = "AccountStateMutationBusyError";
+  }
+}
+
 export function withAccountStateMutationLock<T>(action: () => T, home = defaultHome()): T {
   const release = acquireAccountStateMutationLock(home);
   try {
@@ -107,7 +114,7 @@ function acquireAccountStateMutationLock(home: string): () => void {
   try {
     descriptor = openSync(path, "wx", 0o600);
   } catch (error) {
-    throw new Error("Another First Tree account or Context state change is already running.", { cause: error });
+    throw new AccountStateMutationBusyError({ cause: error });
   }
   heldAccountLocks.add(path);
   writeFileSync(descriptor, `${process.pid}\n`, "utf8");

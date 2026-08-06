@@ -525,7 +525,9 @@ function validateProviderRecoveryState(
 
 const OBSERVATION_STATE_ENTRIES = [
   "adapter-sync",
-  "compatible-sessions",
+  // compatible-sessions contains exact-target-gated facts and action backups
+  // issued independently of this provider operation. Restoring an earlier
+  // operation snapshot must not erase actions issued while the operation ran.
   "reload-pending",
   "reload-consumed",
   "reload-required.json",
