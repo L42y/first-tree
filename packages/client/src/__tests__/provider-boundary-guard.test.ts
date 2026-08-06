@@ -327,6 +327,40 @@ describe("runtime provider architecture guard", () => {
     expect(agentRuntime).not.toMatch(/\bHANDLER_REGISTRY\b/);
   });
 
+  it("keeps SessionManager/SessionRegistry off public barrels and out of CLI production", () => {
+    const rootIndex = readFileSync(join(clientSrc, "index.ts"), "utf8");
+    const runtimeIndex = readFileSync(join(clientSrc, "runtime/index.ts"), "utf8");
+    for (const [label, source] of [
+      ["packages/client/src/index.ts", rootIndex],
+      ["packages/client/src/runtime/index.ts", runtimeIndex],
+    ] as const) {
+      expect(source, `${label} must not re-export SessionManager`).not.toMatch(/export\s*\{[^}]*\bSessionManager\b/);
+      expect(source, `${label} must not re-export SessionRegistry`).not.toMatch(/export\s*\{[^}]*\bSessionRegistry\b/);
+      expect(source, `${label} must expose cleanAgentWorkspaces`).toContain("cleanAgentWorkspaces");
+    }
+
+    const cliProduction = listFilesRecursive(join(repoRoot, "apps/cli/src"), (p) => {
+      return p.endsWith(".ts") && !p.includes("__tests__") && !p.includes("/__mocks__/");
+    });
+    for (const file of cliProduction) {
+      const source = readFileSync(file, "utf8");
+      const rel = relative(repoRoot, file).replaceAll("\\", "/");
+      expect(source, `${rel} must not import SessionRegistry`).not.toMatch(/\bSessionRegistry\b/);
+      expect(source, `${rel} must not import SessionManager`).not.toMatch(/\bSessionManager\b/);
+      expect(source, `${rel} must not call low-level cleanWorkspaces`).not.toMatch(/\bcleanWorkspaces\b/);
+      expect(source, `${rel} must not deep-import client`).not.toMatch(/from ["']@first-tree\/client\//);
+    }
+
+    const cleanCommand = readFileSync(join(repoRoot, "apps/cli/src/commands/agent/workspace/clean.ts"), "utf8");
+    expect(cleanCommand).toContain("cleanAgentWorkspaces");
+    expect(cleanCommand).not.toMatch(/\bfrom ["']node:fs["']/);
+    expect(cleanCommand).not.toMatch(/\bfrom ["']node:path["']/);
+    expect(cleanCommand).not.toContain("defaultDataDir");
+
+    const cliRuntime = readFileSync(join(repoRoot, "apps/cli/src/core/client-runtime.ts"), "utf8");
+    expect(cliRuntime).toMatch(/resolveHandlerFactory[\s\S]*Object\.hasOwn/);
+  });
+
   it("keeps the runtime-auth driver projection in one frozen, schema-exhaustive composition root", () => {
     const drivers = readFileSync(join(clientSrc, "providers/auth-drivers.ts"), "utf8");
     expect(drivers).toContain("Object.freeze");

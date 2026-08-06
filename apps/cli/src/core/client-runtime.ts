@@ -349,6 +349,13 @@ export class ClientRuntime {
   }
 
   private resolveHandlerFactory(type: string): HandlerFactory {
+    // Own-key guard lives in the resolver itself so future callers cannot
+    // index Object.prototype (`toString` / `constructor` / `__proto__`) and
+    // treat inherited values as factories.
+    if (!Object.hasOwn(this.handlerFactories, type)) {
+      const available = Object.keys(this.handlerFactories).join(", ") || "(none)";
+      throw new Error(`Unknown handler type "${type}". Available: ${available}`);
+    }
     const factory = (this.handlerFactories as Readonly<Record<string, HandlerFactory>>)[type];
     if (!factory) {
       const available = Object.keys(this.handlerFactories).join(", ") || "(none)";
