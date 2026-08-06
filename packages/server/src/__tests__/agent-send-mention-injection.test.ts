@@ -544,7 +544,21 @@ describe("mention enforcement + content normalisation", () => {
         participantIds: [peerA.agent.uuid, peerB.agent.uuid],
       });
       expect(chatRes.statusCode).toBe(201);
-      return { sender, peerA, peerB, chatId: chatRes.json().id as string };
+      const chatId = chatRes.json().id as string;
+
+      // The chat is created by the non-human agent, so its manager's human
+      // agent starts as a watcher. The web message route is speaker-gated,
+      // so the human joins through the same route the console's "Join to
+      // reply" button calls before posting — matching the real composer
+      // precondition instead of relying on an implicit auto-join.
+      const joinRes = await app.inject({
+        method: "POST",
+        url: `/api/v1/chats/${encodeURIComponent(chatId)}/workspace-join`,
+        headers: { authorization: `Bearer ${sender.accessToken}` },
+      });
+      expect(joinRes.statusCode).toBe(204);
+
+      return { sender, peerA, peerB, chatId };
     }
 
     it("rejects bypass attempts (no mentions declared) with 400", async () => {

@@ -233,10 +233,12 @@ describe("backfill invariant — service entrypoints (regression: PR #393 follow
     expect(await countSilentEntries(app.db, newcomer.agent.inboxId, chat.id)).toBe(6);
   });
 
-  it("ensureParticipant (HTTP send fallback) backfills the joiner on first call", async () => {
+  it("ensureParticipant backfills the joiner on first call", async () => {
     // ensureParticipant promotes a missing/watcher row to speaker on the
     // first call — that crossing must backfill. Subsequent calls
     // short-circuit (already a speaker) and must not re-backfill.
+    // (No longer reachable from the HTTP send path, which is speaker-gated;
+    // this pins the membership-write seam itself.)
     const app = getApp();
     const owner = await createTestAgent(app, { type: "human" });
     const peer = await createTestAgent(app, { type: "agent" });

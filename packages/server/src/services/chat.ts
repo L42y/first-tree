@@ -1103,12 +1103,20 @@ export async function isParticipant(db: Database, chatId: string, agentId: strin
  * NO authorisation. It is a Layer-1.5 wrapper for `applyMembershipWrite`
  * whose only job is the short-circuit "already a speaker → return without
  * opening a tx". Use it only when the caller has already verified that the
- * given agent has a legitimate reason to be in the chat. The legitimate
- * caller today is:
+ * given agent has a legitimate reason to be in the chat.
  *
- *   1. `api/chats.ts` HTTP message routes — the `scope` middleware has
- *      already gated the request through `requireChatAccess` before reaching
- *      the handler that calls this.
+ * **This is a membership WRITE, never an access check.** It previously ran
+ * on the `api/chats.ts` human write routes on the reasoning that
+ * `requireChatAccess` had "already gated" the request. That reasoning was
+ * wrong: `requireChatAccess` deliberately admits watchers (and supervisors
+ * with no membership row at all), so calling this from a request path
+ * silently promoted any watcher who typed into a speaker — bypassing
+ * `ensureCanJoin`, the guard the dedicated join route applies to exactly
+ * that transition. Request paths gate with `assertParticipant`; watchers
+ * become speakers only through `joinAsParticipant`.
+ *
+ * It has no production caller today. Do NOT reintroduce one from a request
+ * handler.
  *
  * Do NOT call this from new code paths to "lightly join" an agent — for
  * speaker-invokes-invite use `inviteParticipantsToChat`; for manager

@@ -141,10 +141,12 @@ describe("chat upgrade — direct to group", () => {
     expect((await loadParticipant(chat.id, a4.uuid))?.mode).toBe("mention_only");
   });
 
-  it("upgrades when a third participant joins via ensureParticipant (web-UI auto-join path)", async () => {
-    // The First Tree web console's "send a message in this chat" handler funnels
-    // through ensureParticipant to auto-add the sender. This path bypassed
-    // the upgrade logic initially, leaving b1+tester in `full` mode when a
+  it("upgrades when a third participant is admitted via ensureParticipant", async () => {
+    // `ensureParticipant` is the idempotent membership-write seam. It once
+    // also ran on the web console's send handler as an implicit auto-join;
+    // that call is gone (the send route is speaker-gated now), but the
+    // write itself still has to run the direct→group upgrade. This pins
+    // that invariant: skipping it left b1+tester in `full` mode when a
     // human entered an existing direct chat — the exact shape that kept
     // producing emoji echo loops in local testing.
     const app = getApp();

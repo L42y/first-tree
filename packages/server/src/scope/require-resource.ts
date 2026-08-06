@@ -171,8 +171,10 @@ type ChatRow = {
  * surface in `listMeChats` with their own unread badge and engagement
  * state; chat-scoped per-user operations like read-cursor and
  * watcher→speaker upgrade must be reachable from that surface. Write
- * endpoints that need to refuse watchers rely on `ensureParticipant`
- * or service-layer checks, not on this guard.
+ * endpoints that need to refuse watchers do so with `assertParticipant`
+ * (or an equivalent service-layer check), not with this guard and not by
+ * calling a membership writer such as `ensureParticipant` — the latter
+ * admits the caller instead of refusing them.
  *
  * The supervisor branch is a fallback for callers whose human agent
  * has no direct row but who manage a speaker — e.g. before

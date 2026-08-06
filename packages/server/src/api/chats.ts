@@ -26,7 +26,7 @@ import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
-import { ensureParticipant, leaveChat, updateChatMetadata } from "../services/chat.js";
+import { assertParticipant, leaveChat, updateChatMetadata } from "../services/chat.js";
 import { declareEntityFollow, listChatGithubEntities, removeEntityFollow } from "../services/github-entity-follow.js";
 import {
   declareGitlabEntityFollowWithStatus,
@@ -541,7 +541,11 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const { scope } = await requireChatAccess(request, app.db);
       const body = askAgentQuestionSchema.parse(request.body);
-      await ensureParticipant(app.db, request.params.chatId, scope.humanAgentId);
+      // Speaker-gated, NOT a membership write: `requireChatAccess` admits
+      // watchers, and clarifying an open request is a chat write. Watchers
+      // join through `POST /:chatId/workspace-join` (the web console's
+      // "Join to reply"), which is where `ensureCanJoin` applies.
+      await assertParticipant(app.db, request.params.chatId, scope.humanAgentId);
 
       const [parent] = await app.db
         .select({ senderId: messages.senderId })
@@ -614,7 +618,15 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     const body = sendMessageSchema.parse(request.body);
     assertLandingCampaignTrialChatAcceptsHumanMessage(chat.metadata, body);
 
-    await ensureParticipant(app.db, request.params.chatId, scope.humanAgentId);
+    // Speaker-gated, NOT a membership write. `requireChatAccess` deliberately
+    // admits watchers (they need read-cursor / join reachability), so the
+    // write side has to refuse them here. This used to call
+    // `ensureParticipant`, which upserts the caller to `access_mode='speaker'`
+    // — that silently promoted any watcher who typed, bypassing
+    // `ensureCanJoin` on the dedicated join route. The web console already
+    // renders a read-only banner plus "Join to reply" for watchers instead of
+    // a composer; this keeps the server honest to that same contract.
+    await assertParticipant(app.db, request.params.chatId, scope.humanAgentId);
 
     // Explicit-recipient enforcement is the default in `sendMessage()`; this
     // route carries no business flag. The web composer resolves `@<name>` chips
