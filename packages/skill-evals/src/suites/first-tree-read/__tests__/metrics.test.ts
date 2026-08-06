@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { gradingFailureMessages } from "../../../core/grading.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
 import { buildGrading } from "../summary.js";
-import type { EvalMetrics, FixtureValidation } from "../types.js";
+import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation } from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const SELECTOR_ARGV = ["tree", "tree", "/domains/payments"];
@@ -55,11 +55,12 @@ function assistantTextEvent(text: string): unknown {
   };
 }
 
-function firstTreeCall(argv: readonly string[]): unknown {
+function firstTreeCall(argv: readonly string[], extra: Record<string, unknown> = {}): unknown {
   return {
     argv: [...argv],
     phase: "model",
     type: "first_tree_call",
+    ...extra,
   };
 }
 
@@ -75,6 +76,10 @@ function firstTreeResult(argv: readonly string[], exitCode: number, extra: Recor
 
 function metrics(events: readonly unknown[]): EvalMetrics {
   return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT]);
+}
+
+function impactMetrics(events: readonly unknown[], expectation: ImpactNoteExpectation): EvalMetrics {
+  return deriveMetrics(events, VALID_FIXTURE, 0, [EXPECTED_FACT], expectation);
 }
 
 describe("first-tree-read metrics pass criteria", () => {
@@ -331,5 +336,180 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(nonZeroResult.skillHit).toBe(true);
     expect(nonZeroResult.modelFirstTreeCommandsOk).toBe(false);
     expect(casePassed(false, nonZeroResult)).toBe(false);
+  });
+
+  it("accepts one exact-version English impact note in a managed chat body", () => {
+    const body = `JWT routes must enforce the tree constraints.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const result = impactMetrics([firstTreeCall(["chat", "send", "gandy2025", "-F", "reply.md"], { body })], {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceCount: { max: 1, min: 1 },
+    });
+
+    expect(result.impactNoteBehaviorOk).toBe(true);
+    expect(result.impactNoteCount).toBe(1);
+    expect(result.impactNoteBlankLineBefore).toBe(true);
+    expect(result.impactNoteLogicalLinesOk).toBe(true);
+    expect(result.impactNoteExactLinksOk).toBe(true);
+    expect(result.impactNoteSummaryObjectiveOk).toBe(true);
+    expect(result.impactNoteSourceLabels).toEqual(["Organization isolation"]);
+    expect(result.impactNoteMetadataFree).toBe(true);
+  });
+
+  it("makes material trigger cases fail until the final visible note satisfies the behavior contract", () => {
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceCount: { max: 1, min: 1 },
+    };
+    const baseEvents = [
+      skillReadEvent(),
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      firstTreeCall(SELECTOR_ARGV),
+      firstTreeResult(SELECTOR_ARGV, 0),
+      assistantTextEvent(`The tree says ${EXPECTED_FACT}.`),
+    ];
+    const note = `Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> The payment rule narrowed the implementation boundary.\\
+> **Source** · [Payments](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/domains/payments/NODE.md)`;
+    const withoutNote = impactMetrics(baseEvents, expectation);
+    const withNote = impactMetrics([...baseEvents, assistantTextEvent(note)], expectation);
+
+    expect(withoutNote.impactNoteBehaviorOk).toBe(false);
+    expect(casePassed(true, withoutNote)).toBe(false);
+    expect(withNote.impactNoteBehaviorOk).toBe(true);
+    expect(casePassed(true, withNote)).toBe(true);
+  });
+
+  it("rejects duplicate notes, mutable links, and visible receipt metadata", () => {
+    const note = `> **Context Tree impact · Options narrowed**\\
+> The rule ruled out a shared index.\\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/main/systems/server/auth/scopes/NODE.md)`;
+    const result = impactMetrics(
+      [assistantTextEvent(`Answer.\n\n${note}\n\n${note}\n\n{ "contextDecision": { "effect": "constrained" } }`)],
+      {
+        effect: "constrained",
+        language: "en",
+        mode: "present",
+        sourceCount: { max: 1, min: 1 },
+      },
+    );
+
+    expect(result.impactNoteCount).toBe(2);
+    expect(result.impactNoteExactLinksOk).toBe(false);
+    expect(result.impactNoteMetadataFree).toBe(false);
+    expect(result.impactNoteBehaviorOk).toBe(false);
+  });
+
+  it("rejects credential-bearing source links and first-person impact summaries", () => {
+    const result = impactMetrics(
+      [
+        assistantTextEvent(`Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> I used Context Tree to rule out a shared index.\\
+> **Source** · [Organization isolation](https://x-access-token:secret@github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`),
+      ],
+      {
+        effect: "constrained",
+        language: "en",
+        mode: "present",
+        sourceCount: { max: 1, min: 1 },
+      },
+    );
+
+    expect(result.impactNoteExactLinksOk).toBe(false);
+    expect(result.impactNoteSummaryObjectiveOk).toBe(false);
+    expect(result.impactNoteBehaviorOk).toBe(false);
+  });
+
+  it("accepts the complete Chinese conflict template only when the tradeoff remains unresolved", () => {
+    const expectation: ImpactNoteExpectation = {
+      effect: "conflicted",
+      language: "zh",
+      mode: "present",
+      requiredSourceLabels: ["Rollout Policy"],
+      sourceCount: { max: 1, min: 1 },
+      summaryConcepts: [["发布日期"], ["安全审计"], ["仍待", "尚未"]],
+      summaryForbidden: ["已调整", "已解决"],
+    };
+    const valid = impactMetrics(
+      [
+        assistantTextEvent(`不能直接发布。
+
+> **Context Tree 影响 · 发现冲突**\\
+> 固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\\
+> **来源** · [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+      ],
+      expectation,
+    );
+    const fabricatedResolution = impactMetrics(
+      [
+        assistantTextEvent(`方案如下。
+
+> **Context Tree 影响 · 发现冲突**\\
+> 发布日期与安全审计发生冲突，方案已调整并已解决。\\
+> **来源** · [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+      ],
+      expectation,
+    );
+
+    expect(valid.impactNoteBehaviorOk).toBe(true);
+    expect(valid.impactNoteLanguage).toBe("zh");
+    expect(valid.impactNoteSummaryConceptsOk).toBe(true);
+    expect(valid.impactNoteSummaryForbiddenOk).toBe(true);
+    expect(fabricatedResolution.impactNoteSummaryForbiddenOk).toBe(false);
+    expect(fabricatedResolution.impactNoteBehaviorOk).toBe(false);
+  });
+
+  it("requires readable root and disambiguated duplicate labels in a three-source note", () => {
+    const result = impactMetrics(
+      [
+        assistantTextEvent(`The rollout is bounded by all three decisions.
+
+> **Context Tree impact · Options narrowed**\\
+> The rollout rules require one reviewable scope, audit approval, and core-release stability.\\
+> **Sources** · [First Tree Read Eval Context](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/NODE.md) · [Release · Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md) · [Billing · Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/billing/rollout-policy/NODE.md)`),
+      ],
+      {
+        effect: "constrained",
+        language: "en",
+        mode: "present",
+        requiredSourceLabels: ["First Tree Read Eval Context", "Release · Rollout Policy", "Billing · Rollout Policy"],
+        sourceCount: { max: 3, min: 3 },
+      },
+    );
+
+    expect(result.impactNoteBehaviorOk).toBe(true);
+    expect(result.impactNoteSourceCount).toBe(3);
+    expect(result.impactNoteSourceLabels).not.toContain("Node");
+  });
+
+  it("keeps navigation-only reads free of impact notes", () => {
+    const absent: ImpactNoteExpectation = { mode: "absent" };
+    const withoutNote = impactMetrics([assistantTextEvent("systems, domains, operations")], absent);
+    const withNote = impactMetrics(
+      [
+        assistantTextEvent(`systems, domains, operations
+
+> **Context Tree impact · Direction supported**\\
+> The root confirmed the domain names.\\
+> **Source** · [First Tree Read Eval Context](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/NODE.md)`),
+      ],
+      absent,
+    );
+
+    expect(withoutNote.impactNoteBehaviorOk).toBe(true);
+    expect(withNote.impactNoteCount).toBe(1);
+    expect(withNote.impactNoteBehaviorOk).toBe(false);
   });
 });

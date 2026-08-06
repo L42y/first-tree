@@ -59,6 +59,7 @@ const REVIEW_FIXTURE_PATH = ${JSON.stringify(options.reviewFixturePath ?? null)}
 const REVIEW_VERIFY_RUNNER_PATH = ${JSON.stringify(options.reviewVerifyRunnerPath ?? null)};
 const SEED_PREFLIGHT = ${JSON.stringify(options.seedPreflight ?? null)};
 const BYO_READ_ORIGIN_PATH = ${JSON.stringify(join(paths.runRoot, "context-tree-origin.git"))};
+const BYO_READ_BINDING_REPOSITORY = "https://github.com/example/context-tree.git";
 const CONTEXT_REVIEW_BODY_MAX_BYTES = ${JSON.stringify(CONTEXT_REVIEW_BODY_MAX_BYTES)};
 const CONTEXT_REVIEW_RUN_MARKER_PREFIX = ${JSON.stringify(CONTEXT_REVIEW_RUN_MARKER_PREFIX)};
 
@@ -229,7 +230,7 @@ function runTreeRead(argv, phase) {
   const metadataCommands = [
     ["config", "first-tree-read.snapshot", "true"],
     ["config", "first-tree-read.team-id", teamId],
-    ["config", "first-tree-read.binding-repo", "https://git.example.invalid/teams/team-byo-read-eval/context-tree.git"],
+    ["config", "first-tree-read.binding-repo", BYO_READ_BINDING_REPOSITORY],
     ["config", "first-tree-read.binding-branch", "main"],
     ["config", "first-tree-read.commit", exactCommit],
     ["update-ref", "refs/first-tree-read/snapshot", exactCommit],
@@ -247,7 +248,7 @@ function runTreeRead(argv, phase) {
     }
   }
 
-  const bindingRepository = "https://git.example.invalid/teams/team-byo-read-eval/context-tree.git";
+  const bindingRepository = BYO_READ_BINDING_REPOSITORY;
   const stdout =
     JSON.stringify({
       ok: true,

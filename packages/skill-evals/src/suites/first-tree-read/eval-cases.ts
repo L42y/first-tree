@@ -26,6 +26,7 @@ export const FIRST_TREE_READ_EVAL_CASES: readonly SkillEvalCase[] = [
       expected: {
         expectedFacts: evalCase.expectedFacts,
         expectedTrigger: evalCase.expectedTrigger,
+        impactNote: evalCase.impactNote,
         readMode: evalCase.readMode,
       },
       fixture: {
@@ -46,6 +47,7 @@ export const FIRST_TREE_READ_EVAL_CASES: readonly SkillEvalCase[] = [
       expected: {
         expectedFacts: evalCase.expectedFacts,
         expectedTrigger: evalCase.expectedTrigger,
+        impactNote: evalCase.impactNote,
         runtimeBoundary: "generated briefing fixture only; not live First Tree Cloud E2E",
       },
       fixture: {

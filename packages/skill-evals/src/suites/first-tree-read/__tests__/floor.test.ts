@@ -16,6 +16,10 @@ describe("first-tree-read floor contract", () => {
   it("keeps the declared gate matrix complete", () => {
     expect(validateFloor(FIRST_TREE_READ_SUITE.cases)).toEqual([]);
     expect(FIRST_TREE_READ_CASES.map((evalCase) => evalCase.id)).toContain("byo-scope-route-trigger");
+    expect(FIRST_TREE_READ_CASES.map((evalCase) => evalCase.id)).toEqual(
+      expect.arrayContaining(["tree-navigation-no-impact", "tree-conflict-chinese", "tree-readable-multi-source-note"]),
+    );
+    expect(FIRST_TREE_READ_CASES.every((evalCase) => evalCase.impactNote.mode !== undefined)).toBe(true);
   });
 
   it("states the fail-closed, SCOPE-routed exact-snapshot BYO boundary", () => {
@@ -60,13 +64,22 @@ describe("first-tree-read floor contract", () => {
       /`conflicted` → `Conflict surfaced`[\s\S]+`redirected` → `Approach changed`[\s\S]+`constrained` → `Options narrowed`[\s\S]+`confirmed` → `Direction supported`/,
     );
     expect(skill).toContain("Match the note's language to the surrounding final response");
-    expect(skill).toContain("one Markdown blockquote with exactly three visible lines");
-    expect(skill).toContain(
-      "a backslash so Markdown renders a portable\nhard line break without trailing whitespace; do not use HTML",
+    expect(skill).toContain("one Markdown blockquote with exactly three **logical Markdown lines**");
+    expect(skill).toContain("Natural wrapping at narrow display widths\nis expected; never truncate");
+    expect(skill).toContain("Leave one blank line between the preceding answer and the note");
+    expect(skill).toMatch(
+      /a backslash so\s+Markdown renders a portable hard line break without trailing whitespace; do\s+not use HTML/,
     );
-    expect(skill).toContain("Use objective\nlanguage");
-    expect(skill).toContain("roughly 160 English characters or 80 CJK characters");
-    expect(skill).toContain("Use bold `Source` for one and bold\n`Sources` for more than one");
+    expect(skill).toMatch(/Use objective language/);
+    expect(skill).toMatch(/roughly 160 English characters or\s+80 CJK characters/);
+    expect(skill).toContain("Use `Context Tree impact` and `Source` / `Sources` in English");
+    expect(skill).toContain("Use\n`Context Tree 影响` and `来源` in Chinese");
+    expect(skill).toMatch(
+      /`conflicted` \| `Conflict surfaced` \| `发现冲突`[\s\S]+`redirected` \| `Approach changed` \| `方案已调整`[\s\S]+`constrained` \| `Options narrowed` \| `选项已收窄`[\s\S]+`confirmed` \| `Direction supported` \| `当前方向得到支持`/,
+    );
+    expect(skill).toContain("For `conflicted`, name the two incompatible constraints and the\nunresolved tradeoff");
+    expect(skill).toContain("do not imply that the plan changed or the conflict was\nresolved");
+    expect(skill).toContain("In Chinese, use bold `来源` for either\ncount");
     expect(skill).toContain("For a root `NODE.md`, use the root title or the relevant heading — never display\n`Node`");
     expect(skill).toContain("When two cited labels would be identical, prefix the nearest meaningful\nparent title");
     expect(skill).toContain("Never link to a mutable branch");
@@ -74,6 +87,10 @@ describe("first-tree-read floor contract", () => {
       "never invent\na link or expose a raw repository URL, node path, or commit in the visible note",
     );
     expect(skill).toContain("Cite at most three normal node paths");
+    expect(skill).toContain(
+      "credential-free binding repository exactly as the activation receipt or\nmanaged workspace briefing declares it; never substitute a local transport URL",
+    );
+    expect(skill).toContain("Never place a credential-bearing remote URL, query, or fragment in the visible\nresponse");
     expect(skill).toContain("read the binding repository and binding branch declared by the workspace\n   briefing");
     expect(skill).toContain("never infer the binding branch from the checkout's current branch\n   or its upstream");
     expect(skill).not.toContain("resolve the current branch's upstream remote-tracking ref");
@@ -107,6 +124,12 @@ describe("first-tree-read floor contract", () => {
     );
     expect(noteLines[2]).toContain("/system/cloud/team/tenancy-and-identity.md)");
     expect(noteLines[2]?.match(/\/blob\/([0-9a-f]+)\//u)?.[1]).toMatch(/^[0-9a-f]{40}$/);
+
+    const markdownBlocks = [...skill.matchAll(/```markdown\n([\s\S]*?)\n```/gu)].map((match) => match[1] ?? "");
+    const conflictBlock = markdownBlocks.find((block) => block.includes("Context Tree 影响 · 发现冲突")) ?? "";
+    expect(conflictBlock.split("\n")).toHaveLength(3);
+    expect(conflictBlock).toContain("固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定");
+    expect(conflictBlock).toContain("**来源** · [发布安全门槛]");
   });
 
   it("keeps version metadata aligned", () => {

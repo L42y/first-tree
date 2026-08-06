@@ -1,5 +1,12 @@
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
-import type { EvalMetrics, FixtureValidation, ReadMode } from "./types.js";
+import type {
+  EvalMetrics,
+  FixtureValidation,
+  ImpactNoteEffect,
+  ImpactNoteExpectation,
+  ImpactNoteLanguage,
+  ReadMode,
+} from "./types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const READ_HELP_ARGV = ["tree", "read", "--help"];
@@ -32,7 +39,182 @@ const FACT_MATCHERS: readonly FactMatcher[] = [
     ],
     fact: "HTTP routes must follow the repo path conventions document before auth or multi-org changes.",
   },
+  {
+    all: [/(top-level|顶层)/iu, /(systems?|系统)/iu, /(domains?|领域)/iu, /(operations?|运维|操作)/iu],
+    fact: "Top-level Context Tree domains are systems, domains, and operations.",
+  },
+  {
+    all: [
+      /(production release|生产发布|正式发布)/iu,
+      /(security[- ]audit|安全审计)/iu,
+      /(before deployment|发布前|部署前)/iu,
+    ],
+    fact: "Production releases require completed security-audit approval before deployment.",
+  },
+  {
+    all: [
+      /(production rollout|生产发布|正式发布)/iu,
+      /(single reviewable scope|统一[^。\n]*审查范围|单一[^。\n]*范围)/iu,
+    ],
+    fact: "Every production rollout must keep a single reviewable scope across release and billing policy.",
+  },
+  {
+    all: [/(billing changes?|计费变更)/iu, /(core release|核心版本|核心发布)/iu, /(stable monitoring|稳定监控)/iu],
+    fact: "Billing changes must roll out after the core release reaches stable monitoring.",
+  },
 ];
+
+const EFFECT_LABELS: Record<ImpactNoteLanguage, Record<ImpactNoteEffect, string>> = {
+  en: {
+    conflicted: "Conflict surfaced",
+    confirmed: "Direction supported",
+    constrained: "Options narrowed",
+    redirected: "Approach changed",
+  },
+  zh: {
+    conflicted: "发现冲突",
+    confirmed: "当前方向得到支持",
+    constrained: "选项已收窄",
+    redirected: "方案已调整",
+  },
+};
+
+type ImpactNoteObservation = {
+  blankLineBefore: boolean;
+  effectLabel: string;
+  exactLinksOk: boolean;
+  language: ImpactNoteLanguage;
+  logicalLinesOk: boolean;
+  sourceLabels: readonly string[];
+  sourceScaffoldingOk: boolean;
+  summary: string;
+  summaryObjectiveOk: boolean;
+};
+
+function isExactCredentialFreeSourceLink(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.username === "" &&
+      url.password === "" &&
+      url.search === "" &&
+      url.hash === "" &&
+      /\/(?:-\/)?blob\/(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\/[^/].*$/u.test(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservation[] {
+  const observations: ImpactNoteObservation[] = [];
+
+  for (const text of texts) {
+    const lines = text.replace(/\r/gu, "").split("\n");
+    for (let index = 0; index < lines.length; index += 1) {
+      const firstLine = lines[index] ?? "";
+      const titleMatch = /^> \*\*(Context Tree impact|Context Tree 影响) · ([^*]+)\*\*\\$/u.exec(firstLine);
+      if (!titleMatch) continue;
+
+      const language: ImpactNoteLanguage = titleMatch[1] === "Context Tree 影响" ? "zh" : "en";
+      const secondLine = lines[index + 1] ?? "";
+      const thirdLine = lines[index + 2] ?? "";
+      const summaryMatch = /^> (.+)\\$/u.exec(secondLine);
+      const sourcePrefix = language === "zh" ? /^> \*\*来源\*\* · /u : /^> \*\*(Source|Sources)\*\* · /u;
+      const sourcePrefixMatch = sourcePrefix.exec(thirdLine);
+      const markdownLinks = [...thirdLine.matchAll(/\[([^\]\n]+)\]\(([^)\s]+)\)/gu)];
+      const exactLinks = markdownLinks.filter((match) => isExactCredentialFreeSourceLink(match[2] ?? ""));
+      const expectedEnglishSource = markdownLinks.length === 1 ? "Source" : "Sources";
+      const sourceLabel = language === "zh" ? "来源" : expectedEnglishSource;
+      const expectedSourceLine = `> **${sourceLabel}** · ${markdownLinks.map((match) => match[0]).join(" · ")}`;
+      const sourceScaffoldingOk =
+        sourcePrefixMatch !== null &&
+        (language === "zh" || sourcePrefixMatch[1] === expectedEnglishSource) &&
+        markdownLinks.length > 0 &&
+        thirdLine === expectedSourceLine;
+      const summary = summaryMatch?.[1]?.trim() ?? "";
+
+      observations.push({
+        blankLineBefore: index > 0 && (lines[index - 1] ?? "").trim() === "",
+        effectLabel: titleMatch[2]?.trim() ?? "",
+        exactLinksOk: exactLinks.length === markdownLinks.length && exactLinks.length > 0,
+        language,
+        logicalLinesOk:
+          summaryMatch !== null && sourcePrefixMatch !== null && !(lines[index + 3] ?? "").startsWith(">"),
+        sourceLabels: markdownLinks.map((match) => match[1] ?? ""),
+        sourceScaffoldingOk,
+        summary,
+        summaryObjectiveOk: !/(^|\s)(I|We)\s+(used?|read|consulted)|我(使用|读取|参考)了?\s*Context Tree/iu.test(
+          summary,
+        ),
+      });
+    }
+  }
+
+  return observations;
+}
+
+function includesAny(value: string, alternatives: readonly string[]): boolean {
+  const normalized = value.toLocaleLowerCase();
+  return alternatives.some((alternative) => normalized.includes(alternative.toLocaleLowerCase()));
+}
+
+function deriveImpactNoteMetrics(texts: readonly string[], expectation: ImpactNoteExpectation) {
+  const observations = parseImpactNotes(texts);
+  const observation = observations[0] ?? null;
+  const allText = texts.join("\n");
+  const metadataFree = !/contextDecision|["']effect["']\s*:|["']evidence["']\s*:/u.test(allText);
+  const summaryConceptsOk =
+    expectation.mode === "absent" ||
+    (expectation.summaryConcepts?.every((alternatives) => includesAny(observation?.summary ?? "", alternatives)) ??
+      true);
+  const summaryForbiddenOk =
+    expectation.mode === "absent" ||
+    !(expectation.summaryForbidden?.some((value) => includesAny(observation?.summary ?? "", [value])) ?? false);
+  const requiredSourceLabelsOk =
+    expectation.mode === "absent" ||
+    (expectation.requiredSourceLabels?.every((label) => observation?.sourceLabels.includes(label)) ?? true);
+  const sourceCountOk =
+    expectation.mode === "absent" ||
+    ((observation?.sourceLabels.length ?? 0) >= expectation.sourceCount.min &&
+      (observation?.sourceLabels.length ?? 0) <= expectation.sourceCount.max);
+  const expectedEffectLabel =
+    expectation.mode === "present" ? EFFECT_LABELS[expectation.language][expectation.effect] : null;
+  const behaviorOk =
+    expectation.mode === "absent"
+      ? observations.length === 0 && metadataFree
+      : observations.length === 1 &&
+        observation !== null &&
+        observation.blankLineBefore &&
+        observation.logicalLinesOk &&
+        observation.sourceScaffoldingOk &&
+        observation.summaryObjectiveOk &&
+        observation.exactLinksOk &&
+        observation.language === expectation.language &&
+        observation.effectLabel === expectedEffectLabel &&
+        sourceCountOk &&
+        requiredSourceLabelsOk &&
+        summaryConceptsOk &&
+        summaryForbiddenOk &&
+        metadataFree;
+
+  return {
+    impactNoteBehaviorOk: behaviorOk,
+    impactNoteBlankLineBefore: observation?.blankLineBefore ?? false,
+    impactNoteCount: observations.length,
+    impactNoteEffect: observation?.effectLabel ?? null,
+    impactNoteExactLinksOk: observation?.exactLinksOk ?? false,
+    impactNoteLanguage: observation?.language ?? null,
+    impactNoteLogicalLinesOk: observation?.logicalLinesOk ?? false,
+    impactNoteMetadataFree: metadataFree,
+    impactNoteSourceCount: observation?.sourceLabels.length ?? 0,
+    impactNoteSourceLabels: observation?.sourceLabels ?? [],
+    impactNoteSummaryConceptsOk: summaryConceptsOk,
+    impactNoteSummaryForbiddenOk: summaryForbiddenOk,
+    impactNoteSummaryObjectiveOk: observation?.summaryObjectiveOk ?? false,
+  };
+}
 
 function argvEquals(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
@@ -171,7 +353,7 @@ function collectModelOutputText(event: unknown): string[] {
 function normalizeForMatch(value: string): string {
   return value
     .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
 }
@@ -206,6 +388,7 @@ export function deriveMetrics(
   fixtureValidation: FixtureValidation,
   runnerExitCode: number | null,
   expectedFacts: readonly string[],
+  impactNoteExpectation: ImpactNoteExpectation = { mode: "absent" },
 ): EvalMetrics {
   let firstTreeCalls = 0;
   let helpCalls = 0;
@@ -214,6 +397,7 @@ export function deriveMetrics(
   const firstTreeArgv: string[][] = [];
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const helpExitCodes: number[] = [];
+  const deliveredOutputTexts: string[] = [];
   const modelOutputTexts: string[] = [];
   const readActivationResults: Array<{ exactCommit: string | null; exitCode: number }> = [];
   const readHelpExitCodes: number[] = [];
@@ -235,6 +419,14 @@ export function deriveMetrics(
       if (type === "first_tree_call") {
         firstTreeCalls += 1;
         firstTreeArgv.push([...argv]);
+        const command = commandArgv(argv);
+        if (
+          command[0] === "chat" &&
+          (command[1] === "send" || command[1] === "ask") &&
+          typeof event.body === "string"
+        ) {
+          deliveredOutputTexts.push(event.body);
+        }
         if (isHelpArgv(argv)) {
           helpCalls += 1;
         }
@@ -267,8 +459,9 @@ export function deriveMetrics(
     }
   }
 
+  const visibleOutputTexts = deliveredOutputTexts.length > 0 ? deliveredOutputTexts : uniqueStrings(modelOutputTexts);
   const facts = uniqueStrings(expectedFacts);
-  const factHits = expectedFactHits(modelOutputTexts.join("\n"), facts);
+  const factHits = expectedFactHits(visibleOutputTexts.join("\n"), facts);
   const helpSucceeded = firstTreeCommandResults.some((result) => isHelpArgv(result.argv) && result.exitCode === 0);
   const selectionSucceeded = firstTreeCommandResults.some(
     (result) => isTreeSelectorArgv(result.argv) && result.exitCode === 0,
@@ -304,6 +497,7 @@ export function deriveMetrics(
     selectorSnapshotResults.length === selectorCalls.length &&
     selectorSnapshotResults.every((result) => result.detachedHead);
   const modelFirstTreeCommandsOk = firstTreeCommandResults.every((result) => result.exitCode === 0);
+  const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation);
 
   return {
     expectedFactHits: factHits,
@@ -316,6 +510,7 @@ export function deriveMetrics(
     helpCalls,
     helpExitCodes,
     helpSucceeded,
+    ...impactNoteMetrics,
     byoReadSequenceOk,
     byoSelectorsNoPull,
     byoSnapshotDetached,
@@ -347,6 +542,7 @@ export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readM
     return (
       metrics.skillFileReadObserved &&
       metrics.expectedFactsObserved &&
+      metrics.impactNoteBehaviorOk &&
       metrics.helpSucceeded &&
       metrics.selectionSucceeded &&
       metrics.modelFirstTreeCommandsOk &&
@@ -356,6 +552,7 @@ export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readM
 
   return (
     !metrics.skillHit &&
+    metrics.impactNoteBehaviorOk &&
     metrics.expectedFactHits.length === 0 &&
     metrics.firstTreeCalls === 0 &&
     metrics.firstTreeCommandResults.length === 0 &&

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -12,7 +12,36 @@ import { createFirstTreeShim } from "../../../core/shims/first-tree.js";
 import { findFirstTreeReadCase } from "../cases.js";
 import { setupFixture } from "../fixture.js";
 
-describe("first-tree-read SCOPE-routed BYO fixture", () => {
+describe("first-tree-read source provenance fixtures", () => {
+  it("declares a credential-free managed binding that can produce exact source links", () => {
+    const evalCase = findFirstTreeReadCase("tree-software-trigger");
+    if (evalCase === null) throw new Error("missing managed read case");
+
+    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const paths = createRunPaths({
+      caseId: evalCase.id,
+      packageRoot,
+      startedAt: new Date().toISOString(),
+    });
+
+    try {
+      const contextTreePath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+      if (contextTreePath === null) throw new Error("managed fixture must create a Context Tree");
+      const remote = spawnSync("git", ["remote", "get-url", "origin"], {
+        cwd: contextTreePath,
+        encoding: "utf8",
+      });
+      const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
+
+      expect(remote.status).toBe(0);
+      expect(remote.stdout.trim()).toBe("https://github.com/example/context-tree.git");
+      expect(briefing).toContain("Context Tree binding repository `https://github.com/example/context-tree.git`");
+      expect(briefing).toContain("binding branch `main`");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
   it("routes one SCOPE candidate before materializing its detached exact snapshot", () => {
     const evalCase = findFirstTreeReadCase("byo-scope-route-trigger");
     if (evalCase === null) throw new Error("missing SCOPE-routed BYO read case");
@@ -65,10 +94,11 @@ describe("first-tree-read SCOPE-routed BYO fixture", () => {
       });
       expect(activation.status).toBe(0);
       const envelope = JSON.parse(activation.stdout) as {
-        data: { commit: string; snapshotPath: string; teamId: string };
+        data: { binding: { repo: string }; commit: string; snapshotPath: string; teamId: string };
       };
       const receipt = envelope.data;
       expect(receipt).toMatchObject({ snapshotPath, teamId: "team-byo-read-eval" });
+      expect(receipt.binding.repo).toBe("https://github.com/example/context-tree.git");
 
       const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: snapshotPath, encoding: "utf8" });
       const symbolic = spawnSync("git", ["symbolic-ref", "-q", "HEAD"], { cwd: snapshotPath, encoding: "utf8" });

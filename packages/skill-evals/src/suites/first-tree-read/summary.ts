@@ -98,6 +98,12 @@ export function driftNote(
     );
   }
 
+  if (!metrics.impactNoteBehaviorOk) {
+    notes.push(
+      `Visible Context Tree impact-note behavior failed: count=${metrics.impactNoteCount}; language=${metrics.impactNoteLanguage ?? "none"}; effect=${metrics.impactNoteEffect ?? "none"}; logical lines=${metrics.impactNoteLogicalLinesOk}; blank line=${metrics.impactNoteBlankLineBefore}; objective summary=${metrics.impactNoteSummaryObjectiveOk}; exact links=${metrics.impactNoteExactLinksOk}; source labels=${metrics.impactNoteSourceLabels.join(" | ") || "none"}; metadata free=${metrics.impactNoteMetadataFree}.`,
+    );
+  }
+
   if (!expectedTrigger && metrics.expectedFactHits.length > 0) {
     notes.push(`Off-topic case surfaced Context Tree fact(s): ${metrics.expectedFactHits.join(" | ")}.`);
   }
@@ -135,8 +141,10 @@ export function buildGrading(
       metrics.firstTreeCalls === 0 &&
       metrics.firstTreeCommandResults.length === 0 &&
       metrics.modelFirstTreeCommandsOk;
-  const outcomePass = expectedTrigger ? metrics.expectedFactsObserved : metrics.expectedFactHits.length === 0;
-  const riskPass = metrics.modelFirstTreeCommandsOk;
+  const outcomePass = expectedTrigger
+    ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
+    : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
+  const riskPass = metrics.modelFirstTreeCommandsOk && metrics.impactNoteMetadataFree;
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
   return {
@@ -157,22 +165,27 @@ export function buildGrading(
       evidence(
         "outcome_pass",
         expectedTrigger
-          ? `expected facts observed=${metrics.expectedFactsObserved}; hits=${metrics.expectedFactHits.join(" | ") || "none"}`
-          : `off-topic expected fact hits=${metrics.expectedFactHits.join(" | ") || "none"}`,
+          ? `expected facts observed=${metrics.expectedFactsObserved}; hits=${metrics.expectedFactHits.join(" | ") || "none"}; impact-note behavior ok=${metrics.impactNoteBehaviorOk}; count=${metrics.impactNoteCount}; effect=${metrics.impactNoteEffect ?? "none"}; language=${metrics.impactNoteLanguage ?? "none"}; sources=${metrics.impactNoteSourceLabels.join(" | ") || "none"}`
+          : `off-topic expected fact hits=${metrics.expectedFactHits.join(" | ") || "none"}; impact-note behavior ok=${metrics.impactNoteBehaviorOk}; count=${metrics.impactNoteCount}`,
       ),
       evidence(
         "risk_pass",
-        failedCommands.length === 0
-          ? "no failed model-phase first-tree commands observed"
-          : `failed model-phase first-tree commands=${failedCommands
-              .map((result) => `${formatCommand(result.argv)} => ${result.exitCode}`)
-              .join("; ")}`,
+        failedCommands.length === 0 && metrics.impactNoteMetadataFree
+          ? "no failed model-phase first-tree commands or visible receipt metadata observed"
+          : `failed model-phase first-tree commands=${
+              failedCommands.map((result) => `${formatCommand(result.argv)} => ${result.exitCode}`).join("; ") || "none"
+            }; visible receipt metadata absent=${metrics.impactNoteMetadataFree}`,
       ),
     ],
     passed,
-    riskFlags: failedCommands.map((result) =>
-      riskFlag("failed_first_tree_command", `first-tree ${formatCommand(result.argv)} exited ${result.exitCode}`),
-    ),
+    riskFlags: [
+      ...failedCommands.map((result) =>
+        riskFlag("failed_first_tree_command", `first-tree ${formatCommand(result.argv)} exited ${result.exitCode}`),
+      ),
+      ...(metrics.impactNoteMetadataFree
+        ? []
+        : [riskFlag("visible_receipt_metadata", "Final visible output included receipt metadata or JSON fields.")]),
+    ],
     scores: {
       outcome_pass: outcomePass,
       process_pass: processPass,
@@ -220,6 +233,14 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - skillHit: ${markdownBool(summary.metrics.skillHit)}
 - skillFileReadObserved: ${markdownBool(summary.metrics.skillFileReadObserved)}
 - expectedFactsObserved: ${markdownBool(summary.metrics.expectedFactsObserved)}
+- impactNoteBehaviorOk: ${markdownBool(summary.metrics.impactNoteBehaviorOk)}
+- impactNoteCount: ${summary.metrics.impactNoteCount}
+- impactNoteEffect: ${summary.metrics.impactNoteEffect ?? "n/a"}
+- impactNoteLanguage: ${summary.metrics.impactNoteLanguage ?? "n/a"}
+- impactNoteSourceCount: ${summary.metrics.impactNoteSourceCount}
+- impactNoteSourceLabels: ${summary.metrics.impactNoteSourceLabels.join(" | ") || "none"}
+- impactNoteSummaryObjectiveOk: ${markdownBool(summary.metrics.impactNoteSummaryObjectiveOk)}
+- impactNoteMetadataFree: ${markdownBool(summary.metrics.impactNoteMetadataFree)}
 - helpSucceeded: ${markdownBool(summary.metrics.helpSucceeded)}
 - selectionSucceeded: ${markdownBool(summary.metrics.selectionSucceeded)}
 - readHelpSucceeded: ${markdownBool(summary.metrics.readHelpSucceeded)}
@@ -279,6 +300,7 @@ export function formatSummaryTable(batch: BatchSummary): string {
     String(summary.metrics.firstTreeCalls),
     String(summary.metrics.skillFileReadObserved),
     String(summary.metrics.expectedFactsObserved),
+    String(summary.metrics.impactNoteBehaviorOk),
     String(summary.metrics.helpSucceeded),
     String(summary.metrics.selectionSucceeded),
     String(summary.metrics.modelFirstTreeCommandsOk),
@@ -291,6 +313,7 @@ export function formatSummaryTable(batch: BatchSummary): string {
     "first_tree_calls",
     "skill_file_read",
     "expected_facts_observed",
+    "impact_note_behavior_ok",
     "helpSucceeded",
     "selectionSucceeded",
     "modelFirstTreeCommandsOk",

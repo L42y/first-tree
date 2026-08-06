@@ -247,13 +247,30 @@ Choose exactly one effect in this precedence order, then show its human label:
 4. `confirmed` → `Direction supported` — removed material uncertainty and
    justified keeping the choice without changing its boundary.
 
-Match the note's language to the surrounding final response; translate the
-human label while preserving the category's meaning. Never expose the enum key.
+Match the note's language to the surrounding final response. Localize every
+visible scaffolding term, not only the effect label. Use these fixed labels for
+English and Chinese so different agents produce one recognizable format:
 
-Write the note as one Markdown blockquote with exactly three visible lines: the
-effect, one objective sentence naming the concrete change, and the inspectable
-source. End the first two lines with a backslash so Markdown renders a portable
-hard line break without trailing whitespace; do not use HTML. For example:
+| Category | English | Chinese |
+| --- | --- | --- |
+| `conflicted` | `Conflict surfaced` | `发现冲突` |
+| `redirected` | `Approach changed` | `方案已调整` |
+| `constrained` | `Options narrowed` | `选项已收窄` |
+| `confirmed` | `Direction supported` | `当前方向得到支持` |
+
+Use `Context Tree impact` and `Source` / `Sources` in English. Use
+`Context Tree 影响` and `来源` in Chinese. For other languages, translate the
+complete scaffolding and preserve each category's meaning. Never expose the
+enum key.
+
+Leave one blank line between the preceding answer and the note. Write the note
+as one Markdown blockquote with exactly three **logical Markdown lines** and
+information levels: the effect, one objective sentence naming the concrete
+impact, and the inspectable source. Natural wrapping at narrow display widths
+is expected; never truncate or weaken the impact or source merely to keep three
+physical display lines. End the first two logical lines with a backslash so
+Markdown renders a portable hard line break without trailing whitespace; do
+not use HTML. For example:
 
 ```markdown
 > **Context Tree impact · Options narrowed**\
@@ -262,14 +279,27 @@ hard line break without trailing whitespace; do not use HTML. For example:
 ```
 
 Keep the middle sentence concrete and task-specific. Name the Tree decision or
-constraint and the option it changed, ruled out, or supported. Use objective
-language such as "The organization-isolation rule ruled out..." rather than
-first-person or generic language such as "I used Context Tree...". Keep it to
-one sentence and roughly 160 English characters or 80 CJK characters.
+constraint and its specific impact on the choice. For `redirected`,
+`constrained`, or `confirmed`, say which option it changed, ruled out, narrowed,
+or supported. For `conflicted`, name the two incompatible constraints and the
+unresolved tradeoff; do not imply that the plan changed or the conflict was
+resolved. Use objective language such as "The organization-isolation rule
+ruled out..." rather than first-person or generic language such as "I used
+Context Tree...". Keep it to one sentence and roughly 160 English characters or
+80 CJK characters.
 
-Show one to three sources on the final line. Use bold `Source` for one and bold
-`Sources` for more than one, followed by ` · `; separate multiple Markdown
-links with the same delimiter.
+For an unresolved conflict in a Chinese response, the complete note looks like:
+
+```markdown
+> **Context Tree 影响 · 发现冲突**\
+> 固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\
+> **来源** · [发布安全门槛](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/operations/release/safety-gates.md)
+```
+
+Show one to three sources on the final line. In English, use bold `Source` for
+one and bold `Sources` for more than one. In Chinese, use bold `来源` for either
+count. Follow the label with ` · ` and separate multiple Markdown links with
+the same delimiter.
 Build each readable label from the node's frontmatter title plus the relevant
 heading when that adds meaning, for example `Rollout Policy · Expansion gates`.
 For a root `NODE.md`, use the root title or the relevant heading — never display
@@ -282,6 +312,10 @@ commit and Tree-root-relative node path. Never link to a mutable branch. If an
 exact source link cannot be constructed safely, omit that source; never invent
 a link or expose a raw repository URL, node path, or commit in the visible note.
 Cite at most three normal node paths that jointly influenced the same choice.
+Use the credential-free binding repository exactly as the activation receipt or
+managed workspace briefing declares it; never substitute a local transport URL.
+Never place a credential-bearing remote URL, query, or fragment in the visible
+response.
 
 For a BYO task, use the activation receipt's binding repository and commit. Its
 detached snapshot is already exact and remote-backed. For a managed workspace,

@@ -6,12 +6,28 @@ export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree";
 export type BriefingMode = "minimal" | "runtime-generated";
 export type ReadMode = "byo" | "managed";
 
+export type ImpactNoteEffect = "conflicted" | "confirmed" | "constrained" | "redirected";
+export type ImpactNoteLanguage = "en" | "zh";
+
+export type ImpactNoteExpectation =
+  | { mode: "absent" }
+  | {
+      effect: ImpactNoteEffect;
+      language: ImpactNoteLanguage;
+      mode: "present";
+      requiredSourceLabels?: readonly string[];
+      sourceCount: { max: number; min: number };
+      summaryConcepts?: readonly (readonly string[])[];
+      summaryForbidden?: readonly string[];
+    };
+
 export type FirstTreeReadEvalCase = {
   briefingMode?: BriefingMode;
   description: string;
   expectedFacts: readonly string[];
   expectedTrigger: boolean;
   id: string;
+  impactNote: ImpactNoteExpectation;
   prompt: string;
   promptAlternates: readonly string[];
   readMode: ReadMode;
@@ -51,6 +67,19 @@ export type EvalMetrics = {
   helpCalls: number;
   helpExitCodes: readonly number[];
   helpSucceeded: boolean;
+  impactNoteBehaviorOk: boolean;
+  impactNoteBlankLineBefore: boolean;
+  impactNoteCount: number;
+  impactNoteEffect: string | null;
+  impactNoteExactLinksOk: boolean;
+  impactNoteLanguage: ImpactNoteLanguage | null;
+  impactNoteLogicalLinesOk: boolean;
+  impactNoteMetadataFree: boolean;
+  impactNoteSourceCount: number;
+  impactNoteSourceLabels: readonly string[];
+  impactNoteSummaryConceptsOk: boolean;
+  impactNoteSummaryForbiddenOk: boolean;
+  impactNoteSummaryObjectiveOk: boolean;
   byoReadSequenceOk: boolean;
   byoSelectorsNoPull: boolean;
   byoSnapshotDetached: boolean;
