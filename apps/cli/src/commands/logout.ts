@@ -270,7 +270,7 @@ export async function runLogout(opts: {
       print.line(`  ✓ Removed ${entry.label}\n`);
     }
     for (const provider of ["claude-code", "codex"] as const) {
-      for (const state of ["adapter-sync", "reload-pending", "reload-consumed"]) {
+      for (const state of ["adapter-sync", "compatible-sessions", "reload-pending", "reload-consumed"]) {
         rmSync(join(home, "state", "context", "providers", provider, state), { recursive: true, force: true });
       }
       rmSync(join(home, "state", "context", "providers", provider, "reload-required.json"), { force: true });

@@ -102,7 +102,19 @@ describe("context integration bundle", () => {
     expect(installed.manifest.adoptionGeneration).toBeUndefined();
     expect(readFileSync(join(installedPath, "hooks", "hooks.json"), "utf8")).not.toContain("adoption-generation");
 
+    const compatibleSession = join(
+      home,
+      "state",
+      "context",
+      "providers",
+      "claude-code",
+      "compatible-sessions",
+      "old.json",
+    );
+    mkdirSync(join(compatibleSession, ".."), { recursive: true });
+    writeFileSync(compatibleSession, "old compatible session\n");
     uninstallContextIntegration(driver);
+    expect(existsSync(compatibleSession)).toBe(false);
     const failingDriver: ContextIntegrationProviderDriver = {
       ...driver,
       install: () => {

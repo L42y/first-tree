@@ -82,7 +82,7 @@ export function consumeContextAdapterNextSessionObligation(
 
 export function clearContextAdapterObservation(
   provider: ContextIntegrationProvider,
-  options: { includeNextSessionRequired?: boolean } = {},
+  options: { includeNextSessionRequired?: boolean; includeCompatibleSessions?: boolean } = {},
 ): void {
   const root = providerStateRoot(provider);
   rmSync(join(root, "adapter-sync"), { recursive: true, force: true });
@@ -93,6 +93,9 @@ export function clearContextAdapterObservation(
   rmSync(join(root, "reload-required.json"), { force: true });
   if (provider === "claude-code" && options.includeNextSessionRequired) {
     rmSync(nextSessionRequiredPath(), { force: true });
+  }
+  if (provider === "claude-code" && options.includeCompatibleSessions) {
+    rmSync(join(root, "compatible-sessions"), { recursive: true, force: true });
   }
 }
 

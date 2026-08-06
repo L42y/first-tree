@@ -322,7 +322,10 @@ function uninstallContextIntegrationLocked(driver: ContextIntegrationProviderDri
     });
     rmSync(contextIntegrationMarketplaceSourcePath(driver.provider), { recursive: true, force: true });
     if (manifest) removeContextIntegrationInstallManifest(driver.provider);
-    clearContextAdapterObservation(driver.provider, { includeNextSessionRequired: true });
+    clearContextAdapterObservation(driver.provider, {
+      includeNextSessionRequired: true,
+      includeCompatibleSessions: true,
+    });
     removeInstallJournal();
   } catch (error) {
     writeInstallJournal({ ...journal, phase: "uninstall_failed" });

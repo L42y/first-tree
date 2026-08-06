@@ -140,6 +140,7 @@ describe("client switch transaction recovery", () => {
       join(home, "state", "context", "route-receipts", "old.json"),
       join(home, "state", "context", "providers", "claude-code", "reload-pending", "old.json"),
       join(home, "state", "context", "providers", "claude-code", "reload-consumed", "old.json"),
+      join(home, "state", "context", "providers", "claude-code", "compatible-sessions", "old.json"),
       join(home, "state", "context", "providers", "codex", "adapter-sync", "old.json"),
       join(home, "state", "context", "providers", "claude-code", "reload-required.json"),
       join(home, "state", "context", "providers", "claude-code", "next-session-required.json"),
@@ -181,6 +182,7 @@ describe("client switch transaction recovery", () => {
     expect(existsSync(join(home, "state", "context", "route-receipts"))).toBe(false);
     expect(existsSync(join(home, "state", "context", "providers", "claude-code", "reload-pending"))).toBe(false);
     expect(existsSync(join(home, "state", "context", "providers", "claude-code", "reload-consumed"))).toBe(false);
+    expect(existsSync(join(home, "state", "context", "providers", "claude-code", "compatible-sessions"))).toBe(false);
     expect(existsSync(join(home, "state", "context", "providers", "codex", "adapter-sync"))).toBe(false);
     expect(existsSync(join(home, "state", "context", "providers", "claude-code", "reload-required.json"))).toBe(false);
     expect(existsSync(join(home, "state", "context", "providers", "claude-code", "next-session-required.json"))).toBe(

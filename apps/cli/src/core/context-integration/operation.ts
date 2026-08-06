@@ -525,6 +525,7 @@ function validateProviderRecoveryState(
 
 const OBSERVATION_STATE_ENTRIES = [
   "adapter-sync",
+  "compatible-sessions",
   "reload-pending",
   "reload-consumed",
   "reload-required.json",
