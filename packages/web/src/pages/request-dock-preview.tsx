@@ -1,8 +1,11 @@
 import type { AskRequest, ContextDecision, GithubEventCard } from "@first-tree/shared";
-import { useState } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ExternalLink } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { AskTakeover } from "../components/chat/ask-takeover.js";
 import { ContextDecisionReceipt } from "../components/chat/context-decision-receipt.js";
 import { GithubEventCardMessage } from "../components/chat/github-event-card.js";
+import { FirstTreeLogo } from "../components/first-tree-logo.js";
 
 /**
  * DEV-only visual review for `AskTakeover` plus narrow timeline overflow
@@ -148,6 +151,321 @@ const MODES: { label: string; payload: AskRequest }[] = [
   { label: "free text", payload: { multiSelect: false } },
 ];
 
+/**
+ * PROTOTYPE — three density directions for the shipped receipt, switchable on
+ * the existing `/preview/request-dock?prototype=receipt-density&variant=A`
+ * route. This answers one question only: how much vertical chrome can be
+ * removed without hiding the reported outcome, summary, or inspectable sources?
+ */
+type DensityVariant = "A" | "B" | "C";
+
+const DENSITY_VARIANTS: { key: DensityVariant; name: string }[] = [
+  { key: "A", name: "Compact disclosure" },
+  { key: "B", name: "Inline footnote" },
+  { key: "C", name: "Single-row signal" },
+];
+
+function readDensityVariant(value: string | null): DensityVariant {
+  return value === "B" || value === "C" ? value : "A";
+}
+
+function DensityPrototypePage({
+  variant,
+  onVariantChange,
+}: {
+  variant: DensityVariant;
+  onVariantChange: (variant: DensityVariant) => void;
+}) {
+  const receipt = RECEIPTS[2];
+  if (!receipt) return null;
+  const selected = DENSITY_VARIANTS.find((item) => item.key === variant) ?? DENSITY_VARIANTS[0]!;
+
+  return (
+    <main className="min-h-screen" style={{ padding: "var(--sp-6)", background: "var(--bg-sunken)" }}>
+      <div className="mx-auto max-w-5xl">
+        <div className="flex flex-wrap items-end justify-between" style={{ gap: "var(--sp-3)" }}>
+          <div>
+            <div className="text-eyebrow uppercase" style={{ color: "var(--brand-dim)" }}>
+              Throwaway prototype · receipt density
+            </div>
+            <h1 className="text-title" style={{ marginTop: "var(--sp-1)" }}>
+              Keep the value; remove the vertical chrome
+            </h1>
+            <p className="text-body" style={{ marginTop: "var(--sp-1)", color: "var(--fg-2)" }}>
+              Current production card compared with {selected.key} · {selected.name}.
+            </p>
+          </div>
+          <div className="text-caption" style={{ color: "var(--fg-3)" }}>
+            Desktop and mobile use the same content order
+          </div>
+        </div>
+
+        <div className="grid lg:grid-cols-2" style={{ marginTop: "var(--sp-5)", gap: "var(--sp-4)" }}>
+          <PrototypeMessage label="Current production">
+            <ContextDecisionReceipt receipt={receipt} gitlabInstanceOrigin="https://gitlab.example.com" />
+          </PrototypeMessage>
+          <PrototypeMessage label={`${selected.key} · ${selected.name}`} recommended={variant === "A"}>
+            <DensityReceipt variant={variant} receipt={receipt} />
+          </PrototypeMessage>
+        </div>
+
+        <div
+          className="surface-raised text-body"
+          style={{ marginTop: "var(--sp-4)", padding: "var(--sp-3)" }}
+        >
+          {variant === "A" ? (
+            <>
+              <span className="font-semibold">Recommended.</span> The whole receipt becomes the disclosure target, so
+              the separate source row disappears. Context Tree and the effect share one header; the summary remains
+              fully visible, and the source count moves into the expanded details.
+            </>
+          ) : variant === "B" ? (
+            <>
+              <span className="font-semibold">Smallest visual footprint.</span> It reads as a footnote to the answer,
+              but the Context Tree value is easier to miss during normal scanning.
+            </>
+          ) : (
+            <>
+              <span className="font-semibold">Highest scan density.</span> It works for short summaries, but truncation
+              hides the concrete reason on narrow screens, so it is a poor default.
+            </>
+          )}
+        </div>
+      </div>
+      <DensityVariantSwitcher current={variant} onChange={onVariantChange} />
+    </main>
+  );
+}
+
+function PrototypeMessage({
+  label,
+  recommended = false,
+  children,
+}: {
+  label: string;
+  recommended?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="surface-raised overflow-hidden">
+      <div
+        className="text-caption font-semibold flex items-center justify-between"
+        style={{ padding: "var(--sp-2) var(--sp-3)", borderBottom: "var(--hairline) solid var(--border-faint)" }}
+      >
+        <span>{label}</span>
+        {recommended ? <span style={{ color: "var(--brand-dim)" }}>Recommended</span> : null}
+      </div>
+      <div style={{ padding: "var(--sp-4)" }}>
+        <div className="flex items-start" style={{ gap: "var(--sp-2_5)" }}>
+          <div
+            className="text-label font-semibold grid size-8 shrink-0 place-items-center rounded-[var(--radius-full)]"
+            style={{ background: "var(--state-working-soft)", color: "var(--brand-dim)" }}
+          >
+            D
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-caption font-semibold">deploy-agent</div>
+            <div className="text-body" style={{ marginTop: "var(--sp-1)" }}>
+              Recommendation: expand Web to 20%, keep CLI at 5%.
+            </div>
+            <p className="text-body" style={{ marginTop: "var(--sp-1)", color: "var(--fg-2)" }}>
+              Web is ready to expand; CLI still needs its migration guard cleared.
+            </p>
+            {children}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DensityReceipt({ variant, receipt }: { variant: DensityVariant; receipt: ContextDecision }) {
+  const [open, setOpen] = useState(false);
+  const count = `${receipt.evidence.length} decisions`;
+
+  if (variant === "B") {
+    return (
+      <aside
+        style={{ marginTop: "var(--sp-3)", paddingTop: "var(--sp-2)", borderTop: "var(--hairline) solid var(--border)" }}
+      >
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="text-left w-full min-h-11"
+        >
+          <div className="text-body flex items-start" style={{ gap: "var(--sp-2)" }}>
+            <FirstTreeLogo width={12} height={14} style={{ marginTop: "var(--sp-0_5)", color: "var(--brand)" }} />
+            <p className="min-w-0 flex-1 leading-relaxed">
+              <span className="font-semibold">Options narrowed</span>
+              <span style={{ color: "var(--fg-2)" }}> — {receipt.summary}</span>
+            </p>
+            <span className="text-caption shrink-0" style={{ color: "var(--fg-3)" }}>
+              {count}
+            </span>
+            {open ? <ChevronUp aria-hidden className="size-3.5 shrink-0" /> : <ChevronDown aria-hidden className="size-3.5 shrink-0" />}
+          </div>
+          <div className="text-caption" style={{ margin: "var(--sp-1) 0 0 var(--sp-5)", color: "var(--brand-dim)" }}>
+            Context Tree
+          </div>
+        </button>
+        {open ? <CompactEvidence receipt={receipt} /> : null}
+      </aside>
+    );
+  }
+
+  if (variant === "C") {
+    return (
+      <aside style={{ marginTop: "var(--sp-3)", background: "var(--brand-bg)", borderRadius: "var(--radius-panel)" }}>
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="text-body flex w-full min-h-11 items-center text-left"
+          style={{ padding: "var(--sp-2) var(--sp-2_5)", gap: "var(--sp-2)" }}
+        >
+          <FirstTreeLogo width={12} height={14} style={{ flexShrink: 0, color: "var(--brand)" }} />
+          <span className="font-semibold shrink-0">Options narrowed</span>
+          <span className="min-w-0 flex-1 truncate" style={{ color: "var(--fg-2)" }}>
+            {receipt.summary}
+          </span>
+          <span className="text-caption shrink-0" style={{ color: "var(--fg-3)" }}>
+            {count}
+          </span>
+          {open ? <ChevronUp aria-hidden className="size-3.5 shrink-0" /> : <ChevronDown aria-hidden className="size-3.5 shrink-0" />}
+        </button>
+        {open ? <CompactEvidence receipt={receipt} inset /> : null}
+      </aside>
+    );
+  }
+
+  return (
+    <aside style={{ marginTop: "var(--sp-3)", background: "var(--brand-bg)", borderRadius: "var(--radius-panel)" }}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="w-full text-left"
+        style={{ padding: "var(--sp-2_5)" }}
+      >
+        <div className="flex items-start" style={{ gap: "var(--sp-2)" }}>
+          <FirstTreeLogo width={12} height={14} style={{ marginTop: "var(--sp-0_5)", flexShrink: 0, color: "var(--brand)" }} />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center" style={{ gap: "var(--sp-1_5)" }}>
+              <span className="text-caption font-semibold" style={{ color: "var(--brand-dim)" }}>
+                Context Tree
+              </span>
+              <span className="text-body font-semibold min-w-0 flex-1">Options narrowed</span>
+              {open ? <ChevronUp aria-hidden className="size-3.5 shrink-0" /> : <ChevronDown aria-hidden className="size-3.5 shrink-0" />}
+            </div>
+            <p className="text-body leading-relaxed" style={{ marginTop: "var(--sp-1)", color: "var(--fg-2)" }}>
+              {receipt.summary}
+            </p>
+          </div>
+        </div>
+      </button>
+      {open ? <CompactEvidence receipt={receipt} inset /> : null}
+    </aside>
+  );
+}
+
+function CompactEvidence({ receipt, inset = false }: { receipt: ContextDecision; inset?: boolean }) {
+  const version = receipt.evidence[0]?.commit.slice(0, 7);
+  return (
+    <div
+      style={{
+        margin: inset ? "0 var(--sp-2_5)" : "var(--sp-2) 0 0 var(--sp-5)",
+        padding: "var(--sp-2) 0 var(--sp-2_5)",
+        borderTop: "var(--hairline) solid var(--border-faint)",
+      }}
+    >
+      <ul className="flex flex-col" style={{ listStyle: "none", margin: 0, padding: 0, gap: "var(--sp-1)" }}>
+        {receipt.evidence.map((evidence) => (
+          <li key={evidence.nodePath} className="min-h-11 flex items-center" title={evidence.nodePath}>
+            <div className="text-label font-medium flex min-w-0 flex-1 items-center" style={{ gap: "var(--sp-1)" }}>
+              <span className="truncate">{humanizeNodeName(evidence.nodePath)}</span>
+              {evidence.heading ? (
+                <>
+                  <span aria-hidden style={{ color: "var(--fg-3)" }}>
+                    ·
+                  </span>
+                  <span className="truncate" style={{ color: "var(--fg-2)" }}>
+                    {evidence.heading}
+                  </span>
+                </>
+              ) : null}
+            </div>
+            <ExternalLink aria-hidden className="size-3.5 shrink-0" style={{ color: "var(--fg-3)" }} />
+          </li>
+        ))}
+      </ul>
+      {version ? (
+        <div className="text-caption" style={{ paddingTop: "var(--sp-1)", color: "var(--fg-3)" }}>
+          {receipt.evidence.length} decisions · Context Tree version {version}
+        </div>
+      ) : null}
+      <p
+        className="text-caption leading-relaxed"
+        style={{ marginTop: "var(--sp-2)", paddingTop: "var(--sp-2)", borderTop: "var(--hairline) solid var(--border-faint)", color: "var(--fg-3)" }}
+      >
+        Influence is agent-reported, not independently verified.
+      </p>
+    </div>
+  );
+}
+
+function humanizeNodeName(nodePath: string): string {
+  const fileName = nodePath.split("/").at(-1)?.replace(/\.md$/i, "") ?? nodePath;
+  return fileName
+    .split("-")
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function DensityVariantSwitcher({
+  current,
+  onChange,
+}: {
+  current: DensityVariant;
+  onChange: (variant: DensityVariant) => void;
+}) {
+  const currentIndex = DENSITY_VARIANTS.findIndex((item) => item.key === current);
+  const cycle = (offset: number) => {
+    const next = DENSITY_VARIANTS[(currentIndex + offset + DENSITY_VARIANTS.length) % DENSITY_VARIANTS.length];
+    if (next) onChange(next.key);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, [contenteditable='true']")) return;
+      if (event.key === "ArrowLeft") cycle(-1);
+      if (event.key === "ArrowRight") cycle(1);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  const selected = DENSITY_VARIANTS[currentIndex] ?? DENSITY_VARIANTS[0]!;
+  return (
+    <div
+      className="surface-overlay fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center"
+      style={{ padding: "var(--sp-1)", gap: "var(--sp-1)" }}
+    >
+      <button type="button" aria-label="Previous variant" onClick={() => cycle(-1)} className="grid size-9 place-items-center">
+        <ChevronLeft aria-hidden className="size-4" />
+      </button>
+      <div className="text-label font-semibold" style={{ minWidth: "var(--sp-35)", textAlign: "center" }}>
+        {selected.key} · {selected.name}
+      </div>
+      <button type="button" aria-label="Next variant" onClick={() => cycle(1)} className="grid size-9 place-items-center">
+        <ChevronRight aria-hidden className="size-4" />
+      </button>
+    </div>
+  );
+}
+
 function ModeBlock({
   label,
   payload,
@@ -204,6 +522,22 @@ function ModeBlock({
 }
 
 export function RequestDockPreviewPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  if (searchParams.get("prototype") === "receipt-density") {
+    const variant = readDensityVariant(searchParams.get("variant"));
+    return (
+      <DensityPrototypePage
+        variant={variant}
+        onVariantChange={(nextVariant) => {
+          const next = new URLSearchParams(searchParams);
+          next.set("prototype", "receipt-density");
+          next.set("variant", nextVariant);
+          setSearchParams(next, { replace: true });
+        }}
+      />
+    );
+  }
+
   return (
     <div style={{ padding: "var(--sp-6)", background: "var(--bg-sunken)", minHeight: "100vh" }}>
       <h1 className="text-subtitle font-semibold" style={{ marginBottom: "var(--sp-1)" }}>
