@@ -55,6 +55,9 @@ Record the exact commands, the daemon version under test, and the shell used.
   filtered to the runtime process) or the TCC decision log for the run window, not by prompt appearance alone, since a
   prompt is suppressed once a decision exists.
 - The capability entry for the login-shell-only provider in the probe output: state, `runtimeSource`, and `runtimePath`.
+- When the provider is under a version manager, whether `runtimePath` points at the version the shell actually selected.
+  It must never silently be a different installed version: with several fnm versions installed and the per-session link
+  already gone, "not found" is the correct answer, not the newest one.
 - For step 4, whether the process touched `~/Documents` at all.
 
 ## Expected Result
@@ -63,7 +66,9 @@ Record the exact commands, the daemon version under test, and the shell used.
 and on-demand probe, AND the login-shell-only provider was still reported installed with a usable path.
 
 `FAIL` means either half broke: a protected folder was read (or consent requested) without the user selecting anything,
-or the login-shell-only provider was reported missing. Report which half failed — they have different fixes.
+or the login-shell-only provider was reported missing while its selected version was still resolvable. Report which half
+failed — they have different fixes. A resolved path pointing at a version the shell did NOT select is also a `FAIL`,
+and a more serious one than a miss.
 
 `BLOCKED` means the run cell is not macOS, the account already carries TCC decisions for the runtime binary, or no
 filesystem tracing is available, so property 1 cannot be observed.

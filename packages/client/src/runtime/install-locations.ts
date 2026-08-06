@@ -42,19 +42,24 @@ export type VersionManagerDirDeps = {
 };
 
 /**
- * `bin` dirs of every Node version installed by nvm or fnm, **newest first**.
+ * `bin` dir of the **unambiguously** installed Node version under nvm or fnm.
  *
- * These are the STABLE homes of a `claude` / `codex` installed under a Node
- * version manager. The dir such a shell actually puts on `$PATH`
+ * This is the STABLE home of a `claude` / `codex` installed under a Node version
+ * manager. The dir such a shell actually puts on `$PATH`
  * (`fnm_multishells/<pid>_<ts>/bin`) is a per-session symlink that disappears
  * with the shell, so it cannot be searched afterwards — but its target lives
  * here and does not move.
  *
- * This is a FALLBACK, not a preference: callers must search it only after the
- * login-shell dirs, so a shell that intentionally selected an older version
- * keeps that version (and its credential context) whenever the live dir is
- * still resolvable. Newest-first only decides between versions once the active
- * one is already gone.
+ * It is a FALLBACK, not a preference: callers search it only after the
+ * login-shell dirs, so a live selection always wins.
+ *
+ * **A root with more than one installed version contributes nothing.** Which one
+ * the shell selected is not recoverable from disk, and answering with the newest
+ * would silently run a different version than the user pinned — a quiet swap of
+ * the executable and its context, which is worse than reporting the provider as
+ * not found. nvm avoids the ambiguity entirely by exporting `$NVM_BIN` (handled
+ * by the caller); fnm exports no equivalent, so a multi-version fnm root fails
+ * closed.
  *
  * Every root and every returned dir is vetted with
  * {@link resolveOutsideProtectedRootsOnThisHost} BEFORE it is listed or handed
@@ -70,18 +75,24 @@ export function versionManagerBinDirs(home: string, deps: VersionManagerDirDeps 
 
   const safe = (path: string): string | null => resolveOutsideProtectedRootsOnThisHost(path, readLink);
 
-  /** List `root`'s entries only once the root itself is known to be safe. */
+  /**
+   * The single installed version under `root`, or nothing when the root is
+   * unsafe, absent, empty, or ambiguous. Listing happens only after the root
+   * itself is known to be safe.
+   */
   const versionsUnder = (root: string): Array<{ version: string; root: string }> => {
     const vetted = safe(root);
     if (vetted === null) return [];
+    let entries: string[];
     try {
-      return readDir(vetted)
-        .sort((a, b) => VERSION_COLLATOR.compare(b, a))
-        .map((version) => ({ version, root: vetted }));
+      entries = readDir(vetted);
     } catch {
       // No such version manager on this host, or the root is unreadable.
       return [];
     }
+    const [only] = entries;
+    if (entries.length !== 1 || only === undefined) return [];
+    return [{ version: only, root: vetted }];
   };
 
   const nvm = versionsUnder(join(home, ".nvm", "versions", "node")).map(({ version, root }) =>
@@ -111,9 +122,6 @@ export function versionManagerBinDirs(home: string, deps: VersionManagerDirDeps 
   // protected folder, so re-vet each candidate before returning it.
   return [...nvm, ...fnm].map(safe).filter((dir): dir is string => dir !== null);
 }
-
-/** Newest-looking version first, so the chosen dir is stable across runs. */
-const VERSION_COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 /**
  * macOS desktop-app resource directories that can carry the Codex CLI.

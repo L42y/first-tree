@@ -22,22 +22,32 @@ describe("versionManagerBinDirs", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
   });
 
-  it("lists nvm and fnm version bins, newest version first", () => {
+  it("returns the single installed version under each root", () => {
     const home = "/home/u";
     const readDir = (path: string): string[] => {
-      if (path === join(home, ".nvm", "versions", "node")) return ["v20.11.0", "v22.2.0", "v9.0.0"];
-      if (path === join(home, ".local", "share", "fnm", "node-versions")) return ["v18.0.0", "v22.2.0"];
+      if (path === join(home, ".nvm", "versions", "node")) return ["v22.2.0"];
+      if (path === join(home, ".local", "share", "fnm", "node-versions")) return ["v18.0.0"];
       throw new Error("ENOENT");
     };
 
     expect(versionManagerBinDirs(home, { readDir, env: {} })).toEqual([
-      // Numeric-aware, so v22 sorts above v9 rather than below it.
       join(home, ".nvm", "versions", "node", "v22.2.0", "bin"),
-      join(home, ".nvm", "versions", "node", "v20.11.0", "bin"),
-      join(home, ".nvm", "versions", "node", "v9.0.0", "bin"),
-      join(home, ".local", "share", "fnm", "node-versions", "v22.2.0", "installation", "bin"),
       join(home, ".local", "share", "fnm", "node-versions", "v18.0.0", "installation", "bin"),
     ]);
+  });
+
+  // Which version the shell selected is not recoverable from disk. Answering
+  // with the newest would silently swap the executable the user pinned, so an
+  // ambiguous root contributes nothing and the provider reports as not found.
+  it("contributes nothing from a root holding more than one version", () => {
+    const home = "/home/u";
+    const versions = join(home, ".local", "share", "fnm", "node-versions");
+    expect(
+      versionManagerBinDirs(home, {
+        readDir: (path) => (path === versions ? ["v20.11.0", "v22.2.0"] : []),
+        env: {},
+      }),
+    ).toEqual([]);
   });
 
   it("covers the Homebrew and pre-XDG fnm layouts and honours $FNM_DIR", () => {
@@ -112,16 +122,18 @@ describe("versionManagerBinDirs protected-root vetting (macOS)", () => {
     expect(versionManagerBinDirs(home, { readDir: NEVER_LISTED, env: {} })).toEqual([]);
   });
 
-  it("drops a version entry symlinked into a protected folder, keeping its siblings", () => {
+  it("drops a version entry symlinked into a protected folder", () => {
     const home = macHome();
     const versions = join(home, ".nvm", "versions", "node");
-    mkdirSync(join(versions, "v22.0.0", "bin"), { recursive: true });
+    mkdirSync(versions, { recursive: true });
     mkdirSync(join(home, "Documents", "sneaky", "bin"), { recursive: true });
     symlinkSync(join(home, "Documents", "sneaky"), join(versions, "v23.0.0"));
 
-    expect(
-      versionManagerBinDirs(home, { readDir: (path) => (path === versions ? ["v23.0.0", "v22.0.0"] : []), env: {} }),
-    ).toEqual([join(versions, "v22.0.0", "bin")]);
+    // The root itself is fine and holds exactly one version, so only the
+    // per-candidate vetting can reject it.
+    expect(versionManagerBinDirs(home, { readDir: (path) => (path === versions ? ["v23.0.0"] : []), env: {} })).toEqual(
+      [],
+    );
   });
 });
 
@@ -263,10 +275,12 @@ describe("version-manager discovery after a multishell teardown", () => {
     ).toBe(codex);
   });
 
-  // The precedence the fallback must not disturb: an intentionally selected
-  // older version keeps its binary (and credential context) while a newer
-  // inactive version is also installed.
-  it("prefers the shell's active version over a newer installed one", () => {
+  // The precedence the fallback must not disturb. With two versions installed
+  // the shell's selection is unrecoverable from disk, so the fallback fails
+  // closed: a live selection still wins, and once it is gone the provider
+  // reports missing rather than silently running the version the user did not
+  // pick.
+  it("keeps the shell's active version, and refuses to guess once it is gone", () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-active-")));
     const home = join(root, "home");
     const versions = join(home, ".nvm", "versions", "node");
@@ -280,23 +294,25 @@ describe("version-manager discovery after a multishell teardown", () => {
       chmodSync(codex, 0o755);
     }
 
+    // Ambiguous root: it contributes nothing rather than answering v22.
     const fallback = versionManagerBinDirs(home, { env: {} });
-    // Newest-first, so the fallback alone would pick v22.
-    expect(fallback[0]).toBe(newerBin);
+    expect(fallback).toEqual([]);
 
-    expect(
+    const resolveWith = (dirs: string[]): string | null =>
       findCodexExecutableOnPath(
         { HOME: home, PATH: "" },
         {
           platform: "linux",
           pathDelimiter: ":",
-          // What `getLoginShellPathDirs` composes: the live selection first,
-          // the stable roots appended behind it.
-          loginShellPathDirs: () => [activeBin, ...fallback],
+          loginShellPathDirs: () => dirs,
           wellKnownDirs: () => [],
           desktopAppDirs: () => [],
         },
-      ),
-    ).toBe(join(activeBin, "codex"));
+      );
+
+    // Live selection present: it wins, exactly as before this change.
+    expect(resolveWith([activeBin, ...fallback])).toBe(join(activeBin, "codex"));
+    // Selection gone: missing, not silently v22.
+    expect(resolveWith([join(root, "dead-multishell", "bin"), ...fallback])).toBeNull();
   });
 });
