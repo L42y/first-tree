@@ -390,6 +390,41 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     expect(job?.nextRunAt).toBeNull();
   });
 
+  it("pauses active cron jobs when the owning Human speaker is removed", async () => {
+    const { app, owner, peer, agent, chatId, ownerHeaders } = await setupGroup();
+    const jobId = crypto.randomUUID();
+    await app.db.insert(cronJobs).values({
+      id: jobId,
+      ownerMemberId: peer.memberId,
+      controlChatId: chatId,
+      agentId: agent.agent.uuid,
+      name: `rm-own-${jobId.slice(0, 6)}`,
+      chatMode: "reuse_control_chat",
+      cronExpression: "0 10 * * *",
+      timezone: "UTC",
+      prompt: "owner human removed",
+      state: "active",
+      stateReason: null,
+      nextRunAt: new Date(Date.now() + 60_000),
+      revision: 1,
+    });
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${peer.humanAgentUuid}`,
+      headers: ownerHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    // Human may remain as watcher when still managing an in-chat agent.
+    expect(["watcher", null]).toContain(res.json<{ membershipKind: string | null }>().membershipKind);
+
+    const [job] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
+    expect(job?.state).toBe("paused");
+    expect(job?.stateReason).toBe("owner_not_speaker");
+    expect(job?.nextRunAt).toBeNull();
+    void owner;
+  });
+
   it("remove with outstanding trigger → cancel clears pointer → GC → re-add/resume/sweep continues", async () => {
     const app = getApp();
     const runtime = await createTestAgent(app, { name: `rm-out-${crypto.randomUUID().slice(0, 6)}` });

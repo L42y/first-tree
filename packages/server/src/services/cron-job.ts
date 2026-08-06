@@ -292,8 +292,6 @@ export async function createCronJob(
     /** Class D: authenticated managing member; revalidated inside the txn. */
     callerMemberId?: string;
     callerHumanAgentId?: string;
-    /** Test-only: after membership shared, before member/agent row locks. */
-    afterChatMembershipSharedForTest?: () => Promise<void>;
   },
 ): Promise<CronJob> {
   const now = await databaseNow(db);
@@ -321,7 +319,6 @@ export async function createCronJob(
         agentId: input.agentId,
         callerMemberId: input.callerMemberId,
         callerHumanAgentId: input.callerHumanAgentId,
-        afterChatMembershipSharedForTest: input.afterChatMembershipSharedForTest,
       });
       ownerMemberId = input.callerMemberId;
       await lockOwnerChatCronBarrier(txDb, input.controlChatId, ownerMemberId);
@@ -331,9 +328,6 @@ export async function createCronJob(
       });
     } else {
       await lockChatMembershipShared(txDb, [input.controlChatId]);
-      if (input.afterChatMembershipSharedForTest) {
-        await input.afterChatMembershipSharedForTest();
-      }
       const [agent] = await txDb.select().from(agents).where(eq(agents.uuid, input.agentId)).for("update").limit(1);
       if (!agent || agent.status !== "active") {
         throw new CronJobAppError(403, "CRON_JOB_FORBIDDEN", "Agent is not eligible to create scheduled jobs");
@@ -776,13 +770,9 @@ export async function assertCronAgentRouteAccess(
     agentId: string;
     callerMemberId: string;
     callerHumanAgentId: string;
-    afterChatMembershipSharedForTest?: () => Promise<void>;
   },
 ): Promise<void> {
   await lockChatMembershipShared(db, [input.chatId]);
-  if (input.afterChatMembershipSharedForTest) {
-    await input.afterChatMembershipSharedForTest();
-  }
 
   const [callerMember] = await db
     .select({ id: members.id })
