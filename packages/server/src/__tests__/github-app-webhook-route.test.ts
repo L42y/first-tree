@@ -910,6 +910,14 @@ describe("POST /webhooks/github-app", () => {
     });
     const chatId = `chat_${randomUUID()}`;
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "direct" });
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: human,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: human,
@@ -958,6 +966,14 @@ describe("POST /webhooks/github-app", () => {
     });
     const prChatId = `chat_${randomUUID()}`;
     await app.db.insert(chats).values({ id: prChatId, organizationId: admin.organizationId, type: "direct" });
+    await app.db.insert(chatMembership).values({
+      chatId: prChatId,
+      agentId: human,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: human,

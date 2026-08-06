@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityOverview, RuntimeAgent } from "../../../api/activity.js";
 import type { SessionListItem } from "../../../api/sessions.js";
+import { ToastProvider } from "../../../components/ui/toast.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -146,7 +147,11 @@ async function renderDom(element: ReactElement): Promise<{ container: HTMLElemen
   document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<QueryClientProvider client={createClient()}>{element}</QueryClientProvider>);
+    root.render(
+      <QueryClientProvider client={createClient()}>
+        <ToastProvider>{element}</ToastProvider>
+      </QueryClientProvider>,
+    );
   });
   await flush();
   return { container, root };

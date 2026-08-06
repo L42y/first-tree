@@ -210,6 +210,14 @@ describe("deliverGithubEvent", () => {
     // Seed an existing chat + mapping for the target entity
     const chatId = `chat_${randomUUID()}`;
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "direct" });
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: human,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: human,
@@ -1126,6 +1134,14 @@ describe("deliverGithubEvent", () => {
       type: "direct",
       topic: "PR repo#209: Old title",
     });
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: human,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: human,
@@ -1349,6 +1365,14 @@ describe("deliverGithubEvent", () => {
     });
     const goodChatId = `chat_${randomUUID()}`;
     await app.db.insert(chats).values({ id: goodChatId, organizationId: admin.organizationId, type: "direct" });
+    await app.db.insert(chatMembership).values({
+      chatId: goodChatId,
+      agentId: goodHuman,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     await app.db.insert(githubEntityChatMappings).values({
       organizationId: admin.organizationId,
       humanAgentId: goodHuman,

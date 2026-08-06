@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { attachments } from "../db/schema/attachments.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { messages } from "../db/schema/messages.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -392,6 +393,14 @@ describe("attachments route — upload + capability download", () => {
     const admin = await createTestAdmin(app, { username: `file-ref-send-${crypto.randomUUID().slice(0, 6)}` });
     const chatId = uuidv7();
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: admin.humanAgentUuid,
+      role: "owner",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
     const missingRef = {
       imageId: crypto.randomUUID(),
       mimeType: "image/png" as const,

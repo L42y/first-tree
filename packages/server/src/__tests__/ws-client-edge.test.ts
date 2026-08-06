@@ -6,7 +6,11 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import WebSocket from "ws";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
+import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
+import { inboxEntries } from "../db/schema/inbox-entries.js";
+import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
 import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
@@ -234,13 +238,65 @@ describe("Agent client WS edge protocol coverage", () => {
       inboxId,
       messageId: `msg-${id}`,
       chatId,
-      status: "delivered",
+      status: "delivered" as const,
       retryCount: 0,
       createdAt: new Date().toISOString(),
       deliveredAt: new Date().toISOString(),
       ackedAt: null,
       message: null,
     };
+  }
+
+  /** Durable chat + speaker + inbox row for live fence; claim mock must mark delivered. */
+  async function seedLiveInboxDeliverFence(
+    targetApp: FastifyInstance,
+    input: {
+      organizationId: string;
+      agentId: string;
+      inboxId: string;
+      entryId: number;
+      chatId: string;
+      messageId: string;
+    },
+  ) {
+    await targetApp.db.insert(chats).values({
+      id: input.chatId,
+      organizationId: input.organizationId,
+      type: "group",
+    });
+    await targetApp.db.insert(chatMembership).values({
+      chatId: input.chatId,
+      agentId: input.agentId,
+      role: "member",
+      accessMode: "speaker",
+      mode: "full",
+      source: "manual",
+    });
+    await targetApp.db.insert(messages).values({
+      id: input.messageId,
+      chatId: input.chatId,
+      senderId: input.agentId,
+      format: "text",
+      content: "live-fence fixture",
+      source: "api",
+    });
+    // Seed pending so agent:bind's resetDeliveredForInboxes (delivered→pending)
+    // cannot wipe the row before the claim mock simulates a real claim.
+    await targetApp.db.insert(inboxEntries).values({
+      id: input.entryId,
+      inboxId: input.inboxId,
+      messageId: input.messageId,
+      chatId: input.chatId,
+      status: "pending",
+    });
+  }
+
+  async function claimDeliveredOnce(targetApp: FastifyInstance, entry: ReturnType<typeof inboxEntry>) {
+    await targetApp.db
+      .update(inboxEntries)
+      .set({ status: "delivered", deliveredAt: new Date() })
+      .where(eq(inboxEntries.id, entry.id));
+    return [entry] as never;
   }
 
   async function withInboxCappedApp(
@@ -773,26 +829,36 @@ describe("Agent client WS edge protocol coverage", () => {
     });
     const agent = await createPinnedAgent({ ...seed, suffix: "invalid-deliver" });
     const entryId = 444_000_001;
+    const chatId = "chat-invalid-deliver";
+    const messageId = "msg-invalid-deliver";
+    await seedLiveInboxDeliverFence(app, {
+      organizationId: seed.organizationId,
+      agentId: agent.uuid,
+      inboxId: agent.inboxId,
+      entryId,
+      chatId,
+      messageId,
+    });
     const claimSpy = vi
       .spyOn(inboxService, "claimBacklogForPushFair")
-      .mockResolvedValueOnce([
-        {
+      .mockImplementationOnce(async () =>
+        claimDeliveredOnce(app, {
           id: entryId,
           inboxId: agent.inboxId,
-          messageId: "msg-invalid-deliver",
-          chatId: "chat-invalid-deliver",
+          messageId,
+          chatId,
           status: "delivered",
           retryCount: 0,
           createdAt: new Date().toISOString(),
           deliveredAt: new Date().toISOString(),
           ackedAt: null,
           message: null,
-        },
-      ] as never)
+        }),
+      )
       .mockResolvedValue([]);
     const ackSpy = vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValueOnce({
       ok: true,
-      throughEntry: { id: entryId, inboxId: agent.inboxId, chatId: "chat-invalid-deliver" },
+      throughEntry: { id: entryId, inboxId: agent.inboxId, chatId },
       disposition: "acked",
       ackedCount: 1,
       ackedEntryIds: [entryId],
@@ -870,10 +936,20 @@ describe("Agent client WS edge protocol coverage", () => {
         username: `ws-global-cap-${crypto.randomUUID().slice(0, 8)}`,
       });
       const agent = await createPinnedAgentFor(targetApp, { ...seed, suffix: "global-cap" });
+      const entryId = 555_000_001;
+      const chatId = "chat-global-cap";
+      await seedLiveInboxDeliverFence(targetApp, {
+        organizationId: seed.organizationId,
+        agentId: agent.uuid,
+        inboxId: agent.inboxId,
+        entryId,
+        chatId,
+        messageId: `msg-${entryId}`,
+      });
       const warnSpy = vi.spyOn(targetApp.log, "warn");
       const claimSpy = vi
         .spyOn(inboxService, "claimBacklogForPushFair")
-        .mockResolvedValueOnce([inboxEntry(555_000_001, agent.inboxId, "chat-global-cap")] as never)
+        .mockImplementationOnce(async () => claimDeliveredOnce(targetApp, inboxEntry(entryId, agent.inboxId, chatId)))
         .mockResolvedValue([]);
       const ws = await openRegisteredSocketAt(targetWsUrl, seed);
 
@@ -887,9 +963,9 @@ describe("Agent client WS edge protocol coverage", () => {
             ws,
             (message) =>
               (message as { type?: string; entryId?: number }).type === "inbox:deliver" &&
-              (message as { entryId?: number }).entryId === 555_000_001,
+              (message as { entryId?: number }).entryId === entryId,
           ),
-        ).resolves.toMatchObject({ type: "inbox:deliver", entryId: 555_000_001 });
+        ).resolves.toMatchObject({ type: "inbox:deliver", entryId });
 
         await targetApp.notifier.notify(agent.inboxId, "msg-global-cap");
         await vi.waitFor(() =>
@@ -913,10 +989,20 @@ describe("Agent client WS edge protocol coverage", () => {
         username: `ws-chat-cap-${crypto.randomUUID().slice(0, 8)}`,
       });
       const agent = await createPinnedAgentFor(targetApp, { ...seed, suffix: "chat-cap" });
+      const entryId = 555_000_002;
+      const chatId = "chat-per-cap";
+      await seedLiveInboxDeliverFence(targetApp, {
+        organizationId: seed.organizationId,
+        agentId: agent.uuid,
+        inboxId: agent.inboxId,
+        entryId,
+        chatId,
+        messageId: `msg-${entryId}`,
+      });
       const debugSpy = vi.spyOn(targetApp.log, "debug");
       const claimSpy = vi
         .spyOn(inboxService, "claimBacklogForPushFair")
-        .mockResolvedValueOnce([inboxEntry(555_000_002, agent.inboxId, "chat-per-cap")] as never)
+        .mockImplementationOnce(async () => claimDeliveredOnce(targetApp, inboxEntry(entryId, agent.inboxId, chatId)))
         .mockResolvedValue([]);
       const recoverSpy = vi.spyOn(inboxService, "recoverUnackedForScope").mockResolvedValueOnce({
         resetCount: 0,
@@ -933,7 +1019,7 @@ describe("Agent client WS edge protocol coverage", () => {
           ws,
           (message) =>
             (message as { type?: string; entryId?: number }).type === "inbox:deliver" &&
-            (message as { entryId?: number }).entryId === 555_000_002,
+            (message as { entryId?: number }).entryId === entryId,
         );
 
         ws.send(
@@ -941,7 +1027,7 @@ describe("Agent client WS edge protocol coverage", () => {
             type: "inbox:recover",
             ref: "recover-chat-cap",
             agentId: agent.uuid,
-            chatId: "chat-per-cap",
+            chatId,
           }),
         );
         await expect(
