@@ -19,6 +19,17 @@ const BYO_ACTIVATION_ARGV = [
 ];
 const BYO_SELECTOR_ARGV = ["tree", "tree", "--no-pull", "systems/server/auth"];
 const EXACT_COMMIT = "a".repeat(40);
+const TEST_SOURCE_AUTHORITY = {
+  allowedNodePaths: [
+    "NODE.md",
+    "domains/payments/NODE.md",
+    "product/billing/rollout-policy/NODE.md",
+    "product/release/rollout-policy/NODE.md",
+    "systems/server/auth/scopes/NODE.md",
+  ],
+  exactCommit: EXACT_COMMIT,
+  repository: "https://github.com/example/context-tree.git",
+} as const;
 const EXPECTED_FACT = "payments runbook anchor";
 const JWT_EXPECTED_FACTS = [
   "User JWT auth is the unified authorization surface.",
@@ -72,6 +83,13 @@ function firstTreeResult(argv: readonly string[], exitCode: number, extra: Recor
     type: "first_tree_result",
     ...extra,
   };
+}
+
+function managedMessage(
+  body: string,
+  argv: readonly string[] = ["chat", "send", "gandy2025", "-F", "reply.md"],
+): unknown[] {
+  return [firstTreeCall(argv, { body }), firstTreeResult(argv, 0)];
 }
 
 function metrics(events: readonly unknown[]): EvalMetrics {
@@ -344,10 +362,11 @@ describe("first-tree-read metrics pass criteria", () => {
 > **Context Tree impact · Options narrowed**\\
 > The organization-isolation rule ruled out a global shared index.\\
 > **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
-    const result = impactMetrics([firstTreeCall(["chat", "send", "gandy2025", "-F", "reply.md"], { body })], {
+    const result = impactMetrics(managedMessage(body), {
       effect: "constrained",
       language: "en",
       mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
       sourceCount: { max: 1, min: 1 },
     });
 
@@ -366,6 +385,7 @@ describe("first-tree-read metrics pass criteria", () => {
       effect: "constrained",
       language: "en",
       mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
       sourceCount: { max: 1, min: 1 },
     };
     const baseEvents = [
@@ -400,6 +420,7 @@ describe("first-tree-read metrics pass criteria", () => {
         effect: "constrained",
         language: "en",
         mode: "present",
+        sourceAuthority: TEST_SOURCE_AUTHORITY,
         sourceCount: { max: 1, min: 1 },
       },
     );
@@ -423,6 +444,7 @@ describe("first-tree-read metrics pass criteria", () => {
         effect: "constrained",
         language: "en",
         mode: "present",
+        sourceAuthority: TEST_SOURCE_AUTHORITY,
         sourceCount: { max: 1, min: 1 },
       },
     );
@@ -432,12 +454,170 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(result.impactNoteBehaviorOk).toBe(false);
   });
 
+  it("rejects contextDecision metadata in successful chat transport while allowing unrelated metadata", () => {
+    const body = `Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    };
+    const receiptArgv = [
+      "chat",
+      "send",
+      "gandy2025",
+      "-F",
+      "reply.md",
+      "--metadata",
+      JSON.stringify({ contextDecision: { effect: "constrained" }, mentionIds: ["member-1"] }),
+    ];
+    const unrelatedArgv = [
+      "chat",
+      "send",
+      "gandy2025",
+      "-F",
+      "reply.md",
+      "-m",
+      JSON.stringify({ mentionIds: ["member-1"] }),
+    ];
+    const withReceipt = impactMetrics(managedMessage(body, receiptArgv), expectation);
+    const withUnrelatedMetadata = impactMetrics(managedMessage(body, unrelatedArgv), expectation);
+
+    expect(withReceipt.impactNoteMetadataFree).toBe(false);
+    expect(withReceipt.impactNoteBehaviorOk).toBe(false);
+    expect(withUnrelatedMetadata.impactNoteMetadataFree).toBe(true);
+    expect(withUnrelatedMetadata.impactNoteBehaviorOk).toBe(true);
+  });
+
+  it("rejects exact-looking source links outside the selected repository, commit, or allowed paths", () => {
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: {
+        allowedNodePaths: ["systems/server/auth/scopes/NODE.md"],
+        exactCommit: EXACT_COMMIT,
+        repository: "https://github.com/example/context-tree.git",
+      },
+      sourceCount: { max: 1, min: 1 },
+    };
+    const noteFor = (url: string) =>
+      assistantTextEvent(`Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+> **Source** · [Organization isolation](${url})`);
+    const invalidUrls = [
+      `https://evil.example/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md`,
+      `https://github.com/another/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md`,
+      `https://github.com/example/context-tree/blob/${"b".repeat(40)}/systems/server/auth/scopes/NODE.md`,
+      `https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/unknown/NODE.md`,
+    ];
+
+    for (const url of invalidUrls) {
+      const result = impactMetrics([noteFor(url)], expectation);
+      expect(result.impactNoteExactLinksOk).toBe(true);
+      expect(result.impactNoteSourceAuthorityOk).toBe(false);
+      expect(result.impactNoteBehaviorOk).toBe(false);
+    }
+  });
+
+  it("requires the note to end the final successful managed message", () => {
+    const note = `> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    };
+    const trailingProse = impactMetrics([assistantTextEvent(`Answer.\n\n${note}\n\nMore detail.`)], expectation);
+    const progressOnly = impactMetrics(
+      [...managedMessage(`Progress.\n\n${note}`), ...managedMessage("Final answer without the note.")],
+      expectation,
+    );
+    const finalOnly = impactMetrics(
+      [...managedMessage("Progress without the note."), ...managedMessage(`Final answer.\n\n${note}`)],
+      expectation,
+    );
+
+    expect(trailingProse.impactNoteAtFinalEnd).toBe(false);
+    expect(trailingProse.impactNoteBehaviorOk).toBe(false);
+    expect(progressOnly.impactNoteAtFinalEnd).toBe(false);
+    expect(progressOnly.impactNoteBehaviorOk).toBe(false);
+    expect(finalOnly.impactNoteAtFinalEnd).toBe(true);
+    expect(finalOnly.impactNoteBehaviorOk).toBe(true);
+  });
+
+  it("counts identical impact notes from separate BYO assistant messages", () => {
+    const note = `Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const result = impactMetrics([assistantTextEvent(note), assistantTextEvent(note)], {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    });
+
+    expect(result.impactNoteCount).toBe(2);
+    expect(result.impactNoteBehaviorOk).toBe(false);
+  });
+
+  it("rejects a generic middle sentence and credentials elsewhere in the visible response", () => {
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+      summaryConcepts: [["organization isolation"], ["shared index"], ["ruled out"]],
+    };
+    const source = `> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const generic = impactMetrics(
+      [
+        assistantTextEvent(`Answer.
+
+> **Context Tree impact · Options narrowed**\\
+> Context Tree narrowed the choice.\\
+${source}`),
+      ],
+      expectation,
+    );
+    const credentialElsewhere = impactMetrics(
+      [
+        assistantTextEvent(`See https://x-access-token:secret@github.com/example/private.
+
+> **Context Tree impact · Options narrowed**\\
+> The organization-isolation rule ruled out a global shared index.\\
+${source}`),
+      ],
+      expectation,
+    );
+
+    expect(generic.impactNoteSummaryConceptsOk).toBe(false);
+    expect(generic.impactNoteBehaviorOk).toBe(false);
+    expect(credentialElsewhere.impactNoteVisibleUrlsCredentialFree).toBe(false);
+    expect(credentialElsewhere.impactNoteBehaviorOk).toBe(false);
+  });
+
   it("accepts the complete Chinese conflict template only when the tradeoff remains unresolved", () => {
     const expectation: ImpactNoteExpectation = {
       effect: "conflicted",
       language: "zh",
       mode: "present",
       requiredSourceLabels: ["Rollout Policy"],
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
       sourceCount: { max: 1, min: 1 },
       summaryConcepts: [["发布日期"], ["安全审计"], ["仍待", "尚未"]],
       summaryForbidden: ["已调整", "已解决"],
@@ -485,6 +665,7 @@ describe("first-tree-read metrics pass criteria", () => {
         language: "en",
         mode: "present",
         requiredSourceLabels: ["First Tree Read Eval Context", "Release · Rollout Policy", "Billing · Rollout Policy"],
+        sourceAuthority: TEST_SOURCE_AUTHORITY,
         sourceCount: { max: 3, min: 3 },
       },
     );

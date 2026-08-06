@@ -90,7 +90,8 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain(
       "credential-free binding repository exactly as the activation receipt or\nmanaged workspace briefing declares it; never substitute a local transport URL",
     );
-    expect(skill).toContain("Never place a credential-bearing remote URL, query, or fragment in the visible\nresponse");
+    expect(skill).toContain("Never place a credential-bearing remote URL anywhere in the visible response");
+    expect(skill).toContain("Source links must not contain a query or fragment");
     expect(skill).toContain("read the binding repository and binding branch declared by the workspace\n   briefing");
     expect(skill).toContain("never infer the binding branch from the checkout's current branch\n   or its upstream");
     expect(skill).not.toContain("resolve the current branch's upstream remote-tracking ref");

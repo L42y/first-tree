@@ -80,6 +80,7 @@ const EFFECT_LABELS: Record<ImpactNoteLanguage, Record<ImpactNoteEffect, string>
 };
 
 type ImpactNoteObservation = {
+  atEnd: boolean;
   blankLineBefore: boolean;
   effectLabel: string;
   exactLinksOk: boolean;
@@ -87,30 +88,81 @@ type ImpactNoteObservation = {
   logicalLinesOk: boolean;
   sourceLabels: readonly string[];
   sourceScaffoldingOk: boolean;
+  sourceUrls: readonly string[];
   summary: string;
   summaryObjectiveOk: boolean;
+  textIndex: number;
 };
 
-function isExactCredentialFreeSourceLink(value: string): boolean {
+type ExactSourceLink = {
+  commit: string;
+  nodePath: string;
+  repositoryIdentity: string;
+};
+
+function canonicalRepositoryIdentity(value: string): string | null {
   try {
     const url = new URL(value);
-    return (
-      url.protocol === "https:" &&
-      url.username === "" &&
-      url.password === "" &&
-      url.search === "" &&
-      url.hash === "" &&
-      /\/(?:-\/)?blob\/(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\/[^/].*$/u.test(url.pathname)
-    );
+    const path = url.pathname.replace(/^\/+|\/+$/gu, "").replace(/\.git$/iu, "");
+    return path.length > 0 ? `${url.host.toLowerCase()}/${path.toLowerCase()}` : null;
   } catch {
-    return false;
+    const scpMatch = /^(?:[^@\s]+@)?([^:\s]+):(.+)$/u.exec(value.trim());
+    if (!scpMatch) return null;
+    const host = scpMatch[1]?.toLowerCase() ?? "";
+    const path = (scpMatch[2] ?? "")
+      .replace(/^\/+|\/+$/gu, "")
+      .replace(/\.git$/iu, "")
+      .toLowerCase();
+    return host.length > 0 && path.length > 0 ? `${host}/${path}` : null;
+  }
+}
+
+function parseExactCredentialFreeSourceLink(value: string): ExactSourceLink | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      return null;
+    }
+
+    const segments = url.pathname.split("/").filter(Boolean);
+    const blobIndex = segments.findIndex(
+      (segment, index) =>
+        segment === "blob" && /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/u.test(segments[index + 1] ?? ""),
+    );
+    if (blobIndex <= 0 || blobIndex + 2 >= segments.length) return null;
+    const repositoryEnd = segments[blobIndex - 1] === "-" ? blobIndex - 1 : blobIndex;
+    if (repositoryEnd <= 0) return null;
+
+    const repositoryPath = segments
+      .slice(0, repositoryEnd)
+      .join("/")
+      .replace(/\.git$/iu, "");
+    const nodePath = segments
+      .slice(blobIndex + 2)
+      .map((segment) => decodeURIComponent(segment))
+      .join("/");
+    if (repositoryPath.length === 0 || nodePath.length === 0) return null;
+
+    return {
+      commit: segments[blobIndex + 1]?.toLowerCase() ?? "",
+      nodePath,
+      repositoryIdentity: `${url.host.toLowerCase()}/${repositoryPath.toLowerCase()}`,
+    };
+  } catch {
+    return null;
   }
 }
 
 function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservation[] {
   const observations: ImpactNoteObservation[] = [];
 
-  for (const text of texts) {
+  for (const [textIndex, text] of texts.entries()) {
     const lines = text.replace(/\r/gu, "").split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const firstLine = lines[index] ?? "";
@@ -124,7 +176,7 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
       const sourcePrefix = language === "zh" ? /^> \*\*来源\*\* · /u : /^> \*\*(Source|Sources)\*\* · /u;
       const sourcePrefixMatch = sourcePrefix.exec(thirdLine);
       const markdownLinks = [...thirdLine.matchAll(/\[([^\]\n]+)\]\(([^)\s]+)\)/gu)];
-      const exactLinks = markdownLinks.filter((match) => isExactCredentialFreeSourceLink(match[2] ?? ""));
+      const exactLinks = markdownLinks.filter((match) => parseExactCredentialFreeSourceLink(match[2] ?? "") !== null);
       const expectedEnglishSource = markdownLinks.length === 1 ? "Source" : "Sources";
       const sourceLabel = language === "zh" ? "来源" : expectedEnglishSource;
       const expectedSourceLine = `> **${sourceLabel}** · ${markdownLinks.map((match) => match[0]).join(" · ")}`;
@@ -136,6 +188,7 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
       const summary = summaryMatch?.[1]?.trim() ?? "";
 
       observations.push({
+        atEnd: lines.slice(index + 3).every((line) => line.trim() === ""),
         blankLineBefore: index > 0 && (lines[index - 1] ?? "").trim() === "",
         effectLabel: titleMatch[2]?.trim() ?? "",
         exactLinksOk: exactLinks.length === markdownLinks.length && exactLinks.length > 0,
@@ -144,10 +197,12 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
           summaryMatch !== null && sourcePrefixMatch !== null && !(lines[index + 3] ?? "").startsWith(">"),
         sourceLabels: markdownLinks.map((match) => match[1] ?? ""),
         sourceScaffoldingOk,
+        sourceUrls: markdownLinks.map((match) => match[2] ?? ""),
         summary,
         summaryObjectiveOk: !/(^|\s)(I|We)\s+(used?|read|consulted)|我(使用|读取|参考)了?\s*Context Tree/iu.test(
           summary,
         ),
+        textIndex,
       });
     }
   }
@@ -155,16 +210,64 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
   return observations;
 }
 
+function visibleUrlsCredentialFree(texts: readonly string[]): boolean {
+  const urls = texts
+    .flatMap((text) => [...text.matchAll(/https?:\/\/[^\s<>\])]+/gu)].map((match) => match[0] ?? ""))
+    .filter(Boolean);
+
+  return urls.every((value) => {
+    try {
+      const url = new URL(value);
+      return url.username === "" && url.password === "";
+    } catch {
+      return false;
+    }
+  });
+}
+
+function sourceAuthorityMatches(
+  observation: ImpactNoteObservation | null,
+  expectation: ImpactNoteExpectation,
+  selectedExactCommit: string | null,
+): boolean {
+  if (expectation.mode === "absent") return true;
+  if (observation === null) return false;
+
+  const expectedRepository = canonicalRepositoryIdentity(expectation.sourceAuthority.repository);
+  const expectedCommit = (expectation.sourceAuthority.exactCommit ?? selectedExactCommit)?.toLowerCase() ?? null;
+  const allowedPaths = new Set(expectation.sourceAuthority.allowedNodePaths);
+  if (expectedRepository === null || expectedCommit === null) return false;
+
+  return observation.sourceUrls.every((value) => {
+    const source = parseExactCredentialFreeSourceLink(value);
+    return (
+      source !== null &&
+      source.repositoryIdentity === expectedRepository &&
+      source.commit === expectedCommit &&
+      allowedPaths.has(source.nodePath)
+    );
+  });
+}
+
 function includesAny(value: string, alternatives: readonly string[]): boolean {
   const normalized = value.toLocaleLowerCase();
   return alternatives.some((alternative) => normalized.includes(alternative.toLocaleLowerCase()));
 }
 
-function deriveImpactNoteMetrics(texts: readonly string[], expectation: ImpactNoteExpectation) {
+function deriveImpactNoteMetrics(
+  texts: readonly string[],
+  expectation: ImpactNoteExpectation,
+  options: { contextDecisionMetadataPresent: boolean; selectedExactCommit: string | null },
+) {
   const observations = parseImpactNotes(texts);
   const observation = observations[0] ?? null;
   const allText = texts.join("\n");
-  const metadataFree = !/contextDecision|["']effect["']\s*:|["']evidence["']\s*:/u.test(allText);
+  const metadataFree =
+    !options.contextDecisionMetadataPresent &&
+    !/contextDecision|["']effect["']\s*:|["']evidence["']\s*:/u.test(allText);
+  const atFinalEnd = observation?.atEnd === true && observation.textIndex === texts.length - 1;
+  const sourceAuthorityOk = sourceAuthorityMatches(observation, expectation, options.selectedExactCommit);
+  const visibleUrlsSafe = visibleUrlsCredentialFree(texts);
   const summaryConceptsOk =
     expectation.mode === "absent" ||
     (expectation.summaryConcepts?.every((alternatives) => includesAny(observation?.summary ?? "", alternatives)) ??
@@ -186,21 +289,25 @@ function deriveImpactNoteMetrics(texts: readonly string[], expectation: ImpactNo
       ? observations.length === 0 && metadataFree
       : observations.length === 1 &&
         observation !== null &&
+        atFinalEnd &&
         observation.blankLineBefore &&
         observation.logicalLinesOk &&
         observation.sourceScaffoldingOk &&
         observation.summaryObjectiveOk &&
         observation.exactLinksOk &&
+        sourceAuthorityOk &&
         observation.language === expectation.language &&
         observation.effectLabel === expectedEffectLabel &&
         sourceCountOk &&
         requiredSourceLabelsOk &&
         summaryConceptsOk &&
         summaryForbiddenOk &&
-        metadataFree;
+        metadataFree &&
+        visibleUrlsSafe;
 
   return {
     impactNoteBehaviorOk: behaviorOk,
+    impactNoteAtFinalEnd: atFinalEnd,
     impactNoteBlankLineBefore: observation?.blankLineBefore ?? false,
     impactNoteCount: observations.length,
     impactNoteEffect: observation?.effectLabel ?? null,
@@ -208,11 +315,13 @@ function deriveImpactNoteMetrics(texts: readonly string[], expectation: ImpactNo
     impactNoteLanguage: observation?.language ?? null,
     impactNoteLogicalLinesOk: observation?.logicalLinesOk ?? false,
     impactNoteMetadataFree: metadataFree,
+    impactNoteSourceAuthorityOk: sourceAuthorityOk,
     impactNoteSourceCount: observation?.sourceLabels.length ?? 0,
     impactNoteSourceLabels: observation?.sourceLabels ?? [],
     impactNoteSummaryConceptsOk: summaryConceptsOk,
     impactNoteSummaryForbiddenOk: summaryForbiddenOk,
     impactNoteSummaryObjectiveOk: observation?.summaryObjectiveOk ?? false,
+    impactNoteVisibleUrlsCredentialFree: visibleUrlsSafe,
   };
 }
 
@@ -248,6 +357,40 @@ function isTreeTreeArgv(argv: readonly string[]): boolean {
 
 function isTreeSelectorArgv(argv: readonly string[]): boolean {
   return isTreeTreeArgv(argv) && !isHelpArgv(argv);
+}
+
+function isChatAuthoringArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "chat" && (command[1] === "send" || command[1] === "ask");
+}
+
+function metadataOptionValues(argv: readonly string[]): readonly string[] {
+  const command = commandArgv(argv);
+  const values: string[] = [];
+  for (let index = 2; index < command.length; index += 1) {
+    const arg = command[index] ?? "";
+    if (arg === "--metadata" || arg === "-m") {
+      const value = command[index + 1];
+      if (value !== undefined) values.push(value);
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--metadata=") || arg.startsWith("-m=")) {
+      values.push(arg.slice(arg.indexOf("=") + 1));
+    }
+  }
+  return values;
+}
+
+function hasContextDecisionMetadata(argv: readonly string[]): boolean {
+  return metadataOptionValues(argv).some((value) => {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return isRecord(parsed) && Object.hasOwn(parsed, "contextDecision");
+    } catch {
+      return /["']?contextDecision["']?\s*:/u.test(value);
+    }
+  });
 }
 
 function isModelPhase(event: Record<string, unknown>): boolean {
@@ -394,10 +537,15 @@ export function deriveMetrics(
   let helpCalls = 0;
   let readActivationCalls = 0;
   let skillFileReadObserved = false;
+  const authoringCalls: Array<{
+    argv: string[];
+    body: string;
+    contextDecisionMetadataPresent: boolean;
+    exitCode: number | null;
+  }> = [];
   const firstTreeArgv: string[][] = [];
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const helpExitCodes: number[] = [];
-  const deliveredOutputTexts: string[] = [];
   const modelOutputTexts: string[] = [];
   const readActivationResults: Array<{ exactCommit: string | null; exitCode: number }> = [];
   const readHelpExitCodes: number[] = [];
@@ -408,7 +556,7 @@ export function deriveMetrics(
       skillFileReadObserved = true;
     }
 
-    modelOutputTexts.push(...collectModelOutputText(event));
+    modelOutputTexts.push(...uniqueStrings(collectModelOutputText(event)));
 
     if (!isRecord(event)) continue;
     const type = eventType(event);
@@ -419,13 +567,13 @@ export function deriveMetrics(
       if (type === "first_tree_call") {
         firstTreeCalls += 1;
         firstTreeArgv.push([...argv]);
-        const command = commandArgv(argv);
-        if (
-          command[0] === "chat" &&
-          (command[1] === "send" || command[1] === "ask") &&
-          typeof event.body === "string"
-        ) {
-          deliveredOutputTexts.push(event.body);
+        if (isChatAuthoringArgv(argv)) {
+          authoringCalls.push({
+            argv: [...argv],
+            body: typeof event.body === "string" ? event.body : "",
+            contextDecisionMetadataPresent: hasContextDecisionMetadata(argv),
+            exitCode: null,
+          });
         }
         if (isHelpArgv(argv)) {
           helpCalls += 1;
@@ -437,6 +585,10 @@ export function deriveMetrics(
 
       if (type === "first_tree_result" && typeof event.exitCode === "number") {
         firstTreeCommandResults.push({ argv: [...argv], exitCode: event.exitCode });
+        if (isChatAuthoringArgv(argv)) {
+          const pendingCall = authoringCalls.find((call) => call.exitCode === null && argvEquals(call.argv, argv));
+          if (pendingCall) pendingCall.exitCode = event.exitCode;
+        }
         if (isHelpArgv(argv)) {
           helpExitCodes.push(event.exitCode);
         }
@@ -459,7 +611,10 @@ export function deriveMetrics(
     }
   }
 
-  const visibleOutputTexts = deliveredOutputTexts.length > 0 ? deliveredOutputTexts : uniqueStrings(modelOutputTexts);
+  const successfulAuthoringCalls = authoringCalls.filter((call) => call.exitCode === 0);
+  const visibleOutputTexts =
+    authoringCalls.length > 0 ? successfulAuthoringCalls.map((call) => call.body) : modelOutputTexts;
+  const contextDecisionMetadataPresent = successfulAuthoringCalls.some((call) => call.contextDecisionMetadataPresent);
   const facts = uniqueStrings(expectedFacts);
   const factHits = expectedFactHits(visibleOutputTexts.join("\n"), facts);
   const helpSucceeded = firstTreeCommandResults.some((result) => isHelpArgv(result.argv) && result.exitCode === 0);
@@ -497,7 +652,11 @@ export function deriveMetrics(
     selectorSnapshotResults.length === selectorCalls.length &&
     selectorSnapshotResults.every((result) => result.detachedHead);
   const modelFirstTreeCommandsOk = firstTreeCommandResults.every((result) => result.exitCode === 0);
-  const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation);
+  const selectedExactCommit = exactCommit ?? selectorSnapshotResults.at(-1)?.actualHead ?? null;
+  const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation, {
+    contextDecisionMetadataPresent,
+    selectedExactCommit,
+  });
 
   return {
     expectedFactHits: factHits,

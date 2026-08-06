@@ -18,6 +18,19 @@ const ROLLOUT_EXPECTED_FACTS = [
   "Billing changes must roll out after the core release reaches stable monitoring.",
 ] as const;
 
+const EVAL_SOURCE_REPOSITORY = "https://github.com/example/context-tree.git";
+const JWT_SOURCE_PATHS = [
+  "systems/server/auth/jwt/NODE.md",
+  "systems/server/auth/scopes/NODE.md",
+  "systems/server/http/routes/NODE.md",
+] as const;
+const JWT_SUMMARY_CONCEPTS = [
+  ["JWT"],
+  ["route", "路由"],
+  ["membership", "成员"],
+  ["narrowed", "ruled out", "requires", "must", "收窄", "排除", "必须"],
+] as const;
+
 export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
   {
     description: "Blank workspace with first-tree-read installed and a casual prompt.",
@@ -39,7 +52,12 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       effect: "constrained",
       language: "en",
       mode: "present",
+      sourceAuthority: {
+        allowedNodePaths: JWT_SOURCE_PATHS,
+        repository: EVAL_SOURCE_REPOSITORY,
+      },
       sourceCount: { max: 3, min: 1 },
+      summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
     prompt: "For this project, what constraints should JWT auth routes follow?",
     promptAlternates: ["Analyze server route naming and multi-org permission boundaries for this project."],
@@ -55,7 +73,12 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       effect: "constrained",
       language: "en",
       mode: "present",
+      sourceAuthority: {
+        allowedNodePaths: JWT_SOURCE_PATHS,
+        repository: EVAL_SOURCE_REPOSITORY,
+      },
       sourceCount: { max: 3, min: 1 },
+      summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
     prompt:
       "For this BYO Context Tree task, use the locally authorized SCOPE router and answer: what constraints should JWT auth routes follow?",
@@ -98,6 +121,10 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       language: "zh",
       mode: "present",
       requiredSourceLabels: ["Rollout Policy"],
+      sourceAuthority: {
+        allowedNodePaths: ["product/release/rollout-policy/NODE.md"],
+        repository: EVAL_SOURCE_REPOSITORY,
+      },
       sourceCount: { max: 1, min: 1 },
       summaryConcepts: [["发布日期", "发布日"], ["安全审计"], ["仍待", "尚未", "需要决定", "需升级"]],
       summaryForbidden: ["已调整", "已解决", "已排除", "已完成取舍"],
@@ -120,7 +147,16 @@ export const FIRST_TREE_READ_CASES: readonly FirstTreeReadEvalCase[] = [
       language: "en",
       mode: "present",
       requiredSourceLabels: ["First Tree Read Eval Context", "Release · Rollout Policy", "Billing · Rollout Policy"],
+      sourceAuthority: {
+        allowedNodePaths: [
+          "NODE.md",
+          "product/release/rollout-policy/NODE.md",
+          "product/billing/rollout-policy/NODE.md",
+        ],
+        repository: EVAL_SOURCE_REPOSITORY,
+      },
       sourceCount: { max: 3, min: 3 },
+      summaryConcepts: [["rollout"], ["reviewable scope"], ["audit"], ["billing"]],
     },
     prompt:
       "Plan a production billing rollout. Apply the Context Tree's root rollout-scope rule, release security gate, and billing ordering constraint, and explain the resulting implementation boundary.",
@@ -143,7 +179,12 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
       effect: "constrained",
       language: "en",
       mode: "present",
+      sourceAuthority: {
+        allowedNodePaths: JWT_SOURCE_PATHS,
+        repository: EVAL_SOURCE_REPOSITORY,
+      },
       sourceCount: { max: 3, min: 1 },
+      summaryConcepts: JWT_SUMMARY_CONCEPTS,
     },
     prompt:
       "Use this workspace's current Context Tree to answer: what constraints should JWT auth routes follow for this project?",

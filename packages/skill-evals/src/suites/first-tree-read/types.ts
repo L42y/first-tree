@@ -16,6 +16,11 @@ export type ImpactNoteExpectation =
       language: ImpactNoteLanguage;
       mode: "present";
       requiredSourceLabels?: readonly string[];
+      sourceAuthority: {
+        allowedNodePaths: readonly string[];
+        exactCommit?: string;
+        repository: string;
+      };
       sourceCount: { max: number; min: number };
       summaryConcepts?: readonly (readonly string[])[];
       summaryForbidden?: readonly string[];
@@ -71,15 +76,18 @@ export type EvalMetrics = {
   impactNoteBlankLineBefore: boolean;
   impactNoteCount: number;
   impactNoteEffect: string | null;
+  impactNoteAtFinalEnd: boolean;
   impactNoteExactLinksOk: boolean;
   impactNoteLanguage: ImpactNoteLanguage | null;
   impactNoteLogicalLinesOk: boolean;
   impactNoteMetadataFree: boolean;
+  impactNoteSourceAuthorityOk: boolean;
   impactNoteSourceCount: number;
   impactNoteSourceLabels: readonly string[];
   impactNoteSummaryConceptsOk: boolean;
   impactNoteSummaryForbiddenOk: boolean;
   impactNoteSummaryObjectiveOk: boolean;
+  impactNoteVisibleUrlsCredentialFree: boolean;
   byoReadSequenceOk: boolean;
   byoSelectorsNoPull: boolean;
   byoSnapshotDetached: boolean;

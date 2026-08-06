@@ -314,8 +314,8 @@ a link or expose a raw repository URL, node path, or commit in the visible note.
 Cite at most three normal node paths that jointly influenced the same choice.
 Use the credential-free binding repository exactly as the activation receipt or
 managed workspace briefing declares it; never substitute a local transport URL.
-Never place a credential-bearing remote URL, query, or fragment in the visible
-response.
+Never place a credential-bearing remote URL anywhere in the visible response.
+Source links must not contain a query or fragment.
 
 For a BYO task, use the activation receipt's binding repository and commit. Its
 detached snapshot is already exact and remote-backed. For a managed workspace,

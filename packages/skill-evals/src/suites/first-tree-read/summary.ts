@@ -100,7 +100,7 @@ export function driftNote(
 
   if (!metrics.impactNoteBehaviorOk) {
     notes.push(
-      `Visible Context Tree impact-note behavior failed: count=${metrics.impactNoteCount}; language=${metrics.impactNoteLanguage ?? "none"}; effect=${metrics.impactNoteEffect ?? "none"}; logical lines=${metrics.impactNoteLogicalLinesOk}; blank line=${metrics.impactNoteBlankLineBefore}; objective summary=${metrics.impactNoteSummaryObjectiveOk}; exact links=${metrics.impactNoteExactLinksOk}; source labels=${metrics.impactNoteSourceLabels.join(" | ") || "none"}; metadata free=${metrics.impactNoteMetadataFree}.`,
+      `Visible Context Tree impact-note behavior failed: count=${metrics.impactNoteCount}; language=${metrics.impactNoteLanguage ?? "none"}; effect=${metrics.impactNoteEffect ?? "none"}; final end=${metrics.impactNoteAtFinalEnd}; logical lines=${metrics.impactNoteLogicalLinesOk}; blank line=${metrics.impactNoteBlankLineBefore}; objective summary=${metrics.impactNoteSummaryObjectiveOk}; exact links=${metrics.impactNoteExactLinksOk}; source authority=${metrics.impactNoteSourceAuthorityOk}; source labels=${metrics.impactNoteSourceLabels.join(" | ") || "none"}; metadata free=${metrics.impactNoteMetadataFree}; visible URL credentials absent=${metrics.impactNoteVisibleUrlsCredentialFree}.`,
     );
   }
 
@@ -234,6 +234,7 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - skillFileReadObserved: ${markdownBool(summary.metrics.skillFileReadObserved)}
 - expectedFactsObserved: ${markdownBool(summary.metrics.expectedFactsObserved)}
 - impactNoteBehaviorOk: ${markdownBool(summary.metrics.impactNoteBehaviorOk)}
+- impactNoteAtFinalEnd: ${markdownBool(summary.metrics.impactNoteAtFinalEnd)}
 - impactNoteCount: ${summary.metrics.impactNoteCount}
 - impactNoteEffect: ${summary.metrics.impactNoteEffect ?? "n/a"}
 - impactNoteLanguage: ${summary.metrics.impactNoteLanguage ?? "n/a"}
@@ -241,6 +242,8 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - impactNoteSourceLabels: ${summary.metrics.impactNoteSourceLabels.join(" | ") || "none"}
 - impactNoteSummaryObjectiveOk: ${markdownBool(summary.metrics.impactNoteSummaryObjectiveOk)}
 - impactNoteMetadataFree: ${markdownBool(summary.metrics.impactNoteMetadataFree)}
+- impactNoteSourceAuthorityOk: ${markdownBool(summary.metrics.impactNoteSourceAuthorityOk)}
+- impactNoteVisibleUrlsCredentialFree: ${markdownBool(summary.metrics.impactNoteVisibleUrlsCredentialFree)}
 - helpSucceeded: ${markdownBool(summary.metrics.helpSucceeded)}
 - selectionSucceeded: ${markdownBool(summary.metrics.selectionSucceeded)}
 - readHelpSucceeded: ${markdownBool(summary.metrics.readHelpSucceeded)}
