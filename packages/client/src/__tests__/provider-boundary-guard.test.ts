@@ -211,6 +211,52 @@ describe("runtime provider architecture guard", () => {
     }
   });
 
+  it("keeps production handlers from owning a second binary-missing matcher or reason-code table", () => {
+    const handlersRoot = join(clientSrc, "handlers");
+    const productionFiles = listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts"));
+    // Local regex / phrase tables that re-recognize provider binary absence.
+    const secondOwnerMatchers = [
+      /pi cli is missing/i,
+      /no pi binary/i,
+      /BINARY_MISSING_PATTERNS/,
+      /codex runtime binary is missing/i,
+      /unable to locate codex cli binaries/i,
+      /cursor agent cli is missing/i,
+      /grok build cli is missing/i,
+    ] as const;
+    const reasonLiterals = [
+      '"codex_binary_missing"',
+      '"cursor_binary_missing"',
+      '"grok_binary_missing"',
+      '"pi_binary_missing"',
+      "'codex_binary_missing'",
+      "'cursor_binary_missing'",
+      "'grok_binary_missing'",
+      "'pi_binary_missing'",
+    ] as const;
+
+    for (const file of productionFiles) {
+      const source = readFileSync(file, "utf8");
+      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      for (const matcher of secondOwnerMatchers) {
+        expect(source, `${rel} must not re-own binary-missing recognition (${matcher})`).not.toMatch(matcher);
+      }
+      for (const literal of reasonLiterals) {
+        expect(
+          source,
+          `${rel} must not hard-code ${literal}; import PROVIDER_BINARY_FAILURE_REASON_CODES`,
+        ).not.toContain(literal);
+      }
+    }
+
+    // Pi sanitizer must consume the seam matcher + stable constant.
+    const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
+    expect(piHandler).toContain("isPiBinaryMissingError");
+    expect(piHandler).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
+    expect(piHandler).toContain("provider-support/binary-failure");
+    expect(piHandler).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING");
+  });
+
   it("names only the concrete composition files as registration roots", () => {
     for (const rel of ["handlers/index.ts", "providers/builtin-registry.ts"] as const) {
       const source = readFileSync(join(clientSrc, rel), "utf8");

@@ -118,6 +118,9 @@ export function isGrokBinaryMissingError(input: unknown): boolean {
 export function isPiBinaryMissingError(input: unknown): boolean {
   const text = piErrorText(input).toLowerCase();
   if (text.includes("pi cli is missing")) return true;
+  // Production resolution errors use this phrase before formatting the
+  // user-facing "Pi CLI is missing…" copy (e.g. "no pi binary resolved").
+  if (text.includes("no pi binary")) return true;
   // Linear-time classification: any "pi" followed later by "not found" /
   // "not installed". Avoid `pi.*not ...` regex backtracking on adversarial
   // strings that repeat "pi" many times without a terminal phrase.
