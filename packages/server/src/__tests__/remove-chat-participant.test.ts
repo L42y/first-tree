@@ -1211,6 +1211,60 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     }
   });
 
+  it("capability-withhold rollback does not resurrect a remove-cancelled row", async () => {
+    const { app, owner, agent, chatId, ownerHeaders } = await setupGroup();
+    await sendMessage(app.db, chatId, owner.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "gen work before remove",
+      metadata: { mentions: [agent.agent.uuid] },
+    });
+    // Force a generation>0 delivered claim as an old Client would have claimed.
+    await app.db
+      .insert(agentChatSessions)
+      .values({
+        agentId: agent.agent.uuid,
+        chatId,
+        state: "active",
+        resumeGeneration: 1,
+        updatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [agentChatSessions.agentId, agentChatSessions.chatId],
+        set: { resumeGeneration: 1, state: "active", updatedAt: new Date() },
+      });
+    const [claimed] = await app.db
+      .update(inboxEntries)
+      .set({ status: "delivered", resumeGeneration: 1, deliveredAt: new Date() })
+      .where(and(eq(inboxEntries.inboxId, agent.agent.inboxId), eq(inboxEntries.chatId, chatId)))
+      .returning({ id: inboxEntries.id });
+    expect(claimed?.id).toBeTruthy();
+
+    const remove = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+    expect(remove.statusCode).toBe(200);
+    const [cancelled] = await app.db
+      .select({ status: inboxEntries.status })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.id, claimed!.id));
+    expect(cancelled?.status).toBe("cancelled");
+
+    // Same predicate as ws-client fail-closed rollback: only while still delivered.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "pending", deliveredAt: null })
+      .where(and(eq(inboxEntries.id, claimed!.id), eq(inboxEntries.status, "delivered")));
+
+    const [after] = await app.db
+      .select({ status: inboxEntries.status })
+      .from(inboxEntries)
+      .where(eq(inboxEntries.id, claimed!.id));
+    expect(after?.status).toBe("cancelled");
+  });
+
   it("inbox delivery fence skips stale claims after remove and holds shared until send completes", async () => {
     const { app, owner, agent, chatId, ownerHeaders } = await setupGroup();
     const sent = await sendMessage(app.db, chatId, owner.humanAgentUuid, {

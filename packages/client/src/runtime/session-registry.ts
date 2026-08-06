@@ -147,6 +147,18 @@ export class SessionRegistry {
   }
 
   /**
+   * Roll back an in-memory resume generation after a failed durable flush.
+   * Only used when adoption failed before the generation became admissible.
+   */
+  revertResumeGeneration(chatId: string, generation: number): void {
+    if (generation <= 0) {
+      this.resumeGenerations.delete(chatId);
+      return;
+    }
+    this.resumeGenerations.set(chatId, generation);
+  }
+
+  /**
    * Rotate the chat's fresh-start nonce for a Reset attempt. The first call
    * for an in-flight Reset mints a cryptographically random UUID; a failed
    * flush keeps that pending rotation so the genuine retry writes the same

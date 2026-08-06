@@ -4174,11 +4174,80 @@ describe("SessionManager resume generation admission", () => {
       expect(start).not.toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       expect(ackEntry).not.toHaveBeenCalled();
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      // Disk must still hold the pre-removal mapping — generation is not admissible yet.
+      const mid = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        entries: Record<string, { claudeSessionId: string }>;
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(mid.entries["chat-pf"]?.claudeSessionId).toBe("old-id");
+      expect(mid.resumeGenerations?.["chat-pf"]).toBeUndefined();
 
       flushSpy.mockRestore();
+      const flushSpy2 = vi.spyOn(SessionRegistry.prototype, "flushOrThrow");
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-pf", messageId: "msg-pf-1", resumeGeneration: 1 }));
+      expect(flushSpy2).toHaveBeenCalled();
       expect(resume).not.toHaveBeenCalled();
       expect(start).toHaveBeenCalledTimes(1);
+      flushSpy2.mockRestore();
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("delayed g1 adoption drops when g2 commits first after shared teardown", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-resume-gen-g1g2-"));
+    const registryPath = join(root, "sessions.json");
+
+    try {
+      let releaseShutdown: () => void = () => {};
+      const shutdownGate = new Promise<void>((resolve) => {
+        releaseShutdown = resolve;
+      });
+      let shutdownEntered = 0;
+      const start = vi.fn(async () => ({
+        sessionId: `fresh-${start.mock.calls.length}`,
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const resume = vi.fn(async () => ({
+        sessionId: "should-not",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const inject = vi.fn(() => ({ kind: "owned" as const, mode: "queued" as const }));
+      const ackEntry = mockAckEntry();
+      const handler = createMockHandler({
+        start,
+        resume,
+        inject,
+        shutdown: vi.fn(async () => {
+          shutdownEntered++;
+          await shutdownGate;
+        }),
+      });
+
+      const sm = createSessionManager({ handler, registryPath, ackEntry });
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-race", messageId: "msg-seed", resumeGeneration: 0 }));
+      expect(start).toHaveBeenCalledTimes(1);
+      start.mockClear();
+
+      const g1 = sm.dispatch(mockEntry({ id: 2, chatId: "chat-race", messageId: "msg-g1", resumeGeneration: 1 }));
+      await vi.waitFor(() => expect(shutdownEntered).toBeGreaterThan(0));
+      const g2 = sm.dispatch(mockEntry({ id: 3, chatId: "chat-race", messageId: "msg-g2", resumeGeneration: 2 }));
+      releaseShutdown();
+      await Promise.all([g1, g2]);
+
+      // g1 must not enter provider once g2 has committed; g2 fresh-starts once.
+      expect(resume).not.toHaveBeenCalled();
+      expect(inject).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(ackEntry).toHaveBeenCalledWith(2);
+
+      const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(persisted.resumeGenerations?.["chat-race"]).toBe(2);
 
       await sm.shutdown();
     } finally {

@@ -884,11 +884,13 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
             const caps = boundClientId ? connectionManager.getClientWireCapabilities(boundClientId) : undefined;
             if (caps?.wsResumeGenerationV1 !== true) {
               // Fail-closed: leave the row pending for a capable client; do not
-              // silently push generation>0 work to an old runtime.
+              // silently push generation>0 work to an old runtime. Only roll
+              // back while still `delivered` so a concurrent remove's
+              // `cancelled` terminal state cannot be resurrected to pending.
               await app.db
                 .update(inboxEntries)
                 .set({ status: "pending", deliveredAt: null })
-                .where(eq(inboxEntries.id, entry.id));
+                .where(and(eq(inboxEntries.id, entry.id), eq(inboxEntries.status, "delivered")));
               app.log.warn(
                 {
                   entryId: entry.id,

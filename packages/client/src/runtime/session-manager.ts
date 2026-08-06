@@ -566,6 +566,13 @@ export class SessionManager {
   private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
   /** Locally adopted resume/removal generation per chat (default 0). */
   private readonly resumeGenerations = new Map<string, number>();
+  /**
+   * Per-chat exclusive lock for resume-generation adoption. Concurrent
+   * inbox deliveries must serialize so a delayed teardown cannot let an
+   * older generation return `proceed` while a newer one is still adopting.
+   * Value is the tail promise of the adoption chain for that chat.
+   */
+  private readonly resumeGenerationAdoptions = new Map<string, Promise<void>>();
   private readonly config: SessionManagerConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
   /** Last lazy Context-Tree re-resolution attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
@@ -776,11 +783,20 @@ export class SessionManager {
       // Persistence/teardown failed — keep delivered custody for deterministic retry.
       return;
     }
+    // A concurrent newer adoption may have committed after we returned proceed.
+    if (this.getLocalResumeGeneration(chatId) !== incomingGeneration) {
+      if (incomingGeneration < this.getLocalResumeGeneration(chatId)) {
+        await this.config.ackEntry(entry.id);
+        return;
+      }
+      return;
+    }
     const admissionGeneration = this.admissionGenerations.get(chatId) ?? 0;
     const admissionValid = () =>
       !this.shuttingDown &&
       (this.admissionGenerations.get(chatId) ?? 0) === admissionGeneration &&
-      !this.isProviderRouteAdmissionFenced(chatId);
+      !this.isProviderRouteAdmissionFenced(chatId) &&
+      this.getLocalResumeGeneration(chatId) === incomingGeneration;
     const suspending = this.sessions.get(chatId)?.suspending;
     if (suspending) await suspending;
     const isRecoveryRedelivery = this.inboxDelivery.takeRecoveryActivationReady(chatId);
@@ -867,7 +883,12 @@ export class SessionManager {
 
         if (!admissionValid()) {
           if (this.inboxDelivery.hasEntry(work)) {
-            if (this.isProviderRouteAdmissionFenced(chatId)) {
+            if (incomingGeneration < this.getLocalResumeGeneration(chatId)) {
+              // Newer resume generation committed while we were admitting —
+              // this envelope is remove-stale; settle it rather than retrying
+              // into the newer provider session.
+              await this.config.ackEntry(entry.id);
+            } else if (this.isProviderRouteAdmissionFenced(chatId)) {
               await this.parkDeliveryBehindResetAdmissionFence(chatId, message);
             } else {
               this.retryDeliveryTurn(chatId, message, "delivery_admission_invalidated");
@@ -4924,33 +4945,89 @@ export class SessionManager {
   }
 
   private getLocalResumeGeneration(chatId: string): number {
-    return this.resumeGenerations.get(chatId) ?? this.registry?.getResumeGeneration(chatId) ?? 0;
+    // Only the post-flush committed map is admissible. Registry in-memory
+    // may briefly hold a not-yet-durable candidate during adoption.
+    return this.resumeGenerations.get(chatId) ?? 0;
+  }
+
+  /**
+   * Serialize resume-generation adoption per chat. Waiters chain onto the
+   * current tail so two concurrent dispatches cannot both observe the same
+   * older `local` and independently return `proceed`.
+   */
+  private async withResumeGenerationAdoptionLock<T>(chatId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.resumeGenerationAdoptions.get(chatId) ?? Promise.resolve();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.then(
+      () => hold,
+      () => hold,
+    );
+    this.resumeGenerationAdoptions.set(chatId, chained);
+    await prev.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.resumeGenerationAdoptions.get(chatId) === chained) {
+        this.resumeGenerationAdoptions.delete(chatId);
+      }
+    }
   }
 
   /**
    * Fence provider admission against the inbox-stamped resume generation.
    * Reuses Reset's quiesce → teardown → delete mapping + nonce → flushOrThrow
    * path when generation advances; never rolls back a newer local generation.
+   * The new generation stays non-admissible until the tombstone flush commits.
    */
   private async ensureResumeGenerationAdmission(
     chatId: string,
     incoming: number,
   ): Promise<"proceed" | "drop" | "retry"> {
+    const outcome = await this.withResumeGenerationAdoptionLock(chatId, async () => {
+      const local = this.getLocalResumeGeneration(chatId);
+      if (incoming < local) return "drop" as const;
+      if (incoming === local) return "proceed" as const;
+      return this.adoptResumeGeneration(chatId, incoming);
+    });
+    // Re-read after the exclusive section: a waiter that adopted a newer
+    // generation while we were queued (or after we committed) must drop us.
+    const committed = this.getLocalResumeGeneration(chatId);
+    if (incoming < committed) return "drop";
+    if (incoming > committed) {
+      // Flush failure left generation non-admissible — surface retry, or a
+      // lost race needs another adopt attempt.
+      return outcome === "retry" ? "retry" : this.ensureResumeGenerationAdmission(chatId, incoming);
+    }
+    return outcome === "retry" ? "retry" : "proceed";
+  }
+
+  /**
+   * Exclusive adoption body. Updates the admissible generation only after
+   * teardown + durable registry flush succeed; rolls registry memory back on
+   * flush failure so a same-generation retry cannot skip the tombstone write.
+   */
+  private async adoptResumeGeneration(chatId: string, incoming: number): Promise<"proceed" | "drop" | "retry"> {
     const local = this.getLocalResumeGeneration(chatId);
     if (incoming < local) return "drop";
     if (incoming === local) return "proceed";
 
     this.invalidateDeliveryAdmission(chatId);
     this.config.log.info({ chatId, local, incoming }, "adopting newer resume generation before provider admission");
+    const previousCommitted = local;
     try {
       await this.retireProviderContextForResumeGeneration(chatId);
-      this.resumeGenerations.set(chatId, incoming);
       this.registry?.setResumeGeneration(chatId, incoming);
       this.registry?.rotateFreshStartNonce(chatId);
       this.persistRegistry({ throwOnFailure: true });
       this.registry?.markResetNonceDurable(chatId);
+      this.resumeGenerations.set(chatId, incoming);
       return "proceed";
     } catch (err) {
+      this.registry?.revertResumeGeneration(chatId, previousCommitted);
       this.config.log.warn({ err, chatId, incoming }, "resume generation adoption failed; withholding provider");
       return "retry";
     }
