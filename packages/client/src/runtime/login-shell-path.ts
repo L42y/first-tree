@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
+import { sep } from "node:path";
 import { versionManagerBinDirs } from "./install-locations.js";
 import { protectedRootsOnThisHost, type ReadLink, resolveOutsideProtectedRoots } from "./protected-paths.js";
 
@@ -105,7 +106,24 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell, read
     const roots = protectedRootsOnThisHost();
     const vet = (dir: string): string | null =>
       roots.length === 0 ? dir : resolveOutsideProtectedRoots(dir, roots, readLink);
-    const live = probed.dirs.map(vet).filter((dir): dir is string => dir !== null);
+    // When the shell reported two version managers, neither one's tree can be
+    // trusted to hold the selection — and withholding it only from the appended
+    // fallback would achieve nothing, because the raw `$PATH` already lists it.
+    // A capture ordered `[dead fnm multishell, $NVM_BIN]` would otherwise skip
+    // the dead entry and launch nvm, which is precisely the substitution the
+    // ambiguity rule exists to prevent. So the decision applies to the whole
+    // returned list, not just the part this function appends.
+    const untrusted =
+      probed.env.nvmBin !== undefined && probed.env.fnmDir !== undefined
+        ? [probed.env.nvmBin, probed.env.fnmDir].map(vet).filter((dir): dir is string => dir !== null)
+        : [];
+    const trusted = (dir: string): boolean =>
+      !untrusted.some((root) => dir === root || dir.startsWith(`${root}${sep}`));
+
+    const live = probed.dirs
+      .map(vet)
+      .filter((dir): dir is string => dir !== null)
+      .filter(trusted);
 
     // Stable fallback for a per-session dir that is already gone. What the shell
     // reported about its version manager decides it — and decides it globally,

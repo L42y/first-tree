@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findCodexExecutableOnPath } from "../runtime/codex-binary.js";
 import { versionManagerBinDirs, wellKnownBinDirs } from "../runtime/install-locations.js";
+import { getLoginShellPathDirs, resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 
 const NEVER_LISTED = (path: string): string[] => {
   throw new Error(`unexpected readdir: ${path}`);
@@ -327,6 +328,48 @@ describe("version-manager discovery after a multishell teardown", () => {
         },
       ),
     ).toBe(codex);
+  });
+
+  // End to end, through the real `getLoginShellPathDirs` composition: two
+  // manager variables reported, the fnm per-session entry already gone, and a
+  // runnable binary sitting under `$NVM_BIN`. Withholding nvm only from the
+  // appended fallback would prove nothing here — the raw `$PATH` lists it, so
+  // the resolver would skip the dead entry and launch nvm. Missing is the
+  // correct answer: the live shell had selected fnm.
+  it("resolves nothing rather than nvm when both managers were reported", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-dual-")));
+    const home = join(root, "home");
+    const nvmBin = join(home, ".nvm", "versions", "node", "v22.2.0", "bin");
+    const fnmDir = join(root, "custom-fnm");
+    const multishell = join(root, "fnm_multishells", "88_2", "bin");
+    mkdirSync(nvmBin, { recursive: true });
+    mkdirSync(join(fnmDir, "node-versions", "v20.11.0", "installation", "bin"), { recursive: true });
+    mkdirSync(home, { recursive: true });
+    const nvmCodex = join(nvmBin, "codex");
+    writeFileSync(nvmCodex, "#!/bin/sh\n");
+    chmodSync(nvmCodex, 0o755);
+
+    vi.stubEnv("HOME", home);
+    resetLoginShellPathDirsCache();
+    const dirs = getLoginShellPathDirs(
+      () =>
+        `__FT_SHELL_PATH__${multishell}\n${nvmBin}__FT_SHELL_PATH__${"__FT_SHELL_ENV__"}${fnmDir}\n${nvmBin}${"__FT_SHELL_ENV__"}`,
+    );
+    resetLoginShellPathDirsCache();
+
+    expect(dirs).not.toContain(nvmBin);
+    expect(
+      findCodexExecutableOnPath(
+        { HOME: home, PATH: "" },
+        {
+          platform: "linux",
+          pathDelimiter: ":",
+          loginShellPathDirs: () => dirs,
+          wellKnownDirs: () => [],
+          desktopAppDirs: () => [],
+        },
+      ),
+    ).toBeNull();
   });
 
   // The precedence the fallback must not disturb. With two versions installed
