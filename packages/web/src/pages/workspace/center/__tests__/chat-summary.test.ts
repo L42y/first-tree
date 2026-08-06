@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { describe, expect, it } from "vitest";
 import { ChatSummary, descriptionFirstLine } from "../chat-summary.js";
@@ -108,6 +108,7 @@ describe("ChatSummary", () => {
   async function renderSummary(
     scrollEl: HTMLDivElement,
     overrides: Partial<SummaryProps> = {},
+    options: { strictMode?: boolean } = {},
   ): Promise<{
     container: HTMLDivElement;
     overlayEl: HTMLDivElement;
@@ -122,8 +123,12 @@ describe("ChatSummary", () => {
     document.body.appendChild(overlayEl);
     const root = createRoot(container);
     let props = summaryProps(scrollEl, overlayEl, overrides);
+    const renderTree = (nextProps: SummaryProps) => {
+      const summary = createElement(ChatSummary, nextProps);
+      return options.strictMode ? createElement(StrictMode, null, summary) : summary;
+    };
     await act(async () => {
-      root.render(createElement(ChatSummary, props));
+      root.render(renderTree(props));
     });
     return {
       container,
@@ -132,7 +137,7 @@ describe("ChatSummary", () => {
       rerender: async (next: Partial<SummaryProps>) => {
         props = { ...props, ...next };
         await act(async () => {
-          root.render(createElement(ChatSummary, props));
+          root.render(renderTree(props));
         });
       },
     };
@@ -182,8 +187,14 @@ describe("ChatSummary", () => {
     const lead = summaryDocument?.querySelector<HTMLElement>('[data-summary-part="lead"]');
     const paragraphs = summaryDocument?.querySelectorAll("p");
     expect(summaryDocument?.dataset.summaryLayout).toBe("lead");
+    // Blank-line lead must be a child span — never the <p> that receives [&_p]:text-body.
+    expect(lead?.tagName).toBe("SPAN");
+    expect(lead?.parentElement?.tagName).toBe("P");
+    expect(paragraphs?.[0]?.getAttribute("data-summary-part")).toBeNull();
+    expect(summaryDocument?.querySelectorAll('[data-summary-part="lead"]')).toHaveLength(1);
     expect(lead?.textContent).toContain("The current result is ready for readers.");
     expect(lead?.className).toContain("text-subtitle");
+    expect(lead?.style.fontSize).toBe("var(--text-subtitle)");
     expect(lead?.querySelector("strong")?.textContent).toBe("current result");
     expect(paragraphs?.[1]?.textContent).toContain("Supporting context is secondary.");
     expect(paragraphs?.[2]?.textContent).toContain("Next: Observe usage.");
@@ -218,13 +229,40 @@ describe("ChatSummary", () => {
     // Soft breaks stay in one paragraph under remark-breaks.
     expect(paragraphs?.length).toBe(1);
     expect(lead?.tagName).toBe("SPAN");
+    expect(paragraphs?.[0]?.getAttribute("data-summary-part")).toBeNull();
     expect(lead?.textContent).toBe("Chat Summary V1 已上线，后续摘要会优先展示用户可行动的当前状态。");
     expect(lead?.className).toContain("text-subtitle");
+    expect(lead?.style.fontSize).toBe("var(--text-subtitle)");
     // Supporting soft-break lines remain in the same <p> but outside the lead.
     expect(paragraphs?.[0]?.textContent).toContain("旧摘要会在下一次实质进展时重写");
     expect(paragraphs?.[0]?.textContent).toContain("下一步");
     expect(lead?.textContent).not.toContain("旧摘要会在下一次实质进展时重写");
     expect(lead?.textContent).not.toContain("下一步");
+
+    await act(async () => root.unmount());
+    container.remove();
+    overlayEl.remove();
+  });
+
+  it("keeps a unique lead under StrictMode for soft-break writing-contract copy", async () => {
+    localStorage.clear();
+    const scrollEl = document.createElement("div");
+    const { container, overlayEl, root } = await renderSummary(
+      scrollEl,
+      {
+        description: ["首行是唯一 headline。", "第二行保持普通正文。", "第三行也是普通正文。"].join("\n"),
+        descriptionUpdatedAt: unreadVersionAt,
+        lastReadAt: readRecentlyAt,
+      },
+      { strictMode: true },
+    );
+
+    const leads = overlayEl.querySelectorAll('[data-summary-part="lead"]');
+    expect(leads).toHaveLength(1);
+    expect(leads[0]?.tagName).toBe("SPAN");
+    expect(leads[0]?.textContent).toBe("首行是唯一 headline。");
+    expect(leads[0]?.textContent).not.toContain("第二行");
+    expect(overlayEl.querySelector("p")?.getAttribute("data-summary-part")).toBeNull();
 
     await act(async () => root.unmount());
     container.remove();

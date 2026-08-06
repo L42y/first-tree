@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import {
   Children,
+  type CSSProperties,
   type HTMLAttributes,
   isValidElement,
   type ReactNode,
@@ -137,11 +138,13 @@ function clearDismissedVersion(chatId: string, version: string): void {
 type DescriptionLead = {
   preview: string;
   promotable: boolean;
+  /** 1-based source line of the lead physical line (matches mdast/hast positions). */
+  line: number;
 };
 
 function findDescriptionLead(description: string): DescriptionLead | null {
   const lines = description.split(/\r?\n/);
-  let headingFallback = "";
+  let headingFallback: { preview: string; line: number } | null = null;
   for (const [index, rawLine] of lines.entries()) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -167,10 +170,11 @@ function findDescriptionLead(description: string): DescriptionLead | null {
       .replace(/\s+/g, " ")
       .trim();
     if (!stripped) continue;
+    const sourceLine = index + 1;
     if (isHeading) {
       // Remember the first heading as a fallback, but keep scanning for prose.
       if (!headingFallback) {
-        headingFallback = stripped;
+        headingFallback = { preview: stripped, line: sourceLine };
       }
       continue;
     }
@@ -185,17 +189,34 @@ function findDescriptionLead(description: string): DescriptionLead | null {
     return {
       preview: stripped,
       promotable: !startsComplexBlock,
+      line: sourceLine,
     };
   }
   if (!headingFallback) return null;
   return {
-    preview: headingFallback,
+    preview: headingFallback.preview,
     promotable: false,
+    line: headingFallback.line,
   };
 }
 
 export function descriptionFirstLine(description: string): string {
   return findDescriptionLead(description)?.preview ?? "";
+}
+
+type MarkdownParagraphNode = {
+  position?: {
+    start?: { line?: number };
+    end?: { line?: number };
+  };
+};
+
+/** Pure: true when this paragraph's source span covers the lead physical line. */
+function paragraphContainsLeadLine(node: MarkdownParagraphNode | undefined, leadLine: number): boolean {
+  const start = node?.position?.start?.line;
+  const end = node?.position?.end?.line;
+  if (start == null || end == null) return false;
+  return start <= leadLine && leadLine <= end;
 }
 
 function isBreakElement(node: ReactNode): boolean {
@@ -230,11 +251,31 @@ function joinSoftBreakSegments(segments: ReactNode[][]): ReactNode {
   }, null);
 }
 
+const LEAD_SPAN_STYLE: CSSProperties = {
+  display: "block",
+  color: "var(--fg)",
+  marginBottom: "var(--sp-3)",
+  // Inline measure beats parent `[&_p]:text-body` inheritance/specificity on <p>.
+  fontSize: "var(--text-subtitle)",
+  fontWeight: "var(--text-subtitle--font-weight)" as CSSProperties["fontWeight"],
+  lineHeight: "var(--text-subtitle--line-height)",
+  letterSpacing: "var(--text-subtitle--letter-spacing)",
+};
+
+function LeadSpan({ children }: { children: ReactNode }) {
+  return (
+    <span data-summary-part="lead" className="text-subtitle" style={LEAD_SPAN_STYLE}>
+      {children}
+    </span>
+  );
+}
+
 /**
- * Promote only the first physical line of the first prose paragraph. Soft breaks
- * from the writing contract (`line\nline`) stay in one Markdown `<p>`; styling
- * the whole paragraph would bold the entire brief. Blank-line paragraphs still
- * promote the whole first `<p>` when it has no soft breaks.
+ * Promote only the first physical line of the prose paragraph that covers the
+ * lead source line. Soft breaks from the writing contract stay in one Markdown
+ * `<p>`; the lead is always a child span so `[&_p]:text-body` cannot flatten
+ * headline weight back to body. Blank-line paragraphs wrap their sole segment
+ * the same way.
  */
 function LeadAwareParagraph({
   children,
@@ -256,33 +297,15 @@ function LeadAwareParagraph({
   );
   if (nonEmpty.length <= 1) {
     return (
-      <p
-        {...props}
-        data-summary-part="lead"
-        className={["text-subtitle mt-0 mb-[var(--sp-3)]", props.className].filter(Boolean).join(" ")}
-        style={{
-          ...(typeof props.style === "object" && props.style ? props.style : {}),
-          color: "var(--fg)",
-        }}
-      >
-        {children}
+      <p {...props}>
+        <LeadSpan>{children}</LeadSpan>
       </p>
     );
   }
   const [lead, ...rest] = nonEmpty;
   return (
     <p {...props}>
-      <span
-        data-summary-part="lead"
-        className="text-subtitle"
-        style={{
-          display: "block",
-          color: "var(--fg)",
-          marginBottom: "var(--sp-3)",
-        }}
-      >
-        {lead}
-      </span>
+      <LeadSpan>{lead}</LeadSpan>
       {joinSoftBreakSegments(rest)}
     </p>
   );
@@ -510,10 +533,30 @@ export function ChatSummary({
     };
   }, [expanded, dismiss]);
 
+  const descriptionLead = useMemo(() => findDescriptionLead(markdownDescription), [markdownDescription]);
+  const promotesHeadline = descriptionLead?.promotable ?? false;
+  const leadSourceLine = promotesHeadline ? (descriptionLead?.line ?? null) : null;
+  const summaryMarkdownComponents = useMemo(() => {
+    if (leadSourceLine == null) return undefined;
+    return {
+      p: ({
+        node,
+        children,
+        ...props
+      }: HTMLAttributes<HTMLParagraphElement> & {
+        node?: MarkdownParagraphNode;
+        children?: ReactNode;
+      }) => (
+        <LeadAwareParagraph promoteLead={paragraphContainsLeadLine(node, leadSourceLine)} {...props}>
+          {children}
+        </LeadAwareParagraph>
+      ),
+    };
+  }, [leadSourceLine]);
+
   if (!hasDescription) return null;
 
   const firstLine = descriptionFirstLine(markdownDescription);
-  const promotesHeadline = findDescriptionLead(markdownDescription)?.promotable ?? false;
   const freshnessText = updatedAtMs !== null ? formatRelative(descriptionUpdatedAt) : null;
   const showAmberChip = unread && !unreadCleared && !expanded;
   const amberActive = highlighted && expanded;
@@ -645,25 +688,7 @@ export function ChatSummary({
                   className={
                     "[&_p]:text-body [&_li]:text-body [&_:is(h1,h2,h3,h4,h5,h6)]:text-[length:1em] [&_:is(h1,h2,h3,h4,h5,h6)]:font-semibold [&_:is(h1,h2,h3,h4,h5,h6)]:leading-snug [&_:is(h1,h2,h3,h4,h5,h6)]:mt-3.5 [&_:is(h1,h2,h3,h4,h5,h6)]:mb-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_ul]:pl-4 [&_ol]:pl-4"
                   }
-                  components={
-                    promotesHeadline
-                      ? (() => {
-                          let leadApplied = false;
-                          return {
-                            p: ({ node, children, ...props }) => {
-                              void node;
-                              const promoteThis = !leadApplied;
-                              if (promoteThis) leadApplied = true;
-                              return (
-                                <LeadAwareParagraph promoteLead={promoteThis} {...props}>
-                                  {children}
-                                </LeadAwareParagraph>
-                              );
-                            },
-                          };
-                        })()
-                      : undefined
-                  }
+                  components={summaryMarkdownComponents}
                 >
                   {markdownDescription}
                 </Markdown>
