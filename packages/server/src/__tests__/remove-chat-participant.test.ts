@@ -391,11 +391,15 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
   });
 
   it("pauses active cron jobs when the owning Human speaker is removed", async () => {
-    const { app, owner, peer, agent, chatId, ownerHeaders } = await setupGroup();
+    const { app, owner, agent, chatId, ownerHeaders } = await setupGroup();
+    // Legal product shape: the managing human of the wake agent is a speaker and
+    // owns the job; removing that human must pause with owner_not_speaker while
+    // watcher recompute keeps them watching the still-present managed agent.
+    await ensureParticipant(app.db, chatId, agent.humanAgentUuid);
     const jobId = crypto.randomUUID();
     await app.db.insert(cronJobs).values({
       id: jobId,
-      ownerMemberId: peer.memberId,
+      ownerMemberId: agent.memberId,
       controlChatId: chatId,
       agentId: agent.agent.uuid,
       name: `rm-own-${jobId.slice(0, 6)}`,
@@ -411,12 +415,15 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
 
     const res = await app.inject({
       method: "DELETE",
-      url: `/api/v1/chats/${chatId}/participants/${peer.humanAgentUuid}`,
+      url: `/api/v1/chats/${chatId}/participants/${agent.humanAgentUuid}`,
       headers: ownerHeaders,
     });
     expect(res.statusCode).toBe(200);
-    // Human may remain as watcher when still managing an in-chat agent.
-    expect(["watcher", null]).toContain(res.json<{ membershipKind: string | null }>().membershipKind);
+    expect(res.json()).toEqual({
+      chatId,
+      targetAgentId: agent.humanAgentUuid,
+      membershipKind: "watching",
+    });
 
     const [job] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
     expect(job?.state).toBe("paused");
