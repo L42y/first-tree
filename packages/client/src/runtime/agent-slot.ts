@@ -473,10 +473,10 @@ export class AgentSlot {
           // finalized frame for the superseded generation is then ignored.
           // Membership-removal soft terminate may carry resumeGeneration so a
           // Client that already adopted a newer generation ignores the frame.
+          const terminateOpts =
+            cmd.resumeGeneration !== undefined ? { resumeGeneration: cmd.resumeGeneration } : undefined;
           this.sessionManager
-            .handleCommand(cmd.chatId, cmd.type, {
-              ...(cmd.resumeGeneration !== undefined ? { resumeGeneration: cmd.resumeGeneration } : {}),
-            })
+            .handleCommand(cmd.chatId, cmd.type, terminateOpts)
             .then(() => {
               this.sessionManager?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
             })

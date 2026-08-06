@@ -779,7 +779,13 @@ export class SessionManager {
     const chatId = entry.chatId ?? entry.message.chatId;
     const messageId = entry.message.id;
     const incomingGeneration = entry.resumeGeneration ?? 0;
-    const generationGate = await this.ensureResumeGenerationAdmission(chatId, incomingGeneration);
+    // Prefer a truly synchronous generation gate so the common no-adoption
+    // path does not microtask-yield before recovery sampling. `await` on an
+    // already-resolved async function still schedules a turn and can promote
+    // a pre-recovery frame into post-recovery redelivery.
+    const syncGenerationGate = this.tryResumeGenerationAdmissionSync(chatId, incomingGeneration);
+    const generationGate =
+      syncGenerationGate ?? (await this.ensureResumeGenerationAdmission(chatId, incomingGeneration));
     if (generationGate === "drop") {
       // Stale lower-generation delivery must not enter provider or roll back
       // the adopted generation; settle the envelope so it does not loop.
@@ -5005,6 +5011,21 @@ export class SessionManager {
   }
 
   /**
+   * Synchronous no-adoption check. Returns null when async adoption / lock
+   * joining is required. Must not be `async` — callers rely on a true
+   * non-yielding path to preserve inbox-recovery sampling order.
+   */
+  private tryResumeGenerationAdmissionSync(chatId: string, incoming: number): "proceed" | "drop" | null {
+    const localAtEntry = this.getLocalResumeGeneration(chatId);
+    const pendingAtEntry = this.getPendingResumeGeneration(chatId);
+    if (incoming < localAtEntry || incoming < pendingAtEntry) return "drop";
+    if (incoming === localAtEntry && incoming === pendingAtEntry && !this.resumeGenerationAdoptions.has(chatId)) {
+      return "proceed";
+    }
+    return null;
+  }
+
+  /**
    * Fence provider admission against the inbox-stamped resume generation.
    * Reuses Reset's quiesce → teardown → delete mapping + nonce → flushOrThrow
    * path when generation advances; never rolls back a newer local generation.
@@ -5018,6 +5039,9 @@ export class SessionManager {
     chatId: string,
     incoming: number,
   ): Promise<"proceed" | "drop" | "retry"> {
+    const sync = this.tryResumeGenerationAdmissionSync(chatId, incoming);
+    if (sync !== null) return sync;
+
     this.notePendingResumeGeneration(chatId, incoming);
 
     const outcome = await this.withResumeGenerationAdoptionLock(chatId, async () => {
@@ -5047,8 +5071,8 @@ export class SessionManager {
     // Final authority check after releasing the lock: a newer waiter may have
     // raised pending or committed while our continuation was scheduled.
     const committed = this.getLocalResumeGeneration(chatId);
-    const pending = this.getPendingResumeGeneration(chatId);
-    if (incoming < committed || incoming < pending) return "drop";
+    const pendingAfter = this.getPendingResumeGeneration(chatId);
+    if (incoming < committed || incoming < pendingAfter) return "drop";
     if (incoming > committed)
       return outcome === "retry" ? "retry" : this.ensureResumeGenerationAdmission(chatId, incoming);
     return outcome === "retry" ? "retry" : "proceed";

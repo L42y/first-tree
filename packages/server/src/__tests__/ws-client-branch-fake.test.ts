@@ -339,7 +339,13 @@ describe("Agent client WS branch fakes", () => {
     await handler(socket, { headers: { "user-agent": "fake" }, ip: "127.0.0.1" });
     await emitMessage(socket, { type: "auth", token: await signAccess() });
     await waitUntil(() => socket.sent.some((frame) => (frame as { type?: string }).type === "server:welcome"));
-    await emitMessage(socket, { type: "client:register", clientId: "client_fake1234" });
+    await emitMessage(socket, {
+      type: "client:register",
+      clientId: "client_fake1234",
+      // Advertise resume-generation so session:state does not consume an extra
+      // fake-db select for the legacy-client generation lookup.
+      wireCapabilities: { wsResumeGenerationV1: true },
+    });
     await waitUntil(() => socket.sent.some((frame) => (frame as { type?: string }).type === "client:registered"));
   }
 
