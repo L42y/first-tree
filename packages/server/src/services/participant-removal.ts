@@ -42,15 +42,16 @@
  */
 
 import { parseLandingCampaignTrialChatMetadata } from "@first-tree/shared";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { BadRequestError, CallerNotSpeakerError, ForbiddenError, NotFoundError } from "../errors.js";
+import { messages } from "../db/schema/messages.js";
+import { BadRequestError, CallerNotSpeakerError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
+import { lockChatSpeakerAndAgentSnapshot } from "./chat-membership-lock.js";
 import { recomputeChatWatchers } from "./participant-mode.js";
 
 export type RemoveParticipantArgs = {
@@ -89,6 +90,55 @@ async function loadSpeaker(db: Database, chatId: string, agentId: string): Promi
   return row ?? null;
 }
 
+/**
+ * Would the target still hold a `chat_membership` row after their speaker row
+ * goes away? Mirrors `recomputeChatWatchers`' anchoring condition: a human
+ * keeps a watcher row while they still manage an active non-human speaker in
+ * the chat. Non-human agents have no watcher representation, so removing one
+ * always detaches it.
+ */
+async function keepsMembershipAfterRemoval(
+  db: Database,
+  chatId: string,
+  target: { type: string; agentId: string },
+): Promise<boolean> {
+  if (target.type !== "human") return false;
+  const rows = (await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM chat_membership cm
+        JOIN agents  a ON a.uuid = cm.agent_id
+        JOIN members m ON m.id   = a.manager_id
+       WHERE cm.chat_id = ${chatId}
+         AND cm.access_mode = 'speaker'
+         AND cm.agent_id <> ${target.agentId}
+         AND m.agent_id = ${target.agentId}
+         AND m.status   = 'active'
+         AND a.type    <> 'human'
+    ) AS anchored
+  `)) as unknown as Array<{ anchored: boolean }>;
+  return Boolean(rows[0]?.anchored);
+}
+
+/**
+ * An unresolved `format='request'` message addressed to `agentId`. Mirrors
+ * `need-you.ts::openRequestPredicate` — same request/resolution authority the
+ * review queue and `open_request_count` derive from.
+ */
+function openRequestForTarget(agentId: string) {
+  return and(
+    eq(messages.format, "request"),
+    sql`${messages.metadata} -> 'mentions' @> jsonb_build_array(${agentId}::text)`,
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${messages} AS resolver
+      WHERE resolver.chat_id = ${messages.chatId}
+        AND resolver.metadata -> 'resolves' ->> 'request' = ${messages.id}::text
+        AND resolver.metadata -> 'resolves' ->> 'kind' IN ('answered', 'closed')
+        AND resolver.sender_id IN (${messages.senderId}, ${agentId})
+    )`,
+  );
+}
+
 /** The owning member behind the chat's `role='owner'` row, if the chat still has one. */
 async function loadChatOwnerMemberId(db: Database, chatId: string): Promise<string | null> {
   const [row] = await db
@@ -112,7 +162,15 @@ export async function removeParticipantFromChat(
 
   const speakers = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
-    await lockChatMembershipMutation(tx, [chatId]);
+    // Authorization below is derived from `agents.manager_id` (who owns the
+    // caller, the target, and the chat owner). Taking only the membership
+    // fence would leave those rows free to move: a manager reassignment
+    // committing between the reads and this commit would let the decision
+    // stand on ownership that no longer holds. `lockChatSpeakerAndAgentSnapshot`
+    // exists for exactly that — it locks the chat, its speaker rows, and the
+    // named agent rows FOR UPDATE in one UUID-sorted set, so manager
+    // transfers cannot invalidate owner authority mid-transaction.
+    await lockChatSpeakerAndAgentSnapshot(tx, [chatId], [callerAgentId, targetAgentId]);
 
     const [chat] = await tx
       .select({ id: chats.id, metadata: chats.metadata })
@@ -156,6 +214,28 @@ export async function removeParticipantFromChat(
       );
     }
 
+    // An unresolved request addressed to the target, when removal would
+    // leave them no membership row at all, is a trap with no exit:
+    // `listNeedYouRequests` joins `chat_membership` so the request drops out
+    // of their queue, `requireChatAccess` then refuses the chat so "Join to
+    // reply" is unreachable, and `chat_user_state.open_request_count` stays
+    // positive — which `chat-archive` treats as never-archivable. Refuse
+    // instead of manufacturing that state. Callers who still hold a watcher
+    // row are unaffected: they can see the request and join to answer it.
+    if (!(await keepsMembershipAfterRemoval(tx, chatId, { type: target.type, agentId: targetAgentId }))) {
+      const [openRequest] = await tx
+        .select({ id: messages.id })
+        .from(messages)
+        .where(and(eq(messages.chatId, chatId), openRequestForTarget(targetAgentId)))
+        .limit(1);
+      if (openRequest) {
+        throw new ConflictError(
+          `Agent "${targetAgentId}" has an unanswered request in this chat and would lose all access to it. ` +
+            "Resolve the request first, then remove them.",
+        );
+      }
+    }
+
     await tx
       .delete(chatMembership)
       .where(
@@ -166,18 +246,27 @@ export async function removeParticipantFromChat(
         ),
       );
 
-    // Drop anything still queued for the removed agent in this chat.
-    // Inbox delivery is inbox-scoped and never re-checks membership, so
-    // without this the agent keeps being woken for a chat it can no longer
-    // write to — it would burn a turn and then take a 403 on reply.
-    // Deleting undeliverable rows matches `pruneStaleSilentEntries`.
+    // Drop what is still queued or in flight for the removed agent in this
+    // chat. Delivery is inbox-scoped and never re-checks membership, so
+    // leaving rows behind keeps waking an agent that can no longer write —
+    // it burns a turn and then takes a 403 on reply. `delivered` rows matter
+    // as much as `pending` ones: `resetDeliveredForInboxes` flips them back
+    // to `pending` on the next bind without consulting membership, which
+    // would resurrect exactly what this clears. Deleting undeliverable rows
+    // matches `pruneStaleSilentEntries`.
+    //
+    // This is a mitigation, not a fence: `sendMessage` snapshots the speaker
+    // set without taking the membership lock, so a send that started before
+    // this transaction can still insert a row afterwards. Closing that
+    // properly means making the delivery path membership-aware rather than
+    // cleaning up behind it — tracked separately, see the PR discussion.
     await tx
       .delete(inboxEntries)
       .where(
         and(
           eq(inboxEntries.inboxId, target.inboxId),
           eq(inboxEntries.chatId, chatId),
-          eq(inboxEntries.status, "pending"),
+          inArray(inboxEntries.status, ["pending", "delivered"]),
         ),
       );
 

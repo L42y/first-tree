@@ -14,6 +14,7 @@ import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
+import { messages } from "../db/schema/messages.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
 import { createMeChat } from "../services/me-chat.js";
@@ -423,6 +424,128 @@ describe("removeParticipantFromChat", () => {
         targetAgentId: helper.uuid,
       }),
     ).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("also clears delivered inbox rows, which rebind would otherwise revive", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const helper = await ownedAgent(app, owner.memberId, owner.organizationId, "delivered");
+    const { chatId } = await createMeChat(app.db, owner.humanAgentUuid, owner.organizationId, {
+      participantIds: [helper.uuid],
+    });
+    await sendMessage(
+      app.db,
+      chatId,
+      owner.humanAgentUuid,
+      { source: "api", format: "text", content: "ping" },
+      { allowRecipientlessSend: true },
+    );
+    // Simulate a claim that already handed the row to the runtime.
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "delivered" })
+      .where(and(eq(inboxEntries.inboxId, helper.inboxId), eq(inboxEntries.chatId, chatId)));
+
+    await removeParticipantFromChat(app.db, {
+      chatId,
+      callerAgentId: owner.humanAgentUuid,
+      targetAgentId: helper.uuid,
+    });
+
+    // `resetDeliveredForInboxes` flips delivered → pending on the next bind
+    // without consulting membership, so a surviving delivered row would wake
+    // an agent that is no longer in the chat.
+    const rows = await app.db
+      .select({ id: inboxEntries.id })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.inboxId, helper.inboxId), eq(inboxEntries.chatId, chatId)));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("refuses to strand an unanswered request when removal detaches the target entirely", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const other = await createTestAdmin(app);
+    const ownerAgent = await ownedAgent(app, owner.memberId, owner.organizationId, "asker");
+
+    const { chatId } = await createMeChat(app.db, owner.humanAgentUuid, owner.organizationId, {
+      participantIds: [ownerAgent.uuid],
+    });
+    // `other` speaks here but manages nothing in the chat, so removal would
+    // delete their row outright.
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: other.humanAgentUuid,
+      role: "member",
+      accessMode: "speaker",
+      mode: "mention_only",
+      source: "manual",
+    });
+    await app.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      chatId,
+      senderId: ownerAgent.uuid,
+      format: "request",
+      content: "need a decision",
+      metadata: { mentions: [other.humanAgentUuid] },
+      source: "agent",
+    });
+
+    // Detaching them would drop the request out of their Need-You queue,
+    // deny them the chat, and leave open_request_count blocking archive.
+    await expect(
+      removeParticipantFromChat(app.db, {
+        chatId,
+        callerAgentId: owner.humanAgentUuid,
+        targetAgentId: other.humanAgentUuid,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+
+    expect((await membershipOf(app, chatId, other.humanAgentUuid))?.accessMode).toBe("speaker");
+  });
+
+  it("allows removal with an open request when the target keeps a watcher row", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const other = await createTestAdmin(app);
+    const theirAgent = await ownedAgent(app, other.memberId, other.organizationId, "theirs");
+
+    const { chatId } = await createMeChat(app.db, owner.humanAgentUuid, owner.organizationId, {
+      participantIds: [theirAgent.uuid],
+    });
+    await app.db
+      .insert(chatMembership)
+      .values({
+        chatId,
+        agentId: other.humanAgentUuid,
+        role: "member",
+        accessMode: "speaker",
+        mode: "mention_only",
+        source: "manual",
+      })
+      .onConflictDoUpdate({
+        target: [chatMembership.chatId, chatMembership.agentId],
+        set: { accessMode: "speaker" },
+      });
+    await app.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      chatId,
+      senderId: theirAgent.uuid,
+      format: "request",
+      content: "need a decision",
+      metadata: { mentions: [other.humanAgentUuid] },
+      source: "agent",
+    });
+
+    // Their own agent stays, so the watcher row survives — they can still
+    // see the request and join to answer it. No reason to block.
+    await removeParticipantFromChat(app.db, {
+      chatId,
+      callerAgentId: owner.humanAgentUuid,
+      targetAgentId: other.humanAgentUuid,
+    });
+
+    expect((await membershipOf(app, chatId, other.humanAgentUuid))?.accessMode).toBe("watcher");
   });
 
   it("does not resurrect the removed agent through the watcher recompute", async () => {
