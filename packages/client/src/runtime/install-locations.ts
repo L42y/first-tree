@@ -1,60 +1,9 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { type ReadLink, resolveOutsideProtectedRootsOnThisHost } from "./protected-paths.js";
 
 /** Injectable directory listing so tests need no real version-manager install. */
 export type ReadDirNames = (path: string) => string[];
-
-function listNames(path: string, readDir: ReadDirNames): string[] {
-  try {
-    return readDir(path);
-  } catch {
-    // No such version manager on this host, or the root is unreadable.
-    return [];
-  }
-}
-
-/** Newest-looking version first, so the chosen dir is stable across runs. */
-const VERSION_COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
-
-/**
- * `bin` dirs of every Node version installed by nvm or fnm.
- *
- * These are the STABLE homes of a `claude` / `codex` installed under a Node
- * version manager. The per-session dir such a shell actually puts on `$PATH`
- * (`fnm_multishells/<pid>_<ts>/bin`) is a symlink that disappears with the
- * shell, so it cannot be searched later — but its target lives here and does
- * not move. Enumerating these keeps version-manager installs discoverable
- * without following anything the user may have pointed somewhere unexpected.
- *
- * Every root read here belongs to the version manager itself, never to a
- * macOS TCC-protected folder, so this is safe to run during automatic probing.
- */
-export function versionManagerBinDirs(home: string, readDir: ReadDirNames = readdirSync): string[] {
-  const nvm = listNames(join(home, ".nvm", "versions", "node"), readDir)
-    .sort((a, b) => VERSION_COLLATOR.compare(b, a))
-    .map((version) => join(home, ".nvm", "versions", "node", version, "bin"));
-
-  // fnm's data dir varies by installer: XDG default, Homebrew on macOS, and the
-  // pre-XDG layout. `$FNM_DIR` wins when the operator set one.
-  const fnmRoots = [
-    process.env.FNM_DIR,
-    join(home, ".local", "share", "fnm"),
-    join(home, "Library", "Application Support", "fnm"),
-    join(home, ".fnm"),
-  ].filter((root): root is string => typeof root === "string" && root.length > 0);
-
-  const seen = new Set<string>();
-  const fnm = fnmRoots.flatMap((root) => {
-    if (seen.has(root)) return [];
-    seen.add(root);
-    const versionsRoot = join(root, "node-versions");
-    return listNames(versionsRoot, readDir)
-      .sort((a, b) => VERSION_COLLATOR.compare(b, a))
-      .map((version) => join(versionsRoot, version, "installation", "bin"));
-  });
-
-  return [...nvm, ...fnm];
-}
 
 /**
  * Curated, stable install directories where a globally-installed `claude` /
@@ -66,12 +15,8 @@ export function versionManagerBinDirs(home: string, readDir: ReadDirNames = read
  * Covers node-version-manager shims, global-npm prefixes, and the pnpm / bun
  * global bins. macOS-only Homebrew / pnpm dirs are gated on `darwin`. Returns
  * absolute dir paths (binary name is appended by the caller, per provider).
- *
- * The nvm / fnm version dirs come LAST, after every fixed location, so they
- * only decide the outcome when nothing else matched and the existing precedence
- * is untouched.
  */
-export function wellKnownBinDirs(home: string, readDir?: ReadDirNames): string[] {
+export function wellKnownBinDirs(home: string): string[] {
   const isMac = process.platform === "darwin";
   const dirs = [
     join(home, ".local", "bin"), // official native installer default
@@ -85,10 +30,90 @@ export function wellKnownBinDirs(home: string, readDir?: ReadDirNames): string[]
     join(home, ".bun", "bin"), // bun global
     ...(isMac ? ["/opt/homebrew/bin"] : []), // Apple-silicon Homebrew
     "/usr/local/bin", // Intel Homebrew / common manual installs
-    ...versionManagerBinDirs(home, readDir),
   ];
   return dirs;
 }
+
+/** Injectable seams so tests need neither a real install nor a real filesystem. */
+export type VersionManagerDirDeps = {
+  readDir?: ReadDirNames;
+  readLink?: ReadLink;
+  env?: NodeJS.ProcessEnv;
+};
+
+/**
+ * `bin` dirs of every Node version installed by nvm or fnm, **newest first**.
+ *
+ * These are the STABLE homes of a `claude` / `codex` installed under a Node
+ * version manager. The dir such a shell actually puts on `$PATH`
+ * (`fnm_multishells/<pid>_<ts>/bin`) is a per-session symlink that disappears
+ * with the shell, so it cannot be searched afterwards — but its target lives
+ * here and does not move.
+ *
+ * This is a FALLBACK, not a preference: callers must search it only after the
+ * login-shell dirs, so a shell that intentionally selected an older version
+ * keeps that version (and its credential context) whenever the live dir is
+ * still resolvable. Newest-first only decides between versions once the active
+ * one is already gone.
+ *
+ * Every root and every returned dir is vetted with
+ * {@link resolveOutsideProtectedRootsOnThisHost} BEFORE it is listed or handed
+ * back. Nothing here is trusted for being spelled like a version manager:
+ * `$FNM_DIR` is user-controlled, and `~/.nvm`, a fnm data dir, or a single
+ * version entry can each be a symlink — or sit under one — pointing into a
+ * protected folder.
+ */
+export function versionManagerBinDirs(home: string, deps: VersionManagerDirDeps = {}): string[] {
+  const readDir = deps.readDir ?? readdirSync;
+  const readLink = deps.readLink;
+  const env = deps.env ?? process.env;
+
+  const safe = (path: string): string | null => resolveOutsideProtectedRootsOnThisHost(path, readLink);
+
+  /** List `root`'s entries only once the root itself is known to be safe. */
+  const versionsUnder = (root: string): Array<{ version: string; root: string }> => {
+    const vetted = safe(root);
+    if (vetted === null) return [];
+    try {
+      return readDir(vetted)
+        .sort((a, b) => VERSION_COLLATOR.compare(b, a))
+        .map((version) => ({ version, root: vetted }));
+    } catch {
+      // No such version manager on this host, or the root is unreadable.
+      return [];
+    }
+  };
+
+  const nvm = versionsUnder(join(home, ".nvm", "versions", "node")).map(({ version, root }) =>
+    join(root, version, "bin"),
+  );
+
+  // fnm's data dir varies by installer: XDG default, Homebrew on macOS, and the
+  // pre-XDG layout. `$FNM_DIR` wins when the operator set one — and is exactly
+  // why the vetting above is not optional.
+  const fnmRoots = [
+    env.FNM_DIR,
+    join(home, ".local", "share", "fnm"),
+    join(home, "Library", "Application Support", "fnm"),
+    join(home, ".fnm"),
+  ].filter((root): root is string => typeof root === "string" && root.length > 0);
+
+  const seen = new Set<string>();
+  const fnm = fnmRoots.flatMap((root) => {
+    if (seen.has(root)) return [];
+    seen.add(root);
+    return versionsUnder(join(root, "node-versions")).map(({ version, root: versionsRoot }) =>
+      join(versionsRoot, version, "installation", "bin"),
+    );
+  });
+
+  // A vetted root can still hold a version entry that is itself a symlink into a
+  // protected folder, so re-vet each candidate before returning it.
+  return [...nvm, ...fnm].map(safe).filter((dir): dir is string => dir !== null);
+}
+
+/** Newest-looking version first, so the chosen dir is stable across runs. */
+const VERSION_COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
 
 /**
  * macOS desktop-app resource directories that can carry the Codex CLI.

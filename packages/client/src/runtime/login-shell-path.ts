@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve, sep } from "node:path";
+import { versionManagerBinDirs } from "./install-locations.js";
+import { protectedRootsOnThisHost, type ReadLink, resolveOutsideProtectedRoots } from "./protected-paths.js";
 
 /**
  * Unique marker that brackets the canonical dir list in the probe output so we
@@ -10,40 +10,8 @@ import { isAbsolute, join, resolve, sep } from "node:path";
  */
 const DELIM = "__FT_SHELL_PATH__";
 
-/**
- * Home-relative roots macOS puts behind a TCC "Files & Folders" consent prompt.
- *
- * The daemon runs this probe automatically at startup / reconnect, before the
- * user has chosen anything, so it must never be the reason macOS asks for
- * Desktop / Documents / Downloads / iCloud access. Both the shell script (which
- * would otherwise `cd` into every `$PATH` entry) and the parsed result (whose
- * dirs are later `existsSync`-checked by each provider resolver) skip these.
- *
- * The cost is bounded and deliberate: a provider binary whose `$PATH` entry
- * lives inside one of these roots is not auto-discovered. Every ordinary
- * install location — Homebrew, `~/.local/bin`, npm-global, pnpm, bun, and the
- * nvm / fnm / volta / mise / asdf shims this probe exists for — is unaffected.
- */
-const MACOS_PROTECTED_HOME_SUBPATHS = [
-  "Desktop",
-  "Documents",
-  "Downloads",
-  // iCloud Drive, including the "Desktop & Documents Folders" sync target.
-  "Library/Mobile Documents",
-  // File Provider mounts: OneDrive, Dropbox, Google Drive, Box, …
-  "Library/CloudStorage",
-] as const;
-
 /** Injectable seam for hermetic tests — returns the raw shell stdout, or null on failure. */
 export type RunShell = () => string | null;
-
-/**
- * Injectable seam for the ONE syscall path resolution is allowed to make. Tests
- * use it to assert what was touched, which is the property that matters here:
- * a reviewer can check the ordering by reading the code, but only this can show
- * that no protected path was ever passed to it.
- */
-export type ReadLink = (path: string) => string;
 
 /**
  * Cap on the number of probe spawns per process. The first probe may run during
@@ -80,12 +48,17 @@ let failedAttempts = 0;
  * On macOS the shell does no filesystem access at all and the same
  * canonicalization happens here, via {@link resolveOutsideProtectedRoots}: it
  * walks each path with `readlink`, so a dir that resolves into a TCC-protected
- * root is dropped WITHOUT ever being entered — see
- * {@link MACOS_PROTECTED_HOME_SUBPATHS}. That runs immediately after the probe
- * returns, so a multishell dir still present then resolves exactly as before;
- * one already torn down does not. Relative `$PATH` entries also resolve against
- * this process's cwd rather than the probe shell's, which only matters for a
- * shape that cannot hold a reliably spawnable binary anyway.
+ * root is dropped WITHOUT ever being entered. That runs immediately after the
+ * probe returns, so a multishell dir still present then resolves exactly as
+ * before; one already torn down does not. Relative `$PATH` entries also resolve
+ * against this process's cwd rather than the probe shell's, which only matters
+ * for a shape that cannot hold a reliably spawnable binary anyway.
+ *
+ * The nvm / fnm stable version dirs are appended AFTER whatever the probe
+ * returned, so a torn-down multishell entry still has somewhere to resolve from
+ * while an intentionally selected version — which the live probe reports first —
+ * keeps winning. Callers search this list in order, so the fallback only decides
+ * the outcome once the active dir is gone.
  *
  * Properties:
  *   - **Memoized on success**: a probe that ran the shell, exited 0, and parsed a
@@ -104,10 +77,7 @@ let failedAttempts = 0;
  * @param runShell test-only seam to supply the raw shell stdout without spawning.
  * @param readLink test-only seam to observe every path resolution touches.
  */
-export function getLoginShellPathDirs(
-  runShell: RunShell = defaultRunShell,
-  readLink: ReadLink = readlinkSync,
-): string[] {
+export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell, readLink?: ReadLink): string[] {
   if (memo) return memo.dirs;
   // Deterministic skip — cache immediately, this is not a transient failure.
   if (process.platform === "win32") {
@@ -117,14 +87,15 @@ export function getLoginShellPathDirs(
   const dirs = probe(runShell);
   if (dirs) {
     const roots = protectedRootsOnThisHost();
-    memo = {
-      dirs:
-        roots.length === 0
-          ? dirs
-          : dirs
-              .map((dir) => resolveOutsideProtectedRoots(dir, roots, readLink))
-              .filter((dir): dir is string => dir !== null),
-    };
+    const live =
+      roots.length === 0
+        ? dirs
+        : dirs
+            .map((dir) => resolveOutsideProtectedRoots(dir, roots, readLink))
+            .filter((dir): dir is string => dir !== null);
+    const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
+    const fallback = versionManagerBinDirs(home, { readLink }).filter((dir) => !live.includes(dir));
+    memo = { dirs: [...live, ...fallback] };
     return memo.dirs;
   }
   // Probe failed (spawn error / timeout / non-zero exit / parse miss). Don't
@@ -223,83 +194,6 @@ export function buildProbeScript(platform: NodeJS.Platform = process.platform): 
     `set -f; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${body}; done; ` +
     `printf %s ${DELIM}`;
   return `/bin/sh -c '${posix}'`;
-}
-
-/** This host's absolute TCC-protected roots. Empty off macOS, where none apply. */
-function protectedRootsOnThisHost(): string[] {
-  if (process.platform !== "darwin") return [];
-  const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
-  return MACOS_PROTECTED_HOME_SUBPATHS.map((sub) => join(home, sub));
-}
-
-/**
- * Case-fold for path comparison. The default macOS filesystem is
- * case-INSENSITIVE, so `~/documents/bin` and `~/Documents/bin` are the same
- * directory and a case-sensitive guard would wave one of them through. Folding
- * both sides is also the conservative answer on a case-sensitive volume, where
- * it can only over-reject — never enter a protected folder by accident.
- */
-function fold(value: string): string {
-  return value.toLocaleLowerCase("en-US");
-}
-
-function insideAny(path: string, roots: readonly string[]): boolean {
-  const candidate = fold(path);
-  return roots.some((root) => {
-    const folded = fold(root);
-    return candidate === folded || candidate.startsWith(`${folded}${sep}`);
-  });
-}
-
-/** Give up rather than loop forever on a symlink cycle. */
-const MAX_SYMLINK_HOPS = 32;
-
-/**
- * Canonicalize `dir`, or return `null` if doing so would mean reaching into a
- * protected root.
- *
- * This exists because neither a lexical check nor `cd` can do the job alone. A
- * lexical check cannot see that `~/bin` is a symlink to `~/Documents/bin`, and
- * `cd` (or `realpath`, or `existsSync`) finds that out only by entering the
- * protected directory — which is the access we are trying to avoid, not a way
- * to detect it.
- *
- * So the path is walked one component at a time from the root. Each component
- * is checked against the protected roots BEFORE it is touched, and the only
- * syscall performed on it is `readlink`, which reads the link's own target and
- * never follows it. A component that is not a symlink is simply appended.
- * Because a symlink's target is re-walked from the root, an expansion that
- * lands in a protected root is caught on the next iteration, before anything
- * inside it is read — which covers the symlinked-ancestor case as well as a
- * symlinked entry.
- */
-function resolveOutsideProtectedRoots(dir: string, roots: readonly string[], readLink: ReadLink): string | null {
-  let pending = resolve(dir).split(sep).filter(Boolean);
-  let resolved: string = sep;
-  let hops = 0;
-  while (pending.length > 0) {
-    const [head = "", ...rest] = pending;
-    const candidate = join(resolved, head);
-    if (insideAny(candidate, roots)) return null;
-    let target: string | null = null;
-    try {
-      target = readLink(candidate);
-    } catch {
-      // Not a symlink, missing, or unreadable — nothing to follow either way.
-      // A missing dir stays in the result and simply fails the caller's
-      // existence check, exactly as an uncanonicalized entry did before.
-    }
-    if (target === null) {
-      resolved = candidate;
-      pending = rest;
-      continue;
-    }
-    if (++hops > MAX_SYMLINK_HOPS) return null;
-    const expanded = isAbsolute(target) ? target : join(resolved, target);
-    pending = [...resolve(expanded).split(sep).filter(Boolean), ...rest];
-    resolved = sep;
-  }
-  return resolved;
 }
 
 /** Spawn the user's interactive login shell to run the probe; raw stdout or null. */

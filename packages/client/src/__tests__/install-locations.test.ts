@@ -1,12 +1,26 @@
 import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { findCodexExecutableOnPath } from "../runtime/codex-binary.js";
 import { versionManagerBinDirs, wellKnownBinDirs } from "../runtime/install-locations.js";
 
+const NEVER_LISTED = (path: string): string[] => {
+  throw new Error(`unexpected readdir: ${path}`);
+};
+
 describe("versionManagerBinDirs", () => {
-  afterEach(() => vi.unstubAllEnvs());
+  // Pin a non-macOS baseline: on macOS these synthetic roots go through
+  // protected-root resolution, which follows real symlinks (`/home` is a
+  // firmlink there) and would rewrite them. The macOS cases opt in below.
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
 
   it("lists nvm and fnm version bins, newest version first", () => {
     const home = "/home/u";
@@ -16,7 +30,7 @@ describe("versionManagerBinDirs", () => {
       throw new Error("ENOENT");
     };
 
-    expect(versionManagerBinDirs(home, readDir)).toEqual([
+    expect(versionManagerBinDirs(home, { readDir, env: {} })).toEqual([
       // Numeric-aware, so v22 sorts above v9 rather than below it.
       join(home, ".nvm", "versions", "node", "v22.2.0", "bin"),
       join(home, ".nvm", "versions", "node", "v20.11.0", "bin"),
@@ -28,7 +42,6 @@ describe("versionManagerBinDirs", () => {
 
   it("covers the Homebrew and pre-XDG fnm layouts and honours $FNM_DIR", () => {
     const home = "/home/u";
-    vi.stubEnv("FNM_DIR", "/opt/fnm");
     const readDir = (path: string): string[] => {
       if (path === join("/opt/fnm", "node-versions")) return ["v22.0.0"];
       if (path === join(home, "Library", "Application Support", "fnm", "node-versions")) return ["v21.0.0"];
@@ -36,7 +49,7 @@ describe("versionManagerBinDirs", () => {
       throw new Error("ENOENT");
     };
 
-    expect(versionManagerBinDirs(home, readDir)).toEqual([
+    expect(versionManagerBinDirs(home, { readDir, env: { FNM_DIR: "/opt/fnm" } })).toEqual([
       join("/opt/fnm", "node-versions", "v22.0.0", "installation", "bin"),
       join(home, "Library", "Application Support", "fnm", "node-versions", "v21.0.0", "installation", "bin"),
       join(home, ".fnm", "node-versions", "v20.0.0", "installation", "bin"),
@@ -45,23 +58,70 @@ describe("versionManagerBinDirs", () => {
 
   it("returns nothing when no version manager is installed", () => {
     expect(
-      versionManagerBinDirs("/home/u", () => {
-        throw new Error("ENOENT");
+      versionManagerBinDirs("/home/u", {
+        readDir: () => {
+          throw new Error("ENOENT");
+        },
+        env: {},
       }),
     ).toEqual([]);
   });
 
-  it("appends version dirs after every fixed location, leaving precedence intact", () => {
-    const home = "/home/u";
-    const fixed = wellKnownBinDirs(home, () => {
-      throw new Error("ENOENT");
-    });
-    const withVersions = wellKnownBinDirs(home, (path) =>
-      path === join(home, ".nvm", "versions", "node") ? ["v22.0.0"] : [],
-    );
+  it("keeps version dirs out of wellKnownBinDirs, whose precedence is above the login shell", () => {
+    // Well-known dirs are searched BEFORE the login-shell PATH, so a newest-first
+    // version list there would outrank the version the shell actually selected.
+    // The fallback belongs after the login shell instead.
+    const dirs = wellKnownBinDirs("/home/u");
+    expect(dirs.some((dir) => dir.includes(".nvm"))).toBe(false);
+    expect(dirs.some((dir) => dir.includes("fnm"))).toBe(false);
+  });
+});
 
-    expect(withVersions.slice(0, fixed.length)).toEqual(fixed);
-    expect(withVersions).toContain(join(home, ".nvm", "versions", "node", "v22.0.0", "bin"));
+// A version-manager root is not trusted for being spelled like one. `$FNM_DIR`
+// is user-controlled, and `~/.nvm`, a fnm data dir, or one version entry can be
+// a symlink — or sit under one — pointing into a protected folder. Listing such
+// a root, or handing its `bin` dirs to an executable check, is the same TCC
+// access this change exists to remove.
+describe("versionManagerBinDirs protected-root vetting (macOS)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+
+  function macHome(): string {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-vm-")));
+    const home = join(root, "home");
+    mkdirSync(join(home, "Documents"), { recursive: true });
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    return home;
+  }
+
+  it("never lists a $FNM_DIR pointing into a protected folder", () => {
+    const home = macHome();
+    expect(
+      versionManagerBinDirs(home, { readDir: NEVER_LISTED, env: { FNM_DIR: join(home, "Documents", "fnm") } }),
+    ).toEqual([]);
+  });
+
+  it("never lists a default root symlinked into a protected folder", () => {
+    const home = macHome();
+    mkdirSync(join(home, "Documents", "nvm", "versions", "node"), { recursive: true });
+    symlinkSync(join(home, "Documents", "nvm"), join(home, ".nvm"));
+
+    expect(versionManagerBinDirs(home, { readDir: NEVER_LISTED, env: {} })).toEqual([]);
+  });
+
+  it("drops a version entry symlinked into a protected folder, keeping its siblings", () => {
+    const home = macHome();
+    const versions = join(home, ".nvm", "versions", "node");
+    mkdirSync(join(versions, "v22.0.0", "bin"), { recursive: true });
+    mkdirSync(join(home, "Documents", "sneaky", "bin"), { recursive: true });
+    symlinkSync(join(home, "Documents", "sneaky"), join(versions, "v23.0.0"));
+
+    expect(
+      versionManagerBinDirs(home, { readDir: (path) => (path === versions ? ["v23.0.0", "v22.0.0"] : []), env: {} }),
+    ).toEqual([join(versions, "v22.0.0", "bin")]);
   });
 });
 
@@ -84,10 +144,11 @@ describe("version-manager discovery after a multishell teardown", () => {
     symlinkSync(installBin, multishell);
 
     // The login-shell seam models the probe shell's lifetime: by the time it has
-    // answered, its per-session dir no longer exists.
+    // answered, its per-session dir no longer exists — so only the stable
+    // version dir, appended after it, can still answer.
     const loginShellPathDirs = (): string[] => {
       rmSync(multishell, { force: true });
-      return [multishell];
+      return [multishell, ...versionManagerBinDirs(home, { env: {} })];
     };
 
     expect(
@@ -98,12 +159,48 @@ describe("version-manager discovery after a multishell teardown", () => {
           pathDelimiter: ":",
           loginShellPathDirs,
           // Only the version dirs, so a real binary on this host's `/usr/local`
-          // or Homebrew path cannot answer for the mechanism under test. That
-          // `wellKnownBinDirs` appends these is covered above.
-          wellKnownDirs: () => versionManagerBinDirs(home),
+          // or Homebrew path cannot answer for the mechanism under test.
+          wellKnownDirs: () => [],
           desktopAppDirs: () => [],
         },
       ),
     ).toBe(codex);
+  });
+
+  // The precedence the fallback must not disturb: an intentionally selected
+  // older version keeps its binary (and credential context) while a newer
+  // inactive version is also installed.
+  it("prefers the shell's active version over a newer installed one", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-active-")));
+    const home = join(root, "home");
+    const versions = join(home, ".nvm", "versions", "node");
+    const activeBin = join(versions, "v20.11.0", "bin");
+    const newerBin = join(versions, "v22.2.0", "bin");
+    mkdirSync(activeBin, { recursive: true });
+    mkdirSync(newerBin, { recursive: true });
+    for (const bin of [activeBin, newerBin]) {
+      const codex = join(bin, "codex");
+      writeFileSync(codex, "#!/bin/sh\n");
+      chmodSync(codex, 0o755);
+    }
+
+    const fallback = versionManagerBinDirs(home, { env: {} });
+    // Newest-first, so the fallback alone would pick v22.
+    expect(fallback[0]).toBe(newerBin);
+
+    expect(
+      findCodexExecutableOnPath(
+        { HOME: home, PATH: "" },
+        {
+          platform: "linux",
+          pathDelimiter: ":",
+          // What `getLoginShellPathDirs` composes: the live selection first,
+          // the stable roots appended behind it.
+          loginShellPathDirs: () => [activeBin, ...fallback],
+          wellKnownDirs: () => [],
+          desktopAppDirs: () => [],
+        },
+      ),
+    ).toBe(join(activeBin, "codex"));
   });
 });
