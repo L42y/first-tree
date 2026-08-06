@@ -224,59 +224,63 @@ export async function orgGithubAppRoutes(app: FastifyInstance): Promise<void> {
   // requester identity on no-code approval landings, so a deliberate account
   // switch after the picker opens can still leave a safe, unbound installation;
   // it cannot bind or cross a First Tree Team boundary.
-  app.get<{ Params: { orgId: string }; Querystring: { next?: string } }>("/install-url", async (request, reply) => {
-    // Admin-gated: the resolved scope is the org the install binds to.
-    const scope = await requireOrgAdmin(request, app.db);
-    const callerGithubId = await resolveCallerGithubId(app.db, scope.userId);
-    if (callerGithubId === null) {
-      throw new ConflictError("Connect a GitHub account before installing the GitHub App", {
-        code: "github_identity_required",
-      });
-    }
-    const appCfg = app.config.oauth?.githubApp;
-    if (!appCfg?.slug) {
-      // The App may be configured for sign-in/webhooks but missing the
-      // slug needed for the install dialog. 503 (not 404/400) — the
-      // operator can fix it by setting one env var; the panel renders a
-      // "ask your operator to set FIRST_TREE_GITHUB_APP_SLUG" hint.
-      return reply
-        .status(503)
-        .send({ error: "GitHub App install URL is unavailable — FIRST_TREE_GITHUB_APP_SLUG is not configured." });
-    }
+  app.get<{ Params: { orgId: string }; Querystring: { next?: string } }>(
+    "/install-url",
+    { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } },
+    async (request, reply) => {
+      // Admin-gated: the resolved scope is the org the install binds to.
+      const scope = await requireOrgAdmin(request, app.db);
+      const callerGithubId = await resolveCallerGithubId(app.db, scope.userId);
+      if (callerGithubId === null) {
+        throw new ConflictError("Connect a GitHub account before installing the GitHub App", {
+          code: "github_identity_required",
+        });
+      }
+      const appCfg = app.config.oauth?.githubApp;
+      if (!appCfg?.slug) {
+        // The App may be configured for sign-in/webhooks but missing the
+        // slug needed for the install dialog. 503 (not 404/400) — the
+        // operator can fix it by setting one env var; the panel renders a
+        // "ask your operator to set FIRST_TREE_GITHUB_APP_SLUG" hint.
+        return reply
+          .status(503)
+          .send({ error: "GitHub App install URL is unavailable — FIRST_TREE_GITHUB_APP_SLUG is not configured." });
+      }
 
-    // `targetOrganizationId` rides inside the signed state so the callback
-    // can land the browser back on *this* org's panel rather than the
-    // caller's primary org (codex P1-3). `kickoffUserId` rides alongside it
-    // so the callback can detect the browser's github.com session resolving
-    // to a DIFFERENT identity than the kickoff admin — the github.com
-    // session and the First Tree session are independent, and a mismatch
-    // must not silently swap the signed-in user.
-    const { token, nonce } = await signOAuthState(
-      app.config.secrets.jwtSecret,
-      resolvePostInstallNext(request.query.next),
-      {
-        intent: "install",
-        installPhase: "identity",
-        provider: "github",
-        targetOrganizationId: scope.organizationId,
-        kickoffUserId: scope.userId,
-      },
-    );
-    reply.header(
-      "Set-Cookie",
-      buildCookie({
-        name: STATE_NONCE_COOKIE_NAME,
-        value: protectOAuthStateNonce(nonce, app.config.secrets.encryptionKey),
-        maxAge: STATE_NONCE_COOKIE_TTL_SECONDS,
-        secure: process.env.NODE_ENV === "production",
-      }),
-    );
+      // `targetOrganizationId` rides inside the signed state so the callback
+      // can land the browser back on *this* org's panel rather than the
+      // caller's primary org (codex P1-3). `kickoffUserId` rides alongside it
+      // so the callback can detect the browser's github.com session resolving
+      // to a DIFFERENT identity than the kickoff admin — the github.com
+      // session and the First Tree session are independent, and a mismatch
+      // must not silently swap the signed-in user.
+      const { token, nonce } = await signOAuthState(
+        app.config.secrets.jwtSecret,
+        resolvePostInstallNext(request.query.next),
+        {
+          intent: "install",
+          installPhase: "identity",
+          provider: "github",
+          targetOrganizationId: scope.organizationId,
+          kickoffUserId: scope.userId,
+        },
+      );
+      reply.header(
+        "Set-Cookie",
+        buildCookie({
+          name: STATE_NONCE_COOKIE_NAME,
+          value: protectOAuthStateNonce(nonce, app.config.secrets.encryptionKey),
+          maxAge: STATE_NONCE_COOKIE_TTL_SECONDS,
+          secure: process.env.NODE_ENV === "production",
+        }),
+      );
 
-    const redirectUri = `${resolvePublicUrl(app, request)}/api/v1/auth/github/callback`;
-    return {
-      installUrl: buildAppAuthorizeUrl({ clientId: appCfg.clientId, redirectUri, state: token }),
-    };
-  });
+      const redirectUri = `${resolvePublicUrl(app, request)}/api/v1/auth/github/callback`;
+      return {
+        installUrl: buildAppAuthorizeUrl({ clientId: appCfg.clientId, redirectUri, state: token }),
+      };
+    },
+  );
 
   // ── Connect panel ────────────────────────────────────────────────────
   //
