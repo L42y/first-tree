@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  beginContextAdapterNextSessionObligation,
+  inspectContextAdapterNextSessionObligation,
+} from "../core/context-integration/adapter-observation.js";
+import {
+  AdapterNextSessionRequiredError,
   hasKnownCompatibleContextAdapterSession,
+  hasKnownGoodCompatibleContextAdapter,
   issueAdapterSyncAction,
   synchronizeContextAdapter,
 } from "../core/context-integration/adapter-sync.js";
@@ -226,6 +232,41 @@ describe("lazy Context adapter sync", () => {
         }),
       }),
     ).toMatchObject({ updated: true, currentSessionAdoption: "next_session" });
+  });
+
+  it("rejects an old sync action replay after another repair requires next-session adoption", () => {
+    const fixture = prepareOldCompatibleInstall();
+    const action = issueAdapterSyncAction(
+      { provider: "claude-code", sessionId: "session-old", suppliedAdapterDigest: fixture.previous.adapterDigest },
+      { releaseRoot, driver: driver("claude-code") },
+    );
+    writeContextIntegrationInstallManifest({
+      ...fixture.previous,
+      adapterVersion: fixture.target.adapterVersion,
+      adapterDigest: fixture.target.adapterDigest,
+    });
+    beginContextAdapterNextSessionObligation(fixture.release.manifest, "standalone_repair");
+
+    expect(inspectContextAdapterNextSessionObligation()).toBe("standalone_repair");
+    expect(hasKnownGoodCompatibleContextAdapter(driver("claude-code"))).toBe(false);
+    expect(() =>
+      synchronizeContextAdapter(driver("claude-code"), action.challenge, {
+        releaseRoot,
+        repairOperation: vi.fn(() => {
+          throw new Error("pending adoption must block replay before mutation");
+        }),
+      }),
+    ).toThrow(AdapterNextSessionRequiredError);
+    expect(
+      hasKnownCompatibleContextAdapterSession(
+        {
+          provider: "claude-code",
+          sessionId: "session-old",
+          suppliedAdapterDigest: fixture.previous.adapterDigest,
+        },
+        { releaseRoot, driver: driver("claude-code") },
+      ),
+    ).toBe(false);
   });
 
   it("activates the prepared session fact if the process exits after the provider update commits", () => {

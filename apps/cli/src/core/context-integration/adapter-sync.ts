@@ -144,6 +144,9 @@ export function synchronizeContextAdapter(
     const release = resolveContextIntegrationRelease(dependencies.releaseRoot, { coreRoot: dependencies.coreRoot });
     const installed = readContextIntegrationInstallManifest(driver.provider);
     const target = release.manifest.providers[driver.provider];
+    if (driver.provider === "claude-code" && inspectContextAdapterNextSessionObligation() !== null) {
+      throw new AdapterNextSessionRequiredError();
+    }
     if (
       receipt.accountClientId === accountClientId &&
       receipt.channel === channelConfig.channel &&
@@ -333,6 +336,7 @@ function assertReceiptAccountAndTargetStillCurrent(
 
 export function hasKnownGoodCompatibleContextAdapter(driver: ContextIntegrationProviderDriver): boolean {
   try {
+    if (driver.provider === "claude-code" && inspectContextAdapterNextSessionObligation() !== null) return false;
     const installed = readContextIntegrationInstallManifest(driver.provider);
     if (
       installed?.channel !== channelConfig.channel ||
@@ -349,6 +353,15 @@ export function hasKnownGoodCompatibleContextAdapter(driver: ContextIntegrationP
     return true;
   } catch {
     return false;
+  }
+}
+
+export class AdapterNextSessionRequiredError extends Error {
+  readonly code = "CONTEXT_PLUGIN_RELOAD_REQUIRED";
+
+  constructor() {
+    super("This Claude session cannot use the repaired First Tree Context Plugin. Start a new Claude session.");
+    this.name = "AdapterNextSessionRequiredError";
   }
 }
 

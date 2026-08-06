@@ -56,7 +56,9 @@ together.
   the prewritten compatibility fact must make both retry and the next lifecycle
   event usable without repair guidance. Repeat an already successful Claude
   challenge and confirm its TTL-bound terminal result remains idempotently
-  successful. For Codex,
+  successful. Then issue an old-adapter action before a separate repair creates
+  a next-session obligation; replay and lock-busy fallback must require a new
+  Claude session rather than report `currentAdapterUsable=true`. For Codex,
   require `/hooks` trust only when the provider reports a changed Hook identity.
   Both providers must use the updated adapter on the next session.
 - Independently tamper one stable stub, one provider-cache file, and one partial
