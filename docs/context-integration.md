@@ -87,7 +87,9 @@ pathless binding to global scope.
 
 ## Current-session handoff
 
-A successful apply returns `currentSessionHandoff` schema v3 with:
+A successful session-only apply, or a persistent apply whose adapter is already
+usable in the current provider session, returns `currentSessionHandoff` schema
+v3 with:
 
 - immutable `provider` and `project` identity;
 - `consumerKind: byo` and the exact activation scope;
@@ -95,7 +97,10 @@ A successful apply returns `currentSessionHandoff` schema v3 with:
 - stable Skill descriptions and versioned loader commands;
 - for session-only, the opaque short-lived Server-signed session candidate receipt.
 
-Persistent handoffs expose `first-tree`, `first-tree-read`, and
+Claude persistent setup that installs, migrates, or repairs the Plugin returns
+no current-session handoff while its next-session obligation is pending; setup
+is complete, but Context activation starts in a new Claude session. Persistent
+handoffs that are safe to use expose `first-tree`, `first-tree-read`, and
 `first-tree-write`; session-only exposes only Read and Write. The coding agent
 adopts the handoff immediately in the same conversation. It must not reconstruct
 a Team from cwd, Git remotes, Web state or remembered context.
@@ -216,9 +221,9 @@ migration, and adapter repair materialize deterministic Plugin bytes for the
 target `adapterVersion`. Repeating repair for the same version keeps both the
 provider cache version and payload unchanged. The operation leaves a
 next-session marker; the next valid SessionStart from that exact adapter
-consumes it and enables persistent routing. The current Claude session is not
-required to adopt a repaired adapter immediately, while setup may still return
-its verified current-session handoff. Full payload health is checked by
+consumes it and enables persistent routing. The current Claude session does not
+adopt a repaired adapter immediately, and setup does not return a handoff that
+persistent routing would reject. Full payload health is checked by
 setup/status and once at each new task route; the exact routed snapshot and
 Write authority then own the rest of that task. The general Skill loader is
 read-only and never records lifecycle state. Later Core-only CLI upgrades and

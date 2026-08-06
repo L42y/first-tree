@@ -44,7 +44,10 @@ together.
   rolls back, confirm `update_deferred` keeps that known-good adapter usable and
   does not surface an internal failure to the user.
 - For Claude, verify the current task may continue on its already loaded adapter
-  while automatic persistent routing waits for the next SessionStart. For Codex,
+  after automatic sync. Trigger resume, clear, and compact on that same session;
+  each must use the session-and-old-digest compatibility record, avoid repair
+  guidance, and leave any next-session obligation untouched. A different
+  session or digest must not reuse that record. For Codex,
   require `/hooks` trust only when the provider reports a changed Hook identity.
   Both providers must use the updated adapter on the next session.
 - Independently tamper one stable stub, one provider-cache file, and one partial

@@ -384,7 +384,7 @@ describe("context enable v3 command", () => {
     expect(mocks.buildHandoff).not.toHaveBeenCalled();
   });
 
-  it("completes first-time Claude setup with a handoff while persistent adoption waits for a new session", async () => {
+  it("completes first-time Claude setup without promising a blocked current-session handoff", async () => {
     mocks.createDriver.mockReturnValue({ provider: "claude-code", inspectHook: mocks.inspectHook });
     mocks.planInstall.mockReturnValue({ operation: "install" });
     mocks.inspectNextSession.mockReturnValue("setup");
@@ -404,9 +404,11 @@ describe("context enable v3 command", () => {
       nextActions: string[];
     };
     expect(result.setup).toEqual({ complete: true, missingLayers: [] });
-    expect(result.currentSessionHandoff).toEqual(expect.objectContaining({ consumerKind: "byo" }));
-    expect(result.nextActions).toEqual([expect.stringContaining("Start a new Claude session")]);
-    expect(mocks.buildHandoff).toHaveBeenCalledOnce();
+    expect(result.currentSessionHandoff).toBeNull();
+    expect(result.nextActions).toEqual([
+      expect.stringContaining("does not activate Context in the current Claude session"),
+    ]);
+    expect(mocks.buildHandoff).not.toHaveBeenCalled();
   });
 
   it("does not send a Plugin failure into the Codex Hook recovery loop", async () => {

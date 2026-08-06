@@ -3,7 +3,11 @@ import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { issueAdapterSyncAction, synchronizeContextAdapter } from "../core/context-integration/adapter-sync.js";
+import {
+  hasKnownCompatibleContextAdapterSession,
+  issueAdapterSyncAction,
+  synchronizeContextAdapter,
+} from "../core/context-integration/adapter-sync.js";
 import {
   readContextIntegrationInstallManifest,
   writeContextIntegrationInstallManifest,
@@ -58,6 +62,62 @@ describe("lazy Context adapter sync", () => {
         repairOperation: repair,
       }),
     ).toThrow("missing or invalid");
+  });
+
+  it("keeps the exact upgraded Claude session compatible across later lifecycle events", () => {
+    const fixture = prepareOldCompatibleInstall();
+    const action = issueAdapterSyncAction(
+      {
+        provider: "claude-code",
+        sessionId: "session-lifecycle",
+        suppliedAdapterDigest: fixture.previous.adapterDigest,
+      },
+      { releaseRoot, driver: driver("claude-code") },
+    );
+    const repair = vi.fn(() => {
+      writeContextIntegrationInstallManifest({
+        ...fixture.previous,
+        adapterVersion: fixture.target.adapterVersion,
+        adapterDigest: fixture.target.adapterDigest,
+      });
+    });
+
+    synchronizeContextAdapter(driver("claude-code"), action.challenge, {
+      releaseRoot,
+      planInstall: () => fixture.plan,
+      repairOperation: repair,
+    });
+
+    expect(
+      hasKnownCompatibleContextAdapterSession(
+        {
+          provider: "claude-code",
+          sessionId: "session-lifecycle",
+          suppliedAdapterDigest: fixture.previous.adapterDigest,
+        },
+        { releaseRoot, driver: driver("claude-code") },
+      ),
+    ).toBe(true);
+    expect(
+      hasKnownCompatibleContextAdapterSession(
+        {
+          provider: "claude-code",
+          sessionId: "another-session",
+          suppliedAdapterDigest: fixture.previous.adapterDigest,
+        },
+        { releaseRoot, driver: driver("claude-code") },
+      ),
+    ).toBe(false);
+    expect(
+      hasKnownCompatibleContextAdapterSession(
+        {
+          provider: "claude-code",
+          sessionId: "session-lifecycle",
+          suppliedAdapterDigest: `sha256:${"f".repeat(64)}`,
+        },
+        { releaseRoot, driver: driver("claude-code") },
+      ),
+    ).toBe(false);
   });
 
   it("retains the exact action after a rolled-back update so a bounded retry can succeed", () => {

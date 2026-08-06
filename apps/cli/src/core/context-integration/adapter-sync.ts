@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
@@ -19,15 +19,30 @@ import { createContextIntegrationProviderDriver } from "./provider-factory.js";
 import { resolveContextIntegrationRelease } from "./release.js";
 
 const SYNC_TTL_MS = 10 * 60 * 1000;
+const COMPATIBLE_SESSION_TTL_MS = 30 * 24 * 60 * 60_000;
 
 type AdapterSyncReceipt = {
   schemaVersion: 1;
   accountClientId: string;
   channel: "prod" | "staging" | "dev";
   provider: ContextIntegrationProvider;
+  sessionId: string;
   challenge: string;
   fromAdapterVersion: string;
   fromAdapterDigest: string;
+  targetAdapterVersion: string;
+  targetAdapterDigest: string;
+  expiresAt: string;
+};
+
+type CompatibleAdapterSession = {
+  schemaVersion: 1;
+  accountClientId: string;
+  channel: "prod" | "staging" | "dev";
+  provider: "claude-code";
+  sessionIdHash: string;
+  adapterVersion: string;
+  adapterDigest: string;
   targetAdapterVersion: string;
   targetAdapterDigest: string;
   expiresAt: string;
@@ -90,6 +105,7 @@ export function issueAdapterSyncAction(
     accountClientId,
     channel: channelConfig.channel,
     provider: input.provider,
+    sessionId: input.sessionId,
     challenge,
     fromAdapterVersion: installed.adapterVersion,
     fromAdapterDigest: installed.adapterDigest,
@@ -159,6 +175,7 @@ export function synchronizeContextAdapter(
     assertReceiptAccountAndTargetStillCurrent(receipt, release.manifest.providers[driver.provider]);
     (dependencies.repairOperation ?? repairContextIntegrationOperation)(driver, plan, {});
     assertReceiptAccountAndTargetStillCurrent(receipt, release.manifest.providers[driver.provider]);
+    if (driver.provider === "claude-code") writeCompatibleAdapterSession(receipt);
     rmSync(receiptPath(driver.provider, challenge), { force: true });
     return {
       updated: true as const,
@@ -166,6 +183,47 @@ export function synchronizeContextAdapter(
       currentSessionAdoption: "next_session" as const,
     };
   });
+}
+
+export function hasKnownCompatibleContextAdapterSession(
+  input: {
+    provider: ContextIntegrationProvider;
+    sessionId?: string;
+    suppliedAdapterDigest: string;
+  },
+  options: { releaseRoot?: string; coreRoot?: string; driver?: ContextIntegrationProviderDriver } = {},
+): boolean {
+  if (input.provider !== "claude-code" || !input.sessionId) return false;
+  try {
+    assertSessionId(input.sessionId);
+    const marker = readCompatibleAdapterSession(input.sessionId);
+    if (!marker) return false;
+    const release = resolveContextIntegrationRelease(options.releaseRoot, { coreRoot: options.coreRoot });
+    const target = release.manifest.providers["claude-code"];
+    const installed = readContextIntegrationInstallManifest("claude-code");
+    if (
+      marker.accountClientId !== readActiveContextAccountClientId() ||
+      marker.channel !== channelConfig.channel ||
+      marker.sessionIdHash !== sessionIdHash(input.sessionId) ||
+      marker.adapterDigest !== input.suppliedAdapterDigest ||
+      marker.targetAdapterVersion !== target.adapterVersion ||
+      marker.targetAdapterDigest !== target.adapterDigest ||
+      installed?.adapterVersion !== target.adapterVersion ||
+      installed.adapterDigest !== target.adapterDigest ||
+      !semver.valid(marker.adapterVersion) ||
+      !semver.valid(marker.targetAdapterVersion) ||
+      !semver.lt(marker.adapterVersion, marker.targetAdapterVersion)
+    ) {
+      return false;
+    }
+    assertContextAdapterPayloadHealthy(options.driver ?? createContextIntegrationProviderDriver("claude-code"), {
+      adapterVersion: installed.adapterVersion,
+      adapterDigest: installed.adapterDigest,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function assertReceiptAccountAndTargetStillCurrent(
@@ -236,6 +294,9 @@ function readReceipt(provider: ContextIntegrationProvider, challenge: string): A
       value.schemaVersion !== 1 ||
       value.provider !== provider ||
       value.challenge !== challenge ||
+      typeof value.sessionId !== "string" ||
+      value.sessionId.length > 256 ||
+      !/^[0-9A-Za-z._:-]+$/u.test(value.sessionId) ||
       typeof value.accountClientId !== "string" ||
       typeof value.fromAdapterVersion !== "string" ||
       typeof value.fromAdapterDigest !== "string" ||
@@ -255,6 +316,79 @@ function readReceipt(provider: ContextIntegrationProvider, challenge: string): A
   } catch (error) {
     if (error instanceof AdapterSyncRejectedError) throw error;
     throw new AdapterSyncRejectedError("The automatic First Tree Context update action is missing or invalid.");
+  }
+}
+
+function writeCompatibleAdapterSession(receipt: AdapterSyncReceipt): void {
+  const marker: CompatibleAdapterSession = {
+    schemaVersion: 1,
+    accountClientId: receipt.accountClientId,
+    channel: receipt.channel,
+    provider: "claude-code",
+    sessionIdHash: sessionIdHash(receipt.sessionId),
+    adapterVersion: receipt.fromAdapterVersion,
+    adapterDigest: receipt.fromAdapterDigest,
+    targetAdapterVersion: receipt.targetAdapterVersion,
+    targetAdapterDigest: receipt.targetAdapterDigest,
+    expiresAt: new Date(Date.now() + COMPATIBLE_SESSION_TTL_MS).toISOString(),
+  };
+  writeJson(compatibleSessionPath(receipt.sessionId), marker);
+}
+
+function readCompatibleAdapterSession(sessionId: string): CompatibleAdapterSession | null {
+  const path = compatibleSessionPath(sessionId);
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<CompatibleAdapterSession>;
+    if (
+      value.schemaVersion !== 1 ||
+      value.provider !== "claude-code" ||
+      typeof value.accountClientId !== "string" ||
+      !["prod", "staging", "dev"].includes(value.channel ?? "") ||
+      !/^sha256:[0-9a-f]{64}$/u.test(value.adapterDigest ?? "") ||
+      !/^sha256:[0-9a-f]{64}$/u.test(value.targetAdapterDigest ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(value.sessionIdHash ?? "") ||
+      typeof value.adapterVersion !== "string" ||
+      typeof value.targetAdapterVersion !== "string" ||
+      typeof value.expiresAt !== "string" ||
+      !Number.isFinite(Date.parse(value.expiresAt))
+    ) {
+      return null;
+    }
+    if (Date.parse(value.expiresAt) <= Date.now()) {
+      rmSync(path, { force: true });
+      return null;
+    }
+    return value as CompatibleAdapterSession;
+  } catch {
+    return null;
+  }
+}
+
+function compatibleSessionPath(sessionId: string): string {
+  return join(
+    defaultHome(),
+    "state",
+    "context",
+    "providers",
+    "claude-code",
+    "adapter-sync",
+    "compatible-sessions",
+    `${sessionIdHash(sessionId)}.json`,
+  );
+}
+
+function sessionIdHash(sessionId: string): string {
+  return createHash("sha256").update(sessionId).digest("hex");
+}
+
+function writeJson(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const temporary = `${path}.tmp.${process.pid}.${Date.now()}`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
   }
 }
 

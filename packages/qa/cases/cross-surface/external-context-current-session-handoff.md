@@ -1,6 +1,6 @@
 ---
 id: external-context-current-session-handoff
-description: Validate thin-Plugin migration, exact-release Core loading, concise setup recovery, and current-session handoff across Claude Code and Codex.
+description: Validate thin-Plugin migration, exact-release Core loading, concise setup recovery, Claude next-session adoption, and safe current-session handoff.
 areas: [cross-surface]
 surfaces: [web, server, cli, claude-code, codex, context-tree]
 ---
@@ -9,9 +9,10 @@ surfaces: [web, server, cli, claude-code, codex, context-tree]
 
 ## Goal
 
-Confirm that an already-running Claude Code or Codex conversation can install
-the thin First Tree Context Plugin, complete provider-owned consent, and load
-the current CLI release's canonical Core workflow. Prove that a later Core-only
+Confirm that Codex can install the thin First Tree Context Plugin, complete
+provider-owned consent, and load the current CLI release's canonical Core
+workflow in the same conversation. Confirm Claude setup accurately waits for a
+new session instead of returning a blocked handoff. Prove that a later Core-only
 CLI upgrade needs no Plugin reinstall, Claude lifecycle action, or repeated
 Codex trust.
 
@@ -39,9 +40,10 @@ Codex trust.
    Hook trust, destructive reset, and a changed plan. Confirm the agent always
    stops for the user at these boundaries and never hand-edits provider cache,
    Context config, receipts, or journals.
-4. Install or migrate Claude. Confirm apply returns a verified current-session
-   handoff and tells the user that persistent automatic routing begins in the
-   next session. Confirm the Plugin contains only SessionStart lifecycle logic,
+4. Install or migrate Claude. Confirm apply completes with
+   `currentSessionHandoff: null`, does not provide a Read loader or claim that
+   Context is active in the current conversation, and tells the user that
+   persistent automatic routing begins in the next session. Confirm the Plugin contains only SessionStart lifecycle logic,
    no same-session adoption hook or receipt path, and the general Skill loader
    creates no lifecycle state. Start a new session and verify its exact
    SessionStart consumes the obligation before routing.
@@ -107,9 +109,9 @@ Codex trust.
 
 ## Expected Result
 
-`PASS`: both providers return a current-session handoff in the original
-conversation; first Claude migration uses next-session adoption for automatic
-routing; later Core-only releases load on the next task with stable adapter
+`PASS`: Codex returns a usable current-session handoff in the original
+conversation; first Claude migration returns no current-session handoff and
+uses next-session adoption for automatic routing; later Core-only releases load on the next task with stable adapter
 identity; unchanged Core content is reused only by
 digest while changed or unavailable content is reread; adapter 1.0.2 is adopted
 through the compatible update path; recovery is bounded, concise, and preserves

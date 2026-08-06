@@ -364,7 +364,7 @@ async function applyPersistent(
       ...(authorityMissing ? [`Team authority: ${finalActivation.message}`] : []),
     ];
     let currentSessionHandoff: CurrentSessionHandoff | null = null;
-    if (missingLayers.length === 0 && health.probe.installedPath) {
+    if (missingLayers.length === 0 && health.probe.installedPath && !claudeNextSessionRequired) {
       currentSessionHandoff = buildCurrentSessionHandoff({
         provider,
         project: plan.location.project,
@@ -374,11 +374,11 @@ async function applyPersistent(
       });
     }
     assertPlannedAccount(plan);
-    const setupComplete = missingLayers.length === 0 && currentSessionHandoff !== null;
+    const setupComplete = missingLayers.length === 0 && (currentSessionHandoff !== null || claudeNextSessionRequired);
     const nextActions = setupComplete
       ? [
           claudeNextSessionRequired
-            ? "Adopt the verified handoff in this session. Start a new Claude session for persistent auto-activation."
+            ? "Start a new Claude session for persistent auto-activation. This setup does not activate Context in the current Claude session."
             : "Adopt the verified handoff in this session. Future sessions will load the neutral Team router automatically.",
         ]
       : [

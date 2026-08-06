@@ -10,7 +10,11 @@ import {
 } from "../../core/context-integration/activation.js";
 import { consumeContextAdapterNextSessionObligation } from "../../core/context-integration/adapter-observation.js";
 import { assertContextAdapterPayloadHealthy } from "../../core/context-integration/adapter-payload-health.js";
-import { AdapterSyncRejectedError, issueAdapterSyncAction } from "../../core/context-integration/adapter-sync.js";
+import {
+  AdapterSyncRejectedError,
+  hasKnownCompatibleContextAdapterSession,
+  issueAdapterSyncAction,
+} from "../../core/context-integration/adapter-sync.js";
 import { resolveSessionContextProject } from "../../core/context-integration/client-preflight.js";
 import { readContextIntegrationInstallManifest } from "../../core/context-integration/manifest.js";
 import { resolveContextIntegrationRelease } from "../../core/context-integration/release.js";
@@ -51,6 +55,14 @@ export async function runContextActivate(
     const installed = readContextIntegrationInstallManifest(provider);
     const target = release.manifest.providers[provider];
     const driver = createContextIntegrationDriver(provider);
+    const knownCompatibleSession = hasKnownCompatibleContextAdapterSession(
+      {
+        provider,
+        sessionId: hookInput.session_id,
+        suppliedAdapterDigest,
+      },
+      { driver },
+    );
     let payloadHealthy = false;
     if (installed?.adapterVersion && installed.adapterDigest === suppliedAdapterDigest) {
       try {
@@ -64,10 +76,11 @@ export async function runContextActivate(
       }
     }
     const current =
-      payloadHealthy &&
-      installed?.adapterVersion === target.adapterVersion &&
-      installed.adapterDigest === target.adapterDigest &&
-      suppliedAdapterDigest === target.adapterDigest;
+      knownCompatibleSession ||
+      (payloadHealthy &&
+        installed?.adapterVersion === target.adapterVersion &&
+        installed.adapterDigest === target.adapterDigest &&
+        suppliedAdapterDigest === target.adapterDigest);
     if (!current) {
       const compatibleForwardUpdate = Boolean(
         payloadHealthy &&

@@ -1272,10 +1272,14 @@ the shared Plugin and add one schema-v3 grant. Session-only verifies the
 release bundle, writes no grant, and returns only Read/Write loader entries plus a
 signed opaque candidate receipt.
 
-Successful apply returns `currentSessionHandoff` schema v3. It contains
+Successful session-only apply, and persistent apply when the adapter is already
+usable in the current provider session, returns `currentSessionHandoff` schema
+v3. It contains
 immutable provider/project identity, `consumerKind: byo`, activation scope,
 neutral standing routing context, and versioned exact-release loader commands.
-Persistent scope returns `first-tree`, `first-tree-read`, and
+Claude persistent setup that installs, migrates, or repairs the Plugin returns
+`currentSessionHandoff: null` while its next-session obligation is pending and
+instructs the user to start a new session. Other usable persistent scopes return `first-tree`, `first-tree-read`, and
 `first-tree-write`; session scope returns Read/Write only. Human mode prints
 the full usable JSON handoff.
 
@@ -1303,8 +1307,8 @@ Claude Code materializes deterministic thin-Plugin bytes for each
 leave a next-session obligation that only an exact repaired SessionStart can
 consume. Repeating repair for the same adapter version does not change the
 provider cache version or payload. The current session need not adopt the repair
-immediately; setup can still return its verified current-session handoff, while
-persistent automatic routing resumes in the next Claude session. Later
+immediately; setup returns no current-session handoff, and persistent automatic
+routing starts in the next Claude session. Later
 Core-only upgrades and additional Team grants require no provider lifecycle
 action or repeated Codex trust.
 
