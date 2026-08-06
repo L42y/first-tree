@@ -53,11 +53,11 @@ const DAEMON_CLIENT_COMMAND_CHANNEL = "daemon_client_commands";
 const DAEMON_CLIENT_COMMAND_RESULT_CHANNEL = "daemon_client_command_results";
 /**
  * A viewer's PRIVATE me-chats projection changed (for example, they pinned,
- * unpinned, or archived a chat). Carries `<humanAgentId>:<organizationId>` so the WS layer
- * can fan a bare `me-chats:changed` invalidation to ONLY that user's own
- * sockets in that org. Pin state is private per-user and must never reach
- * another member's devices — so unlike `chat_updated_events` (audience-scoped
- * to every chat member), this channel is user-scoped.
+ * unpinned, archived, or were fully detached from a chat). Carries
+ * `<humanAgentId>:<organizationId>` or `<humanAgentId>:<organizationId>:<chatId>`
+ * so the WS layer can fan a `me-chats:changed` invalidation to ONLY that user's
+ * own sockets in that org. Pin/engagement stay bare; detach may include chatId
+ * so the open detail can 404 without waiting for audience-scoped chat:updated.
  */
 const ME_CHATS_CHANNEL = "me_chats_changed";
 
@@ -179,7 +179,12 @@ export type DaemonClientCommandResultPayload = {
   ref: string;
 };
 export type DaemonClientCommandResultHandler = (payload: DaemonClientCommandResultPayload) => void;
-export type MeChatsChangedHandler = (payload: { humanAgentId: string; organizationId: string }) => void;
+export type MeChatsChangedHandler = (payload: {
+  humanAgentId: string;
+  organizationId: string;
+  /** When set, the open chat-detail for this id should refresh (e.g. detach). */
+  chatId?: string;
+}) => void;
 
 /**
  * Per-socket push handler for the WS data plane. When a NOTIFY arrives on
@@ -226,12 +231,12 @@ export type Notifier = {
   /** Chat metadata changed (description / topic): kick admin WS sockets to invalidate `["chat-detail", chatId]` + `["me","chats"]`. */
   notifyChatUpdated(chatId: string): Promise<void>;
   /**
-   * A viewer's private me-chats list changed (pin / engagement). Kicks ONLY that
-   * user's own admin WS sockets (in `organizationId`) to invalidate
-   * `["me","chats"]`, so the change syncs across their devices without ever
-   * touching another member's sockets.
+   * A viewer's private me-chats list changed (pin / engagement / detach). Kicks
+   * ONLY that user's own admin WS sockets (in `organizationId`) to invalidate
+   * `["me","chats"]`. Optional `chatId` asks clients to also invalidate
+   * `["chat-detail", chatId]` (detach while `?c=` stays open).
    */
-  notifyMeChatsChanged(humanAgentId: string, organizationId: string): Promise<void>;
+  notifyMeChatsChanged(humanAgentId: string, organizationId: string, chatId?: string): Promise<void>;
   /** Agent runtime route changed: fan local WS detach/pin handling to every server replica. */
   notifyAgentRouteChange(payload: AgentRouteChangePayload): Promise<void>;
   /**
@@ -440,9 +445,10 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
       }
     },
 
-    async notifyMeChatsChanged(humanAgentId: string, organizationId: string) {
+    async notifyMeChatsChanged(humanAgentId: string, organizationId: string, chatId?: string) {
       try {
-        await listenClient`SELECT pg_notify(${ME_CHATS_CHANNEL}, ${`${humanAgentId}:${organizationId}`})`;
+        const payload = chatId ? `${humanAgentId}:${organizationId}:${chatId}` : `${humanAgentId}:${organizationId}`;
+        await listenClient`SELECT pg_notify(${ME_CHATS_CHANNEL}, ${payload})`;
       } catch {
         // fire-and-forget — realtime is best-effort; the 30s me-chats poll and
         // web reconnect refetch are the durable fallback.
@@ -688,15 +694,18 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
 
       const meChatsChangedResult = await listenClient.listen(ME_CHATS_CHANNEL, (payload) => {
         if (!payload) return;
-        // payload format: "humanAgentId:organizationId" — both are UUIDs (no
-        // colons), so the first separator wins.
-        const sep = payload.indexOf(":");
-        if (sep <= 0) return;
-        const humanAgentId = payload.slice(0, sep);
-        const organizationId = payload.slice(sep + 1);
+        // payload: "humanAgentId:organizationId" or "...:chatId" — UUIDs have
+        // no colons, so split on the first two separators.
+        const first = payload.indexOf(":");
+        if (first <= 0) return;
+        const second = payload.indexOf(":", first + 1);
+        const humanAgentId = payload.slice(0, first);
+        const organizationId = second < 0 ? payload.slice(first + 1) : payload.slice(first + 1, second);
+        const chatId = second < 0 ? undefined : payload.slice(second + 1) || undefined;
+        if (!humanAgentId || !organizationId) return;
         for (const handler of meChatsChangedHandlers) {
           try {
-            handler({ humanAgentId, organizationId });
+            handler(chatId ? { humanAgentId, organizationId, chatId } : { humanAgentId, organizationId });
           } catch {
             // swallow — handler errors must not poison fan-out
           }

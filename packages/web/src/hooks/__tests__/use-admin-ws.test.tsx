@@ -237,6 +237,22 @@ describe("useAdminWs", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
   });
 
+  it("invalidates open chat-detail when me-chats:changed carries chatId (detach)", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    await renderHook();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("socket missing");
+    invalidateSpy.mockClear();
+
+    await act(async () => {
+      socket.emit({ type: "me-chats:changed", chatId: "chat-detached" });
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["me", "chats"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-detail", "chat-detached"] });
+  });
+
   it("refreshes access tokens on auth close and reconnects immediately", async () => {
     const onMessage = await renderHook();
     const first = FakeWebSocket.instances[0];

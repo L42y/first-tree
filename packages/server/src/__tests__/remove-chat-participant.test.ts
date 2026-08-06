@@ -1,7 +1,7 @@
 import { CRON_TRIGGER_METADATA_KEY, REMOVE_PARTICIPANT_OPEN_REQUEST_CODE } from "@first-tree/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
@@ -14,9 +14,14 @@ import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { upsertSessionState } from "../services/activity.js";
-import { createChat, removeParticipant } from "../services/chat.js";
+import { createChat, ensureParticipant, removeParticipant } from "../services/chat.js";
+import * as connectionManager from "../services/connection-manager.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { sendMessage } from "../services/message.js";
+import {
+  isRemovedSessionSoftTerminateLive,
+  softTerminateRemovedAgentSession,
+} from "../services/remove-chat-participant.js";
 import { appendLiveEvent } from "../services/session-event.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
@@ -539,5 +544,81 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       await removePool.end();
       await observer.end();
     }
+  });
+
+  it("delayed soft terminate after re-add does not kill the new session; still-evicted does", async () => {
+    const { app, agent, chatId, ownerHeaders } = await setupGroup();
+    await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await isRemovedSessionSoftTerminateLive(app.db, agent.agent.uuid, chatId)).toBe(true);
+
+    const sendSpy = vi.spyOn(connectionManager, "sendToAgent").mockReturnValue(true);
+    try {
+      // Still removed + evicted → terminate delivers.
+      await softTerminateRemovedAgentSession({
+        db: app.db,
+        agentId: agent.agent.uuid,
+        chatId,
+      });
+      expect(sendSpy).toHaveBeenCalledWith(agent.agent.uuid, {
+        type: "session:terminate",
+        chatId,
+      });
+      sendSpy.mockClear();
+
+      // Re-add as speaker and revive session — delayed terminate must no-op.
+      await ensureParticipant(app.db, chatId, agent.agent.uuid);
+      await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
+      expect(await isRemovedSessionSoftTerminateLive(app.db, agent.agent.uuid, chatId)).toBe(false);
+
+      await softTerminateRemovedAgentSession({
+        db: app.db,
+        agentId: agent.agent.uuid,
+        chatId,
+        notifier: app.notifier,
+        instanceId: "other-replica",
+      });
+      expect(sendSpy).not.toHaveBeenCalled();
+
+      const [session] = await app.db
+        .select({ state: agentChatSessions.state })
+        .from(agentChatSessions)
+        .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+        .limit(1);
+      expect(session?.state).toBe("active");
+    } finally {
+      sendSpy.mockRestore();
+    }
+  });
+
+  it("detaches Human with me-chats:changed(chatId) and notifies audience only once", async () => {
+    const { app, owner, peer, chatId, ownerHeaders } = await setupGroup();
+    const audienceSpy = vi.spyOn(app.notifier, "notifyChatAudience");
+    const meChatsSpy = vi.spyOn(app.notifier, "notifyMeChatsChanged");
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${peer.humanAgentUuid}`,
+      headers: ownerHeaders,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ membershipKind: null });
+
+    await vi.waitFor(() => {
+      expect(meChatsSpy).toHaveBeenCalledWith(peer.humanAgentUuid, peer.organizationId, chatId);
+    });
+    // invalidateChatAudience → dispatcher → notifyChatAudience exactly once
+    // (no second explicit call from removeChatParticipant).
+    expect(audienceSpy).toHaveBeenCalledTimes(1);
+    expect(audienceSpy).toHaveBeenCalledWith(chatId);
+
+    audienceSpy.mockRestore();
+    meChatsSpy.mockRestore();
   });
 });

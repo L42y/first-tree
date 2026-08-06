@@ -25,7 +25,7 @@ import { members } from "../db/schema/members.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
+import { isChatSpeaker, lockChatMembershipMutation, lockChatMembershipShared } from "./chat-membership-lock.js";
 import { sendToAgent } from "./connection-manager.js";
 import { lockOwnerChatCronBarrier } from "./cron-job.js";
 import type { Notifier } from "./notifier.js";
@@ -277,10 +277,11 @@ export async function removeChatParticipant(
 
   const notifier = options.notifier;
   if (notifier) {
-    void notifier.notifyChatAudience(chatId);
+    // `invalidateChatAudience` already fans `notifyChatAudience` via the
+    // boot-registered dispatcher — do not call it again here.
     void notifier.notifyChatUpdated(chatId);
     if (outcome.detachedHumanAgentId) {
-      void notifier.notifyMeChatsChanged(outcome.detachedHumanAgentId, outcome.organizationId);
+      void notifier.notifyMeChatsChanged(outcome.detachedHumanAgentId, outcome.organizationId, chatId);
     }
   }
 
@@ -397,11 +398,38 @@ async function pauseCronJobsForRemovedSpeaker(
 }
 
 /**
+ * Soft terminate is only live while the removal fence still holds: the agent
+ * is not a speaker and the durable `(agent, chat)` session row is still
+ * `evicted`. Re-add takes exclusive membership and clears that fence, so a
+ * delayed local send or cross-replica `session:evict` must re-check under the
+ * shared membership advisory before delivering `session:terminate`.
+ */
+export async function isRemovedSessionSoftTerminateLive(
+  db: Database,
+  agentId: string,
+  chatId: string,
+): Promise<boolean> {
+  return db.transaction(async (rawTx) => {
+    const tx = rawTx as unknown as Database;
+    await lockChatMembershipShared(tx, [chatId]);
+    if (await isChatSpeaker(tx, chatId, agentId)) return false;
+    const [session] = await tx
+      .select({ state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    return session?.state === "evicted";
+  });
+}
+
+/**
  * Best-effort ordinary `session:terminate` (no Reset apply-ack). Local first;
  * when the agent's socket lives on another replica, fan a soft evict command.
  * Failures never surface to the DELETE caller — DB eviction is authoritative.
+ * Re-validates the removal fence immediately before each delivery attempt so
+ * a delayed wake cannot kill a session after re-add.
  */
-async function softTerminateRemovedAgentSession(input: {
+export async function softTerminateRemovedAgentSession(input: {
   db: Database;
   agentId: string;
   chatId: string;
@@ -409,10 +437,19 @@ async function softTerminateRemovedAgentSession(input: {
   instanceId?: string;
 }): Promise<void> {
   try {
+    if (!(await isRemovedSessionSoftTerminateLive(input.db, input.agentId, input.chatId))) {
+      return;
+    }
     if (sendToAgent(input.agentId, { type: "session:terminate", chatId: input.chatId })) {
       return;
     }
     if (!input.notifier || !input.instanceId) return;
+
+    // Re-check after the local miss: re-add may have won between the first
+    // fence read and the remote publish.
+    if (!(await isRemovedSessionSoftTerminateLive(input.db, input.agentId, input.chatId))) {
+      return;
+    }
 
     const [route] = await input.db
       .select({

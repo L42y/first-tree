@@ -225,6 +225,7 @@ describe("createNotifier", () => {
     listeners.get("chat_audience_events")?.("chat_1");
     listeners.get("chat_updated_events")?.("chat_1");
     listeners.get("me_chats_changed")?.("human_1:org_1");
+    listeners.get("me_chats_changed")?.("human_1:org_1:chat_9");
     listeners.get("me_chats_changed")?.("bad");
     listeners.get("agent_route_events")?.(
       JSON.stringify({
@@ -308,8 +309,13 @@ describe("createNotifier", () => {
     expect(chatAudienceSecond).toHaveBeenCalledWith({ chatId: "chat_1" });
     expect(chatUpdatedSecond).toHaveBeenCalledWith({ chatId: "chat_1" });
     expect(meChatsChanged).toHaveBeenCalledWith({ humanAgentId: "human_1", organizationId: "org_1" });
+    expect(meChatsChanged).toHaveBeenCalledWith({
+      humanAgentId: "human_1",
+      organizationId: "org_1",
+      chatId: "chat_9",
+    });
     // The malformed "bad" payload (no colon) is dropped, not passed through.
-    expect(meChatsChanged).toHaveBeenCalledTimes(1);
+    expect(meChatsChanged).toHaveBeenCalledTimes(2);
     expect(agentRouteSecond).toHaveBeenCalledWith({
       agentId: "agent_1",
       agentType: "codex",

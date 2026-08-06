@@ -102,8 +102,8 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     void dispatchChatUpdated(chatId);
   });
 
-  notifier.onMeChatsChanged(({ humanAgentId, organizationId }) => {
-    dispatchMeChatsChanged(humanAgentId, organizationId);
+  notifier.onMeChatsChanged(({ humanAgentId, organizationId, chatId }) => {
+    dispatchMeChatsChanged(humanAgentId, organizationId, chatId);
   });
 
   /**
@@ -190,16 +190,16 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     }
   }
 
-  // Per-USER sibling of dispatchChatUpdated: a private me-chats change (pin or
-  // engagement) fans a bare `me-chats:changed` invalidation to ONLY the acting
+  // Per-USER sibling of dispatchChatUpdated: a private me-chats change (pin,
+  // engagement, or full detach) fans `me-chats:changed` to ONLY the acting
   // user's own sockets in that org. Deliberately NO chat-audience lookup — pin
   // state is private and must never reach another member's devices, so the gate
-  // is identity (`humanAgentId`) + org, not chat membership. One user with two
-  // devices in the org sees both rails regroup; nobody else is touched. Sync
-  // (no DB), so it runs inline on the notifier callback.
-  function dispatchMeChatsChanged(humanAgentId: string, organizationId: string): void {
+  // is identity (`humanAgentId`) + org, not chat membership. Optional `chatId`
+  // lets a detach invalidate the open detail after the viewer left the audience.
+  // Sync (no DB), so it runs inline on the notifier callback.
+  function dispatchMeChatsChanged(humanAgentId: string, organizationId: string, chatId?: string): void {
     if (adminSockets.size === 0) return;
-    const frame = JSON.stringify({ type: "me-chats:changed" });
+    const frame = JSON.stringify(chatId ? { type: "me-chats:changed", chatId } : { type: "me-chats:changed" });
     for (const [ws, meta] of adminSockets) {
       if (ws.readyState !== 1) continue;
       if (meta.humanAgentId !== humanAgentId || meta.organizationId !== organizationId) continue;

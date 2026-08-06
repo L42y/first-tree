@@ -289,13 +289,19 @@ describe("Admin WS route edge paths", () => {
 
     // The acting user's own pin in their org → delivered to `own` only.
     handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-1" });
+    // Detach carries chatId so the open detail can invalidate after leaving audience.
+    handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-1", chatId: "chat-detach" });
     // A DIFFERENT user's pin in the same org → delivered to nobody. This is the
     // privacy boundary: pin state is private and must never reach another member.
     handlers.meChatsChanged?.({ humanAgentId: "human-2", organizationId: "org-1" });
     // The same user, a different org → delivered to nobody here (org-scoped).
     handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-3" });
 
-    expect(sentPayloads(own.send).map((payload) => payload.type)).toEqual(["admin:connected", "me-chats:changed"]);
+    const types = sentPayloads(own.send).map((payload) => payload.type);
+    expect(types).toEqual(["admin:connected", "me-chats:changed", "me-chats:changed"]);
+    expect(
+      sentPayloads(own.send).some((payload) => payload.type === "me-chats:changed" && payload.chatId === "chat-detach"),
+    ).toBe(true);
     // The other-org socket (same user) never sees org-1's pin.
     expect(sentPayloads(otherOrg.send).map((payload) => payload.type)).toEqual(["admin:connected"]);
   });
