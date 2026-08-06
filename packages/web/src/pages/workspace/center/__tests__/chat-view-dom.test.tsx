@@ -4,6 +4,7 @@ import {
   type Agent,
   type ChatDetail,
   type ChatParticipantDetail,
+  CONTEXT_DECISION_METADATA_KEY,
   encodeProviderRetryEventMessage,
   FIRST_CHAT_ORIENTATION_CHAT_STATES,
   FIRST_CHAT_ORIENTATION_METADATA_KEY,
@@ -5091,6 +5092,118 @@ describe("need-you queue session", () => {
     await answerOpenAsk(container);
     expect(locText(container)).toBe("/");
     expect(meChatMocks.listNeedYouRequests).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+});
+
+describe("ChatView Context Tree decision receipt", () => {
+  const RECEIPT = {
+    version: 1,
+    effect: "constrained",
+    summary: "Team rollout policy caps Web at 20%; CLI stays at 5% until the migration guard clears.",
+    evidence: [
+      {
+        repoUrl: "https://github.com/example/context-tree",
+        commit: "0123456789abcdef0123456789abcdef01234567",
+        nodePath: "product/release/rollout-policy.md",
+        heading: "Expansion gates",
+      },
+    ],
+  };
+
+  function withReceipt(
+    overrides: Partial<MessageWithDelivery> & { id: string; senderId: string },
+    receipt: unknown = RECEIPT,
+  ): MessageWithDelivery {
+    return message({
+      ...overrides,
+      metadata: { ...(overrides.metadata ?? {}), [CONTEXT_DECISION_METADATA_KEY]: receipt },
+    });
+  }
+
+  it("shows the receipt under an agent reply", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const history = messages([
+      withReceipt({
+        id: "msg-receipt",
+        senderId: "agent-1",
+        content: "Expanding Web to 20% and holding CLI at 5%.",
+        source: "cli",
+      }),
+    ]);
+    chatMocks.listChatMessages.mockResolvedValue(history);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), history),
+      "/",
+    );
+
+    await waitForText(container, "Context Tree in action");
+    expect(container.textContent).toContain("Options narrowed");
+    expect(container.textContent).toContain("Team rollout policy caps Web at 20%");
+    // Collapsed by default: the exact source is one click away, not in the way.
+    expect(container.textContent).not.toContain("product/release/rollout-policy.md");
+
+    await act(async () => root.unmount());
+  });
+
+  it("ignores a receipt on a human message and a malformed receipt from an agent", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const history = messages([
+      withReceipt({
+        id: "msg-human",
+        senderId: "human-agent-self",
+        content: "Human message claiming context influence.",
+        metadata: { mentions: ["agent-1"] },
+      }),
+      withReceipt(
+        { id: "msg-broken", senderId: "agent-1", content: "Agent reply with a broken receipt.", source: "cli" },
+        { ...RECEIPT, effect: "none" },
+      ),
+    ]);
+    chatMocks.listChatMessages.mockResolvedValue(history);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), history),
+      "/",
+    );
+
+    await waitForText(container, "Agent reply with a broken receipt.");
+    expect(container.textContent).not.toContain("Context Tree in action");
+
+    await act(async () => root.unmount());
+  });
+
+  it("shows the asking agent's receipt inside the blocking ask, above the answer controls", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const ask = withReceipt({
+      id: "ask-receipt",
+      senderId: "agent-1",
+      format: "request",
+      content: "Expand Web to 20% now, or hold for 24 hours?",
+      metadata: { mentions: ["human-agent-self"], request: { multiSelect: false } },
+      createdAt: "2026-05-28T11:59:00.000Z",
+    });
+    chatMocks.listChatOpenRequests.mockResolvedValue({ items: [ask] });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), messages([ask]));
+        client.setQueryData(["chat-open-requests", "chat-1"], { items: [ask] });
+      },
+      "/",
+    );
+
+    await waitForText(container, "Expand Web to 20% now, or hold for 24 hours?");
+    await waitForText(container, "Context Tree in action");
+    const takeover = container.querySelector<HTMLElement>('[aria-label^="Question from"]');
+    if (!takeover) throw new Error("ask takeover missing");
+    const receipt = takeover.querySelector<HTMLElement>('[aria-label="Context Tree influence reported by the agent"]');
+    const answerBox = takeover.querySelector<HTMLTextAreaElement>('textarea[placeholder^="Type your answer"]');
+    if (!receipt || !answerBox) throw new Error("receipt or answer input missing from the takeover");
+    // The receipt is context for the decision, so it must precede the controls.
+    expect(receipt.compareDocumentPosition(answerBox) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     await act(async () => root.unmount());
   });

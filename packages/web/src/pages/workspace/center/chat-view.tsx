@@ -20,6 +20,7 @@ import {
   type RequestResolution,
   type RuntimeAuthProvider,
   readAskAgentMessageMetadata,
+  readContextDecisionMetadata,
   readFirstChatOrientationChatState,
   readFirstChatOrientationMessageMetadata,
   statusReasonFromProviderRetryEvent,
@@ -95,6 +96,7 @@ import { sendAskAnswer } from "../../../components/chat/ask-answer-transport.js"
 import { type AskAnswer, AskTakeover, clearAskTakeoverDraft } from "../../../components/chat/ask-takeover.js";
 import { awaitedAgentsFromMessage, ChatOfflineNotice } from "../../../components/chat/chat-offline-notice.js";
 import { ComposeStatusBar } from "../../../components/chat/compose-status-bar.js";
+import { ContextDecisionReceipt } from "../../../components/chat/context-decision-receipt.js";
 import {
   GITHUB_SYSTEM_SENDER_NAME,
   GithubEventCardMessage,
@@ -580,6 +582,8 @@ type MessageRowProps = {
   agentAvatarFn: (id: string) => string | null;
   agentColorTokenFn: (id: string) => string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  /** See `MessageBodyProps.senderIsHuman`. */
+  senderIsHuman: boolean;
   /** Trial surface: render sender avatar/name as plain identity, without the
    *  AgentHovercard whose actions ("View profile" → /agents/:id, "New chat" →
    *  /?c=draft) would navigate out of the controlled trial conversation. */
@@ -597,6 +601,13 @@ type MessageBodyProps = {
   requestTagAgentId: string | null;
   myAgentId: string | null;
   mentionParticipants: RenderedMentionParticipant[];
+  /**
+   * True when this row's sender is a human speaker in THIS chat. Only used to
+   * suppress an agent-attributed Context Tree receipt on a human's message: the
+   * server strips the key from human sends, but message rows are immutable, so
+   * history written before that guard is still checked here.
+   */
+  senderIsHuman: boolean;
 };
 
 type MessageMarkdownProps = {
@@ -663,6 +674,7 @@ const MessageBody = memo(function MessageBody({
   requestTagAgentId,
   myAgentId,
   mentionParticipants,
+  senderIsHuman,
 }: MessageBodyProps) {
   const [searchParams, setSearchParams] = useSearchParams();
   const queryClient = useQueryClient();
@@ -706,6 +718,13 @@ const MessageBody = memo(function MessageBody({
     );
   }, [msg.metadata, msg.content]);
   const failedDocMentions = useMemo(() => failedDocMentionsFromMetadata(msg.metadata), [msg.metadata]);
+  // The agent's own record of how team context shaped THIS reply. Strictly
+  // parsed (unknown version / malformed payload -> null -> nothing renders),
+  // and never shown for a human speaker's row.
+  const contextDecision = useMemo(
+    () => (senderIsHuman ? null : readContextDecisionMetadata(msg.metadata)),
+    [msg.metadata, senderIsHuman],
+  );
   // Resolve a visible label only when this token's persisted mention ID still
   // identifies the current owner of the canonical handle. System-level
   // addressedAgentIds can include recipients unrelated to a particular token
@@ -950,6 +969,9 @@ const MessageBody = memo(function MessageBody({
           ))}
         </div>
       )}
+      {contextDecision ? (
+        <ContextDecisionReceipt receipt={contextDecision} gitlabInstanceOrigin={gitlabInstanceOrigin} />
+      ) : null}
     </div>
   );
 }, areMessageBodyPropsEqual);
@@ -962,6 +984,7 @@ const MessageRow = memo(function MessageRow({
   agentAvatarFn,
   agentColorTokenFn,
   mentionParticipants,
+  senderIsHuman,
   isTrial,
   orientationCompleted,
   orientationHidden,
@@ -1090,6 +1113,7 @@ const MessageRow = memo(function MessageRow({
           requestTagAgentId={requestTagAgentId}
           myAgentId={myAgentId}
           mentionParticipants={mentionParticipants}
+          senderIsHuman={senderIsHuman}
         />
       </div>
     </div>
@@ -1104,6 +1128,7 @@ function areMessageRowPropsEqual(prev: MessageRowProps, next: MessageRowProps): 
     prev.agentNameFn === next.agentNameFn &&
     prev.agentAvatarFn === next.agentAvatarFn &&
     prev.agentColorTokenFn === next.agentColorTokenFn &&
+    prev.senderIsHuman === next.senderIsHuman &&
     prev.isTrial === next.isTrial &&
     prev.orientationCompleted === next.orientationCompleted &&
     prev.orientationHidden === next.orientationHidden &&
@@ -1118,6 +1143,7 @@ function areMessageBodyPropsEqual(prev: MessageBodyProps, next: MessageBodyProps
     messageBodyFieldsEqual(prev.msg, next.msg) &&
     prev.requestTagAgentId === next.requestTagAgentId &&
     prev.myAgentId === next.myAgentId &&
+    prev.senderIsHuman === next.senderIsHuman &&
     mentionParticipantsEqual(prev.mentionParticipants, next.mentionParticipants)
   );
 }
@@ -1444,6 +1470,8 @@ type ChatTimelineProps = {
   /** Non-human agent participants — drives the inline offline notice. */
   agents: ChatParticipantDetail[];
   mentionParticipants: RenderedMentionParticipant[];
+  /** Human speakers in this chat — see `MessageBodyProps.senderIsHuman`. */
+  humanParticipantIds: ReadonlySet<string>;
   dockRequestId: string | undefined;
   gapAfterMessageId: string | null;
   firstNewItemIdx: number;
@@ -1477,6 +1505,7 @@ const ChatTimeline = memo(function ChatTimeline({
   chatId,
   agents,
   mentionParticipants,
+  humanParticipantIds,
   dockRequestId,
   gapAfterMessageId,
   firstNewItemIdx,
@@ -1583,6 +1612,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     agentAvatarFn={agentAvatarFn}
                     agentColorTokenFn={agentColorTokenFn}
                     mentionParticipants={mentionParticipants}
+                    senderIsHuman={humanParticipantIds.has(msg.senderId)}
                     isTrial={isTrial}
                     orientationCompleted={completedOrientationMessageIds.has(msg.id)}
                     orientationHidden={orientationHidden}
@@ -4411,6 +4441,12 @@ export function ChatView({
                   imageId: ref.attachmentId,
                   filename: ref.filename,
                 }))}
+                contextDecision={
+                  humanParticipantIds.has(dockRequest.senderId)
+                    ? null
+                    : readContextDecisionMetadata(dockRequest.metadata)
+                }
+                gitlabInstanceOrigin={gitlabInstanceOrigin}
                 payload={dockPayload}
                 askerName={chatScopedAgentName(dockRequest.senderId)}
                 sending={askBusy}
@@ -4952,6 +4988,7 @@ export function ChatView({
             chatId={chatId}
             agents={(chatDetail?.participants ?? []).filter((p) => p.type !== "human")}
             mentionParticipants={renderMentionParticipants}
+            humanParticipantIds={humanParticipantIds}
             dockRequestId={dockRequestId}
             gapAfterMessageId={gapAfterMessageId}
             firstNewItemIdx={firstNewItemIdx}

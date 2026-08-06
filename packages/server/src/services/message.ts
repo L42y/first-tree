@@ -4,7 +4,9 @@ import {
   attachmentRefsFromMetadata,
   CLI_BODY_ORIGIN_METADATA_KEY,
   CLI_BODY_ORIGINS,
+  CONTEXT_DECISION_METADATA_KEY,
   CRON_TRIGGER_METADATA_KEY,
+  contextDecisionSchema,
   extractCaption,
   FIRST_CHAT_ORIENTATION_CHAT_METADATA_KEY,
   FIRST_CHAT_ORIENTATION_CHAT_STATES,
@@ -110,6 +112,36 @@ function stripUntrustedMetadataKeys(
         (options.allowSystemSender || key !== "systemSender"),
     ),
   );
+}
+
+/**
+ * Trust boundary for `metadata.contextDecision` — the agent-reported record
+ * that Context Tree content shaped the choice carried by this message.
+ *
+ * Two rules, both fail-closed:
+ *   1. A HUMAN sender never carries one. The key is stripped rather than
+ *      rejected (a human's message body is fine; only the agent-attribution
+ *      claim is not theirs to make), so a browser/API write cannot dress a
+ *      human message as agent-reported Context Tree influence.
+ *   2. An AGENT sender's receipt must parse. Rejecting the write surfaces the
+ *      mistake to the agent, which fixes and resends; storing it silently would
+ *      leave an unrenderable receipt that no consumer can show and no author
+ *      knows is broken.
+ */
+function applyContextDecisionTrustBoundary(meta: Record<string, unknown>, senderType: string): Record<string, unknown> {
+  if (!(CONTEXT_DECISION_METADATA_KEY in meta)) return meta;
+  if (senderType === "human") {
+    return Object.fromEntries(Object.entries(meta).filter(([key]) => key !== CONTEXT_DECISION_METADATA_KEY));
+  }
+  const parsed = contextDecisionSchema.safeParse(meta[CONTEXT_DECISION_METADATA_KEY]);
+  if (!parsed.success) {
+    throw new BadRequestError(
+      'Malformed "metadata.contextDecision": expected {version: 1, effect: ' +
+        '"conflicted"|"redirected"|"constrained"|"confirmed", summary: <one sentence>, ' +
+        "evidence: [{repoUrl, commit, nodePath, heading?}] with 1-3 rows}.",
+    );
+  }
+  return meta;
 }
 
 /**
@@ -517,7 +549,10 @@ export function preflightMessageSendIntent(input: {
   // normalization can salvage an empty body into a bare "@name".
   validateMessageContent({ format: data.format, content: effectiveContent }, { hasAttachmentRefs });
 
-  const incomingMeta = stripUntrustedMetadataKeys(rawIncomingMeta, options);
+  const incomingMeta = applyContextDecisionTrustBoundary(
+    stripUntrustedMetadataKeys(rawIncomingMeta, options),
+    senderType,
+  );
   validateDocumentContext(incomingMeta);
   const parsedResolution = requestResolutionSchema.safeParse(incomingMeta.resolves);
   if (incomingMeta.resolves !== undefined && !parsedResolution.success) {
