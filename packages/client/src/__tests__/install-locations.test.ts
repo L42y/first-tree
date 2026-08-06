@@ -22,23 +22,17 @@ describe("versionManagerBinDirs", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
   });
 
-  it("returns the single installed version under each root", () => {
+  it("returns the sole candidate when exactly one root holds exactly one version", () => {
     const home = "/home/u";
-    const readDir = (path: string): string[] => {
-      if (path === join(home, ".nvm", "versions", "node")) return ["v22.2.0"];
-      if (path === join(home, ".local", "share", "fnm", "node-versions")) return ["v18.0.0"];
-      throw new Error("ENOENT");
-    };
-
-    expect(versionManagerBinDirs(home, { readDir, env: {} })).toEqual([
-      join(home, ".nvm", "versions", "node", "v22.2.0", "bin"),
-      join(home, ".local", "share", "fnm", "node-versions", "v18.0.0", "installation", "bin"),
-    ]);
+    const versions = join(home, ".nvm", "versions", "node");
+    expect(versionManagerBinDirs(home, { readDir: (path) => (path === versions ? ["v22.2.0"] : []), env: {} })).toEqual(
+      [join(versions, "v22.2.0", "bin")],
+    );
   });
 
-  // Which version the shell selected is not recoverable from disk. Answering
-  // with the newest would silently swap the executable the user pinned, so an
-  // ambiguous root contributes nothing and the provider reports as not found.
+  // Which version the shell selected is not recoverable from disk, and
+  // answering with the wrong one silently swaps the executable the user pinned.
+  // Ambiguity is judged across the WHOLE state, not per root.
   it("contributes nothing from a root holding more than one version", () => {
     const home = "/home/u";
     const versions = join(home, ".local", "share", "fnm", "node-versions");
@@ -50,20 +44,52 @@ describe("versionManagerBinDirs", () => {
     ).toEqual([]);
   });
 
-  it("covers the Homebrew and pre-XDG fnm layouts and honours $FNM_DIR", () => {
+  it("contributes nothing when two roots each hold one version", () => {
     const home = "/home/u";
-    const readDir = (path: string): string[] => {
-      if (path === join("/opt/fnm", "node-versions")) return ["v22.0.0"];
-      if (path === join(home, "Library", "Application Support", "fnm", "node-versions")) return ["v21.0.0"];
-      if (path === join(home, ".fnm", "node-versions")) return ["v20.0.0"];
-      throw new Error("ENOENT");
-    };
+    const nvm = join(home, ".nvm", "versions", "node");
+    const fnm = join(home, ".local", "share", "fnm", "node-versions");
+    expect(
+      versionManagerBinDirs(home, {
+        readDir: (path) => (path === nvm ? ["v22.2.0"] : path === fnm ? ["v18.0.0"] : []),
+        env: {},
+      }),
+    ).toEqual([]);
+  });
 
-    expect(versionManagerBinDirs(home, { readDir, env: { FNM_DIR: "/opt/fnm" } })).toEqual([
-      join("/opt/fnm", "node-versions", "v22.0.0", "installation", "bin"),
-      join(home, "Library", "Application Support", "fnm", "node-versions", "v21.0.0", "installation", "bin"),
-      join(home, ".fnm", "node-versions", "v20.0.0", "installation", "bin"),
-    ]);
+  it("uses only the active $FNM_DIR the shell reported, and only when it is unambiguous", () => {
+    const home = "/home/u";
+    const activeVersions = join("/opt/fnm", "node-versions");
+    const staleNvm = join(home, ".nvm", "versions", "node");
+    const readDir = (path: string): string[] =>
+      path === activeVersions ? ["v20.11.0", "v22.2.0"] : path === staleNvm ? ["v18.0.0"] : [];
+
+    // Active root is ambiguous — a stale single-version root elsewhere is NOT a
+    // better answer, it is a different installation.
+    expect(versionManagerBinDirs(home, { readDir, active: { fnmDir: "/opt/fnm" }, env: {} })).toEqual([]);
+
+    // Same active root, now unambiguous: it answers, and the stale root still
+    // plays no part.
+    expect(
+      versionManagerBinDirs(home, {
+        readDir: (path) => (path === activeVersions ? ["v20.11.0"] : path === staleNvm ? ["v18.0.0"] : []),
+        active: { fnmDir: "/opt/fnm" },
+        env: {},
+      }),
+    ).toEqual([join(activeVersions, "v20.11.0", "installation", "bin")]);
+  });
+
+  it("takes $NVM_BIN as authoritative instead of enumerating nvm", () => {
+    const home = "/home/u";
+    const active = join(home, ".nvm", "versions", "node", "v20.11.0", "bin");
+    expect(
+      versionManagerBinDirs(home, {
+        // Two installed versions would be ambiguous on their own; the shell
+        // named the selected one, so there is nothing to guess.
+        readDir: () => ["v20.11.0", "v22.2.0"],
+        active: { nvmBin: active },
+        env: {},
+      }),
+    ).toEqual([active]);
   });
 
   it("returns nothing when no version manager is installed", () => {

@@ -107,23 +107,17 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell, read
       roots.length === 0 ? dir : resolveOutsideProtectedRoots(dir, roots, readLink);
     const live = probed.dirs.map(vet).filter((dir): dir is string => dir !== null);
 
-    // Stable fallback, in precedence order: the version the shell actually
-    // selected (nvm reports it as a real directory that outlives the probe),
-    // then every installed version newest-first. `$FNM_DIR` comes from the
-    // shell too — the daemon's own environment never sees a root exported by
-    // `fnm env` inside an rc file.
+    // Stable fallback for a per-session dir that is already gone. What the shell
+    // reported about its version manager decides it — and decides it globally,
+    // so an unrelated installation is never substituted for a selection we
+    // could not recover. See `versionManagerBinDirs`.
     const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
-    const env = probed.env.fnmDir ? { ...process.env, FNM_DIR: probed.env.fnmDir } : process.env;
     const seen = new Set(live);
     const fallback: string[] = [];
-    for (const dir of [
-      ...(probed.env.nvmBin ? [probed.env.nvmBin] : []),
-      ...versionManagerBinDirs(home, { readLink, env }),
-    ]) {
-      const vetted = vet(dir);
-      if (vetted === null || seen.has(vetted)) continue;
-      seen.add(vetted);
-      fallback.push(vetted);
+    for (const dir of versionManagerBinDirs(home, { readLink, active: probed.env })) {
+      if (seen.has(dir)) continue;
+      seen.add(dir);
+      fallback.push(dir);
     }
     memo = { dirs: [...live, ...fallback] };
     return memo.dirs;
