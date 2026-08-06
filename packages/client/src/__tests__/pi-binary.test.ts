@@ -95,8 +95,8 @@ describe("Pi binary resolution", () => {
     expect(isPiBinaryMissingError("no pi binary resolved")).toBe(true);
     expect(isPiBinaryMissingError("python: command not found")).toBe(false);
     expect(isPiBinaryMissingError("network timeout")).toBe(false);
-    // Generic absence phrases without a Pi subject stay unmatched — the old
-    // Pi sanitizer regex could falsely claim ownership of bare "not found".
+    // Generic taxonomy matcher requires a Pi subject — bare absence phrases
+    // stay unmatched (Pi-scoped sanitizer uses a broader seam entry instead).
     expect(isPiBinaryMissingError("file not found")).toBe(false);
     expect(isPiBinaryMissingError("package not installed")).toBe(false);
   });

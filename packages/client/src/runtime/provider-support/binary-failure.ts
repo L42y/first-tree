@@ -130,6 +130,33 @@ export function isPiBinaryMissingError(input: unknown): boolean {
   return afterPi.includes("not found") || afterPi.includes("not installed");
 }
 
+/**
+ * Pi-provider-detail context only. Callers must already have scoped `detail`
+ * to Pi provider diagnostics (e.g. {@link sanitizePiProviderDetail}).
+ *
+ * Preserves the historical sanitizer mapping, which is intentionally broader
+ * than {@link isPiBinaryMissingError}: once the subject is known to be Pi,
+ * bare `not found` / `not installed` still map to {@link PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING}.
+ * Generic taxonomy must keep using {@link isPiBinaryMissingError} so unscoped
+ * text cannot be misclassified as a missing binary.
+ */
+export function piProviderDetailBinaryMissingReasonCode(
+  detail: string,
+): (typeof PROVIDER_BINARY_FAILURE_REASON_CODES)["PI_BINARY_MISSING"] | null {
+  const lower = detail.trim().toLowerCase();
+  if (!lower) return null;
+  // Historical sanitizer: /pi cli is missing|no pi binary|not (?:found|installed)/
+  if (
+    lower.includes("pi cli is missing") ||
+    lower.includes("no pi binary") ||
+    lower.includes("not found") ||
+    lower.includes("not installed")
+  ) {
+    return PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING;
+  }
+  return null;
+}
+
 function readErrorName(err: unknown): string | undefined {
   if (err instanceof Error) return err.name;
   if (err && typeof err === "object") {

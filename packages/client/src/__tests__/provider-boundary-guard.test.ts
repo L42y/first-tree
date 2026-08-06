@@ -191,6 +191,7 @@ describe("runtime provider architecture guard", () => {
     expect(source).toContain("isCursorBinaryMissingError");
     expect(source).toContain("isGrokBinaryMissingError");
     expect(source).toContain("isPiBinaryMissingError");
+    expect(source).toContain("piProviderDetailBinaryMissingReasonCode");
   });
 
   it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {
@@ -249,12 +250,12 @@ describe("runtime provider architecture guard", () => {
       }
     }
 
-    // Pi sanitizer must consume the seam matcher + stable constant.
+    // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
     const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
-    expect(piHandler).toContain("isPiBinaryMissingError");
-    expect(piHandler).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
+    expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
     expect(piHandler).toContain("provider-support/binary-failure");
-    expect(piHandler).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES.PI_BINARY_MISSING");
+    expect(piHandler).not.toContain("isPiBinaryMissingError");
+    expect(piHandler).not.toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
   });
 
   it("names only the concrete composition files as registration roots", () => {
