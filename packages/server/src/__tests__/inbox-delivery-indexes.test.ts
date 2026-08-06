@@ -41,7 +41,9 @@ describe("inbox delivery indexes", () => {
     expect(rows[0]?.definition).toContain("pending");
     expect(rows[0]?.definition).toContain("delivered");
     expect(rows[0]?.definition).toContain("acked");
+    expect(rows[0]?.definition).toContain("cancelled");
     expect(rows[0]?.definition).not.toContain("failed");
+    // Keep NOT VALID (same posture as 0066) so ADD CONSTRAINT stays low-lock.
     expect(rows[0]?.definition).toContain("NOT VALID");
   });
 

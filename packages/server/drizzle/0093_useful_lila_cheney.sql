@@ -1,2 +1,2 @@
 ALTER TABLE "inbox_entries" DROP CONSTRAINT "ck_inbox_entries_status";--> statement-breakpoint
-ALTER TABLE "inbox_entries" ADD CONSTRAINT "ck_inbox_entries_status" CHECK ("inbox_entries"."status" IN ('pending', 'delivered', 'acked', 'cancelled'));
+ALTER TABLE "inbox_entries" ADD CONSTRAINT "ck_inbox_entries_status" CHECK ("inbox_entries"."status" IN ('pending', 'delivered', 'acked', 'cancelled')) NOT VALID;

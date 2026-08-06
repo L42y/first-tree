@@ -18,6 +18,7 @@ import { createAgent } from "../services/agent.js";
 import { createChat, ensureParticipant, removeParticipant } from "../services/chat.js";
 import * as connectionManager from "../services/connection-manager.js";
 import { sendToAgent } from "../services/connection-manager.js";
+import { loadOutstanding, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox } from "../services/inbox.js";
 import { sendMessage } from "../services/message.js";
@@ -377,6 +378,116 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     expect(job?.state).toBe("paused");
     expect(job?.stateReason).toBe("agent_not_speaker");
     expect(job?.nextRunAt).toBeNull();
+  });
+
+  it("remove with outstanding trigger → re-add → resume → sweep continues (cancelled ≠ missing)", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `rm-out-${crypto.randomUUID().slice(0, 6)}` });
+    const chat = await createChat(app.db, runtime.humanAgentUuid, {
+      type: "group",
+      participantIds: [runtime.agent.uuid],
+    });
+    const chatId = chat.id;
+    await seedDispatchRoute(app, runtime.agent.uuid, runtime.clientId);
+
+    const sent = await sendMessage(app.db, chatId, runtime.humanAgentUuid, {
+      source: "api",
+      format: "markdown",
+      content: "cron outstanding before remove",
+      metadata: { mentions: [runtime.agent.uuid] },
+    });
+    const outstandingBefore = await app.db
+      .select({ status: inboxEntries.status, notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(
+        and(
+          eq(inboxEntries.inboxId, runtime.agent.inboxId),
+          eq(inboxEntries.messageId, sent.message.id),
+          eq(inboxEntries.notify, true),
+        ),
+      );
+    expect(outstandingBefore.some((r) => r.status === "pending" || r.status === "delivered")).toBe(true);
+
+    const jobId = crypto.randomUUID();
+    await app.db.insert(cronJobs).values({
+      id: jobId,
+      ownerMemberId: runtime.memberId,
+      controlChatId: chatId,
+      agentId: runtime.agent.uuid,
+      name: `rm-out-${jobId.slice(0, 6)}`,
+      chatMode: "reuse_control_chat",
+      cronExpression: "0 * * * *",
+      timezone: "UTC",
+      prompt: "wake after re-add",
+      state: "active",
+      stateReason: null,
+      nextRunAt: new Date(Date.now() + 60_000),
+      lastTriggerMessageId: sent.message.id,
+      revision: 1,
+    });
+
+    await removeParticipant(app.db, chatId, runtime.humanAgentUuid, runtime.agent.uuid);
+
+    const cancelledRows = await app.db
+      .select({ status: inboxEntries.status })
+      .from(inboxEntries)
+      .where(
+        and(
+          eq(inboxEntries.inboxId, runtime.agent.inboxId),
+          eq(inboxEntries.messageId, sent.message.id),
+          eq(inboxEntries.notify, true),
+        ),
+      );
+    expect(cancelledRows.every((r) => r.status === "cancelled")).toBe(true);
+
+    const [paused] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
+    expect(paused?.state).toBe("paused");
+    expect(paused?.stateReason).toBe("agent_not_speaker");
+    expect(paused?.lastTriggerMessageId).toBe(sent.message.id);
+
+    expect(await loadOutstanding(app.db, paused!)).toBeNull();
+
+    await ensureParticipant(app.db, chatId, runtime.agent.uuid);
+    // Re-add clears cancelled envelopes; outstanding must stay null (not missing).
+    expect(await loadOutstanding(app.db, paused!)).toBeNull();
+    await seedDispatchRoute(app, runtime.agent.uuid, runtime.clientId);
+
+    const resumed = await updateCronJob(app.db, {
+      jobId,
+      expectedRevision: paused!.revision,
+      ownerMemberId: runtime.memberId,
+      body: { state: "active" },
+    });
+    expect(resumed.state).toBe("active");
+    expect(resumed.stateReason).toBeNull();
+    expect(resumed.outstanding).toBeNull();
+
+    // Force due so the next sweep must re-evaluate outstanding (cancelled).
+    await app.db
+      .update(cronJobs)
+      .set({ nextRunAt: new Date(Date.now() - 5_000) })
+      .where(eq(cronJobs.id, jobId));
+
+    const beforeTriggers = cronTriggerMessages(
+      await app.db.select().from(messages).where(eq(messages.chatId, chatId)),
+      jobId,
+    ).length;
+
+    await sweepCronJobs(app.db, app.notifier, {
+      staleSeconds: app.config.runtime.presenceCleanupSeconds,
+    });
+
+    const [afterSweep] = await app.db.select().from(cronJobs).where(eq(cronJobs.id, jobId)).limit(1);
+    expect(afterSweep?.state).toBe("active");
+    expect(afterSweep?.stateReason).not.toBe("inbox_state_missing");
+    expect(afterSweep?.stateReason).toBeNull();
+
+    const afterTriggers = cronTriggerMessages(
+      await app.db.select().from(messages).where(eq(messages.chatId, chatId)),
+      jobId,
+    );
+    expect(afterTriggers.length).toBeGreaterThan(beforeTriggers);
+    expect(afterSweep?.lastTriggerMessageId).not.toBe(sent.message.id);
   });
 
   it("keeps agent DELETE 204 contract while sharing the mutation", async () => {
