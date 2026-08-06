@@ -141,7 +141,13 @@ function applyContextDecisionTrustBoundary(meta: Record<string, unknown>, sender
         "evidence: [{repoUrl, commit, nodePath, heading?}] with 1-3 rows}.",
     );
   }
-  return meta;
+  // Persist the PARSED receipt, not the caller's object. Validation is not the
+  // same as normalization: the schema strips unknown keys and trims `summary`,
+  // so storing the raw value would durably keep an extra (possibly
+  // credential-bearing) field and a summary longer than the declared bound —
+  // invisibly, because every reader re-parses and drops them. The row must hold
+  // exactly the shape the contract promises.
+  return { ...meta, [CONTEXT_DECISION_METADATA_KEY]: parsed.data };
 }
 
 /**

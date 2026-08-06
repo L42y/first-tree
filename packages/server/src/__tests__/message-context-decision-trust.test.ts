@@ -64,6 +64,23 @@ describe("contextDecision receipt trust boundary", () => {
     expect(() => preflight(AGENT, "constrained")).toThrow(/metadata.contextDecision/);
   });
 
+  // Validation is not normalization: the schema strips unknown keys and trims
+  // `summary`, so persisting the caller's object would durably keep an extra
+  // credential-bearing field and an over-long summary that no reader surfaces.
+  it("persists the parsed receipt, not the caller's raw object", () => {
+    const stored = preflight(AGENT, {
+      ...RECEIPT,
+      summary: `  ${"x".repeat(398)}   `,
+      secretToken: "top-level-extra",
+      evidence: [{ ...RECEIPT.evidence[0], accessToken: "nested-extra-secret" }],
+    }).metadata[CONTEXT_DECISION_METADATA_KEY] as Record<string, unknown>;
+
+    expect(Object.keys(stored).sort()).toEqual(["effect", "evidence", "summary", "version"]);
+    expect(stored.summary).toBe("x".repeat(398));
+    const rows = stored.evidence as Array<Record<string, unknown>>;
+    expect(Object.keys(rows[0] ?? {}).sort()).toEqual(["commit", "heading", "nodePath", "repoUrl"]);
+  });
+
   it("leaves an ordinary send untouched", () => {
     const result = preflightMessageSendIntent({
       chatId: "chat-1",
