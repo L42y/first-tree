@@ -18,9 +18,7 @@ const hoursAgo = (h: number): string => new Date(Date.now() - h * 3_600_000).toI
 
 const CURRENT_STATE = [
   "Chat Summary now leads with the **current result and user impact**.",
-  "",
-  "Supporting context stays quieter and within a readable text measure, so a wide Workspace does not become one long scanning line.",
-  "",
+  "Supporting context stays quieter inside a rem-sized card measure, so a wide Workspace does not leave empty half-width chrome.",
   "**Next:** Validate the same hierarchy in the live Workspace.",
 ].join("\n");
 

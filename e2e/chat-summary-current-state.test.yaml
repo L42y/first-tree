@@ -13,8 +13,8 @@ steps:
   - waitForUrl: /?c=e2e-summary-
   - assert: The real Workspace has Mobile navigation polish selected. Its expanded panel is labeled Current state,
       presents Mobile navigation polish is awaiting product review as the visually stronger lead above quieter
-      supporting context and a distinct Next line, keeps freshness visible, and constrains the copy to a readable
-      left-aligned measure instead of stretching across the full message area.
+      supporting context and a distinct Next line, keeps freshness visible, and constrains the raised card to a
+      readable left-aligned measure instead of stretching as a full-bleed empty surface across the message area.
   - click: the Summary rollout validation chat in the conversation list
   - assert: Summary rollout validation is now selected and the Current state panel has changed to that chat's summary,
       led by Chat Summary hierarchy is ready in the real Workspace; none of the Mobile navigation polish summary remains
