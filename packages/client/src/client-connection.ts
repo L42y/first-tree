@@ -192,6 +192,12 @@ export type SessionCommand = {
    * effect — never earlier.
    */
   ref?: string;
+  /**
+   * Soft-terminate (membership removal) carries the invalidated pre-bump
+   * resume generation so a Client that already adopted a newer generation
+   * ignores the late cleanup frame.
+   */
+  resumeGeneration?: number;
 };
 
 export type SessionReconcileResult = {
@@ -562,6 +568,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
    * sends ahead of `auth:ok`.
    */
   private serverSupportsSessionResetV1 = false;
+  /**
+   * Per-connection negotiation for chat-scoped resume/removal generation.
+   * Cleared on every new socket and re-learned from welcome, same as Reset.
+   */
+  private serverSupportsResumeGenerationV1 = false;
   /**
    * Last handshake error, stashed for the `close` handler to surface a typed
    * reason (e.g. {@link ClientOrgMismatchError}) instead of a generic
@@ -1475,6 +1486,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         // server's Reset support into the register frame of a socket that may
         // have landed on a rolled-back replica.
         this.serverSupportsSessionResetV1 = false;
+        this.serverSupportsResumeGenerationV1 = false;
         // Don't reset reconnectAttempt here — a TCP/WS handshake succeeding
         // but the auth phase failing is exactly the loop the client.log
         // captured at 19:40 (1 Hz reconnect storm with `failed to obtain
@@ -1635,6 +1647,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           // servers ignore the unknown v1 field.
           wireCapabilities: {
             ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
+            ...(this.serverSupportsResumeGenerationV1 ? { wsResumeGenerationV1: true } : {}),
           },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),
@@ -1659,6 +1672,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       this.serverSupportsInboxAckConfirm = parsed.data.capabilities?.wsInboxAckConfirm === true;
       this.serverSupportsSessionEventConfirm = parsed.data.capabilities?.wsSessionEventConfirm === true;
       this.serverSupportsSessionResetV1 = parsed.data.capabilities?.wsSessionResetV1 === true;
+      this.serverSupportsResumeGenerationV1 = parsed.data.capabilities?.wsResumeGenerationV1 === true;
       this.emit("server:welcome", { frame: parsed.data, isReconnect });
       return;
     }
@@ -1894,12 +1908,17 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       const agentId = msg.agentId as string;
       const chatId = msg.chatId as string;
       const ref = typeof msg.ref === "string" && msg.ref.length > 0 ? msg.ref : undefined;
+      const resumeGeneration =
+        typeof msg.resumeGeneration === "number" && Number.isInteger(msg.resumeGeneration) && msg.resumeGeneration >= 0
+          ? msg.resumeGeneration
+          : undefined;
       if (agentId && chatId) {
         this.emit("session:command", {
           type: type as SessionCommand["type"],
           agentId,
           chatId,
           ...(ref ? { ref } : {}),
+          ...(resumeGeneration !== undefined ? { resumeGeneration } : {}),
         });
       }
       return;

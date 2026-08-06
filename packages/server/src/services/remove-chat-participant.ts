@@ -49,6 +49,12 @@ type TxOutcome = RemoveChatParticipantResponse & {
   detachedHumanAgentIds: string[];
   /** Non-human targets always get a soft terminate attempt after commit. */
   terminateAgentId: string | null;
+  /**
+   * Generation being invalidated by this remove (pre-bump). Soft terminate
+   * carries it so a Client that already adopted the post-bump generation
+   * ignores the late cleanup frame.
+   */
+  terminateInvalidatedGeneration: number | null;
 };
 
 /**
@@ -192,9 +198,18 @@ export async function removeChatParticipant(
     }
 
     // Non-human: force an evicted fence even when no prior session row exists,
-    // clear live events, and refresh presence session counts.
+    // bump resume generation atomically, clear live events, and refresh
+    // presence session counts. Generation must never be reset by later re-add.
+    let terminateInvalidatedGeneration: number | null = null;
     if (targetAgent.type !== "human") {
       const now = new Date();
+      const [prior] = await tx
+        .select({ resumeGeneration: agentChatSessions.resumeGeneration })
+        .from(agentChatSessions)
+        .where(and(eq(agentChatSessions.agentId, targetAgentId), eq(agentChatSessions.chatId, chatId)))
+        .limit(1);
+      const invalidatedGeneration = prior?.resumeGeneration ?? 0;
+      terminateInvalidatedGeneration = invalidatedGeneration;
       await tx
         .insert(agentChatSessions)
         .values({
@@ -203,6 +218,7 @@ export async function removeChatParticipant(
           state: "evicted",
           runtimeState: "idle",
           runtimeStateAt: now,
+          resumeGeneration: invalidatedGeneration + 1,
           updatedAt: now,
         })
         .onConflictDoUpdate({
@@ -211,6 +227,7 @@ export async function removeChatParticipant(
             state: "evicted",
             runtimeState: "idle",
             runtimeStateAt: now,
+            resumeGeneration: sql`${agentChatSessions.resumeGeneration} + 1`,
             updatedAt: now,
           },
         });
@@ -287,6 +304,7 @@ export async function removeChatParticipant(
       targetInboxId: targetAgent.inboxId,
       detachedHumanAgentIds,
       terminateAgentId: targetAgent.type !== "human" ? targetAgentId : null,
+      terminateInvalidatedGeneration,
     };
     return result;
   });
@@ -303,11 +321,12 @@ export async function removeChatParticipant(
     }
   }
 
-  if (outcome.terminateAgentId) {
+  if (outcome.terminateAgentId != null && outcome.terminateInvalidatedGeneration != null) {
     void softTerminateRemovedAgentSession({
       db,
       agentId: outcome.terminateAgentId,
       chatId,
+      invalidatedGeneration: outcome.terminateInvalidatedGeneration,
       notifier,
       instanceId: options.instanceId,
     });
@@ -522,12 +541,18 @@ export async function softTerminateRemovedAgentSession(input: {
   db: Database;
   agentId: string;
   chatId: string;
+  /** Pre-bump generation being cleaned up; Client ignores if already past it. */
+  invalidatedGeneration: number;
   notifier?: Notifier;
   instanceId?: string;
 }): Promise<void> {
   try {
     const localSent = await withLiveRemovedSessionFence(input.db, input.agentId, input.chatId, async () =>
-      sendToAgent(input.agentId, { type: "session:terminate", chatId: input.chatId }),
+      sendToAgent(input.agentId, {
+        type: "session:terminate",
+        chatId: input.chatId,
+        resumeGeneration: input.invalidatedGeneration,
+      }),
     );
     if (localSent) return;
     const notifier = input.notifier;
@@ -553,6 +578,7 @@ export async function softTerminateRemovedAgentSession(input: {
         agentId: input.agentId,
         chatId: input.chatId,
         targetInstanceId: route.instanceId,
+        resumeGeneration: input.invalidatedGeneration,
       });
     });
   } catch {

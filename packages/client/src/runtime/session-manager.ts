@@ -564,6 +564,8 @@ export function encodeResilienceMessage(eventName: string, payload: Record<strin
 export class SessionManager {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
+  /** Locally adopted resume/removal generation per chat (default 0). */
+  private readonly resumeGenerations = new Map<string, number>();
   private readonly config: SessionManagerConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
   /** Last lazy Context-Tree re-resolution attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
@@ -762,6 +764,18 @@ export class SessionManager {
   async dispatch(entry: InboxEntryWithMessage): Promise<void> {
     const chatId = entry.chatId ?? entry.message.chatId;
     const messageId = entry.message.id;
+    const incomingGeneration = entry.resumeGeneration ?? 0;
+    const generationGate = await this.ensureResumeGenerationAdmission(chatId, incomingGeneration);
+    if (generationGate === "drop") {
+      // Stale lower-generation delivery must not enter provider or roll back
+      // the adopted generation; settle the envelope so it does not loop.
+      await this.config.ackEntry(entry.id);
+      return;
+    }
+    if (generationGate === "retry") {
+      // Persistence/teardown failed — keep delivered custody for deterministic retry.
+      return;
+    }
     const admissionGeneration = this.admissionGenerations.get(chatId) ?? 0;
     const admissionValid = () =>
       !this.shuttingDown &&
@@ -987,7 +1001,11 @@ export class SessionManager {
    * generation's exact receipted terminal disposition (`session:command:finalized`
    * or `session:command:aborted`) can lift the fence.
    */
-  async handleCommand(chatId: string, command: SessionCommandType, options?: { resetRef?: string }): Promise<void> {
+  async handleCommand(
+    chatId: string,
+    command: SessionCommandType,
+    options?: { resetRef?: string; resumeGeneration?: number },
+  ): Promise<void> {
     const inFlightTermination = this.terminatingChats.get(chatId);
     if (inFlightTermination) {
       // A duplicate terminate joins the in-flight cleanup instead of
@@ -995,6 +1013,18 @@ export class SessionManager {
       // after the shared work settles, and must reject if it rejects.
       // Suspend/resume keep the early-return admission fence.
       if (command === "session:terminate") {
+        // Soft-terminate with a stale generation must not join (or kill) a
+        // newer adopted generation's cleanup / live session.
+        if (
+          options?.resumeGeneration !== undefined &&
+          options.resumeGeneration < this.getLocalResumeGeneration(chatId)
+        ) {
+          this.config.log.info(
+            { chatId, resumeGeneration: options.resumeGeneration },
+            "ignoring stale soft terminate while newer generation already in flight",
+          );
+          return;
+        }
         // A joining ref'd Reset shares this one termination, so it becomes an
         // ALIAS of the generation that termination arms rather than
         // superseding it: both Resets have the same local outcome, so either
@@ -1053,6 +1083,16 @@ export class SessionManager {
     }
 
     if (command === "session:terminate") {
+      // Soft terminate carries the invalidated (pre-bump) generation. Once the
+      // Client has adopted a newer generation from inbox admission, ignore the
+      // late cleanup so it cannot kill the post-re-add session.
+      if (options?.resumeGeneration !== undefined && options.resumeGeneration < this.getLocalResumeGeneration(chatId)) {
+        this.config.log.info(
+          { chatId, resumeGeneration: options.resumeGeneration, local: this.getLocalResumeGeneration(chatId) },
+          "ignoring stale soft terminate for older resume generation",
+        );
+        return;
+      }
       const session = this.sessions.get(chatId);
       // NOTE: there is deliberately NO no-work early return. Empty memory
       // (no session, mapping, queue, custody, failure marker, debt, or
@@ -4857,7 +4897,10 @@ export class SessionManager {
   private loadPersistedSessions(): void {
     if (!this.registry) return;
 
-    const { entries } = this.registry.loadSnapshot();
+    const { entries, resumeGenerations } = this.registry.loadSnapshot();
+    for (const [chatId, generation] of resumeGenerations) {
+      this.resumeGenerations.set(chatId, generation);
+    }
     let loadedCount = 0;
     for (const [chatId, data] of entries) {
       // All persisted sessions become evicted mappings on load.
@@ -4877,6 +4920,87 @@ export class SessionManager {
 
     if (loadedCount > 0) {
       this.config.log.info({ count: loadedCount }, "loaded persisted session mappings");
+    }
+  }
+
+  private getLocalResumeGeneration(chatId: string): number {
+    return this.resumeGenerations.get(chatId) ?? this.registry?.getResumeGeneration(chatId) ?? 0;
+  }
+
+  /**
+   * Fence provider admission against the inbox-stamped resume generation.
+   * Reuses Reset's quiesce → teardown → delete mapping + nonce → flushOrThrow
+   * path when generation advances; never rolls back a newer local generation.
+   */
+  private async ensureResumeGenerationAdmission(
+    chatId: string,
+    incoming: number,
+  ): Promise<"proceed" | "drop" | "retry"> {
+    const local = this.getLocalResumeGeneration(chatId);
+    if (incoming < local) return "drop";
+    if (incoming === local) return "proceed";
+
+    this.invalidateDeliveryAdmission(chatId);
+    this.config.log.info({ chatId, local, incoming }, "adopting newer resume generation before provider admission");
+    try {
+      await this.retireProviderContextForResumeGeneration(chatId);
+      this.resumeGenerations.set(chatId, incoming);
+      this.registry?.setResumeGeneration(chatId, incoming);
+      this.registry?.rotateFreshStartNonce(chatId);
+      this.persistRegistry({ throwOnFailure: true });
+      this.registry?.markResetNonceDurable(chatId);
+      return "proceed";
+    } catch (err) {
+      this.config.log.warn({ err, chatId, incoming }, "resume generation adoption failed; withholding provider");
+      return "retry";
+    }
+  }
+
+  /** Shared Reset-style teardown used when resume generation advances. */
+  private async retireProviderContextForResumeGeneration(chatId: string): Promise<void> {
+    const session = this.sessions.get(chatId);
+    if (session?.retryTimer) {
+      clearTimeout(session.retryTimer);
+      session.retryTimer = null;
+    }
+    if (session) this.invalidateRouteTransition(session, "session_terminated");
+    const joinedSuspend = session?.suspending != null;
+    if (session?.suspending) await session.suspending;
+    if (joinedSuspend && session?.suspendError) throw asTerminateError("suspend", session.suspendError.error);
+    const activeSlotHeld = session?.activeSlotHeld === true;
+    if (session) this.releaseActiveSlot(session);
+    const needsTeardown =
+      session != null &&
+      session.handlerStoppedBySuspend !== session.handler &&
+      (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
+    if (session && needsTeardown) {
+      try {
+        await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
+      } catch (err) {
+        session.teardownError = { error: err };
+        throw asTerminateError("teardown", err);
+      }
+    }
+    await this.quiesceRouteProducers(chatId);
+    for (;;) {
+      const pendingTeardown = this.pendingTeardowns.get(chatId);
+      if (!pendingTeardown || pendingTeardown.size === 0) break;
+      for (const pendingHandler of [...pendingTeardown]) {
+        try {
+          await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
+          this.dropPendingTeardown(chatId, pendingHandler);
+        } catch (err) {
+          throw asTerminateError("teardown", err);
+        }
+      }
+    }
+    this.sessions.delete(chatId);
+    this.evictedMappings.delete(chatId);
+    this.sessionRuntimeStates.delete(chatId);
+    this.lastReportedStates.delete(chatId);
+    this.currentTrigger.delete(chatId);
+    for (let i = this.pendingQueue.length - 1; i >= 0; i--) {
+      if (this.pendingQueue[i]?.chatId === chatId) this.pendingQueue.splice(i, 1);
     }
   }
 

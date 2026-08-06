@@ -411,6 +411,7 @@ export class AgentSlot {
         chatId: string;
         type: "session:suspend" | "session:resume" | "session:terminate";
         ref?: string;
+        resumeGeneration?: number;
       }) => {
         if (cmd.agentId !== this.config.agentId || !this.sessionManager) return;
         if (cmd.type === "session:terminate" && cmd.ref) {
@@ -470,8 +471,12 @@ export class AgentSlot {
           // authority to retire whatever Reset generation is armed. That is
           // an explicit supersede, not the incidental unref'd release — a
           // finalized frame for the superseded generation is then ignored.
+          // Membership-removal soft terminate may carry resumeGeneration so a
+          // Client that already adopted a newer generation ignores the frame.
           this.sessionManager
-            .handleCommand(cmd.chatId, cmd.type)
+            .handleCommand(cmd.chatId, cmd.type, {
+              ...(cmd.resumeGeneration !== undefined ? { resumeGeneration: cmd.resumeGeneration } : {}),
+            })
             .then(() => {
               this.sessionManager?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
             })
@@ -952,6 +957,7 @@ export class AgentSlot {
       // are read by SessionManager.dispatch, but keeping the shape correct
       // lets test fixtures and downstream consumers depend on the schema.
       status: "delivered",
+      resumeGeneration: frame.resumeGeneration ?? 0,
       retryCount: 0,
       createdAt: frame.message.createdAt,
       deliveredAt: new Date().toISOString(),

@@ -133,6 +133,12 @@ export const serverCapabilitiesSchema = z
      * frame alone.
      */
     wsSessionResetV1: z.boolean().default(false),
+    /**
+     * Server stamps inbox rows / soft-terminate frames with a monotonic
+     * resume generation and requires matching client wire capability before
+     * delivering generation > 0 work.
+     */
+    wsResumeGenerationV1: z.boolean().default(false),
   })
   .partial();
 export type ServerCapabilities = z.infer<typeof serverCapabilitiesSchema>;

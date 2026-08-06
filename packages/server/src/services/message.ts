@@ -27,6 +27,7 @@ import {
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
@@ -1115,9 +1116,27 @@ async function sendMessageInner(
       }));
 
     if (fanout.length > 0) {
-      await tx
-        .insert(inboxEntries)
-        .values(fanout.map((f) => ({ inboxId: f.inboxId, messageId, chatId, notify: f.notify })));
+      const recipientAgentIds = [...new Set(fanout.map((f) => f.agentId))];
+      const generationRows =
+        recipientAgentIds.length === 0
+          ? []
+          : await tx
+              .select({
+                agentId: agentChatSessions.agentId,
+                resumeGeneration: agentChatSessions.resumeGeneration,
+              })
+              .from(agentChatSessions)
+              .where(and(eq(agentChatSessions.chatId, chatId), inArray(agentChatSessions.agentId, recipientAgentIds)));
+      const generationByAgent = new Map(generationRows.map((row) => [row.agentId, row.resumeGeneration]));
+      await tx.insert(inboxEntries).values(
+        fanout.map((f) => ({
+          inboxId: f.inboxId,
+          messageId,
+          chatId,
+          notify: f.notify,
+          resumeGeneration: generationByAgent.get(f.agentId) ?? 0,
+        })),
+      );
     }
 
     // notify=true entries serve two consumers:

@@ -1,4 +1,4 @@
-import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { chats } from "./chats.js";
 
@@ -34,6 +34,14 @@ export const agentChatSessions = pgTable(
      * would let the producer light up agents that never reported anything.
      */
     runtimeStateAt: timestamp("runtime_state_at", { withTimezone: true }),
+    /**
+     * Monotonic removal/resume generation for this (agent, chat). Starts at 0.
+     * Non-human participant removal bumps it atomically; re-add / predictive
+     * activation / session:state must never reset it. Inbox rows and soft
+     * terminate frames carry a generation so the Client can fence provider
+     * admission against stale resume mappings.
+     */
+    resumeGeneration: integer("resume_generation").notNull().default(0),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

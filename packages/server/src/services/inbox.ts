@@ -11,6 +11,8 @@ import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-or
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import type { Database } from "../db/connection.js";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
+import { agents } from "../db/schema/agents.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { ForbiddenError } from "../errors.js";
@@ -121,10 +123,43 @@ export async function backfillSilentContextForNewParticipants(
 
   if (recent.length === 0) return;
 
-  const rows: Array<{ inboxId: string; messageId: string; chatId: string; notify: boolean }> = [];
+  // Stamp each silent row with the recipient's current resume generation.
+  const agentRows = await tx
+    .select({ inboxId: agents.inboxId, uuid: agents.uuid })
+    .from(agents)
+    .where(inArray(agents.inboxId, inboxIds));
+  const agentIdByInbox = new Map(agentRows.map((row) => [row.inboxId, row.uuid]));
+  const agentIds = [...new Set(agentRows.map((row) => row.uuid))];
+  const generationRows =
+    agentIds.length === 0
+      ? []
+      : await tx
+          .select({
+            agentId: agentChatSessions.agentId,
+            resumeGeneration: agentChatSessions.resumeGeneration,
+          })
+          .from(agentChatSessions)
+          .where(and(eq(agentChatSessions.chatId, chatId), inArray(agentChatSessions.agentId, agentIds)));
+  const generationByAgent = new Map(generationRows.map((row) => [row.agentId, row.resumeGeneration]));
+
+  const rows: Array<{
+    inboxId: string;
+    messageId: string;
+    chatId: string;
+    notify: boolean;
+    resumeGeneration: number;
+  }> = [];
   for (const p of newParticipants) {
+    const agentId = agentIdByInbox.get(p.inboxId);
+    const resumeGeneration = agentId == null ? 0 : (generationByAgent.get(agentId) ?? 0);
     for (const m of recent) {
-      rows.push({ inboxId: p.inboxId, messageId: m.id, chatId, notify: false });
+      rows.push({
+        inboxId: p.inboxId,
+        messageId: m.id,
+        chatId,
+        notify: false,
+        resumeGeneration,
+      });
     }
   }
 
@@ -265,6 +300,7 @@ export async function bundleDeliveryWithSilentContext(
       messageId: entry.messageId,
       chatId: entry.chatId,
       status: inboxEntryStatusSchema.parse(entry.status),
+      resumeGeneration: entry.resumeGeneration ?? 0,
       retryCount: entry.retryCount,
       createdAt: entry.createdAt.toISOString(),
       deliveredAt: entry.deliveredAt?.toISOString() ?? null,

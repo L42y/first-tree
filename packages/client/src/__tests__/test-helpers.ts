@@ -62,6 +62,8 @@ export function mockEntry(
     precedingMessages?: PrecedingMessage[];
     /** Override the derived `message.id`. */
     messageId?: string;
+    /** Inbox-stamped resume/removal generation (default 0). */
+    resumeGeneration?: number;
   } = {},
 ): InboxEntryWithMessage {
   const chatId = opts.chatId ?? "chat-1";
@@ -72,6 +74,7 @@ export function mockEntry(
     messageId,
     chatId,
     status: "delivered",
+    resumeGeneration: opts.resumeGeneration ?? 0,
     retryCount: 0,
     createdAt: new Date().toISOString(),
     deliveredAt: new Date().toISOString(),

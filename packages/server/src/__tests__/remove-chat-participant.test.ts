@@ -355,6 +355,12 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       .limit(1);
     expect(after?.state).toBe("evicted");
 
+    const [gen] = await app.db
+      .select({ resumeGeneration: agentChatSessions.resumeGeneration })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    expect(gen?.resumeGeneration).toBe(1);
     const late = await appendLiveEvent(app.db, agent.agent.uuid, chatId, {
       kind: "assistant_text",
       payload: { text: "late" },
@@ -739,6 +745,7 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
         db: app.db,
         agentId: runtime.agent.uuid,
         chatId,
+        invalidatedGeneration: 0,
       });
 
       const frames = ws.send.mock.calls.map((call) => JSON.parse(String(call[0])) as { type: string });
@@ -1450,10 +1457,12 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
         db: app.db,
         agentId: agent.agent.uuid,
         chatId,
+        invalidatedGeneration: 0,
       });
       expect(sendSpy).toHaveBeenCalledWith(agent.agent.uuid, {
         type: "session:terminate",
         chatId,
+        resumeGeneration: 0,
       });
     } finally {
       sendSpy.mockRestore();
@@ -1524,10 +1533,57 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     const delivered = await pollInbox(app.db, agent.agent.inboxId, 10);
     const wake = delivered.find((e) => e.message.content === "wake after re-add");
     expect(wake).toBeTruthy();
-    const ack = await ackThroughEntryIdForBoundAgents(app.db, wake!.id, [agent.agent.inboxId]);
+    expect(wake?.resumeGeneration).toBe(1);
+    const [sessionGen] = await app.db
+      .select({ resumeGeneration: agentChatSessions.resumeGeneration, state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    expect(sessionGen?.resumeGeneration).toBe(1);
+    // Predictive activation / re-add must not reset generation.
+    await upsertSessionState(app.db, agent.agent.uuid, chatId, "active", agent.organizationId);
+    const [afterActive] = await app.db
+      .select({ resumeGeneration: agentChatSessions.resumeGeneration, state: agentChatSessions.state })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    expect(afterActive?.state).toBe("active");
+    expect(afterActive?.resumeGeneration).toBe(1);
+    expect(wake).toBeDefined();
+    if (!wake) throw new Error("expected wake entry");
+    const ack = await ackThroughEntryIdForBoundAgents(app.db, wake.id, [agent.agent.inboxId]);
     expect(ack).toMatchObject({ ok: true });
   });
 
+  it("remove without prior session inserts generation 1; second remove bumps to 2", async () => {
+    const { app, agent, chatId, ownerHeaders } = await setupGroup();
+    const del1 = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+    expect(del1.statusCode).toBe(200);
+    const [g1] = await app.db
+      .select({ resumeGeneration: agentChatSessions.resumeGeneration })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    expect(g1?.resumeGeneration).toBe(1);
+
+    await ensureParticipant(app.db, chatId, agent.agent.uuid);
+    const del2 = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${chatId}/participants/${agent.agent.uuid}`,
+      headers: ownerHeaders,
+    });
+    expect(del2.statusCode).toBe(200);
+    const [g2] = await app.db
+      .select({ resumeGeneration: agentChatSessions.resumeGeneration })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.agent.uuid), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    expect(g2?.resumeGeneration).toBe(2);
+  });
   it("detaches Human with me-chats:changed(chatId) and notifies audience only once", async () => {
     const { app, peer, chatId, ownerHeaders } = await setupGroup();
     const audienceSpy = vi.spyOn(app.notifier, "notifyChatAudience");

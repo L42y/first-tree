@@ -4010,3 +4010,218 @@ describe("SessionManager confirmed-ACK fence settlement suppression", () => {
     }
   });
 });
+
+describe("SessionManager resume generation admission", () => {
+  it("offline old mapping(g0) → notify(g1) fresh-starts and durably drops old provider id", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-resume-gen-"));
+    const registryPath = join(root, "sessions.json");
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "chat-rg": {
+            claudeSessionId: "old-provider-id",
+            lastActivity: new Date().toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    try {
+      const startSpy = vi.fn(async () => ({
+        sessionId: "fresh-provider-id",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const resumeSpy = vi.fn(async () => ({
+        sessionId: "should-not-resume",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const handler = createMockHandler({ start: startSpy, resume: resumeSpy });
+      const sm = createSessionManager({ handler, registryPath, ackEntry: mockAckEntry() });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-rg", messageId: "msg-rg-1", resumeGeneration: 1 }));
+      expect(resumeSpy).not.toHaveBeenCalled();
+      expect(startSpy).toHaveBeenCalledTimes(1);
+
+      const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        entries: Record<string, { claudeSessionId: string }>;
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(persisted.entries["chat-rg"]?.claudeSessionId).not.toBe("old-provider-id");
+      expect(persisted.resumeGenerations?.["chat-rg"]).toBe(1);
+
+      await sm.shutdown();
+
+      // Restart from disk: old provider id must stay gone. Matching generation
+      // may resume the post-adoption fresh id — never the pre-removal mapping.
+      const resume2 = vi.fn(async (_msg, sessionId: string) => ({
+        sessionId,
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const start2 = vi.fn(async () => ({
+        sessionId: "fresh-2",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const sm2 = createSessionManager({
+        handler: createMockHandler({ start: start2, resume: resume2 }),
+        registryPath,
+        ackEntry: mockAckEntry(),
+      });
+      const disk = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        entries: Record<string, { claudeSessionId: string }>;
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(disk.entries["chat-rg"]?.claudeSessionId).not.toBe("old-provider-id");
+      expect(disk.resumeGenerations?.["chat-rg"]).toBe(1);
+
+      await sm2.dispatch(mockEntry({ id: 2, chatId: "chat-rg", messageId: "msg-rg-2", resumeGeneration: 1 }));
+      if (resume2.mock.calls.length > 0) {
+        expect(resume2.mock.calls[0]?.[1]).not.toBe("old-provider-id");
+      }
+      expect(start2.mock.calls.length + resume2.mock.calls.length).toBe(1);
+      await sm2.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("generation advance tears down active handler before fresh-start; stale soft terminate is ignored", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-resume-gen-active-"));
+    const registryPath = join(root, "sessions.json");
+    try {
+      const handler = createMockHandler({
+        start: vi
+          .fn()
+          .mockResolvedValueOnce({
+            sessionId: "old-active",
+            route: { kind: "owned" as const, mode: "queued" as const },
+          })
+          .mockResolvedValueOnce({
+            sessionId: "g1-fresh",
+            route: { kind: "owned" as const, mode: "queued" as const },
+          }),
+        resume: vi.fn(async () => ({
+          sessionId: "should-not",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        })),
+        shutdown: vi.fn(async () => {}),
+      });
+      const sm = createSessionManager({ handler, registryPath, ackEntry: mockAckEntry() });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-fast", messageId: "msg-1", resumeGeneration: 0 }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+
+      await sm.dispatch(mockEntry({ id: 2, chatId: "chat-fast", messageId: "msg-2", resumeGeneration: 1 }));
+      expect(handler.shutdown).toHaveBeenCalled();
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect(handler.start).toHaveBeenCalledTimes(2);
+
+      await sm.handleCommand("chat-fast", "session:terminate", { resumeGeneration: 0 });
+      expect(handler.start).toHaveBeenCalledTimes(2);
+
+      const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(persisted.resumeGenerations?.["chat-fast"]).toBe(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("persist failure withholds provider and ACK; retry then fresh-starts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-resume-gen-persist-"));
+    const registryPath = join(root, "sessions.json");
+    writeFileSync(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          "chat-pf": {
+            claudeSessionId: "old-id",
+            lastActivity: new Date().toISOString(),
+            status: "evicted",
+          },
+        },
+      }),
+      "utf-8",
+    );
+
+    try {
+      const { SessionRegistry } = await import("../runtime/session-registry.js");
+      const ackEntry = mockAckEntry();
+      const start = vi.fn(async () => ({
+        sessionId: "fresh",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const resume = vi.fn(async () => ({
+        sessionId: "resume-bad",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }));
+      const handler = createMockHandler({ start, resume });
+
+      const flushSpy = vi.spyOn(SessionRegistry.prototype, "flushOrThrow");
+      flushSpy.mockImplementationOnce(() => {
+        throw new Error("disk full");
+      });
+
+      const sm = createSessionManager({ handler, registryPath, ackEntry });
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-pf", messageId: "msg-pf-1", resumeGeneration: 1 }));
+      expect(start).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(ackEntry).not.toHaveBeenCalled();
+
+      flushSpy.mockRestore();
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-pf", messageId: "msg-pf-1", resumeGeneration: 1 }));
+      expect(resume).not.toHaveBeenCalled();
+      expect(start).toHaveBeenCalledTimes(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("stale lower-generation frame does not roll back or teardown adopted generation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ft-resume-gen-stale-"));
+    const registryPath = join(root, "sessions.json");
+    const ackEntry = mockAckEntry();
+    try {
+      const handler = createMockHandler({
+        start: vi.fn(async () => ({
+          sessionId: "g1",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        })),
+        resume: vi.fn(async () => ({
+          sessionId: "should-not",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        })),
+        shutdown: vi.fn(async () => {}),
+      });
+      const sm = createSessionManager({ handler, registryPath, ackEntry });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-stale", messageId: "msg-g1", resumeGeneration: 1 }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      const shutdownCountAfterAdopt = (handler.shutdown as ReturnType<typeof vi.fn>).mock.calls.length;
+
+      await sm.dispatch(mockEntry({ id: 2, chatId: "chat-stale", messageId: "msg-g0", resumeGeneration: 0 }));
+      expect(handler.start).toHaveBeenCalledTimes(1);
+      expect(handler.resume).not.toHaveBeenCalled();
+      expect((handler.shutdown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(shutdownCountAfterAdopt);
+      expect(ackEntry).toHaveBeenCalledWith(2);
+
+      const persisted = JSON.parse(readFileSync(registryPath, "utf-8")) as {
+        resumeGenerations?: Record<string, number>;
+      };
+      expect(persisted.resumeGenerations?.["chat-stale"]).toBe(1);
+
+      await sm.shutdown();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

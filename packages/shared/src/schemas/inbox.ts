@@ -18,6 +18,11 @@ export const inboxEntrySchema = z.object({
   messageId: z.string(),
   chatId: z.string().nullable(),
   status: inboxEntryStatusSchema,
+  /**
+   * Removal/resume generation snapshotted at fan-out. Optional so older
+   * servers/fixtures without the column still parse; absent ⇒ treat as 0.
+   */
+  resumeGeneration: z.number().int().nonnegative().optional().default(0),
   retryCount: z.number(),
   createdAt: z.string(),
   deliveredAt: z.string().nullable(),

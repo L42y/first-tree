@@ -1,0 +1,2 @@
+ALTER TABLE "agent_chat_sessions" ADD COLUMN "resume_generation" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE "inbox_entries" ADD COLUMN "resume_generation" integer DEFAULT 0 NOT NULL;

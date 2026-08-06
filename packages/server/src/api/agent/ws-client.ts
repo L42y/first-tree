@@ -36,6 +36,7 @@ import { z } from "zod";
 import { agentChatSessions } from "../../db/schema/agent-chat-sessions.js";
 import { agents } from "../../db/schema/agents.js";
 import { clients } from "../../db/schema/clients.js";
+import { inboxEntries } from "../../db/schema/inbox-entries.js";
 import { members } from "../../db/schema/members.js";
 import { users } from "../../db/schema/users.js";
 import { ClientOrgMismatchError, ClientRetiredError, ClientUserMismatchError } from "../../errors.js";
@@ -340,6 +341,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
             type: "session:terminate",
             agentId: payload.agentId,
             chatId: payload.chatId,
+            resumeGeneration: payload.resumeGeneration,
           });
         }).catch((err) => {
           app.log.warn(
@@ -707,12 +709,14 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
        */
       function sendInboxDeliverFrame(entry: InboxEntryWithMessage): boolean {
         if (socket.readyState !== socket.OPEN) return false;
+        const resumeGeneration = entry.resumeGeneration ?? 0;
         const frame = {
           type: "inbox:deliver",
           entryId: entry.id,
           inboxId: entry.inboxId,
           chatId: entry.chatId,
           message: entry.message,
+          resumeGeneration,
         };
         // Self-validate the wire shape against the same schema the client
         // applies. A failure here means the server has serialised something
@@ -874,6 +878,31 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         }
 
         for (const entry of entries) {
+          const resumeGeneration = entry.resumeGeneration ?? 0;
+          if (resumeGeneration > 0) {
+            const boundClientId = connectionManager.getAgentClientId(agentId);
+            const caps = boundClientId ? connectionManager.getClientWireCapabilities(boundClientId) : undefined;
+            if (caps?.wsResumeGenerationV1 !== true) {
+              // Fail-closed: leave the row pending for a capable client; do not
+              // silently push generation>0 work to an old runtime.
+              await app.db
+                .update(inboxEntries)
+                .set({ status: "pending", deliveredAt: null })
+                .where(eq(inboxEntries.id, entry.id));
+              app.log.warn(
+                {
+                  entryId: entry.id,
+                  inboxId: entry.inboxId,
+                  agentId,
+                  resumeGeneration,
+                  clientId: boundClientId,
+                },
+                "inbox:deliver withheld — client lacks wsResumeGenerationV1",
+              );
+              continue;
+            }
+          }
+
           // chatId-less rows are not speaker-scoped; keep the historical
           // claim→send path. Chat-scoped rows must re-check speaker +
           // delivered under shared membership so remove cannot cancel and
@@ -1126,6 +1155,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
                 wsInboxAckConfirm: true,
                 wsSessionEventConfirm: true,
                 wsSessionResetV1: true,
+                wsResumeGenerationV1: true,
               },
             });
             sendJsonOrThrow(socket, { type: "auth:ok" });
@@ -1537,6 +1567,38 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
               // rejection.
               await chainSessionOp(agentId, payloadResult.data.chatId, async () => {
                 try {
+                  if (!clientId) return;
+                  const caps = connectionManager.getClientWireCapabilities(clientId);
+                  if (caps?.wsResumeGenerationV1 !== true) {
+                    const [genRow] = await app.db
+                      .select({ resumeGeneration: agentChatSessions.resumeGeneration })
+                      .from(agentChatSessions)
+                      .where(
+                        and(
+                          eq(agentChatSessions.agentId, agentId),
+                          eq(agentChatSessions.chatId, payloadResult.data.chatId),
+                        ),
+                      )
+                      .limit(1);
+                    if ((genRow?.resumeGeneration ?? 0) > 0) {
+                      socket.send(
+                        JSON.stringify({
+                          type: "error",
+                          message: "Client upgrade required for resume generation protocol",
+                        }),
+                      );
+                      app.log.warn(
+                        {
+                          clientId,
+                          agentId,
+                          chatId: payloadResult.data.chatId,
+                          resumeGeneration: genRow?.resumeGeneration,
+                        },
+                        "session:state rejected — client lacks wsResumeGenerationV1",
+                      );
+                      return;
+                    }
+                  }
                   await activityService.upsertSessionState(
                     app.db,
                     agentId,

@@ -25,6 +25,12 @@ export const inboxEntries = pgTable(
      * Notify=true entries are the normal "active" deliverables.
      */
     notify: boolean("notify").notNull().default(true),
+    /**
+     * Snapshot of `agent_chat_sessions.resume_generation` for this recipient
+     * at fan-out time. Defaults to 0 for pre-migration rows. Client admission
+     * fences provider start/resume/inject against this generation.
+     */
+    resumeGeneration: integer("resume_generation").notNull().default(0),
     /** Reserved legacy counter; delivery recovery does not dead-letter rows. */
     retryCount: integer("retry_count").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

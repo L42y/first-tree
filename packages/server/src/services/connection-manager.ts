@@ -147,6 +147,13 @@ export function getAgentClientId(agentId: string): string | undefined {
   return agentToClient.get(agentId);
 }
 
+/** Negotiated wire capabilities for a live client socket, if still connected. */
+export function getClientWireCapabilities(clientId: string): ClientWireCapabilities | undefined {
+  const entry = clientConnections.get(clientId);
+  if (!entry || entry.ws.readyState > 1) return undefined;
+  return entry.capabilities;
+}
+
 export function getAgentRuntimeSession(agentId: string): AgentRuntimeSessionBinding | undefined {
   const binding = agentRuntimeSessions.get(agentId);
   if (!binding) return undefined;

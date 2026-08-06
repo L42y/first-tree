@@ -96,6 +96,13 @@ export const clientWireCapabilitiesSchema = z
      * `terminate?waitForApply=true` on this field alone.
      */
     wsSessionResetV1: z.boolean().default(false),
+    /**
+     * Client understands inbox/session resume-generation fencing: durable
+     * registry generation, admission teardown before start/resume/inject when
+     * incoming generation advances, and ignore of stale soft terminates.
+     * Required to consume inbox rows with resumeGeneration > 0.
+     */
+    wsResumeGenerationV1: z.boolean().default(false),
   })
   .partial();
 export type ClientWireCapabilities = z.infer<typeof clientWireCapabilitiesSchema>;

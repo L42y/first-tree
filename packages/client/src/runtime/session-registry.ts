@@ -22,6 +22,11 @@ type RegistryData = {
    * from reopening the discarded provider artifact.
    */
   freshStartNonces?: Record<string, string>;
+  /**
+   * Optional per-chat removal/resume generations. Absent on legacy files ⇒ 0
+   * for every chat (pre-migration mappings are generation 0).
+   */
+  resumeGenerations?: Record<string, number>;
 };
 
 export type RegistryEntry = { claudeSessionId: string; lastActivity: number; status: string };
@@ -29,16 +34,17 @@ export type RegistryEntry = { claudeSessionId: string; lastActivity: number; sta
 export type RegistrySnapshot = {
   entries: Map<string, RegistryEntry>;
   freshStartNonces: Map<string, string>;
+  resumeGenerations: Map<string, number>;
 };
 
 /**
  * SessionRegistry — persists `chatId → claudeSessionId` mappings to disk,
- * plus optional per-chat Reset fresh-start nonces.
+ * plus optional per-chat Reset fresh-start nonces and resume generations.
  *
  * Write strategy: debounced write-then-rename for atomicity. Every write
- * carries the current authoritative mapping set AND the full nonce map so a
- * stale debounced snapshot cannot erase a Reset tombstone or resurrect a
- * deleted mapping.
+ * carries the current authoritative mapping set AND the full nonce /
+ * generation maps so a stale debounced snapshot cannot erase a tombstone or
+ * resurrect a deleted mapping.
  *
  * On load, all entries start as `suspended`.
  */
@@ -49,6 +55,8 @@ export class SessionRegistry {
   private pendingEntries: Map<string, RegistryEntry> | null = null;
   /** Authoritative in-memory Reset nonces; always written with every flush. */
   private freshStartNonces = new Map<string, string>();
+  /** Authoritative per-chat resume/removal generations; default absent ⇒ 0. */
+  private resumeGenerations = new Map<string, number>();
   /**
    * Nonces rotated for an in-flight Reset whose durable flush has not yet
    * succeeded. Retained across flushOrThrow failures so a genuine retry
@@ -71,12 +79,14 @@ export class SessionRegistry {
   }
 
   /**
-   * Load the full registry snapshot (mappings + Reset fresh-start nonces).
-   * Both this and `load()` populate the in-memory nonce map from disk.
+   * Load the full registry snapshot (mappings + Reset fresh-start nonces +
+   * resume generations). Both this and `load()` populate the in-memory maps
+   * from disk.
    */
   loadSnapshot(): RegistrySnapshot {
     const entries = new Map<string, RegistryEntry>();
     const freshStartNonces = new Map<string, string>();
+    const resumeGenerations = new Map<string, number>();
 
     try {
       const raw = readFileSync(this.filePath, "utf-8");
@@ -85,8 +95,9 @@ export class SessionRegistry {
       if (data.version !== REGISTRY_VERSION) {
         // Version mismatch — discard and start fresh
         this.freshStartNonces = freshStartNonces;
+        this.resumeGenerations = resumeGenerations;
         this.pendingResetRotations.clear();
-        return { entries, freshStartNonces };
+        return { entries, freshStartNonces, resumeGenerations };
       }
 
       for (const [chatId, entry] of Object.entries(data.entries ?? {})) {
@@ -103,17 +114,36 @@ export class SessionRegistry {
           }
         }
       }
+      if (data.resumeGenerations && typeof data.resumeGenerations === "object") {
+        for (const [chatId, generation] of Object.entries(data.resumeGenerations)) {
+          if (typeof generation === "number" && Number.isInteger(generation) && generation >= 0) {
+            resumeGenerations.set(chatId, generation);
+          }
+        }
+      }
     } catch {
       // File doesn't exist or is corrupted — start fresh
     }
 
     this.freshStartNonces = new Map(freshStartNonces);
+    this.resumeGenerations = new Map(resumeGenerations);
     this.pendingResetRotations.clear();
-    return { entries, freshStartNonces };
+    return { entries, freshStartNonces, resumeGenerations };
   }
 
   getFreshStartNonce(chatId: string): string | undefined {
     return this.freshStartNonces.get(chatId);
+  }
+
+  getResumeGeneration(chatId: string): number {
+    return this.resumeGenerations.get(chatId) ?? 0;
+  }
+
+  /** Persist the adopted resume generation for a chat (monotonic; never decreases). */
+  setResumeGeneration(chatId: string, generation: number): void {
+    const current = this.resumeGenerations.get(chatId) ?? 0;
+    if (generation < current) return;
+    this.resumeGenerations.set(chatId, generation);
   }
 
   /**
@@ -190,10 +220,15 @@ export class SessionRegistry {
     for (const [chatId, nonce] of this.freshStartNonces) {
       freshStartNonces[chatId] = nonce;
     }
+    const resumeGenerations: Record<string, number> = {};
+    for (const [chatId, generation] of this.resumeGenerations) {
+      if (generation > 0) resumeGenerations[chatId] = generation;
+    }
     const data: RegistryData = {
       version: REGISTRY_VERSION,
       entries: {},
       freshStartNonces,
+      resumeGenerations,
     };
 
     for (const [chatId, entry] of entries) {

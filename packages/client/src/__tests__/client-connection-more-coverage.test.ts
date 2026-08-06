@@ -877,6 +877,32 @@ describe("ClientConnection — additional branch coverage", () => {
     priv(connection).clearTimers();
   });
 
+  it("echoes wsResumeGenerationV1 on register only when welcome advertised it", async () => {
+    const connection = await makeConnection();
+    const internal = priv(connection);
+    const openPromise = internal.openWebSocket();
+    const socket = FakeWebSocket.instances.at(-1);
+    if (!socket) throw new Error("missing fake socket");
+    socket.emitOpen();
+    await flushMicrotasks();
+    socket.emitMessage({
+      type: "server:welcome",
+      serverCommandVersion: "1.0.0",
+      serverTimeMs: Date.now(),
+      capabilities: { wsResumeGenerationV1: true },
+    });
+    socket.emitMessage({ type: "auth:ok" });
+    socket.emitMessage({ type: "client:registered" });
+    await openPromise;
+
+    const registerFrame = socket.sent
+      .map((raw) => JSON.parse(raw) as Record<string, unknown>)
+      .find((message) => message.type === "client:register");
+    expect(registerFrame?.wireCapabilities).toEqual({ wsResumeGenerationV1: true });
+
+    priv(connection).clearTimers();
+  });
+
   it("treats a pre-v1 server Reset advertisement as no Reset capability", async () => {
     const connection = await makeConnection();
     const internal = priv(connection);

@@ -19,6 +19,11 @@ export const inboxDeliverFrameSchema = z
     inboxId: z.string().min(1),
     chatId: z.string().nullable(),
     message: clientMessageSchema,
+    /**
+     * Removal/resume generation for this delivery. Optional for wire
+     * compatibility with older servers; absent ⇒ generation 0.
+     */
+    resumeGeneration: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 export type InboxDeliverFrame = z.infer<typeof inboxDeliverFrameSchema>;

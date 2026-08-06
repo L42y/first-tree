@@ -134,12 +134,14 @@ export type DaemonClientCommandPayload =
       /**
        * Membership removal soft terminate: ordinary `session:terminate` without
        * a Reset apply-ack generation. Owning replica forwards fire-and-forget.
+       * `resumeGeneration` is the pre-bump generation being cleaned up.
        */
       type: "session:evict";
       clientId: string;
       agentId: string;
       chatId: string;
       targetInstanceId: string;
+      resumeGeneration: number;
     }
   | {
       /** Post-finalize signal: forward Reset finalization to the owning replica. */
