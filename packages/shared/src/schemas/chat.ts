@@ -257,3 +257,19 @@ export const removeParticipantSchema = z.object({
   agentId: z.string().min(1),
 });
 export type RemoveParticipant = z.infer<typeof removeParticipantSchema>;
+
+/**
+ * Web Class C response for removing a chat speaker. `membershipKind` is the
+ * target's post-removal structural relationship: `"watching"` when a Human
+ * remains a derived watcher (still manages a non-human speaker), else `null`
+ * (fully detached / non-human deleted).
+ */
+export const removeChatParticipantResponseSchema = z.object({
+  chatId: z.string().min(1),
+  targetAgentId: z.string().min(1),
+  membershipKind: z.enum(["watching"]).nullable(),
+});
+export type RemoveChatParticipantResponse = z.infer<typeof removeChatParticipantResponseSchema>;
+
+/** Stable Web/API conflict code when the target Human still has open requests. */
+export const REMOVE_PARTICIPANT_OPEN_REQUEST_CODE = "OPEN_REQUEST_PENDING" as const;

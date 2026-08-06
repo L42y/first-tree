@@ -38,6 +38,7 @@ import { uuidv7 } from "../uuid.js";
 import { upsertSessionState } from "./activity.js";
 import { type AttachmentReader, deleteAttachmentIfUnreferenced, loadAttachmentMetaForReference } from "./attachment.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
+import { lockChatMembershipShared } from "./chat-membership-lock.js";
 import { applyAfterFanOut, fireChatMessageKick } from "./chat-projection.js";
 import { validateDocumentContext, validateMessageAttachmentRefs } from "./doc-snapshots.js";
 import { hasRemainingLandingCampaignTrialBudget } from "./landing-campaigns/chat-state.js";
@@ -824,6 +825,12 @@ async function sendMessageInner(
   options: SendMessageOptions,
 ): Promise<SendMessageResult> {
   const txResult = await db.transaction(async (tx) => {
+    // Serialize against membership removal with a shared fence so concurrent
+    // sends on the same chat still proceed, while a remover waits for this
+    // snapshot (or vice versa: removal commits first and this send sees the
+    // post-removal speaker set).
+    await lockChatMembershipShared(tx, [chatId]);
+
     // 1. Load participants and sender (inbox + org) in parallel — both are
     //    needed for fan-out + mention enforcement + post-tx session
     //    activation. Running concurrently keeps the hot send path on a
@@ -856,6 +863,9 @@ async function sendMessageInner(
     ]);
     if (!senderRow) {
       throw new NotFoundError(`Sender agent "${senderId}" not found`);
+    }
+    if (!participants.some((p) => p.agentId === senderId)) {
+      throw new ForbiddenError("Not a participant of this chat");
     }
     const prepared = preflightMessageSendIntent({
       chatId,

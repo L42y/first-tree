@@ -164,9 +164,11 @@ describe("GET /clients/:clientId/providers/:provider/models", () => {
       provider: "cursor",
       targetInstanceId: "replica-other",
     });
-    expect(typeof command?.ref).toBe("string");
-    const ref = command?.ref;
-    if (!ref) throw new Error("expected notifyDaemonClientCommand ref");
+    if (!command || command.type !== "provider-models:list") {
+      throw new Error("expected provider-models:list notifyDaemonClientCommand");
+    }
+    expect(typeof command.ref).toBe("string");
+    const ref = command.ref;
 
     const catalog = {
       provider: "cursor" as const,
@@ -211,8 +213,11 @@ describe("GET /clients/:clientId/providers/:provider/models", () => {
         clientId: admin.clientId,
       });
 
-      const ref = notifyCommand.mock.calls[0]?.[0]?.ref;
-      if (!ref) throw new Error("expected ref");
+      const command = notifyCommand.mock.calls[0]?.[0];
+      if (!command || command.type !== "provider-models:list") {
+        throw new Error("expected provider-models:list notifyDaemonClientCommand");
+      }
+      const ref = command.ref;
       const catalog = {
         provider: "cursor" as const,
         models: [{ id: "auto", label: "Auto" }],

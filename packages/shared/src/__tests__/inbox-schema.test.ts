@@ -3,8 +3,8 @@ import { INBOX_ENTRY_STATUSES, inboxEntrySchema, inboxEntryStatusSchema } from "
 
 describe("inboxEntryStatusSchema", () => {
   it("accepts only active delivery states", () => {
-    expect(inboxEntryStatusSchema.options).toEqual(["pending", "delivered", "acked"]);
-    expect(Object.values(INBOX_ENTRY_STATUSES)).toEqual(["pending", "delivered", "acked"]);
+    expect(inboxEntryStatusSchema.options).toEqual(["pending", "delivered", "acked", "cancelled"]);
+    expect(Object.values(INBOX_ENTRY_STATUSES)).toEqual(["pending", "delivered", "acked", "cancelled"]);
     expect(inboxEntryStatusSchema.safeParse("failed").success).toBe(false);
   });
 

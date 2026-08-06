@@ -39,6 +39,41 @@ export async function lockChatMembershipMutation(db: DbLike, chatIds: ReadonlyAr
 }
 
 /**
+ * Shared fence for send / session write paths that must serialize against
+ * membership removal without blocking concurrent sends on the same chat.
+ * Exclusive removers (`lockChatMembershipMutation`) wait for all shared
+ * holders; shared holders wait for an exclusive remover.
+ */
+export async function lockChatMembershipShared(db: DbLike, chatIds: ReadonlyArray<string>): Promise<void> {
+  const stableChatIds = [...new Set(chatIds)].sort();
+  for (const chatId of stableChatIds) {
+    await db.execute(
+      sql`SELECT pg_advisory_xact_lock_shared(hashtext('chat_speaker_membership'), hashtext(${chatId}))`,
+    );
+  }
+}
+
+/**
+ * True when `agentId` is currently a speaker of `chatId`. Callers that hold
+ * the shared or exclusive membership fence use this to refuse late session
+ * frames after removal.
+ */
+export async function isChatSpeaker(db: DbLike, chatId: string, agentId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ agentId: chatMembership.agentId })
+    .from(chatMembership)
+    .where(
+      and(
+        eq(chatMembership.chatId, chatId),
+        eq(chatMembership.agentId, agentId),
+        eq(chatMembership.accessMode, "speaker"),
+      ),
+    )
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
  * Lock a stable speaker/owner snapshot after taking the shared membership
  * mutation fence. Agent rows are locked separately so manager transfers and
  * status/delegate changes cannot invalidate owner or wake authority before

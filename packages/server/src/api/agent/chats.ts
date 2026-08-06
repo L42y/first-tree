@@ -269,7 +269,10 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/participants/:agentId",
     async (request, reply) => {
       const identity = requireAgent(request);
-      await chatService.removeParticipant(app.db, request.params.chatId, identity.uuid, request.params.agentId);
+      await chatService.removeParticipant(app.db, request.params.chatId, identity.uuid, request.params.agentId, {
+        notifier: app.notifier,
+        instanceId: app.config.instanceId,
+      });
       return reply.status(204).send();
     },
   );

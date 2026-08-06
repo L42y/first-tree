@@ -5,9 +5,11 @@ export const INBOX_ENTRY_STATUSES = {
   PENDING: "pending",
   DELIVERED: "delivered",
   ACKED: "acked",
+  /** Terminal: membership removal cancelled delivery without pretending ACK. */
+  CANCELLED: "cancelled",
 } as const;
 
-export const inboxEntryStatusSchema = z.enum(["pending", "delivered", "acked"]);
+export const inboxEntryStatusSchema = z.enum(["pending", "delivered", "acked", "cancelled"]);
 export type InboxEntryStatus = z.infer<typeof inboxEntryStatusSchema>;
 
 export const inboxEntrySchema = z.object({

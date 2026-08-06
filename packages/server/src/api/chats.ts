@@ -9,6 +9,7 @@ import {
   parseLandingCampaignTrialChatMetadata,
   patchChatEngagementSchema,
   pinMeChatSchema,
+  removeChatParticipantResponseSchema,
   sendMessageSchema,
   updateChatSchema,
 } from "@first-tree/shared";
@@ -26,7 +27,7 @@ import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
-import { ensureParticipant, leaveChat, updateChatMetadata } from "../services/chat.js";
+import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat.js";
 import { declareEntityFollow, listChatGithubEntities, removeEntityFollow } from "../services/github-entity-follow.js";
 import {
   declareGitlabEntityFollowWithStatus,
@@ -683,6 +684,23 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     await assertNoLandingCampaignTrialAgents(app.db, body.participantIds);
     await addMeChatParticipants(app.db, request.params.chatId, scope.humanAgentId, scope.organizationId, body);
     return reply.status(204).send();
+  });
+
+  /**
+   * DELETE /chats/:chatId/participants/:agentId — remove another speaker.
+   * Class C; caller is the current human agent. Shares the canonical mutation
+   * with the agent Class D DELETE (which keeps a 204 wire contract).
+   */
+  app.delete<{ Params: { chatId: string; agentId: string } }>("/:chatId/participants/:agentId", async (request) => {
+    const { chat, scope } = await requireChatAccess(request, app.db);
+    if (parseLandingCampaignTrialChatMetadata(chat.metadata)) {
+      throw new ForbiddenError("Landing campaign trial chats are managed by First Tree.");
+    }
+    const result = await removeParticipant(app.db, request.params.chatId, scope.humanAgentId, request.params.agentId, {
+      notifier: app.notifier,
+      instanceId: app.config.instanceId,
+    });
+    return removeChatParticipantResponseSchema.parse(result);
   });
 
   /** Watcher → speaking participant. State-carry. */

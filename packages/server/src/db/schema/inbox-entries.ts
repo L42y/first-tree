@@ -14,7 +14,7 @@ export const inboxEntries = pgTable(
       .references(() => messages.id),
     /** Routing tag. May differ from message.chat_id in replyTo scenarios; used by Client to route to the correct Session */
     chatId: text("chat_id"),
-    /** "pending" -> "delivered" -> "acked" */
+    /** "pending" -> "delivered" -> "acked", or terminal "cancelled" on membership removal */
     status: text("status").notNull().default("pending"),
     /**
      * When `false`, the entry is a "silent context" row: written so future
@@ -55,6 +55,6 @@ export const inboxEntries = pgTable(
      * pending; keeping message_id first bounds that lookup by page size.
      */
     index("idx_inbox_entries_message_status").on(table.messageId, table.status),
-    check("ck_inbox_entries_status", sql`${table.status} IN ('pending', 'delivered', 'acked')`),
+    check("ck_inbox_entries_status", sql`${table.status} IN ('pending', 'delivered', 'acked', 'cancelled')`),
   ],
 );

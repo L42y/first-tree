@@ -328,6 +328,18 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
         });
         return;
       }
+      if (payload.type === "session:evict") {
+        // Membership-removal soft terminate: ordinary frame, no Reset ref /
+        // capability gate. Re-check the live binding so a stale replica does
+        // not terminate the wrong socket after takeover.
+        if (connectionManager.getAgentClientId(payload.agentId) !== payload.clientId) return;
+        connectionManager.sendToClient(payload.clientId, {
+          type: "session:terminate",
+          agentId: payload.agentId,
+          chatId: payload.chatId,
+        });
+        return;
+      }
       if (payload.type === "session:command:finalized" || payload.type === "session:command:aborted") {
         // Post-apply disposition fan-out. Addressed by the ORIGINAL applying
         // `clientId`, deliberately WITHOUT an agent-route or capability

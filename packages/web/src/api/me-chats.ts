@@ -12,6 +12,7 @@ import type {
   MeChatSourceCounts,
   MeChatUnreadResponse,
   PinMeChat,
+  RemoveChatParticipantResponse,
 } from "@first-tree/shared";
 import { listMeChatsResponseSchema, listNeedYouRequestsResponseSchema } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
@@ -111,6 +112,12 @@ export function pinMeChat(chatId: string, pinned: boolean): Promise<MeChatPinRes
 
 export function addMeChatParticipants(chatId: string, body: AddMeChatParticipants): Promise<void> {
   return api.post<void>(`/chats/${encodeURIComponent(chatId)}/participants`, body);
+}
+
+export function removeMeChatParticipant(chatId: string, agentId: string): Promise<RemoveChatParticipantResponse> {
+  return api.delete<RemoveChatParticipantResponse>(
+    `/chats/${encodeURIComponent(chatId)}/participants/${encodeURIComponent(agentId)}`,
+  );
 }
 
 export function joinMeChat(chatId: string): Promise<void> {

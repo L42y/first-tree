@@ -14,6 +14,7 @@ import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { uuidv7 } from "../uuid.js";
+import { lockChatMembershipShared } from "./chat-membership-lock.js";
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
@@ -174,6 +175,10 @@ export async function appendLiveEvent(
       await new Promise((r) => setTimeout(r, Math.random() * RETRY_JITTER_MS));
     }
     const outcome = await db.transaction(async (tx) => {
+      // Serialize against membership removal so we observe a committed
+      // evicted fence rather than inserting traces that removal just cleared.
+      await lockChatMembershipShared(tx, [chatId]);
+
       const [session] = await tx
         .select({ state: agentChatSessions.state })
         .from(agentChatSessions)

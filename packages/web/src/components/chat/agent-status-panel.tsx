@@ -14,6 +14,7 @@ import { viewOf } from "../../lib/agent-status-view.js";
 import { toneOf } from "../../lib/tones.js";
 import { AgentSessionResetConfirmDialog } from "../agent-lifecycle-confirm-dialog.js";
 import { Avatar } from "../avatar.js";
+import { type RowAction, RowActionsMenu } from "../ui/row-actions-menu.js";
 import { StatusGlyph } from "../ui/status-glyph.js";
 import { useToast } from "../ui/toast.js";
 import { AgentHovercard } from "./agent-hovercard.js";
@@ -35,6 +36,8 @@ export function AgentStatusPanel({
   canManage,
   order = "fixed",
   compact = false,
+  onRequestRemove,
+  selfAgentId,
 }: {
   chatId: string;
   /** Non-human agent participants, in display order. */
@@ -47,6 +50,9 @@ export function AgentStatusPanel({
   /** Tighter row padding for the dense sidebar roster. The compose-bar usage
    *  keeps the roomier default. */
   compact?: boolean;
+  /** When set, non-self agent rows expose a Remove action. */
+  onRequestRemove?: (agent: ChatParticipantDetail) => void;
+  selfAgentId?: string | null;
 }) {
   const { data: statuses } = useQuery({
     queryKey: chatAgentStatusQueryKey(chatId),
@@ -78,6 +84,8 @@ export function AgentStatusPanel({
           status={byAgent.get(agent.agentId) ?? null}
           canManage={canManage(agent.agentId)}
           compact={compact}
+          canRemove={Boolean(onRequestRemove) && agent.agentId !== selfAgentId}
+          onRequestRemove={onRequestRemove ? () => onRequestRemove(agent) : undefined}
         />
       ))}
     </div>
@@ -121,12 +129,16 @@ function AgentStatusRow({
   status,
   canManage,
   compact,
+  canRemove,
+  onRequestRemove,
 }: {
   chatId: string;
   agent: ChatParticipantDetail;
   status: AgentChatStatus | null;
   canManage: boolean;
   compact: boolean;
+  canRemove: boolean;
+  onRequestRemove?: () => void;
 }) {
   const queryClient = useQueryClient();
   const { addToast } = useToast();
@@ -191,6 +203,10 @@ function AgentStatusRow({
   const showPause = canManage && canPauseStatus(status);
   const showResume = canManage && canResumeStatus(status);
   const sessionReset = canManage && canResetSessionStatus(status) ? { onRequest: () => setResetOpen(true) } : undefined;
+  const removeActions: RowAction[] =
+    canRemove && onRequestRemove
+      ? [{ key: "remove", label: "Remove from chat", destructive: true, onSelect: onRequestRemove }]
+      : [];
 
   return (
     <>
@@ -255,6 +271,9 @@ function AgentStatusRow({
 
         {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
         {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
+        {removeActions.length > 0 ? (
+          <RowActionsMenu actions={removeActions} ariaLabel={`Actions for ${agent.displayName}`} />
+        ) : null}
       </div>
       {sessionReset || resetOpen ? (
         // Mounted on `resetOpen` too: after a failed reset the server may

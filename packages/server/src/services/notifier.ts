@@ -131,6 +131,17 @@ export type DaemonClientCommandPayload =
       targetInstanceId: string;
     }
   | {
+      /**
+       * Membership removal soft terminate: ordinary `session:terminate` without
+       * a Reset apply-ack generation. Owning replica forwards fire-and-forget.
+       */
+      type: "session:evict";
+      clientId: string;
+      agentId: string;
+      chatId: string;
+      targetInstanceId: string;
+    }
+  | {
       /** Post-finalize signal: forward Reset finalization to the owning replica. */
       type: "session:command:finalized";
       clientId: string;
@@ -729,7 +740,6 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           if (
             typeof parsed.type !== "string" ||
             typeof parsed.clientId !== "string" ||
-            typeof parsed.ref !== "string" ||
             typeof parsed.targetInstanceId !== "string"
           ) {
             return;
@@ -737,7 +747,13 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
           // Discriminated union: each command type carries its own required
           // fields; anything else (unknown type, missing discriminator
           // fields) is malformed and must not reach handlers.
-          if (
+          if (parsed.type === "session:evict") {
+            const sessionPayload = parsed as { agentId?: unknown; chatId?: unknown };
+            if (typeof sessionPayload.agentId !== "string" || typeof sessionPayload.chatId !== "string") return;
+            // Soft membership-evict terminate has no Reset apply-ack ref.
+          } else if (typeof (parsed as { ref?: unknown }).ref !== "string") {
+            return;
+          } else if (
             parsed.type === "session:terminate" ||
             parsed.type === "session:command:finalized" ||
             parsed.type === "session:command:aborted"

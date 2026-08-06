@@ -7,6 +7,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import type { OrgScope } from "../scope/types.js";
 import { agentVisibilityCondition } from "./access-control.js";
+import { isChatSpeaker, lockChatMembershipShared } from "./chat-membership-lock.js";
 import type { Notifier } from "./notifier.js";
 
 /**
@@ -39,6 +40,12 @@ export async function upsertSessionState(
   const now = new Date();
   let stateChanged = false;
   await db.transaction(async (tx) => {
+    // Serialize against membership removal and refuse late frames that would
+    // revive an agent who is no longer a speaker of this chat.
+    await lockChatMembershipShared(tx, [chatId]);
+    const stillSpeaker = await isChatSpeaker(tx, chatId, agentId);
+    if (!stillSpeaker) return;
+
     // Short-circuit when the row is already at the target state: skip the
     // updatedAt refresh so steady-state messaging doesn't churn the row.
     // Insertions and any state transition (evicted → active, active →

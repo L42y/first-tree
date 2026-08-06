@@ -1,10 +1,24 @@
-import type { ChatParticipantDetail } from "@first-tree/shared";
+import { type ChatParticipantDetail, REMOVE_PARTICIPANT_OPEN_REQUEST_CODE } from "@first-tree/shared";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
+import { ApiError } from "../../../api/client.js";
+import { removeMeChatParticipant } from "../../../api/me-chats.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { AddParticipantDropdown } from "../../../components/add-participant-dropdown.js";
 import { Avatar as RealAvatar } from "../../../components/avatar.js";
 import { AgentStatusPanel } from "../../../components/chat/agent-status-panel.js";
+import { Button } from "../../../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../../components/ui/dialog.js";
+import { type RowAction, RowActionsMenu } from "../../../components/ui/row-actions-menu.js";
+import { useToast } from "../../../components/ui/toast.js";
 
 /** Roster rows shown before the "Show all" fold. The rail is a calm
  *  inspection surface, not a member-management screen — a long roster
@@ -43,22 +57,8 @@ export function partitionRoster(
 
 /**
  * Participants section — full chat membership (humans + agents), the top
- * section of the rail. Agents render first (their live status is the
- * glanceable pulse of the work) through <AgentStatusPanel> (one
- * /chats/:id/agent-status call drives every agent's composite status +
- * per-row Pause when the caller can manage). Humans follow as a simplified
- * roster (no session state, no actions in v1 — Remove / Change role are
- * deferred alongside the missing backend routes for member-side removal).
- *
- * The roster is capped at VISIBLE_LIMIT; the remainder collapses behind a
- * "Show all" toggle so a crowded chat can't dominate the rail.
- *
- * The bottom "Add" affordance shares <AddParticipantDropdown> with the
- * header quick-add icon — both go through the same `addMeChatParticipants`
- * mutation and the same grouped, avatar'd picker.
- *
- * Membership data (`participants` / `managedByMe`) is passed down from
- * ChatView, which already holds the `chat-detail` + `activity` queries.
+ * section of the rail. Speakers other than the current user expose a Remove
+ * action; watchers / read-only / self do not.
  */
 export function ParticipantsSection({
   chatId,
@@ -75,14 +75,60 @@ export function ParticipantsSection({
   onAdded: () => void;
   readOnly: boolean;
 }) {
-  const { role } = useAuth();
+  const { role, agentId: selfAgentId } = useAuth();
+  const { addToast } = useToast();
+  const queryClient = useQueryClient();
   const [showAll, setShowAll] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<ChatParticipantDetail | null>(null);
 
   const isAdmin = role === "admin";
+  const canRemoveSpeakers = !readOnly && Boolean(selfAgentId);
   const { total, visibleAgents, visibleHumans, hiddenCount } = useMemo(
     () => partitionRoster(participants, showAll),
     [participants, showAll],
   );
+
+  const removeMut = useMutation({
+    mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
+    onSuccess: (result, target) => {
+      setPendingRemove(null);
+      void queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
+      void queryClient.invalidateQueries({ queryKey: ["me", "chats"] });
+      void queryClient.invalidateQueries({ queryKey: ["chat-agent-status", chatId] });
+      void queryClient.invalidateQueries({ queryKey: ["chat-right-sidebar", "cron-jobs", chatId] });
+      if (result.membershipKind === "watching") {
+        addToast({
+          title: "Moved to watching",
+          description: `${target.displayName} was removed as a participant but can still observe this chat because they manage an agent here.`,
+        });
+      } else {
+        addToast({
+          title: "Participant removed",
+          description: `${target.displayName} can no longer send, receive, or be mentioned in this chat.`,
+        });
+      }
+      onAdded();
+    },
+    onError: (error) => {
+      const openRequest =
+        error instanceof ApiError && (error.code === REMOVE_PARTICIPANT_OPEN_REQUEST_CODE || error.status === 409);
+      addToast({
+        title: openRequest ? "Unanswered request" : "Could not remove participant",
+        description: openRequest
+          ? error instanceof Error
+            ? error.message
+            : "Answer or skip the open request before removing this person."
+          : error instanceof Error
+            ? error.message
+            : "Something went wrong. Try again.",
+      });
+    },
+  });
+
+  const requestRemove = (target: ChatParticipantDetail): void => {
+    if (!canRemoveSpeakers || target.agentId === selfAgentId) return;
+    setPendingRemove(target);
+  };
 
   return (
     <section style={{ borderBottom: "var(--hairline) solid var(--border-faint)" }}>
@@ -107,10 +153,24 @@ export function ParticipantsSection({
                 agents={visibleAgents}
                 canManage={(id) => isAdmin || (managedByMe.get(id) ?? false)}
                 compact
+                onRequestRemove={
+                  canRemoveSpeakers
+                    ? (agent) => {
+                        if (agent.agentId === selfAgentId) return;
+                        requestRemove(agent);
+                      }
+                    : undefined
+                }
+                selfAgentId={selfAgentId}
               />
             ) : null}
             {visibleHumans.map((p) => (
-              <HumanRow key={p.agentId} participant={p} />
+              <HumanRow
+                key={p.agentId}
+                participant={p}
+                canRemove={canRemoveSpeakers && p.agentId !== selfAgentId}
+                onRequestRemove={() => requestRemove(p)}
+              />
             ))}
             {hiddenCount > 0 ? (
               <RosterToggle onClick={() => setShowAll(true)}>Show all · {total}</RosterToggle>
@@ -131,6 +191,18 @@ export function ParticipantsSection({
           />
         </div>
       )}
+
+      <RemoveParticipantConfirmDialog
+        open={pendingRemove !== null}
+        participant={pendingRemove}
+        pending={removeMut.isPending}
+        onOpenChange={(open) => {
+          if (!open && !removeMut.isPending) setPendingRemove(null);
+        }}
+        onConfirm={() => {
+          if (pendingRemove && !removeMut.isPending) removeMut.mutate(pendingRemove);
+        }}
+      />
     </section>
   );
 }
@@ -148,10 +220,22 @@ function RosterToggle({ onClick, children }: { onClick: () => void; children: Re
   );
 }
 
-function HumanRow({ participant }: { participant: ChatParticipantDetail }) {
+function HumanRow({
+  participant,
+  canRemove,
+  onRequestRemove,
+}: {
+  participant: ChatParticipantDetail;
+  canRemove: boolean;
+  onRequestRemove: () => void;
+}) {
+  const actions: RowAction[] = canRemove
+    ? [{ key: "remove", label: "Remove from chat", destructive: true, onSelect: onRequestRemove }]
+    : [];
+
   return (
     <div
-      className="flex items-center"
+      className="group flex items-center"
       style={{
         gap: "var(--sp-2_5)",
         padding: "var(--sp-1_25) var(--sp-2)",
@@ -168,6 +252,46 @@ function HumanRow({ participant }: { participant: ChatParticipantDetail }) {
       <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
         <div className="truncate text-subtitle">{participant.displayName}</div>
       </div>
+      {actions.length > 0 ? (
+        <RowActionsMenu actions={actions} ariaLabel={`Actions for ${participant.displayName}`} />
+      ) : null}
     </div>
+  );
+}
+
+export function RemoveParticipantConfirmDialog({
+  open,
+  participant,
+  pending,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  participant: ChatParticipantDetail | null;
+  pending: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+}) {
+  const label = participant?.displayName ?? "this participant";
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Remove {label}?</DialogTitle>
+          <DialogDescription>
+            They will be removed from this chat only. They will no longer be able to send, receive, or be @mentioned
+            here. Message history is kept.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
+            {pending ? "Removing…" : "Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
