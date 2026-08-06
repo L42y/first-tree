@@ -846,7 +846,7 @@ export class FirstTreeHubSDK {
     );
   }
 
-  /** Publish one server-authored App-directed GitHub task reply. */
+  /** Publish one server-authored, automatically routed GitHub task reply. */
   async submitGithubTaskReply(
     chatId: string,
     runId: string,

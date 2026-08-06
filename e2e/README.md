@@ -18,6 +18,8 @@ The Agent Detail journey is owned by
 [`agent-detail-availability-and-capabilities`](../packages/qa/cases/cross-surface/agent-detail-availability-and-capabilities.md).
 The Chat Summary switching journey is owned by
 [`chat-summary-chat-switch-reentry`](../packages/qa/cases/web/chat-summary-chat-switch-reentry.md).
+The GitHub install identity-gate journey is owned by
+[`github-settings-connection-panel`](../packages/qa/cases/cross-surface/github-settings-connection-panel.md).
 Those cases remain the contracts and the place judgement lives. This directory
 is one way to execute parts of them unattended, in the same spirit as the
 fixtures and environment recipes under `packages/qa` — useful for a quick
@@ -29,9 +31,11 @@ Two limits follow from that and are deliberate:
 - It is **not a CI gate** and is not wired into any workflow. Steps resolve from
   natural-language descriptions through a hosted model and some assertions are
   model-evaluated, so a red run is a signal to investigate, not a merge blocker.
-- It covers the registration happy path, the connect-computer gate, and the Web
-  setup-prompt dialog — not the negative branches, provider handoff execution,
-  degraded states, or evidence judgement the cases ask for.
+- It covers selected visible journeys: registration, the connect-computer gate,
+  the Web setup-prompt dialog, and the GitHub install identity gate before and
+  after account linking. It does not drive real provider OAuth, GitHub App
+  installation or owner approval, degraded provider states, or the evidence
+  judgement the cases ask for.
 
 A stable invariant that Vitest could assert still belongs in Vitest. Do not move
 a check here to escape a flaky product test.
@@ -104,6 +108,7 @@ the local stack and the local tests do not touch staging.
 | `settings-coding-agent-prompt-dialog.test.yaml` | local | A signed-in Team with a bound Context Tree opens the real setup prompt, reviews the provider-neutral handoff, and copies it from the dialog |
 | `agent-detail-configuration.test.yaml` | local | A Team admin follows one agent from the directory through its availability and effective tools into shared resource Settings |
 | `chat-summary-current-state.test.yaml` | local | Two real Workspace chats switch their readable current-state hierarchy and collapse back to a one-line preview |
+| `github-install-identity-gate.test.yaml` | local | A Google/OIDC-style admin is gated from install until GitHub is linked, then returns to the same Team with Install as a separate action |
 | `dev-cloud-sign-in-available.test.yaml` | first-tree-dev-cloud | Staging serves the landing page and offers Google + GitHub sign-in |
 
 `modules/sign-up-fresh-user.module.yaml` holds the shared sign-up flow. Each run
@@ -170,6 +175,15 @@ connected clients and agents whose heartbeat is older than
 `packages/server/src/services/client.ts`). Without a heartbeat loop a plain
 `NOW()` would decay mid-run and the flow would regress to "Your computer isn't
 connected".
+
+`set-test-user-provider-mode.js` substitutes only the external provider callback
+for the GitHub install identity-gate journey. It keeps the existing First Tree
+user, Team, membership, and browser tokens intact while changing that user's
+provider rows from Google-only to Google+GitHub. The visible Settings flow and
+all capability queries still run through the real web and server. It does not
+claim to validate github.com's login, consent, installation picker, or owner
+approval UI; deterministic server integration tests own those state and
+authorization boundaries.
 
 If onboarding ever stops depending on a connected daemon, delete the fixtures
 rather than working around them.

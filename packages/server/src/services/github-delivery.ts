@@ -182,7 +182,7 @@ export async function deliverGithubEvent(
       // out by the message service (the card still lands as a silent row via
       // `allowRecipientlessSend`). The unread-mention red dot stays off because
       // delegates are non-human mention targets.
-      // The task marker scopes who may execute an App-directed request; it
+      // The task marker scopes who may execute an automatically routed event; it
       // does not replace independent subscription / explicit wake lines that
       // survived into this chat delivery.
       const mentions = scmWakeAgentIds(entries);
@@ -316,10 +316,12 @@ async function resolveChatFor(
     eventType: event.eventType,
     action: event.action ?? "",
     entityStateSeed: options.entityStateSeed ?? null,
-    // Personnel and provider-task targets come from explicit directed evidence
-    // in the event payload — the only paths allowed to mint a fresh chat for an
-    // opened creation event. Subscription targets short-circuit above; the
-    // guard is still wired so any future caller is safe by default.
+    // Personnel targets carry explicit directed evidence; provider-task
+    // targets carry repository-role authority. Those are the only paths
+    // allowed to mint a fresh chat for an opened creation event. Subscription
+    // targets short-circuit above; the guard is still wired so any future
+    // caller is safe by default. `isMentionMatched` is the historical name for
+    // that fresh-chat authority bit.
     isMentionMatched: true,
   };
   if (target.entry.kind === "provider_task_target") {

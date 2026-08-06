@@ -753,18 +753,22 @@ first-tree github unfollow acme/api#42
 ```
 
 `github reply` is available only inside the active Agent turn and current chat
-recorded by a server-authored `teamAgentTask: { agentUuid, runId }` card. The
-CLI supplies only the run id and body; Cloud fixes the repository and Issue or
-pull request, verifies the exact selected Agent/runtime/chat and installation
-coverage, and keeps the App credential server-side. Each run accepts one
-immutable payload. Unknown GitHub writes reconcile a hidden run marker before
-retrying, and a different payload is rejected. The body must not mention the
-App or contain the reserved marker. Historical markers without a run id and
-Discussion/commit events cannot publish; webhook ingress reports the stable
-`GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED` blocker without creating a run.
-Missing accepted Issue/PR write permission similarly reports
-`GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED`. This ordinary comment publisher
-does not grant Context Review verdict or merge authority.
+recorded by a server-authored `teamAgentTask: { agentUuid, runId }` card.
+Supported Issue and pull-request activity from connected repositories creates
+these tasks automatically; it does not depend on mentioning or assigning the
+GitHub App. The CLI supplies only the run id and body; Cloud fixes the
+repository and Issue or pull request, verifies the exact selected
+Agent/runtime/chat and installation coverage, and keeps the App credential
+server-side. Each run accepts one immutable payload. Unknown GitHub writes
+reconcile a hidden run marker before retrying, and a different payload is
+rejected. The body must not mention the App or contain the reserved marker.
+Historical markers without a run id cannot publish. Discussion and commit
+events do not create task runs; an unsupported or malformed publishable entity
+reports `GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED`. Missing accepted Issue/PR write
+permission similarly reports `GITHUB_TASK_REPLY_APP_PERMISSION_REQUIRED`. A
+terminal App reply carrying its valid hidden run marker remains an ordinary
+subscription event but cannot create another task run. This ordinary comment
+publisher does not grant Context Review verdict or merge authority.
 
 `<entity>` accepts a full GitHub URL, `owner/repo#N`, or `owner/repo@<sha>`.
 A `409` means the same (human, delegate) line already lives in another chat

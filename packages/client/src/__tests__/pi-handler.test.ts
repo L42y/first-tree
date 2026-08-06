@@ -649,6 +649,15 @@ describe("sanitizePiProviderDetail", () => {
     expect(sanitizePiProviderDetail("Please ignore prior text: PRIVATE_USER_PROMPT_XYZ")).toBe("pi_provider_error");
     expect(sanitizePiProviderDetail("Please ignore prior text: PRIVATE_USER_PROMPT_XYZ")).not.toContain("PRIVATE");
   });
+
+  it("delegates binary-missing recognition to the provider-support seam", () => {
+    // Pi-scoped sanitizer keeps the historical broad mapping.
+    expect(sanitizePiProviderDetail("Pi CLI is missing on this machine")).toBe("pi_binary_missing");
+    expect(sanitizePiProviderDetail("no pi binary resolved")).toBe("pi_binary_missing");
+    expect(sanitizePiProviderDetail("pi: command not found")).toBe("pi_binary_missing");
+    expect(sanitizePiProviderDetail("file not found")).toBe("pi_binary_missing");
+    expect(sanitizePiProviderDetail("package not installed")).toBe("pi_binary_missing");
+  });
 });
 
 describe("resolvePiNativeToolRefs", () => {
