@@ -1122,6 +1122,18 @@ export class SessionManager {
         if (joinedSuspend && session?.suspendError) throw asTerminateError("suspend", session.suspendError.error);
         const activeSlotHeld = session?.activeSlotHeld === true;
         if (session) this.releaseActiveSlot(session);
+        // An abandoned producer can still materialize the SAME handler and
+        // register a new after-prior teardown while a strict abandoned-handler
+        // retry is awaiting. Because teardown debt is handler-keyed, letting
+        // that retry start now could make its success delete the newer debt.
+        // Fail before any handler teardown; once the producer settles, its
+        // stale-completion debt is registered before the producer disappears.
+        if (this.hasAbandonedRouteProducer(chatId)) {
+          throw asTerminateError(
+            "teardown",
+            new Error(`timed-out route producer is not confirmed settled for chat ${chatId}`),
+          );
+        }
         // The teardown boundary — strict in every case, because a
         // handler.shutdown rejection must fail the apply (applied:false),
         // never resolve into an ack over a possibly-live handler. Beyond the
@@ -1168,9 +1180,7 @@ export class SessionManager {
         // `discardStaleRouteTransition` → fresh teardown debt. The drain
         // below must see that complete debt, so this quiesce runs first.
         await this.quiesceRouteProducers(chatId);
-        if (
-          [...(this.routeProducers.get(chatId) ?? [])].some((producer) => this.abandonedRouteProducers.has(producer))
-        ) {
+        if (this.hasAbandonedRouteProducer(chatId)) {
           throw asTerminateError(
             "teardown",
             new Error(`timed-out route producer is not confirmed settled for chat ${chatId}`),
@@ -2264,6 +2274,10 @@ export class SessionManager {
       current.delete(promise);
       if (current.size === 0) this.routeProducers.delete(chatId);
     };
+  }
+
+  private hasAbandonedRouteProducer(chatId: string): boolean {
+    return [...(this.routeProducers.get(chatId) ?? [])].some((producer) => this.abandonedRouteProducers.has(producer));
   }
 
   /**

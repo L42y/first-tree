@@ -3463,6 +3463,66 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("refuses an abandoned teardown retry until its producer materializes late teardown debt", async () => {
+    vi.useFakeTimers();
+    let signalResumeStarted: (() => void) | undefined;
+    let resolveResume: (() => void) | undefined;
+    const resumeStarted = new Promise<void>((resolve) => {
+      signalResumeStarted = resolve;
+    });
+    const resumeGate = new Promise<void>((resolve) => {
+      resolveResume = resolve;
+    });
+    const oldHandler = handler({
+      resume: vi.fn().mockImplementation(async (message, _sessionId, _ctx, token) => {
+        token?.processingStarted(message);
+        signalResumeStarted?.();
+        await resumeGate;
+        return { sessionId: "late-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      suspend: vi.fn(() => new Promise<void>(() => {})),
+      shutdown: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("initial shutdown failure"))
+        .mockImplementation(() => new Promise<void>(() => {})),
+    });
+    const sm = makeManager();
+    const i = internals(sm);
+    const chatId = "chat-abandoned-producer-before-reset-retry";
+    i.sessions.set(
+      chatId,
+      makeSessionRecord(chatId, {
+        handler: oldHandler,
+        status: "suspended",
+        claudeSessionId: "existing-session",
+      }),
+    );
+
+    const resumeDispatch = sm.dispatch(mockEntry({ id: 9115, chatId, messageId: "msg-late-reset-race" }));
+    await resumeStarted;
+    await sm.handleCommand(chatId, "session:suspend");
+    const suspendBoundary = i.sessions.get(chatId)?.suspending;
+    if (!suspendBoundary) throw new Error("operator suspend boundary was not created");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await suspendBoundary;
+    await vi.waitFor(() => expect(oldHandler.shutdown).toHaveBeenCalledTimes(1));
+
+    const firstReset = sm.handleCommand(chatId, "session:terminate");
+    await Promise.resolve();
+    expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
+    await expect(firstReset).rejects.toThrow("timed-out route producer is not confirmed settled");
+
+    resolveResume?.();
+    await resumeDispatch;
+    await vi.waitFor(() => expect(oldHandler.shutdown).toHaveBeenCalledTimes(2));
+    expect(i.routeProducers.has(chatId)).toBe(false);
+    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+
+    await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toThrow("not confirmed stopped");
+    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+    await sm.shutdown();
+  });
+
   it("retains teardown proof when a canceled fresh-start shutdown fails, and converges on terminate", async () => {
     const boom = new Error("start-cancel shutdown failed");
     const startHandler = handler({
