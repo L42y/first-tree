@@ -61,6 +61,7 @@ import {
 import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
 import { listRequestThread } from "../services/need-you.js";
 import { notifyRecipients } from "../services/notifier.js";
+import { removeParticipantFromChat } from "../services/participant-removal.js";
 import { resolveHumanScmBindingPair } from "../services/scm-attention-line.js";
 import { extractSummary } from "../services/session.js";
 import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/session-event.js";
@@ -684,6 +685,27 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     await addMeChatParticipants(app.db, request.params.chatId, scope.humanAgentId, scope.organizationId, body);
     return reply.status(204).send();
   });
+
+  /**
+   * DELETE /chats/:chatId/participants/:agentId — remove one speaker.
+   *
+   * The caller acts as their HUMAN agent, so the shared authorizer sees the
+   * same shape it sees on the agent route and applies one set of rules to
+   * both. Removing yourself is refused here on purpose: that is
+   * `POST /:chatId/workspace-leave`.
+   */
+  app.delete<{ Params: { chatId: string; agentId: string } }>(
+    "/:chatId/participants/:agentId",
+    async (request, reply) => {
+      const { scope } = await requireChatAccess(request, app.db);
+      await removeParticipantFromChat(app.db, {
+        chatId: request.params.chatId,
+        callerAgentId: scope.humanAgentId,
+        targetAgentId: request.params.agentId,
+      });
+      return reply.status(204).send();
+    },
+  );
 
   /** Watcher → speaking participant. State-carry. */
   app.post<{ Params: { chatId: string } }>("/:chatId/workspace-join", async (request, reply) => {

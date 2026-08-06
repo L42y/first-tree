@@ -7,7 +7,6 @@ import {
   FIRST_CHAT_ORIENTATION_CHAT_STATES,
   type LegacyCreateChat,
   parseLandingCampaignTrialAgentMetadata,
-  parseLandingCampaignTrialChatMetadata,
   type SendMessage,
   withFirstChatOrientationChatState,
 } from "@first-tree/shared";
@@ -23,7 +22,6 @@ import { users } from "../db/schema/users.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { resolveAvatarImageUrl } from "./agent.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
 import { resolveChatTitle } from "./me-chat.js";
 import {
   type DeferredSendMessagePostCommitEffects,
@@ -35,7 +33,8 @@ import {
 } from "./message.js";
 import { WIRE_RECIPIENT_MODE } from "./message-dispatcher.js";
 import { inviteParticipantsToChat, rejectedPrivateTargets } from "./participant-invite.js";
-import { addChatParticipants, applyMembershipWrite, recomputeChatWatchers } from "./participant-mode.js";
+import { addChatParticipants, applyMembershipWrite } from "./participant-mode.js";
+import { removeParticipantFromChat } from "./participant-removal.js";
 import { extractSummary } from "./session.js";
 import { leaveAsParticipant } from "./watcher.js";
 
@@ -1175,41 +1174,16 @@ export async function addParticipant(db: Database, chatId: string, requesterId: 
     .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.accessMode, "speaker")));
 }
 
+/**
+ * Agent-JWT entrypoint: `DELETE /agent/.../chats/:id/participants/:agentId`.
+ *
+ * Thin shell over the shared removal authorizer so this route and the web
+ * route `DELETE /chats/:id/participants/:agentId` cannot drift apart. The
+ * rules — owner protection, owner-side-or-own-agent, self-removal is
+ * `leave` — live in `participant-removal.ts`.
+ */
 export async function removeParticipant(db: Database, chatId: string, requesterId: string, targetAgentId: string) {
-  const speakers = await db.transaction(async (rawTx) => {
-    const tx = rawTx as unknown as Database;
-    await lockChatMembershipMutation(tx, [chatId]);
-    const chat = await getChat(tx, chatId);
-    if (parseLandingCampaignTrialChatMetadata(chat.metadata)) {
-      throw new ForbiddenError("Landing campaign trial chats are managed by First Tree.");
-    }
-
-    await assertParticipant(tx, chatId, requesterId);
-    if (requesterId === targetAgentId) {
-      throw new BadRequestError("Cannot remove yourself from a chat");
-    }
-
-    const [removed] = await tx
-      .delete(chatMembership)
-      .where(
-        and(
-          eq(chatMembership.chatId, chatId),
-          eq(chatMembership.agentId, targetAgentId),
-          eq(chatMembership.accessMode, "speaker"),
-        ),
-      )
-      .returning();
-    if (!removed) {
-      throw new NotFoundError(`Agent "${targetAgentId}" is not a participant of this chat`);
-    }
-    await recomputeChatWatchers(tx, chatId);
-    return tx
-      .select()
-      .from(chatMembership)
-      .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.accessMode, "speaker")));
-  });
-  invalidateChatAudience(chatId);
-  return speakers;
+  return removeParticipantFromChat(db, { chatId, callerAgentId: requesterId, targetAgentId });
 }
 
 /**
