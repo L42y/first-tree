@@ -63,12 +63,16 @@ export type VersionManagerDirDeps = {
  * the provider as not found, so the decision is made across the complete state
  * rather than per root:
  *
- *   - The login shell reported something. Only that is used. `$NVM_BIN` names
- *     the selected version outright and is authoritative, replacing any nvm
- *     enumeration. `$FNM_DIR` names only the active root, so that root — and no
- *     other — is consulted, and it answers only if it holds exactly one version.
- *     Default roots are not scanned at all: if we know which manager is active
- *     and it cannot answer, an unrelated installation is not a better answer.
+ *   - The login shell reported exactly one manager. Only that is used.
+ *     `$NVM_BIN` names the selected version outright and is authoritative,
+ *     replacing any nvm enumeration. `$FNM_DIR` names only the active root, so
+ *     that root — and no other — is consulted, and it answers only if it holds
+ *     exactly one version. Default roots are not scanned at all: if we know
+ *     which manager is active and it cannot answer, an unrelated installation
+ *     is not a better answer.
+ *   - The login shell reported BOTH managers. Which one was active was decided
+ *     by the live `$PATH` order, which is exactly what is no longer available,
+ *     so neither answers.
  *   - The login shell reported nothing. The default roots are scanned and the
  *     result is used only when there is exactly ONE safe candidate in total.
  *     Two single-version roots are just as ambiguous as one two-version root.
@@ -115,11 +119,17 @@ export function versionManagerBinDirs(home: string, deps: VersionManagerDirDeps 
     join(versionsRoot, version, "installation", "bin");
 
   if (active.nvmBin !== undefined || active.fnmDir !== undefined) {
-    const fromActive = [
-      ...(active.nvmBin !== undefined ? [active.nvmBin] : []),
-      ...(active.fnmDir !== undefined ? soleVersionUnder(join(active.fnmDir, "node-versions"), fnmLayout) : []),
-    ];
-    return fromActive.map(safe).filter((dir): dir is string => dir !== null);
+    // Two managers reported: which one was actually active was decided by the
+    // live `$PATH` order, and once that entry is gone the variables alone do
+    // not say. Both can be set when both init scripts ran, or when one survived
+    // a later PATH change. Answering with either is a guess, so answer neither.
+    if (active.nvmBin !== undefined && active.fnmDir !== undefined) return [];
+    const fromActive =
+      active.nvmBin !== undefined
+        ? [active.nvmBin]
+        : soleVersionUnder(join(active.fnmDir ?? "", "node-versions"), fnmLayout);
+    const vettedActive = fromActive.map(safe).filter((dir): dir is string => dir !== null);
+    return vettedActive.length === 1 ? vettedActive : [];
   }
 
   // fnm's data dir varies by installer: XDG default, Homebrew on macOS, and the

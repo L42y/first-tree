@@ -92,6 +92,34 @@ describe("versionManagerBinDirs", () => {
     ).toEqual([active]);
   });
 
+  // Both variables set says two managers initialised, not which one `$PATH`
+  // had put first — and that ordering is precisely what is gone. Neither form
+  // may quietly resolve to nvm just because it is cheaper to answer.
+  it("fails closed when the shell reported both managers", () => {
+    const home = "/home/u";
+    const nvmBin = join(home, ".nvm", "versions", "node", "v20.11.0", "bin");
+    const fnmVersions = join("/opt/fnm", "node-versions");
+
+    // …with an unambiguous fnm root.
+    expect(
+      versionManagerBinDirs(home, {
+        readDir: (path) => (path === fnmVersions ? ["v18.0.0"] : []),
+        active: { nvmBin, fnmDir: "/opt/fnm" },
+        env: {},
+      }),
+    ).toEqual([]);
+
+    // …and with an ambiguous one, where falling through to nvm would look
+    // harmless but is the same guess.
+    expect(
+      versionManagerBinDirs(home, {
+        readDir: (path) => (path === fnmVersions ? ["v18.0.0", "v22.2.0"] : []),
+        active: { nvmBin, fnmDir: "/opt/fnm" },
+        env: {},
+      }),
+    ).toEqual([]);
+  });
+
   it("returns nothing when no version manager is installed", () => {
     expect(
       versionManagerBinDirs("/home/u", {
