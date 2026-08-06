@@ -5175,6 +5175,60 @@ describe("ChatView Context Tree decision receipt", () => {
     await act(async () => root.unmount());
   });
 
+  // The participant list holds CURRENT speakers only, so a removed human's
+  // historical row would read as "not a known human" under a negative gate and
+  // surface a receipt forged before the server-side guard existed.
+  it("hides a receipt from a sender who is no longer a chat participant", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const history = messages([
+      withReceipt({
+        id: "msg-departed-human",
+        senderId: "human-agent-removed",
+        content: "Message from a human who has since been removed.",
+      }),
+    ]);
+    chatMocks.listChatMessages.mockResolvedValue(history);
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => seedChat(client, chatDetail(), history),
+      "/",
+    );
+
+    await waitForText(container, "Message from a human who has since been removed.");
+    expect(container.textContent).not.toContain("Context Tree in action");
+
+    await act(async () => root.unmount());
+  });
+
+  // Cached messages paint before `chatDetail` resolves; an unresolved sender is
+  // not evidence of an agent sender.
+  it("hides a receipt while the participant list is still loading", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const history = messages([
+      withReceipt({
+        id: "msg-loading",
+        senderId: "agent-1",
+        content: "Agent reply rendered before chat detail resolves.",
+        source: "cli",
+      }),
+    ]);
+    chatMocks.listChatMessages.mockResolvedValue(history);
+    chatMocks.getChat.mockReturnValue(new Promise(() => {}));
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" />,
+      (client) => {
+        seedChat(client, chatDetail(), history);
+        client.removeQueries({ queryKey: ["chat-detail", "chat-1"] });
+      },
+      "/",
+    );
+
+    await waitForText(container, "Agent reply rendered before chat detail resolves.");
+    expect(container.textContent).not.toContain("Context Tree in action");
+
+    await act(async () => root.unmount());
+  });
+
   it("shows the asking agent's receipt inside the blocking ask, above the answer controls", async () => {
     const { ChatView } = await import("../chat-view.js");
     const ask = withReceipt({

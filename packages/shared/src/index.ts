@@ -472,6 +472,7 @@ export {
   contextDecisionEvidenceSchema,
   contextDecisionSchema,
   MAX_CONTEXT_DECISION_EVIDENCE,
+  MAX_CONTEXT_DECISION_REPO_URL_LENGTH,
   MAX_CONTEXT_DECISION_SUMMARY_LENGTH,
   readContextDecisionMetadata,
 } from "./schemas/context-decision.js";

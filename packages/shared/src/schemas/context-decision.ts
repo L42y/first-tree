@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { canonicalGitRepoIdentity } from "../canonical-git-repo-url.js";
+import { contextTreeRepoSchema } from "./org-settings.js";
 
 /**
  * `metadata.contextDecision` — an agent's self-attributed record that Context
@@ -38,6 +38,7 @@ export type ContextDecisionEffect = z.infer<typeof contextDecisionEffectSchema>;
 /** At most three node paths may jointly influence one choice (skill contract). */
 export const MAX_CONTEXT_DECISION_EVIDENCE = 3;
 export const MAX_CONTEXT_DECISION_SUMMARY_LENGTH = 400;
+export const MAX_CONTEXT_DECISION_REPO_URL_LENGTH = 2_000;
 
 /**
  * One cited passage: the exact repository + commit + Tree-root-relative node
@@ -47,22 +48,30 @@ export const MAX_CONTEXT_DECISION_SUMMARY_LENGTH = 400;
  * be shown and linked without leaking a secret.
  */
 export const contextDecisionEvidenceSchema = z.object({
-  repoUrl: z
-    .string()
-    .min(1)
-    .max(2_000)
-    .refine((value) => canonicalGitRepoIdentity(value) !== null, {
-      message: "repoUrl must be a resolvable git repository URL",
-    })
-    .refine((value) => !hasEmbeddedCredentials(value), {
-      message: "repoUrl must not embed credentials",
-    }),
   /**
-   * The exact commit the passage was read at. Full 40-char SHA-1 is what the
-   * skill specifies; shorter unambiguous prefixes are accepted rather than
-   * failing an otherwise valid final message, and 64 covers SHA-256 repos.
+   * The SAME contract the Context Tree binding itself is validated against.
+   * The producer copies the declared binding repository verbatim, so a second
+   * URL rule here could only drift from it: a stricter one rejects a valid
+   * binding (`ssh://git@host/path` carries a username by design) and a looser
+   * one admits shapes the binding would refuse. `contextTreeRepoSchema` already
+   * requires https / ssh / scp-like transport with a host and repository path,
+   * and rejects embedded passwords, HTTPS usernames, query and fragment
+   * components, control characters, and line separators — so a credential
+   * cannot ride any of the three forms into an immutable message row.
    */
-  commit: z.string().regex(/^[0-9a-fA-F]{7,64}$/, "commit must be a hex git object id (7-64 chars)"),
+  repoUrl: contextTreeRepoSchema.refine((value) => value.length <= MAX_CONTEXT_DECISION_REPO_URL_LENGTH, {
+    message: `repoUrl must be at most ${MAX_CONTEXT_DECISION_REPO_URL_LENGTH} characters`,
+  }),
+  /**
+   * The exact commit the passage was read at. A clone identity resolves an
+   * abbreviation against one repository at one moment, so only a full object id
+   * keeps naming the same immutable version for the life of the stored receipt.
+   * SHA-1 (40) and SHA-256 (64) are the two legal lengths; every producer path
+   * emits one because the receipt is built from `git rev-parse HEAD`.
+   */
+  commit: z
+    .string()
+    .regex(/^([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/, "commit must be a full SHA-1 (40) or SHA-256 (64) object id"),
   /** Tree-root-relative path, e.g. `system/cloud/team/tenancy-and-identity.md`. */
   nodePath: z
     .string()
@@ -100,19 +109,4 @@ export function readContextDecisionMetadata(
   if (metadata?.[CONTEXT_DECISION_METADATA_KEY] === undefined) return null;
   const parsed = contextDecisionSchema.safeParse(metadata[CONTEXT_DECISION_METADATA_KEY]);
   return parsed.success ? parsed.data : null;
-}
-
-/**
- * A URL that carries `user:token@host` would be persisted, rendered, and linked
- * verbatim. Reject it at the write boundary instead.
- */
-function hasEmbeddedCredentials(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed.includes("://")) return false;
-  try {
-    const url = new URL(trimmed);
-    return url.username !== "" || url.password !== "";
-  } catch {
-    return false;
-  }
 }
