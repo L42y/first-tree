@@ -212,7 +212,7 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
 
 function visibleUrlsCredentialFree(texts: readonly string[]): boolean {
   const urls = texts
-    .flatMap((text) => [...text.matchAll(/https?:\/\/[^\s<>\])]+/gu)].map((match) => match[0] ?? ""))
+    .flatMap((text) => [...text.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>\])]+/giu)].map((match) => match[0] ?? ""))
     .filter(Boolean);
 
   return urls.every((value) => {

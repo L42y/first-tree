@@ -5,13 +5,14 @@ import { contextTreeRepoSchema } from "./org-settings.js";
  * `metadata.contextDecision` — an agent's self-attributed record that Context
  * Tree content materially shaped the choice carried by THIS message.
  *
- * Written by the `first-tree-read` skill on the same final `chat send` (or
- * blocking `chat ask`) that contains the affected choice, never as a separate
- * message and never as prose. The receipt is the agent's own report: First Tree
- * preserves the cited repository/commit/path so a reader can inspect the exact
- * source, but it does NOT independently verify that the passage caused the
- * choice. Every consumer must present it as agent-reported, never as a
- * system-verified causal claim.
+ * Legacy agents wrote this receipt on the same final `chat send` (or blocking
+ * `chat ask`) that contained the affected choice. New `first-tree-read`
+ * payloads use a portable note in the message body instead; this schema remains
+ * the compatibility contract for stored history and older agents. The receipt
+ * is the agent's own report: First Tree preserves the cited
+ * repository/commit/path so a reader can inspect the exact source, but it does
+ * NOT independently verify that the passage caused the choice. Every consumer
+ * must present it as agent-reported, never as a system-verified causal claim.
  *
  * Trust boundary: the server strips the key from human senders and rejects a
  * malformed receipt from an agent sender, so a stored receipt is always an

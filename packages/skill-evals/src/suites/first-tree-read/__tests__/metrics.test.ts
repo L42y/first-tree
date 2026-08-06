@@ -594,21 +594,31 @@ ${source}`),
       ],
       expectation,
     );
-    const credentialElsewhere = impactMetrics(
-      [
-        assistantTextEvent(`See https://x-access-token:secret@github.com/example/private.
+    const credentialUrls = [
+      "https://x-access-token:secret@github.com/example/private",
+      "HTTPS://x-access-token:secret@github.com/example/private",
+      "hTtPs://x-access-token:secret@github.com/example/private",
+      "ssh://git:secret@github.com/example/private",
+    ];
+    const credentialResults = credentialUrls.map((url) =>
+      impactMetrics(
+        [
+          assistantTextEvent(`See ${url}.
 
 > **Context Tree impact · Options narrowed**\\
 > The organization-isolation rule ruled out a global shared index.\\
 ${source}`),
-      ],
-      expectation,
+        ],
+        expectation,
+      ),
     );
 
     expect(generic.impactNoteSummaryConceptsOk).toBe(false);
     expect(generic.impactNoteBehaviorOk).toBe(false);
-    expect(credentialElsewhere.impactNoteVisibleUrlsCredentialFree).toBe(false);
-    expect(credentialElsewhere.impactNoteBehaviorOk).toBe(false);
+    for (const result of credentialResults) {
+      expect(result.impactNoteVisibleUrlsCredentialFree).toBe(false);
+      expect(result.impactNoteBehaviorOk).toBe(false);
+    }
   });
 
   it("accepts the complete Chinese conflict template only when the tradeoff remains unresolved", () => {
