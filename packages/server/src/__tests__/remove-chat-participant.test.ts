@@ -26,10 +26,9 @@ import {
   sendToAgent,
   setClientConnection,
 } from "../services/connection-manager.js";
-import { assertCronAgentRouteAccess, createCronJob, loadOutstanding, updateCronJob } from "../services/cron-job.js";
+import { createCronJob, loadOutstanding, lockOwnerChatCronBarrier, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
-import { setChatEngagement } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import { softTerminateRemovedAgentSession, withLiveRemovedSessionFence } from "../services/remove-chat-participant.js";
 import { lockAndValidateScmPersonnelPlacement } from "../services/scm-target-chat-policy.js";
@@ -804,13 +803,30 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     const engAppName = `rm_eng_de_${crypto.randomUUID().slice(0, 8)}`;
     const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
     const engPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, engAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
     try {
+      // Deterministic: engagement holds owner-chat barrier first. New remove waits on
+      // that barrier before touching cron rows, so this txn can FOR UPDATE the job.
+      // Old remove (cron row → barrier) would already hold the cron row and deadlock.
+      let removePromise!: Promise<unknown>;
+      await engPool.transaction(async (tx) => {
+        await lockOwnerChatCronBarrier(tx as never, chatId, runtime.memberId);
+
+        removePromise = removeParticipant(removePool, chatId, runtime.humanAgentUuid, runtime.agent.uuid);
+        await waitForPostgresLockWait(observer, removeAppName);
+
+        const locked = await tx
+          .select({ id: cronJobs.id })
+          .from(cronJobs)
+          .where(eq(cronJobs.id, jobId))
+          .for("update")
+          .limit(1);
+        expect(locked).toHaveLength(1);
+      });
+
       await Promise.race([
-        Promise.all([
-          removeParticipant(removePool, chatId, runtime.humanAgentUuid, runtime.agent.uuid),
-          setChatEngagement(engPool, chatId, runtime.humanAgentUuid, "deleted"),
-        ]),
+        removePromise,
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error("remove vs engagement-delete deadlock timeout")), 15_000);
         }),
@@ -821,6 +837,7 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     } finally {
       await removePool.end();
       await engPool.end();
+      await observer.end();
     }
   });
 
@@ -844,65 +861,47 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
       const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
       try {
-        let releaseCron!: () => void;
-        const cronHeld = new Promise<void>((resolve) => {
-          releaseCron = resolve;
-        });
-        let cronReady!: () => void;
-        const cronReadyP = new Promise<void>((resolve) => {
-          cronReady = resolve;
-        });
+        // Reverse of the weak order: SCM holds membership exclusive first. Create waits
+        // on shared. New create has not taken member/agent yet, so SCM can finish
+        // lockAndValidateScmPersonnelPlacement; old member/agent→membership would deadlock.
+        let createPromise!: Promise<unknown>;
+        await scmPool.transaction(async (tx) => {
+          await lockChatMembershipMutation(tx as never, [chatId]);
 
-        const cronPromise = withCaller
-          ? cronPool.transaction(async (tx) => {
-              await assertCronAgentRouteAccess(tx as never, {
-                chatId,
-                agentId: runtime.agent.uuid,
-                callerMemberId: runtime.memberId,
-                callerHumanAgentId: runtime.humanAgentUuid,
-                afterChatMembershipSharedForTest: async () => {
-                  cronReady();
-                  await cronHeld;
-                },
-              });
-            })
-          : createCronJob(cronPool, {
-              controlChatId: chatId,
-              agentId: runtime.agent.uuid,
-              body: {
-                name: `rm-scm-${label}-${crypto.randomUUID().slice(0, 6)}`,
-                schedule: "0 3 * * *",
-                timezone: "UTC",
-                prompt: "lock order",
-              },
-              afterChatMembershipSharedForTest: async () => {
-                cronReady();
-                await cronHeld;
-              },
-            });
+          createPromise = createCronJob(cronPool, {
+            controlChatId: chatId,
+            agentId: runtime.agent.uuid,
+            body: {
+              name: `rm-scm-${label}-${crypto.randomUUID().slice(0, 6)}`,
+              schedule: "0 3 * * *",
+              timezone: "UTC",
+              prompt: "lock order",
+            },
+            ...(withCaller
+              ? {
+                  callerMemberId: runtime.memberId,
+                  callerHumanAgentId: runtime.humanAgentUuid,
+                }
+              : {}),
+          });
+          await waitForPostgresLockWait(observer, cronAppName);
+
+          const placement = await lockAndValidateScmPersonnelPlacement(tx as never, {
+            humanAgentId: runtime.humanAgentUuid,
+            wakeAgentId: runtime.agent.uuid,
+            candidateChatIds: [chatId],
+          });
+          // Placement may be null for ordinary group chats; completing member/agent
+          // locks under exclusive without deadlock is the gate.
+          void placement;
+        });
 
         await Promise.race([
-          cronReadyP,
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new Error(`${label}: cron shared barrier timeout`)), 10_000);
-          }),
-        ]);
-
-        const scmPromise = lockAndValidateScmPersonnelPlacement(scmPool, {
-          humanAgentId: runtime.humanAgentUuid,
-          wakeAgentId: runtime.agent.uuid,
-          candidateChatIds: [chatId],
-        });
-        await waitForPostgresLockWait(observer, scmAppName);
-        releaseCron();
-
-        const results = await Promise.race([
-          Promise.all([cronPromise, scmPromise]),
+          createPromise,
           new Promise<never>((_, reject) => {
             setTimeout(() => reject(new Error(`${label}: cron vs SCM deadlock timeout`)), 15_000);
           }),
         ]);
-        expect(results).toHaveLength(2);
       } finally {
         await cronPool.end();
         await scmPool.end();
