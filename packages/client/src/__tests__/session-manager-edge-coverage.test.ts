@@ -3356,6 +3356,79 @@ describe("SessionManager edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("preserves terminal notice debt when operator suspend emits failure and then times out", async () => {
+    vi.useFakeTimers();
+    let initialCtx: SessionContext | undefined;
+    const oldHandler = handler({
+      start: vi.fn().mockImplementation(async (message, ctx, token) => {
+        initialCtx = ctx;
+        token?.processingStarted(message);
+        return { sessionId: "established-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      suspend: vi.fn().mockImplementation(() => {
+        if (!initialCtx) throw new Error("initial route context was not captured");
+        initialCtx.emitEvent({
+          kind: "error",
+          payload: {
+            source: "runtime",
+            message: encodeProviderRetryEventMessage({
+              event: "provider_failure_terminal",
+              provider: "codex",
+              scope: "provider_turn",
+              category: "credential",
+              reasonCode: "provider_credential_required",
+              replaySafety: "provider_entered",
+              userSeverity: "error",
+              messagePreview: "refresh token revoked while suspending",
+            }),
+          },
+        });
+        return new Promise<void>(() => {});
+      }),
+      shutdown: vi.fn(() => new Promise<void>(() => {})),
+    });
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-after-timeout" });
+    const sdk = { ...mockSdk(), sendMessage } as unknown as FirstTreeHubSDK;
+    const sm = makeManager({ handlers: [oldHandler], ackEntry, recoverChat, sdk });
+    const i = internals(sm);
+    const chatId = "chat-timeout-terminal-notice-debt";
+    const headEntry = mockEntry({ id: 9110, chatId, messageId: "msg-timeout-terminal-notice" });
+
+    await sm.dispatch(headEntry);
+    await sm.handleCommand(chatId, "session:suspend");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await i.sessions.get(chatId)?.suspending;
+
+    expect(ackEntry).not.toHaveBeenCalled();
+    expect(i.inboxDelivery.snapshot(chatId)).toMatchObject({
+      entries: [{ entryId: 9110, messageId: headEntry.message.id, phase: "owned" }],
+      recoveryDebt: "required",
+    });
+
+    // The first frame opens recovery; the server's redelivery then settles
+    // the retained notice debt without re-entering the provider.
+    await sm.dispatch(headEntry);
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(ackEntry).not.toHaveBeenCalled();
+
+    await sm.dispatch(headEntry);
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledTimes(1));
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(ackEntry).toHaveBeenCalledWith(9110);
+    expect(oldHandler.start).toHaveBeenCalledTimes(1);
+    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    const ackOrder = ackEntry.mock.invocationCallOrder[0];
+    if (noticeOrder === undefined || ackOrder === undefined) throw new Error("expected notice and ACK order");
+    expect(noticeOrder).toBeLessThan(ackOrder);
+    expect(oldHandler.shutdown).not.toHaveBeenCalled();
+
+    await sm.shutdown();
+  });
+
   it("keeps later suspend and resume cycles healthy while the quarantined callback never settles", async () => {
     vi.useFakeTimers();
     const oldHandler = handler({

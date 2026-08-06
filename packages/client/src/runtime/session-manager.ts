@@ -4277,13 +4277,6 @@ export class SessionManager {
           await waitForHandlerSuspend(entry.chatId, () =>
             entry.handler.suspend(opts.reason, { settleProviderEntered: true }),
           );
-          // If settle captured a terminal notice but could not persist it (or
-          // could not claim token settlement), transfer the obligation onto
-          // the inbox ledger so prepareOperatorSuspend / recovery cannot ACK
-          // without durable notice evidence.
-          if (entry.pendingRuntimeFailureNotice) {
-            this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
-          }
           settled = true;
         } catch (err) {
           entry.suspendError = { error: err };
@@ -4294,6 +4287,15 @@ export class SessionManager {
           } catch (logErr) {
             this.config.log.warn({ chatId: entry.chatId, err: logErr }, "operator suspend settlement error");
           }
+        }
+
+        // Suspend may emit a terminal provider-failure event and then either
+        // settle or lose its completion callback. Transfer that durable-notice
+        // obligation before invalidating the generation and before
+        // prepareOperatorSuspend can promote the provider-entered prefix to
+        // ACK-eligible terminal work.
+        if ((settled || timedOut) && entry.pendingRuntimeFailureNotice) {
+          this.inboxDelivery.markNoticeRequiredForProcessingPrefix(entry.chatId, entry.pendingRuntimeFailureNotice);
         }
 
         // Bump adoption generation only after settle. Kick observeFailure
