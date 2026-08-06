@@ -36,11 +36,16 @@ const EFFECT_LABELS: Record<ContextDecisionEffect, string> = {
  * verification:
  *   - the visual is a scoped Context Tree panel, never system/verified card
  *     chrome, and carries no success check or "verified" copy;
- *   - the collapsed state stays on user value; the agent-attribution sentence
- *     lives at the bottom of the expanded sources, where a reader who is
- *     inspecting provenance actually needs it. That weakening is only valid
- *     while the receipt is still attached to its authoring agent's message —
- *     any future cross-message digest must re-state attribution up front.
+ *   - the collapsed state stays on user value; a short agent-attribution note
+ *     lives at the bottom of the expanded sources, where a reader inspecting
+ *     provenance needs it. That weakening is only valid while the receipt is
+ *     still attached to its authoring agent's message — any future
+ *     cross-message digest must re-state attribution up front.
+ *
+ * The whole compact panel is the disclosure target. Source rows lead with a
+ * human-readable node + heading label; exact repository, commit and path stay
+ * in the link/title and only repeat visibly when a safe source link cannot be
+ * built.
  *
  * Rendering is gated on a strict parse upstream (`readContextDecisionMetadata`),
  * so a partial or unknown-version payload shows nothing at all rather than a
@@ -61,6 +66,8 @@ export function ContextDecisionReceipt({
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const conflict = receipt.effect === "conflicted";
+  const sharedVersion = sharedEvidenceVersion(receipt.evidence);
+  const sourceVersionCount = new Set(receipt.evidence.map(evidenceVersionKey)).size;
 
   return (
     <aside
@@ -68,95 +75,91 @@ export function ContextDecisionReceipt({
       className="text-body"
       style={{
         marginTop: "var(--sp-3)",
-        padding: "var(--sp-3)",
         borderRadius: "var(--radius-panel)",
         background: "var(--brand-bg)",
       }}
     >
-      <div className="flex items-start" style={{ gap: "var(--sp-2_5)" }}>
-        <FirstTreeLogo
-          width={14}
-          height={16}
-          style={{ marginTop: "var(--sp-1)", flexShrink: 0, color: "var(--brand)" }}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="text-eyebrow uppercase" style={{ color: "var(--brand-dim)" }}>
-            Context Tree in action
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={detailsId}
+        onClick={() => setOpen((value) => !value)}
+        className="w-full min-h-11 text-left focus-visible:outline-none focus-visible:ring-1 ring-ring ring-offset-1"
+        style={{ padding: "var(--sp-2_5)" }}
+      >
+        <div className="flex items-start" style={{ gap: "var(--sp-2)" }}>
+          <FirstTreeLogo
+            width={12}
+            height={14}
+            style={{ marginTop: "var(--sp-0_5)", flexShrink: 0, color: "var(--brand)" }}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center" style={{ gap: "var(--sp-1_5)" }}>
+              <span className="text-caption font-semibold" style={{ color: "var(--brand-dim)" }}>
+                Context Tree
+              </span>
+              <span
+                className="text-body font-semibold min-w-0 flex-1"
+                style={{ color: conflict ? "var(--warning)" : "var(--fg)" }}
+              >
+                {EFFECT_LABELS[receipt.effect]}
+              </span>
+              {open ? (
+                <ChevronUp aria-hidden className="size-3.5 shrink-0" style={{ color: "var(--fg-3)" }} />
+              ) : (
+                <ChevronDown aria-hidden className="size-3.5 shrink-0" style={{ color: "var(--fg-3)" }} />
+              )}
+            </div>
+            <p className="leading-relaxed" style={{ marginTop: "var(--sp-1)", color: "var(--fg-2)" }}>
+              {receipt.summary}
+            </p>
           </div>
-          <div
-            className="font-semibold"
-            style={{
-              marginTop: "var(--sp-0_5)",
-              color: conflict ? "var(--warning)" : "var(--fg)",
-            }}
-          >
-            {EFFECT_LABELS[receipt.effect]}
+        </div>
+      </button>
+      {open ? (
+        <div
+          id={detailsId}
+          style={{
+            margin: "0 var(--sp-2_5)",
+            padding: "var(--sp-2) 0 var(--sp-2_5)",
+            borderTop: "var(--hairline) solid var(--border-faint)",
+          }}
+        >
+          <ul className="flex flex-col" style={{ listStyle: "none", margin: 0, padding: 0, gap: "var(--sp-1)" }}>
+            {receipt.evidence.map((evidence) => (
+              <li key={`${evidence.repoUrl}@${evidence.commit}:${evidence.nodePath}`}>
+                <EvidenceRow evidence={evidence} gitlabInstanceOrigin={gitlabInstanceOrigin} />
+              </li>
+            ))}
+          </ul>
+          <div className="text-caption" style={{ paddingTop: "var(--sp-1)", color: "var(--fg-3)" }}>
+            {receipt.evidence.length === 1 ? "1 decision" : `${receipt.evidence.length} decisions`}
+            {sharedVersion
+              ? ` · Context Tree version ${sharedVersion.commit.slice(0, 7)}`
+              : ` · ${sourceVersionCount} source versions`}
           </div>
-          <p className="leading-relaxed" style={{ marginTop: "var(--sp-1)", color: "var(--fg-2)" }}>
-            {receipt.summary}
-          </p>
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-controls={detailsId}
-            onClick={() => setOpen((value) => !value)}
-            className="text-caption font-medium flex w-full items-center text-left"
+          <p
+            className="text-caption leading-relaxed"
             style={{
-              marginTop: "var(--sp-1_5)",
-              minHeight: "var(--sp-11)",
-              gap: "var(--sp-2)",
+              marginTop: "var(--sp-2)",
+              paddingTop: "var(--sp-2)",
+              borderTop: "var(--hairline) solid var(--border-faint)",
               color: "var(--fg-3)",
             }}
           >
-            <span className="min-w-0 flex-1">
-              {receipt.evidence.length === 1 ? "1 team decision" : `${receipt.evidence.length} team decisions`}
-            </span>
-            {open ? (
-              <ChevronUp aria-hidden className="size-3.5 shrink-0" />
-            ) : (
-              <ChevronDown aria-hidden className="size-3.5 shrink-0" />
-            )}
-          </button>
-          {open ? (
-            <div id={detailsId}>
-              <div className="text-label font-semibold" style={{ color: "var(--fg)" }}>
-                Team decisions applied to this result
-              </div>
-              <ul
-                className="flex flex-col"
-                style={{ listStyle: "none", margin: "var(--sp-2) 0 0", padding: 0, gap: "var(--sp-2)" }}
-              >
-                {receipt.evidence.map((evidence) => (
-                  <li key={`${evidence.repoUrl}@${evidence.commit}:${evidence.nodePath}`}>
-                    <EvidenceRow evidence={evidence} gitlabInstanceOrigin={gitlabInstanceOrigin} />
-                  </li>
-                ))}
-              </ul>
-              <p
-                className="text-caption leading-relaxed"
-                style={{
-                  marginTop: "var(--sp-3)",
-                  paddingTop: "var(--sp-2_5)",
-                  borderTop: "var(--hairline) solid var(--border-faint)",
-                  color: "var(--fg-3)",
-                }}
-              >
-                Added by the agent. First Tree preserves the cited version for inspection, but does not independently
-                verify causality.
-              </p>
-            </div>
-          ) : null}
+            Influence is agent-reported, not independently verified.
+          </p>
         </div>
-      </div>
+      ) : null}
     </aside>
   );
 }
 
 /**
- * One cited node: the human-readable heading first, then the exact source it
- * came from. The repository shows as its `namespace/repo` identity and the
- * commit as a short prefix — a full URL or 40-char SHA is noise at this size,
- * and the link (when the forge is unambiguous) already carries the exact one.
+ * One cited node: a readable node + heading label links to the exact source.
+ * Raw repository, commit and path are noise when that link is safe, so they
+ * stay in its target/title; an unidentifiable forge falls back to visible
+ * technical provenance instead of a guessed link.
  */
 function EvidenceRow({
   evidence,
@@ -167,26 +170,29 @@ function EvidenceRow({
 }) {
   const identity = canonicalGitRepoIdentity(evidence.repoUrl);
   const href = contextDecisionSourceHref(evidence, gitlabInstanceOrigin);
-  const title = evidence.heading ?? nodeFileName(evidence.nodePath);
-  const provenance = `${identity?.path ?? evidence.repoUrl} · ${evidence.commit.slice(0, 7)}`;
+  const title = evidenceLabel(evidence);
+  const sourceDetails = `${evidence.nodePath} · ${identity?.path ?? evidence.repoUrl} · ${evidence.commit.slice(0, 7)}`;
 
   const body = (
     <>
-      <span className="text-label font-medium block truncate" style={{ color: "var(--fg)" }}>
+      <span className="text-label font-medium block" style={{ color: "var(--fg)" }}>
         {title}
       </span>
-      <span className="mono text-caption block truncate" style={{ color: "var(--fg-2)" }}>
-        {evidence.nodePath}
-      </span>
-      <span className="text-caption block truncate" style={{ color: "var(--fg-3)" }}>
-        {provenance}
-      </span>
+      {!href ? (
+        <span className="mono text-caption block break-all" style={{ color: "var(--fg-3)" }}>
+          {sourceDetails}
+        </span>
+      ) : null}
     </>
   );
 
   if (!href) {
     return (
-      <div className="min-w-0" style={{ minHeight: "var(--sp-11)" }} title={evidence.nodePath}>
+      <div
+        className="min-w-0 flex items-center"
+        style={{ minHeight: "var(--sp-11)" }}
+        title={`${evidence.nodePath} at ${evidence.commit}`}
+      >
         {body}
       </div>
     );
@@ -196,9 +202,10 @@ function EvidenceRow({
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="flex min-w-0 items-start no-underline"
+      aria-label={`${title}, source version ${evidence.commit.slice(0, 7)}`}
+      className="flex min-w-0 items-center no-underline focus-visible:outline-none focus-visible:ring-1 ring-ring ring-offset-1"
       style={{ minHeight: "var(--sp-11)", gap: "var(--sp-2)", color: "inherit" }}
-      title={`${evidence.nodePath} at ${evidence.commit.slice(0, 7)}`}
+      title={`${evidence.nodePath} at ${evidence.commit}`}
     >
       <span className="min-w-0 flex-1">{body}</span>
       <ExternalLink aria-hidden className="size-3.5 shrink-0" style={{ color: "var(--fg-3)" }} />
@@ -230,6 +237,31 @@ export function contextDecisionSourceHref(
   return null;
 }
 
-function nodeFileName(nodePath: string): string {
-  return nodePath.split("/").filter(Boolean).at(-1) ?? nodePath;
+function evidenceLabel(evidence: ContextDecisionEvidence): string {
+  const parts = evidence.nodePath.split("/").filter(Boolean);
+  const fileName = parts.at(-1)?.replace(/\.md$/i, "") ?? evidence.nodePath;
+  const nodeName = humanizeNodeSegment(fileName.toLowerCase() === "node" ? (parts.at(-2) ?? fileName) : fileName);
+  if (!evidence.heading || evidence.heading.toLocaleLowerCase() === nodeName.toLocaleLowerCase()) return nodeName;
+  return `${nodeName} · ${evidence.heading}`;
+}
+
+function humanizeNodeSegment(value: string): string {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toLocaleUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function sharedEvidenceVersion(evidence: ContextDecisionEvidence[]): ContextDecisionEvidence | null {
+  const first = evidence[0];
+  if (!first) return null;
+  const firstVersion = evidenceVersionKey(first);
+  return evidence.every((item) => evidenceVersionKey(item) === firstVersion) ? first : null;
+}
+
+function evidenceVersionKey(evidence: ContextDecisionEvidence): string {
+  const identity = canonicalGitRepoIdentity(evidence.repoUrl);
+  const repo = identity ? `${identity.host}/${identity.path}` : evidence.repoUrl;
+  return `${repo}\u0000${evidence.commit}`;
 }

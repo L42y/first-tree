@@ -7,20 +7,19 @@ import { createDomHarness, type DomHarness } from "../../../test-utils/dom-harne
 import { ContextDecisionReceipt, contextDecisionSourceHref } from "../context-decision-receipt.js";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
+const PRIMARY_EVIDENCE: ContextDecision["evidence"][number] = {
+  repoUrl: "https://github.com/example/context-tree",
+  commit: COMMIT,
+  nodePath: "product/release/rollout-policy.md",
+  heading: "Expansion gates",
+};
 
 function receipt(overrides: Partial<ContextDecision> = {}): ContextDecision {
   return {
     version: 1,
     effect: "constrained",
     summary: "Team rollout policy caps Web at 20%; CLI stays at 5% until the migration guard clears.",
-    evidence: [
-      {
-        repoUrl: "https://github.com/example/context-tree",
-        commit: COMMIT,
-        nodePath: "product/release/rollout-policy.md",
-        heading: "Expansion gates",
-      },
-    ],
+    evidence: [PRIMARY_EVIDENCE],
     ...overrides,
   };
 }
@@ -42,10 +41,11 @@ const toggle = (): HTMLButtonElement => {
 describe("ContextDecisionReceipt", () => {
   it("leads with the Context Tree effect and the agent's concrete summary", () => {
     h.render(<ContextDecisionReceipt receipt={receipt()} />);
-    expect(text()).toContain("Context Tree in action");
+    expect(text()).toContain("Context Tree");
     expect(text()).toContain("Options narrowed");
     expect(text()).toContain("Team rollout policy caps Web at 20%");
-    expect(text()).toContain("1 team decision");
+    expect(text()).not.toContain("1 decision");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
   });
 
   it("names each effect in user language, never the raw enum", () => {
@@ -62,7 +62,7 @@ describe("ContextDecisionReceipt", () => {
     }
   });
 
-  it("keeps sources collapsed until asked, then shows the exact cited source", () => {
+  it("makes the whole compact receipt the disclosure and shows a readable source label", () => {
     h.render(<ContextDecisionReceipt receipt={receipt()} />);
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(text()).not.toContain("product/release/rollout-policy.md");
@@ -70,25 +70,26 @@ describe("ContextDecisionReceipt", () => {
     act(() => toggle().click());
 
     expect(toggle().getAttribute("aria-expanded")).toBe("true");
-    expect(text()).toContain("Expansion gates");
-    expect(text()).toContain("product/release/rollout-policy.md");
-    expect(text()).toContain("example/context-tree · 0123456");
+    expect(text()).toContain("Rollout Policy · Expansion gates");
+    expect(text()).toContain("1 decision · Context Tree version 0123456");
+    expect(text()).not.toContain("product/release/rollout-policy.md");
+    expect(text()).not.toContain("example/context-tree");
     expect(text()).not.toContain(COMMIT);
   });
 
-  it("discloses agent attribution only inside the expanded sources", () => {
+  it("keeps only a short agent-attribution note inside the expanded sources", () => {
     h.render(<ContextDecisionReceipt receipt={receipt()} />);
-    expect(text()).not.toContain("Added by the agent");
+    expect(text()).not.toContain("agent-reported");
 
     act(() => toggle().click());
 
-    expect(text()).toContain("Added by the agent");
-    expect(text()).toContain("does not independently verify causality");
+    expect(text()).toContain("Influence is agent-reported, not independently verified.");
+    expect(text()).not.toContain("First Tree preserves the cited version");
   });
 
   it("makes no verification claim about the confirmed effect", () => {
     h.render(<ContextDecisionReceipt receipt={receipt({ effect: "confirmed" })} />);
-    act(() => toggle().click());
+    expect(text()).toContain("Direction supported");
     expect(text().toLowerCase()).not.toContain("verified");
   });
 
@@ -107,8 +108,52 @@ describe("ContextDecisionReceipt", () => {
     h.render(<ContextDecisionReceipt receipt={receipt({ evidence })} />);
     act(() => toggle().click());
     expect(h.container.querySelector("a")).toBeNull();
-    expect(text()).toContain("a.md");
-    expect(text()).toContain("team/tree · 0123456");
+    expect(text()).toContain("A");
+    expect(text()).toContain("a.md · team/tree · 0123456");
+    expect(text()).toContain("1 decision · Context Tree version 0123456");
+  });
+
+  it("summarizes one shared version once for multiple readable source rows", () => {
+    const evidence = [
+      PRIMARY_EVIDENCE,
+      {
+        repoUrl: "git@github.com:example/context-tree.git",
+        commit: COMMIT,
+        nodePath: "system/cloud/chat/messaging.md",
+        heading: "Decision receipts",
+      },
+    ];
+    h.render(<ContextDecisionReceipt receipt={receipt({ evidence })} />);
+    act(() => toggle().click());
+
+    expect(text()).toContain("Rollout Policy · Expansion gates");
+    expect(text()).toContain("Messaging · Decision receipts");
+    expect(text()).toContain("2 decisions · Context Tree version 0123456");
+    expect(text()).not.toContain("Multiple Context Tree versions");
+  });
+
+  it("keeps different versions in exact links without repeating raw paths in the card", () => {
+    const otherCommit = "fedcba9876543210fedcba9876543210fedcba98";
+    const evidence = [
+      PRIMARY_EVIDENCE,
+      {
+        repoUrl: "https://github.com/example/other-tree",
+        commit: otherCommit,
+        nodePath: "system/cloud/chat/messaging.md",
+        heading: "Decision receipts",
+      },
+    ];
+    h.render(<ContextDecisionReceipt receipt={receipt({ evidence })} />);
+    act(() => toggle().click());
+
+    expect(text()).toContain("Rollout Policy · Expansion gates");
+    expect(text()).toContain("Messaging · Decision receipts");
+    expect(text()).not.toContain("product/release/rollout-policy.md");
+    expect(text()).not.toContain("system/cloud/chat/messaging.md");
+    expect(text()).toContain("2 decisions · 2 source versions");
+    const links = Array.from(h.container.querySelectorAll("a"));
+    expect(links[0]?.getAttribute("aria-label")).toContain("source version 0123456");
+    expect(links[1]?.getAttribute("aria-label")).toContain("source version fedcba9");
   });
 });
 

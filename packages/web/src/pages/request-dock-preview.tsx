@@ -228,7 +228,7 @@ export function RequestDockPreviewPage() {
       </h2>
       <p className="text-body" style={{ color: "var(--fg-3)", margin: "var(--sp-1) 0 var(--sp-4)" }}>
         Rendered where it ships: under the agent result it explains. Collapsed shows what team context did and what
-        changed; expanding reveals the exact cited nodes, repository and commit, plus the agent-attribution note.
+        changed; expanding opens readable source labels with exact-version links and a short agent-attribution note.
       </p>
       {RECEIPTS.map((receipt) => (
         <div

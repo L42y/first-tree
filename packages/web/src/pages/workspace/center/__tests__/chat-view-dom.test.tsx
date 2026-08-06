@@ -5139,7 +5139,7 @@ describe("ChatView Context Tree decision receipt", () => {
       "/",
     );
 
-    await waitForText(container, "Context Tree in action");
+    await waitForText(container, "Options narrowed");
     expect(container.textContent).toContain("Options narrowed");
     expect(container.textContent).toContain("Team rollout policy caps Web at 20%");
     // Collapsed by default: the exact source is one click away, not in the way.
@@ -5170,7 +5170,7 @@ describe("ChatView Context Tree decision receipt", () => {
     );
 
     await waitForText(container, "Agent reply with a broken receipt.");
-    expect(container.textContent).not.toContain("Context Tree in action");
+    expect(container.querySelector('[aria-label="Context Tree influence reported by the agent"]')).toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -5195,7 +5195,7 @@ describe("ChatView Context Tree decision receipt", () => {
     );
 
     await waitForText(container, "Message from a human who has since been removed.");
-    expect(container.textContent).not.toContain("Context Tree in action");
+    expect(container.querySelector('[aria-label="Context Tree influence reported by the agent"]')).toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -5224,7 +5224,7 @@ describe("ChatView Context Tree decision receipt", () => {
     );
 
     await waitForText(container, "Agent reply rendered before chat detail resolves.");
-    expect(container.textContent).not.toContain("Context Tree in action");
+    expect(container.querySelector('[aria-label="Context Tree influence reported by the agent"]')).toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -5270,7 +5270,7 @@ describe("ChatView Context Tree decision receipt", () => {
     );
 
     await waitForText(container, "Question from a sender with no resolved type?");
-    expect(container.textContent).not.toContain("Context Tree in action");
+    expect(container.querySelector('[aria-label="Context Tree influence reported by the agent"]')).toBeNull();
 
     await act(async () => root.unmount());
   });
@@ -5296,7 +5296,7 @@ describe("ChatView Context Tree decision receipt", () => {
     );
 
     await waitForText(container, "Expand Web to 20% now, or hold for 24 hours?");
-    await waitForText(container, "Context Tree in action");
+    await waitForText(container, "Options narrowed");
     const takeover = container.querySelector<HTMLElement>('[aria-label^="Question from"]');
     if (!takeover) throw new Error("ask takeover missing");
     const receipt = takeover.querySelector<HTMLElement>('[aria-label="Context Tree influence reported by the agent"]');
