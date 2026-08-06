@@ -222,6 +222,19 @@ describe("Context project resolver", () => {
     });
   });
 
+  it("routes Claude sessions without a stable project directory as pathless", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "claude-session-cwd-"));
+    expect(resolveProviderProject("claude-code", { cwd }, {})).toMatchObject({
+      kind: "pathless",
+      project: { kind: "pathless" },
+      source: "claude_project_dir_unavailable",
+    });
+    expect(resolveProviderProject("claude-code", { cwd }, { CLAUDE_PROJECT_DIR: join(cwd, "missing") })).toMatchObject({
+      kind: "pathless",
+      source: "claude_project_dir_unavailable",
+    });
+  });
+
   it("uses valid Claude project roots and preserves an explicit setup root", () => {
     const root = mkdtempSync(join(tmpdir(), "claude-setup-root-"));
     const cwd = join(root, "nested");

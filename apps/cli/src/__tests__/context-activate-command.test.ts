@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   readInstall: vi.fn(),
   resolveRelease: vi.fn(),
   assertPayloadHealthy: vi.fn(),
+  consumeNextSession: vi.fn(),
+  resolveProject: vi.fn(),
+  activateExternal: vi.fn(),
+  renderResponse: vi.fn(),
 }));
 
 vi.mock("../core/output.js", () => ({ print: { hook: mocks.hook } }));
@@ -24,6 +28,16 @@ vi.mock("../core/context-integration/release.js", () => ({
 }));
 vi.mock("../core/context-integration/adapter-payload-health.js", () => ({
   assertContextAdapterPayloadHealthy: mocks.assertPayloadHealthy,
+}));
+vi.mock("../core/context-integration/adapter-observation.js", () => ({
+  consumeContextAdapterNextSessionObligation: mocks.consumeNextSession,
+}));
+vi.mock("../core/context-integration/client-preflight.js", () => ({
+  resolveSessionContextProject: mocks.resolveProject,
+}));
+vi.mock("../core/context-integration/activation.js", () => ({
+  activateExternalContext: mocks.activateExternal,
+  renderProviderSessionStartResponse: mocks.renderResponse,
 }));
 
 import { runContextActivate } from "../commands/context/activate.js";
@@ -55,6 +69,9 @@ describe("context activate command", () => {
       command: "first-tree-dev --json context adapter-sync --provider codex --challenge opaque",
     });
     mocks.assertPayloadHealthy.mockReturnValue(undefined);
+    mocks.resolveProject.mockReturnValue({ kind: "pathless", project: { kind: "pathless" } });
+    mocks.activateExternal.mockResolvedValue({ outcome: "connected" });
+    mocks.renderResponse.mockReturnValue({ continue: true, systemMessage: "connected" });
   });
 
   afterEach(() => {
@@ -163,5 +180,32 @@ describe("context activate command", () => {
     const response = mocks.hook.mock.calls[0]?.[0];
     expect(response.systemMessage).toContain("needs attention");
     expect(response.hookSpecificOutput.additionalContext).toContain("context repair");
+  });
+
+  it("consumes the Claude next-session marker before automatic routing", async () => {
+    mocks.readInstall.mockReturnValue({
+      accountClientId: "client_1234abcd",
+      channel: "dev",
+      loaderProtocolVersion: 1,
+      adapterVersion: "1.0.2",
+      adapterDigest: "sha256:current",
+    });
+    mocks.resolveRelease.mockReturnValue({
+      manifest: {
+        providers: { "claude-code": { adapterVersion: "1.0.2", adapterDigest: "sha256:current" } },
+      },
+    });
+
+    await runContextActivate(context({ provider: "claude-code", adapterDigest: "sha256:current" }), {
+      readHookInput: () => ({ session_id: "session-new", cwd: "/work" }),
+    });
+
+    expect(mocks.consumeNextSession).toHaveBeenCalledWith({
+      provider: "claude-code",
+      adapterDigest: "sha256:current",
+    });
+    expect(mocks.resolveProject).toHaveBeenCalledAfter(mocks.consumeNextSession);
+    expect(mocks.activateExternal).toHaveBeenCalledOnce();
+    expect(mocks.hook).toHaveBeenCalledWith({ continue: true, systemMessage: "connected" });
   });
 });

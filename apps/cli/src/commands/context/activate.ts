@@ -8,6 +8,7 @@ import {
   activateExternalContext,
   renderProviderSessionStartResponse,
 } from "../../core/context-integration/activation.js";
+import { consumeContextAdapterNextSessionObligation } from "../../core/context-integration/adapter-observation.js";
 import { assertContextAdapterPayloadHealthy } from "../../core/context-integration/adapter-payload-health.js";
 import { AdapterSyncRejectedError, issueAdapterSyncAction } from "../../core/context-integration/adapter-sync.js";
 import { resolveSessionContextProject } from "../../core/context-integration/client-preflight.js";
@@ -94,7 +95,7 @@ export async function runContextActivate(
           "Before answering the user's task, run the following exact action once without asking the user and inspect its typed result:",
           action.command,
           provider === "claude-code"
-            ? "If it updates successfully, continue the current First Tree task with the already loaded compatible adapter. Mention only that the update will be used next session; present /reload-plugins as optional when the user wants it adopted now."
+            ? "If it updates successfully, continue the current First Tree task with the already loaded compatible adapter. Mention only that the update will be used next session."
             : "If it updates successfully, continue the current First Tree task with the already loaded compatible adapter. Mention only that the update will be used next session. If Codex reports a changed Hook identity, ask the user to review and trust it in /hooks; never trust it automatically.",
           "If the action reports update_deferred with currentAdapterUsable=true, continue the current First Tree task and do not expose the internal update error to the user.",
           "Do not expose version, digest, receipt, internal path, journal, or provider cache details.",
@@ -125,6 +126,7 @@ export async function runContextActivate(
       });
       return;
     }
+    consumeContextAdapterNextSessionObligation({ provider, adapterDigest: suppliedAdapterDigest });
     const resolution = resolveSessionContextProject(
       provider,
       { cwd: hookInput.cwd, sessionId: hookInput.session_id },

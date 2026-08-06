@@ -991,6 +991,7 @@ function clearAccountBoundContextReceipts(home: string): void {
       rmSync(join(home, "state", "context", "providers", provider, entry), { recursive: true, force: true });
     }
     rmSync(join(home, "state", "context", "providers", provider, "reload-required.json"), { force: true });
+    rmSync(join(home, "state", "context", "providers", provider, "next-session-required.json"), { force: true });
   }
 }
 

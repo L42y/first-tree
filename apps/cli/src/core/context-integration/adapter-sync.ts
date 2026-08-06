@@ -117,7 +117,7 @@ export function synchronizeContextAdapter(
 ): {
   updated: true;
   provider: ContextIntegrationProvider;
-  currentSessionAdoption: "reload_optional" | "next_session";
+  currentSessionAdoption: "next_session";
 } {
   return withAccountStateMutationLock(() => {
     assertContextMutationCanStart();
@@ -163,8 +163,7 @@ export function synchronizeContextAdapter(
     return {
       updated: true as const,
       provider: driver.provider,
-      currentSessionAdoption:
-        driver.provider === "claude-code" ? ("reload_optional" as const) : ("next_session" as const),
+      currentSessionAdoption: "next_session" as const,
     };
   });
 }

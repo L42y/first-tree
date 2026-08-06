@@ -24,7 +24,7 @@ export function runContextAdapterSync(context: CommandContext): void {
       ...result,
       message:
         provider === "claude-code"
-          ? "First Tree Context was updated. It will be used next session; /reload-plugins can adopt it now."
+          ? "First Tree Context was updated. It will be used in the next Claude session."
           : "First Tree Context was updated. Review /hooks if Codex asks you to trust the updated Hook; otherwise it is guaranteed for the next session.",
     });
   } catch (error) {

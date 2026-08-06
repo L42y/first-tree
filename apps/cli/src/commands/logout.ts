@@ -274,6 +274,7 @@ export async function runLogout(opts: {
         rmSync(join(home, "state", "context", "providers", provider, state), { recursive: true, force: true });
       }
       rmSync(join(home, "state", "context", "providers", provider, "reload-required.json"), { force: true });
+      rmSync(join(home, "state", "context", "providers", provider, "next-session-required.json"), { force: true });
     }
   }
   print.line(`\n  Logged out. Run \`${channelConfig.binName} login <code>\` to reconnect.\n\n`);

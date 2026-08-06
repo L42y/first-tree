@@ -49,7 +49,7 @@ describe("lazy Context adapter sync", () => {
       repairOperation: repair,
     });
 
-    expect(result).toMatchObject({ updated: true, currentSessionAdoption: "reload_optional" });
+    expect(result).toMatchObject({ updated: true, currentSessionAdoption: "next_session" });
     expect(repair).toHaveBeenCalledOnce();
     expect(() =>
       synchronizeContextAdapter(driver("claude-code"), action.challenge, {
@@ -213,7 +213,6 @@ function prepareOldCompatibleInstall() {
     adapterDigest: `sha256:${"1".repeat(64)}`,
     marketplaceName: "first-tree-dev",
     pluginName: "first-tree-context",
-    adoptionGeneration: "a".repeat(48),
     materializedInvocation: "first-tree-dev",
     materializedPayloadDigest: payload.pluginDigest,
     materializedMarketplaceDigest: payload.marketplaceDigest,
@@ -281,11 +280,9 @@ function prepareProviderPayload(provider: "claude-code" | "codex") {
   const providerCache = join(home, "provider-cache", provider);
   mkdirSync(join(plugin, "bin"), { recursive: true });
   writeFileSync(join(marketplace, "marketplace.json"), "{}\n");
-  for (const launcher of ["context-session-start", "context-observe-loaded"]) {
-    const path = join(plugin, "bin", launcher);
-    writeFileSync(path, "#!/bin/sh\nexit 0\n");
-    chmodSync(path, 0o700);
-  }
+  const launcher = join(plugin, "bin", "context-session-start");
+  writeFileSync(launcher, "#!/bin/sh\nexit 0\n");
+  chmodSync(launcher, 0o700);
   cpSync(plugin, providerCache, { recursive: true });
   return {
     pluginDigest: contextPluginTreeDigest(plugin),
