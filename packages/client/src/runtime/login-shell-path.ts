@@ -10,6 +10,22 @@ import { protectedRootsOnThisHost, type ReadLink, resolveOutsideProtectedRoots }
  */
 const DELIM = "__FT_SHELL_PATH__";
 
+/**
+ * Brackets a second section carrying the version-manager variables the login
+ * shell exported. Reading an environment variable costs no filesystem access at
+ * all, which is why these can be captured here while a symlink target cannot.
+ *
+ * They matter because the daemon's own environment never sees them: `fnm env` /
+ * `nvm.sh` run inside the user's rc files. `$NVM_BIN` is nvm's ACTIVE version's
+ * bin dir and is a real directory, so it survives the probe shell and keeps the
+ * selected version winning after its per-session entry is gone. `$FNM_DIR` is a
+ * custom fnm data root the hard-coded defaults would otherwise miss entirely.
+ */
+const ENV_DELIM = "__FT_SHELL_ENV__";
+
+/** The version-manager environment the login shell reported, if it reported any. */
+type ProbedShellEnv = { fnmDir?: string; nvmBin?: string };
+
 /** Injectable seam for hermetic tests — returns the raw shell stdout, or null on failure. */
 export type RunShell = () => string | null;
 
@@ -84,17 +100,31 @@ export function getLoginShellPathDirs(runShell: RunShell = defaultRunShell, read
     memo = { dirs: [] };
     return memo.dirs;
   }
-  const dirs = probe(runShell);
-  if (dirs) {
+  const probed = probe(runShell);
+  if (probed) {
     const roots = protectedRootsOnThisHost();
-    const live =
-      roots.length === 0
-        ? dirs
-        : dirs
-            .map((dir) => resolveOutsideProtectedRoots(dir, roots, readLink))
-            .filter((dir): dir is string => dir !== null);
+    const vet = (dir: string): string | null =>
+      roots.length === 0 ? dir : resolveOutsideProtectedRoots(dir, roots, readLink);
+    const live = probed.dirs.map(vet).filter((dir): dir is string => dir !== null);
+
+    // Stable fallback, in precedence order: the version the shell actually
+    // selected (nvm reports it as a real directory that outlives the probe),
+    // then every installed version newest-first. `$FNM_DIR` comes from the
+    // shell too — the daemon's own environment never sees a root exported by
+    // `fnm env` inside an rc file.
     const home = process.env.HOME && process.env.HOME.length > 0 ? process.env.HOME : homedir();
-    const fallback = versionManagerBinDirs(home, { readLink }).filter((dir) => !live.includes(dir));
+    const env = probed.env.fnmDir ? { ...process.env, FNM_DIR: probed.env.fnmDir } : process.env;
+    const seen = new Set(live);
+    const fallback: string[] = [];
+    for (const dir of [
+      ...(probed.env.nvmBin ? [probed.env.nvmBin] : []),
+      ...versionManagerBinDirs(home, { readLink, env }),
+    ]) {
+      const vetted = vet(dir);
+      if (vetted === null || seen.has(vetted)) continue;
+      seen.add(vetted);
+      fallback.push(vetted);
+    }
     memo = { dirs: [...live, ...fallback] };
     return memo.dirs;
   }
@@ -121,7 +151,7 @@ export function resetLoginShellPathDirsCache(): void {
  * `null` on any failure (spawn error / timeout / non-zero exit / missing stdout /
  * parse miss) so the caller can distinguish "ran ok" from "must retry".
  */
-function probe(runShell: RunShell): string[] | null {
+function probe(runShell: RunShell): { dirs: string[]; env: ProbedShellEnv } | null {
   let output: string | null;
   try {
     output = runShell();
@@ -129,7 +159,9 @@ function probe(runShell: RunShell): string[] | null {
     return null;
   }
   if (!output) return null;
-  return parsePathFromShellOutput(output);
+  const dirs = parsePathFromShellOutput(output);
+  if (dirs === null) return null;
+  return { dirs, env: parseShellEnv(output) };
 }
 
 /**
@@ -192,7 +224,10 @@ export function buildProbeScript(platform: NodeJS.Platform = process.platform): 
   const posix =
     `printf %s ${DELIM}; ` +
     `set -f; IFS=:; for d in $PATH; do [ -n "$d" ] || continue; ${body}; done; ` +
-    `printf %s ${DELIM}`;
+    `printf %s ${DELIM}; ` +
+    // Pure variable expansion — no path is touched, so this is safe on every
+    // platform and needs no vetting until the values are used.
+    `printf %s ${ENV_DELIM}; printf "%s\n%s\n" "$FNM_DIR" "$NVM_BIN"; printf %s ${ENV_DELIM}`;
   return `/bin/sh -c '${posix}'`;
 }
 
@@ -226,6 +261,18 @@ function pickShell(): string {
  * (delimiters absent) so the caller treats it as a retryable failure rather than
  * a genuine empty PATH.
  */
+function parseShellEnv(output: string): ProbedShellEnv {
+  const start = output.indexOf(ENV_DELIM);
+  if (start < 0) return {};
+  const end = output.indexOf(ENV_DELIM, start + ENV_DELIM.length);
+  if (end < 0) return {};
+  const [fnmDir, nvmBin] = output.slice(start + ENV_DELIM.length, end).split("\n");
+  return {
+    ...(fnmDir ? { fnmDir } : {}),
+    ...(nvmBin ? { nvmBin } : {}),
+  };
+}
+
 function parsePathFromShellOutput(output: string): string[] | null {
   const start = output.indexOf(DELIM);
   if (start < 0) return null;

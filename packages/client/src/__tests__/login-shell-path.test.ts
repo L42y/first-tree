@@ -254,6 +254,37 @@ describe("getLoginShellPathDirs", () => {
     expect(getLoginShellPathDirs(() => wrap([join(root, "a")]))).toEqual([]);
   });
 
+  // The teardown case as it actually happens on macOS: the shell emits the raw
+  // multishell path, the link is gone by the time resolution runs, and the
+  // custom `$FNM_DIR` that produced it exists ONLY in the login shell — the
+  // daemon's own environment never saw `fnm env` run. Both the active selection
+  // and the custom root have to survive the shell for the provider to be found.
+  it.skipIf(process.platform === "win32")("recovers a shell-only FNM_DIR after the multishell link is gone", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-shellenv-")));
+    const home = join(root, "home");
+    const fnmDir = join(root, "custom-fnm");
+    const activeBin = join(fnmDir, "node-versions", "v20.11.0", "installation", "bin");
+    const newerBin = join(fnmDir, "node-versions", "v22.2.0", "installation", "bin");
+    const multishell = join(root, "fnm_multishells", "77_1", "bin");
+    mkdirSync(activeBin, { recursive: true });
+    mkdirSync(newerBin, { recursive: true });
+    mkdirSync(home, { recursive: true });
+
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    // The daemon environment has no FNM_DIR at all — only the shell reports it.
+    vi.stubEnv("FNM_DIR", "");
+
+    const dirs = getLoginShellPathDirs(
+      () => `${DELIM}${multishell}${DELIM}${"__FT_SHELL_ENV__"}${fnmDir}\n${"__FT_SHELL_ENV__"}`,
+    );
+
+    // The dead per-session entry is kept lexically (it simply fails later
+    // existence checks), and the custom root's versions follow it.
+    expect(dirs).toContain(newerBin);
+    expect(dirs).toContain(activeBin);
+  });
+
   it("keeps protected-looking dirs on non-macOS hosts", () => {
     Object.defineProperty(process, "platform", { value: "linux" });
     vi.stubEnv("HOME", "/home/tester");

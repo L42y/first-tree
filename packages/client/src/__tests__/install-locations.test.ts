@@ -125,6 +125,102 @@ describe("versionManagerBinDirs protected-root vetting (macOS)", () => {
   });
 });
 
+// Vetting the directory a candidate came from is not enough, and neither is
+// trusting the source that produced it. The check has to happen on the complete
+// candidate, at the last moment before `stat` / `access` follows it.
+describe("executable candidates are vetted, whatever produced them (macOS)", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
+
+  function macRoot(): { root: string; home: string } {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ft-cand-")));
+    const home = join(root, "home");
+    mkdirSync(join(home, "Documents"), { recursive: true });
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.stubEnv("HOME", home);
+    return { root, home };
+  }
+
+  function executable(path: string): string {
+    mkdirSync(join(path, ".."), { recursive: true });
+    writeFileSync(path, "#!/bin/sh\n");
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("rejects a well-known dir whose ancestor is symlinked into a protected folder", () => {
+    const { home } = macRoot();
+    // `~/.local` -> `~/Documents/hidden`, so `~/.local/bin/codex` resolves inside
+    // Documents even though the spelling of the well-known dir looks ordinary.
+    mkdirSync(join(home, "Documents", "hidden", "bin"), { recursive: true });
+    executable(join(home, "Documents", "hidden", "bin", "codex"));
+    symlinkSync(join(home, "Documents", "hidden"), join(home, ".local"));
+
+    expect(
+      findCodexExecutableOnPath(
+        { HOME: home, PATH: "" },
+        {
+          platform: "darwin",
+          pathDelimiter: ":",
+          loginShellPathDirs: () => [],
+          wellKnownDirs: () => [join(home, ".local", "bin")],
+          desktopAppDirs: () => [],
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects an executable that is itself a symlink into a protected folder", () => {
+    const { home } = macRoot();
+    // The directory is entirely ordinary; only the leaf points into Documents.
+    const safeBin = join(home, "tools", "bin");
+    mkdirSync(safeBin, { recursive: true });
+    executable(join(home, "Documents", "codex"));
+    symlinkSync(join(home, "Documents", "codex"), join(safeBin, "codex"));
+
+    expect(
+      findCodexExecutableOnPath(
+        { HOME: home, PATH: "" },
+        {
+          platform: "darwin",
+          pathDelimiter: ":",
+          loginShellPathDirs: () => [safeBin],
+          wellKnownDirs: () => [],
+          desktopAppDirs: () => [],
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("still resolves an ordinary executable, and one symlinked outside protected roots", () => {
+    const { root, home } = macRoot();
+    const plainBin = join(home, "tools", "bin");
+    const linkedBin = join(home, "linked", "bin");
+    mkdirSync(plainBin, { recursive: true });
+    mkdirSync(linkedBin, { recursive: true });
+    const real = executable(join(root, "elsewhere", "codex"));
+    symlinkSync(real, join(linkedBin, "codex"));
+    executable(join(plainBin, "codex"));
+
+    for (const dir of [plainBin, linkedBin]) {
+      expect(
+        findCodexExecutableOnPath(
+          { HOME: home, PATH: "" },
+          {
+            platform: "darwin",
+            pathDelimiter: ":",
+            loginShellPathDirs: () => [dir],
+            wellKnownDirs: () => [],
+            desktopAppDirs: () => [],
+          },
+        ),
+      ).toBe(join(dir, "codex"));
+    }
+  });
+});
+
 describe("version-manager discovery after a multishell teardown", () => {
   // The exact regression #1314 fixed, re-checked against the mechanism that
   // replaced it. fnm puts a per-session SYMLINK on `$PATH`; it is gone once the

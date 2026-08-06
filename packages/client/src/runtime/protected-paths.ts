@@ -128,3 +128,24 @@ export function resolveOutsideProtectedRootsOnThisHost(dir: string, readLink: Re
   if (roots.length === 0) return dir;
   return resolveOutsideProtectedRoots(dir, roots, readLink);
 }
+
+/**
+ * The gate every AUTOMATIC executable check must pass before it calls `stat` or
+ * `access` on a candidate.
+ *
+ * Vetting the containing directory is not enough, and neither is vetting the
+ * source it came from. `~/.local/bin` is no safer a spelling than a
+ * version-manager root — `~/.local`, or `bin`, or the `codex` entry inside it
+ * can each be a symlink into `~/Documents` — and `statSync` / `accessSync`
+ * follow that link, which IS the protected access. So the check happens on the
+ * complete candidate path, at the last moment before the syscall, and applies
+ * uniformly to every source: daemon `PATH`, fixed well-known dirs,
+ * provider-specific dirs, login-shell dirs, version roots, and desktop-app
+ * candidates.
+ *
+ * An explicit operator override (`CLAUDE_CODE_EXECUTABLE`) is user-directed
+ * rather than automatic and is deliberately not gated here.
+ */
+export function automaticCandidateAllowed(candidate: string, readLink?: ReadLink): boolean {
+  return resolveOutsideProtectedRootsOnThisHost(candidate, readLink) !== null;
+}
