@@ -187,6 +187,30 @@ describe("first-tree eval shim", () => {
           }),
         ]),
       );
+
+      const currentState = "Current state remains visible while work continues.";
+      const updateArgv = ["chat", "update", "--description", "-"];
+      const update = spawnSync(join(paths.binDir, "first-tree"), updateArgv, {
+        cwd: paths.workspacePath,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          FIRST_TREE_EVAL_EVENTS: paths.eventsPath,
+          FIRST_TREE_EVAL_PHASE: "model",
+        },
+        input: currentState,
+      });
+
+      expect(update.status).toBe(0);
+      expect(readEvents(paths.eventsPath)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            argv: updateArgv,
+            body: currentState,
+            type: "first_tree_call",
+          }),
+        ]),
+      );
     } finally {
       rmSync(repoRoot, { force: true, recursive: true });
     }

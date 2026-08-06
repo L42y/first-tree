@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.5.0
+version: 0.6.0
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -202,9 +202,10 @@ If tree content conflicts with the user's instruction, follow the tree
 constraint and surface the conflict. If the tree says nothing relevant, say so
 briefly and proceed from repo evidence.
 
-### 7. Record material decision influence
+### 7. Show material decision influence
 
-Attach a small `contextDecision` receipt only when all of these conditions hold:
+Append one compact, visible Context Tree impact note only when all of these
+conditions hold:
 
 1. The agent read a normal-content passage containing a current decision,
    constraint, rationale, or cross-domain relationship. Opening a file is not
@@ -215,62 +216,106 @@ Attach a small `contextDecision` receipt only when all of these conditions hold:
 4. The final visible message shows how the passage confirmed, constrained,
    redirected, or conflicted with that choice.
 
-Do not attach a receipt for root or domain files used only as navigation,
+Do not append a note for root or domain files used only as navigation,
 `AGENTS.md`, skill or workflow instructions, pure ownership routing,
 archive/proposal/supporting material alone, a Tree mention without decision
 influence, or a task for which the Tree had no relevant decision-bearing
-content. Do not emit `effect: none`.
+content. Do not emit `effect: none`, `contextDecision` metadata, receipt JSON,
+or a separate receipt message.
 
-When the task ends with a visible First Tree `chat send` that contains the
-affected choice, add one receipt under the top-level `contextDecision` metadata
-key on that same command. If Tree context exposes an unresolved conflict and
-the task correctly ends with a blocking `chat ask`, attach the receipt to that
-same ask instead. `chat send` and `chat ask` merge recipient mentions,
-attachments, and body-origin metadata; supply only the new
-`contextDecision` key. For example, pass the JSON below through
-`--metadata '<json>'` on the same command that sends the final body. Do not send
-a separate receipt message, put the receipt only in prose, or reconstruct other
-metadata:
+Use the same visible note for every consumer:
 
-```json
-{
-  "contextDecision": {
-    "version": 1,
-    "effect": "constrained",
-    "summary": "The existing organization-isolation constraint ruled out a global shared index.",
-    "evidence": [
-      {
-        "repoUrl": "https://github.com/example/context-tree",
-        "commit": "0123456789abcdef0123456789abcdef01234567",
-        "nodePath": "system/cloud/team/tenancy-and-identity.md",
-        "heading": "Organization isolation"
-      }
-    ]
-  }
-}
+- In managed First Tree Chat, append it to the body of the same final
+  `chat send` that carries the affected choice. If the Tree exposes an
+  unresolved conflict and the task correctly ends with a blocking `chat ask`,
+  append it to that question body instead. Do not pass `contextDecision`
+  metadata.
+- In BYO sessions, append it to the authoring coding agent's native final
+  response.
+
+Never add the note to progress messages, status updates, or a second message.
+Keep the outcome first and place the note at the very end of the authored final
+response or blocking question.
+
+Choose exactly one effect in this precedence order, then show its human label:
+
+1. `conflicted` → `Conflict surfaced` — exposed a conflict that still requires
+   resolution or escalation;
+2. `redirected` → `Approach changed` — changed the intended approach;
+3. `constrained` → `Options narrowed` — ruled out an option or narrowed the
+   acceptable solution or implementation boundary;
+4. `confirmed` → `Direction supported` — removed material uncertainty and
+   justified keeping the choice without changing its boundary.
+
+Match the note's language to the surrounding final response. Localize every
+visible scaffolding term, not only the effect label. Use these fixed labels for
+English and Chinese so different agents produce one recognizable format:
+
+| Category | English | Chinese |
+| --- | --- | --- |
+| `conflicted` | `Conflict surfaced` | `发现约束冲突` |
+| `redirected` | `Approach changed` | `改变方案路径` |
+| `constrained` | `Options narrowed` | `收窄可选范围` |
+| `confirmed` | `Direction supported` | `支持当前方向` |
+
+Use `Context Tree impact` and `Source` / `Sources` in English. Use
+`Context Tree 影响` and `来源` in Chinese. For other languages, translate the
+complete scaffolding and preserve each category's meaning. Never expose the
+enum key.
+
+Leave one blank line between the preceding answer and the note. Write the note
+as one Markdown blockquote with exactly three **logical Markdown lines** and
+information levels: the effect, one objective sentence naming the concrete
+impact, and the inspectable source. Natural wrapping at narrow display widths
+is expected; never truncate or weaken the impact or source merely to keep three
+physical display lines. End the first two logical lines with a backslash so
+Markdown renders a portable hard line break without trailing whitespace; do
+not use HTML. For example:
+
+```markdown
+> **Context Tree impact · Options narrowed**\
+> The organization-isolation rule ruled out a global shared index.\
+> **Source** · [Organization isolation](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/system/cloud/team/tenancy-and-identity.md)
 ```
 
-Use exactly one effect. Choose the first matching category in this precedence
-order so periodic reports remain comparable:
+Keep the middle sentence concrete and task-specific. Name the Tree decision or
+constraint and its specific impact on the choice. For `redirected`,
+`constrained`, or `confirmed`, say which option it changed, ruled out, narrowed,
+or supported. For `conflicted`, name the two incompatible constraints and the
+unresolved tradeoff; do not imply that the plan changed or the conflict was
+resolved. Use objective language such as "The organization-isolation rule
+ruled out..." rather than first-person or generic language such as "I used
+Context Tree...". Keep it to one sentence and roughly 160 English characters or
+80 CJK characters.
 
-1. `conflicted` — exposed a conflict that still requires resolution or
-   escalation;
-2. `redirected` — changed the intended approach;
-3. `constrained` — ruled out an option or narrowed the acceptable solution or
-   implementation boundary;
-4. `confirmed` — removed material uncertainty and justified keeping the choice
-   without changing its boundary.
+For an unresolved conflict in a Chinese response, the complete note looks like:
 
-Keep `summary` to one concrete sentence. Cite at most three Tree-root-relative
-normal node paths that jointly influenced the same choice. `heading` is
-optional; omit it when the relevant heading cannot be named reliably.
+```markdown
+> **Context Tree 影响 · 发现约束冲突**\
+> 固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\
+> **来源** · [发布安全门槛](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/operations/release/safety-gates.md)
+```
 
-Every evidence row must identify the repository and exact commit that supplied
-the passage. Store `repoUrl` as the credential-free binding repository exactly
-as the Server activation receipt or managed workspace briefing declares it;
-never substitute a local transport URL. Report consumers must compare this
-field through First Tree's canonical repository identity rather than raw string
-equality. Never persist a credential-bearing remote URL.
+Show one to three sources on the final line. In English, use bold `Source` for
+one and bold `Sources` for more than one. In Chinese, use bold `来源` for either
+count. Follow the label with ` · ` and separate multiple Markdown links with
+the same delimiter.
+Build each readable label from the node's frontmatter title plus the relevant
+heading when that adds meaning, for example `Rollout Policy · Expansion gates`.
+For a root `NODE.md`, use the root title or the relevant heading — never display
+`Node`. When two cited labels would be identical, prefix the nearest meaningful
+parent title, for example `Release · Rollout Policy` and
+`Billing · Rollout Policy`.
+
+When the repository forge is unambiguous, link the readable label to the exact
+commit and Tree-root-relative node path. Never link to a mutable branch. If an
+exact source link cannot be constructed safely, omit that source; never invent
+a link or expose a raw repository URL, node path, or commit in the visible note.
+Cite at most three normal node paths that jointly influenced the same choice.
+Use the credential-free binding repository exactly as the activation receipt or
+managed workspace briefing declares it; never substitute a local transport URL.
+Never place a credential-bearing remote URL anywhere in the visible response.
+Source links must not contain a query or fragment.
 
 For a BYO task, use the activation receipt's binding repository and commit. Its
 detached snapshot is already exact and remote-backed. For a managed workspace,
@@ -297,14 +342,15 @@ stable commit before attributing influence. If the briefing has no unambiguous
 binding branch, the latest hierarchy refresh cannot be shown to have refreshed
 the exact binding-branch remote-tracking ref, that ref or its owning fetch remote
 is missing or ambiguous, or the canonical repository identities do not match,
-do not attribute the briefing's `repoUrl`. The checkout's current branch or
-upstream is never a fallback authority. If repository, branch, commit, remote
-reachability, or path identity cannot be established safely, omit the evidence
-row and do not attach the receipt when no valid evidence remains.
+do not use the briefing's repository as source authority. The checkout's
+current branch or upstream is never a fallback authority. If repository,
+branch, commit, remote reachability, or path identity cannot be established
+safely, omit the source and do not append the note when no valid source remains.
 
-The receipt is the agent's durable, reviewable attribution. It is not
-server-verified proof of causality, and the final prose must not claim that it
-is.
+The note is the authoring agent's explanation inside its own response, not a
+First Tree verification of causality. Do not add a long attribution disclaimer,
+a verified/success claim, system-style framing, emoji, badge, divider, or
+collapsible detail.
 
 ## Output Expectations
 
@@ -315,9 +361,9 @@ Keep the user-facing result concise:
   relationships that affect the task
 - for BYO Read, report the selected Team, binding, and exact commit when it
   helps the user verify which task snapshot governed the answer
-- when the strict decision-influence test passes, attach the receipt to the
-  same final First Tree `chat send`, or to the same blocking `chat ask` for an
-  unresolved conflict, instead of adding receipt prose or another message
+- when the strict decision-influence test passes, append the same compact
+  visible note to the authored final response for managed and BYO consumers;
+  for an unresolved conflict, append it to the blocking question body
 - avoid restating every node; carry forward only what changes how you act
 
 Never modify tree files with this skill.

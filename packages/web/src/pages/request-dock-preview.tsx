@@ -72,9 +72,9 @@ const COMMIT_CARD: GithubEventCard = {
 };
 
 /**
- * Agent-reported Context Tree receipts, one per observable effect. Same shape
- * the `first-tree-read` skill attaches to a real final send, so this preview
- * exercises the production component rather than a look-alike.
+ * Legacy agent-reported Context Tree receipts, one per observable effect. The
+ * reader skill now writes a portable message-body note, but stored history and
+ * older agents still exercise this production compatibility component.
  */
 const RECEIPTS: ContextDecision[] = [
   {
