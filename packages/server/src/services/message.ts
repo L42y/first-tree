@@ -480,10 +480,10 @@ export type SendMessageOptions = {
    */
   allowContextReviewRun?: boolean;
   /**
-   * Trusted-internal capability for creating an App-directed GitHub task run.
-   * The `teamAgentTask` marker and `githubTask*` metadata namespace carry
-   * recipient-bound App comment publication authority and are rejected at
-   * every ordinary message boundary.
+   * Trusted-internal capability for creating an automatically routed GitHub
+   * task run. The `teamAgentTask` marker and `githubTask*` metadata namespace
+   * carry recipient-bound App comment publication authority and are rejected
+   * at every ordinary message boundary.
    */
   allowGithubTaskRun?: boolean;
   /**

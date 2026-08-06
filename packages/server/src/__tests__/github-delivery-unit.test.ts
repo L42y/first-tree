@@ -109,8 +109,6 @@ function providerTaskTarget(): ScmAudienceTarget<GithubProviderTaskContext> {
       kind: "provider_task_target",
       humanAgentId: "human-task",
       wakeAgentId: "delegate-task",
-      reason: "mentioned",
-      externalUsername: "test-app-slug",
       providerContext: { kind: "github_app_task", agentUuid: "delegate-task" },
     },
   };

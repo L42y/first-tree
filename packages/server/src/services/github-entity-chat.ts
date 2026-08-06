@@ -204,11 +204,12 @@ export async function resolveTargetChat(
     /** GitHub action on `eventType`. Same scope as `eventType`. */
     action: string;
     /**
-     * Whether the calling audience target came from an explicit mention /
-     * involve in the event payload (vs. a pre-existing subscription). Only
-     * mention-driven targets are allowed to create a fresh chat from a
-     * creation webhook (`pull_request.opened` / `issues.opened`); subscription
-     * fall-through is rejected so opened events can't proliferate chats.
+     * Historical name for fresh-chat authority. `true` means the calling
+     * audience target is either an explicit personnel involve or a
+     * provider-owned task capability (vs. a pre-existing subscription). Only
+     * those targets may create a fresh chat from a creation webhook
+     * (`pull_request.opened` / `issues.opened`); subscription fall-through is
+     * rejected so opened events cannot proliferate chats.
      *
      * Required, not optional: the guard is fail-closed by design so any
      * future caller that forgets to plumb the signal lands in the safer
@@ -335,13 +336,12 @@ async function resolveTargetChatInTransaction(
   }
 
   // (b.5) Creation-event guard. `pull_request.opened` / `issues.opened` must
-  // never invent a chat for a target that didn't explicitly @-mention an
-  // agent. By the time we get here, (a) miss + (b) miss already proves the
-  // entity is brand-new from the mapping's perspective; the only legitimate
-  // reason to enter (c) is an explicit mention/involve. Subscription
-  // fall-through (or any future caller that forgets to set the flag) gets
-  // rejected with `null` so the delivery loop drops the event instead of
-  // proliferating chats. See proposals discussion: opened-webhook intercept.
+  // never invent a chat from a subscription fall-through. By the time we get
+  // here, (a) miss + (b) miss already proves the entity is brand-new from the
+  // mapping's perspective; the only legitimate reason to enter (c) is an
+  // explicit personnel involve or a provider-owned task capability. A caller
+  // without that authority gets `null` so the delivery loop drops the event
+  // instead of proliferating chats.
   if (isCreationEvent(eventType, action) && !isMentionMatched) {
     return null;
   }

@@ -290,10 +290,10 @@ describe("SettingsGithubPage — Context round-trip return", () => {
   });
 });
 
-describe("SettingsGithubPage — task routing", () => {
+describe("SettingsGithubPage — automatic handling", () => {
   it.each([
     ["#connection", "#connection", "GitHub connection"],
-    ["#task-routing", "#task-routing", "GitHub task routing"],
+    ["#task-routing", "#task-routing", "GitHub automatic handling"],
   ])("positions and focuses the %s section", async (hash, selector, label) => {
     const { SettingsGithubPage } = await import("../github.js");
     const { container, root } = await renderAt(`/settings/integrations/github${hash}`, <SettingsGithubPage />);
@@ -310,12 +310,21 @@ describe("SettingsGithubPage — task routing", () => {
   it("places GitHub Task Agent directly below the GitHub connection and updates its assignment", async () => {
     const { SettingsGithubPage } = await import("../github.js");
     const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
-    await waitForText(container, "Task routing");
+    await waitForText(container, "Automatic handling");
 
     const connection = await waitForSelector<HTMLElement>(container, "#connection");
     const taskRouting = await waitForSelector<HTMLElement>(container, "#task-routing");
     expect(connection.compareDocumentPosition(taskRouting) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(taskRouting.textContent).toContain(
+      "Choose an Agent to handle Issue and pull request activity from connected GitHub repositories.",
+    );
     expect(taskRouting.textContent).toContain("GitHub Task Agent");
+    expect(taskRouting.textContent).toContain(
+      "automatically handles Issue and pull request activity outside the Context Tree repository and posts final replies as the First Tree GitHub App",
+    );
+    expect(taskRouting.textContent).toContain(
+      "Context Tree activity uses Context Reviewer. These roles must use different Agents.",
+    );
 
     const controls = await waitForSelector<HTMLElement>(taskRouting, '[data-github-task-agent-controls="admin"]');
     expect(controls.parentElement?.style.cssText).toContain("border-top");
@@ -349,7 +358,8 @@ describe("SettingsGithubPage — task routing", () => {
     });
     const { SettingsGithubPage } = await import("../github.js");
     const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
-    await waitForText(container, "Dev Agent One handles GitHub App mentions");
+    await waitForText(container, "Dev Agent One automatically handles Issue and pull request activity");
+    expect(container.textContent).toContain("posts final replies as the First Tree GitHub App");
 
     expect(container.querySelector('[aria-label="GitHub Task Agent"]')).toBeNull();
     expect(teamAgentMocks.getTeamAgentCandidates).not.toHaveBeenCalled();
@@ -365,7 +375,7 @@ describe("SettingsGithubPage — task routing", () => {
     const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
     await waitForText(
       container,
-      "A deployment operator must configure the GitHub App login before App-target delegation can run.",
+      "A deployment operator must configure the GitHub App login before automatic GitHub handling can run.",
     );
 
     const taskRouting = await waitForSelector<HTMLElement>(container, "#task-routing");

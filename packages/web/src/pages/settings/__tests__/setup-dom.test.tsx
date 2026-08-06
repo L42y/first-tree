@@ -346,7 +346,7 @@ describe("Settings Setup overview", () => {
       "Context Tree",
     ]);
     expect(view.host.querySelector('[data-setup-row="repository-automation"]')?.textContent).toContain(
-      "Repository events, identity, and GitHub task routing.",
+      "Repository events, identity, and automatic GitHub handling.",
     );
     expect(view.host.querySelector('[data-setup-row="automatic-review"]')).toBeNull();
     expect(view.host.querySelector('[data-setup-row="work-access"] .lucide-message-circle')).not.toBeNull();
@@ -1374,7 +1374,7 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("redirects the retired Team Agent hash to GitHub task routing", async () => {
+  it("redirects the retired Team Agent hash to GitHub automatic handling", async () => {
     const view = await renderSettingsSetupPage("/settings/setup#team-agent");
     await waitForText(view.host, "/settings/integrations/github#task-routing");
 
