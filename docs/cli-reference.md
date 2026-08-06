@@ -572,8 +572,12 @@ first-tree chat archive
 # most one deliverable). Default 2–4 short sentences; 1500 chars is a ceiling,
 # not a target. Leave out stage history, plan/progress lists, implementation
 # detail, and process metadata (SHAs, test counts, reviewers, sub-agents, CI
-# jobs, commands). It renders as Markdown at the top of the chat's right
-# sidebar; agents also read it via `chat list` to self-locate (see the agent
+# jobs, commands). It renders as Markdown between the chat header and the
+# message stream on the web (collapsed to its first line until expanded) and as
+# the timeline's Current state card on mobile (short values in full, long ones
+# clamped) — so keep a one-line value to the headline alone and put any next
+# step on its own line;
+# agents also read it via `chat list` to self-locate (see the agent
 # briefing's "Chat Topic & Description" for the full authoring contract). Keep
 # human decisions OUT of it — raise `chat ask <human>` for those. Owner-gated:
 # the chat's creator may update it, and when
@@ -581,8 +585,8 @@ first-tree chat archive
 # creator left) every worker agent counts as the owner; a non-owner agent in a
 # chat whose agent creator is still present is refused with 403.
 first-tree chat update --topic "review PR #916"
-first-tree chat update --description "PR #916 is ready to merge — no blocking findings left. Next: hand it back to the author for the squash merge."
-first-tree chat update --topic "ship plan" --description "Ship plan drafted and ready for QA to check. Next: hand it to QA."
+first-tree chat update --description "PR #916 is ready to merge — no blocking findings left."
+first-tree chat update --topic "ship plan" --description "The ship plan is drafted and ready for QA to check."
 first-tree chat update --clear-description
 # A one-line --description whose newlines are written as literal `\n` is rejected
 # before the write: shell quotes do not expand `\n`, so it would persist and

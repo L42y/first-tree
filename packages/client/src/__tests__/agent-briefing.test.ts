@@ -762,7 +762,11 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     // Wrapped prose, so every phrase assertion tolerates a newline.
     expect(chatTopic).toContain("Rewrite it in place");
     expect(chatTopic).toMatch(/from\s+blank every time \(history is the log\);\s+never append/);
+    // The standalone first line is a physical-line rule: the desktop collapsed
+    // bar and the mobile card preview only `descriptionFirstLine()`.
     expect(chatTopic).toMatch(/first line stands\s+alone/);
+    expect(chatTopic).toMatch(/on\s+its own physical line/);
+    expect(chatTopic).toMatch(/collapsed chat bar previews only it/);
     expect(chatTopic).toMatch(/2–4\s+short sentences/);
     expect(chatTopic).toMatch(/1500 characters is a hard\s+ceiling,\s+not a\s+target/);
 

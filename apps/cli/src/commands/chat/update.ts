@@ -20,7 +20,8 @@ function describe(): string {
     "place from blank each time, leading with the current result and what it " +
     "means for the reader, then only the context needed to trust it (2–4 short " +
     "sentences by default). Markdown-supported, surfaced to the agent each turn, " +
-    "shown by default at the top of the chat's right sidebar, and used to locate " +
+    "shown on the web between the chat header and the message stream and on mobile " +
+    "as the timeline's Current state card, and used to locate " +
     "the chat via `chat list`. Keep stage history, process metadata, and human " +
     "decisions OUT of the description — raise `chat ask <human>` for a " +
     "decision. By default acts on the " +

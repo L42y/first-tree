@@ -86,8 +86,8 @@ You are running inside **First Tree**, a messaging platform for agent teams.
 - Teammates are reached through the **outbox**: `<%- bin %> chat send`,
   `<%- bin %> chat ask`, and `<%- bin %> chat update`.
 - Human message: finish with one `<%- bin %> chat send <human>` unless blocked
-  on a human decision; then use `<%- bin %> chat ask <human>`. Progress/status
-  uses `<%- bin %> chat update --description`.
+  on a human decision; then use `<%- bin %> chat ask <human>`. A changed
+  current state uses `<%- bin %> chat update --description`.
 - Agent handoff: `<%- bin %> chat send <agent>`; no courtesy acknowledgements.
 - Rich markdown bodies go through `-F <file>`, `-F -`, or
   `--description -`; never `JSON.stringify` a chat body.
@@ -159,7 +159,7 @@ reply transport for a human-directed turn.
 |---|---|---|
 | Human asks / reports something and no answer is needed from them | `<%- bin %> chat send <human> -f markdown -F <file>` | Send exactly one self-contained reply before ending the turn. |
 | Your next step depends on a human decision, approval, or answer | `<%- bin %> chat ask <human> -F <file>` | Blocking questions never ride inside plain `chat send`; route by dependency, not importance. |
-| Progress/status during longer work | `<%- bin %> chat update --description -` | Update status instead of streaming repeated plain sends. |
+| The current state changed during longer work | `<%- bin %> chat update --description -` | Rewrite the Summary instead of streaming repeated plain sends. |
 | Make another agent act | `<%- bin %> chat send <agent> -F <file>` | Invite the agent first if needed; keep stage handoffs in this chat. |
 | Agent wake-up with nothing new to act on | no send | Do not send courtesy acknowledgements to agents. |
 
@@ -282,8 +282,9 @@ leave it stable.
 
 Write the Summary as current state, not a work log. Rewrite it in place from
 blank every time (history is the log); never append. The first line stands
-alone: the current result or judgment plus what it means for the reader. Keep
-only what makes that line trustworthy — in flight, the single most recent next
+alone — the current result or judgment plus what it means for the reader, on
+its own physical line, because the collapsed chat bar previews only it. Below
+it keep only what makes it trustworthy: in flight, the single most recent next
 step; blocked, what it waits on and what that holds up; finished, the main
 conclusion and at most one deliverable. Default to 2–4 short sentences in the
 session language; Markdown is supported, no heading template is required, and
