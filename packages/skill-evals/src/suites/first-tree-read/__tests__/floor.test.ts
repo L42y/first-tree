@@ -75,7 +75,7 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("Use `Context Tree impact` and `Source` / `Sources` in English");
     expect(skill).toContain("Use\n`Context Tree 影响` and `来源` in Chinese");
     expect(skill).toMatch(
-      /`conflicted` \| `Conflict surfaced` \| `发现冲突`[\s\S]+`redirected` \| `Approach changed` \| `方案已调整`[\s\S]+`constrained` \| `Options narrowed` \| `选项已收窄`[\s\S]+`confirmed` \| `Direction supported` \| `当前方向得到支持`/,
+      /`conflicted` \| `Conflict surfaced` \| `发现约束冲突`[\s\S]+`redirected` \| `Approach changed` \| `改变方案路径`[\s\S]+`constrained` \| `Options narrowed` \| `收窄可选范围`[\s\S]+`confirmed` \| `Direction supported` \| `支持当前方向`/,
     );
     expect(skill).toContain("For `conflicted`, name the two incompatible constraints and the\nunresolved tradeoff");
     expect(skill).toContain("do not imply that the plan changed or the conflict was\nresolved");
@@ -127,7 +127,7 @@ describe("first-tree-read floor contract", () => {
     expect(noteLines[2]?.match(/\/blob\/([0-9a-f]+)\//u)?.[1]).toMatch(/^[0-9a-f]{40}$/);
 
     const markdownBlocks = [...skill.matchAll(/```markdown\n([\s\S]*?)\n```/gu)].map((match) => match[1] ?? "");
-    const conflictBlock = markdownBlocks.find((block) => block.includes("Context Tree 影响 · 发现冲突")) ?? "";
+    const conflictBlock = markdownBlocks.find((block) => block.includes("Context Tree 影响 · 发现约束冲突")) ?? "";
     expect(conflictBlock.split("\n")).toHaveLength(3);
     expect(conflictBlock).toContain("固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定");
     expect(conflictBlock).toContain("**来源** · [发布安全门槛]");

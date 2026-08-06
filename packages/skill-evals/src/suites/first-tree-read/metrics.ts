@@ -72,10 +72,10 @@ const EFFECT_LABELS: Record<ImpactNoteLanguage, Record<ImpactNoteEffect, string>
     redirected: "Approach changed",
   },
   zh: {
-    conflicted: "发现冲突",
-    confirmed: "当前方向得到支持",
-    constrained: "选项已收窄",
-    redirected: "方案已调整",
+    conflicted: "发现约束冲突",
+    confirmed: "支持当前方向",
+    constrained: "收窄可选范围",
+    redirected: "改变方案路径",
   },
 };
 

@@ -253,10 +253,10 @@ English and Chinese so different agents produce one recognizable format:
 
 | Category | English | Chinese |
 | --- | --- | --- |
-| `conflicted` | `Conflict surfaced` | `发现冲突` |
-| `redirected` | `Approach changed` | `方案已调整` |
-| `constrained` | `Options narrowed` | `选项已收窄` |
-| `confirmed` | `Direction supported` | `当前方向得到支持` |
+| `conflicted` | `Conflict surfaced` | `发现约束冲突` |
+| `redirected` | `Approach changed` | `改变方案路径` |
+| `constrained` | `Options narrowed` | `收窄可选范围` |
+| `confirmed` | `Direction supported` | `支持当前方向` |
 
 Use `Context Tree impact` and `Source` / `Sources` in English. Use
 `Context Tree 影响` and `来源` in Chinese. For other languages, translate the
@@ -291,7 +291,7 @@ Context Tree...". Keep it to one sentence and roughly 160 English characters or
 For an unresolved conflict in a Chinese response, the complete note looks like:
 
 ```markdown
-> **Context Tree 影响 · 发现冲突**\
+> **Context Tree 影响 · 发现约束冲突**\
 > 固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\
 > **来源** · [发布安全门槛](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/operations/release/safety-gates.md)
 ```
