@@ -1480,6 +1480,9 @@ export const createPiHandler: HandlerFactory = (config) => {
         branch: contextTreeBranch,
       },
       markInitComplete: false,
+      atProjectionEntry: () => {
+        assertLifecycleGeneration(generation, "prepared_refresh_projection");
+      },
       beforeBriefing: async () => {
         assertLifecycleGeneration(generation, "prepared_refresh_skills");
       },
@@ -1833,10 +1836,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
       },
-      beforeProjection: async () => {
-        // Lifecycle fence after chat-context fetch and before Managed Skills
-        // projection — suspend during the fetch must not enter reconcile /
-        // workspace mutation when the fetch later settles.
+      atProjectionEntry: () => {
+        // Sync fence at projection entry (first statement of
+        // projectManagedWorkspace, before any await) — closes the microtask
+        // window after chat-context fetch where suspend could otherwise advance
+        // generation before reconcile. Must stay synchronous (no async/await).
         assertLifecycleGeneration(generation, "prepare_before_projection");
       },
       beforeBriefing: async () => {

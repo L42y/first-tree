@@ -48,15 +48,17 @@ export type PrepareManagedSessionParams = {
   payloadResolved: boolean;
   contextTree: ContextTreeCoordinates;
   /**
-   * Optional provider-owned checkpoint after chat-context fetch and before
-   * Managed Skills projection. Callers use this for lifecycle fences (e.g. Pi
-   * generation) so a suspended generation cannot enter reconcile / workspace
-   * mutation after an in-flight fetch settles.
+   * Optional provider-owned **synchronous** checkpoint at Managed Skills
+   * projection entry (first statement inside {@link projectManagedWorkspace},
+   * before any await). Must not return a Promise: an `await` boundary here
+   * would reopen a microtask window where `suspend()` can advance lifecycle
+   * generation before reconcile begins. Callers use this for Pi generation
+   * fences after chat-context fetch.
    */
-  beforeProjection?: (args: {
+  atProjectionEntry?: (args: {
     workspace: string;
     chatContext: ChatContext | undefined;
-  }) => void | Promise<void>;
+  }) => void;
   /**
    * Optional provider-owned work after Managed Skills settle and before the
    * shared briefing / bootstrap / init-complete sentinel. Callers use this for
@@ -104,6 +106,12 @@ export type ProjectManagedWorkspaceParams = {
    * skipped the sentinel must pass false explicitly (no default footgun).
    */
   markInitComplete: boolean;
+  /**
+   * Optional provider-owned **synchronous** checkpoint at projection entry —
+   * invoked before any await (including Managed Skills reconcile). Must not
+   * return a Promise; see {@link PrepareManagedSessionParams.atProjectionEntry}.
+   */
+  atProjectionEntry?: (args: { workspace: string }) => void;
   /**
    * Optional provider-owned checkpoint after Managed Skills settle and before
    * briefing / bootstrap / sentinel. Used for lifecycle fences and landing
@@ -156,8 +164,15 @@ export async function projectManagedWorkspace(
     payloadResolved,
     contextTree,
     markInitComplete,
+    atProjectionEntry,
     beforeBriefing,
   } = params;
+
+  // Sync fence — must run before any await so a queued suspend after a prior
+  // await boundary cannot enter reconcile on a stale generation.
+  if (atProjectionEntry) {
+    atProjectionEntry({ workspace });
+  }
 
   const sourceRepos = declaredSourceRepos(workspace, payload);
 
@@ -204,15 +219,18 @@ export async function projectManagedWorkspace(
  *
  * 1. acquire the per-agent home;
  * 2. best-effort raw chat context (degrades to none on failure);
- * 3. optional provider-owned `beforeProjection` work (lifecycle fence);
- * 4. declare the payload's source repos;
- * 5. settle Managed Skills — this gates provider admission, so a reconcile
+ * 3. declare the payload's source repos (after sync `atProjectionEntry`);
+ * 4. settle Managed Skills — this gates provider admission, so a reconcile
  *    that cannot prove discovery safe throws here and leaves the delivery as
  *    unacked recovery debt;
- * 6. optional provider-owned `beforeBriefing` work (e.g. landing sandbox env);
- * 7. build the briefing from *that same* reconcile result;
- * 8. run the shared agent bootstrap;
- * 9. mark the workspace init-complete.
+ * 5. optional provider-owned `beforeBriefing` work (e.g. landing sandbox env);
+ * 6. build the briefing from *that same* reconcile result;
+ * 7. run the shared agent bootstrap;
+ * 8. mark the workspace init-complete.
+ *
+ * Lifecycle fences that must close the post-await / pre-reconcile window use
+ * synchronous {@link PrepareManagedSessionParams.atProjectionEntry} (invoked
+ * as the first statement of {@link projectManagedWorkspace}, before any await).
  *
  * Preparation failure remains pre-provider: no provider process/session is
  * opened here, and no new ACK authority is created.
@@ -226,16 +244,12 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     payload,
     payloadResolved,
     contextTree,
-    beforeProjection,
+    atProjectionEntry,
     beforeBriefing,
   } = params;
 
   const workspace = acquireAgentHome(workspaceRoot);
   const chatContext = await fetchChatContextOrLog(sessionCtx);
-
-  if (beforeProjection) {
-    await beforeProjection({ workspace, chatContext });
-  }
 
   const projected = await projectManagedWorkspace({
     sessionCtx,
@@ -246,6 +260,11 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     payloadResolved,
     contextTree,
     markInitComplete: true,
+    atProjectionEntry: atProjectionEntry
+      ? () => {
+          atProjectionEntry({ workspace, chatContext });
+        }
+      : undefined,
     beforeBriefing: beforeBriefing
       ? async (args) => {
           await beforeBriefing({ ...args, chatContext });

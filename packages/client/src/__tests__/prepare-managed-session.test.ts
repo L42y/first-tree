@@ -396,10 +396,10 @@ describe("prepareManagedSession", () => {
     expect(markWorkspaceInitComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("runs beforeProjection after chat context and before skills projection", async () => {
+  it("runs atProjectionEntry sync before skills projection", async () => {
     const prepareManagedSession = await loadPrepare();
-    const beforeProjection = vi.fn(async () => {
-      callOrder.push("beforeProjection");
+    const atProjectionEntry = vi.fn(() => {
+      callOrder.push("atProjectionEntry");
     });
     const beforeBriefing = vi.fn(async () => {
       callOrder.push("beforeBriefing");
@@ -421,16 +421,16 @@ describe("prepareManagedSession", () => {
       },
       payloadResolved: false,
       contextTree: { path: null, repoUrl: null, branch: null },
-      beforeProjection,
+      atProjectionEntry,
       beforeBriefing,
     });
 
-    expect(beforeProjection).toHaveBeenCalledTimes(1);
+    expect(atProjectionEntry).toHaveBeenCalledTimes(1);
     expect(beforeBriefing).toHaveBeenCalledTimes(1);
     expect(callOrder).toEqual([
       "acquire",
       "chatContext",
-      "beforeProjection",
+      "atProjectionEntry",
       "sourceRepos",
       "skills",
       "beforeBriefing",
@@ -441,7 +441,7 @@ describe("prepareManagedSession", () => {
     ]);
   });
 
-  it("leaves skills/briefing/bootstrap/sentinel untouched when beforeProjection throws", async () => {
+  it("leaves skills/briefing/bootstrap/sentinel untouched when atProjectionEntry throws", async () => {
     const prepareManagedSession = await loadPrepare();
 
     await expect(
@@ -461,14 +461,14 @@ describe("prepareManagedSession", () => {
         },
         payloadResolved: false,
         contextTree: { path: null, repoUrl: null, branch: null },
-        beforeProjection: async () => {
-          callOrder.push("beforeProjection");
+        atProjectionEntry: () => {
+          callOrder.push("atProjectionEntry");
           throw new Error("lifecycle cancelled at prepare_before_projection");
         },
       }),
     ).rejects.toThrow(/lifecycle cancelled at prepare_before_projection/);
 
-    expect(callOrder).toEqual(["acquire", "chatContext", "beforeProjection"]);
+    expect(callOrder).toEqual(["acquire", "chatContext", "atProjectionEntry"]);
     expect(declaredSourceRepos).not.toHaveBeenCalled();
     expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
     expect(buildAgentBriefing).not.toHaveBeenCalled();
