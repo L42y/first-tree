@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { gradingFailureMessages } from "../../../core/grading.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
-import { buildGrading } from "../summary.js";
+import { buildGrading, driftNote } from "../summary.js";
 import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport } from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
@@ -810,6 +810,38 @@ describe("first-tree-read metrics pass criteria", () => {
     expect(sentForTerminalCase.impactNoteBehaviorOk).toBe(true);
     expect(sentForTerminalCase.impactNoteOutsideBlockingAsk).toBe(true);
     expect(sentForTerminalCase.managedFinalTransportOk).toBe(true);
+  });
+
+  it("reports the transport a case actually requires, not a fixed one", () => {
+    const body = `Answer.
+
+> **How Context Tree affected this work**\\
+> **Options narrowed:** The isolation rule ruled out a shared index.\\
+> **Context Tree source:** [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    };
+    // An ask-contract case that wrongly finished with `send` must be told that
+    // `ask` was required — the previous fixed wording said the opposite.
+    const wrongSendForAskCase = impactMetrics(managedMessage(body), expectation, "ask");
+    const askNote = driftNote(wrongSendForAskCase, true, "managed") ?? "";
+    expect(askNote).toContain("requires chat ask");
+    expect(askNote).not.toContain("requires chat send");
+    expect(askNote).toContain("final managed delivery was send");
+
+    // A placement-only failure must name the failing predicate, otherwise every
+    // displayed shape/authority field reads true with no visible cause.
+    const noteInsideAsk = impactMetrics(
+      managedMessage(body, ["chat", "ask", "gandy2025", "-F", "question.md"]),
+      expectation,
+      "ask",
+    );
+    expect(noteInsideAsk.impactNoteBehaviorOk).toBe(false);
+    expect(driftNote(noteInsideAsk, true, "managed") ?? "").toContain("outside blocking ask=false");
   });
 
   it.each([

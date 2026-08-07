@@ -772,6 +772,8 @@ export function deriveMetrics(
     legacyReadActivationCalls,
     modelFirstTreeCommandsOk,
     managedFinalTransportOk,
+    managedFinalTransportKind: finalAuthoringKind,
+    managedTransportExpected: managedTransportExpectation,
     readActivationCalls,
     readActivationSucceeded,
     readRouteCalls,

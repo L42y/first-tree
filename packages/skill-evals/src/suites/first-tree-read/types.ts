@@ -96,6 +96,10 @@ export type EvalMetrics = {
   byoSnapshotDetached: boolean;
   byoSnapshotExactHeadConsistent: boolean;
   managedFinalTransportOk: boolean;
+  /** The delivery actually used by the last successful authoring call. */
+  managedFinalTransportKind: ManagedTransport | null;
+  /** The delivery this case's task contract requires, when it declares one. */
+  managedTransportExpected: ManagedTransport | null;
   legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;
