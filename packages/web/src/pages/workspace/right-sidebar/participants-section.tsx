@@ -127,9 +127,11 @@ export function ParticipantsSection({
   const removeMut = useMutation({
     mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
     onSuccess: (_data, target) => {
-      // Close first; keep `removeDialogLabel` until `onOpenChange(false)` so the
-      // exit animation never flashes an empty target name.
+      // Close the dialog and drop the actionable target immediately so a second
+      // Confirm during Radix exit presence cannot re-fire DELETE. Keep only the
+      // display label for the ~200ms close animation (never `Remove ""?`).
       setRemoveDialogOpen(false);
+      setRemoveTarget(null);
       queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
       queryClient.invalidateQueries({ queryKey: ["activity"] });
       onAdded();
@@ -145,6 +147,9 @@ export function ParticipantsSection({
       });
     },
   });
+
+  // Confirm stays inert once the actionable target is cleared (post-success exit).
+  const removeConfirmLocked = removeMut.isPending || removeTarget === null;
 
   return (
     <section style={{ borderBottom: "var(--hairline) solid var(--border-faint)" }}>
@@ -212,6 +217,7 @@ export function ParticipantsSection({
           removeMut.mutate(removeTarget);
         }}
         pending={removeMut.isPending}
+        locked={removeConfirmLocked}
       />
     </section>
   );
@@ -304,12 +310,15 @@ function RemoveParticipantConfirmDialog({
   label,
   onConfirm,
   pending,
+  locked,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   label: string;
   onConfirm: () => void;
   pending: boolean;
+  /** True while mutating or once the actionable target has been cleared. */
+  locked: boolean;
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -333,7 +342,7 @@ function RemoveParticipantConfirmDialog({
             type="button"
             variant="destructive"
             onClick={onConfirm}
-            disabled={pending}
+            disabled={locked}
             aria-label={pending ? "Removing participant" : "Confirm remove participant"}
           >
             {pending ? "Removing…" : "Remove"}

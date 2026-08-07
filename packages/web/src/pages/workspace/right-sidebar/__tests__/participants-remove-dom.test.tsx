@@ -74,6 +74,30 @@ vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
   ),
 }));
 
+/** Presence-like Dialog: once opened, keep children mounted after close so
+ *  post-success exit races (second Confirm) are deterministic in happy-dom. */
+vi.mock("../../../../components/ui/dialog.js", async () => {
+  const React = await import("react");
+  function Dialog({ open, children }: { open: boolean; children: React.ReactNode }) {
+    const wasOpen = React.useRef(false);
+    if (open) wasOpen.current = true;
+    if (!open && !wasOpen.current) return null;
+    return (
+      <div data-testid="dialog-root" data-open={String(open)}>
+        {children}
+      </div>
+    );
+  }
+  return {
+    Dialog,
+    DialogContent: ({ children }: { children: React.ReactNode }) => <div role="dialog">{children}</div>,
+    DialogHeader: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    DialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
+    DialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  };
+});
+
 function participant(id: string, type: "human" | "agent", displayName = id): ChatParticipantDetail {
   return {
     agentId: id,
@@ -296,6 +320,47 @@ describe("ParticipantsSection remove affordance", () => {
     await flush();
     expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
     expect(document.body.textContent).not.toContain('Remove ""?');
+  });
+
+  it("does not re-fire DELETE when Confirm is activated again after success during exit", async () => {
+    let release!: () => void;
+    meChatMocks.removeMeChatParticipant.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    await renderSection({
+      participants: [participant("agent-1", "agent", "Byte"), participant("human-self", "human", "Me")],
+    });
+    await flush();
+
+    await click(buttonByLabel(removeLabel("Byte")));
+    await click(buttonByLabel("Confirm remove participant"));
+    expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    await flush();
+
+    // Dialog mock keeps content mounted (exit presence). Label may remain, but
+    // the actionable target is cleared — Confirm stays locked; second activation
+    // must not enqueue another DELETE.
+    expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
+    expect(document.body.textContent).toContain('Remove "Byte"?');
+    expect(document.body.textContent).not.toContain('Remove ""?');
+
+    const confirmAfter = buttonByLabel("Confirm remove participant");
+    expect(confirmAfter).not.toBeNull();
+    expect(confirmAfter?.disabled).toBe(true);
+    await click(confirmAfter);
+    confirmAfter?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    confirmAfter?.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+    await flush();
+    expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces a visible error toast when remove fails", async () => {
