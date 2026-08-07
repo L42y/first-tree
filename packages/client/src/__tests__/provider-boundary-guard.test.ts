@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
 import ts from "typescript";
@@ -944,8 +944,12 @@ describe("runtime provider architecture guard", () => {
      * substring / banned-name predicates. Adding any seam symbol requires an
      * explicit allowlist edit in provider-support-export-allowlists.ts.
      */
-    function isExported(node: ts.HasModifiers): boolean {
-      return !!ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    function hasExportKeyword(node: ts.Node): boolean {
+      return ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+    }
+
+    function hasDefaultKeyword(node: ts.Node): boolean {
+      return ts.canHaveModifiers(node) && !!ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.DefaultKeyword);
     }
 
     function extractExportTuples(source: string): {
@@ -957,22 +961,19 @@ describe("runtime provider architecture guard", () => {
       const violations: string[] = [];
 
       for (const node of sourceFile.statements) {
+        let handled = false;
+
         if (ts.isExportDeclaration(node)) {
+          handled = true;
           if (node.moduleSpecifier && !ts.isStringLiteralLike(node.moduleSpecifier)) {
             violations.push("non-literal export module specifier");
-            continue;
-          }
-          if (!node.exportClause && node.moduleSpecifier) {
+          } else if (!node.exportClause && node.moduleSpecifier) {
             violations.push(
               `export * from ${ts.isStringLiteralLike(node.moduleSpecifier) ? node.moduleSpecifier.text : "?"}`,
             );
-            continue;
-          }
-          if (node.exportClause && ts.isNamespaceExport(node.exportClause)) {
+          } else if (node.exportClause && ts.isNamespaceExport(node.exportClause)) {
             violations.push("export * as namespace");
-            continue;
-          }
-          if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+          } else if (node.exportClause && ts.isNamedExports(node.exportClause)) {
             const sourceModule =
               node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)
                 ? node.moduleSpecifier.text
@@ -983,51 +984,75 @@ describe("runtime provider architecture guard", () => {
               const originalName = el.propertyName ? el.propertyName.text : exportedName;
               tuples.push(`${kind}|${exportedName}|${originalName}|${sourceModule}`);
             }
-            continue;
+          } else {
+            violations.push("unsupported ExportDeclaration shape");
           }
-          violations.push("unsupported ExportDeclaration shape");
-          continue;
-        }
-
-        if (ts.isExportAssignment(node)) {
+        } else if (ts.isExportAssignment(node)) {
+          handled = true;
           violations.push(node.isExportEquals ? "export =" : "export default");
-          continue;
-        }
-
-        if (ts.isFunctionDeclaration(node) && isExported(node)) {
-          if (!node.name) violations.push("unnamed exported function");
-          else tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
-          continue;
-        }
-        if (ts.isClassDeclaration(node) && isExported(node)) {
-          if (!node.name) violations.push("unnamed exported class");
-          else tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
-          continue;
-        }
-        if (ts.isInterfaceDeclaration(node) && isExported(node)) {
-          tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
-          continue;
-        }
-        if (ts.isTypeAliasDeclaration(node) && isExported(node)) {
-          tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
-          continue;
-        }
-        if (ts.isEnumDeclaration(node) && isExported(node)) {
-          tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
-          continue;
-        }
-        if (ts.isVariableStatement(node) && isExported(node)) {
-          for (const decl of node.declarationList.declarations) {
-            if (ts.isIdentifier(decl.name)) {
-              tuples.push(`value|${decl.name.text}|${decl.name.text}|<local>`);
-            } else {
-              violations.push("exported binding pattern");
+        } else if (ts.isFunctionDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default function");
+          } else if (!node.name) {
+            violations.push("unnamed exported function");
+          } else {
+            tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
+          }
+        } else if (ts.isClassDeclaration(node) && hasExportKeyword(node)) {
+          // Local class exports are unused on the seam today — fail closed rather
+          // than inventing an undocumented tuple kind.
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default class");
+          } else {
+            violations.push("unsupported exported local class");
+          }
+        } else if (ts.isInterfaceDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default interface");
+          } else {
+            tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
+          }
+        } else if (ts.isTypeAliasDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default type alias");
+          } else {
+            tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
+          }
+        } else if (ts.isEnumDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default enum");
+          } else {
+            violations.push("unsupported exported local enum");
+          }
+        } else if (ts.isVariableStatement(node) && hasExportKeyword(node)) {
+          handled = true;
+          if (hasDefaultKeyword(node)) {
+            violations.push("export default variable");
+          } else {
+            for (const decl of node.declarationList.declarations) {
+              if (ts.isIdentifier(decl.name)) {
+                tuples.push(`value|${decl.name.text}|${decl.name.text}|<local>`);
+              } else {
+                violations.push("exported binding pattern");
+              }
             }
           }
-          continue;
-        }
-        if (ts.isModuleDeclaration(node) && isExported(node)) {
+        } else if (ts.isModuleDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
           violations.push("exported namespace/module");
+        } else if (ts.isImportEqualsDeclaration(node) && hasExportKeyword(node)) {
+          handled = true;
+          violations.push("unsupported export import equals");
+        }
+
+        // Catch-all: any ExportKeyword statement that no supported branch owned.
+        if (!handled && hasExportKeyword(node)) {
+          violations.push(`unsupported exported declaration ${ts.SyntaxKind[node.kind]}`);
         }
       }
 
@@ -1069,6 +1094,21 @@ describe("runtime provider architecture guard", () => {
     // Negative: export * fail-closed.
     const starExport = extractExportTuples(`export * from "../child-process-registry.js";`);
     expect(starExport.violations).toContain("export * from ../child-process-registry.js");
+
+    // Negative: default exports must not be mistaken for named local tuples.
+    expect(extractExportTuples(`export default function namedDefault() {}`).violations).toContain(
+      "export default function",
+    );
+    expect(extractExportTuples(`export default class NamedDefault {}`).violations).toContain("export default class");
+
+    // Negative: export import equals is unsupported (catch-all / dedicated branch).
+    expect(extractExportTuples(`export import Owner = require("../child-process-registry.js");`).violations).toContain(
+      "unsupported export import equals",
+    );
+
+    // Negative: unsupported local class/enum fail closed (not silently tupled).
+    expect(extractExportTuples(`export class LocalOwner {}`).violations).toContain("unsupported exported local class");
+    expect(extractExportTuples(`export enum LocalKind { A }`).violations).toContain("unsupported exported local enum");
   });
 
   it("keeps provider-support value re-exports identical to their owning group modules", async () => {
@@ -1088,20 +1128,22 @@ describe("runtime provider architecture guard", () => {
 
   it("keeps generic Runtime free of handler and concrete provider implementation imports", () => {
     const runtimeRoot = join(clientSrc, "runtime");
-    const runtimeFiles = listFilesRecursive(
-      runtimeRoot,
-      (p) => p.endsWith(".ts") && !p.includes("__tests__") && !p.includes(`${sep}capabilities${sep}`),
-    );
-    const transitionalProviderModules = new Set(
-      TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => rel.split("/").pop() ?? ""),
-    );
+    // Scan the full runtime tree, including capabilities/; only exact
+    // transitional paths are exempt — basename / directory patterns are not.
+    const runtimeFiles = listFilesRecursive(runtimeRoot, (p) => p.endsWith(".ts") && !p.includes("__tests__"));
     const transitionalRelPaths = new Set<string>(TRANSITIONAL_PROVIDER_FAMILY_FILES);
+
+    function isExplicitTransitionalProviderFamilyPath(rel: string): boolean {
+      return transitionalRelPaths.has(rel);
+    }
+
+    expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/index.ts")).toBe(true);
+    expect(isExplicitTransitionalProviderFamilyPath("runtime/brand-new/index.ts")).toBe(false);
+    expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/brand-new.ts")).toBe(false);
 
     for (const file of runtimeFiles) {
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
-      const base = rel.split("/").pop() ?? "";
-      if (transitionalProviderModules.has(base) || transitionalRelPaths.has(rel)) continue;
-      if (rel.startsWith("runtime/capabilities/")) continue;
+      if (isExplicitTransitionalProviderFamilyPath(rel)) continue;
       const source = readFileSync(file, "utf8");
       expect(source, `${rel} must not import handlers/**`).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
       if (!rel.includes("provider-support/binary-failure")) {

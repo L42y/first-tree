@@ -1,6 +1,7 @@
 /**
  * Exact provider-support export allowlists for the architecture guard.
- * Tuples are `kind|exportedName|originalName|sourceModule|<local>`.
+ * Each tuple is four segments: `kind|exportedName|originalName|sourceModule`
+ * where `sourceModule` is a relative specifier or the literal `<local>`.
  * Do not regenerate from source in the test — any seam change must edit this list.
  */
 export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
