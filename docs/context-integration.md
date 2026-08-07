@@ -308,3 +308,38 @@ Sensitive Teams should use separate provider sessions.
 Session-only means no persistent grant, Plugin or Hook and no automatic future
 activation. It does not promise continuity across clear, compact, resume, exit,
 or a new session.
+
+## Qualification status
+
+BYO Context ships on the public `latest` channel. Its real-provider
+qualification is incomplete: no recorded Claude Code or Codex surface evidence
+exists for any of the scenarios below. #2143 carried this as an explicit
+release risk and it has not since been discharged.
+
+Current coverage comes from three layers, none of which is provider-surface
+evidence:
+
+- deterministic behavior — per-package Vitest;
+- recurring agent behavior — `@first-tree/skill-evals` floors;
+- scenario definitions — the prose cases under `packages/qa/cases/`, which are
+  prompts for a human-requested QA run, not execution records.
+
+The release bar is recorded evidence from real Claude Code and Codex surfaces
+for:
+
+1. global, directory and session-only setup;
+2. two or more real Teams with clear, overlapping, missing and non-matching
+   SCOPE bodies;
+3. single- and multi-Team BYO writes with the mandatory new user confirmation.
+
+Unit tests and mock QA do not replace these real-provider checks.
+
+The remaining scenarios — dynamic setup choices and `/hooks` consent,
+membership revocation and binding movement, SCOPE admin approval, v2 store
+backup, legacy Plugin migration, cross-organization isolation and Client
+switching, and bootstrap error recovery — stay defined in `packages/qa/cases/`
+and are qualified when a change touches them rather than on every release.
+Dynamic directory choice additionally depends on #2208.
+
+#2239 owns the environment these checks need and the current per-scenario
+status.
