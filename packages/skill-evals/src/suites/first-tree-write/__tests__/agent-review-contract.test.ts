@@ -39,6 +39,9 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toContain("Initial write intent is not this confirmation");
     expect(skill).toContain("Managed mode does not add this gate");
     expect(skill).toContain("Only after the BYO confirmation above, create the\n   authoring worktree");
+    expect(skill).toContain("If the live preflight provider is GitHub, obtain the current local\n   `gh` login again");
+    expect(skill).toContain('--confirmed --github-login "<gh-login>"');
+    expect(skill).toContain("If the provider is GitLab, do not pass a GitHub login");
     expect(skill).toContain("re-run the same\npreflight immediately before each push and PR/MR creation");
     expect(skill).toContain("observability only, never local routing");
   });
@@ -55,7 +58,7 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.0");
+    expect(version).toBe("0.16.1");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });
