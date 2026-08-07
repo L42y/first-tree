@@ -1942,11 +1942,12 @@ describe("remove chat participant — owner-side / own-agent authorization", () 
     expect(await membershipOf(app, drifted.id, peer.humanAgentUuid)).toBeNull();
   });
 
-  it("waits on concurrent FOR UPDATE of an authority agent row before deciding removal", async () => {
+  it("rejects former own-agent manager after a concurrent target manager transfer commits", async () => {
     const app = getApp();
     const owner = await createTestAdmin(app);
     const manager = await createTestAdmin(app);
-    const mine = await ownedAgent(app, manager.memberId, manager.organizationId, "race");
+    const other = await createTestAdmin(app);
+    const mine = await ownedAgent(app, manager.memberId, manager.organizationId, "race-target");
     const chat = await createChat(app.db, owner.humanAgentUuid, {
       type: "group",
       participantIds: [mine.uuid, manager.humanAgentUuid],
@@ -1955,51 +1956,155 @@ describe("remove chat participant — owner-side / own-agent authorization", () 
     const databaseUrl = process.env.DATABASE_URL ?? "";
     if (!databaseUrl) throw new Error("DATABASE_URL is required for authority race test");
 
-    const holdAppName = `rm_auth_hold_${crypto.randomUUID().slice(0, 8)}`;
+    const transferAppName = `rm_auth_tf_${crypto.randomUUID().slice(0, 8)}`;
     const removeAppName = `rm_auth_rm_${crypto.randomUUID().slice(0, 8)}`;
-    const holdPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, holdAppName));
+    const transferPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, transferAppName));
     const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
     const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
 
     try {
-      let releaseHold!: () => void;
-      const holdReleased = new Promise<void>((resolve) => {
-        releaseHold = resolve;
+      let releaseTransfer!: () => void;
+      const transferReleased = new Promise<void>((resolve) => {
+        releaseTransfer = resolve;
       });
-      let holdReady!: () => void;
-      const holdReadyP = new Promise<void>((resolve) => {
-        holdReady = resolve;
+      let transferReady!: () => void;
+      const transferReadyP = new Promise<void>((resolve) => {
+        transferReady = resolve;
       });
 
-      // Hold the target agent row the way a concurrent manager_id transfer would,
-      // so remove's authority snapshot must wait on the same FOR UPDATE set.
-      const holdPromise = holdPool.transaction(async (tx) => {
+      // Hold the target agent, then commit a real manager_id transfer before the
+      // blocked remove continues — proving auth reads the post-transfer snapshot.
+      const transferPromise = transferPool.transaction(async (tx) => {
         await tx.select({ uuid: agents.uuid }).from(agents).where(eq(agents.uuid, mine.uuid)).for("update").limit(1);
-        holdReady();
-        await holdReleased;
+        transferReady();
+        await transferReleased;
+        await tx.update(agents).set({ managerId: other.memberId }).where(eq(agents.uuid, mine.uuid));
       });
 
       await Promise.race([
-        holdReadyP,
+        transferReadyP,
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("authority hold barrier timeout")), 10_000);
+          setTimeout(() => reject(new Error("target-manager transfer barrier timeout")), 10_000);
         }),
       ]);
 
-      const removePromise = removeParticipant(removePool, chat.id, manager.humanAgentUuid, mine.uuid);
+      const removePromise = removeParticipant(removePool, chat.id, manager.humanAgentUuid, mine.uuid).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
       await waitForPostgresLockWait(observer, removeAppName);
 
-      releaseHold();
-      await Promise.race([
-        Promise.all([holdPromise, removePromise]),
+      releaseTransfer();
+      const [removeOutcome] = await Promise.race([
+        Promise.all([removePromise, transferPromise]),
         new Promise<never>((_, reject) => {
-          setTimeout(() => reject(new Error("authority race deadlock timeout")), 15_000);
+          setTimeout(() => reject(new Error("target-manager authority race deadlock timeout")), 15_000);
         }),
       ]);
 
-      expect(await membershipOf(app, chat.id, mine.uuid)).toBeNull();
+      expect(removeOutcome.ok).toBe(false);
+      if (!removeOutcome.ok) {
+        expect(removeOutcome.error).toMatchObject({ statusCode: 403 });
+      }
+      expect(await membershipOf(app, chat.id, mine.uuid)).toEqual({
+        accessMode: "speaker",
+        role: "member",
+      });
+      const [after] = await app.db
+        .select({ managerId: agents.managerId })
+        .from(agents)
+        .where(eq(agents.uuid, mine.uuid))
+        .limit(1);
+      expect(after?.managerId).toBe(other.memberId);
     } finally {
-      await holdPool.end();
+      await transferPool.end();
+      await removePool.end();
+      await observer.end();
+    }
+  });
+
+  it("rejects former owner-side caller after a concurrent owner-agent manager transfer commits", async () => {
+    const app = getApp();
+    const boss = await createTestAdmin(app);
+    const other = await createTestAdmin(app);
+    const guestOwner = await createTestAdmin(app);
+    const creator = await ownedAgent(app, boss.memberId, boss.organizationId, "race-owner");
+    const guest = await ownedAgent(app, guestOwner.memberId, guestOwner.organizationId, "race-guest");
+    const chat = await createChat(app.db, creator.uuid, {
+      type: "group",
+      participantIds: [guest.uuid, boss.humanAgentUuid],
+    });
+    expect((await membershipOf(app, chat.id, creator.uuid))?.role).toBe("owner");
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for owner-side authority race test");
+
+    const transferAppName = `rm_own_tf_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `rm_own_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const transferPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, transferAppName));
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseTransfer!: () => void;
+      const transferReleased = new Promise<void>((resolve) => {
+        releaseTransfer = resolve;
+      });
+      let transferReady!: () => void;
+      const transferReadyP = new Promise<void>((resolve) => {
+        transferReady = resolve;
+      });
+
+      // Owner-side authority comes from creator.manager_id matching boss. Transfer
+      // that row before remove continues so boss is no longer owner-side.
+      const transferPromise = transferPool.transaction(async (tx) => {
+        await tx.select({ uuid: agents.uuid }).from(agents).where(eq(agents.uuid, creator.uuid)).for("update").limit(1);
+        transferReady();
+        await transferReleased;
+        await tx.update(agents).set({ managerId: other.memberId }).where(eq(agents.uuid, creator.uuid));
+      });
+
+      await Promise.race([
+        transferReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("owner-agent transfer barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const removePromise = removeParticipant(removePool, chat.id, boss.humanAgentUuid, guest.uuid).then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      await waitForPostgresLockWait(observer, removeAppName);
+
+      releaseTransfer();
+      const [removeOutcome] = await Promise.race([
+        Promise.all([removePromise, transferPromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("owner-side authority race deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      expect(removeOutcome.ok).toBe(false);
+      if (!removeOutcome.ok) {
+        expect(removeOutcome.error).toMatchObject({ statusCode: 403 });
+      }
+      expect(await membershipOf(app, chat.id, guest.uuid)).toEqual({
+        accessMode: "speaker",
+        role: "member",
+      });
+      expect(await membershipOf(app, chat.id, creator.uuid)).toEqual({
+        accessMode: "speaker",
+        role: "owner",
+      });
+      const [after] = await app.db
+        .select({ managerId: agents.managerId })
+        .from(agents)
+        .where(eq(agents.uuid, creator.uuid))
+        .limit(1);
+      expect(after?.managerId).toBe(other.memberId);
+    } finally {
+      await transferPool.end();
       await removePool.end();
       await observer.end();
     }

@@ -1191,7 +1191,6 @@ export async function removeParticipant(
   options?: {
     notifier?: import("./notifier.js").Notifier;
     instanceId?: string;
-    afterAuthoritySnapshotForTest?: () => Promise<void>;
   },
 ) {
   return removeChatParticipant(db, chatId, requesterId, targetAgentId, options);

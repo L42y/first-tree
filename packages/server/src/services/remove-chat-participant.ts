@@ -42,12 +42,6 @@ export type RemoveChatParticipantOptions = {
   notifier?: Notifier;
   /** This server replica's instance id — used for soft terminate routing. */
   instanceId?: string;
-  /**
-   * Test-only barrier after the authority snapshot is locked and before
-   * authorization / mutation, so concurrent manager_id updates can be proven
-   * to wait on the same FOR UPDATE set.
-   */
-  afterAuthoritySnapshotForTest?: () => Promise<void>;
 };
 
 /**
@@ -185,9 +179,6 @@ export async function removeChatParticipant(
       ? [requesterId, targetAgentId, chatOwnerAgentId]
       : [requesterId, targetAgentId];
     const authority = await lockChatSpeakerAndAgentSnapshot(tx, [chatId], authorityAgentIds);
-    if (options.afterAuthoritySnapshotForTest) {
-      await options.afterAuthoritySnapshotForTest();
-    }
 
     const chat = authority.chats.find((row) => row.id === chatId);
     if (!chat) throw new NotFoundError(`Chat "${chatId}" not found`);
