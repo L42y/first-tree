@@ -178,11 +178,13 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
     const lines = text.replace(/\r/gu, "").split("\n");
     for (let index = 0; index < lines.length; index += 1) {
       const firstLine = lines[index] ?? "";
-      const titleMatch = /^> \*\*(How Context Tree affected this work|Context Tree 如何影响本次工作)\*\*\\$/u.exec(
-        firstLine,
-      );
+      // Only the effect label is bold: the first and third lines carry the same
+      // fixed wording in every note, so the single bold span stays the reader's
+      // entry point. A bolded first line is the superseded scaffold and is
+      // rejected rather than silently accepted.
+      const titleMatch = /^> (How Context Tree affected this work|Context Tree 如何影响本次工作)\\$/u.exec(firstLine);
       const currentTitleScaffoldMatch =
-        /^> \*\*(How Context Tree affected this work|Context Tree 如何影响本次工作)\*\*\\?\s*$/u.exec(firstLine);
+        /^> (How Context Tree affected this work|Context Tree 如何影响本次工作)\\?\s*$/u.exec(firstLine);
       const legacyTitleMatch = /^> \*\*(Context Tree impact|Context Tree 影响)(?: · ([^*]+))?\*\*\\?\s*$/u.exec(
         firstLine,
       );
@@ -199,18 +201,14 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
         language === "zh"
           ? /^> \*\*([^*]+)\*\*：([^\s].*)\\$/u.exec(secondLine)
           : /^> \*\*([^*]+):\*\* (.+)\\$/u.exec(secondLine);
-      const sourcePrefix =
-        language === "zh" ? /^> \*\*Context Tree 来源\*\*：/u : /^> \*\*Context Tree (source|sources):\*\* /u;
+      const sourcePrefix = language === "zh" ? /^> Context Tree 来源：/u : /^> Context Tree (source|sources): /u;
       const sourcePrefixMatch = sourcePrefix.exec(thirdLine);
       const markdownLinks = [...thirdLine.matchAll(/\[([^\]\n]+)\]\(([^)\s]+)\)/gu)];
       const exactLinks = markdownLinks.filter((match) => parseExactCredentialFreeSourceLink(match[2] ?? "") !== null);
       const expectedEnglishSource = markdownLinks.length === 1 ? "source" : "sources";
-      // Chinese keeps the full-width colon OUTSIDE the bold: Markdown cannot
-      // close `**` when the delimiter is preceded by punctuation and followed
-      // by a CJK character, so `**…：**文字` would render literal asterisks.
       const sourceLabel = language === "zh" ? "Context Tree 来源" : `Context Tree ${expectedEnglishSource}:`;
       const sourceSeparator = language === "zh" ? "：" : " ";
-      const expectedSourceLine = `> **${sourceLabel}**${sourceSeparator}${markdownLinks.map((match) => match[0]).join(" · ")}`;
+      const expectedSourceLine = `> ${sourceLabel}${sourceSeparator}${markdownLinks.map((match) => match[0]).join(" · ")}`;
       const sourceScaffoldingOk =
         titleMatch !== null &&
         sourcePrefixMatch !== null &&
