@@ -48,9 +48,9 @@ import { resolveAvatarImageUrl } from "./agent.js";
 import { resolveAgentChatStatuses } from "./agent-chat-status.js";
 import { createChat } from "./chat.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
+import { extractChatSummary, resolveChatTitle } from "./chat-read-model.js";
 import { pauseActiveJobsForOwnerChatDelete } from "./cron-job.js";
 import { assertChatVisibleInOrgOrNotFound, inviteParticipantsToChat } from "./participant-invite.js";
-import { extractSummary } from "./session.js";
 import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMembership } from "./watcher.js";
 
 // ---------------------------------------------------------------------------
@@ -576,7 +576,7 @@ async function enrichMeChatRows(
 
   const firstMessageSummary = new Map<string, string>();
   for (const row of firstMessageRows) {
-    const s = extractSummary(row.content);
+    const s = extractChatSummary(row.content);
     if (s) firstMessageSummary.set(row.chatId, s);
   }
 
@@ -760,27 +760,6 @@ export async function listMeChats(
     rows,
     nextCursor,
   };
-}
-
-/**
- * Title resolution priority:
- *
- *   1. `chat.topic` (manual, set via `PATCH /chats/:chatId`)
- *   2. First message summary (auto, ≤ 50 chars from `extractSummary`)
- *   3. Participant join (fallback when chat has no messages yet)
- */
-export function resolveChatTitle<P extends { agentId: string; displayName: string }>(
-  topic: string | null,
-  firstMessageSummary: string | null,
-  participants: ReadonlyArray<P>,
-  selfAgentId: string,
-): string {
-  if (topic && topic.length > 0) return topic;
-  if (firstMessageSummary && firstMessageSummary.length > 0) return firstMessageSummary;
-  const others = participants.filter((p) => p.agentId !== selfAgentId);
-  if (others.length === 0) return "Empty chat";
-  if (others.length <= 3) return others.map((p) => p.displayName).join(", ");
-  return `${others[0]?.displayName}, ${others[1]?.displayName} +${others.length - 2}`;
 }
 
 // ---------------------------------------------------------------------------

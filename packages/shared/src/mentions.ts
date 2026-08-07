@@ -40,7 +40,7 @@ export const MENTION_REGEX = /(?<![A-Za-z0-9_.@-])@([A-Za-z0-9][A-Za-z0-9_-]{0,6
  * Strip Markdown code regions (fenced + inline) so identifier-shaped
  * tokens inside code (`@param`, `@staticmethod`, etc.) don't get
  * misclassified as mentions. Shared between `extractMentions` (routing)
- * and `extractSummary` (auto-title) so they agree on what counts as a
+ * and `extractChatSummary` (auto-title) so they agree on what counts as a
  * "real" mention vs a code reference.
  */
 export function stripCode(content: string): string {
