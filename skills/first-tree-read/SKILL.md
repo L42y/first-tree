@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.6.2
+version: 0.7.0
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -240,16 +240,20 @@ or a separate receipt message.
 Use the same visible note for every consumer:
 
 - In managed First Tree Chat, append it to the body of the same final
-  `chat send` that carries the affected choice. If the Tree exposes an
-  unresolved conflict and the task correctly ends with a blocking `chat ask`,
-  append it to that question body instead. Do not pass `contextDecision`
+  `chat send` that carries the affected choice. Do not pass `contextDecision`
   metadata.
 - In BYO sessions, append it to the authoring coding agent's native final
   response.
 
+Never put the note in a blocking `chat ask`. A question's body must stay
+decision-self-sufficient: the reader is being asked to choose, and an
+attribution footnote competes with the choice instead of serving it. When the
+task correctly ends with a blocking question, state any Tree constraint that
+bears on the decision as ordinary prose inside the question and append no note.
+
 Never add the note to progress messages, status updates, or a second message.
 Keep the outcome first and place the note at the very end of the authored final
-response or blocking question.
+response.
 
 Choose exactly one effect in this precedence order, then show its human label:
 
@@ -383,7 +387,7 @@ Keep the user-facing result concise:
   helps the user verify which task snapshot governed the answer
 - when the strict decision-influence test passes, append the same compact
   visible note to the authored final response for managed and BYO consumers;
-  for an unresolved conflict, append it to the blocking question body
+  a task ending in a blocking question carries no note
 - avoid restating every node; carry forward only what changes how you act
 
 Never modify tree files with this skill.

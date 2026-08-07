@@ -104,7 +104,7 @@ export function driftNote(
   }
 
   if (expectedTrigger && readMode === "managed" && !metrics.managedFinalTransportOk) {
-    notes.push("The impact note was not delivered through the required final managed chat send or blocking chat ask.");
+    notes.push("The impact note was not delivered through the required final managed chat send.");
   }
 
   if (expectedTrigger && !metrics.expectedFactsObserved) {

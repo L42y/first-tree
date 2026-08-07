@@ -802,9 +802,13 @@ describe("first-tree-read metrics pass criteria", () => {
 
     expect(sentForBlockingCase.impactNoteBehaviorOk).toBe(true);
     expect(sentForBlockingCase.managedFinalTransportOk).toBe(false);
-    expect(askedForBlockingCase.impactNoteBehaviorOk).toBe(true);
+    // A blocking question must stay decision-self-sufficient: the note never
+    // rides an ask body, even when the ask is the correct final transport.
+    expect(askedForBlockingCase.impactNoteBehaviorOk).toBe(false);
+    expect(askedForBlockingCase.impactNoteOutsideBlockingAsk).toBe(false);
     expect(askedForBlockingCase.managedFinalTransportOk).toBe(true);
     expect(sentForTerminalCase.impactNoteBehaviorOk).toBe(true);
+    expect(sentForTerminalCase.impactNoteOutsideBlockingAsk).toBe(true);
     expect(sentForTerminalCase.managedFinalTransportOk).toBe(true);
   });
 

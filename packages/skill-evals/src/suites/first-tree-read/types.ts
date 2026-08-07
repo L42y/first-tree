@@ -83,6 +83,7 @@ export type EvalMetrics = {
   impactNoteLanguage: ImpactNoteLanguage | null;
   impactNoteLogicalLinesOk: boolean;
   impactNoteMetadataFree: boolean;
+  impactNoteOutsideBlockingAsk: boolean;
   impactNoteSourceAuthorityOk: boolean;
   impactNoteSourceCount: number;
   impactNoteSourceLabels: readonly string[];

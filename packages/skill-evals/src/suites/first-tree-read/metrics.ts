@@ -285,7 +285,11 @@ function includesAny(value: string, alternatives: readonly string[]): boolean {
 function deriveImpactNoteMetrics(
   texts: readonly string[],
   expectation: ImpactNoteExpectation,
-  options: { contextDecisionMetadataPresent: boolean; selectedExactCommit: string | null },
+  options: {
+    contextDecisionMetadataPresent: boolean;
+    selectedExactCommit: string | null;
+    visibleOutputKinds?: readonly (ManagedTransport | null)[];
+  },
 ) {
   const observations = parseImpactNotes(texts);
   const observation = observations[0] ?? null;
@@ -294,6 +298,9 @@ function deriveImpactNoteMetrics(
     !options.contextDecisionMetadataPresent &&
     !/contextDecision|["']effect["']\s*:|["']evidence["']\s*:/u.test(allText);
   const atFinalEnd = observation?.atEnd === true && observation.textIndex === texts.length - 1;
+  // A blocking question asks the reader to choose; an attribution footnote there
+  // competes with the choice instead of serving it.
+  const noteOutsideBlockingAsk = observations.every((item) => options.visibleOutputKinds?.[item.textIndex] !== "ask");
   const sourceAuthorityOk = sourceAuthorityMatches(observation, expectation, options.selectedExactCommit);
   const visibleUrlsSafe = visibleUrlsCredentialFree(texts);
   const summaryConceptsOk =
@@ -314,7 +321,7 @@ function deriveImpactNoteMetrics(
     expectation.mode === "present" ? EFFECT_LABELS[expectation.language][expectation.effect] : null;
   const behaviorOk =
     expectation.mode === "absent"
-      ? observations.length === 0 && metadataFree
+      ? observations.length === 0 && metadataFree && noteOutsideBlockingAsk
       : observations.length === 1 &&
         observation !== null &&
         atFinalEnd &&
@@ -323,6 +330,7 @@ function deriveImpactNoteMetrics(
         observation.sourceScaffoldingOk &&
         observation.summaryObjectiveOk &&
         observation.exactLinksOk &&
+        noteOutsideBlockingAsk &&
         sourceAuthorityOk &&
         observation.language === expectation.language &&
         observation.effectLabel === expectedEffectLabel &&
@@ -343,6 +351,7 @@ function deriveImpactNoteMetrics(
     impactNoteLanguage: observation?.language ?? null,
     impactNoteLogicalLinesOk: observation?.logicalLinesOk ?? false,
     impactNoteMetadataFree: metadataFree,
+    impactNoteOutsideBlockingAsk: noteOutsideBlockingAsk,
     impactNoteSourceAuthorityOk: sourceAuthorityOk,
     impactNoteSourceCount: observation?.sourceLabels.length ?? 0,
     impactNoteSourceLabels: observation?.sourceLabels ?? [],
@@ -684,6 +693,17 @@ export function deriveMetrics(
     authoringCalls.length > 0 || progressCalls.length > 0
       ? [...modelOutputTexts, ...successfulProgressCalls.map((call) => call.body), ...authoredOutputTexts]
       : modelOutputTexts;
+  // Index-aligned with `visibleOutputTexts` so the grader can tell which surface
+  // a note was found on. A blocking question must stay decision-self-sufficient,
+  // so a note delivered in a `chat ask` body fails regardless of its shape.
+  const visibleOutputKinds: readonly (ManagedTransport | null)[] =
+    authoringCalls.length > 0 || progressCalls.length > 0
+      ? [
+          ...modelOutputTexts.map(() => null),
+          ...successfulProgressCalls.map(() => null),
+          ...successfulAuthoringCalls.map((call) => chatAuthoringKind(call.argv)),
+        ]
+      : modelOutputTexts.map(() => null);
   const contextDecisionMetadataPresent = successfulAuthoringCalls.some((call) => call.contextDecisionMetadataPresent);
   const facts = uniqueStrings(expectedFacts);
   const factHits = expectedFactHits(factOutputTexts.join("\n"), facts);
@@ -730,6 +750,7 @@ export function deriveMetrics(
   const impactNoteMetrics = deriveImpactNoteMetrics(visibleOutputTexts, impactNoteExpectation, {
     contextDecisionMetadataPresent,
     selectedExactCommit,
+    visibleOutputKinds,
   });
 
   return {

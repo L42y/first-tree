@@ -81,7 +81,9 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("Do not emit `effect: none`");
     expect(skill).toContain("Do not pass `contextDecision`\n  metadata");
     expect(skill).toContain("In BYO sessions, append it to the authoring coding agent's native final\n  response");
-    expect(skill).toContain("task correctly ends with a blocking `chat ask`");
+    expect(skill).toContain("Never put the note in a blocking `chat ask`");
+    expect(skill).toContain("append no note");
+    expect(skill).not.toContain("append it to that question body instead");
     expect(skill).toContain("Never add the note to progress messages, status updates, or a second message");
     expect(skill).toContain("Choose exactly one effect in this precedence order, then show its human label");
     expect(skill).toMatch(
@@ -167,7 +169,7 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.6.2");
+    expect(skillVersion).toBe("0.7.0");
     expect(skill).toContain(`version: ${skillVersion}`);
   });
 });
