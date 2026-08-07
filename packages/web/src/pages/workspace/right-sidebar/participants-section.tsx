@@ -92,6 +92,10 @@ export function ParticipantsSection({
   const { addToast } = useToast();
   const [showAll, setShowAll] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<ChatParticipantDetail | null>(null);
+  // Decouple dialog open from target so a successful close can start the exit
+  // animation without clearing the title to `Remove ""?` mid-transition.
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [removeDialogLabel, setRemoveDialogLabel] = useState("");
 
   const isAdmin = role === "admin";
   const { total, visibleAgents, visibleHumans, hiddenCount } = useMemo(
@@ -106,10 +110,26 @@ export function ParticipantsSection({
   const canRemoveOthers = !readOnly && selfIsSpeaker;
   const canRemove = (agentId: string) => canRemoveOthers && agentId !== selfAgentId;
 
+  const openRemoveDialog = (target: ChatParticipantDetail) => {
+    setRemoveTarget(target);
+    setRemoveDialogLabel(target.displayName);
+    setRemoveDialogOpen(true);
+  };
+
+  const closeRemoveDialog = () => {
+    setRemoveDialogOpen(false);
+    setRemoveTarget(null);
+    // Keep `removeDialogLabel` through the exit animation (and after Cancel).
+    // The next `openRemoveDialog` overwrites it; an empty string must never
+    // drive the title while DialogContent is still mounted.
+  };
+
   const removeMut = useMutation({
     mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
     onSuccess: (_data, target) => {
-      setRemoveTarget(null);
+      // Close first; keep `removeDialogLabel` until `onOpenChange(false)` so the
+      // exit animation never flashes an empty target name.
+      setRemoveDialogOpen(false);
       queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
       queryClient.invalidateQueries({ queryKey: ["activity"] });
       onAdded();
@@ -149,7 +169,7 @@ export function ParticipantsSection({
                 agents={visibleAgents}
                 canManage={(id) => isAdmin || (managedByMe.get(id) ?? false)}
                 canRemove={canRemove}
-                onRemove={(agent) => setRemoveTarget(agent)}
+                onRemove={openRemoveDialog}
                 compact
               />
             ) : null}
@@ -158,7 +178,7 @@ export function ParticipantsSection({
                 key={p.agentId}
                 participant={p}
                 showRemove={canRemove(p.agentId)}
-                onRemove={() => setRemoveTarget(p)}
+                onRemove={() => openRemoveDialog(p)}
               />
             ))}
             {hiddenCount > 0 ? (
@@ -182,11 +202,11 @@ export function ParticipantsSection({
       )}
 
       <RemoveParticipantConfirmDialog
-        open={removeTarget !== null}
+        open={removeDialogOpen}
         onOpenChange={(open) => {
-          if (!open && !removeMut.isPending) setRemoveTarget(null);
+          if (!open && !removeMut.isPending) closeRemoveDialog();
         }}
-        label={removeTarget?.displayName ?? ""}
+        label={removeDialogLabel}
         onConfirm={() => {
           if (!removeTarget || removeMut.isPending) return;
           removeMut.mutate(removeTarget);

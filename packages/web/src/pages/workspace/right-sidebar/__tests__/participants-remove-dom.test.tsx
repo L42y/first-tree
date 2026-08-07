@@ -259,6 +259,45 @@ describe("ParticipantsSection remove affordance", () => {
     expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
   });
 
+  it("keeps the confirm display name through a successful close transition", async () => {
+    let release!: () => void;
+    meChatMocks.removeMeChatParticipant.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    await renderSection({
+      participants: [participant("agent-1", "agent", "Byte"), participant("human-self", "human", "Me")],
+    });
+    await flush();
+
+    await click(buttonByLabel(removeLabel("Byte")));
+    expect(document.body.textContent).toContain('Remove "Byte"?');
+    expect(document.body.textContent).not.toContain('Remove ""?');
+
+    await click(buttonByLabel("Confirm remove participant"));
+    expect(document.body.textContent).toContain('Remove "Byte"?');
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    // Success closes the dialog but must not clear the title to `Remove ""?` while
+    // Radix still mounts the exit animation (~200ms). Any remaining Remove title
+    // must still name the participant.
+    const titles = Array.from(document.body.textContent?.matchAll(/Remove "[^"]*"\?/g) ?? []).map((m) => m[0]);
+    expect(titles).not.toContain('Remove ""?');
+    for (const title of titles) {
+      expect(title).toBe('Remove "Byte"?');
+    }
+
+    await flush();
+    expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
+    expect(document.body.textContent).not.toContain('Remove ""?');
+  });
+
   it("surfaces a visible error toast when remove fails", async () => {
     meChatMocks.removeMeChatParticipant.mockRejectedValueOnce(new ApiError(403, "Not a participant of this chat"));
     await renderSection({
