@@ -34,7 +34,7 @@ import {
 import { WIRE_RECIPIENT_MODE } from "./message-dispatcher.js";
 import { inviteParticipantsToChat, rejectedPrivateTargets } from "./participant-invite.js";
 import { addChatParticipants, applyMembershipWrite } from "./participant-mode.js";
-import { removeChatParticipant } from "./remove-chat-participant.js";
+import { removeChatParticipant, resolveParticipantRemoveFlags } from "./remove-chat-participant.js";
 import { extractSummary } from "./session.js";
 import { leaveAsParticipant } from "./watcher.js";
 
@@ -815,6 +815,7 @@ export async function getChatDetail(db: Database, chatId: string, selfAgentId: s
       name: agents.name,
       displayName: agents.displayName,
       type: agents.type,
+      managerId: agents.managerId,
       avatarColorToken: agents.avatarColorToken,
       avatarImageUpdatedAt: agents.avatarImageUpdatedAt,
       userAvatarUrl: users.avatarUrl,
@@ -837,6 +838,13 @@ export async function getChatDetail(db: Database, chatId: string, selfAgentId: s
     .limit(1);
   const firstMessagePreview = firstMessageRow ? extractSummary(firstMessageRow.content) : null;
   const title = resolveChatTitle(chat.topic, firstMessagePreview, participantRows, selfAgentId ?? "");
+
+  const removeFlags = await resolveParticipantRemoveFlags(db, {
+    chatId,
+    viewerAgentId: selfAgentId,
+    chatMetadata: chat.metadata,
+    participants: participantRows,
+  });
 
   // Preserve the resolved name / displayName / type / avatar fields on
   // the wire (PR #402 identity-rendering contract; avatar fields added
@@ -861,6 +869,7 @@ export async function getChatDetail(db: Database, chatId: string, selfAgentId: s
       avatarImageUpdatedAt: p.avatarImageUpdatedAt,
       userAvatarUrl: p.userAvatarUrl,
     }),
+    canRemove: removeFlags.get(p.agentId) ?? false,
   }));
 
   // Match the chatDetailSchema wire contract — the chat-first workspace

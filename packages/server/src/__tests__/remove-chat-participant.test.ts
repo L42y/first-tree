@@ -2004,4 +2004,60 @@ describe("remove chat participant — owner-side / own-agent authorization", () 
       await observer.end();
     }
   });
+
+  it("projects canRemove on chat detail for owner-side, own-agent, and bystander viewers", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const manager = await createTestAdmin(app);
+    const bystander = await createTestAdmin(app);
+    const mine = await ownedAgent(app, manager.memberId, manager.organizationId, "flag-mine");
+    const theirs = await ownedAgent(app, owner.memberId, owner.organizationId, "flag-theirs");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [mine.uuid, theirs.uuid, manager.humanAgentUuid, bystander.humanAgentUuid],
+    });
+
+    const ownerDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${chat.id}`,
+      headers: { authorization: `Bearer ${owner.accessToken}` },
+    });
+    expect(ownerDetail.statusCode).toBe(200);
+    const ownerBody = ownerDetail.json() as {
+      participants: Array<{ agentId: string; role: string; canRemove?: boolean }>;
+    };
+    const ownerFlags = new Map(ownerBody.participants.map((p) => [p.agentId, p.canRemove]));
+    expect(ownerFlags.get(owner.humanAgentUuid)).toBe(false);
+    expect(ownerFlags.get(manager.humanAgentUuid)).toBe(true);
+    expect(ownerFlags.get(bystander.humanAgentUuid)).toBe(true);
+    expect(ownerFlags.get(mine.uuid)).toBe(true);
+    expect(ownerFlags.get(theirs.uuid)).toBe(true);
+
+    const managerDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${chat.id}`,
+      headers: { authorization: `Bearer ${manager.accessToken}` },
+    });
+    const managerFlags = new Map(
+      (managerDetail.json() as { participants: Array<{ agentId: string; canRemove?: boolean }> }).participants.map(
+        (p) => [p.agentId, p.canRemove],
+      ),
+    );
+    expect(managerFlags.get(owner.humanAgentUuid)).toBe(false);
+    expect(managerFlags.get(mine.uuid)).toBe(true);
+    expect(managerFlags.get(theirs.uuid)).toBe(false);
+    expect(managerFlags.get(bystander.humanAgentUuid)).toBe(false);
+
+    const bystanderDetail = await app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${chat.id}`,
+      headers: { authorization: `Bearer ${bystander.accessToken}` },
+    });
+    const bystanderFlags = new Map(
+      (bystanderDetail.json() as { participants: Array<{ agentId: string; canRemove?: boolean }> }).participants.map(
+        (p) => [p.agentId, p.canRemove],
+      ),
+    );
+    expect([...bystanderFlags.values()].every((v) => v === false)).toBe(true);
+  });
 });

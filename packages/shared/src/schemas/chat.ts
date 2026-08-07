@@ -138,6 +138,12 @@ export const chatParticipantDetailSchema = chatParticipantSchema.extend({
    * color + initial.
    */
   avatarImageUrl: z.string().nullable(),
+  /**
+   * Server-derived Remove affordance for the current viewer. Computed with the
+   * same owner-side / own-agent matrix as `removeChatParticipant`. Older
+   * payloads may omit it — clients must treat missing as false (fail closed).
+   */
+  canRemove: z.boolean().optional(),
 });
 export type ChatParticipantDetail = z.infer<typeof chatParticipantDetailSchema>;
 

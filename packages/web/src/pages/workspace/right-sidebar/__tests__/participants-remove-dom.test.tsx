@@ -71,10 +71,15 @@ vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
   ),
 }));
 
-function participant(id: string, type: "human" | "agent", displayName = id, role = "member"): ChatParticipantDetail {
+function participant(
+  id: string,
+  type: "human" | "agent",
+  displayName = id,
+  opts: { role?: string; canRemove?: boolean } = {},
+): ChatParticipantDetail {
   return {
     agentId: id,
-    role,
+    role: opts.role ?? "member",
     mode: "default",
     joinedAt: "2026-06-16T00:00:00.000Z",
     name: id,
@@ -82,6 +87,7 @@ function participant(id: string, type: "human" | "agent", displayName = id, role
     type,
     avatarColorToken: null,
     avatarImageUrl: null,
+    canRemove: opts.canRemove ?? false,
   };
 }
 
@@ -94,6 +100,21 @@ function render(ui: ReactElement): { container: HTMLDivElement; root: Root; qc: 
     root.render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
   });
   return { container, root, qc };
+}
+
+async function openRemoveConfirm(container: HTMLElement, label: string): Promise<void> {
+  const menu = container.querySelector(`[aria-label="Actions for ${label}"]`) as HTMLButtonElement;
+  expect(menu).toBeTruthy();
+  await act(async () => {
+    menu.click();
+  });
+  const removeItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
+    b.textContent?.includes("Remove from chat"),
+  ) as HTMLButtonElement | undefined;
+  expect(removeItem).toBeTruthy();
+  await act(async () => {
+    removeItem?.click();
+  });
 }
 
 describe("ParticipantsSection remove affordance", () => {
@@ -114,11 +135,11 @@ describe("ParticipantsSection remove affordance", () => {
     }
   });
 
-  it("hides Remove for self and in read-only mode", () => {
+  it("hides Remove for self, owner, read-only, and watcher/non-speaker", () => {
     const roster = [
-      participant("human-self", "human", "Me", "owner"),
-      participant("human-other", "human", "Other"),
-      participant("agent-1", "agent", "Nova"),
+      participant("human-self", "human", "Me", { role: "owner", canRemove: false }),
+      participant("human-other", "human", "Other", { canRemove: true }),
+      participant("agent-1", "agent", "Nova", { canRemove: true }),
     ];
     const readOnly = render(
       <ParticipantsSection
@@ -153,12 +174,16 @@ describe("ParticipantsSection remove affordance", () => {
     act(() => writable.root.unmount());
     writable.container.remove();
 
-    // Supervisor / admin-without-membership: selfAgentId set but not in speaker roster.
+    // Watcher / supervisor: server sets every canRemove false.
     authMock.agentId = "human-supervisor";
     const outsider = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={roster}
+        participants={[
+          participant("human-owner", "human", "Owner", { role: "owner", canRemove: false }),
+          participant("human-other", "human", "Other", { canRemove: false }),
+          participant("agent-1", "agent", "Nova", { canRemove: false }),
+        ]}
         participantsLoading={false}
         managedByMe={new Map()}
         onAdded={() => undefined}
@@ -170,30 +195,51 @@ describe("ParticipantsSection remove affordance", () => {
     expect(outsider.container.querySelector('[aria-label="Actions for Nova"]')).toBeNull();
   });
 
-  it("hides Remove for the owner row and for bystander targets outside own-agent", () => {
-    authMock.agentId = "human-bystander";
-    const roster = [
-      participant("human-owner", "human", "Owner", "owner"),
-      participant("human-bystander", "human", "Bystander"),
-      participant("human-peer", "human", "Peer"),
-      participant("agent-mine", "agent", "Mine"),
-      participant("agent-theirs", "agent", "Theirs"),
-    ];
-    const { container, root } = render(
+  it("follows server canRemove for owner-side, own-agent, and unrelated speaker", () => {
+    authMock.agentId = "human-owner";
+    const ownerSide = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={roster}
+        participants={[
+          participant("human-owner", "human", "Owner", { role: "owner", canRemove: false }),
+          participant("human-peer", "human", "Peer", { canRemove: true }),
+          participant("agent-any", "agent", "Any", { canRemove: true }),
+        ]}
+        participantsLoading={false}
+        managedByMe={new Map()}
+        onAdded={() => undefined}
+        readOnly={false}
+      />,
+    );
+    mounted = ownerSide;
+    expect(ownerSide.container.querySelector('[aria-label="Actions for Owner"]')).toBeNull();
+    expect(ownerSide.container.querySelector('[aria-label="Actions for Peer"]')).not.toBeNull();
+    expect(ownerSide.container.querySelector('[aria-label="Actions for Any"]')).not.toBeNull();
+    act(() => ownerSide.root.unmount());
+    ownerSide.container.remove();
+
+    authMock.agentId = "human-bystander";
+    const bystander = render(
+      <ParticipantsSection
+        chatId="chat-1"
+        participants={[
+          participant("human-owner", "human", "Owner", { role: "owner", canRemove: false }),
+          participant("human-bystander", "human", "Bystander", { canRemove: false }),
+          participant("human-peer", "human", "Peer", { canRemove: false }),
+          participant("agent-mine", "agent", "Mine", { canRemove: true }),
+          participant("agent-theirs", "agent", "Theirs", { canRemove: false }),
+        ]}
         participantsLoading={false}
         managedByMe={new Map([["agent-mine", true]])}
         onAdded={() => undefined}
         readOnly={false}
       />,
     );
-    mounted = { container, root };
-    expect(container.querySelector('[aria-label="Actions for Owner"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Actions for Peer"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Actions for Theirs"]')).toBeNull();
-    expect(container.querySelector('[aria-label="Actions for Mine"]')).not.toBeNull();
+    mounted = bystander;
+    expect(bystander.container.querySelector('[aria-label="Actions for Owner"]')).toBeNull();
+    expect(bystander.container.querySelector('[aria-label="Actions for Peer"]')).toBeNull();
+    expect(bystander.container.querySelector('[aria-label="Actions for Theirs"]')).toBeNull();
+    expect(bystander.container.querySelector('[aria-label="Actions for Mine"]')).not.toBeNull();
   });
 
   it("shows confirm copy, submits once, and toasts watching vs detached", async () => {
@@ -205,7 +251,10 @@ describe("ParticipantsSection remove affordance", () => {
     const { container, root } = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={[participant("human-self", "human", "Me", "owner"), participant("human-other", "human", "Other")]}
+        participants={[
+          participant("human-self", "human", "Me", { role: "owner", canRemove: false }),
+          participant("human-other", "human", "Other", { canRemove: true }),
+        ]}
         participantsLoading={false}
         managedByMe={new Map()}
         onAdded={() => undefined}
@@ -214,17 +263,7 @@ describe("ParticipantsSection remove affordance", () => {
     );
     mounted = { container, root };
 
-    const menu = container.querySelector('[aria-label="Actions for Other"]') as HTMLButtonElement;
-    await act(async () => {
-      menu.click();
-    });
-    const removeItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
-      b.textContent?.includes("Remove from chat"),
-    ) as HTMLButtonElement | undefined;
-    expect(removeItem).toBeTruthy();
-    await act(async () => {
-      removeItem?.click();
-    });
+    await openRemoveConfirm(container, "Other");
 
     expect(document.body.textContent).toContain("Remove Other?");
     expect(document.body.textContent).toContain("Message history is kept");
@@ -247,7 +286,7 @@ describe("ParticipantsSection remove affordance", () => {
     );
   });
 
-  it("surfaces open-request 409 failures clearly", async () => {
+  it("surfaces open-request 409 and generic forbidden 403 distinctly", async () => {
     meChatMocks.removeMeChatParticipant.mockRejectedValueOnce(
       new ApiError(409, "Answer or skip first", undefined, REMOVE_PARTICIPANT_OPEN_REQUEST_CODE),
     );
@@ -255,7 +294,10 @@ describe("ParticipantsSection remove affordance", () => {
     const section = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={[participant("human-self", "human", "Me", "owner"), participant("human-other", "human", "Other")]}
+        participants={[
+          participant("human-self", "human", "Me", { role: "owner", canRemove: false }),
+          participant("human-other", "human", "Other", { canRemove: true }),
+        ]}
         participantsLoading={false}
         managedByMe={new Map()}
         onAdded={() => undefined}
@@ -263,16 +305,7 @@ describe("ParticipantsSection remove affordance", () => {
       />,
     );
     mounted = section;
-    const menu = section.container.querySelector('[aria-label="Actions for Other"]') as HTMLButtonElement;
-    await act(async () => {
-      menu.click();
-    });
-    const removeItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find((b) =>
-      b.textContent?.includes("Remove from chat"),
-    ) as HTMLButtonElement | undefined;
-    await act(async () => {
-      removeItem?.click();
-    });
+    await openRemoveConfirm(section.container, "Other");
     const confirm = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Remove");
     await act(async () => {
       confirm?.click();
@@ -282,6 +315,38 @@ describe("ParticipantsSection remove affordance", () => {
     expect(toastMock.addToast).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Unanswered request",
+      }),
+    );
+
+    act(() => section.root.unmount());
+    section.container.remove();
+    toastMock.addToast.mockReset();
+    meChatMocks.removeMeChatParticipant.mockRejectedValueOnce(new ApiError(403, "Only the chat owner's side"));
+
+    const forbidden = render(
+      <ParticipantsSection
+        chatId="chat-1"
+        participants={[
+          participant("human-self", "human", "Me", { role: "owner", canRemove: false }),
+          participant("human-other", "human", "Other", { canRemove: true }),
+        ]}
+        participantsLoading={false}
+        managedByMe={new Map()}
+        onAdded={() => undefined}
+        readOnly={false}
+      />,
+    );
+    mounted = forbidden;
+    await openRemoveConfirm(forbidden.container, "Other");
+    const confirm2 = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Remove");
+    await act(async () => {
+      confirm2?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(toastMock.addToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Not allowed",
       }),
     );
   });

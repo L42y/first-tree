@@ -50,6 +50,96 @@ export type RemoveChatParticipantOptions = {
   afterAuthoritySnapshotForTest?: () => Promise<void>;
 };
 
+/**
+ * Pure owner-side / own-agent matrix used by both the mutation and the Web
+ * `canRemove` projection. Does not cover open-request / trial / existence
+ * checks — those stay on the mutation path.
+ */
+export function isAuthorizedToRemoveParticipant(input: {
+  callerAgentId: string;
+  callerIsSpeaker: boolean;
+  callerRole: string | null;
+  callerManagerId: string;
+  targetAgentId: string;
+  targetRole: string;
+  targetType: string;
+  targetManagerId: string;
+  ownerManagerId: string | null;
+}): boolean {
+  if (!input.callerIsSpeaker) return false;
+  if (input.callerAgentId === input.targetAgentId) return false;
+  if (input.targetRole === "owner") return false;
+  const callerIsOwnerSide =
+    input.callerRole === "owner" || (input.ownerManagerId != null && input.ownerManagerId === input.callerManagerId);
+  if (callerIsOwnerSide) return true;
+  return input.targetType !== "human" && input.targetManagerId === input.callerManagerId;
+}
+
+/**
+ * Viewer-relative Remove flags for speaker roster rows. Uses the same matrix
+ * as the mutation; trial chats and non-speakers get every flag false.
+ */
+export async function resolveParticipantRemoveFlags(
+  db: Database,
+  input: {
+    chatId: string;
+    viewerAgentId: string | null;
+    chatMetadata: Record<string, unknown> | null | undefined;
+    participants: ReadonlyArray<{ agentId: string; role: string; type: string; managerId: string }>;
+  },
+): Promise<Map<string, boolean>> {
+  const flags = new Map<string, boolean>();
+  for (const p of input.participants) flags.set(p.agentId, false);
+  if (!input.viewerAgentId) return flags;
+  if (parseLandingCampaignTrialChatMetadata(input.chatMetadata)) return flags;
+
+  const [viewer] = await db
+    .select({
+      role: chatMembership.role,
+      accessMode: chatMembership.accessMode,
+      managerId: agents.managerId,
+    })
+    .from(chatMembership)
+    .innerJoin(agents, eq(agents.uuid, chatMembership.agentId))
+    .where(and(eq(chatMembership.chatId, input.chatId), eq(chatMembership.agentId, input.viewerAgentId)))
+    .limit(1);
+  if (!viewer || viewer.accessMode !== "speaker") return flags;
+
+  const ownerAgentId = await loadChatOwnerAgentId(db, input.chatId);
+  let ownerManagerId: string | null = null;
+  if (ownerAgentId) {
+    const fromRoster = input.participants.find((p) => p.agentId === ownerAgentId);
+    if (fromRoster) {
+      ownerManagerId = fromRoster.managerId;
+    } else {
+      const [owner] = await db
+        .select({ managerId: agents.managerId })
+        .from(agents)
+        .where(eq(agents.uuid, ownerAgentId))
+        .limit(1);
+      ownerManagerId = owner?.managerId ?? null;
+    }
+  }
+
+  for (const p of input.participants) {
+    flags.set(
+      p.agentId,
+      isAuthorizedToRemoveParticipant({
+        callerAgentId: input.viewerAgentId,
+        callerIsSpeaker: true,
+        callerRole: viewer.role,
+        callerManagerId: viewer.managerId,
+        targetAgentId: p.agentId,
+        targetRole: p.role,
+        targetType: p.type,
+        targetManagerId: p.managerId,
+        ownerManagerId,
+      }),
+    );
+  }
+  return flags;
+}
+
 type TxOutcome = RemoveChatParticipantResponse & {
   organizationId: string;
   targetType: string;
@@ -141,10 +231,19 @@ export async function removeChatParticipant(
     }
 
     const ownerLocked = chatOwnerAgentId ? authority.agents.find((row) => row.agentId === chatOwnerAgentId) : undefined;
-    const callerIsOwnerSide =
-      callerSpeaker.role === "owner" || (ownerLocked != null && ownerLocked.managerId === callerLocked.managerId);
-    const targetIsCallersOwnAgent = targetLocked.type !== "human" && targetLocked.managerId === callerLocked.managerId;
-    if (!callerIsOwnerSide && !targetIsCallersOwnAgent) {
+    if (
+      !isAuthorizedToRemoveParticipant({
+        callerAgentId: requesterId,
+        callerIsSpeaker: true,
+        callerRole: callerSpeaker.role,
+        callerManagerId: callerLocked.managerId,
+        targetAgentId: targetAgentId,
+        targetRole: targetSpeaker.role,
+        targetType: targetLocked.type,
+        targetManagerId: targetLocked.managerId,
+        ownerManagerId: ownerLocked?.managerId ?? null,
+      })
+    ) {
       throw new ForbiddenError(
         "Only the chat owner's side can remove a participant, or the agent's own manager can recall it",
       );

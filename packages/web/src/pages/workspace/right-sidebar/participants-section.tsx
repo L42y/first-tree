@@ -56,34 +56,10 @@ export function partitionRoster(
 }
 
 /**
- * Best-effort Web affordance for the owner-side / own-agent removal matrix.
- * Server remains the authority; this only hides controls the roster +
- * `managedByMe` map can prove are disallowed. Owner rows are never removable.
- * When the owner speaker is absent from the roster (watcher owner), only
- * own-agent recalls remain visible.
- */
-export function canRequestRemoveParticipant(input: {
-  selfAgentId: string | null | undefined;
-  target: ChatParticipantDetail;
-  participants: ChatParticipantDetail[];
-  managedByMe: Map<string, boolean>;
-}): boolean {
-  const { selfAgentId, target, participants, managedByMe } = input;
-  if (!selfAgentId || target.agentId === selfAgentId) return false;
-  if (target.role === "owner") return false;
-  const selfRow = participants.find((p) => p.agentId === selfAgentId);
-  if (!selfRow) return false;
-  const ownerRow = participants.find((p) => p.role === "owner");
-  const ownerSide = selfRow.role === "owner" || Boolean(ownerRow && (managedByMe.get(ownerRow.agentId) ?? false));
-  if (ownerSide) return true;
-  return target.type !== "human" && (managedByMe.get(target.agentId) ?? false);
-}
-
-/**
  * Participants section — full chat membership (humans + agents), the top
- * section of the rail. Speakers other than the current user expose a Remove
- * action when the owner-side / own-agent matrix allows; watchers / read-only /
- * self / owners do not.
+ * section of the rail. Remove affordance is server-derived (`canRemove`) via
+ * the owner-side / own-agent matrix; the client never invents a Remove from
+ * incomplete roster inference. Watchers / read-only / self / owners stay hidden.
  */
 export function ParticipantsSection({
   chatId,
@@ -107,17 +83,13 @@ export function ParticipantsSection({
   const [pendingRemove, setPendingRemove] = useState<ChatParticipantDetail | null>(null);
 
   const isAdmin = role === "admin";
-  // Chat detail participants are speakers-only. Supervisors who can open the
-  // chat without membership must not see Remove — the server still 403s them.
-  const selfIsSpeaker = Boolean(selfAgentId && participants.some((p) => p.agentId === selfAgentId));
-  const canRemoveSpeakers = !readOnly && selfIsSpeaker;
   const { total, visibleAgents, visibleHumans, hiddenCount } = useMemo(
     () => partitionRoster(participants, showAll),
     [participants, showAll],
   );
 
   const allowRemove = (target: ChatParticipantDetail): boolean =>
-    canRemoveSpeakers && canRequestRemoveParticipant({ selfAgentId, target, participants, managedByMe });
+    !readOnly && target.canRemove === true && target.agentId !== selfAgentId;
 
   const removeMut = useMutation({
     mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
@@ -141,17 +113,24 @@ export function ParticipantsSection({
       onAdded();
     },
     onError: (error) => {
-      const openRequest =
-        error instanceof ApiError && (error.code === REMOVE_PARTICIPANT_OPEN_REQUEST_CODE || error.status === 409);
+      if (error instanceof ApiError && (error.code === REMOVE_PARTICIPANT_OPEN_REQUEST_CODE || error.status === 409)) {
+        addToast({
+          title: "Unanswered request",
+          description:
+            error instanceof Error ? error.message : "Answer or skip the open request before removing this person.",
+        });
+        return;
+      }
+      if (error instanceof ApiError && error.status === 403) {
+        addToast({
+          title: "Not allowed",
+          description: error.message || "You cannot remove this participant.",
+        });
+        return;
+      }
       addToast({
-        title: openRequest ? "Unanswered request" : "Could not remove participant",
-        description: openRequest
-          ? error instanceof Error
-            ? error.message
-            : "Answer or skip the open request before removing this person."
-          : error instanceof Error
-            ? error.message
-            : "Something went wrong. Try again.",
+        title: "Could not remove participant",
+        description: error instanceof Error ? error.message : "Something went wrong. Try again.",
       });
     },
   });
@@ -160,6 +139,8 @@ export function ParticipantsSection({
     if (!allowRemove(target)) return;
     setPendingRemove(target);
   };
+
+  const anyRemovable = participants.some(allowRemove);
 
   return (
     <section style={{ borderBottom: "var(--hairline) solid var(--border-faint)" }}>
@@ -184,7 +165,7 @@ export function ParticipantsSection({
                 agents={visibleAgents}
                 canManage={(id) => isAdmin || (managedByMe.get(id) ?? false)}
                 compact
-                onRequestRemove={canRemoveSpeakers ? requestRemove : undefined}
+                onRequestRemove={anyRemovable ? requestRemove : undefined}
                 canRemoveAgent={allowRemove}
                 selfAgentId={selfAgentId}
               />

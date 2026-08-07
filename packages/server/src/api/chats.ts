@@ -62,6 +62,7 @@ import {
 import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
 import { listRequestThread } from "../services/need-you.js";
 import { notifyRecipients } from "../services/notifier.js";
+import { resolveParticipantRemoveFlags } from "../services/remove-chat-participant.js";
 import { resolveHumanScmBindingPair } from "../services/scm-attention-line.js";
 import { extractSummary } from "../services/session.js";
 import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/session-event.js";
@@ -121,6 +122,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         name: agents.name,
         displayName: agents.displayName,
         type: agents.type,
+        managerId: agents.managerId,
         avatarColorToken: agents.avatarColorToken,
         avatarImageUpdatedAt: agents.avatarImageUpdatedAt,
         userAvatarUrl: users.avatarUrl,
@@ -152,6 +154,13 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       }),
     }));
     const title = resolveChatTitle(chat.topic, firstMessagePreview, participantsForTitle, scope.humanAgentId);
+
+    const removeFlags = await resolveParticipantRemoveFlags(app.db, {
+      chatId: chat.id,
+      viewerAgentId: scope.humanAgentId,
+      chatMetadata: chat.metadata,
+      participants,
+    });
 
     const [callerState] = await app.db.execute<{
       engagement_status: ChatEngagementStatus | null;
@@ -220,6 +229,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
           avatarImageUpdatedAt: p.avatarImageUpdatedAt,
           userAvatarUrl: p.userAvatarUrl,
         }),
+        canRemove: removeFlags.get(p.agentId) ?? false,
       })),
     };
   });
