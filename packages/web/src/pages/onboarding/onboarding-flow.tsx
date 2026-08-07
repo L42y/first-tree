@@ -300,6 +300,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     onTokenMintFailed: () => reportStepFailure("connect_token_mint_failed", { step: "connect-computer" }),
     allowBootstrapMint: activeStep !== "get-started" || byoBootstrapRequested,
     prepareBootstrapWhenConnected: activeStep === "get-started" && byoBootstrapRequested,
+    requireExplicitSelectionWhenMultiple: activeStep === "create-agent",
   });
 
   // A connected computer with a completed capability report but no usable

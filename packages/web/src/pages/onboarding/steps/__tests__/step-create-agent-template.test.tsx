@@ -16,28 +16,38 @@ const templateMocks = vi.hoisted(() => ({
   updateAgentTemplates: vi.fn(),
 }));
 
-const flowMock = vi.hoisted(() => ({
-  path: "admin" as const,
-  organizationId: "org-1" as string | null,
-  agentDisplayName: "My assistant",
-  setAgentDisplayName: vi.fn(),
-  visibility: "organization" as const,
-  setVisibility: vi.fn(),
-  computer: {
-    connectedClient: { id: "client-1" } as { id: string } | null,
-    selectedRuntime: "claude-code" as string | null,
-    setSelectedRuntime: vi.fn(),
-    okRuntimes: ["claude-code"],
-  },
-  createAgent: vi.fn(async (_args: Record<string, unknown>) => undefined),
-  retryAgent: vi.fn(async () => undefined),
-  finishLater: vi.fn(async () => undefined),
-  agentPhase: "idle" as const,
-  agentError: null as string | null,
-  goNext: vi.fn(),
-  goTo: vi.fn(),
-  sequence: ["create-team", "connect-computer", "create-agent", "start-chat"] as const,
-}));
+const flowMock = vi.hoisted(() => {
+  function nullable<T>(value: T): T | null {
+    return value;
+  }
+
+  return {
+    path: "admin" as const,
+    organizationId: "org-1" as string | null,
+    agentDisplayName: "My assistant",
+    setAgentDisplayName: vi.fn(),
+    visibility: "organization" as const,
+    setVisibility: vi.fn(),
+    computer: {
+      connectedClients: [{ id: "client-1", hostname: "gandy-macbook", os: "darwin" }],
+      selectedClientId: nullable("client-1"),
+      setSelectedClientId: vi.fn(),
+      connectedClient: nullable({ id: "client-1", hostname: "gandy-macbook", os: "darwin" }),
+      capabilitiesLoaded: true,
+      selectedRuntime: nullable("claude-code"),
+      setSelectedRuntime: vi.fn(),
+      okRuntimes: ["claude-code"],
+    },
+    createAgent: vi.fn(async (_args: Record<string, unknown>) => undefined),
+    retryAgent: vi.fn(async () => undefined),
+    finishLater: vi.fn(async () => undefined),
+    agentPhase: "idle" as const,
+    agentError: null as string | null,
+    goNext: vi.fn(),
+    goTo: vi.fn(),
+    sequence: ["create-team", "connect-computer", "create-agent", "start-chat"] as const,
+  };
+});
 
 const authMock = vi.hoisted(() => ({
   value: { currentOrgHasPersonalAgent: false },
@@ -185,7 +195,7 @@ describe("StepCreateAgent template intent", () => {
     flowMock.agentPhase = "idle";
     flowMock.agentError = null;
     flowMock.organizationId = "org-1";
-    flowMock.computer.connectedClient = { id: "client-1" };
+    flowMock.computer.connectedClient = { id: "client-1", hostname: "gandy-macbook", os: "darwin" };
     flowMock.computer.selectedRuntime = "claude-code";
     authMock.value.currentOrgHasPersonalAgent = false;
     windowProbeEnabled = false;

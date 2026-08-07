@@ -8,6 +8,7 @@ import { ArrowRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { getAgentTemplate } from "../../../api/agent-templates.js";
 import { useAuth } from "../../../auth/auth-context.js";
+import { ConnectedComputerSelect, ConnectedComputerSummary } from "../../../components/connected-computer-select.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
@@ -158,11 +159,6 @@ export function StepCreateAgent() {
   // Codex-first catalog preference in `useComputerConnection`.
   const { okRuntimes, selectedRuntime, setSelectedRuntime } = computer;
   const orderedOkRuntimes = useMemo(() => orderRuntimeProvidersByPreference(okRuntimes), [okRuntimes]);
-  useEffect(() => {
-    if (selectedRuntime && orderedOkRuntimes.includes(selectedRuntime)) return;
-    const next = orderedOkRuntimes[0];
-    if (next) setSelectedRuntime(next);
-  }, [orderedOkRuntimes, selectedRuntime, setSelectedRuntime]);
 
   // Coding-agent pills to render. When the computer drops mid-form, okRuntimes
   // empties but `selectedRuntime` keeps the last pick — so we still show THAT
@@ -170,7 +166,12 @@ export function StepCreateAgent() {
   // jump. A disabled pill + the reconnect hint reads as "your agent's here, just
   // temporarily unreachable", not "it's gone".
   const connected = !!computer.connectedClient;
-  const displayProviders = orderedOkRuntimes.length > 0 ? orderedOkRuntimes : selectedRuntime ? [selectedRuntime] : [];
+  const noRuntime = connected && computer.capabilitiesLoaded && orderedOkRuntimes.length === 0;
+  const displayProviders = connected
+    ? orderedOkRuntimes
+    : computer.connectedClients.length === 0 && selectedRuntime
+      ? [selectedRuntime]
+      : [];
 
   if (agentPhase === "creating") {
     return <WorkingState label={COPY.createAgent.creating} hint={COPY.createAgent.creatingHint} />;
@@ -217,47 +218,77 @@ export function StepCreateAgent() {
     });
   };
 
-  const toolPicker =
-    displayProviders.length > 0 ? (
-      <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
-        <legend
-          className="text-label font-medium"
-          style={{
-            color: "var(--fg-2)",
-            marginBottom: "var(--sp-1)",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "var(--sp-2)",
-          }}
-        >
-          {COPY.createAgent.codingAgentLabel}
-          {/* Prominent amber "Not ready" badge when the computer dropped — makes
-              the disabled pill read as unavailable (reconnect needed), not just
-              quietly greyed. */}
-          {!connected && (
+  const executionPicker = (
+    <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
+      <legend
+        className="text-label font-medium"
+        style={{
+          color: "var(--fg-2)",
+          marginBottom: "var(--sp-1)",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "var(--sp-2)",
+        }}
+      >
+        {COPY.createAgent.codingAgentLabel}
+        {/* Only a genuinely disconnected state is "Not ready". With several
+            online computers and no selection, the dropdown itself is the
+            required next action. */}
+        {computer.connectedClients.length === 0 && (
+          <span
+            className="inline-flex items-center text-caption font-medium"
+            style={{
+              gap: "var(--sp-1)",
+              padding: "var(--sp-0_5) var(--sp-1_5)",
+              borderRadius: "var(--radius-chip)",
+              background: "var(--state-needs-you-soft)",
+              color: "var(--fg-needs-you-strong)",
+            }}
+          >
             <span
-              className="inline-flex items-center text-caption font-medium"
+              aria-hidden="true"
               style={{
-                gap: "var(--sp-1)",
-                padding: "var(--sp-0_5) var(--sp-1_5)",
-                borderRadius: "var(--radius-chip)",
-                background: "var(--state-needs-you-soft)",
-                color: "var(--fg-needs-you-strong)",
+                width: "var(--sp-1_5)",
+                height: "var(--sp-1_5)",
+                borderRadius: "var(--radius-full)",
+                background: "var(--state-needs-you)",
               }}
-            >
-              <span
-                aria-hidden="true"
-                style={{
-                  width: "var(--sp-1_5)",
-                  height: "var(--sp-1_5)",
-                  borderRadius: "var(--radius-full)",
-                  background: "var(--state-needs-you)",
-                }}
-              />
-              {COPY.createAgent.codingAgentNotReady}
-            </span>
-          )}
-        </legend>
+            />
+            {COPY.createAgent.codingAgentNotReady}
+          </span>
+        )}
+      </legend>
+
+      {computer.connectedClients.length > 1 ? (
+        <ConnectedComputerSelect
+          clients={computer.connectedClients}
+          value={computer.selectedClientId}
+          onChange={computer.setSelectedClientId}
+          id="onboarding-agent-computer"
+        />
+      ) : computer.connectedClients.length === 1 && computer.connectedClients[0] ? (
+        <ConnectedComputerSummary client={computer.connectedClients[0]} />
+      ) : null}
+
+      {connected && !computer.capabilitiesLoaded ? (
+        <p className="text-caption text-muted-foreground" role="status" style={{ margin: 0 }}>
+          Detecting what this computer can run…
+        </p>
+      ) : noRuntime ? (
+        <FlowHint role="status">
+          {COPY.createAgent.noRuntime.pre}
+          <a
+            href="/settings/computers"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-medium underline underline-offset-2"
+            style={{ color: "var(--primary)" }}
+          >
+            {COPY.createAgent.noRuntime.link}
+          </a>
+          {COPY.createAgent.noRuntime.post}
+        </FlowHint>
+      ) : displayProviders.length > 0 ? (
         <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
           {displayProviders.map((provider) => (
             <OptionCard
@@ -272,8 +303,9 @@ export function StepCreateAgent() {
             </OptionCard>
           ))}
         </div>
-      </fieldset>
-    ) : null;
+      ) : null}
+    </fieldset>
+  );
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
@@ -330,7 +362,7 @@ export function StepCreateAgent() {
         />
       </div>
 
-      {toolPicker}
+      {executionPicker}
 
       <fieldset className="flex flex-col" style={{ gap: "var(--sp-2)", margin: 0, padding: 0, border: 0 }}>
         <legend className="text-label font-medium" style={{ color: "var(--fg-2)", marginBottom: "var(--sp-1)" }}>
@@ -361,7 +393,7 @@ export function StepCreateAgent() {
         </FlowHint>
       )}
 
-      {!computer.connectedClient && (
+      {computer.connectedClients.length === 0 && (
         // Computer dropped (slept / offline) or resumed here with it not
         // connected — Create is gated on a live client. One line with the
         // "reconnect it" action inline (→ connect-computer), not a separate

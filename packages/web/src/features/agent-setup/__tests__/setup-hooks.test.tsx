@@ -54,6 +54,12 @@ function expectHookValue<T>(value: T): NonNullable<T> {
   return value;
 }
 
+function latestVisibilityTick(): () => void | Promise<void> {
+  const tick = visibilityMocks.runVisibilityAwareInterval.mock.calls.at(-1)?.[0];
+  if (!tick) throw new Error("visibility-aware interval was not registered");
+  return tick;
+}
+
 function createStorage(): Storage {
   const data = new Map<string, string>();
   return {
@@ -181,6 +187,94 @@ describe("shared setup hooks", () => {
     expect(eventMocks.reportOnboardingEvent).not.toHaveBeenCalled();
   });
 
+  it("requires an explicit computer choice when multiple computers are connected", async () => {
+    const latest: { current: ComputerConnection | null } = { current: null };
+    const older = {
+      id: "client-old",
+      userId: "user-self",
+      status: "connected",
+      authState: "ok",
+      binName: "first-tree-dev",
+      sdkVersion: "0.5.0",
+      hostname: "studio-mac",
+      os: "darwin",
+      agentCount: 1,
+      connectedAt: "2026-05-28T00:00:00.000Z",
+      lastSeenAt: "2026-05-28T11:00:00.000Z",
+      capabilities: {},
+    };
+    const newer = {
+      ...older,
+      id: "client-new",
+      hostname: "travel-mac",
+      lastSeenAt: "2026-05-28T12:00:00.000Z",
+    };
+    activityMocks.listClients.mockResolvedValue([older, newer]);
+    activityMocks.getClientCapabilities.mockImplementation(async (clientId: string) => ({
+      ...(clientId === older.id ? older : newer),
+      capabilities:
+        clientId === older.id
+          ? {
+              "claude-code": {
+                state: "ok",
+                available: true,
+                detectedAt: "2026-05-28T12:00:00.000Z",
+              },
+            }
+          : {
+              codex: {
+                state: "ok",
+                available: true,
+                detectedAt: "2026-05-28T12:00:00.000Z",
+              },
+              "claude-code": {
+                state: "ok",
+                available: true,
+                detectedAt: "2026-05-28T12:00:00.000Z",
+              },
+            },
+    }));
+
+    function Probe() {
+      latest.current = useComputerConnection(true, { requireExplicitSelectionWhenMultiple: true });
+      return <div>{latest.current.selectedClientId ?? "choose"}</div>;
+    }
+
+    await renderProbe(<Probe />);
+    await flush();
+    await flush();
+
+    expect(expectHookValue(latest.current).connectedClients.map((client) => client.id)).toEqual([
+      "client-new",
+      "client-old",
+    ]);
+    expect(expectHookValue(latest.current).selectedClientId).toBeNull();
+    expect(expectHookValue(latest.current).connectedClient).toBeNull();
+    expect(activityMocks.getClientCapabilities).not.toHaveBeenCalled();
+
+    await act(async () => expectHookValue(latest.current).setSelectedClientId("client-old"));
+    await flush();
+    await flush();
+
+    expect(expectHookValue(latest.current).connectedClient?.id).toBe("client-old");
+    expect(activityMocks.getClientCapabilities).toHaveBeenCalledWith("client-old");
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("claude-code");
+
+    await act(async () => expectHookValue(latest.current).setSelectedClientId("client-new"));
+    await flush();
+    await flush();
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("codex");
+
+    await act(async () => expectHookValue(latest.current).setSelectedRuntime("claude-code"));
+    await act(async () => expectHookValue(latest.current).setSelectedClientId("client-old"));
+    await flush();
+    await flush();
+    await act(async () => expectHookValue(latest.current).setSelectedClientId("client-new"));
+    await flush();
+    await flush();
+    expect(expectHookValue(latest.current).selectedRuntime).toBe("claude-code");
+  });
+
   it("keeps an empty capability snapshot in detecting state until a provider report arrives", async () => {
     const latest = { current: null as ComputerConnection | null };
     const client = {
@@ -198,18 +292,7 @@ describe("shared setup hooks", () => {
       capabilities: {},
     };
     activityMocks.listClients.mockResolvedValue([client]);
-    activityMocks.getClientCapabilities.mockResolvedValueOnce({ ...client, capabilities: {} }).mockResolvedValueOnce({
-      ...client,
-      capabilities: {
-        codex: {
-          state: "ok",
-          available: true,
-          authenticated: true,
-          authMethod: "none",
-          detectedAt: "2026-05-28T12:00:05.000Z",
-        },
-      },
-    });
+    activityMocks.getClientCapabilities.mockResolvedValue({ ...client, capabilities: {} });
 
     function Probe() {
       latest.current = useComputerConnection(true);
@@ -225,8 +308,19 @@ describe("shared setup hooks", () => {
     expect(expectHookValue(latest.current).okRuntimes).toEqual([]);
     expect(expectHookValue(latest.current).selectedRuntime).toBeNull();
 
-    const tick = visibilityMocks.runVisibilityAwareInterval.mock.calls[0]?.[0];
-    if (!tick) throw new Error("visibility-aware interval was not registered");
+    activityMocks.getClientCapabilities.mockResolvedValue({
+      ...client,
+      capabilities: {
+        codex: {
+          state: "ok",
+          available: true,
+          authenticated: true,
+          authMethod: "none",
+          detectedAt: "2026-05-28T12:00:05.000Z",
+        },
+      },
+    });
+    const tick = latestVisibilityTick();
     await act(async () => {
       await tick();
     });
@@ -259,14 +353,7 @@ describe("shared setup hooks", () => {
       detectedAt: "2026-05-28T12:00:00.000Z",
     };
     activityMocks.listClients.mockResolvedValue([client]);
-    activityMocks.getClientCapabilities.mockRejectedValueOnce(new Error("capabilities offline")).mockResolvedValue({
-      ...client,
-      capabilities: {
-        // Disabled known provider + unknown wire id — neither is selectable.
-        "claude-code-tui": ok,
-        "future-provider": ok,
-      },
-    });
+    activityMocks.getClientCapabilities.mockRejectedValue(new Error("capabilities offline"));
 
     function Probe() {
       latest.current = useComputerConnection(true);
@@ -279,8 +366,15 @@ describe("shared setup hooks", () => {
 
     expect(expectHookValue(latest.current).capabilitiesLoaded).toBe(false);
 
-    const tick = visibilityMocks.runVisibilityAwareInterval.mock.calls[0]?.[0];
-    if (!tick) throw new Error("visibility-aware interval was not registered");
+    activityMocks.getClientCapabilities.mockResolvedValue({
+      ...client,
+      capabilities: {
+        // Disabled known provider + unknown wire id — neither is selectable.
+        "claude-code-tui": ok,
+        "future-provider": ok,
+      },
+    });
+    const tick = latestVisibilityTick();
     await act(async () => {
       await tick();
     });

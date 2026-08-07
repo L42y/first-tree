@@ -213,6 +213,15 @@ export const COPY = {
     // disabled picker reads AS unavailable (action needed: reconnect) at a glance,
     // not just a quietly greyed pill.
     codingAgentNotReady: "Not ready",
+    /** A selected computer can be online without any ready runtime. Keep the
+        reason and recovery action inside the execution field so a disabled
+        Create button never becomes an unexplained dead end. Settings opens in
+        another tab, preserving this onboarding draft while setup is finished. */
+    noRuntime: {
+      pre: "Nothing is ready to run on this computer. ",
+      link: "Finish setup in Settings → Computers",
+      post: ", then come back.",
+    },
     nameLabel: "Name your agent",
     // "Bringing your agent online…" (not "Setting up…"): the step registers the
     // agent then polls until it comes online. Pairs with timeout's "isn't online

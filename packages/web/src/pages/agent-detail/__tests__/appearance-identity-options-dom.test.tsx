@@ -814,6 +814,42 @@ describe("Select", () => {
     getRect.mockRestore();
   });
 
+  it("keeps stacked option context visible in both the trigger and list", async () => {
+    const { Select } = await import("../../../components/ui/select.js");
+    const getRect = vi.spyOn(HTMLButtonElement.prototype, "getBoundingClientRect");
+    getRect.mockReturnValue({
+      x: 10,
+      y: 20,
+      top: 20,
+      right: 210,
+      bottom: 68,
+      left: 10,
+      width: 200,
+      height: 48,
+      toJSON: () => ({}),
+    });
+    const { container, root } = await renderDom(
+      <Select
+        value="alpha"
+        onChange={vi.fn()}
+        hintLayout="stacked"
+        options={[
+          { value: "alpha", label: "Studio Mac", hint: "darwin · online" },
+          { value: "beta", label: "Travel Mac", hint: "linux · online" },
+        ]}
+      />,
+    );
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]');
+    expect(trigger?.textContent).toContain("Studio Macdarwin · online");
+    await click(trigger);
+    const travel = buttonByText(document.body, "Travel Mac");
+    expect(travel?.textContent).toContain("Travel Maclinux · online");
+
+    await act(async () => root.unmount());
+    getRect.mockRestore();
+  });
+
   it("stays closed when disabled and falls back to the raw value for unknown selections", async () => {
     const { Select } = await import("../../../components/ui/select.js");
     const onChange = vi.fn();
