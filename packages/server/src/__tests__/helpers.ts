@@ -1,4 +1,4 @@
-import type { AgentType, RuntimeProvider } from "@first-tree/shared";
+import { AGENT_RUNTIME_SESSION_HEADER, type AgentType, type RuntimeProvider } from "@first-tree/shared";
 import { setConfig } from "@first-tree/shared/config";
 import bcrypt from "bcrypt";
 import { eq } from "drizzle-orm";
@@ -13,6 +13,7 @@ import { members } from "../db/schema/members.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agent.js";
+import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { signTokensForUser } from "../services/auth.js";
 import { resolveDefaultOrgId } from "../services/organization.js";
@@ -77,7 +78,6 @@ export type CreateTestAppOptions = {
   rateLimit?: Partial<NonNullable<Config["rateLimit"]>>;
   connectBootstrap?: Config["connectBootstrap"];
   inbox?: Partial<NonNullable<Config["inbox"]>>;
-  runtimeHttpTokenEnforcement?: boolean;
   runtimeSwitchFaultInjection?: boolean;
   allowedOrganizationId?: string;
   /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
@@ -169,7 +169,6 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
           origin: `https://${host}`,
           addressPolicy: { kind: "public" as const },
         })),
-      legacyEgressAllowlist: undefined,
     },
     ...(opts.allowedOrganizationId !== undefined
       ? { access: { allowedOrganizationId: opts.allowedOrganizationId.trim() || undefined } }
@@ -216,7 +215,6 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
       logging: { level: "error", format: "json", bridgeToSpanLevel: "off" },
     },
     runtime: {
-      agentHttpTokenEnforcement: opts.runtimeHttpTokenEnforcement ?? false,
       runtimeSwitchFaultInjection: opts.runtimeSwitchFaultInjection ?? false,
       pollingIntervalSeconds: 5,
       presenceCleanupSeconds: 60,
@@ -308,6 +306,8 @@ export async function createTestAgent(
           clientId,
         });
   if (!agent) throw new Error("test agent setup failed");
+  const runtimeSessionToken =
+    type === "human" ? undefined : await bindAgentRuntimeSession(app.db, agent.uuid, clientId);
 
   // `token` is kept as an alias for the user's JWT so the large body of
   // pre-unified-token tests still compiles; those tests will additionally
@@ -322,7 +322,7 @@ export async function createTestAgent(
     humanAgentUuid: admin.humanAgentUuid,
     userId: member.userId,
     organizationId: member.organizationId,
-    /** Agent-scoped request — adds `Authorization` + `x-agent-id` headers. */
+    /** Agent-scoped request — adds auth, agent-selector, and runtime-session headers. */
     request: ((method, url, payload, extraHeaders) =>
       app.inject({
         method: method as "GET" | "POST" | "PATCH" | "DELETE",
@@ -330,6 +330,7 @@ export async function createTestAgent(
         headers: {
           authorization: `Bearer ${admin.accessToken}`,
           "x-agent-id": agent.uuid,
+          ...(runtimeSessionToken ? { [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken } : {}),
           ...extraHeaders,
         },
         ...(payload ? { payload } : {}),
@@ -342,11 +343,30 @@ export async function createTestAgent(
  * Useful when the test already has the pieces and doesn't need a fresh agent.
  */
 export function agentRequest(app: FastifyInstance, accessToken: string, agentUuid: string): AgentRequestFn {
-  return (method, url, payload) =>
+  let runtimeSessionToken: Promise<string> | undefined;
+  const getRuntimeSessionToken = () => {
+    runtimeSessionToken ??= app.db
+      .select({ clientId: agents.clientId })
+      .from(agents)
+      .where(eq(agents.uuid, agentUuid))
+      .limit(1)
+      .then(([agent]) => {
+        if (!agent?.clientId) throw new Error(`test agent ${agentUuid} is not pinned to a client`);
+        return bindAgentRuntimeSession(app.db, agentUuid, agent.clientId);
+      });
+    return runtimeSessionToken;
+  };
+
+  return async (method, url, payload, extraHeaders) =>
     app.inject({
       method: method as "GET" | "POST" | "PATCH" | "DELETE",
       url,
-      headers: { authorization: `Bearer ${accessToken}`, "x-agent-id": agentUuid },
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "x-agent-id": agentUuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: await getRuntimeSessionToken(),
+        ...extraHeaders,
+      },
       ...(payload ? { payload } : {}),
     });
 }

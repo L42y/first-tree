@@ -7,8 +7,6 @@ function capability(state: CapabilityEntry["state"]): CapabilityEntry {
   return {
     state,
     available: state === "ok",
-    authenticated: state === "ok",
-    authMethod: "none",
     sdkVersion: null,
     detectedAt: new Date(0).toISOString(),
   };
@@ -46,5 +44,11 @@ describe("runtime switch capability filtering", () => {
 
     expect(available).toContain("codex");
     expect(available).not.toContain("opencode");
+  });
+
+  it.each([null, "0.1.0"])("does not filter providers by Client SDK version %s", (sdkVersion) => {
+    const target = { ...client({ codex: capability("ok") }), sdkVersion };
+
+    expect(runtimeSwitchAvailableProviders(target)).toContain("codex");
   });
 });

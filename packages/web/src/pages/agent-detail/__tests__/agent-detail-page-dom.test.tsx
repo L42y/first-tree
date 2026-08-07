@@ -260,7 +260,7 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
     status: overrides.status ?? "connected",
     authState: overrides.authState ?? "ok",
     binName: overrides.binName ?? "first-tree-dev",
-    sdkVersion: overrides.sdkVersion ?? "0.5.11",
+    sdkVersion: overrides.sdkVersion === undefined ? "0.5.11" : overrides.sdkVersion,
     hostname: overrides.hostname ?? "gandy-macbook",
     os: overrides.os ?? "darwin",
     agentCount: overrides.agentCount ?? 1,
@@ -1513,6 +1513,26 @@ describe("AgentDetailPage", () => {
       runtimeProvider: "codex",
       confirmLocalDataLoss: true,
     });
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("does not block runtime-switch candidates with missing or old SDK versions", async () => {
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    activityMocks.listClients.mockResolvedValue([
+      client({ id: "client-old", hostname: "old-cli", sdkVersion: "0.1.0" }),
+      client({ id: "client-unknown", hostname: "unknown-cli", sdkVersion: null }),
+    ]);
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
+    await waitForText(view.container, "Switch runtime");
+    await click(buttonByText(view.container, "Switch runtime"));
+    await waitForText(document.body, "old-cli");
+    await waitForText(document.body, "unknown-cli");
+
+    expect(buttonByText(document.body, "old-cli")?.disabled).toBe(false);
+    expect(buttonByText(document.body, "unknown-cli")?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain("Requires CLI");
 
     await act(async () => view.root.unmount());
   });

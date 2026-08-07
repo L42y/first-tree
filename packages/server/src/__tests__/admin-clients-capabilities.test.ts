@@ -105,8 +105,6 @@ describe("PATCH /clients/:clientId/capabilities", () => {
           "claude-code": {
             state: "pending", // <- not in the schema enum
             available: true,
-            authenticated: false,
-            authMethod: "none",
             detectedAt: new Date().toISOString(),
           },
         },

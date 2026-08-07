@@ -782,8 +782,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
   async function setup(
     state: string,
     opts: {
-      /** `"apply-ack-only"` models a legacy client that predates the composite v1 protocol. */
-      capable?: boolean | "apply-ack-only";
+      capable?: boolean;
       connected?: boolean;
       remote?: boolean;
       localSocket?: boolean;
@@ -811,12 +810,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
         status: connected ? "connected" : "disconnected",
         instanceId: connected ? instanceId : null,
         metadata: {
-          wireCapabilities:
-            capable === true
-              ? { wsSessionResetV1: true }
-              : capable === "apply-ack-only"
-                ? { wsSessionTerminateApplyAck: true }
-                : {},
+          wireCapabilities: capable ? { wsSessionResetV1: true } : {},
         },
       })
       .where(eq(clients.id, admin.clientId));
@@ -1322,12 +1316,8 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     }
   });
 
-  it("fails 503 for a legacy client that declares only the apply-only Reset flag", async () => {
-    // Old client → new server. Half a handshake is worse than none: the
-    // client would park its intervening inbox rows behind a Reset fence and
-    // never answer the post-finalize signal, so Reset must fail before
-    // anything is applied.
-    const { app, admin, agent, chat, ws } = await setup("suspended", { capable: "apply-ack-only" });
+  it("fails 503 for a client without the composite Reset capability", async () => {
+    const { app, admin, agent, chat, ws } = await setup("suspended", { capable: false });
     try {
       const res = await terminateReq(app, admin, agent.uuid, chat.id);
       expect(res.statusCode).toBe(503);
@@ -1351,7 +1341,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       payload: { source: "sdk", message: "must survive" },
     });
     const legacyWs = makeFakeClientSocket(app, admin.clientId);
-    setClientConnection(admin.clientId, legacyWs as unknown as WebSocket, { wsSessionTerminateApplyAck: true });
+    setClientConnection(admin.clientId, legacyWs as unknown as WebSocket, {});
     bindAgentToClient(admin.clientId, agent.uuid);
     // A regression here sends the frame and then stalls on the ack waiter;
     // keep that failure fast instead of pinning the suite for 25s.
@@ -1398,7 +1388,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     const { eq } = await import("drizzle-orm");
     await app.db
       .update(clients)
-      .set({ metadata: { wireCapabilities: { wsSessionTerminateApplyAck: true } } })
+      .set({ metadata: { wireCapabilities: {} } })
       .where(eq(clients.id, admin.clientId));
     try {
       const appliedRef = crypto.randomUUID();

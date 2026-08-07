@@ -124,16 +124,15 @@ describe("serverWelcomeFrameSchema", () => {
     expect(res.success).toBe(false);
   });
 
-  it("accepts a capabilities block advertising wsInboxDeliver", () => {
+  it("accepts a capabilities block advertising acknowledgement support", () => {
     const res = serverWelcomeFrameSchema.safeParse({
       type: "server:welcome",
       serverCommandVersion: "1.0.0",
       serverTimeMs: 1_713_000_000_000,
-      capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true },
+      capabilities: { wsInboxAckConfirm: true },
     });
     expect(res.success).toBe(true);
     if (res.success) {
-      expect(res.data.capabilities?.wsInboxDeliver).toBe(true);
       expect(res.data.capabilities?.wsInboxAckConfirm).toBe(true);
     }
   });
@@ -147,9 +146,6 @@ describe("serverWelcomeFrameSchema", () => {
     });
     expect(res.success).toBe(true);
     if (res.success) {
-      // The field default + .partial() inflate `{}` → `{wsInboxDeliver:false}`,
-      // matching the server-side behaviour: unset == "no opt-in".
-      expect(res.data.capabilities?.wsInboxDeliver).toBe(false);
       expect(res.data.capabilities?.wsInboxAckConfirm).toBe(false);
     }
   });
@@ -182,7 +178,7 @@ describe("serverWelcomeFrameSchema", () => {
       type: "server:welcome",
       serverCommandVersion: "0.14.2",
       serverTimeMs: 0,
-      capabilities: { wsInboxDeliver: true, wsInboxAckConfirm: true },
+      capabilities: { wsInboxAckConfirm: true },
     });
     expect(olderBlock.capabilities?.wsSessionResetV1).toBe(false);
 
@@ -190,7 +186,7 @@ describe("serverWelcomeFrameSchema", () => {
       type: "server:welcome",
       serverCommandVersion: "0.15.0",
       serverTimeMs: 0,
-      capabilities: { wsInboxDeliver: true, wsSessionResetFinalizeHandshake: true },
+      capabilities: { wsSessionResetFinalizeHandshake: true },
     });
     expect(preV1ResetBlock.capabilities?.wsSessionResetV1).toBe(false);
 
@@ -198,7 +194,7 @@ describe("serverWelcomeFrameSchema", () => {
       type: "server:welcome",
       serverCommandVersion: "1.0.0",
       serverTimeMs: 0,
-      capabilities: { wsInboxDeliver: true, wsSessionResetV1: true },
+      capabilities: { wsSessionResetV1: true },
     });
     expect(current.capabilities?.wsSessionResetV1).toBe(true);
   });

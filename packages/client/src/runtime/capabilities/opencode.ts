@@ -35,7 +35,6 @@ export async function probeOpenCodeCapability(deps: OpenCodeProbeDeps = {}): Pro
     ...detected,
     state: "error",
     available: false,
-    authenticated: false,
     error:
       "OpenCode is installed, but First Tree cannot run it on Windows until the client-wide " +
       "pre-admission Job Object supervisor is available.",

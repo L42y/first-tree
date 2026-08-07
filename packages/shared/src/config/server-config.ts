@@ -77,20 +77,6 @@ const gitlabAllowedOriginsSchema = jsonEnvironmentArray(
   ),
 );
 
-const legacyGitlabEgressAllowlistSchema = jsonEnvironmentArray(
-  z.array(
-    z
-      .object({
-        origin: gitlabExactOriginSchema,
-        addressPolicy: z.discriminatedUnion("kind", [
-          z.object({ kind: z.literal("public") }).strict(),
-          z.object({ kind: z.literal("cidrs"), cidrs: z.array(z.string().trim().min(1)).min(1) }).strict(),
-        ]),
-      })
-      .strict(),
-  ),
-);
-
 const googleOauthConfig = optional({
   clientId: field(z.string().min(1), { env: "FIRST_TREE_GOOGLE_CLIENT_ID" }),
   clientSecret: field(z.string().min(1), {
@@ -336,13 +322,6 @@ export const serverConfigSchema = defineConfig({
     egressAllowlist: field(gitlabAllowedOriginsSchema.optional(), {
       env: "FIRST_TREE_GITLAB_ALLOWED_ORIGINS",
     }),
-    /**
-     * Deprecated compatibility input. Bootstrap normalizes this old shape
-     * into `egressAllowlist` and rejects simultaneous old/new configuration.
-     */
-    legacyEgressAllowlist: field(legacyGitlabEgressAllowlistSchema.optional(), {
-      env: "FIRST_TREE_GITLAB_EGRESS_ALLOWLIST",
-    }),
   }),
   oauth: optional({
     ...({ google: googleOauthConfig } as { google?: typeof googleOauthConfig }),
@@ -449,13 +428,7 @@ export const serverConfigSchema = defineConfig({
      * agent until an ack arrives — leftover entries stay `pending` in the DB
      * and get replayed via later backlog scans.
      *
-     * The WS data plane is the only delivery path on this server build. The
-     * legacy `new_message` doorbell + HTTP poll fallback was removed in
-     * `first-tree@0.14.3`. Clients older than
-     * 0.10.4 (before the WS push data plane was introduced) are no longer
-     * supported; clients in 0.10.4 ~ 0.14.2 continue to work because they
-     * read `server:welcome.capabilities.wsInboxDeliver` to skip their own
-     * poll path on bootstrap.
+     * The WS data plane is the only delivery path on this server build.
      */
     maxInFlightPerAgent: field(z.number().int().min(1).max(65_536).default(8192), {
       env: "FIRST_TREE_INBOX_MAX_IN_FLIGHT_PER_AGENT",
@@ -566,17 +539,6 @@ export const serverConfigSchema = defineConfig({
    * deploy manifest (systemd / docker-compose / Fly.toml / Render env).
    */
   runtime: {
-    /**
-     * Require non-human agent-scoped HTTP requests to carry the ephemeral
-     * runtime-session token minted by the current successful WS `agent:bind`.
-     *
-     * Rollout is expand-then-enforce: token-aware clients can start sending the
-     * header while this remains false; once the fleet is upgraded, operators
-     * flip this to true so legacy user-JWT + X-Agent-Id calls are rejected.
-     */
-    agentHttpTokenEnforcement: field(z.boolean().default(false), {
-      env: "FIRST_TREE_AGENT_HTTP_RUNTIME_SESSION_ENFORCEMENT",
-    }),
     /**
      * Local/test-only runtime-switch fault injection. When enabled, the
      * switch-runtime route accepts an explicit fault header so QA can

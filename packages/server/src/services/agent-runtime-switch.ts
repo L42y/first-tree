@@ -7,7 +7,6 @@ import {
   type RuntimeProvider,
 } from "@first-tree/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import * as semver from "semver";
 import type { Database } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agents } from "../db/schema/agents.js";
@@ -21,8 +20,6 @@ import { forceDisconnect } from "./connection-manager.js";
 import type { Notifier } from "./notifier.js";
 import { setOffline } from "./presence.js";
 import { archiveAllSessionsForAgent } from "./session.js";
-
-export const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.11";
 
 type RuntimeSwitchPhase = "claimed" | "committed";
 
@@ -111,19 +108,9 @@ export type SwitchAgentRuntimeResult = {
 };
 
 type RuntimeSwitchOptions = {
-  runtimeHttpTokenEnforced: boolean;
   notifier?: Notifier;
   fault?: RuntimeSwitchFault;
 };
-
-function assertRuntimeSwitchClientVersion(sdkVersion: string | null): void {
-  const normalized = sdkVersion ? semver.valid(sdkVersion) : null;
-  if (!normalized || semver.lt(normalized, MIN_RUNTIME_SWITCH_CLIENT_VERSION)) {
-    throw new BadRequestError(
-      `Target client must run First Tree CLI ${MIN_RUNTIME_SWITCH_CLIENT_VERSION} or newer before switching runtimes.`,
-    );
-  }
-}
 
 function retagRuntimeConfigPayload(
   currentPayload: unknown,
@@ -210,12 +197,8 @@ export async function switchAgentRuntime(
   agentId: string,
   input: SwitchAgentRuntimeInput,
   actor: SwitchAgentRuntimeActor,
-  options: RuntimeSwitchOptions = { runtimeHttpTokenEnforced: false },
+  options: RuntimeSwitchOptions = {},
 ): Promise<SwitchAgentRuntimeResult> {
-  if (!options.runtimeHttpTokenEnforced) {
-    throw new ConflictError("Runtime switching requires agent HTTP runtime-session enforcement to be enabled");
-  }
-
   const current = await selectAgentRowWithRuntime(db, agentId);
   if (!current || current.status === AGENT_STATUSES.DELETED) {
     throw new NotFoundError(`Agent "${agentId}" not found`);
@@ -250,7 +233,6 @@ export async function switchAgentRuntime(
     .select({
       id: clients.id,
       userId: clients.userId,
-      sdkVersion: clients.sdkVersion,
       retiredAt: clients.retiredAt,
     })
     .from(clients)
@@ -268,7 +250,6 @@ export async function switchAgentRuntime(
   if (targetClient.retiredAt) {
     throw new ClientRetiredError(`Client "${input.clientId}" has been retired`);
   }
-  assertRuntimeSwitchClientVersion(targetClient.sdkVersion);
   await ensureClientSupportsRuntimeProvider(db, targetClient.id, input.runtimeProvider);
 
   const claim: RuntimeSwitchClaim = {
@@ -395,12 +376,8 @@ export async function switchAgentRuntime(
 export async function recoverAgentRuntimeSwitch(
   db: Database,
   agentId: string,
-  options: RuntimeSwitchOptions = { runtimeHttpTokenEnforced: false },
+  options: RuntimeSwitchOptions = {},
 ): Promise<SwitchAgentRuntimeResult> {
-  if (!options.runtimeHttpTokenEnforced) {
-    throw new ConflictError("Runtime switch recovery requires agent HTTP runtime-session enforcement to be enabled");
-  }
-
   const current = await selectAgentRowWithRuntime(db, agentId);
   if (!current || current.status === AGENT_STATUSES.DELETED) {
     throw new NotFoundError(`Agent "${agentId}" not found`);

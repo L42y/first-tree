@@ -8,7 +8,6 @@ import {
   deleteAgent,
   ensureClientSupportsRuntimeProvider,
   fetchUserAvatarForHumanAgent,
-  legacyWireAgentType,
   listAgents,
   reactivateAgent,
   resolveAvatarImageUrl,
@@ -180,9 +179,6 @@ describe("service branch defaults", () => {
     expect(
       resolveAvatarImageUrl({ uuid: "agent_1", type: "agent", avatarImageUpdatedAt: null, userAvatarUrl: "x" }),
     ).toBeNull();
-    expect(legacyWireAgentType("human")).toBe("human");
-    expect(legacyWireAgentType("agent")).toBe("personal_assistant");
-
     await expect(
       fetchUserAvatarForHumanAgent(queuedSelectDb([]) as never, { uuid: "a", type: "agent" }),
     ).resolves.toBeNull();

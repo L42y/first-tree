@@ -21,9 +21,6 @@ export type AuthTokenExpiries = {
   connectTokenExpiry: string;
 };
 
-/** In-memory set of consumed connect token JTIs. Entries auto-expire after 10 minutes. */
-const consumedConnectJtis = new Map<string, number>();
-const CONNECT_JTI_TTL_MS = 600_000;
 const CONNECT_CODE_BYTES = 16;
 
 /**
@@ -310,49 +307,9 @@ export async function exchangeConnectToken(
     return signTokensForActiveUser(db, row.userId, jwtSecretKey, expiries, "auth.connect");
   }
 
-  return exchangeLegacyConnectJwt(db, connectToken, jwtSecretKey, expiries);
-}
-
-async function exchangeLegacyConnectJwt(
-  db: Database,
-  connectToken: string,
-  jwtSecretKey: string,
-  expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
-): Promise<{ accessToken: string; refreshToken: string }> {
-  const secret = new TextEncoder().encode(jwtSecretKey);
-
-  let payload: TokenPayload;
-  try {
-    const { payload: p } = await jwtVerify(connectToken, secret);
-    payload = p as unknown as TokenPayload;
-  } catch (err) {
-    const untrusted = decodeJwtForTrace(connectToken);
-    throw new UnauthorizedError("Invalid or expired connect token", {
-      "auth.connect.reason": classifyJoseError(err),
-      ...untrustedAttrs("auth.connect", untrusted),
-    });
-  }
-
-  if (payload.type !== "connect" || !payload.sub) {
-    throw new UnauthorizedError("Invalid token type — expected connect token", {
-      "auth.connect.reason": "wrong_token_type",
-      "auth.connect.actual_type": String(payload.type ?? "<missing>"),
-    });
-  }
-
-  const jti = (payload as unknown as Record<string, unknown>).jti as string | undefined;
-  if (jti) {
-    if (consumedConnectJtis.has(jti)) {
-      throw new UnauthorizedError("Connect token has already been used");
-    }
-    consumedConnectJtis.set(jti, Date.now());
-    const cutoff = Date.now() - CONNECT_JTI_TTL_MS;
-    for (const [k, ts] of consumedConnectJtis) {
-      if (ts < cutoff) consumedConnectJtis.delete(k);
-    }
-  }
-
-  return signTokensForActiveUser(db, payload.sub, jwtSecretKey, expiries, "auth.connect");
+  throw new UnauthorizedError("Invalid or expired connect token", {
+    "auth.connect.reason": "code_invalid_or_expired",
+  });
 }
 
 async function signTokensForActiveUser(

@@ -1635,7 +1635,7 @@ describe("Agent client WS edge protocol coverage", () => {
       await expect(bindAgent(staleDbWs, agent.uuid, "bind-cap-db")).resolves.toMatchObject({ type: "agent:bound" });
       await app.db
         .update(clients)
-        .set({ metadata: { wireCapabilities: { wsSessionTerminateApplyAck: true } } })
+        .set({ metadata: { wireCapabilities: {} } })
         .where(eq(clients.id, seed.clientId));
       await expectNoTerminate(staleDbWs, () => fanOutTerminate("550e8400-e29b-41d4-a716-446655440050", "chat-cap-db"));
     } finally {
@@ -1643,8 +1643,8 @@ describe("Agent client WS edge protocol coverage", () => {
     }
 
     // (2) The owning process's live socket re-registered without the flag,
-    // while the DB row is (re)written back to v1 — only the socket is legacy.
-    const legacySocketWs = await openRegisteredSocket(seed, { wsSessionTerminateApplyAck: true });
+    // while the DB row is (re)written back to v1 — only the socket lacks v1.
+    const legacySocketWs = await openRegisteredSocket(seed, {});
     try {
       await expect(bindAgent(legacySocketWs, agent.uuid, "bind-cap-live")).resolves.toMatchObject({
         type: "agent:bound",
@@ -1684,7 +1684,7 @@ describe("Agent client WS edge protocol coverage", () => {
     const agent = await createPinnedAgent({ ...seed, suffix: "cap-ack" });
     const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
 
-    const legacyWs = await openRegisteredSocket(seed, { wsSessionTerminateApplyAck: true });
+    const legacyWs = await openRegisteredSocket(seed, {});
     const legacyRef = "550e8400-e29b-41d4-a716-446655440060";
     try {
       await expect(bindAgent(legacyWs, agent.uuid, "bind-cap-ack-legacy")).resolves.toMatchObject({

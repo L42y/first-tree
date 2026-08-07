@@ -92,8 +92,8 @@ export async function registerClient(
      */
     lastUpdateAttempt?: UpdateAttempt;
     /**
-     * Negotiable wire-protocol capabilities advertised on `client:register`
-     * (e.g. `wsSessionTerminateApplyAck`). Persisted under
+     * Negotiable wire-protocol capabilities advertised on `client:register`.
+     * Persisted under
      * `clients.metadata.wireCapabilities` and REPLACED WHOLESALE on every
      * register — a client that stops advertising a capability (older build,
      * downgrade) must not keep a previous `true`. The chat-session Reset
