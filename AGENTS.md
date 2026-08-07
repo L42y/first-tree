@@ -89,18 +89,7 @@ Operator-only flows such as `login`, `daemon install`, and `agent create` belong
 
 ## Development Workflow
 
-- Treat every database change as a separately approved high-impact change. This
-  includes schemas, migrations, constraints, indexes, defaults, backfills, data
-  rewrites, and persistence-semantics or compatibility changes. Before choosing
-  the approach, editing code, delegating the work, committing, or pushing,
-  explain why the database must change, which tables and data are affected, the
-  no-database-change alternative, deployment/backward-compatibility/rollback
-  risks, and the validation plan, then obtain explicit human approval for that
-  exact change.
-- A feature request, review finding, failing test, technical necessity, or
-  ordinary fix authorization does not authorize a database change. If the need
-  appears after scope is agreed, stop, keep the database unchanged, and ask the
-  human before generating or editing migrations or persistence code.
+- Do not make or delegate any database change—including schema, migrations, constraints, indexes, defaults, backfills, data rewrites, or persistence semantics—without first obtaining the human's explicit approval for that specific change.
 - Update shared schemas/types first when a change crosses packages.
 - Server features usually flow: shared schema -> Drizzle table (if persistent) -> service -> API route -> migration -> tests.
 - Client SDK methods live in `sdk.ts`; handlers register in `handlers/`; runtime changes live under `runtime/`.
