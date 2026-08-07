@@ -160,14 +160,19 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 
 /**
  * Invoke a projection-entry checkpoint without awaiting. TypeScript already
- * rejects `async` callbacks via the `() => undefined` return type; this rejects
- * thenables at runtime so a type-escape cannot reopen the microtask race.
+ * rejects `async` callbacks via the `() => undefined` return type; runtime
+ * rejects any non-`undefined` return (including thenables) so a type-escape
+ * cannot reopen the microtask race.
  */
 function invokeSyncProjectionEntry(hook: (() => undefined) | undefined): void {
   if (!hook) return;
   const result: unknown = hook();
-  if (isThenable(result)) {
-    throw new Error("atProjectionEntry must be synchronous (must not return a thenable)");
+  if (result !== undefined) {
+    throw new Error(
+      `atProjectionEntry must be synchronous (must return undefined; got ${
+        isThenable(result) ? "thenable" : typeof result
+      })`,
+    );
   }
 }
 
@@ -293,11 +298,15 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     markInitComplete: true,
     atProjectionEntry: atProjectionEntry
       ? () => {
-          // Must not discard a thenable return — that would recreate the
+          // Must not discard a non-undefined return — that would recreate the
           // `async () => …` assignable-to-void escape the sync contract forbids.
           const result: unknown = atProjectionEntry({ workspace, chatContext });
-          if (isThenable(result)) {
-            throw new Error("atProjectionEntry must be synchronous (must not return a thenable)");
+          if (result !== undefined) {
+            throw new Error(
+              `atProjectionEntry must be synchronous (must return undefined; got ${
+                isThenable(result) ? "thenable" : typeof result
+              })`,
+            );
           }
           return undefined;
         }

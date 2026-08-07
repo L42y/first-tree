@@ -777,7 +777,8 @@ describe("runtime provider architecture guard", () => {
       // `import * as ns from "node:module"` — `ns.createRequire` is supported.
       const nodeModuleNamespaces = new Set<string>();
       // Identifiers holding the function returned by `createRequire(...)`.
-      const requireBinders = new Set<string>();
+      // Free `require` is a binder source so `const load = require` propagates.
+      const requireBinders = new Set<string>(["require"]);
 
       function isNodeModuleSpecifier(spec: string): boolean {
         return spec === "node:module" || spec === "module";
@@ -793,16 +794,9 @@ describe("runtime provider architecture guard", () => {
         else hasUnresolvableModuleReference = true;
       }
 
-      /**
-       * `true` = known createRequire callee; `"unresolvable"` = `*.createRequire`
-       * form that is not a tracked node:module namespace (fail closed);
-       * `false` = not a createRequire callee.
-       */
-      function classifyCreateRequireCallee(expr: ts.Expression): true | false | "unresolvable" {
-        if (ts.isIdentifier(expr) && createRequireNames.has(expr.text)) return true;
+      function isNamespaceCreateRequireProp(expr: ts.Expression): boolean {
         if (ts.isPropertyAccessExpression(expr) && expr.name.text === "createRequire") {
-          if (ts.isIdentifier(expr.expression) && nodeModuleNamespaces.has(expr.expression.text)) return true;
-          return "unresolvable";
+          return ts.isIdentifier(expr.expression) && nodeModuleNamespaces.has(expr.expression.text);
         }
         if (
           ts.isElementAccessExpression(expr) &&
@@ -810,7 +804,26 @@ describe("runtime provider architecture guard", () => {
           ts.isStringLiteralLike(expr.argumentExpression) &&
           expr.argumentExpression.text === "createRequire"
         ) {
-          if (ts.isIdentifier(expr.expression) && nodeModuleNamespaces.has(expr.expression.text)) return true;
+          return ts.isIdentifier(expr.expression) && nodeModuleNamespaces.has(expr.expression.text);
+        }
+        return false;
+      }
+
+      /**
+       * `true` = known createRequire callee; `"unresolvable"` = `*.createRequire`
+       * form that is not a tracked node:module namespace (fail closed);
+       * `false` = not a createRequire callee.
+       */
+      function classifyCreateRequireCallee(expr: ts.Expression): true | false | "unresolvable" {
+        if (ts.isIdentifier(expr) && createRequireNames.has(expr.text)) return true;
+        if (isNamespaceCreateRequireProp(expr)) return true;
+        if (ts.isPropertyAccessExpression(expr) && expr.name.text === "createRequire") return "unresolvable";
+        if (
+          ts.isElementAccessExpression(expr) &&
+          expr.argumentExpression &&
+          ts.isStringLiteralLike(expr.argumentExpression) &&
+          expr.argumentExpression.text === "createRequire"
+        ) {
           return "unresolvable";
         }
         return false;
@@ -822,6 +835,72 @@ describe("runtime provider architecture guard", () => {
 
       function isRequireBinderAlias(expr: ts.Expression): boolean {
         return ts.isIdentifier(expr) && requireBinders.has(expr.text);
+      }
+
+      function isKnownBinderOrFactoryName(name: string): boolean {
+        return requireBinders.has(name) || createRequireNames.has(name);
+      }
+
+      /**
+       * Allowed uses of a known binder/factory identifier: direct call,
+       * simple `const x = id` / `x = id` aliasing, and binder `.resolve` package
+       * lookup. Any other reference (argument, property storage, destructure)
+       * is an unsupported escape → fail closed.
+       */
+      function isAllowedBinderOrFactoryUse(id: ts.Identifier): boolean {
+        const parent = id.parent;
+        if (!parent) return false;
+        // `import { createRequire }` / `import { createRequire as cr }`
+        if (ts.isImportSpecifier(parent) && (parent.name === id || parent.propertyName === id)) return true;
+        // Binding site: `const req = …` / `load = …` — the name itself is not an escape.
+        if (ts.isVariableDeclaration(parent) && parent.name === id) return true;
+        if (
+          ts.isBinaryExpression(parent) &&
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          parent.left === id &&
+          ts.isIdentifier(parent.left)
+        ) {
+          return true;
+        }
+        if (ts.isCallExpression(parent) && parent.expression === id) return true;
+        if (ts.isVariableDeclaration(parent) && parent.initializer === id && ts.isIdentifier(parent.name)) return true;
+        if (
+          ts.isBinaryExpression(parent) &&
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          parent.right === id &&
+          ts.isIdentifier(parent.left)
+        ) {
+          return true;
+        }
+        if (
+          ts.isPropertyAccessExpression(parent) &&
+          parent.expression === id &&
+          parent.name.text === "resolve" &&
+          requireBinders.has(id.text)
+        ) {
+          return true;
+        }
+        // Property-name token (`obj.createRequire`) is not a value reference to
+        // the `createRequire` binding; namespace forms are handled separately.
+        if (ts.isPropertyAccessExpression(parent) && parent.name === id) return true;
+        return false;
+      }
+
+      function isAllowedNamespaceCreateRequireUse(prop: ts.Expression): boolean {
+        const parent = prop.parent;
+        if (!parent) return false;
+        if (ts.isCallExpression(parent) && parent.expression === prop) return true;
+        if (ts.isVariableDeclaration(parent) && parent.initializer === prop && ts.isIdentifier(parent.name))
+          return true;
+        if (
+          ts.isBinaryExpression(parent) &&
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          parent.right === prop &&
+          ts.isIdentifier(parent.left)
+        ) {
+          return true;
+        }
+        return false;
       }
 
       // Pass 1: collect namespaces, createRequire aliases, binders, and binder aliases.
@@ -848,7 +927,8 @@ describe("runtime provider architecture guard", () => {
           if (isCreateRequireCall(init) || isRequireBinderAlias(init)) {
             requireBinders.add(name);
           } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
-            // `const cr = createRequire` — alias of the factory itself.
+            createRequireNames.add(name);
+          } else if (isNamespaceCreateRequireProp(init)) {
             createRequireNames.add(name);
           } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
             hasUnresolvableModuleReference = true;
@@ -863,6 +943,8 @@ describe("runtime provider architecture guard", () => {
           if (isCreateRequireCall(init) || isRequireBinderAlias(init)) {
             requireBinders.add(name);
           } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
+            createRequireNames.add(name);
+          } else if (isNamespaceCreateRequireProp(init)) {
             createRequireNames.add(name);
           } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
             hasUnresolvableModuleReference = true;
@@ -900,8 +982,6 @@ describe("runtime provider architecture guard", () => {
           if (text !== null) literalSpecifiers.push(text);
           else hasUnresolvableModuleReference = true;
         } else if (ts.isImportTypeNode(node)) {
-          // `type T = import("spec").T` — argument is a LiteralTypeNode whose
-          // literal is a string or no-substitution template.
           if (ts.isLiteralTypeNode(node.argument)) {
             const text = literalModuleSpecifierText(node.argument.literal);
             if (text !== null) literalSpecifiers.push(text);
@@ -910,8 +990,6 @@ describe("runtime provider architecture guard", () => {
             hasUnresolvableModuleReference = true;
           }
         } else if (ts.isImportEqualsDeclaration(node)) {
-          // `import x = require("spec")` only — namespace entity-name aliases
-          // (`import x = NS.y`) are not module edges.
           if (ts.isExternalModuleReference(node.moduleReference)) {
             const text = literalModuleSpecifierText(node.moduleReference.expression);
             if (text !== null) literalSpecifiers.push(text);
@@ -919,7 +997,6 @@ describe("runtime provider architecture guard", () => {
           }
         } else if (ts.isCallExpression(node)) {
           const callee = node.expression;
-          // Immediate `createRequire(…)("spec")` / `module.createRequire(…)("spec")`.
           if (ts.isCallExpression(callee)) {
             const kind = classifyCreateRequireCallee(callee.expression);
             if (kind === true) {
@@ -927,13 +1004,29 @@ describe("runtime provider architecture guard", () => {
             } else if (kind === "unresolvable") {
               hasUnresolvableModuleReference = true;
             }
-          } else if (ts.isIdentifier(callee) && (callee.text === "require" || requireBinders.has(callee.text))) {
-            // Free `require("spec")` or binder / propagated alias `load("spec")`.
+          } else if (ts.isIdentifier(callee) && requireBinders.has(callee.text)) {
             recordLoaderSpecifier(node.arguments[0]);
+          } else if (ts.isIdentifier(callee) && createRequireNames.has(callee.text)) {
+            // Bare `createRequire(url)` factory call — not a module load by itself.
           } else {
-            // Standalone `unknown.createRequire(...)` (result unused) still fail closed.
             const kind = classifyCreateRequireCallee(callee);
             if (kind === "unresolvable") hasUnresolvableModuleReference = true;
+          }
+          for (const arg of node.arguments) {
+            if (ts.isIdentifier(arg) && isKnownBinderOrFactoryName(arg.text)) {
+              hasUnresolvableModuleReference = true;
+            }
+          }
+        } else if (ts.isIdentifier(node) && isKnownBinderOrFactoryName(node.text)) {
+          if (!isAllowedBinderOrFactoryUse(node)) {
+            hasUnresolvableModuleReference = true;
+          }
+        } else if (
+          (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
+          isNamespaceCreateRequireProp(node)
+        ) {
+          if (!isAllowedNamespaceCreateRequireUse(node)) {
+            hasUnresolvableModuleReference = true;
           }
         }
         ts.forEachChild(node, visit);
@@ -1114,6 +1207,39 @@ describe("runtime provider architecture guard", () => {
       req("../../runtime/brand-new-owner.js");
     `);
     expect(unresolvableNsCreateRequire.hasUnresolvableModuleReference).toBe(true);
+
+    // Free `require` alias must still classify the literal load.
+    expectForbiddenRuntimeSpec(
+      `const load = require;
+       load("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Namespace factory property alias must still classify the binder load.
+    expectForbiddenRuntimeSpec(
+      `import * as moduleApi from "node:module";
+       const cr = moduleApi.createRequire;
+       const load = cr(import.meta.url);
+       load("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Property storage of a known binder → fail closed (unsupported escape).
+    const propEscape = extractModuleReferences(`
+      import { createRequire } from "node:module";
+      const req = createRequire(import.meta.url);
+      const box = { load: req };
+      box.load("../../runtime/brand-new-owner.js");
+    `);
+    expect(propEscape.hasUnresolvableModuleReference).toBe(true);
+
+    // Passing a known binder as a call argument → fail closed.
+    const argEscape = extractModuleReferences(`
+      import { createRequire } from "node:module";
+      const req = createRequire(import.meta.url);
+      consume(req);
+    `);
+    expect(argEscape.hasUnresolvableModuleReference).toBe(true);
 
     // Package-resolution `.resolve(...)` is not a direct module-edge load.
     const resolveOnly = extractModuleReferences(`

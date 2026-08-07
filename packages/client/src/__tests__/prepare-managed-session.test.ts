@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionContext } from "../runtime/contracts.js";
+import type { PrepareManagedSessionParams } from "../runtime/provider-support/preparation.js";
 import { INIT_COMPLETE_SENTINEL_REL } from "../runtime/workspace.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
@@ -442,6 +443,12 @@ describe("prepareManagedSession", () => {
     ]);
   });
 
+  it("rejects async atProjectionEntry at compile time", () => {
+    // @ts-expect-error async callbacks are not assignable to () => undefined
+    const _hook: PrepareManagedSessionParams["atProjectionEntry"] = async () => undefined;
+    void _hook;
+  });
+
   it("rejects thenable atProjectionEntry before reconcile (fail-closed sync contract)", async () => {
     const prepareManagedSession = await loadPrepare();
 
@@ -475,13 +482,44 @@ describe("prepareManagedSession", () => {
     expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
   });
 
+  it("rejects non-undefined atProjectionEntry returns before reconcile", async () => {
+    const prepareManagedSession = await loadPrepare();
+
+    await expect(
+      prepareManagedSession({
+        sessionCtx: sessionCtx(),
+        workspaceRoot,
+        runtimeProvider: "cursor",
+        runtimeConfig: null,
+        payload: {
+          kind: "cursor",
+          prompt: { append: "" },
+          model: "",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+        },
+        payloadResolved: false,
+        contextTree: { path: null, repoUrl: null, branch: null },
+        atProjectionEntry: (() => {
+          callOrder.push("atProjectionEntry");
+          return null;
+        }) as unknown as () => undefined,
+      }),
+    ).rejects.toThrow(/atProjectionEntry must be synchronous/);
+
+    expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
+  });
+
   it("enters reconcile in the same synchronous turn as atProjectionEntry", async () => {
     const prepareManagedSession = await loadPrepare();
-    let turn: "start" | "microtask" = "start";
-    const events: string[] = [];
+    let microtaskRan = false;
 
     reconcileManagedSkillsForConfig.mockImplementation(async () => {
-      events.push(`reconcile:${turn}`);
+      // Must observe the flag still false — an `await` after the checkpoint
+      // (old beforeProjection gap) would let the queued microtask run first.
+      expect(microtaskRan).toBe(false);
       callOrder.push("skills");
       return {
         ok: true,
@@ -521,22 +559,109 @@ describe("prepareManagedSession", () => {
       payloadResolved: false,
       contextTree: { path: null, repoUrl: null, branch: null },
       atProjectionEntry: (): undefined => {
-        events.push(`entry:${turn}`);
-        // Queued cancellation / generation bump — must not run before reconcile
-        // is invoked. An `await` after the checkpoint (old beforeProjection gap)
-        // would let this microtask advance `turn` first and fail the assertion.
         queueMicrotask(() => {
-          turn = "microtask";
-          events.push("microtask");
+          microtaskRan = true;
         });
         return undefined;
       },
     });
 
-    expect(events[0]).toBe("entry:start");
-    expect(events[1]).toBe("reconcile:start");
+    expect(reconcileManagedSkillsForConfig).toHaveBeenCalled();
     await Promise.resolve();
-    expect(events).toContain("microtask");
+    expect(microtaskRan).toBe(true);
+  });
+
+  it("completes briefing/bootstrap/sentinel before sync beforeBriefing microtasks", async () => {
+    const prepareManagedSession = await loadPrepare();
+    let microtaskRan = false;
+    const events: string[] = [];
+
+    buildAgentBriefing.mockImplementation((opts: { teamSkills: Array<{ name: string; target: string }> }) => {
+      expect(microtaskRan).toBe(false);
+      events.push("briefing");
+      callOrder.push("briefing");
+      expect(opts.teamSkills[0]?.name).toBe("team-skill");
+      return "BRIEFING_BODY";
+    });
+    ensureAgentBootstrap.mockImplementation(() => {
+      expect(microtaskRan).toBe(false);
+      events.push("bootstrap");
+      callOrder.push("bootstrap");
+    });
+    markWorkspaceInitComplete.mockImplementation(() => {
+      expect(microtaskRan).toBe(false);
+      events.push("sentinel");
+      callOrder.push("sentinel");
+    });
+
+    await prepareManagedSession({
+      sessionCtx: sessionCtx(),
+      workspaceRoot,
+      runtimeProvider: "cursor",
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      beforeBriefing: () => {
+        events.push("beforeBriefing");
+        callOrder.push("beforeBriefing");
+        queueMicrotask(() => {
+          microtaskRan = true;
+        });
+      },
+    });
+
+    expect(events).toEqual(["beforeBriefing", "briefing", "bootstrap", "sentinel"]);
+    await Promise.resolve();
+    expect(microtaskRan).toBe(true);
+  });
+
+  it("awaits async beforeBriefing before briefing/bootstrap/sentinel", async () => {
+    const prepareManagedSession = await loadPrepare();
+
+    await prepareManagedSession({
+      sessionCtx: sessionCtx(),
+      workspaceRoot,
+      runtimeProvider: "cursor",
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      beforeBriefing: async () => {
+        callOrder.push("beforeBriefing-start");
+        await Promise.resolve();
+        callOrder.push("beforeBriefing-end");
+      },
+    });
+
+    expect(callOrder).toEqual([
+      "acquire",
+      "chatContext",
+      "sourceRepos",
+      "skills",
+      "beforeBriefing-start",
+      "beforeBriefing-end",
+      "briefing",
+      "sourceNames:null",
+      "bootstrap",
+      "sentinel",
+    ]);
   });
 
   it("leaves skills/briefing/bootstrap/sentinel untouched when atProjectionEntry throws", async () => {
