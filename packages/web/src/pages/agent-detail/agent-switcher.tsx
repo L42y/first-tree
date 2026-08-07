@@ -8,7 +8,7 @@ import { Button } from "../../components/ui/button.js";
 import { Input } from "../../components/ui/input.js";
 import { Popover } from "../../components/ui/popover.js";
 
-import { fetchAllAgents } from "../team/index.js";
+import { fetchAllAgents, orderAgentsLikeTeam } from "../team/index.js";
 
 /** Above this many switch targets the panel gains a filter input. */
 const SEARCH_THRESHOLD = 8;
@@ -91,7 +91,7 @@ function AgentSwitcherPanel({
   onSelect: (uuid: string) => void;
   close: () => void;
 }) {
-  const { role } = useAuth();
+  const { role, memberId } = useAuth();
   const isAdmin = role === "admin";
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -111,8 +111,11 @@ function AgentSwitcherPanel({
     // A member's list is visibility-filtered, so the agent currently open can
     // legitimately be absent from it. Keep it present, or the list would show
     // no checked row at all.
-    return agents.some((a) => a.uuid === currentAgent.uuid) ? agents : [currentAgent, ...agents];
-  }, [agentsQuery.data, currentAgent]);
+    const withCurrent = agents.some((a) => a.uuid === currentAgent.uuid) ? agents : [...agents, currentAgent];
+    // The server returns `createdAt DESC`; Team reorders client-side. Reuse
+    // that rule so the two surfaces can't disagree about where an agent sits.
+    return orderAgentsLikeTeam(withCurrent, memberId);
+  }, [agentsQuery.data, currentAgent, memberId]);
 
   // Display names are not unique. Disambiguate with the handle only where it
   // is actually needed, so the common case stays a bare list of names.

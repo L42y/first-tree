@@ -175,8 +175,8 @@ describe("AgentSwitcher", () => {
     await renderSwitcher();
     await open();
 
-    expect(rowLabels()).toEqual(["Vega", "Nova"]);
-    expect(rows().map((row) => row.getAttribute("aria-checked"))).toEqual(["true", "false"]);
+    expect(rowLabels()).toEqual(["Nova", "Vega"]);
+    expect(rows().map((row) => row.getAttribute("aria-checked"))).toEqual(["false", "true"]);
   });
 
   it("adds the handle only where display names collide", async () => {
@@ -191,7 +191,7 @@ describe("AgentSwitcher", () => {
     await renderSwitcher();
     await open();
 
-    expect(rowLabels()).toEqual(["Vega@vega", "Vega@vega-2", "Nova"]);
+    expect(rowLabels()).toEqual(["Nova", "Vega@vega", "Vega@vega-2"]);
   });
 
   it("keeps the open agent in the list when the roster query cannot see it", async () => {
@@ -202,8 +202,8 @@ describe("AgentSwitcher", () => {
     await renderSwitcher(agent({ uuid: "agent-private", name: "orion", displayName: "Orion" }));
     await open();
 
-    expect(rowLabels()).toEqual(["Orion", "Nova"]);
-    expect(rows()[0]?.getAttribute("aria-checked")).toBe("true");
+    expect(rowLabels()).toEqual(["Nova", "Orion"]);
+    expect(rows()[1]?.getAttribute("aria-checked")).toBe("true");
   });
 
   it("reads the admin roster when the viewer is an admin", async () => {
@@ -216,19 +216,20 @@ describe("AgentSwitcher", () => {
     await open();
 
     expect(agentMocks.listAgents).not.toHaveBeenCalled();
-    expect(rowLabels()).toEqual(["Vega", "Someone's private agent"]);
+    expect(rowLabels()).toEqual(["Someone's private agent", "Vega"]);
   });
 
   it("reports the picked agent and closes, but treats the open agent as a no-op", async () => {
     const { onSelect } = await renderSwitcher();
     await open();
-    await click(rows()[1]);
+    // Rows are ["Nova", "Vega"]; the open agent is Vega.
+    await click(rows()[0]);
 
     expect(onSelect).toHaveBeenCalledWith("agent-2");
     expect(document.querySelector('div[role="dialog"]')).toBeNull();
 
     await open();
-    await click(rows()[0]);
+    await click(rows()[1]);
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(document.querySelector('div[role="dialog"]')).toBeNull();
   });
@@ -237,11 +238,10 @@ describe("AgentSwitcher", () => {
     const { onSelect } = await renderSwitcher(agent({ uuid: "agent-2", name: "nova", displayName: "Nova" }));
     await open();
 
-    // Focus lands on the row already in view, not blindly on the first one.
-    expect(document.activeElement).toBe(rows()[1]);
-
-    await press(rows()[1] as Element, "ArrowUp");
+    // Focus lands on the checked row, not blindly on the first one.
+    expect(rowLabels()).toEqual(["Nova", "Vega"]);
     expect(document.activeElement).toBe(rows()[0]);
+
     await press(rows()[0] as Element, "ArrowUp");
     expect(document.activeElement).toBe(rows()[1]);
     await press(rows()[1] as Element, "ArrowDown");
@@ -250,9 +250,36 @@ describe("AgentSwitcher", () => {
     expect(document.activeElement).toBe(rows()[1]);
     await press(rows()[1] as Element, "Home");
     expect(document.activeElement).toBe(rows()[0]);
+    await press(rows()[0] as Element, "ArrowDown");
+    expect(document.activeElement).toBe(rows()[1]);
 
     await click(document.activeElement);
     expect(onSelect).toHaveBeenCalledWith("agent-1");
+  });
+
+  it("reorders the API roster into the Team page's order", async () => {
+    authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
+    agentMocks.listAllAgents.mockResolvedValue({
+      // As the API returns it: createdAt DESC, mixed visibility and ownership.
+      items: [
+        agent({ uuid: "a1", name: "zeta", displayName: "Zeta", visibility: "private", managerId: "member-other" }),
+        agent({ uuid: "a2", name: "alpha", displayName: "Alpha", managerId: "member-other" }),
+        agent({ uuid: "a3", name: "mine-zulu", displayName: "Mine Zulu", managerId: "member-self" }),
+        agent({
+          uuid: "a4",
+          name: "private-mine",
+          displayName: "Private Mine",
+          visibility: "private",
+          managerId: "member-self",
+        }),
+        agent({ uuid: "a5", name: "beta", displayName: "Beta", managerId: "member-other" }),
+      ],
+      nextCursor: null,
+    });
+    await renderSwitcher(agent({ uuid: "a3", name: "mine-zulu", displayName: "Mine Zulu", managerId: "member-self" }));
+    await open();
+
+    expect(rowLabels()).toEqual(["Mine Zulu", "Alpha", "Beta", "Private Mine", "Zeta"]);
   });
 
   it("shows a filter only past the small-list threshold and narrows the rows", async () => {
@@ -310,10 +337,10 @@ describe("AgentSwitcher", () => {
     expect(document.activeElement).toBe(retry);
 
     await click(retry);
-    expect(rowLabels()).toEqual(["Vega", "Nova"]);
+    expect(rowLabels()).toEqual(["Nova", "Vega"]);
     // The Retry button that held focus is gone; the recovered list takes over
     // rather than dropping the keyboard on document.body.
-    expect(document.activeElement).toBe(rows()[0]);
+    expect(document.activeElement).toBe(rows()[1]);
   });
 
   it("shows just the open agent when there is nothing to switch to", async () => {
