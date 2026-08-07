@@ -320,7 +320,11 @@ Current coverage comes from three layers, none of which is provider-surface
 evidence:
 
 - deterministic behavior — per-package Vitest;
-- recurring agent behavior — `@first-tree/skill-evals` floors;
+- skill-eval structure — the `@first-tree/skill-evals` no-model floors, which
+  validate the coverage matrix, Skill frontmatter and case schema only. They
+  execute no Codex, Claude Code, or LLM-judge case, so they are not evidence of
+  agent behavior; the model-backed gate, quality and periodic suites are
+  human-requested and have no recorded run for BYO Context;
 - scenario definitions — the prose cases under `packages/qa/cases/`, which are
   prompts for a human-requested QA run, not execution records.
 
