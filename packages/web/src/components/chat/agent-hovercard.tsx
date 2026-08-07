@@ -90,7 +90,7 @@ export function AgentHovercard({
       // Card chrome (background / border / shadow / padding) comes from the
       // HoverCard primitive; only the width is this consumer's call.
       contentStyle={{
-        width: 280,
+        width: "var(--sp-70)",
         maxWidth: "calc(100vw - var(--sp-4))",
       }}
       content={({ close }) => (
@@ -185,7 +185,7 @@ function AgentHovercardBody({
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-2_5)" }}>
-      {/* Head — 40px avatar, name, optional @handle, kind/status on the right */}
+      {/* Head — sp-10 avatar, name, optional @handle, kind/status on the right */}
       <div className="flex items-center" style={{ gap: "var(--sp-2_5)" }}>
         <span className="shrink-0" style={{ width: "var(--sp-10)", height: "var(--sp-10)" }}>
           <Avatar src={avatarImageUrl} name={displayName} seed={agentId} colorToken={avatarColorToken} size={40} />
@@ -280,19 +280,19 @@ function ParticipantActions({
   onAction: () => void;
 }) {
   const rowClass =
-    "text-label flex w-full min-h-8 items-center gap-2 rounded-[var(--radius-input)] px-2 transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring active:bg-[var(--bg-active)]";
+    "text-label flex w-full min-h-8 items-center gap-2 rounded-[var(--radius-input)] px-2 text-[var(--fg-2)] transition-colors hover:bg-[var(--bg-hover)] hover:text-[var(--fg)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring active:bg-[var(--bg-active)]";
   const dangerClass =
-    "text-label flex w-full min-h-8 items-center gap-2 rounded-[var(--radius-input)] px-2 transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--fg-error-strong)] active:bg-[var(--bg-error-soft)]";
+    "text-label flex w-full min-h-8 items-center gap-2 rounded-[var(--radius-input)] px-2 text-[var(--fg-3)] transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--fg-error-strong)] active:bg-[var(--bg-error-soft)]";
 
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-1)" }}>
       <nav aria-label="Participant actions" className="flex flex-col" data-participant-actions style={{ gap: 2 }}>
-        <Link to={chatPath} onClick={onAction} className={rowClass} style={{ color: "var(--fg-2)" }}>
+        <Link to={chatPath} onClick={onAction} className={rowClass}>
           <MessageSquarePlus className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
           <span className="truncate">New chat</span>
         </Link>
         {profilePath ? (
-          <Link to={profilePath} onClick={onAction} className={rowClass} style={{ color: "var(--fg-2)" }}>
+          <Link to={profilePath} onClick={onAction} className={rowClass}>
             <UserRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">View profile</span>
           </Link>
@@ -309,7 +309,6 @@ function ParticipantActions({
               sessionReset.onRequest();
             }}
             className={rowClass}
-            style={{ color: "var(--fg-2)" }}
           >
             <RotateCcw className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Reset</span>
@@ -331,7 +330,6 @@ function ParticipantActions({
               removeFromChat.onRequest();
             }}
             className={dangerClass}
-            style={{ color: "var(--fg-3)" }}
           >
             <Trash2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
             <span className="truncate">Remove from chat</span>
