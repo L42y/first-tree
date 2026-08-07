@@ -927,10 +927,7 @@ describe("runtime provider architecture guard", () => {
             } else if (kind === "unresolvable") {
               hasUnresolvableModuleReference = true;
             }
-          } else if (
-            ts.isIdentifier(callee) &&
-            (callee.text === "require" || requireBinders.has(callee.text))
-          ) {
+          } else if (ts.isIdentifier(callee) && (callee.text === "require" || requireBinders.has(callee.text))) {
             // Free `require("spec")` or binder / propagated alias `load("spec")`.
             recordLoaderSpecifier(node.arguments[0]);
           } else {
@@ -1056,6 +1053,14 @@ describe("runtime provider architecture guard", () => {
       `import * as module from "node:module";
        const req = module.createRequire(import.meta.url);
        req("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Namespace import under a non-`module` local name (yzw-codex fixture).
+    expectForbiddenRuntimeSpec(
+      `import * as moduleApi from "node:module";
+       const load = moduleApi.createRequire(import.meta.url);
+       load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
 

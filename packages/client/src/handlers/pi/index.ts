@@ -1483,7 +1483,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       atProjectionEntry: () => {
         assertLifecycleGeneration(generation, "prepared_refresh_projection");
       },
-      beforeBriefing: async () => {
+      beforeBriefing: () => {
         assertLifecycleGeneration(generation, "prepared_refresh_skills");
       },
     });
@@ -1843,10 +1843,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         // generation before reconcile. Must stay synchronous (no async/await).
         assertLifecycleGeneration(generation, "prepare_before_projection");
       },
-      beforeBriefing: async () => {
-        // Lifecycle fence after Managed Skills and before briefing/bootstrap/
-        // init sentinel — a suspended generation must not write admission side
-        // effects. Cancellation here is pre-provider and creates no ACK authority.
+      beforeBriefing: () => {
+        // Sync lifecycle fence after Managed Skills and before briefing/bootstrap/
+        // init sentinel — must return void (not async) so the helper does not
+        // unconditionally await a microtask window. Cancellation here is
+        // pre-provider and creates no ACK authority.
         assertLifecycleGeneration(generation, "prepare_skills");
       },
     });

@@ -55,10 +55,7 @@ export type PrepareManagedSessionParams = {
    * generation before reconcile begins. Callers use this for Pi generation
    * fences after chat-context fetch.
    */
-  atProjectionEntry?: (args: {
-    workspace: string;
-    chatContext: ChatContext | undefined;
-  }) => void;
+  atProjectionEntry?: (args: { workspace: string; chatContext: ChatContext | undefined }) => void;
   /**
    * Optional provider-owned work after Managed Skills settle and before the
    * shared briefing / bootstrap / init-complete sentinel. Callers use this for
@@ -185,7 +182,13 @@ export async function projectManagedWorkspace(
   );
 
   if (beforeBriefing) {
-    await beforeBriefing({ workspace, sourceRepos, teamSkills });
+    // Only await when the hook actually returns a Promise. Sync lifecycle
+    // checkpoints (Pi generation fences) must not hit an unconditional await
+    // microtask window before briefing/bootstrap/sentinel.
+    const result = beforeBriefing({ workspace, sourceRepos, teamSkills });
+    if (result) {
+      await result;
+    }
   }
 
   const briefing = buildAgentBriefing({
@@ -265,11 +268,7 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
           atProjectionEntry({ workspace, chatContext });
         }
       : undefined,
-    beforeBriefing: beforeBriefing
-      ? async (args) => {
-          await beforeBriefing({ ...args, chatContext });
-        }
-      : undefined,
+    beforeBriefing: beforeBriefing ? (args) => beforeBriefing({ ...args, chatContext }) : undefined,
   });
 
   return {
