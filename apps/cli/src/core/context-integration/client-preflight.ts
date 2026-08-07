@@ -17,11 +17,11 @@ export type ContextProjectResolution =
   | {
       kind: "pathless";
       project: Extract<ContextIntegrationProject, { kind: "pathless" }>;
-      source: "codex_documents_v1" | "explicit_pathless";
+      source: "claude_project_dir_unavailable" | "codex_documents_v1" | "explicit_pathless";
     }
   | {
       kind: "unknown";
-      source: "claude_project_dir_missing" | "cwd_missing" | "path_unreadable";
+      source: "cwd_missing" | "path_unreadable";
       message: string;
     };
 
@@ -183,12 +183,15 @@ export function resolveProviderProject(
     const projectRoot = env.CLAUDE_PROJECT_DIR;
     if (!projectRoot) {
       return {
-        kind: "unknown",
-        source: "claude_project_dir_missing",
-        message: "Claude Code did not provide CLAUDE_PROJECT_DIR for this session.",
+        kind: "pathless",
+        project: { kind: "pathless" },
+        source: "claude_project_dir_unavailable",
       };
     }
-    return resolvePathProject(projectRoot, "claude_project_dir", classifierOptions);
+    const resolution = resolvePathProject(projectRoot, "claude_project_dir", classifierOptions);
+    return resolution.kind === "unknown"
+      ? { kind: "pathless", project: { kind: "pathless" }, source: "claude_project_dir_unavailable" }
+      : resolution;
   }
   if (!input.cwd) {
     return {
@@ -411,7 +414,7 @@ function validCachedResolution(value: unknown): value is CachedSessionProject["r
       typeof project === "object" &&
       project !== null &&
       Reflect.get(project, "kind") === "pathless" &&
-      (source === "codex_documents_v1" || source === "explicit_pathless")
+      (source === "claude_project_dir_unavailable" || source === "codex_documents_v1" || source === "explicit_pathless")
     );
   }
   return (

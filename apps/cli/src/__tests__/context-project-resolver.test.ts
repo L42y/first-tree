@@ -222,6 +222,33 @@ describe("Context project resolver", () => {
     });
   });
 
+  it("routes Claude sessions without a stable project directory as pathless", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "claude-session-cwd-"));
+    expect(resolveProviderProject("claude-code", { cwd }, {})).toMatchObject({
+      kind: "pathless",
+      project: { kind: "pathless" },
+      source: "claude_project_dir_unavailable",
+    });
+    expect(resolveProviderProject("claude-code", { cwd }, { CLAUDE_PROJECT_DIR: join(cwd, "missing") })).toMatchObject({
+      kind: "pathless",
+      source: "claude_project_dir_unavailable",
+    });
+  });
+
+  it("keeps a Claude session pathless when CLAUDE_PROJECT_DIR appears after startup", () => {
+    const pluginData = mkdtempSync(join(tmpdir(), "claude-pathless-cache-"));
+    const projectRoot = mkdtempSync(join(tmpdir(), "claude-late-project-"));
+    const firstEnvironment = { PLUGIN_DATA: pluginData };
+    const laterEnvironment = { PLUGIN_DATA: pluginData, CLAUDE_PROJECT_DIR: projectRoot };
+
+    expect(
+      resolveSessionContextProject("claude-code", { sessionId: "claude-pathless-session" }, firstEnvironment),
+    ).toMatchObject({ kind: "pathless", source: "claude_project_dir_unavailable" });
+    expect(
+      resolveSessionContextProject("claude-code", { sessionId: "claude-pathless-session" }, laterEnvironment),
+    ).toMatchObject({ kind: "pathless", source: "claude_project_dir_unavailable" });
+  });
+
   it("uses valid Claude project roots and preserves an explicit setup root", () => {
     const root = mkdtempSync(join(tmpdir(), "claude-setup-root-"));
     const cwd = join(root, "nested");
