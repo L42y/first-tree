@@ -4,7 +4,9 @@ import {
   type AgentRuntimeConfigPayload,
   agentRuntimeConfigPayloadSchema,
   defaultRuntimeConfigPayload,
+  MIN_RUNTIME_SWITCH_CLIENT_VERSION,
   type RuntimeProvider,
+  supportsRuntimeSwitchClientVersion,
 } from "@first-tree/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
@@ -111,6 +113,14 @@ type RuntimeSwitchOptions = {
   notifier?: Notifier;
   fault?: RuntimeSwitchFault;
 };
+
+function assertRuntimeSwitchClientVersion(sdkVersion: string | null): void {
+  if (!supportsRuntimeSwitchClientVersion(sdkVersion)) {
+    throw new BadRequestError(
+      `Target client must run First Tree CLI ${MIN_RUNTIME_SWITCH_CLIENT_VERSION} or newer before switching runtimes.`,
+    );
+  }
+}
 
 function retagRuntimeConfigPayload(
   currentPayload: unknown,
@@ -233,6 +243,7 @@ export async function switchAgentRuntime(
     .select({
       id: clients.id,
       userId: clients.userId,
+      sdkVersion: clients.sdkVersion,
       retiredAt: clients.retiredAt,
     })
     .from(clients)
@@ -250,6 +261,7 @@ export async function switchAgentRuntime(
   if (targetClient.retiredAt) {
     throw new ClientRetiredError(`Client "${input.clientId}" has been retired`);
   }
+  assertRuntimeSwitchClientVersion(targetClient.sdkVersion);
   await ensureClientSupportsRuntimeProvider(db, targetClient.id, input.runtimeProvider);
 
   const claim: RuntimeSwitchClaim = {

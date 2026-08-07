@@ -1,4 +1,8 @@
-import type { RuntimeProvider } from "@first-tree/shared";
+import {
+  MIN_RUNTIME_SWITCH_CLIENT_VERSION,
+  type RuntimeProvider,
+  supportsRuntimeSwitchClientVersion,
+} from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -965,11 +969,18 @@ export function runtimeSwitchAvailableProviders(client: HubClient): RuntimeProvi
 }
 
 function isRuntimeSwitchCandidateClient(client: HubClient): boolean {
-  return client.authState === "ok" && runtimeSwitchAvailableProviders(client).length > 0;
+  return (
+    client.authState === "ok" &&
+    supportsRuntimeSwitchClientVersion(client.sdkVersion) &&
+    runtimeSwitchAvailableProviders(client).length > 0
+  );
 }
 
 function runtimeSwitchClientBlocker(client: HubClient): string | null {
   if (client.authState !== "ok") return "Credentials expired";
+  if (!supportsRuntimeSwitchClientVersion(client.sdkVersion)) {
+    return `Requires CLI ${MIN_RUNTIME_SWITCH_CLIENT_VERSION}+`;
+  }
   if (runtimeSwitchAvailableProviders(client).length === 0) return "No available runtime provider";
   return null;
 }

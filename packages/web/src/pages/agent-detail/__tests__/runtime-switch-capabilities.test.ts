@@ -46,7 +46,7 @@ describe("runtime switch capability filtering", () => {
     expect(available).not.toContain("opencode");
   });
 
-  it.each([null, "0.1.0"])("does not filter providers by Client SDK version %s", (sdkVersion) => {
+  it.each([null, "0.1.0"])("keeps provider capability independent of Client SDK version %s", (sdkVersion) => {
     const target = { ...client({ codex: capability("ok") }), sdkVersion };
 
     expect(runtimeSwitchAvailableProviders(target)).toContain("codex");

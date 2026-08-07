@@ -39,7 +39,7 @@ async function setClientRuntimeSupport(
 ): Promise<void> {
   await app.db
     .update(clients)
-    .set({ sdkVersion: "0.5.11", metadata: { capabilities: caps } })
+    .set({ sdkVersion: "0.5.12", metadata: { capabilities: caps } })
     .where(eq(clients.id, clientId));
 }
 
@@ -840,7 +840,7 @@ describe("agent runtime switch service preconditions", () => {
       userId: null,
       organizationId: ctx.organizationId,
       status: "connected",
-      sdkVersion: "0.5.11",
+      sdkVersion: "0.5.12",
       metadata: { capabilities: { codex: capability("ok") } },
     });
     await expect(
@@ -852,6 +852,44 @@ describe("agent runtime switch service preconditions", () => {
     await expect(
       switchAgentRuntime(app.db, agent.uuid, { clientId: otherCtx.clientId, runtimeProvider: "codex" }, actor),
     ).rejects.toThrow("not owned");
+  });
+
+  it.each([
+    null,
+    "0.5.11",
+    "0.14.8",
+    "0.5.12-staging.123.1",
+  ])("rejects unsupported target Client version %s", async (sdkVersion) => {
+    const app = getApp();
+    const { ctx, agent, targetClientId } = await createSwitchFixture(app);
+    await app.db.update(clients).set({ sdkVersion }).where(eq(clients.id, targetClientId));
+
+    await expect(
+      switchAgentRuntime(
+        app.db,
+        agent.uuid,
+        { clientId: targetClientId, runtimeProvider: "codex" },
+        { userId: ctx.userId, memberId: ctx.memberId },
+      ),
+    ).rejects.toThrow("0.5.12");
+  });
+
+  it("accepts a staging Client released after stable 0.5.12", async () => {
+    const app = getApp();
+    const { ctx, agent, targetClientId } = await createSwitchFixture(app);
+    await app.db.update(clients).set({ sdkVersion: "0.5.20-staging.123.1" }).where(eq(clients.id, targetClientId));
+
+    await expect(
+      switchAgentRuntime(
+        app.db,
+        agent.uuid,
+        { clientId: targetClientId, runtimeProvider: "codex" },
+        { userId: ctx.userId, memberId: ctx.memberId },
+      ),
+    ).resolves.toMatchObject({
+      agent: { clientId: targetClientId, runtimeProvider: "codex" },
+      targetClientId,
+    });
   });
 
   it("rejects recovery when state is missing, malformed, or the agent is gone", async () => {
