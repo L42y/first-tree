@@ -267,7 +267,7 @@ function AgentStatusRow({
 
         {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
         {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
-        {showRemove && onRemove ? <RowRemoveButton onClick={onRemove} /> : null}
+        {showRemove && onRemove ? <RowRemoveButton displayName={agent.displayName} onClick={onRemove} /> : null}
       </div>
       {sessionReset || resetOpen ? (
         // Mounted on `resetOpen` too: after a failed reset the server may
@@ -343,12 +343,12 @@ function StatePill({ tone, label }: { tone: "blocked" | "error" | "idle"; label:
 
 /** Compact Remove control for the sidebar roster. Confirm lives in the
  *  Participants section so agent and human rows share one dialog. */
-function RowRemoveButton({ onClick }: { onClick: () => void }) {
+function RowRemoveButton({ displayName, onClick }: { displayName: string; onClick: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label="Remove participant"
+      aria-label={`Remove ${displayName} from this chat`}
       title="Remove from this chat"
       className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] hover:border-[var(--fg-error-strong)]"
       style={{

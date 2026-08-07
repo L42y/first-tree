@@ -9,6 +9,10 @@ import { ApiError } from "../../../../api/client.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
+function removeLabel(displayName: string): string {
+  return `Remove ${displayName} from this chat`;
+}
+
 const meChatMocks = vi.hoisted(() => ({
   removeMeChatParticipant: vi.fn(),
   addMeChatParticipants: vi.fn(),
@@ -60,7 +64,7 @@ vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
         <div key={agent.agentId}>
           <span>{agent.displayName}</span>
           {canRemove?.(agent.agentId) ? (
-            <button type="button" aria-label="Remove participant" onClick={() => onRemove?.(agent)}>
+            <button type="button" aria-label={removeLabel(agent.displayName)} onClick={() => onRemove?.(agent)}>
               Remove
             </button>
           ) : null}
@@ -114,10 +118,6 @@ async function click(el: Element | null | undefined): Promise<void> {
   await flush();
 }
 
-function buttonsByLabel(label: string): HTMLButtonElement[] {
-  return [...document.querySelectorAll("button")].filter((b) => b.getAttribute("aria-label") === label);
-}
-
 function buttonByLabel(label: string): HTMLButtonElement | null {
   return document.querySelector(`button[aria-label="${label}"]`);
 }
@@ -160,7 +160,7 @@ afterEach(async () => {
 });
 
 describe("ParticipantsSection remove affordance", () => {
-  it("shows Remove for other agents and humans, not for self", async () => {
+  it("shows Remove for other agents and humans, not for self, with unique aria-labels", async () => {
     await renderSection({
       participants: [
         participant("agent-1", "agent", "Byte"),
@@ -170,19 +170,35 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    expect(buttonsByLabel("Remove participant")).toHaveLength(2);
-    expect(document.body.textContent).toContain("Byte");
-    expect(document.body.textContent).toContain("Teammate");
-    expect(document.body.textContent).toContain("Me");
+    expect(buttonByLabel(removeLabel("Byte"))).not.toBeNull();
+    expect(buttonByLabel(removeLabel("Teammate"))).not.toBeNull();
+    expect(buttonByLabel(removeLabel("Me"))).toBeNull();
   });
 
   it("hides Remove when readOnly", async () => {
     await renderSection({
-      participants: [participant("agent-1", "agent", "Byte"), participant("human-2", "human", "Teammate")],
+      participants: [
+        participant("agent-1", "agent", "Byte"),
+        participant("human-self", "human", "Me"),
+        participant("human-2", "human", "Teammate"),
+      ],
       readOnly: true,
     });
     await flush();
-    expect(buttonsByLabel("Remove participant")).toHaveLength(0);
+    expect(buttonByLabel(removeLabel("Byte"))).toBeNull();
+    expect(buttonByLabel(removeLabel("Teammate"))).toBeNull();
+  });
+
+  it("hides Remove for supervisor views where self is absent from speaker roster", async () => {
+    authMock.agentId = "human-supervisor";
+    await renderSection({
+      participants: [participant("agent-1", "agent", "Byte"), participant("human-2", "human", "Teammate")],
+      readOnly: false,
+    });
+    await flush();
+
+    expect(buttonByLabel(removeLabel("Byte"))).toBeNull();
+    expect(buttonByLabel(removeLabel("Teammate"))).toBeNull();
   });
 
   it("opens confirm, Cancel does not mutate, Confirm submits once", async () => {
@@ -193,19 +209,53 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonsByLabel("Remove participant")[0]);
+    await click(buttonByLabel(removeLabel("Byte")));
     expect(document.body.textContent).toContain('Remove "Byte"?');
 
     await click(buttonByText("Cancel"));
     expect(meChatMocks.removeMeChatParticipant).not.toHaveBeenCalled();
 
-    await click(buttonsByLabel("Remove participant")[0]);
+    await click(buttonByLabel(removeLabel("Byte")));
     await click(buttonByLabel("Confirm remove participant"));
     await flush();
 
     expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
     expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledWith("chat-1", "agent-1");
     expect(onAdded).toHaveBeenCalled();
+    expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
+  });
+
+  it("pending confirm only submits once under deferred mutation", async () => {
+    let release!: () => void;
+    meChatMocks.removeMeChatParticipant.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    await renderSection({
+      participants: [participant("agent-1", "agent", "Byte"), participant("human-self", "human", "Me")],
+    });
+    await flush();
+
+    await click(buttonByLabel(removeLabel("Byte")));
+    const confirm = buttonByLabel("Confirm remove participant");
+    expect(confirm).not.toBeNull();
+
+    await click(confirm);
+    // Mutation is in-flight: confirm is disabled / guarded — a second press must not enqueue another call.
+    expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
+    const pendingConfirm = buttonByLabel("Removing participant");
+    expect(pendingConfirm?.disabled).toBe(true);
+    await click(pendingConfirm);
+    expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      release();
+      await Promise.resolve();
+    });
+    await flush();
     expect(toastMock.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Participant removed" }));
   });
 
@@ -216,7 +266,7 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonsByLabel("Remove participant")[0]);
+    await click(buttonByLabel(removeLabel("Teammate")));
     await click(buttonByLabel("Confirm remove participant"));
     await flush();
 
@@ -226,5 +276,10 @@ describe("ParticipantsSection remove affordance", () => {
         description: "Not a participant of this chat",
       }),
     );
+  });
+
+  it("exports a display-name aria-label helper shared with human rows", async () => {
+    const { removeParticipantAriaLabel } = await import("../participants-section.js");
+    expect(removeParticipantAriaLabel("Byte")).toBe(removeLabel("Byte"));
   });
 });

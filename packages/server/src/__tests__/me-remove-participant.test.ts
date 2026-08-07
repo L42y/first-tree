@@ -155,6 +155,32 @@ describe("DELETE /api/v1/chats/:chatId/participants/:agentId", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it("rejects a caller with no chat membership and no managed speakers with 404", async () => {
+    const { app, alice, peer, chatId } = await createSpeakerChat();
+    const stranger = await createTestAdmin(app);
+
+    const strangerMembership = await app.db
+      .select()
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.agentId, stranger.humanAgentUuid)));
+    expect(strangerMembership).toHaveLength(0);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/chats/${encodeURIComponent(chatId)}/participants/${encodeURIComponent(peer.uuid)}`,
+      headers: { authorization: `Bearer ${stranger.accessToken}` },
+    });
+    expect(res.statusCode).toBe(404);
+    // Alice's roster is unchanged — access gate failed before mutation.
+    const detail = await app.inject({
+      method: "GET",
+      url: `/api/v1/chats/${encodeURIComponent(chatId)}`,
+      headers: { authorization: `Bearer ${alice.accessToken}` },
+    });
+    const participants = detail.json<{ participants: Array<{ agentId: string }> }>().participants;
+    expect(participants.map((p) => p.agentId).sort()).toEqual([alice.humanAgentUuid, peer.uuid].sort());
+  });
+
   it("recomputes watchers after removing the anchoring agent speaker", async () => {
     const app = getApp();
     const alice = await createTestAdmin(app);

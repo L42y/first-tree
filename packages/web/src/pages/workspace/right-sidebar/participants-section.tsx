@@ -58,8 +58,9 @@ export function partitionRoster(
  * glanceable pulse) through <AgentStatusPanel> (one
  * /chats/:id/agent-status call drives every agent's composite status +
  * per-row Pause when the caller can manage). Humans follow as a simplified
- * roster. Speakers (when not read-only) can Remove any other speaker;
- * self-removal stays on Leave, so the caller's own row never shows Remove.
+ * roster. Only a viewer who is themselves a speaker in the passed roster
+ * (and not read-only) can Remove any other speaker; supervisor-only views
+ * must not show Remove. Self-removal stays on Leave.
  *
  * The roster is capped at VISIBLE_LIMIT; the remainder collapses behind a
  * "Show all" toggle so a crowded chat can't dominate the rail.
@@ -98,7 +99,11 @@ export function ParticipantsSection({
     [participants, showAll],
   );
 
-  const canRemoveOthers = !readOnly && Boolean(selfAgentId);
+  // Gate on speaker membership in the roster props — not org role / managedByMe.
+  // Supervisor views (`viewerMembershipKind === null`) still have a selfAgentId
+  // and may leave `readOnly` false, but they are absent from `participants`.
+  const selfIsSpeaker = Boolean(selfAgentId && participants.some((p) => p.agentId === selfAgentId));
+  const canRemoveOthers = !readOnly && selfIsSpeaker;
   const canRemove = (agentId: string) => canRemoveOthers && agentId !== selfAgentId;
 
   const removeMut = useMutation({
@@ -233,18 +238,31 @@ function HumanRow({
       <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
         <div className="truncate text-subtitle">{participant.displayName}</div>
       </div>
-      {showRemove ? <RemoveButton onClick={onRemove} /> : null}
+      {showRemove ? <RemoveButton displayName={participant.displayName} onClick={onRemove} /> : null}
     </div>
   );
 }
 
-export function RemoveButton({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
+/** Unique accessible name shared by human and agent Remove controls. */
+export function removeParticipantAriaLabel(displayName: string): string {
+  return `Remove ${displayName} from this chat`;
+}
+
+export function RemoveButton({
+  displayName,
+  onClick,
+  disabled = false,
+}: {
+  displayName: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      aria-label="Remove participant"
+      aria-label={removeParticipantAriaLabel(displayName)}
       title="Remove from this chat"
       className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] hover:border-[var(--fg-error-strong)] disabled:opacity-50"
       style={{

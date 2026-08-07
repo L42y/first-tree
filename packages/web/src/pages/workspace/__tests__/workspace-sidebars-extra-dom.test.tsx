@@ -114,7 +114,11 @@ vi.mock("../../../components/chat/agent-status-panel.js", () => ({
         <div key={agent.agentId}>
           {agent.displayName} · {canManage(agent.agentId) ? "manageable" : "readonly"}
           {canRemove?.(agent.agentId) ? (
-            <button type="button" aria-label="Remove participant" onClick={() => onRemove?.(agent)}>
+            <button
+              type="button"
+              aria-label={`Remove ${agent.displayName} from this chat`}
+              onClick={() => onRemove?.(agent)}
+            >
               Remove
             </button>
           ) : null}
