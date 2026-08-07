@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
@@ -261,7 +261,7 @@ describe("runtime provider architecture guard", () => {
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
     const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
     expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
-    expect(piHandler).toContain("provider-support/binary-failure");
+    expect(piHandler).toMatch(/runtime\/provider-support\/(?:index|binary-failure)/);
     expect(piHandler).not.toContain("isPiBinaryMissingError");
     expect(piHandler).not.toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
   });
@@ -677,5 +677,159 @@ describe("runtime provider architecture guard", () => {
     const activityTs = readFileSync(join(repoRoot, "packages/web/src/api/activity.ts"), "utf8");
     expect(activityTs).toContain("RuntimeAuthStartRequest");
     expect(activityTs).not.toMatch(/provider:\s*RuntimeProvider/);
+  });
+
+  it("routes provider Runtime-owned imports through contracts or provider-support only", () => {
+    // Runtime-owned modules that provider production code must not deep-import.
+    // Transitional provider-family modules still living under runtime/ (binaries,
+    // login, capabilities, Claude host helpers, OpenCode private config) are
+    // intentionally excluded — S3 relocates those into the provider package.
+    const forbiddenRuntimeOwned = [
+      "runtime/agent-bootstrap.js",
+      "runtime/agent-briefing.js",
+      "runtime/agent-config-cache.js",
+      "runtime/bootstrap.js",
+      "runtime/chat-context.js",
+      "runtime/chat-context-section.js",
+      "runtime/cli-binding.js",
+      "runtime/context-tree-file-refs.js",
+      "runtime/context-tree-git-status.js",
+      "runtime/git-local-path.js",
+      "runtime/managed-skills.js",
+      "runtime/provider-attempt.js",
+      "runtime/provider-process-supervisor.js",
+      "runtime/provider-retry-policy.js",
+      "runtime/provider-support/binary-failure.js",
+      "runtime/redact-error-preview.js",
+      "runtime/runtime-notice.js",
+      "runtime/session-briefing-fingerprint.js",
+      "runtime/source-repos.js",
+      "runtime/team-skill-bundle-resolver.js",
+      "runtime/workspace.js",
+      "runtime/session-manager.js",
+      "runtime/session-registry.js",
+      "runtime/agent-slot.js",
+      "runtime/runtime.js",
+    ] as const;
+
+    const productionProviderFiles = [
+      ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+    ];
+
+    for (const file of productionProviderFiles) {
+      const source = readFileSync(file, "utf8");
+      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      for (const owner of forbiddenRuntimeOwned) {
+        // Fail closed on alias / multiline / single-line import forms that name
+        // the owner module path — not a raw string-count heuristic.
+        expect(source, `${rel} must not deep-import ${owner}`).not.toMatch(
+          new RegExp(`from\\s+["'][^"']*${owner.replaceAll(".", "\\.")}["']`),
+        );
+      }
+    }
+
+    const mustUseProviderSupport = [
+      "handlers/claude-code.ts",
+      "handlers/claude-code-tui/index.ts",
+      "handlers/codex/sdk.ts",
+      "handlers/codex/app-server/index.ts",
+      "handlers/cursor/index.ts",
+      "handlers/grok/index.ts",
+      "handlers/kimi-code.ts",
+      "handlers/opencode/index.ts",
+      "handlers/pi/index.ts",
+    ] as const;
+    for (const rel of mustUseProviderSupport) {
+      const source = readFileSync(join(clientSrc, rel), "utf8");
+      expect(source, `${rel} must import provider-support/index.js`).toMatch(/runtime\/provider-support\/index\.js/);
+      expect(source, `${rel} must call prepareManagedSession`).toMatch(/\bprepareManagedSession\b/);
+      // Handlers must not hand-write the full admission combination.
+      expect(source, `${rel} must not call acquireAgentHome directly`).not.toMatch(/\bacquireAgentHome\s*\(/);
+      expect(source, `${rel} must not call markWorkspaceInitComplete directly`).not.toMatch(
+        /\bmarkWorkspaceInitComplete\s*\(/,
+      );
+      expect(source, `${rel} must not call ensureAgentBootstrap directly`).not.toMatch(/\bensureAgentBootstrap\s*\(/);
+    }
+  });
+
+  it("keeps provider-support entry an explicit allowlist without session/runtime owners or concrete providers", () => {
+    const entry = readFileSync(join(clientSrc, "runtime/provider-support/index.ts"), "utf8");
+    expect(entry).toContain("prepareManagedSession");
+    expect(entry).toContain("./preparation.js");
+    expect(entry).toContain("./process-supervision.js");
+    expect(entry).toContain("./failure-policy.js");
+    expect(entry).toContain("./turn-prompt.js");
+    expect(entry).toContain("./tree-tracking.js");
+    expect(entry).toContain("./host-runtime.js");
+    expect(entry).not.toMatch(/export\s+\*\s+from/);
+    for (const banned of [
+      "SessionManager",
+      "SessionRegistry",
+      "AgentSlot",
+      "AgentRuntime",
+      "createBuiltinHandlerRegistry",
+      "HANDLER_REGISTRY",
+    ]) {
+      expect(entry, `provider-support must not export ${banned}`).not.toMatch(new RegExp(`\\b${banned}\\b`));
+    }
+    // No concrete provider binary / login / capability re-exports.
+    expect(entry).not.toMatch(/codex-binary|cursor-binary|grok-binary|pi-binary|opencode-binary|kimi-binary/);
+    expect(entry).not.toMatch(/claude-login|codex-login|cursor-login|grok-login/);
+    expect(entry).not.toMatch(/capabilities\//);
+
+    // Group modules stay allowlists too.
+    for (const group of [
+      "preparation.ts",
+      "process-supervision.ts",
+      "failure-policy.ts",
+      "turn-prompt.ts",
+      "tree-tracking.ts",
+      "host-runtime.ts",
+    ] as const) {
+      const source = readFileSync(join(clientSrc, "runtime/provider-support", group), "utf8");
+      expect(source, `${group} must not export *`).not.toMatch(/export\s+\*\s+from/);
+      expect(source, `${group} must not mention SessionManager`).not.toMatch(/\bSessionManager\b/);
+    }
+  });
+
+  it("keeps generic Runtime free of handler and concrete provider implementation imports", () => {
+    const runtimeRoot = join(clientSrc, "runtime");
+    const runtimeFiles = listFilesRecursive(
+      runtimeRoot,
+      (p) => p.endsWith(".ts") && !p.includes("__tests__") && !p.includes(`${sep}capabilities${sep}`),
+    );
+    // Transitional provider-family modules currently under runtime/ may name
+    // their own family; the generic Runtime surface must not import handlers
+    // or those concrete implementations.
+    const transitionalProviderModules = new Set([
+      "codex-binary.ts",
+      "cursor-binary.ts",
+      "grok-binary.ts",
+      "pi-binary.ts",
+      "opencode-binary.ts",
+      "kimi-binary.ts",
+      "claude-login.ts",
+      "codex-login.ts",
+      "cursor-login.ts",
+      "grok-login.ts",
+      "opencode-private-config.ts",
+    ]);
+
+    for (const file of runtimeFiles) {
+      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const base = rel.split("/").pop() ?? "";
+      if (transitionalProviderModules.has(base)) continue;
+      if (rel.startsWith("runtime/capabilities/")) continue;
+      const source = readFileSync(file, "utf8");
+      expect(source, `${rel} must not import handlers/**`).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+      if (!rel.includes("provider-support/binary-failure")) {
+        // Generic runtime (except the binary-failure seam's reason-code tables)
+        // must not deep-import concrete provider binary modules.
+        expect(source, `${rel} must not import concrete provider binaries`).not.toMatch(
+          CONCRETE_PROVIDER_BINARY_IMPORT,
+        );
+      }
+    }
   });
 });
