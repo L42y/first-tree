@@ -2586,9 +2586,8 @@ describe("ChatView", () => {
     await act(async () => preview.root.unmount());
   });
 
-  it("self-only roster keeps history and Participants but locks the composer (no self recipient)", async () => {
+  it("self-only roster locks composer without destroying draft, then restores after peer returns", async () => {
     const { ChatView } = await import("../chat-view.js");
-    const { SELF_ONLY_COMPOSER_PLACEHOLDER } = await import("../../../../utils/requires-mention.js");
     localStorage.setItem("first-tree:chat-right-sidebar:open:v1", "1");
     const history = message({
       id: "msg-before-remove",
@@ -2596,41 +2595,63 @@ describe("ChatView", () => {
       content: "hello before last-other remove",
       metadata: { mentions: ["human-agent-alice"] },
     });
-    const solo = chatDetail({
+    const withPeer = chatDetail({
       participants: [
         participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "human-agent-alice", type: "human", name: "alice", displayName: "Alice" }),
       ],
     });
+    const solo = chatDetail({
+      participants: [participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" })],
+    });
     chatMocks.listChatMessages.mockResolvedValue(messages([history]));
-    chatMocks.getChat.mockResolvedValue(solo);
+    chatMocks.getChat.mockResolvedValue(withPeer);
     agentMocks.getAgentSkills.mockClear();
 
-    const { container, root } = await renderDom(
-      // agentId = viewer is only a ChatById mount anchor, not a recipient.
-      <ChatView agentId="human-agent-self" chatId="chat-1" initialChatDetail={solo} />,
-      (queryClient) => seedChat(queryClient, solo, messages([history])),
+    const { container, queryClient, root } = await renderDom(
+      <ChatView agentId="human-agent-alice" chatId="chat-1" initialChatDetail={withPeer} />,
+      (qc) => seedChat(qc, withPeer, messages([history])),
       "/",
     );
 
     await waitForText(container, "hello before last-other remove");
-    await waitForText(container, "Participants");
-    expect(container.textContent).toContain("Add a participant before you can send.");
-    expect(container.textContent).not.toContain("Resolving participants");
-    expect(container.textContent).not.toContain("Hi Gandy!");
-
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     if (!textarea) throw new Error("Composer textarea missing");
-    expect(textarea.disabled).toBe(true);
-    expect(textarea.placeholder).toBe(SELF_ONLY_COMPOSER_PLACEHOLDER);
-    expect(textarea.value).toBe("");
+    await setValue(textarea, "keep this draft after remove");
+    expect(textarea.value).toBe("keep this draft after remove");
+    agentMocks.getAgentSkills.mockClear();
+    chatMocks.sendChatMessage.mockClear();
 
-    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
-    expect(send?.disabled).toBe(true);
-    await click(send);
+    // Roster shrinks to self-only (Remove last other) — draft must survive.
+    chatMocks.getChat.mockResolvedValue(solo);
+    await act(async () => {
+      queryClient.setQueryData(["chat-detail", "chat-1"], solo);
+    });
+    await flush();
+
+    await waitForText(container, "Add a participant to send a message");
+    expect(container.textContent).toContain("Your draft is kept until you add someone.");
+    expect(container.textContent).toContain("Participants");
+    expect(container.textContent).not.toContain("Resolving participants");
+    expect(container.textContent).not.toContain("Hi Gandy!");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector('button[aria-label="Send"]')).toBeNull();
+    expect(container.querySelector('[data-composer-state="no-recipient"]')).not.toBeNull();
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
     expect(agentMocks.getAgentSkills).not.toHaveBeenCalled();
     expect(container.textContent).not.toMatch(/\bPause\b/);
     expect(container.textContent).not.toMatch(/\bResume\b/);
+
+    // Peer returns (Add participant) — draft comes back in the editable composer.
+    chatMocks.getChat.mockResolvedValue(withPeer);
+    await act(async () => {
+      queryClient.setQueryData(["chat-detail", "chat-1"], withPeer);
+    });
+    await flush();
+    await waitForCondition(() => container.querySelector("textarea") != null, "Expected composer restored");
+    const restored = container.querySelector<HTMLTextAreaElement>("textarea");
+    expect(restored?.value).toBe("keep this draft after remove");
+    expect(container.querySelector('[data-composer-state="no-recipient"]')).toBeNull();
 
     await act(async () => root.unmount());
   });

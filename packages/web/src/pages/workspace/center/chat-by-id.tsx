@@ -18,7 +18,7 @@ import { ChatView } from "./chat-view.js";
  *   1. The first non-self, non-human participant (the conversation's
  *      autonomous/personal agent).
  *   2. Fallback: the first non-self participant.
-   *   3. Self-only roster (e.g. after Web Remove of the last other speaker):
+ *   3. Self-only roster (e.g. after Web Remove of the last other speaker):
  *      the viewer's own agent id as a **render anchor only** so history /
  *      composer shell / Participants stay mounted — never as a message
  *      recipient (ChatView locks the composer when the roster is self-only).

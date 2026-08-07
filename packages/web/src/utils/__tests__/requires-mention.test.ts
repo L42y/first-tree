@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  computeRequiresMention,
-  isSelfOnlySpeakerRoster,
-  shouldPrimeMentionOnFocus,
-} from "../requires-mention.js";
+import { computeRequiresMention, isSelfOnlySpeakerRoster, shouldPrimeMentionOnFocus } from "../requires-mention.js";
 
 const ME = "me-agent";
 const A = "agent-a";

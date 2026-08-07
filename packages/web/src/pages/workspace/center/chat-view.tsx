@@ -4163,15 +4163,6 @@ export function ChatView({
     );
   }, [chatDetail, myAgentId]);
 
-  // Drop any leftover draft (e.g. a prior 1:1 "Hi …" prefill) once the chat
-  // becomes recipientless so we never show self as a message target.
-  useEffect(() => {
-    if (!selfOnlyRoster) return;
-    setDraft("");
-    setCursor(0);
-    clearAttachments();
-  }, [selfOnlyRoster, chatId, setDraft, clearAttachments]);
-
   // First-message pre-fill: when the user lands on a brand-new empty chat
   // (typical right after onboarding's "Create" succeeds), drop a friendly
   // "Hi {name}!" into the input so hitting Enter is enough. Group chats are
@@ -4187,7 +4178,9 @@ export function ChatView({
   // name would otherwise stamp "Hi <uuid>! …" and the Set guard prevents
   // a fix-up once the map loads. We just wait for it.
   // Self-only rosters never prefill: `agentId` may be the viewer's own id
-  // as a ChatView mount anchor, not a recipient.
+  // as a ChatView mount anchor, not a recipient. Draft/attachments are
+  // preserved across self-only lock so Remove of the last peer cannot
+  // silently destroy unsent content.
   useEffect(() => {
     // Watchers don't see the composer; stamping a greeting into `draft`
     // is invisible at best and at worst contaminates `prefilledChatsRef`
@@ -5196,6 +5189,31 @@ export function ChatView({
                       Open
                     </span>
                   </button>
+                ) : composerLockedNoRecipient ? (
+                  <div
+                    className="composer-card"
+                    role="status"
+                    data-composer-state="no-recipient"
+                    style={{
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      padding: "var(--sp-3)",
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      // Always cancel navigation / open-as-file before no-op.
+                      e.preventDefault();
+                    }}
+                  >
+                    <div className="text-body" style={{ color: "var(--fg-3)" }}>
+                      {SELF_ONLY_COMPOSER_PLACEHOLDER}
+                    </div>
+                    {draft.trim().length > 0 || pendingAttachments.length > 0 ? (
+                      <div className="text-caption" style={{ color: "var(--fg-4)", marginTop: "var(--sp-1)" }}>
+                        Your draft is kept until you add someone.
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <>
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}
@@ -5228,24 +5246,13 @@ export function ChatView({
                       }}
                       onDragOver={(e) => (isTrial ? undefined : e.preventDefault())}
                       onDrop={(e) => {
-                        // No drag-and-drop image attachments on the trial surface.
-                        if (isTrial || composerLockedNoRecipient) return;
+                        // Always preventDefault before any early return so a drop
+                        // cannot navigate the tab / open the file.
+                        if (isTrial) return;
                         e.preventDefault();
                         addFiles(Array.from(e.dataTransfer.files));
                       }}
                     >
-                      {composerLockedNoRecipient ? (
-                        <div
-                          role="status"
-                          className="text-body"
-                          style={{
-                            padding: "var(--sp-2_25) var(--sp-3) 0",
-                            color: "var(--fg-3)",
-                          }}
-                        >
-                          Add a participant before you can send.
-                        </div>
-                      ) : null}
                       {/* Group-mention tip bubble: a transient popover anchored
                           above the send button, shown only on a blocked send
                           attempt (`flashMentionTip`). Opens upward (the composer
@@ -5496,9 +5503,7 @@ export function ChatView({
                           placeholder={
                             landingCampaignChatLocked
                               ? LANDING_TRIAL_CHAT_ENDED_PLACEHOLDER
-                              : composerLockedNoRecipient
-                                ? SELF_ONLY_COMPOSER_PLACEHOLDER
-                                : isTrial
+                              : isTrial
                                 ? // Trial: a single-agent, controlled conversation — no
                                   // slash commands or @mention (one agent), so the
                                   // placeholder is just the plain message prompt.
@@ -5579,7 +5584,9 @@ export function ChatView({
                               handleSend();
                             }
                           }}
-                          disabled={landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading}
+                          disabled={
+                            landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                          }
                           className="mention-composer-textarea w-full outline-none text-subtitle font-normal placeholder:text-muted-foreground"
                           style={{
                             // Mobile: the toolbar is a flow row below, not an overlay
@@ -5686,7 +5693,9 @@ export function ChatView({
                                   el.setSelectionRange(start + 1, start + 1);
                                 });
                               }}
-                              disabled={landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               title="Mention an agent (or type @)"
                               style={{
                                 background: "none",
@@ -5709,7 +5718,9 @@ export function ChatView({
                             <button
                               type="button"
                               onClick={() => fileInputRef.current?.click()}
-                              disabled={landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               title="Attach file"
                               style={{
                                 background: "none",
@@ -5734,7 +5745,9 @@ export function ChatView({
                               type="file"
                               accept={COMPOSER_ACCEPT_ATTRIBUTE}
                               multiple
-                              disabled={landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               style={{ display: "none" }}
                               onChange={(e) => {
                                 if (e.target.files) {
@@ -5771,12 +5784,12 @@ export function ChatView({
                                   : composerLockedNoRecipient
                                     ? "Add a participant to send a message"
                                     : sendBlockedByMentionGate
-                                    ? "@mention someone to send — a group message must address someone"
-                                    : // On mobile Enter inserts a newline, so the button is
-                                      // the only way to send — don't advertise the Enter shortcut.
-                                      composerMobile
-                                      ? "Send"
-                                      : "Send (Enter)"
+                                      ? "@mention someone to send — a group message must address someone"
+                                      : // On mobile Enter inserts a newline, so the button is
+                                        // the only way to send — don't advertise the Enter shortcut.
+                                        composerMobile
+                                        ? "Send"
+                                        : "Send (Enter)"
                             }
                             aria-label={
                               openRequestsMountFailed
