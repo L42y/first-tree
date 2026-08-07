@@ -1,7 +1,0 @@
-{
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "rootDir": "."
-  },
-  "include": ["scripts/audit-shared-context-tree-repos.ts", "scripts/lib/**/*.ts", "scripts/__tests__/**/*.ts"]
-}
