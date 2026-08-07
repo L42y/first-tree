@@ -95,7 +95,8 @@ function AgentSwitcherPanel({
   const isAdmin = role === "admin";
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const didAutoFocusRef = useRef(false);
+  const retryRef = useRef<HTMLButtonElement>(null);
+  const autoFocusedForRef = useRef<"none" | "error" | "list">("none");
   const [filter, setFilter] = useState("");
 
   // Same query key, source, and order as the Team page, so the switcher shows
@@ -134,11 +135,19 @@ function AgentSwitcherPanel({
     );
   }, [options, filter]);
 
-  // Land the keyboard on something meaningful once the list resolves: the
-  // filter input when there is one, otherwise the agent already open.
+  // Land the keyboard on something meaningful each time the panel's content
+  // changes shape: Retry while the roster is broken, then the filter input or
+  // the agent already open once a list exists. Tracking which shape we focused
+  // for (rather than a one-shot flag) is what lets a successful retry hand the
+  // keyboard on to the rows it just rendered.
   useEffect(() => {
-    if (didAutoFocusRef.current || agentsQuery.isPending) return;
-    didAutoFocusRef.current = true;
+    if (agentsQuery.isError && autoFocusedForRef.current !== "error") {
+      autoFocusedForRef.current = "error";
+      retryRef.current?.focus();
+      return;
+    }
+    if (!agentsQuery.isSuccess || autoFocusedForRef.current === "list") return;
+    autoFocusedForRef.current = "list";
     if (inputRef.current) {
       inputRef.current.focus();
       return;
@@ -148,7 +157,7 @@ function AgentSwitcherPanel({
       rows?.querySelector<HTMLButtonElement>(`${ROW_SELECTOR}[aria-checked="true"]`) ??
       rows?.querySelector<HTMLButtonElement>(ROW_SELECTOR)
     )?.focus();
-  }, [agentsQuery.isPending]);
+  }, [agentsQuery.isError, agentsQuery.isSuccess]);
 
   function pick(uuid: string) {
     close();
@@ -219,7 +228,7 @@ function AgentSwitcherPanel({
           style={{ padding: "var(--sp-1_5) var(--sp-3)", color: "var(--fg-3)" }}
         >
           <span>Couldn’t load agents.</span>
-          <Button size="xs" variant="outline" onClick={() => void agentsQuery.refetch()}>
+          <Button ref={retryRef} size="xs" variant="outline" onClick={() => void agentsQuery.refetch()}>
             Retry
           </Button>
         </div>

@@ -307,8 +307,13 @@ describe("AgentSwitcher", () => {
     expect(trigger().textContent).toBe("Vega");
 
     const retry = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Retry");
+    expect(document.activeElement).toBe(retry);
+
     await click(retry);
     expect(rowLabels()).toEqual(["Vega", "Nova"]);
+    // The Retry button that held focus is gone; the recovered list takes over
+    // rather than dropping the keyboard on document.body.
+    expect(document.activeElement).toBe(rows()[0]);
   });
 
   it("shows just the open agent when there is nothing to switch to", async () => {
