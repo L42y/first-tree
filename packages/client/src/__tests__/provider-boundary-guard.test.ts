@@ -1048,6 +1048,11 @@ describe("runtime provider architecture guard", () => {
         } else if (ts.isImportEqualsDeclaration(node) && hasExportKeyword(node)) {
           handled = true;
           violations.push("unsupported export import equals");
+        } else if (ts.isNamespaceExportDeclaration(node)) {
+          // `export as namespace Foo;` — canHaveModifiers is false, so the
+          // ExportKeyword catch-all would miss it.
+          handled = true;
+          violations.push("unsupported export as namespace");
         }
 
         // Catch-all: any ExportKeyword statement that no supported branch owned.
@@ -1109,6 +1114,9 @@ describe("runtime provider architecture guard", () => {
     // Negative: unsupported local class/enum fail closed (not silently tupled).
     expect(extractExportTuples(`export class LocalOwner {}`).violations).toContain("unsupported exported local class");
     expect(extractExportTuples(`export enum LocalKind { A }`).violations).toContain("unsupported exported local enum");
+
+    // Negative: `export as namespace` is NamespaceExportDeclaration (no modifiers).
+    expect(extractExportTuples(`export as namespace Sneaky;`).violations).toContain("unsupported export as namespace");
   });
 
   it("keeps provider-support value re-exports identical to their owning group modules", async () => {
