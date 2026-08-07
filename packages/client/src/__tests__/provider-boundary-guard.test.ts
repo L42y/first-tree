@@ -747,19 +747,26 @@ describe("runtime provider architecture guard", () => {
       return ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword;
     }
 
+    /** String / no-substitution template literal module specifier, or null. */
+    function literalModuleSpecifierText(node: ts.Expression | ts.LiteralTypeNode["literal"]): string | null {
+      return ts.isStringLiteralLike(node) ? node.text : null;
+    }
+
     /**
      * AST-level module references: ImportDeclaration (including bare
-     * side-effect), ExportDeclaration re-exports, and dynamic `import()`.
-     * Non-literal dynamic import arguments are recorded separately so the
-     * production scan can fail closed instead of silently skipping them.
+     * side-effect), ExportDeclaration re-exports, dynamic `import()`,
+     * `import("…")` type queries (`ImportTypeNode`), and external
+     * `import x = require("…")` (`ImportEqualsDeclaration`).
+     * Non-literal / unclassifiable forms are recorded so the production scan
+     * fails closed instead of silently skipping them.
      */
     function extractModuleReferences(source: string): {
       literalSpecifiers: string[];
-      hasUnresolvableDynamicImport: boolean;
+      hasUnresolvableModuleReference: boolean;
     } {
       const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       const literalSpecifiers: string[] = [];
-      let hasUnresolvableDynamicImport = false;
+      let hasUnresolvableModuleReference = false;
 
       function visit(node: ts.Node): void {
         if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
@@ -772,17 +779,33 @@ describe("runtime provider architecture guard", () => {
           literalSpecifiers.push(node.moduleSpecifier.text);
         } else if (isDynamicImportCall(node)) {
           const [arg] = node.arguments;
-          if (arg && ts.isStringLiteralLike(arg)) {
-            literalSpecifiers.push(arg.text);
+          const text = arg ? literalModuleSpecifierText(arg) : null;
+          if (text !== null) literalSpecifiers.push(text);
+          else hasUnresolvableModuleReference = true;
+        } else if (ts.isImportTypeNode(node)) {
+          // `type T = import("spec").T` — argument is a LiteralTypeNode whose
+          // literal is a string or no-substitution template.
+          if (ts.isLiteralTypeNode(node.argument)) {
+            const text = literalModuleSpecifierText(node.argument.literal);
+            if (text !== null) literalSpecifiers.push(text);
+            else hasUnresolvableModuleReference = true;
           } else {
-            hasUnresolvableDynamicImport = true;
+            hasUnresolvableModuleReference = true;
+          }
+        } else if (ts.isImportEqualsDeclaration(node)) {
+          // `import x = require("spec")` only — namespace entity-name aliases
+          // (`import x = NS.y`) are not module edges.
+          if (ts.isExternalModuleReference(node.moduleReference)) {
+            const text = literalModuleSpecifierText(node.moduleReference.expression);
+            if (text !== null) literalSpecifiers.push(text);
+            else hasUnresolvableModuleReference = true;
           }
         }
         ts.forEachChild(node, visit);
       }
 
       visit(sourceFile);
-      return { literalSpecifiers, hasUnresolvableDynamicImport };
+      return { literalSpecifiers, hasUnresolvableModuleReference };
     }
 
     function classifyRuntimeImport(runtimeRel: string): "ok" | "forbidden" {
@@ -804,9 +827,9 @@ describe("runtime provider architecture guard", () => {
       const source = readFileSync(file, "utf8");
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
       const refs = extractModuleReferences(source);
-      if (refs.hasUnresolvableDynamicImport) {
+      if (refs.hasUnresolvableModuleReference) {
         violations.push(
-          `${rel} has a non-literal dynamic import(); provider-side Runtime edges must be statically classifiable (fail-closed)`,
+          `${rel} has a non-literal / unclassifiable module reference; provider-side Runtime edges must be statically classifiable (fail-closed)`,
         );
       }
       for (const spec of refs.literalSpecifiers) {
@@ -840,7 +863,7 @@ describe("runtime provider architecture guard", () => {
     const cursorHandler = join(clientSrc, "handlers/cursor/index.ts");
     function expectForbiddenRuntimeSpec(source: string, expectedSpec: string): void {
       const refs = extractModuleReferences(source);
-      expect(refs.hasUnresolvableDynamicImport).toBe(false);
+      expect(refs.hasUnresolvableModuleReference).toBe(false);
       expect(refs.literalSpecifiers).toContain(expectedSpec);
       const resolved = resolveRuntimeImport(cursorHandler, expectedSpec);
       expect(resolved).toBe("runtime/brand-new-owner.js");
@@ -852,6 +875,18 @@ describe("runtime provider architecture guard", () => {
 
     // Literal dynamic import must still be classified.
     expectForbiddenRuntimeSpec(`await import("../../runtime/brand-new-owner.js");`, "../../runtime/brand-new-owner.js");
+
+    // Import type query (`ImportTypeNode`) must still be classified.
+    expectForbiddenRuntimeSpec(
+      `type Hidden = import("../../runtime/brand-new-owner.js").Hidden;`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // External import-equals (`import x = require("…")`) must still be classified.
+    expectForbiddenRuntimeSpec(
+      `import Owner = require("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
 
     // Aliased / multiline static import continues to fail closed.
     const multilineFixture = `
@@ -868,8 +903,13 @@ describe("runtime provider architecture guard", () => {
 
     // Non-literal dynamic import cannot be classified → fail closed.
     const unresolvableDynamic = extractModuleReferences(`const p = "./x.js"; await import(p);`);
-    expect(unresolvableDynamic.hasUnresolvableDynamicImport).toBe(true);
+    expect(unresolvableDynamic.hasUnresolvableModuleReference).toBe(true);
     expect(unresolvableDynamic.literalSpecifiers).toEqual([]);
+
+    // Non-literal import-equals require() → fail closed.
+    const unresolvableEquals = extractModuleReferences(`import Owner = require(someVar);`);
+    expect(unresolvableEquals.hasUnresolvableModuleReference).toBe(true);
+    expect(unresolvableEquals.literalSpecifiers).toEqual([]);
 
     const mustUseProviderSupport = [
       "handlers/claude-code.ts",
