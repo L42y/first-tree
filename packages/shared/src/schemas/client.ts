@@ -55,33 +55,11 @@ export type Client = z.infer<typeof clientSchema>;
  * `clientCapabilitiesSchema` (per-runtime-provider availability — different
  * concept).
  *
- * 0.10.4 ~ 0.14.2 clients still send this block (with `wsInboxDeliver: true`
- * hard-coded). The 0.14.3+ runtime omits it. The schema is retained so that
- * middle-version `client:register` frames still parse, even though the
- * server no longer reads any of these fields — the WS inbox data plane is
- * mandatory on this server build.
+ * The WS inbox data plane is mandatory on this server build; this capability
+ * block now carries only explicitly negotiated session behavior.
  */
 export const clientWireCapabilitiesSchema = z
   .object({
-    /**
-     * Historical opt-in for the `inbox:deliver` push path. The server now
-     * ignores the value; 0.10.4 ~ 0.14.2 clients still emit it as `true`.
-     * Kept for parse-compat only; safe to remove after 0.16 once those
-     * middle-version installs are no longer in the field.
-     */
-    wsInboxDeliver: z.boolean().default(false),
-    /**
-     * LEGACY apply-only Reset flag, shipped before the finalize handshake
-     * existed. It means "the client answers a ref'd `session:terminate` with
-     * `session:command:applied`" and nothing more — it does NOT promise the
-     * post-finalize receipt, so it can no longer stand for Reset-readiness.
-     * Current clients never send it: a new client that advertised it against
-     * an old server would be handed the legacy flow and park its inbox rows
-     * behind a fence the old server never lifts. Retained so old clients'
-     * register frames still parse and so this server can recognise them as
-     * legacy and hide Reset.
-     */
-    wsSessionTerminateApplyAck: z.boolean().default(false),
     /**
      * Version 1 of the COMPOSITE Reset protocol (see `wsSessionResetV1` in
      * the server capabilities): apply-ack plus parked-fence release on the

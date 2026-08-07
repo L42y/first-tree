@@ -535,7 +535,7 @@ describe("ClientConnection — WebSocket edge coverage", () => {
 
   it("falls back to legacy inbox ACKs when the server does not advertise confirmations", async () => {
     const connection = await makeConnection();
-    const socket = await openRegisteredConnection(connection, { wsInboxDeliver: true });
+    const socket = await openRegisteredConnection(connection, {});
 
     await expect(connection.sendInboxAck(43)).resolves.toBeUndefined();
     expect(parseSent(socket, socket.sent.length - 1)).toEqual({ type: "inbox:ack", entryId: 43 });

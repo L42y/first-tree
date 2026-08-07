@@ -191,20 +191,11 @@ describe("Reset finalize handshake frames", () => {
     ).toBe(false);
   });
 
-  it("reads a legacy client's register block as having no composite Reset capability", () => {
-    // Old client → new server: the server must see the missing composite flag
-    // and hide Reset instead of evicting into a fence nobody answers. The
-    // legacy apply-only flag is not a substitute at any level of the stack.
-    const oldClient = clientWireCapabilitiesSchema.parse({
-      wsInboxDeliver: true,
-      wsSessionTerminateApplyAck: true,
-    });
+  it("reads a client without the composite Reset capability as unsupported", () => {
+    const oldClient = clientWireCapabilitiesSchema.parse({});
     expect(oldClient.wsSessionResetV1).toBe(false);
 
     const newClient = clientWireCapabilitiesSchema.parse({ wsSessionResetV1: true });
     expect(newClient.wsSessionResetV1).toBe(true);
-    // A current client withholds the legacy flag entirely, so an old server
-    // that gates on it alone cannot read the frame as Reset consent.
-    expect(newClient.wsSessionTerminateApplyAck).toBe(false);
   });
 });

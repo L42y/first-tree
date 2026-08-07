@@ -167,27 +167,21 @@ describe("agent-scoped Context Tree IO feed", () => {
   });
 
   it("serves the agent route and rejects an inverted time window", async () => {
-    const app = getApp();
     const chatId = `chat-${crypto.randomUUID()}`;
     const seed = await seedAgentWithEvents([
       { chatId, action: "read", targetPath: "route/a.md", createdAt: at("2026-07-01T10:00:00Z") },
     ]);
 
-    const ok = await app.inject({
-      method: "GET",
-      url: "/api/v1/agent/context-tree/io?limit=10",
-      headers: { authorization: `Bearer ${seed.accessToken}`, "x-agent-id": seed.agent.uuid },
-    });
+    const ok = await seed.request("GET", "/api/v1/agent/context-tree/io?limit=10");
     expect(ok.statusCode).toBe(200);
     const body = ok.json() as { items: Array<{ targetPath: string }>; nextCursor: string | null };
     expect(body.items.map((item) => item.targetPath)).toEqual(["route/a.md"]);
     expect(body.nextCursor).toBeNull();
 
-    const inverted = await app.inject({
-      method: "GET",
-      url: "/api/v1/agent/context-tree/io?since=2026-07-05T00:00:00Z&until=2026-07-01T00:00:00Z",
-      headers: { authorization: `Bearer ${seed.accessToken}`, "x-agent-id": seed.agent.uuid },
-    });
+    const inverted = await seed.request(
+      "GET",
+      "/api/v1/agent/context-tree/io?since=2026-07-05T00:00:00Z&until=2026-07-01T00:00:00Z",
+    );
     expect(inverted.statusCode).toBe(400);
   });
 

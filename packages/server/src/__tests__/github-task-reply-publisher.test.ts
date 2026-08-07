@@ -27,7 +27,7 @@ const { privateKey: privateKeyPem } = generateKeyPairSync("rsa", {
 });
 
 describe("GitHub App task reply publisher", () => {
-  const getApp = useTestApp({ githubAppPrivateKeyPem: privateKeyPem, runtimeHttpTokenEnforcement: false });
+  const getApp = useTestApp({ githubAppPrivateKeyPem: privateKeyPem });
 
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -262,7 +262,7 @@ describe("GitHub App task reply publisher", () => {
       payload: { body: "Done" },
     });
     expect(missingProof.statusCode).toBe(403);
-    expect(missingProof.json()).toMatchObject({ code: "GITHUB_TASK_REPLY_RUNTIME_SESSION_REQUIRED" });
+    expect(missingProof.json()).toMatchObject({ code: "AGENT_RUNTIME_SESSION_MISSING" });
 
     vi.stubGlobal("fetch", successfulGithubFetcher(fixture.runId));
     const accepted = await fixture.app.inject({

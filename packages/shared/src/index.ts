@@ -22,6 +22,7 @@ export {
   resolveGitLabRepositoryWebIdentity,
   sameContextTreeRepository,
 } from "./canonical-git-repo-url.js";
+export { MIN_RUNTIME_SWITCH_CLIENT_VERSION, supportsRuntimeSwitchClientVersion } from "./client-release.js";
 export {
   buildLoginCommand,
   buildPortableBootstrapCommand,
@@ -109,9 +110,7 @@ export {
   createAgentSchema,
   findReservedAgentMetadataKey,
   isReservedAgentName,
-  type LegacyWireAgentType,
   type ListAgentsQuery,
-  legacyWireAgentTypeSchema,
   listAgentsQuerySchema,
   type NewChatDefaultCandidateAgent,
   type NewChatDefaultCandidatesRequest,
@@ -420,12 +419,10 @@ export {
 } from "./schemas/client.js";
 export {
   CAPABILITY_STATES,
-  type CapabilityAuthMethod,
   type CapabilityEntry,
   type CapabilityRuntimeSource,
   type CapabilityState,
   type ClientCapabilities,
-  capabilityAuthMethodSchema,
   capabilityEntrySchema,
   capabilityRuntimeSourceSchema,
   capabilityStateSchema,

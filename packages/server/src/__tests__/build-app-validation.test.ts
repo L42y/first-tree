@@ -38,7 +38,6 @@ const baseConfig: Config = {
   },
   observability: { logging: { level: "error", format: "json", bridgeToSpanLevel: "off" } },
   runtime: {
-    agentHttpTokenEnforcement: false,
     runtimeSwitchFaultInjection: false,
     pollingIntervalSeconds: 5,
     presenceCleanupSeconds: 60,
@@ -73,7 +72,6 @@ describe("buildApp — token-lifetime config validation", () => {
             addressPolicy: { kind: "cidrs", cidrs: ["127.0.0.0/8"] },
           },
         ],
-        legacyEgressAllowlist: undefined,
       },
     };
     await expect(buildApp(cfg)).rejects.toThrow(/permanently blocked range/u);

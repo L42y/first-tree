@@ -64,8 +64,6 @@ describe("builtin handler registry", () => {
     const customProbe = vi.fn().mockResolvedValue({
       state: "ok",
       available: true,
-      authenticated: false,
-      authMethod: "none",
       sdkVersion: null,
       detectedAt: new Date().toISOString(),
       latencyMs: 1,

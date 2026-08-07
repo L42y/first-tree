@@ -425,10 +425,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
 
   // Auth hooks
   const userAuth = userAuthHook(db, config.secrets.jwtSecret);
-  const agentSelector = agentSelectorHook(db, {
-    enforceRuntimeSession: config.runtime.agentHttpTokenEnforcement,
-    logger: app.log,
-  });
+  const agentSelector = agentSelectorHook(db);
 
   // Helper: build a user-authenticated plugin scope. Each scope mounts:
   //   1. userAuth (validate JWT, populate request.user = { userId })

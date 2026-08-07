@@ -137,9 +137,8 @@ describe("probeClaudeCodeCapability (install-only)", () => {
     });
     expect(typeof entry.latencyMs).toBe("number");
     expect(typeof entry.detectedAt).toBe("string");
-    // Deprecated wire-compat fields are emitted (older servers require them).
-    expect(entry.authenticated).toBe(true);
-    expect(entry.authMethod).toBe("none");
+    expect(entry).not.toHaveProperty("authenticated");
+    expect(entry).not.toHaveProperty("authMethod");
     // No on-disk binary resolved means we never consult the bundle.
     expect(resolveBundled).not.toHaveBeenCalled();
   });

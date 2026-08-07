@@ -134,14 +134,11 @@ function pendingEntry(base: CapabilityEntry | undefined, pending: PendingAuth, n
   // A login only starts after the provider binary resolved, so the provider IS
   // installed: force the install fields rather than inheriting a possibly-stale
   // non-`ok` base (which would yield a contradictory `missing` + pendingAuth
-  // entry). `authenticated`/`authMethod` are deprecated wire-compat for older
-  // servers (see the client-capabilities schema).
+  // entry).
   return {
     ...carried,
     state: "ok",
     available: true,
-    authenticated: true,
-    authMethod: "none",
     pendingAuth: pending,
   };
 }
