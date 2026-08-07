@@ -1,10 +1,9 @@
-import { contextTreeRepoOwnershipIdentity } from "./org-settings.js";
+import { contextTreeRepoOwnershipIdentity } from "../../src/services/org-settings.js";
 
 /**
- * Pure partitioning behind the shared-Context-Tree-repo audit. It lives beside
- * the ownership rule it depends on so both are typechecked and tested with the
- * rest of the service layer; the script under `scripts/` is only the runner
- * that supplies rows and prints them.
+ * Pure partitioning behind the shared-Context-Tree-repo audit. Keeping it in
+ * `scripts/lib` lets the audit runner supply rows and print them while this
+ * logic remains independently testable.
  */
 
 export type BindingRow = {

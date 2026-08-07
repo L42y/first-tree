@@ -29,7 +29,7 @@
 import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
 import { connectDatabase } from "../src/db/connection.js";
-import { auditBindings, type BindingRow } from "../src/services/context-tree-binding-audit.js";
+import { auditBindings, type BindingRow } from "./lib/context-tree-binding-audit.js";
 
 async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;

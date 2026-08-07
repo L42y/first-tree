@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { auditBindings, type BindingRow } from "../services/context-tree-binding-audit.js";
+import { auditBindings, type BindingRow } from "../lib/context-tree-binding-audit.js";
 
 function row(organizationId: string, repo: string, instanceOrigin: string | null = null): BindingRow {
   return {
