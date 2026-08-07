@@ -243,7 +243,7 @@ describe("GithubAppInstallationPanel", () => {
 
     await click(buttonByText(container, "Continue with GitHub"));
 
-    expect(providerMocks.startProviderLink).toHaveBeenCalledWith("github", "/settings/github");
+    expect(providerMocks.startProviderLink).toHaveBeenCalledWith("github", "/settings/integrations/github");
     expect(window.location.assign).toHaveBeenCalledWith("https://github.com/login/oauth/authorize");
     expect(githubMocks.getGithubAppInstallUrl).not.toHaveBeenCalled();
 
@@ -468,7 +468,7 @@ describe("GithubAppInstallationPanel", () => {
   it("falls back to a full-page redirect when the install popup is blocked", async () => {
     githubMocks.getGithubAppInstallation.mockResolvedValue(null);
     // Popup blocked → window.open returns null → full-page redirect. `next` is
-    // omitted so the server applies its `/settings/github` default (returning
+    // omitted so the server applies its `/settings/integrations/github` default (returning
     // this tab to the panel after install).
     const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
     const { GithubAppInstallationPanel } = await import("../github-app-installation-panel.js");

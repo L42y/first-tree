@@ -217,7 +217,7 @@ describe("production-scan fix conversion — cross-path idempotency", () => {
     expect(fixChats).toHaveLength(1);
   });
 
-  it("keeps stale scanFixRepoSlug clients on the same production-scan key", async () => {
+  it("rejects the obsolete scanFixRepoSlug request field", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const agent = await createOrgAgent(app, admin);
@@ -230,14 +230,7 @@ describe("production-scan fix conversion — cross-path idempotency", () => {
       headers: { authorization: `Bearer ${admin.accessToken}` },
       payload: { ...legacy, scanFixRepoSlug: REPO_SLUG },
     });
-    const direct = await app.inject({
-      method: "POST",
-      url: `/api/v1/orgs/${encodeURIComponent(admin.organizationId)}/chats`,
-      headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: directFixPayload(agent.uuid),
-    });
-
-    expect(direct.json<{ chatId: string }>().chatId).toBe(onboarding.json<{ chatId: string }>().chatId);
+    expect(onboarding.statusCode).toBe(400);
   });
 
   it("a non-scan-fix onboarding kickoff keeps the default onboarding key", async () => {

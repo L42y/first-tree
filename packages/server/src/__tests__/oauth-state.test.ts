@@ -12,16 +12,16 @@ describe("OAuth state JWT", () => {
   });
 
   it("round-trips a targetOrganizationId when supplied", async () => {
-    const { token, nonce } = await signOAuthState(SECRET, "/settings/github", {
+    const { token, nonce } = await signOAuthState(SECRET, "/settings/integrations/github", {
       targetOrganizationId: "01961234-aaaa-7000-8000-000000000001",
     });
     const result = await verifyOAuthState(SECRET, token, nonce);
-    expect(result.next).toBe("/settings/github");
+    expect(result.next).toBe("/settings/integrations/github");
     expect(result.targetOrganizationId).toBe("01961234-aaaa-7000-8000-000000000001");
   });
 
   it("round-trips the GitHub App installation intent", async () => {
-    const { token, nonce } = await signOAuthState(SECRET, "/settings/github", {
+    const { token, nonce } = await signOAuthState(SECRET, "/settings/integrations/github", {
       intent: "install",
       installPhase: "identity",
       provider: "github",
@@ -29,7 +29,7 @@ describe("OAuth state JWT", () => {
     });
     const result = await verifyOAuthState(SECRET, token, nonce);
     expect(result).toMatchObject({
-      next: "/settings/github",
+      next: "/settings/integrations/github",
       intent: "install",
       installPhase: "identity",
       provider: "github",
@@ -38,7 +38,7 @@ describe("OAuth state JWT", () => {
 
   it("round-trips the identity row bound to an unlink reauthentication", async () => {
     const targetIdentityId = "01961234-bbbb-7000-8000-000000000002";
-    const { token, nonce } = await signOAuthState(SECRET, "/user-settings", {
+    const { token, nonce } = await signOAuthState(SECRET, "/settings/account", {
       intent: "unlink",
       userId: "01961234-cccc-7000-8000-000000000003",
       provider: "google",
@@ -46,7 +46,7 @@ describe("OAuth state JWT", () => {
     });
     const result = await verifyOAuthState(SECRET, token, nonce);
     expect(result).toMatchObject({
-      next: "/user-settings",
+      next: "/settings/account",
       intent: "unlink",
       provider: "google",
       targetIdentityId,

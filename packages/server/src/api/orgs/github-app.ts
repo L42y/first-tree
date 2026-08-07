@@ -30,7 +30,7 @@ import { buildCookie, protectOAuthStateNonce } from "../auth/oauth-cookie.js";
  * actual destination from the signed state JWT, not from a query param,
  * so this is tamper-proof.
  */
-const POST_INSTALL_NEXT = "/settings/github";
+const POST_INSTALL_NEXT = "/settings/integrations/github";
 
 /**
  * Internal paths the install flow is allowed to return to. The onboarding

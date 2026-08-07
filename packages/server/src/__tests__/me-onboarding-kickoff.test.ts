@@ -51,7 +51,6 @@ const TREE_STATUS_URL = "/api/v1/me/onboarding/tree-setup-status";
 
 describe("POST /me/onboarding/kickoff", () => {
   const getApp = useTestApp({ growthLandingPagesEnabled: true });
-  const getGrowthDisabledApp = useTestApp();
 
   it("creates the chat, sends the bootstrap, and stamps completion", async () => {
     const app = getApp();
@@ -1171,7 +1170,7 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("rejects campaign kickoff when growth landing pages are enabled because campaigns moved to landing-campaigns/start", async () => {
+  it("rejects the obsolete campaign kickoff field", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const agent = await createOrgAgent(app, admin);
@@ -1189,8 +1188,7 @@ describe("POST /me/onboarding/kickoff", () => {
       },
     });
 
-    expect(res.statusCode).toBe(410);
-    expect(res.json()).toMatchObject({ code: "campaign_kickoff_moved" });
+    expect(res.statusCode).toBe(400);
     const rows = await app.db
       .select()
       .from(chats)
@@ -1198,7 +1196,7 @@ describe("POST /me/onboarding/kickoff", () => {
     expect(rows).toHaveLength(0);
   });
 
-  it("rejects legacy kind=tree on the first-chat kickoff endpoint", async () => {
+  it("rejects the obsolete kind field on the first-chat kickoff endpoint", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const agent = await createOrgAgent(app, admin);
@@ -1216,39 +1214,12 @@ describe("POST /me/onboarding/kickoff", () => {
       },
     });
 
-    expect(res.statusCode).toBe(409);
-    expect(res.json()).toMatchObject({ code: "stale_onboarding_kickoff_contract" });
+    expect(res.statusCode).toBe(400);
     const rows = await app.db.select().from(chats).where(eq(chats.organizationId, admin.organizationId));
     expect(rows).toHaveLength(0);
   });
 
-  it("rejects campaign kickoff when growth landing pages are disabled", async () => {
-    const app = getGrowthDisabledApp();
-    const admin = await createTestAdmin(app);
-    const agent = await createOrgAgent(app, admin);
-
-    const res = await app.inject({
-      method: "POST",
-      url: KICKOFF_URL,
-      headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: {
-        organizationId: admin.organizationId,
-        agentUuid: agent.uuid,
-        bootstrap: "Campaign work kickoff.",
-        campaign: "production-scan",
-      },
-    });
-
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toMatchObject({ code: "feature_disabled" });
-    const rows = await app.db
-      .select()
-      .from(chats)
-      .where(eq(chats.onboardingKickoffKey, `${admin.humanAgentUuid}:${agent.uuid}:quickstart:production-scan`));
-    expect(rows).toHaveLength(0);
-  });
-
-  it("uses the onboarding key when no campaign is passed", async () => {
+  it("uses the onboarding key for an ordinary kickoff", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const agent = await createOrgAgent(app, admin);
@@ -1269,25 +1240,9 @@ describe("POST /me/onboarding/kickoff", () => {
 
     const [legacyChat] = await app.db.select().from(chats).where(eq(chats.id, legacyChatId)).limit(1);
     expect(legacyChat?.onboardingKickoffKey).toBe(`${admin.humanAgentUuid}:${agent.uuid}:onboarding`);
-
-    // Campaign quickstart no longer shares this endpoint, so the legacy
-    // onboarding key remains the only chat created through kickoff.
-    const campaign = await app.inject({
-      method: "POST",
-      url: KICKOFF_URL,
-      headers: { authorization: `Bearer ${admin.accessToken}` },
-      payload: {
-        ...base,
-        bootstrap: "Campaign work kickoff.",
-        topic: "Production readiness scan",
-        campaign: "production-scan",
-      },
-    });
-    expect(campaign.statusCode).toBe(410);
-    expect(campaign.json()).toMatchObject({ code: "campaign_kickoff_moved" });
   });
 
-  it("returns a controlled moved response for stale tree-setup clients", async () => {
+  it("does not register the retired tree-setup kickoff route", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
@@ -1298,8 +1253,7 @@ describe("POST /me/onboarding/kickoff", () => {
       payload: { agentUuid: "stale-agent", bootstrap: "stale bootstrap" },
     });
 
-    expect(res.statusCode).toBe(410);
-    expect(res.json()).toMatchObject({ code: "tree_setup_kickoff_moved" });
+    expect(res.statusCode).toBe(404);
     expect(await app.db.select().from(chats).where(eq(chats.organizationId, admin.organizationId))).toHaveLength(0);
   });
 });

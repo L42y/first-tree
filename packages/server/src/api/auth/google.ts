@@ -26,13 +26,7 @@ import {
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
-// OAuth link/unlink flows return the browser to the legacy /user-settings
-// path on purpose: rolling deploys keep pre-Account SPA builds (which have no
-// /settings/account route) in circulation, while the new SPA redirects
-// /user-settings -> /settings/account with the query string intact, so both
-// generations land on a working page. Switch this to /settings/account only
-// once pre-Account SPA builds are out of circulation.
-const ACCOUNT_RETURN_PATH = "/user-settings";
+const ACCOUNT_RETURN_PATH = "/settings/account";
 
 export async function googleOauthRoutes(app: FastifyInstance): Promise<void> {
   app.get("/start", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -46,7 +40,7 @@ export async function googleOauthRoutes(app: FastifyInstance): Promise<void> {
       oidcNonce,
     });
     // Encrypt the short-lived CSRF nonce before placing it in the browser
-    // cookie; the callback also accepts legacy plaintext nonce cookies.
+    // cookie.
     // The value is a nonce-only CSRF token, not an access credential or
     // provider identity; it is short-lived, HttpOnly, SameSite=Lax, and Secure
     // in production.

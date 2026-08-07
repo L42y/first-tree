@@ -17,11 +17,7 @@ import { assertNoLandingCampaignTrialAgents } from "../../services/landing-campa
 import { createMeChat, listMeChatSourceCounts, listMeChats } from "../../services/me-chat.js";
 import { listNeedYouRequests } from "../../services/need-you.js";
 import { notifyRecipients } from "../../services/notifier.js";
-import {
-  campaignActionKickoffKey,
-  recordCampaignActionConversion,
-  resolveCampaignActionContext,
-} from "../../services/onboarding-kickoff.js";
+import { campaignActionKickoffKey, recordCampaignActionConversion } from "../../services/onboarding-kickoff.js";
 
 /**
  * Class B — org-scoped chat collection routes. Mounted at
@@ -160,7 +156,7 @@ export async function orgChatRoutes(app: FastifyInstance): Promise<void> {
       );
       await assertAllAgentsVisibleInOrg(app.db, scope, visibleTargetIds);
       await assertNoLandingCampaignTrialAgents(app.db, visibleTargetIds);
-      const campaignAction = resolveCampaignActionContext(body.campaignAction, body.scanFixRepoSlug);
+      const campaignAction = body.campaignAction ?? null;
       const result = await createChat(app.db, {
         mode: "task",
         initiatorAgentId: scope.humanAgentId,

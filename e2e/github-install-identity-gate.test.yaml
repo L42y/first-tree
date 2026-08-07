@@ -26,8 +26,8 @@ steps:
       and offers one Continue with GitHub action; no Install on GitHub action is present
 
   # A real provider callback is outside the disposable local environment. Add
-  # the same user's GitHub identity, then exercise the exact post-link return
-  # URL and visible state produced by that callback.
+  # the same user's GitHub identity, then exercise the canonical post-link
+  # return URL and visible state produced by that callback.
   - javascript:
       code: return "github-linked";
       environment: node
@@ -36,7 +36,7 @@ steps:
       code: ./scripts/set-test-user-provider-mode.js
       environment: node
       saveAs: GITHUB_LINKED_FIXTURE
-  - navigate: /settings/github?connection=github-linked
+  - navigate: /settings/integrations/github?connection=github-linked
   - waitForUrl: /settings/integrations/github?connection=github-linked
   - assert: the browser returned to the same Team's GitHub Connection panel,
       shows GitHub connected as @{{env.GH_LOGIN}}, and offers Install on GitHub

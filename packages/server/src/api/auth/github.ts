@@ -34,13 +34,8 @@ import {
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
-// OAuth link/unlink flows return the browser to the legacy /user-settings
-// path on purpose: rolling deploys keep pre-Account SPA builds (which have no
-// /settings/account route) in circulation, while the new SPA redirects
-// /user-settings -> /settings/account with the query string intact, so both
-// generations land on a working page. Switch this to /settings/account only
-// once pre-Account SPA builds are out of circulation.
-const ACCOUNT_RETURN_PATH = "/user-settings";
+const ACCOUNT_RETURN_PATH = "/settings/account";
+const GITHUB_SETTINGS_RETURN_PATH = "/settings/integrations/github";
 
 /**
  * GitHub sign-in surface. All routes are public (no member JWT required).
@@ -212,7 +207,7 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
         { event: "github_app.install_callback_incomplete_state", installPhase },
         "install callback state lacks the verified kickoff authority tuple",
       );
-      return redirectCallbackError(reply, "state-expired", "/settings/github", { callbackIntent: "install" });
+      return redirectCallbackError(reply, "state-expired", GITHUB_SETTINGS_RETURN_PATH, { callbackIntent: "install" });
     }
 
     if (providerError) {
@@ -231,7 +226,7 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
           { event: "github_app.install_identity_preflight_no_code", setupAction: parsed.setup_action ?? null },
           "install identity preflight returned without an OAuth code",
         );
-        return redirectCallbackError(reply, "install-not-verified", "/settings/github", {
+        return redirectCallbackError(reply, "install-not-verified", GITHUB_SETTINGS_RETURN_PATH, {
           callbackIntent: intent,
           expectedGithubLogin: kickoffUserId ? (await findGithubIdentityForUser(app, kickoffUserId))?.login : null,
         });
@@ -242,7 +237,7 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
           kickoffUserId,
         });
         if (!landingAuthority.ok) {
-          return redirectCallbackError(reply, landingAuthority.code, "/settings/github", {
+          return redirectCallbackError(reply, landingAuthority.code, GITHUB_SETTINGS_RETURN_PATH, {
             callbackIntent: "install",
             expectedGithubLogin: landingAuthority.expectedGithubLogin,
           });
@@ -321,7 +316,7 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
         kickoffUserId,
       });
       if (!installAuthority.ok) {
-        return redirectCallbackError(reply, installAuthority.code, "/settings/github", {
+        return redirectCallbackError(reply, installAuthority.code, GITHUB_SETTINGS_RETURN_PATH, {
           callbackIntent: "install",
           expectedGithubLogin: installAuthority.expectedGithubLogin,
         });
@@ -491,7 +486,7 @@ function withQueryParam(path: string, key: string, value: string): string {
 }
 
 function installErrorReturnPath(intent: CallbackIntent, next: string): string {
-  return intent === "install" ? "/settings/github" : next;
+  return intent === "install" ? GITHUB_SETTINGS_RETURN_PATH : next;
 }
 
 /**
@@ -605,7 +600,7 @@ async function continueInstallAfterIdentityPreflight(
 ) {
   const { targetOrganizationId, kickoffUserId } = opts;
   if (!targetOrganizationId || !kickoffUserId) {
-    return redirectCallbackError(reply, "state-expired", "/settings/github", { callbackIntent: "install" });
+    return redirectCallbackError(reply, "state-expired", GITHUB_SETTINGS_RETURN_PATH, { callbackIntent: "install" });
   }
 
   const installAuthority = await refreshGithubInstallIdentity(app.db, {
@@ -618,7 +613,7 @@ async function continueInstallAfterIdentityPreflight(
     return redirectCallbackError(
       reply,
       installAuthority.reason === "not-admin" ? "install-not-admin" : "install-not-verified",
-      "/settings/github",
+      GITHUB_SETTINGS_RETURN_PATH,
       {
         callbackIntent: "install",
         expectedGithubLogin: installAuthority.expectedGithubLogin,
@@ -628,7 +623,7 @@ async function continueInstallAfterIdentityPreflight(
 
   const appCfg = app.config.oauth?.githubApp;
   if (!appCfg?.slug) {
-    return redirectCallbackError(reply, "provider-not-configured", "/settings/github", {
+    return redirectCallbackError(reply, "provider-not-configured", GITHUB_SETTINGS_RETURN_PATH, {
       callbackIntent: "install",
       expectedGithubLogin: installAuthority.githubLogin,
     });
@@ -757,7 +752,7 @@ async function completeOauthFlow(
   if (callbackIntent === "install") {
     if (!targetOrganizationId || !kickoffUserId) {
       if (browserFacing) {
-        return redirectCallbackError(reply, "state-expired", "/settings/github", { callbackIntent });
+        return redirectCallbackError(reply, "state-expired", GITHUB_SETTINGS_RETURN_PATH, { callbackIntent });
       }
       return reply.status(409).send({ error: "GitHub App install authority is missing or expired" });
     }
@@ -781,7 +776,7 @@ async function completeOauthFlow(
         "install callback: live Team authority or exact GitHub identity changed before completion",
       );
       if (browserFacing) {
-        return redirectCallbackError(reply, code, "/settings/github", {
+        return redirectCallbackError(reply, code, GITHUB_SETTINGS_RETURN_PATH, {
           callbackIntent,
           expectedGithubLogin: installIdentity.expectedGithubLogin,
         });

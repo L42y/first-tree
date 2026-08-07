@@ -250,10 +250,10 @@ afterEach(() => {
 });
 
 describe("WorkspacePage DOM behavior", () => {
-  it("normalizes legacy URL params and exposes list-driven URL transitions", async () => {
+  it("preserves canonical URL params and exposes list-driven URL transitions", async () => {
     const { WorkspacePage } = await import("../index.js");
     const { container, root } = await renderDom(
-      "/?a=agent-1&c=chat-1&source=manual&docChat=old&docMsg=m&docAttachment=att&docAgent=agent-1&docPath=readme",
+      "/?c=chat-1&origin=manual&docChat=old&docMsg=m&docAttachment=att&docAgent=agent-1&docPath=readme",
       <WorkspacePage />,
     );
 
@@ -261,7 +261,7 @@ describe("WorkspacePage DOM behavior", () => {
     expect(locationParams(container).get("c")).toBe("chat-1");
     expect(locationParams(container).get("origin")).toBe("manual");
     expect(locationParams(container).get("docChat")).toBe("old");
-    // Current attachment-ref params survive the initial normalize.
+    // Current attachment-ref params survive the initial render.
     expect(locationParams(container).get("docAttachment")).toBe("att");
     expect(locationParams(container).get("docMsg")).toBe("m");
     expect(locationParams(container).get("docAgent")).toBe("agent-1");
@@ -269,8 +269,7 @@ describe("WorkspacePage DOM behavior", () => {
     expect(container.textContent).toContain("list:chat-1:active");
     expect(container.textContent).toContain("center:chat-1:wide:no-with");
 
-    // R3: switching chat clears the doc-preview overlay — both the current
-    // attachment-ref params and the legacy ones — so no stale preview lingers.
+    // Switching chat clears the doc-preview overlay so no stale preview lingers.
     await click(buttonByText(container, "Select chat"));
     expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/?c=chat-picked&origin=manual");
     expect(locationParams(container).get("docAttachment")).toBeNull();
@@ -416,8 +415,5 @@ describe("WorkspacePage DOM behavior", () => {
       currentOrgHasUsableAgent: true,
       currentOrgHasPersonalAgent: true,
     };
-    const legacyAgent = await renderDom("/?a=agent-1", <WorkspacePage />);
-    expect(legacyAgent.container.querySelector('[data-testid="location"]')?.textContent).toBe("/");
-    await act(async () => legacyAgent.root.unmount());
   });
 });

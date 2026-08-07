@@ -16,14 +16,8 @@ import { STATE_NONCE_COOKIE_NAME, STATE_NONCE_COOKIE_TTL_SECONDS, signOAuthState
 import { resolvePublicUrl } from "../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce } from "./auth/oauth-cookie.js";
 
-// OAuth link/unlink flows return the browser to the legacy /user-settings
-// path on purpose: rolling deploys keep pre-Account SPA builds (which have no
-// /settings/account route) in circulation, while the new SPA redirects
-// /user-settings -> /settings/account with the query string intact, so both
-// generations land on a working page. Switch this to /settings/account only
-// once pre-Account SPA builds are out of circulation.
-const ACCOUNT_RETURN_PATH = "/user-settings";
-const GITHUB_SETTINGS_RETURN_PATH = "/settings/github";
+const ACCOUNT_RETURN_PATH = "/settings/account";
+const GITHUB_SETTINGS_RETURN_PATH = "/settings/integrations/github";
 const SUPPORTED_ACCOUNT_LINK_RETURN_PATHS: ReadonlySet<string> = new Set([
   ACCOUNT_RETURN_PATH,
   GITHUB_SETTINGS_RETURN_PATH,

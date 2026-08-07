@@ -25,19 +25,10 @@ export function campaignActionKickoffKey(humanAgentId: string, action: LandingCa
   // from separate parses of the handoff — lowercasing here (the single shared
   // composition point) keeps the key identical even if the URLs differ in case.
   const repoSlug = action.repoSlug.toLowerCase();
-  // Preserve the deployed production-scan key so existing launchers continue
-  // to dedupe across old and new web bundles without a data migration.
+  // Preserve the production-scan key because it is stored as the durable
+  // idempotency key for existing campaign-action chats.
   if (action.campaign === "production-scan") return `${humanAgentId}:scan-fix:${repoSlug}`;
   return `${humanAgentId}:campaign-action:${action.campaign}:${repoSlug}`;
-}
-
-/** Normalize a current action context or the legacy production-scan field. */
-export function resolveCampaignActionContext(
-  action: LandingCampaignActionContext | undefined,
-  legacyScanFixRepoSlug: string | undefined,
-): LandingCampaignActionContext | null {
-  if (action) return action;
-  return legacyScanFixRepoSlug ? { campaign: "production-scan", repoSlug: legacyScanFixRepoSlug } : null;
 }
 
 /**

@@ -18,9 +18,9 @@ describe("OAuth state cookie", () => {
     expect(readOAuthStateNonce(header, "oauth_state_nonce", ENCRYPTION_KEY)).toBe(nonce);
   });
 
-  it("accepts a legacy plaintext nonce during a rolling deployment", () => {
+  it("rejects a plaintext nonce", () => {
     const header = "oauth_state_nonce=legacy-nonce; Path=/; HttpOnly; SameSite=Lax";
-    expect(readOAuthStateNonce(header, "oauth_state_nonce", ENCRYPTION_KEY)).toBe("legacy-nonce");
+    expect(readOAuthStateNonce(header, "oauth_state_nonce", ENCRYPTION_KEY)).toBeNull();
   });
 
   it("rejects malformed encrypted values and parses repeated cookie headers", () => {

@@ -1448,7 +1448,7 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#error=state-expired&next=/settings/github",
+        hash: "#error=state-expired&next=/settings/integrations/github",
         pathname: "/auth/github/complete",
       },
     });
@@ -1456,7 +1456,7 @@ describe("web DOM interaction coverage", () => {
     const expired = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("took too long or was already used", expired.container);
     const back = expired.container.querySelector<HTMLAnchorElement>("a");
-    expect(back?.getAttribute("href")).toBe("/settings/github?error=state-expired&flow=link");
+    expect(back?.getAttribute("href")).toBe("/settings/integrations/github?error=state-expired&flow=link");
     await unmountRoot(expired.root);
 
     // Provider cancellation closes the paired sign-in attempt with a fixed,
@@ -1490,14 +1490,14 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#error=install-not-verified&next=/settings/github&expectedGithubLogin=linked-user&callbackIntent=install",
+        hash: "#error=install-not-verified&next=/settings/integrations/github&expectedGithubLogin=linked-user&callbackIntent=install",
         pathname: "/auth/github/complete",
       },
     });
     const mismatch = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("Use @linked-user, then try again", mismatch.container);
     expect(mismatch.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
-      "/settings/github?error=install-not-verified&flow=install",
+      "/settings/integrations/github?error=install-not-verified&flow=install",
     );
     await unmountRoot(mismatch.root);
 
@@ -1516,7 +1516,7 @@ describe("web DOM interaction coverage", () => {
     const expiredInstall = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("took too long or was already used", expiredInstall.container);
     expect(expiredInstall.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
-      "/settings/github?error=state-expired&flow=install",
+      "/settings/integrations/github?error=state-expired&flow=install",
     );
     expect(hasGithubInstallAttempt()).toBe(true);
     await unmountRoot(expiredInstall.root);
@@ -1538,7 +1538,7 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#access=a&refresh=r&next=/settings/github&joinPath=returning&org=org-b&orgPinned=1&callbackIntent=install",
+        hash: "#access=a&refresh=r&next=/settings/integrations/github&joinPath=returning&org=org-b&orgPinned=1&callbackIntent=install",
         pathname: "/auth/github/complete",
       },
     });

@@ -57,7 +57,7 @@ model are deliberately changed and reviewed.
 3. Open the login page and confirm the Google action is visible.
 4. Complete a new Google sign-in and confirm the callback returns to
    `/auth/complete` rather than a Google `redirect_uri_mismatch` error.
-5. Open `/user-settings` and confirm the Google connection snapshot is shown.
+5. Open `/settings/account` and confirm the Google connection snapshot is shown.
 
 If `authProviders.google` remains `false`, verify that both environment
 variables reached the server process. If Google reports a redirect mismatch,
