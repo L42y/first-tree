@@ -210,13 +210,15 @@ describe("runtime provider architecture guard", () => {
       ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
     ] as const) {
       const source = readFileSync(join(clientSrc, file), "utf8");
-      expect(source, `${file} must re-export ${symbol} from provider-support`).toContain(
-        'from "./provider-support/binary-failure.js"',
+      expect(source, `${file} must re-export ${symbol} from provider-support index`).toContain(
+        'from "./provider-support/index.js"',
       );
       expect(source).toContain(symbol);
       // No second owner of the match tables / regexes.
       expect(source).not.toMatch(/BINARY_MISSING_PATTERNS/);
       expect(source).not.toMatch(/function is(?:Codex|Cursor|Grok|Pi)BinaryMissingError/);
+      // Fail closed: no deep provider-support group import.
+      expect(source).not.toMatch(/provider-support\/binary-failure\.js/);
     }
   });
 
@@ -679,55 +681,132 @@ describe("runtime provider architecture guard", () => {
     expect(activityTs).not.toMatch(/provider:\s*RuntimeProvider/);
   });
 
-  it("routes provider Runtime-owned imports through contracts or provider-support only", () => {
-    // Runtime-owned modules that provider production code must not deep-import.
-    // Transitional provider-family modules still living under runtime/ (binaries,
-    // login, capabilities, Claude host helpers, OpenCode private config) are
-    // intentionally excluded — S3 relocates those into the provider package.
-    const forbiddenRuntimeOwned = [
-      "runtime/agent-bootstrap.js",
-      "runtime/agent-briefing.js",
-      "runtime/agent-config-cache.js",
-      "runtime/bootstrap.js",
-      "runtime/chat-context.js",
-      "runtime/chat-context-section.js",
-      "runtime/cli-binding.js",
-      "runtime/context-tree-file-refs.js",
-      "runtime/context-tree-git-status.js",
-      "runtime/git-local-path.js",
-      "runtime/managed-skills.js",
-      "runtime/provider-attempt.js",
-      "runtime/provider-process-supervisor.js",
-      "runtime/provider-retry-policy.js",
-      "runtime/provider-support/binary-failure.js",
-      "runtime/redact-error-preview.js",
-      "runtime/runtime-notice.js",
-      "runtime/session-briefing-fingerprint.js",
-      "runtime/source-repos.js",
-      "runtime/team-skill-bundle-resolver.js",
-      "runtime/workspace.js",
-      "runtime/session-manager.js",
-      "runtime/session-registry.js",
-      "runtime/agent-slot.js",
-      "runtime/runtime.js",
-    ] as const;
-
-    const productionProviderFiles = [
-      ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-      ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-    ];
-
-    for (const file of productionProviderFiles) {
-      const source = readFileSync(file, "utf8");
+  it("fail-closes provider-side Runtime imports to contracts or provider-support/index only", () => {
+    /**
+     * Fail-closed classification for provider-side production code.
+     *
+     * Provider-side files: handlers/**, providers/**, and transitional
+     * provider-family modules still under runtime/ (binaries, login,
+     * capabilities, OpenCode private config). For any import that resolves
+     * into `runtime/`, the only legal targets are:
+     *   - runtime/contracts.js
+     *   - runtime/provider-support/index.js
+     *   - an exact transitional provider-owned module (family code)
+     * Every other runtime path — including provider-support/<group>.js —
+     * fails closed. A newly added Runtime owner is rejected automatically
+     * because it is absent from the transitional allowlist (not because it
+     * must be added to a blacklist).
+     */
+    const transitionalTargets = new Set<string>();
+    for (const file of listFilesRecursive(join(clientSrc, "runtime"), (p) => p.endsWith(".ts"))) {
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
-      for (const owner of forbiddenRuntimeOwned) {
-        // Fail closed on alias / multiline / single-line import forms that name
-        // the owner module path — not a raw string-count heuristic.
-        expect(source, `${rel} must not deep-import ${owner}`).not.toMatch(
-          new RegExp(`from\\s+["'][^"']*${owner.replaceAll(".", "\\.")}["']`),
-        );
+      const name = rel.split("/").pop() ?? "";
+      if (
+        name.endsWith("-binary.ts") ||
+        name.endsWith("-login.ts") ||
+        rel.startsWith("runtime/capabilities/") ||
+        name === "opencode-private-config.ts"
+      ) {
+        transitionalTargets.add(rel.replace(/\.ts$/, ".js"));
       }
     }
+
+    function listProviderSideFiles(): string[] {
+      return [
+        ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...[...transitionalTargets].map((js) => join(clientSrc, js.replace(/\.js$/, ".ts"))),
+      ];
+    }
+
+    /** Resolve an import specifier from `fromFile` into a runtime/*.js path, or null. */
+    function resolveRuntimeImport(fromFile: string, specifier: string): string | null {
+      if (!specifier.endsWith(".js")) return null;
+      if (specifier.startsWith("@") || specifier.startsWith("node:")) return null;
+      const fromDir = dirname(fromFile);
+      let absolute: string;
+      if (specifier.startsWith(".")) {
+        absolute = join(fromDir, specifier);
+      } else if (specifier.includes("/runtime/")) {
+        // unusual but tolerate
+        absolute = join(clientSrc, specifier.slice(specifier.indexOf("runtime/")));
+      } else {
+        return null;
+      }
+      const rel = relative(clientSrc, absolute).replaceAll("\\", "/");
+      if (!rel.startsWith("runtime/") || rel.includes("..")) return null;
+      return rel;
+    }
+
+    /** Extract every `from "..."` / `from '...'` module specifier, including multiline imports. */
+    function extractImportSpecifiers(source: string): string[] {
+      const specs: string[] = [];
+      for (const match of source.matchAll(/\bfrom\s+["']([^"']+)["']/g)) {
+        const spec = match[1];
+        if (spec !== undefined) specs.push(spec);
+      }
+      return specs;
+    }
+
+    function classifyRuntimeImport(runtimeRel: string): "ok" | "forbidden" {
+      if (runtimeRel === "runtime/contracts.js") return "ok";
+      if (runtimeRel === "runtime/provider-support/index.js") return "ok";
+      if (transitionalTargets.has(runtimeRel)) return "ok";
+      return "forbidden";
+    }
+
+    const violations: string[] = [];
+    const residualByClass = {
+      contracts: [] as string[],
+      providerSupportIndex: [] as string[],
+      transitionalTarget: [] as string[],
+      forbiddenRuntime: [] as string[],
+    };
+
+    for (const file of listProviderSideFiles()) {
+      const source = readFileSync(file, "utf8");
+      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      for (const spec of extractImportSpecifiers(source)) {
+        const runtimeRel = resolveRuntimeImport(file, spec);
+        if (!runtimeRel) continue;
+        const verdict = classifyRuntimeImport(runtimeRel);
+        if (verdict === "ok") {
+          if (runtimeRel === "runtime/contracts.js") residualByClass.contracts.push(`${rel} -> ${runtimeRel}`);
+          else if (runtimeRel === "runtime/provider-support/index.js")
+            residualByClass.providerSupportIndex.push(`${rel} -> ${runtimeRel}`);
+          else residualByClass.transitionalTarget.push(`${rel} -> ${runtimeRel}`);
+        } else {
+          residualByClass.forbiddenRuntime.push(`${rel} -> ${runtimeRel} (via ${spec})`);
+          violations.push(`${rel} imports forbidden Runtime module ${runtimeRel} (specifier ${spec})`);
+        }
+      }
+    }
+
+    expect(violations, violations.join("\n")).toEqual([]);
+    // Mechanically supported residual report for the review freeze note.
+    expect(residualByClass.forbiddenRuntime).toEqual([]);
+    expect(residualByClass.providerSupportIndex.length).toBeGreaterThan(0);
+
+    // Negative fixtures: newly introduced Runtime owners / deep support paths fail closed.
+    expect(classifyRuntimeImport("runtime/brand-new-owner.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/provider-support/preparation.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/provider-support/binary-failure.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/agent-io.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/install-locations.js")).toBe("forbidden");
+    // Aliased / multiline forms still expose a normal `from "..."` specifier.
+    const multilineFixture = `
+      import {
+        prepareManagedSession as prep,
+        type ChatContext as Ctx,
+      } from "../../runtime/agent-bootstrap.js";
+    `;
+    const specs = extractImportSpecifiers(multilineFixture);
+    expect(specs).toEqual(["../../runtime/agent-bootstrap.js"]);
+    const multilineSpec = specs[0];
+    expect(multilineSpec).toBeDefined();
+    const resolvedMultiline = resolveRuntimeImport(join(clientSrc, "handlers/cursor/index.ts"), multilineSpec ?? "");
+    expect(resolvedMultiline).toBe("runtime/agent-bootstrap.js");
+    expect(classifyRuntimeImport(resolvedMultiline ?? "")).toBe("forbidden");
 
     const mustUseProviderSupport = [
       "handlers/claude-code.ts",
@@ -744,12 +823,14 @@ describe("runtime provider architecture guard", () => {
       const source = readFileSync(join(clientSrc, rel), "utf8");
       expect(source, `${rel} must import provider-support/index.js`).toMatch(/runtime\/provider-support\/index\.js/);
       expect(source, `${rel} must call prepareManagedSession`).toMatch(/\bprepareManagedSession\b/);
-      // Handlers must not hand-write the full admission combination.
       expect(source, `${rel} must not call acquireAgentHome directly`).not.toMatch(/\bacquireAgentHome\s*\(/);
       expect(source, `${rel} must not call markWorkspaceInitComplete directly`).not.toMatch(
         /\bmarkWorkspaceInitComplete\s*\(/,
       );
       expect(source, `${rel} must not call ensureAgentBootstrap directly`).not.toMatch(/\bensureAgentBootstrap\s*\(/);
+      expect(source, `${rel} must not deep-import provider-support groups`).not.toMatch(
+        /provider-support\/(?!index\.js)[\w-]+\.js/,
+      );
     }
   });
 
@@ -760,6 +841,7 @@ describe("runtime provider architecture guard", () => {
     expect(entry).toContain("./process-supervision.js");
     expect(entry).toContain("./failure-policy.js");
     expect(entry).toContain("./turn-prompt.js");
+    expect(entry).toContain("./turn-input.js");
     expect(entry).toContain("./tree-tracking.js");
     expect(entry).toContain("./host-runtime.js");
     expect(entry).not.toMatch(/export\s+\*\s+from/);
@@ -784,6 +866,7 @@ describe("runtime provider architecture guard", () => {
       "process-supervision.ts",
       "failure-policy.ts",
       "turn-prompt.ts",
+      "turn-input.ts",
       "tree-tracking.ts",
       "host-runtime.ts",
     ] as const) {

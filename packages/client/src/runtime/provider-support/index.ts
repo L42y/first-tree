@@ -13,8 +13,9 @@
  * - process-supervision — default provider process lifecycle supervision
  * - failure-policy — attempt/retry/terminal notice/redaction + binary-failure seam
  * - turn-prompt — chat-context prompt rendering + briefing fingerprint helpers
+ * - turn-input — streaming input controller + attachment/image prompt helpers
  * - tree-tracking — Context Tree path/git attribution
- * - host-runtime — briefing rewrite, CLI binding, agent-home path helpers
+ * - host-runtime — briefing rewrite, CLI binding, discovery roots, workspace lock
  *
  * Do not `export *` owner modules. Do not re-export session/runtime owners,
  * stores, registries, or concrete provider binary/login/capability
@@ -51,12 +52,34 @@ export {
   recognizeProviderBinaryFailure,
   redactErrorPreview,
 } from "./failure-policy.js";
-export type { AgentConfigCache, PredeclaredSourceRepo } from "./host-runtime.js";
+export type {
+  AcquireWorkspaceFileLockOptions,
+  ActiveVersionManager,
+  AgentConfigCache,
+  PredeclaredSourceRepo,
+  ReadDirNames,
+  ReadLink,
+  RunShell,
+  VersionManagerDirDeps,
+  WorkspaceFileLock,
+} from "./host-runtime.js";
 // host-runtime
 export {
+  acquireWorkspaceFileLock,
+  automaticCandidateAllowed,
+  buildProbeScript,
+  codexDesktopAppBinDirs,
   FIRST_TREE_WORKSPACE_MARKER,
   getCliBinding,
+  getLoginShellPathDirs,
+  protectedRootsOnThisHost,
+  resetLoginShellPathDirsCache,
   resolveGitRepoTargetPath,
+  resolveOutsideProtectedRoots,
+  resolveOutsideProtectedRootsOnThisHost,
+  versionManagerBinDirs,
+  WorkspaceFileLockTimeoutError,
+  wellKnownBinDirs,
   writeAgentBriefing,
 } from "./host-runtime.js";
 export type {
@@ -113,6 +136,15 @@ export {
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
 } from "./tree-tracking.js";
+// turn-input
+export {
+  findImagePath,
+  InputController,
+  imagePath,
+  renderDocumentAttachmentsForLLM,
+  renderImageAttachmentsForLLM,
+  writeImage,
+} from "./turn-input.js";
 // turn-prompt
 export {
   buildBriefingUpdateNotice,

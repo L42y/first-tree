@@ -20,7 +20,6 @@ import {
   runtimeProviderSchema,
   SUPPORTED_IMAGE_MIMES as SHARED_SUPPORTED_IMAGE_MIMES,
 } from "@first-tree/shared";
-import { renderDocumentAttachmentsForLLM } from "../runtime/agent-io.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -29,8 +28,6 @@ import type {
   SessionMessage,
 } from "../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../runtime/contracts.js";
-import { findImagePath } from "../runtime/image-store.js";
-import { InputController } from "../runtime/input-controller.js";
 import type {
   AgentConfigCache,
   ChatContext,
@@ -49,12 +46,15 @@ import {
   createContextTreeGitWriteTracker,
   decideProviderRetry,
   fetchChatContextOrLog,
+  findImagePath,
+  InputController,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
   prepareManagedSession,
   readSessionBriefingFingerprint,
   reconcileManagedSkillsForConfig,
   redactErrorPreview,
+  renderDocumentAttachmentsForLLM,
   teamSkillBundleResolverFromSdk,
   writeAgentBriefing,
   writeSessionBriefingFingerprint,

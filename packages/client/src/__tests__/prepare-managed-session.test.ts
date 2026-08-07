@@ -395,4 +395,189 @@ describe("prepareManagedSession", () => {
     expect(ensureAgentBootstrap).toHaveBeenCalledTimes(1);
     expect(markWorkspaceInitComplete).toHaveBeenCalledTimes(1);
   });
+
+  it("runs beforeBriefing after skills and before briefing/bootstrap/sentinel", async () => {
+    const prepareManagedSession = await loadPrepare();
+    const beforeBriefing = vi.fn(async () => {
+      callOrder.push("beforeBriefing");
+    });
+
+    await prepareManagedSession({
+      sessionCtx: sessionCtx(),
+      workspaceRoot,
+      runtimeProvider: "cursor",
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      beforeBriefing,
+    });
+
+    expect(beforeBriefing).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual([
+      "acquire",
+      "chatContext",
+      "sourceRepos",
+      "skills",
+      "beforeBriefing",
+      "briefing",
+      "sourceNames:null",
+      "bootstrap",
+      "sentinel",
+    ]);
+  });
+
+  it("leaves briefing/bootstrap/sentinel untouched when beforeBriefing throws", async () => {
+    const prepareManagedSession = await loadPrepare();
+
+    await expect(
+      prepareManagedSession({
+        sessionCtx: sessionCtx(),
+        workspaceRoot,
+        runtimeProvider: "cursor",
+        runtimeConfig: null,
+        payload: {
+          kind: "cursor",
+          prompt: { append: "" },
+          model: "",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+        },
+        payloadResolved: false,
+        contextTree: { path: null, repoUrl: null, branch: null },
+        beforeBriefing: async () => {
+          callOrder.push("beforeBriefing");
+          throw new Error("lifecycle cancelled at prepare_skills");
+        },
+      }),
+    ).rejects.toThrow(/lifecycle cancelled at prepare_skills/);
+
+    expect(callOrder).toEqual(["acquire", "chatContext", "sourceRepos", "skills", "beforeBriefing"]);
+    expect(buildAgentBriefing).not.toHaveBeenCalled();
+    expect(ensureAgentBootstrap).not.toHaveBeenCalled();
+    expect(markWorkspaceInitComplete).not.toHaveBeenCalled();
+  });
+});
+
+describe("projectManagedWorkspace", () => {
+  let workspaceRoot: string;
+  const callOrder: string[] = [];
+
+  beforeEach(() => {
+    workspaceRoot = mkdtempSync(join(tmpdir(), "project-managed-workspace-"));
+    callOrder.length = 0;
+    vi.clearAllMocks();
+    declaredSourceRepos.mockImplementation((workspace: string) => {
+      callOrder.push("sourceRepos");
+      return [{ absolutePath: join(workspace, "source-repos", "widget"), url: "https://example.test/widget" }];
+    });
+    reconcileManagedSkillsForConfig.mockImplementation(async () => {
+      callOrder.push("skills");
+      return {
+        ok: true,
+        resourceConfigVersion: 1,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [],
+        failures: [],
+        staleTeamSnapshot: false,
+      };
+    });
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING";
+    });
+    ensureAgentBootstrap.mockImplementation(() => {
+      callOrder.push("bootstrap");
+    });
+    markWorkspaceInitComplete.mockImplementation(() => {
+      callOrder.push("sentinel");
+    });
+    currentSourceRepoNamesFromPayload.mockReturnValue(null);
+    teamSkillBundleResolverFromSdk.mockReturnValue(vi.fn());
+  });
+
+  afterEach(() => {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function sessionCtx(): SessionContext {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    return {
+      agent: {
+        agentId: "019d9a97-90b0-716b-8317-a8c0be8430d7",
+        inboxId: "inbox-1",
+        displayName: "prep-agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: { serverUrl: "https://first-tree.example.test", sendMessage } as unknown as SessionContext["sdk"],
+      chatId: "chat-1",
+      log: () => {},
+      recordProviderActivity: () => {},
+      emitEvent: () => {},
+      ...mockCtxPlumbing({ sendMessage }, "chat-1"),
+    } as SessionContext;
+  }
+
+  it("requires an explicit markInitComplete:false to skip the sentinel", async () => {
+    const { projectManagedWorkspace } = await import("../runtime/provider-support/preparation.js");
+    await projectManagedWorkspace({
+      sessionCtx: sessionCtx(),
+      workspace: workspaceRoot,
+      runtimeProvider: "pi",
+      runtimeConfig: null,
+      payload: {
+        kind: "pi",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      markInitComplete: false,
+    });
+    expect(callOrder).toEqual(["sourceRepos", "skills", "briefing", "bootstrap"]);
+    expect(markWorkspaceInitComplete).not.toHaveBeenCalled();
+  });
+
+  it("writes the sentinel when markInitComplete is true", async () => {
+    const { projectManagedWorkspace } = await import("../runtime/provider-support/preparation.js");
+    await projectManagedWorkspace({
+      sessionCtx: sessionCtx(),
+      workspace: workspaceRoot,
+      runtimeProvider: "opencode",
+      runtimeConfig: null,
+      payload: {
+        kind: "opencode",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      markInitComplete: true,
+    });
+    expect(callOrder).toContain("sentinel");
+    expect(markWorkspaceInitComplete).toHaveBeenCalledWith(workspaceRoot);
+  });
 });

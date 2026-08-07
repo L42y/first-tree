@@ -88,10 +88,16 @@ export type ProjectManagedWorkspaceParams = {
   payloadResolved: boolean;
   contextTree: ContextTreeCoordinates;
   /**
-   * When true (default), write the init-complete sentinel after bootstrap.
-   * Mid-session refresh paths that historically skipped the sentinel pass false.
+   * Required: whether to write the init-complete sentinel after bootstrap.
+   * Full admission passes true; mid-session refresh paths that historically
+   * skipped the sentinel must pass false explicitly (no default footgun).
    */
-  markInitComplete?: boolean;
+  markInitComplete: boolean;
+  /**
+   * Optional provider-owned checkpoint after Managed Skills settle and before
+   * briefing / bootstrap / sentinel. Used for lifecycle fences and landing
+   * sandbox env setup so cancellation/failure leaves no sentinel.
+   */
   beforeBriefing?: (args: {
     workspace: string;
     sourceRepos: readonly PredeclaredSourceRepo[];
@@ -138,7 +144,7 @@ export async function projectManagedWorkspace(
     payload,
     payloadResolved,
     contextTree,
-    markInitComplete = true,
+    markInitComplete,
     beforeBriefing,
   } = params;
 

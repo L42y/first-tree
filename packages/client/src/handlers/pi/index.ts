@@ -1480,7 +1480,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         branch: contextTreeBranch,
       },
       markInitComplete: false,
+      beforeBriefing: async () => {
+        assertLifecycleGeneration(generation, "prepared_refresh_skills");
+      },
     });
+    assertLifecycleGeneration(generation, "prepared_refresh_activate");
     reconciledTeamSkills = projected.teamSkills;
     activeResourceConfigVersion = projected.resourceConfigVersion;
     activeSkillsDigest = skillsContentDigest(reconciledTeamSkills, activeResourceConfigVersion);
@@ -1829,8 +1833,13 @@ export const createPiHandler: HandlerFactory = (config) => {
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
       },
+      beforeBriefing: async () => {
+        // Lifecycle fence after Managed Skills and before briefing/bootstrap/
+        // init sentinel — a suspended generation must not write admission side
+        // effects. Cancellation here is pre-provider and creates no ACK authority.
+        assertLifecycleGeneration(generation, "prepare_skills");
+      },
     });
-    assertLifecycleGeneration(generation, "prepare_skills");
     const workspaceCwd = prepared.workspace;
     cwd = workspaceCwd;
     reconciledTeamSkills = prepared.teamSkills;
