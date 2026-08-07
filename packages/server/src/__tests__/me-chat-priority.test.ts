@@ -113,7 +113,6 @@ describe("listMeChats — pins plus ordinary recency", () => {
     await setActivity(app, second, "2026-07-01T00:00:00.000Z");
 
     const result = await list(app, owner);
-    expect(result.priorityRows.attention).toEqual([]);
     expect(result.priorityRows.pinned.map((row) => row.chatId)).toEqual([first, second]);
     expect(result.rows.map((row) => row.chatId)).toEqual(expect.arrayContaining([first, second]));
   });
@@ -136,7 +135,7 @@ describe("listMeChats — pins plus ordinary recency", () => {
     expect(firstPage.nextCursor).not.toBeNull();
 
     const secondPage = await list(app, owner, { limit: 2, cursor: firstPage.nextCursor ?? undefined });
-    expect(secondPage.priorityRows).toEqual({ pinned: [], attention: [] });
+    expect(secondPage.priorityRows).toEqual({ pinned: [] });
     expect(secondPage.rows.map((row) => row.chatId)).toContain(oldPin);
   });
 

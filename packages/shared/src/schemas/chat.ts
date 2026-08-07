@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { callerWritableChatMetadataSchema } from "./chat-metadata.js";
-import { landingCampaignActionContextSchema, landingCampaignRepoSlugSchema } from "./landing-campaign.js";
+import { landingCampaignActionContextSchema } from "./landing-campaign.js";
 import { sendMessageSchema } from "./message.js";
 
 export const CHAT_TYPES = {
@@ -85,14 +85,8 @@ export const createWebTaskChatSchema = z
     // Trusted landing-campaign action context. The server derives the shared
     // idempotency key from this pair; the browser never supplies the key.
     campaignAction: landingCampaignActionContextSchema.optional(),
-    // Compatibility for already-deployed production-scan clients.
-    scanFixRepoSlug: landingCampaignRepoSlugSchema.optional(),
   })
-  .superRefine((value, ctx) => {
-    if (value.campaignAction && value.scanFixRepoSlug) {
-      ctx.addIssue({ code: "custom", message: "Use campaignAction or scanFixRepoSlug, not both." });
-    }
-  })
+  .strict()
   .refine(hasInitialRecipient, {
     message: "task chat creation requires at least one initial recipient",
   });

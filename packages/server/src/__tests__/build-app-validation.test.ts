@@ -186,8 +186,8 @@ describe("buildApp — server secret validation", () => {
   });
 });
 
-describe("buildApp — retired feedback route boundary", () => {
-  it("returns a 410 tombstone for /feedback/* instead of the SPA shell", async () => {
+describe("buildApp — Web fallback boundary", () => {
+  it("uses the ordinary SPA fallback for extensionless browser routes", async () => {
     const webRoot = await mkdtemp(join(tmpdir(), "first-tree-web-"));
     await writeFile(join(webRoot, "index.html"), "<!doctype html><html><body>App shell</body></html>", "utf8");
 
@@ -200,10 +200,8 @@ describe("buildApp — retired feedback route boundary", () => {
       expect(spa.body).toContain("App shell");
 
       const feedback = await app.inject({ method: "POST", url: "/feedback/chat" });
-      expect(feedback.statusCode).toBe(410);
-      expect(feedback.headers["content-type"]).toContain("application/json");
-      expect(feedback.json()).toEqual({ error: "Feedback has been removed" });
-      expect(feedback.body).not.toContain("App shell");
+      expect(feedback.statusCode).toBe(200);
+      expect(feedback.body).toContain("App shell");
 
       const apiMiss = await app.inject({ method: "GET", url: "/api/missing" });
       expect(apiMiss.statusCode).toBe(404);

@@ -303,21 +303,20 @@ describe("App routes", () => {
     expect(await renderAppAt("/onboarding")).toContain("onboarding page");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/agents/agent-1/tools")).toContain("profile tab");
-    await resetRenderedApp();
-
     expect(await renderAppAt("/settings")).toContain("settings account");
     await resetRenderedApp();
 
     expect(await renderAppAt("/settings/account")).toContain("settings account");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/user-settings?connection=google-linked")).toContain("settings account");
+    expect(await renderAppAt("/settings/account?connection=google-linked")).toContain("settings account");
     expect(window.location.pathname).toBe("/settings/account");
     expect(window.location.search).toBe("?connection=google-linked");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/settings/github?connection=github-linked#connection")).toContain("settings github");
+    expect(await renderAppAt("/settings/integrations/github?connection=github-linked#connection")).toContain(
+      "settings github",
+    );
     expect(window.location.pathname).toBe("/settings/integrations/github");
     expect(window.location.search).toBe("?connection=github-linked");
     expect(window.location.hash).toBe("#connection");
@@ -329,14 +328,7 @@ describe("App routes", () => {
     expect(await renderAppAt("/settings/integrations/gitlab")).toContain("settings gitlab");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/integrations")).toContain("settings github");
-    await resetRenderedApp();
-
     expect(await renderAppAt("/settings/setup")).toContain("settings setup");
-    await resetRenderedApp();
-
-    expect(await renderAppAt("/settings/onboarding")).toContain("settings setup");
-    expect(window.location.pathname).toBe("/settings/setup");
     await resetRenderedApp();
 
     expect(await renderAppAt("/settings/repositories")).toContain("settings repositories");
@@ -347,9 +339,6 @@ describe("App routes", () => {
     await resetRenderedApp();
 
     expect(await renderAppAt("/settings/resources")).toContain("settings resources");
-    await resetRenderedApp();
-
-    expect(await renderAppAt("/settings/team")).toContain("settings computers");
     await resetRenderedApp();
 
     expect(await renderAppAt("/quickstart")).toContain("quickstart page");
@@ -379,9 +368,6 @@ describe("App routes", () => {
     expect(await renderAppAt("/agents/agent-1/repositories")).toContain("repositories tab");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/admin#agents")).toContain("team page");
-    await resetRenderedApp();
-
     expect(await renderAppAt("/preview/styleguide")).toContain("styleguide preview");
     await resetRenderedApp();
 
@@ -406,6 +392,34 @@ describe("App routes", () => {
     expect(document.querySelector('[data-testid="selected-chat-id"]')?.textContent).toBe("new");
   });
 
+  it.each([
+    "/m/work",
+    "/m/now",
+    "/m/retired",
+    "/user-settings",
+    "/settings/github",
+    "/settings/team",
+    "/settings/onboarding",
+    "/integrations",
+    "/clients",
+    "/agents",
+    "/team/members",
+    "/team/agents",
+    "/team/invite",
+    "/team/settings",
+    "/admin",
+    "/agents/agent-1/setup",
+    "/agents/agent-1/tools",
+    "/agents/agent-1/resources",
+  ])("does not resolve the retired browser route %s", async (path) => {
+    const content = await renderAppAt(path);
+
+    expect(content).not.toMatch(
+      /mobile work|settings account|settings github|settings computers|settings setup|team page|profile tab|runtime tab|resources tab/,
+    );
+    expect(window.location.pathname).toBe(path);
+  });
+
   it("opens the mobile experience on prod", async () => {
     setViewportWidth(390);
     expect(await renderAppAt("/")).toContain("mobile work");
@@ -416,20 +430,6 @@ describe("App routes", () => {
 
     setViewportWidth(390);
     expect(await renderAppAt("/m")).toContain("mobile work");
-    expect(window.location.pathname).toBe("/m/chat");
-    await act(async () => root?.unmount());
-    document.body.innerHTML = "";
-
-    setViewportWidth(390);
-    expect(await renderAppAt("/m/work?c=chat-1#latest")).toContain("mobile work");
-    expect(window.location.pathname).toBe("/m/chat");
-    expect(window.location.search).toBe("?c=chat-1");
-    expect(window.location.hash).toBe("#latest");
-    await act(async () => root?.unmount());
-    document.body.innerHTML = "";
-
-    setViewportWidth(390);
-    expect(await renderAppAt("/m/now")).toContain("mobile work");
     expect(window.location.pathname).toBe("/m/chat");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
@@ -458,11 +458,6 @@ describe("App routes", () => {
 
     expect(await renderAppAt("/")).toContain("workspace page");
     expect(document.head.querySelector('link[rel="manifest"]')).toBeNull();
-    await act(async () => root?.unmount());
-    document.body.innerHTML = "";
-
-    setViewportWidth(390);
-    expect(await renderAppAt("/m/now")).toContain("workspace page");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 
@@ -524,7 +519,7 @@ describe("App routes", () => {
     serverChannelStateMock.channel = "dev";
     setViewportWidth(390);
 
-    expect(await renderAppAt("/m/now")).toContain("mobile work");
+    expect(await renderAppAt("/m/chat")).toContain("mobile work");
   });
 
   it("routes development preview pages and omits dev-only previews in production", async () => {

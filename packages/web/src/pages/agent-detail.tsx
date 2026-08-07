@@ -47,7 +47,6 @@ import {
   type TabDef,
 } from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
-import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
 
 const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.11";
@@ -69,8 +68,6 @@ function AgentDetailPageView() {
   const { memberId, role } = useAuth();
   // Narrow web viewports trade the local navigation rail for a section selector.
   const isNarrow = useWorkspaceViewport() === "narrow";
-  useLegacyAnchorRedirect();
-
   const agentQuery = useQuery({
     queryKey: ["agent", uuid],
     queryFn: () => getAgent(uuid),

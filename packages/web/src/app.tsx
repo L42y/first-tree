@@ -480,11 +480,8 @@ export function App() {
                 <Route element={<MobileExperienceGate />}>
                   <Route path="m" element={<Navigate to="/m/chat" replace />} />
                   <Route path="m/chat" element={<MobileWorkPage />} />
-                  <Route path="m/work" element={<LegacyMobileWorkRedirect />} />
-                  <Route path="m/now" element={<LegacyMobileWorkRedirect />} />
                   <Route path="m/team" element={<MobileTeamPage />} />
                   <Route path="m/me" element={<MobileMePage />} />
-                  <Route path="m/*" element={<Navigate to="/m/chat" replace />} />
                 </Route>
                 <Route
                   element={
@@ -509,14 +506,10 @@ export function App() {
                     <Route path="profile" element={<ProfileTab />} />
                     <Route path="responsibilities" element={<ResponsibilitiesTab />} />
                     <Route path="runtime" element={<RuntimeTab />} />
-                    <Route path="setup" element={<Navigate to="../runtime" replace />} />
                     <Route path="prompt" element={<PromptTab />} />
-                    <Route path="tools" element={<Navigate to="../profile" replace />} />
                     <Route path="capabilities" element={<ResourcesTab />} />
                     <Route path="repositories" element={<RepositoriesTab />} />
                     <Route path="usage" element={<UsageTab />} />
-                    {/* Legacy deep links: the tab was renamed Resources → Capabilities. */}
-                    <Route path="resources" element={<Navigate to="../capabilities" replace />} />
                   </Route>
 
                   {/* Team — flat roster page, no sub-nav. Org-scoped admin
@@ -524,38 +517,23 @@ export function App() {
                       lives under /settings, not as a peer of the
                       people-and-agents view. */}
                   <Route path="team" element={<TeamPage />} />
-                  <Route path="user-settings" element={<LegacyUserSettingsRedirect />} />
 
                   {/* Settings master-detail. Setup is the permanent role-aware
                       overview; /onboarding remains the standalone first-run flow. */}
                   <Route path="settings" element={<SettingsLayout />}>
                     <Route index element={<Navigate to="account" replace />} />
-                    <Route path="team" element={<Navigate to="/settings/computers" replace />} />
                     <Route path="account" element={<SettingsAccountPage />} />
                     <Route path="repositories" element={<SettingsRepositoriesPage />} />
                     <Route path="context" element={<SettingsContextTreePage />} />
                     <Route path="resources" element={<SettingsResourcesPage />} />
                     <Route path="computers" element={<SettingsComputersPage />} />
-                    <Route path="github" element={<LegacyGithubSettingsRedirect />} />
                     <Route path="integrations" element={<SettingsIntegrationsLayout />}>
                       <Route index element={<Navigate to="github" replace />} />
                       <Route path="github" element={<SettingsGithubPage />} />
                       <Route path="gitlab" element={<SettingsGitlabPage />} />
                     </Route>
                     <Route path="setup" element={<SettingsSetupPage />} />
-                    {/* Compatibility only. Setup is now the canonical route. */}
-                    <Route path="onboarding" element={<Navigate to="/settings/setup" replace />} />
                   </Route>
-
-                  {/* Backwards-compat redirects for old top-level + sub-tab routes */}
-                  <Route path="agents" element={<Navigate to="/team" replace />} />
-                  <Route path="clients" element={<Navigate to="/settings/computers" replace />} />
-                  <Route path="integrations" element={<Navigate to="/settings/integrations/github" replace />} />
-                  <Route path="team/members" element={<Navigate to="/team" replace />} />
-                  <Route path="team/agents" element={<Navigate to="/team" replace />} />
-                  <Route path="team/invite" element={<Navigate to="/team" replace />} />
-                  <Route path="team/settings" element={<Navigate to="/settings/computers" replace />} />
-                  <Route path="admin" element={<AdminRedirect />} />
                 </Route>
               </Route>
             </Routes>
@@ -564,11 +542,6 @@ export function App() {
       </AuthProvider>
     </QueryClientProvider>
   );
-}
-
-function AdminRedirect() {
-  const location = useLocation();
-  return <Navigate to={`/team${location.hash}`} replace />;
 }
 
 function ContextTreeSetupPreviewRoute() {
@@ -598,26 +571,6 @@ function ContextTreeSetupPreviewUnavailable() {
       </section>
     </main>
   );
-}
-
-function LegacyUserSettingsRedirect() {
-  const location = useLocation();
-  return <Navigate to={{ pathname: "/settings/account", search: location.search, hash: location.hash }} replace />;
-}
-
-function LegacyGithubSettingsRedirect() {
-  const location = useLocation();
-  return (
-    <Navigate
-      to={{ pathname: "/settings/integrations/github", search: location.search, hash: location.hash }}
-      replace
-    />
-  );
-}
-
-function LegacyMobileWorkRedirect() {
-  const location = useLocation();
-  return <Navigate to={{ pathname: "/m/chat", search: location.search, hash: location.hash }} replace />;
 }
 
 function WorkspaceEntry() {

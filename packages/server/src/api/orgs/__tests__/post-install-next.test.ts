@@ -10,7 +10,7 @@ describe("resolvePostInstallNext", () => {
   it("passes through allowlisted internal paths", () => {
     expect(resolvePostInstallNext("/onboarding")).toBe("/onboarding");
     expect(resolvePostInstallNext("/onboarding/connected")).toBe("/onboarding/connected");
-    expect(resolvePostInstallNext("/settings/github")).toBe("/settings/github");
+    expect(resolvePostInstallNext("/settings/integrations/github")).toBe("/settings/integrations/github");
     // The Context tab build entry passes itself as `next` when the install popup
     // is blocked — rewriting it to Settings would bounce the admin out of the
     // inline build/repo-pick flow they were in.
@@ -18,15 +18,15 @@ describe("resolvePostInstallNext", () => {
   });
 
   it("falls back to Settings for an absent value", () => {
-    expect(resolvePostInstallNext(undefined)).toBe("/settings/github");
+    expect(resolvePostInstallNext(undefined)).toBe("/settings/integrations/github");
   });
 
   it("falls back to Settings for anything off the allowlist (no open redirect)", () => {
-    expect(resolvePostInstallNext("https://evil.example.com")).toBe("/settings/github");
-    expect(resolvePostInstallNext("//evil.example.com")).toBe("/settings/github");
-    expect(resolvePostInstallNext("/onboarding/../settings")).toBe("/settings/github");
-    expect(resolvePostInstallNext("/arbitrary")).toBe("/settings/github");
-    expect(resolvePostInstallNext("")).toBe("/settings/github");
+    expect(resolvePostInstallNext("https://evil.example.com")).toBe("/settings/integrations/github");
+    expect(resolvePostInstallNext("//evil.example.com")).toBe("/settings/integrations/github");
+    expect(resolvePostInstallNext("/onboarding/../settings")).toBe("/settings/integrations/github");
+    expect(resolvePostInstallNext("/arbitrary")).toBe("/settings/integrations/github");
+    expect(resolvePostInstallNext("")).toBe("/settings/integrations/github");
   });
 
   it("only allows the known internal destinations", () => {
@@ -34,7 +34,7 @@ describe("resolvePostInstallNext", () => {
       "/context",
       "/onboarding",
       "/onboarding/connected",
-      "/settings/github",
+      "/settings/integrations/github",
     ]);
   });
 });

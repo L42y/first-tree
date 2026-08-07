@@ -64,29 +64,9 @@ import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMember
 const CURSOR_VERSION = "v2";
 
 /**
- * Expand-contract bridge for independently deployed Web and Server builds.
- * The retired `attention` tier stays empty so an older Web can deserialize a
- * newer response; current clients strip it and never use it for ordering.
+ * A decoded cursor is either a canonical v2 keyset anchor or invalid input.
  */
-type LegacyCompatibleListMeChatsResponse = Omit<ListMeChatsResponse, "priorityRows"> & {
-  priorityRows: ListMeChatsResponse["priorityRows"] & { attention: MeChatRow[] };
-};
-
-/**
- * A decoded cursor is one of three cases so the caller can treat them
- * differently across a rollout:
- *   - `ok`     — a valid `v2|<iso>|<chatId>` cursor; resume from it.
- *   - `legacy` — a recognized PRE-PR shape (2 parts, non-empty chat id): either
- *     `<iso>|<chatId>` (a normal boundary) or `|<chatId>` (an empty timestamp,
- *     which the old encoder emitted for a `last_message_at IS NULL` tail
- *     boundary). Its timestamp meant `last_message_at`, not `activity_at`, so it
- *     can't be reinterpreted against the new ordering; a client that held one
- *     across the rollout is restarted from page 1 rather than stranded.
- *   - `invalid` — anything else (truncated / wrong-version / garbage). Kept as a
- *     typed failure (→ 400) so a genuine client/API bug still surfaces instead of
- *     being silently served page 1.
- */
-type DecodedCursor = { status: "ok"; activityAt: Date; chatId: string } | { status: "legacy" } | { status: "invalid" };
+type DecodedCursor = { status: "ok"; activityAt: Date; chatId: string } | { status: "invalid" };
 
 export function encodeCursor(activityAt: Date, chatId: string): string {
   const payload = `${CURSOR_VERSION}|${activityAt.toISOString()}|${chatId}`;
@@ -101,7 +81,7 @@ export function decodeCursor(cursor: string): DecodedCursor {
     return { status: "invalid" };
   }
   // Chat ids are UUIDs (never contain `|`), so a well-formed payload splits
-  // cleanly: current `v2|<iso>|<chatId>` is 3 parts, legacy `<iso>|<chatId>` is 2.
+  // cleanly into `v2|<iso>|<chatId>`.
   const parts = decoded.split("|");
   if (parts.length === 3) {
     const [version, tsPart, chatId] = parts;
@@ -109,17 +89,6 @@ export function decodeCursor(cursor: string): DecodedCursor {
       return { status: "ok", activityAt: new Date(tsPart), chatId };
     }
     return { status: "invalid" };
-  }
-  if (parts.length === 2) {
-    const [tsPart, chatId] = parts;
-    // The deployed pre-PR encoder emitted `<iso>|<chatId>` for a normal boundary
-    // AND `|<chatId>` (EMPTY timestamp) for a `last_message_at IS NULL` tail
-    // boundary. Recognize both exact old shapes — empty or parseable timestamp,
-    // with a non-empty chat id — as legacy so every real deployed cursor takes
-    // the page-1 recovery path instead of 400ing.
-    if (tsPart !== undefined && chatId && (tsPart === "" || !Number.isNaN(new Date(tsPart).getTime()))) {
-      return { status: "legacy" };
-    }
   }
   return { status: "invalid" };
 }
@@ -658,18 +627,13 @@ async function enrichMeChatRows(
  * `rows` is the ordinary activity-ordered keyset page. Open asks and recovery
  * remain on each row as independent status icons and never change ordering.
  *
- * ADDITIVE contract (deliberate, for safe rollout): `rows` is NOT filtered
+ * ADDITIVE contract: `rows` is NOT filtered
  * against the priority ids. A pinned chat appears in `rows` too, and the client
  * de-duplicates it when rendering (pinned > recency). This keeps the response
- * backward-compatible with the already-shipped web that reads only `rows` — a
- * server deploy ahead of the priority-aware client never makes a chat vanish.
+ * complete for CLI Workspace listings.
  *
  * FIRST-PAGE gating: pins are computed only when there is no cursor and returned
  * empty on load-more pages (the client reads them from page one).
- *
- * A recognized pre-PR (legacy) cursor is treated as a first-page request rather
- * than a 400, so a client that held one across the rollout recovers gracefully
- * instead of looping its load-more Retry; a genuinely invalid cursor still 400s.
  */
 export async function listMeChats(
   db: Database,
@@ -677,13 +641,8 @@ export async function listMeChats(
   callerMemberId: string,
   organizationId: string,
   query: ListMeChatsQuery,
-): Promise<LegacyCompatibleListMeChatsResponse> {
+): Promise<ListMeChatsResponse> {
   const limit = query.limit;
-  // Resolve the cursor into a keyset anchor. A recognized `legacy` cursor (a
-  // pre-PR shape a client held across the rollout) restarts from page 1 — the
-  // client de-duplicates the repeated rows and picks up a fresh v2 cursor — while
-  // an `invalid` cursor stays a typed 400 so a genuine client/API bug surfaces
-  // instead of being silently masked as a first-page request.
   const decoded = query.cursor ? decodeCursor(query.cursor) : null;
   if (decoded?.status === "invalid") {
     throw new BadRequestError("Invalid cursor");
@@ -732,8 +691,7 @@ export async function listMeChats(
   // Whole-set projection the client reads once (from the first page). Gating
   // it on `cursor === null` keeps `load-more` cheap AND is what lets `rows`
   // stay ADDITIVE: later pages never exclude priority ids, so the ordinary
-  // stream is the complete recency list — backward-compatible with a client that
-  // ignores `priorityRows`. See docblock.
+  // stream is the complete recency list. See docblock.
   let pinnedRaw: RawMeChatRow[] = [];
   if (cursor === null) {
     pinnedRaw = await selectMeChatRawRows(db, {
@@ -750,8 +708,7 @@ export async function listMeChats(
   // ADDITIVE: no priority-id exclusion. `rows` is the complete activity-ordered
   // recency stream; a pinned chat also appears here and the client
   // de-duplicates it against `priorityRows` when it renders the groups. This
-  // keeps the response backward-compatible with the already-shipped web that
-  // reads only `rows`.
+  // keeps the response complete for CLI Workspace consumers.
   const ordinaryRaw = await selectMeChatRawRows(db, {
     humanAgentId,
     organizationId,
@@ -791,7 +748,7 @@ export async function listMeChats(
     const rows = pageRaw.map((row) => rowById.get(row.chat_id)).filter((row): row is MeChatRow => row !== undefined);
 
     return {
-      priorityRows: { pinned, attention: [] },
+      priorityRows: { pinned },
       rows,
       nextCursor,
     };
@@ -799,7 +756,7 @@ export async function listMeChats(
 
   const rows = await enrichMeChatRows(db, pageRaw, { humanAgentId, managedAgentIds });
   return {
-    priorityRows: { pinned: [], attention: [] },
+    priorityRows: { pinned: [] },
     rows,
     nextCursor,
   };
