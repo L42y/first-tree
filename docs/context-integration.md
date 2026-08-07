@@ -308,30 +308,3 @@ Sensitive Teams should use separate provider sessions.
 Session-only means no persistent grant, Plugin or Hook and no automatic future
 activation. It does not promise continuity across clear, compact, resume, exit,
 or a new session.
-
-## Release qualification
-
-Before production qualification, real Claude Code and Codex surfaces must
-record evidence for:
-
-1. global, directory and session-only setup;
-2. dynamic setup choices for pathless, Codex scratch, default managed-worktree,
-   and ordinary-project locations, plus `/hooks` consent and same-conversation
-   continuation;
-3. two or more real Teams with clear, overlapping, missing and non-matching
-   SCOPE bodies;
-4. a non-programming SCOPE and imperative text treated only as routing data;
-5. membership revocation, binding movement, offline authority and scope-commit
-   movement;
-6. single- and multi-Team BYO writes with the mandatory new user confirmation;
-7. SCOPE admin approval, rejection, changed head/digest and manager demotion;
-8. v2 store backup and explicit reauthorization;
-9. legacy full Plugin migration with the Claude next-session adoption gate,
-   followed by a Core-only CLI upgrade that leaves adapter bytes and provider
-   trust unchanged;
-10. same-organization cross-provider repo reuse, cross-organization isolation,
-    A→B→A Client switching, and active-write switch refusal;
-11. concise bootstrap progress, bounded typed-error recovery, and unchanged
-    human confirmation boundaries.
-
-Unit tests and mock QA do not replace these real-provider checks.
