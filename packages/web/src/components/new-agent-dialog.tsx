@@ -947,6 +947,27 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                   {fieldErrors.templates}
                 </p>
               )}
+              {/* The only in-app entry to the public Template Library. It lives
+                  here — the moment the user is actually choosing a
+                  responsibility — rather than in the sidebar or landing, because
+                  a public Template only pays off when it helps someone reach a
+                  working agent, not as standalone browsing chrome.
+                  Deliberately inside the catalog-gated section, so an empty or
+                  failed catalog never advertises an empty library and the plain
+                  create path stays unchanged. A new tab (not a route change)
+                  keeps the in-progress draft in this dialog alive. */}
+              <p className="text-caption text-muted-foreground">
+                <a
+                  href="/templates"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  aria-label="Browse the template library — opens in a new tab"
+                  onClick={() => trackEvent("agent_template_library_open", { surface: "new_agent" })}
+                  className="rounded-[var(--radius-input)] underline underline-offset-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                >
+                  Browse the template library
+                </a>
+              </p>
             </div>
           )}
 
