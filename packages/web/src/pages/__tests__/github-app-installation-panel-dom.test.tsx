@@ -174,6 +174,8 @@ describe("GithubAppInstallationPanel", () => {
     const { container, root } = await renderDom(<GithubAppInstallationPanel />);
 
     await waitForText(container, "Connected to");
+    // The connection reads as one row: what it is, then who it's bound to.
+    expect(container.textContent).toContain("GitHub App");
     // GitHub accounts render as the full github.com path so a GitHub org is
     // never confusable with a First Tree team name.
     expect(container.textContent).toContain("github.com/octocat");

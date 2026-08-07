@@ -1,6 +1,6 @@
 import type { GithubAppConnectPanelInstallation, GithubAppInstallationOutput } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Building2, ChevronRight, ExternalLink, PauseCircle, User } from "lucide-react";
+import { ArrowLeft, Building2, ChevronRight, ExternalLink, Github, PauseCircle, User } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiError } from "../api/client.js";
 import {
@@ -13,6 +13,7 @@ import {
 import { getAuthProviders, startProviderLink } from "../api/user-settings.js";
 import { useAuth } from "../auth/auth-context.js";
 import { Button } from "../components/ui/button.js";
+import { SettingRow } from "../components/ui/setting-row.js";
 import { clearGithubAccountLinkReturn, rememberGithubAccountLinkReturn } from "../lib/github-account-link-return.js";
 import {
   clearGithubInstallAttemptForOrganization,
@@ -108,7 +109,9 @@ export function GithubAppInstallationPanel({
 
 /**
  * Unbound summary: the team has no GitHub connection yet, so the whole
- * surface is one prominent entry point into the connect panel.
+ * surface is one prominent entry point into the connect panel. Same row shape
+ * as the connected state, so connecting doesn't reflow the section — only the
+ * status line and the right-hand control change.
  */
 function NotConnectedSummary({
   disabled,
@@ -120,17 +123,18 @@ function NotConnectedSummary({
   onOpenPanel: () => void;
 }) {
   return (
-    <div>
-      <p className="text-body" style={{ color: "var(--fg-2)", marginBottom: "var(--sp-3)" }}>
-        This team isn't connected to GitHub yet. Connect a GitHub App installation to start receiving issues, pull
-        requests, and reviews as routed messages.
-      </p>
-      {!readOnly && (
-        <Button type="button" size="sm" onClick={onOpenPanel} disabled={disabled}>
-          Connect GitHub
-        </Button>
-      )}
-    </div>
+    <SettingRow
+      icon={<Github className="h-4 w-4" />}
+      title="GitHub App"
+      description="This team isn't connected to GitHub yet. Connect a GitHub App installation to start receiving issues, pull requests, and reviews as routed messages."
+      control={
+        readOnly ? null : (
+          <Button type="button" size="sm" onClick={onOpenPanel} disabled={disabled}>
+            Connect GitHub
+          </Button>
+        )
+      }
+    />
   );
 }
 
@@ -156,49 +160,43 @@ function InstalledState({
   return (
     // No borderTop of its own: the page's Section frame already draws the
     // rule above this block.
-    <div
-      style={{
-        paddingTop: "var(--sp-1)",
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--sp-4)",
-      }}
-    >
+    <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
       {data.suspended && <SuspendedBanner />}
 
-      <div>
-        <div className="text-label" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1)" }}>
-          Connected to
-        </div>
-        <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-          <AccountIcon className="h-4 w-4" style={{ color: "var(--fg-2)" }} />
-          <span className="text-body font-medium" style={{ color: "var(--fg)" }}>
-            {githubAccountPath(data.accountLogin)}
+      <SettingRow
+        icon={<Github className="h-4 w-4" />}
+        title="GitHub App"
+        // Who's connected reads as the row's status line rather than a separate
+        // labelled block — one glance answers "is this wired up, and to what".
+        description={
+          <span className="inline-flex flex-wrap items-center" style={{ gap: "var(--sp-1_5)" }}>
+            <span className="inline-flex items-center" style={{ gap: "var(--sp-1)" }}>
+              <AccountIcon className="h-3 w-3 shrink-0" aria-hidden />
+              <span style={{ overflowWrap: "anywhere" }}>Connected to {githubAccountPath(data.accountLogin)}</span>
+            </span>
+            <span style={{ color: "var(--fg-4)" }}>{data.accountType}</span>
           </span>
-          <span className="text-caption" style={{ color: "var(--fg-3)" }}>
-            {data.accountType}
-          </span>
-        </div>
+        }
+        control={
+          readOnly ? null : (
+            <>
+              <Button type="button" variant="outline" size="sm" onClick={onOpenPanel}>
+                Manage connection
+              </Button>
+              <Button asChild variant="outline" size="sm">
+                <a href={data.manageUrl} target="_blank" rel="noreferrer">
+                  Manage on GitHub
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </Button>
+            </>
+          )
+        }
+      >
         {/* Expandable details sit directly under the connected account they
             describe, not below the action buttons. */}
-        <div style={{ marginTop: "var(--sp-3)" }}>
-          <ConnectionDetails data={data} />
-        </div>
-      </div>
-
-      {!readOnly && (
-        <div className="flex items-center" style={{ gap: "var(--sp-2)", flexWrap: "wrap" }}>
-          <Button type="button" variant="outline" size="sm" onClick={onOpenPanel}>
-            Manage connection
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <a href={data.manageUrl} target="_blank" rel="noreferrer">
-              Manage on GitHub
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          </Button>
-        </div>
-      )}
+        <ConnectionDetails data={data} />
+      </SettingRow>
     </div>
   );
 }
