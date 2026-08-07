@@ -393,9 +393,6 @@ describe("App routes", () => {
   });
 
   it.each([
-    "/m/work",
-    "/m/now",
-    "/m/retired",
     "/user-settings",
     "/settings/github",
     "/settings/team",
@@ -418,6 +415,14 @@ describe("App routes", () => {
       /mobile work|settings account|settings github|settings computers|settings setup|team page|profile tab|runtime tab|resources tab/,
     );
     expect(window.location.pathname).toBe(path);
+  });
+
+  it.each(["/m/work", "/m/now", "/m/retired"])("recovers the unmatched mobile route %s", async (path) => {
+    setViewportWidth(390);
+    const content = await renderAppAt(path);
+
+    expect(content).toContain("mobile work");
+    expect(window.location.pathname).toBe("/m/chat");
   });
 
   it("opens the mobile experience on prod", async () => {
@@ -463,6 +468,12 @@ describe("App routes", () => {
 
     setViewportWidth(390);
     expect(await renderAppAt("/m/chat")).toContain("workspace page");
+    await act(async () => root?.unmount());
+    document.body.innerHTML = "";
+
+    setViewportWidth(390);
+    expect(await renderAppAt("/m/retired")).toContain("workspace page");
+    expect(window.location.pathname).toBe("/");
     await act(async () => root?.unmount());
     document.body.innerHTML = "";
 

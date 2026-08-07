@@ -482,6 +482,7 @@ export function App() {
                   <Route path="m/chat" element={<MobileWorkPage />} />
                   <Route path="m/team" element={<MobileTeamPage />} />
                   <Route path="m/me" element={<MobileMePage />} />
+                  <Route path="m/*" element={<Navigate to="/m/chat" replace />} />
                 </Route>
                 <Route
                   element={

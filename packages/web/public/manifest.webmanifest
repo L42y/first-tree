@@ -2,7 +2,7 @@
   "name": "First Tree",
   "short_name": "First Tree",
   "description": "First Tree mobile chat surface for agent teams.",
-  "id": "/m/chat",
+  "id": "/m/now",
   "start_url": "/m/chat",
   "scope": "/",
   "display": "standalone",
