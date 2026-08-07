@@ -1341,7 +1341,8 @@ After selection, the projected Skill uses:
 ```text
 first-tree --json context snapshot --candidate CANDIDATE
 first-tree --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
-first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed
+first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed \
+  [--github-login LOGIN]
 first-tree --json context write-status --team TEAM --plan-anchor DIGEST
 first-tree --json context write-finish --team TEAM --operation OPERATION
 ```

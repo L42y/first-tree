@@ -88,6 +88,23 @@ beforeEach(() => {
 });
 
 describe("context write-worktree recovery", () => {
+  it("forwards the current GitHub login into the live preflight", async () => {
+    await runContextWriteWorktree(startContext({ githubLogin: "writer" }));
+
+    expect(mocks.preflight).toHaveBeenCalledWith(
+      expect.any(Object),
+      {
+        teamId: "org-acme",
+        snapshotPath: "/tmp/snapshot",
+        requesterGithubLogin: "writer",
+      },
+      undefined,
+      undefined,
+      expect.objectContaining({ fetchCurrentCommit: expect.any(Function) }),
+    );
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the same durable operation after result output is lost and the plan receipt was consumed", async () => {
     mocks.inspect.mockReturnValueOnce(null).mockReturnValueOnce(active);
     mocks.result.mockImplementationOnce(() => {
@@ -114,8 +131,8 @@ describe("context write-worktree recovery", () => {
   });
 });
 
-function startContext(): CommandContext {
-  return context({ snapshot: "/tmp/snapshot", planAnchor, confirmed: true });
+function startContext(overrides: Record<string, unknown> = {}): CommandContext {
+  return context({ snapshot: "/tmp/snapshot", planAnchor, confirmed: true, ...overrides });
 }
 
 function context(options: Record<string, unknown>): CommandContext {
