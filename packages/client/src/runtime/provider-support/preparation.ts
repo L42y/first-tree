@@ -48,6 +48,16 @@ export type PrepareManagedSessionParams = {
   payloadResolved: boolean;
   contextTree: ContextTreeCoordinates;
   /**
+   * Optional provider-owned checkpoint after chat-context fetch and before
+   * Managed Skills projection. Callers use this for lifecycle fences (e.g. Pi
+   * generation) so a suspended generation cannot enter reconcile / workspace
+   * mutation after an in-flight fetch settles.
+   */
+  beforeProjection?: (args: {
+    workspace: string;
+    chatContext: ChatContext | undefined;
+  }) => void | Promise<void>;
+  /**
    * Optional provider-owned work after Managed Skills settle and before the
    * shared briefing / bootstrap / init-complete sentinel. Callers use this for
    * lifecycle fences (e.g. Pi generation checkpoints) and landing-campaign
@@ -194,14 +204,15 @@ export async function projectManagedWorkspace(
  *
  * 1. acquire the per-agent home;
  * 2. best-effort raw chat context (degrades to none on failure);
- * 3. declare the payload's source repos;
- * 4. settle Managed Skills — this gates provider admission, so a reconcile
+ * 3. optional provider-owned `beforeProjection` work (lifecycle fence);
+ * 4. declare the payload's source repos;
+ * 5. settle Managed Skills — this gates provider admission, so a reconcile
  *    that cannot prove discovery safe throws here and leaves the delivery as
  *    unacked recovery debt;
- * 5. optional provider-owned `beforeBriefing` work (e.g. landing sandbox env);
- * 6. build the briefing from *that same* reconcile result;
- * 7. run the shared agent bootstrap;
- * 8. mark the workspace init-complete.
+ * 6. optional provider-owned `beforeBriefing` work (e.g. landing sandbox env);
+ * 7. build the briefing from *that same* reconcile result;
+ * 8. run the shared agent bootstrap;
+ * 9. mark the workspace init-complete.
  *
  * Preparation failure remains pre-provider: no provider process/session is
  * opened here, and no new ACK authority is created.
@@ -215,11 +226,16 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     payload,
     payloadResolved,
     contextTree,
+    beforeProjection,
     beforeBriefing,
   } = params;
 
   const workspace = acquireAgentHome(workspaceRoot);
   const chatContext = await fetchChatContextOrLog(sessionCtx);
+
+  if (beforeProjection) {
+    await beforeProjection({ workspace, chatContext });
+  }
 
   const projected = await projectManagedWorkspace({
     sessionCtx,

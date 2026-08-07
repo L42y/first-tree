@@ -8,8 +8,12 @@ import { INIT_COMPLETE_SENTINEL_REL } from "../runtime/workspace.js";
 import { mockCtxPlumbing } from "./test-helpers.js";
 
 /**
- * Regression: a suspended Pi generation must not cross the post-skills /
- * pre-briefing fence into bootstrap + init-complete sentinel writes.
+ * Regression: a suspended Pi generation must not cross managed-session
+ * preparation fences into skills reconcile, bootstrap, or init-complete.
+ *
+ * Covers both:
+ * - post-chat-context / pre-projection (suspend while fetch is pending)
+ * - post-skills / pre-briefing (suspend mid-reconcile)
  *
  * `start()` catches `PiLifecycleCancelledError` and retries delivery rather
  * than rethrowing — assert admission side effects stayed closed.
@@ -42,7 +46,13 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
     rmSync(workspaceRoot, { recursive: true, force: true });
   });
 
-  function makeCtx(logs: string[]): SessionContext {
+  function makeCtx(
+    logs: string[],
+    sdkOverrides?: {
+      getChatDetail?: SessionContext["sdk"]["getChatDetail"];
+      listChatParticipants?: SessionContext["sdk"]["listChatParticipants"];
+    },
+  ): SessionContext {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
     return {
       agent: {
@@ -59,6 +69,7 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
         sendMessage,
         getChatDetail: async () => ({ id: "chat-pi", title: "t", topic: null, description: null }),
         listChatParticipants: async () => [],
+        ...sdkOverrides,
       } as unknown as SessionContext["sdk"],
       chatId: "chat-pi",
       log: (m: string) => logs.push(m),
@@ -92,6 +103,59 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
       retried,
     };
   }
+
+  it("cancels during chat-context fetch before skills reconcile begins", async () => {
+    const logs: string[] = [];
+    let releaseFetch: (() => void) | undefined;
+    let markFetchStarted!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      markFetchStarted = resolve;
+    });
+
+    vi.mocked(reconcileManagedSkillsForConfig).mockImplementation(async () => {
+      throw new Error("reconcileManagedSkillsForConfig must not run after suspend-during-fetch");
+    });
+
+    const handler = createPiHandler({
+      workspaceRoot,
+      runtimeProvider: "pi",
+      piBinaryResolver: () => ({ ok: true as const, binary: "/usr/bin/pi", version: "0.0.0" }),
+      providerProcessSupervisor: {
+        spawn: () => {
+          throw new Error("provider must not spawn during this fence test");
+        },
+      },
+    });
+
+    const token = makeToken();
+    const started = handler.start(
+      makeMessage(),
+      makeCtx(logs, {
+        getChatDetail: async () => {
+          markFetchStarted();
+          await new Promise<void>((r) => {
+            releaseFetch = r;
+          });
+          return { id: "chat-pi", title: "t", topic: null, description: null };
+        },
+      }),
+      token,
+    );
+    await fetchGate;
+    // endLifecycle bumps generation without joining the in-flight preparation.
+    await handler.suspend("test_suspend");
+    releaseFetch?.();
+
+    const result = await started;
+    expect(result).toMatchObject({ route: { kind: "owned", mode: "processing" } });
+    expect(token.retried).toContain("pi_turn_cancelled");
+
+    expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
+    expect(ensureAgentBootstrap).not.toHaveBeenCalled();
+    expect(existsSync(join(workspaceRoot, INIT_COMPLETE_SENTINEL_REL))).toBe(false);
+
+    await handler.shutdown();
+  });
 
   it("cancels after skills and before bootstrap/sentinel when lifecycle ends mid-reconcile", async () => {
     const logs: string[] = [];

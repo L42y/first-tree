@@ -1833,6 +1833,12 @@ export const createPiHandler: HandlerFactory = (config) => {
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
       },
+      beforeProjection: async () => {
+        // Lifecycle fence after chat-context fetch and before Managed Skills
+        // projection — suspend during the fetch must not enter reconcile /
+        // workspace mutation when the fetch later settles.
+        assertLifecycleGeneration(generation, "prepare_before_projection");
+      },
       beforeBriefing: async () => {
         // Lifecycle fence after Managed Skills and before briefing/bootstrap/
         // init sentinel — a suspended generation must not write admission side

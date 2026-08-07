@@ -396,6 +396,86 @@ describe("prepareManagedSession", () => {
     expect(markWorkspaceInitComplete).toHaveBeenCalledTimes(1);
   });
 
+  it("runs beforeProjection after chat context and before skills projection", async () => {
+    const prepareManagedSession = await loadPrepare();
+    const beforeProjection = vi.fn(async () => {
+      callOrder.push("beforeProjection");
+    });
+    const beforeBriefing = vi.fn(async () => {
+      callOrder.push("beforeBriefing");
+    });
+
+    await prepareManagedSession({
+      sessionCtx: sessionCtx(),
+      workspaceRoot,
+      runtimeProvider: "cursor",
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      beforeProjection,
+      beforeBriefing,
+    });
+
+    expect(beforeProjection).toHaveBeenCalledTimes(1);
+    expect(beforeBriefing).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual([
+      "acquire",
+      "chatContext",
+      "beforeProjection",
+      "sourceRepos",
+      "skills",
+      "beforeBriefing",
+      "briefing",
+      "sourceNames:null",
+      "bootstrap",
+      "sentinel",
+    ]);
+  });
+
+  it("leaves skills/briefing/bootstrap/sentinel untouched when beforeProjection throws", async () => {
+    const prepareManagedSession = await loadPrepare();
+
+    await expect(
+      prepareManagedSession({
+        sessionCtx: sessionCtx(),
+        workspaceRoot,
+        runtimeProvider: "cursor",
+        runtimeConfig: null,
+        payload: {
+          kind: "cursor",
+          prompt: { append: "" },
+          model: "",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+        },
+        payloadResolved: false,
+        contextTree: { path: null, repoUrl: null, branch: null },
+        beforeProjection: async () => {
+          callOrder.push("beforeProjection");
+          throw new Error("lifecycle cancelled at prepare_before_projection");
+        },
+      }),
+    ).rejects.toThrow(/lifecycle cancelled at prepare_before_projection/);
+
+    expect(callOrder).toEqual(["acquire", "chatContext", "beforeProjection"]);
+    expect(declaredSourceRepos).not.toHaveBeenCalled();
+    expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
+    expect(buildAgentBriefing).not.toHaveBeenCalled();
+    expect(ensureAgentBootstrap).not.toHaveBeenCalled();
+    expect(markWorkspaceInitComplete).not.toHaveBeenCalled();
+  });
+
   it("runs beforeBriefing after skills and before briefing/bootstrap/sentinel", async () => {
     const prepareManagedSession = await loadPrepare();
     const beforeBriefing = vi.fn(async () => {

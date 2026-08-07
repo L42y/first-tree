@@ -754,10 +754,13 @@ describe("runtime provider architecture guard", () => {
     /**
      * AST-level module references: ImportDeclaration (including bare
      * side-effect), ExportDeclaration re-exports, dynamic `import()`,
-     * `import("…")` type queries (`ImportTypeNode`), and external
-     * `import x = require("…")` (`ImportEqualsDeclaration`).
-     * Non-literal / unclassifiable forms are recorded so the production scan
-     * fails closed instead of silently skipping them.
+     * `import("…")` type queries (`ImportTypeNode`), external
+     * `import x = require("…")` (`ImportEqualsDeclaration`), and executable
+     * CommonJS loader calls — `require("…")`, immediate
+     * `createRequire(…)("…")`, and aliased `const req = createRequire(…); req("…")`.
+     * Direct binder calls are classified; `req.resolve(…)` package lookups are
+     * not treated as module-edge loads. Non-literal / unclassifiable forms are
+     * recorded so the production scan fails closed instead of silently skipping them.
      */
     function extractModuleReferences(source: string): {
       literalSpecifiers: string[];
@@ -766,6 +769,50 @@ describe("runtime provider architecture guard", () => {
       const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
       const literalSpecifiers: string[] = [];
       let hasUnresolvableModuleReference = false;
+
+      // Names that bind `createRequire` (import rename / local alias).
+      const createRequireNames = new Set<string>(["createRequire"]);
+      // Identifiers holding the function returned by `createRequire(...)`.
+      const requireBinders = new Set<string>();
+
+      function recordLoaderSpecifier(arg: ts.Expression | undefined): void {
+        if (!arg) {
+          hasUnresolvableModuleReference = true;
+          return;
+        }
+        const text = literalModuleSpecifierText(arg);
+        if (text !== null) literalSpecifiers.push(text);
+        else hasUnresolvableModuleReference = true;
+      }
+
+      function isCreateRequireCallee(expr: ts.Expression): boolean {
+        return ts.isIdentifier(expr) && createRequireNames.has(expr.text);
+      }
+
+      function isCreateRequireCall(expr: ts.Expression): boolean {
+        return ts.isCallExpression(expr) && isCreateRequireCallee(expr.expression);
+      }
+
+      // Pass 1: collect createRequire import aliases and binder identifiers.
+      function collectBinders(node: ts.Node): void {
+        if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
+          for (const el of node.importClause.namedBindings.elements) {
+            if ((el.propertyName?.text ?? el.name.text) === "createRequire") {
+              createRequireNames.add(el.name.text);
+            }
+          }
+        } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && isCreateRequireCall(node.initializer)) {
+          requireBinders.add(node.name.text);
+        } else if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left) &&
+          isCreateRequireCall(node.right)
+        ) {
+          requireBinders.add(node.left.text);
+        }
+        ts.forEachChild(node, collectBinders);
+      }
 
       function visit(node: ts.Node): void {
         if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
@@ -799,10 +846,23 @@ describe("runtime provider architecture guard", () => {
             if (text !== null) literalSpecifiers.push(text);
             else hasUnresolvableModuleReference = true;
           }
+        } else if (ts.isCallExpression(node)) {
+          const callee = node.expression;
+          // Immediate `createRequire(…)("spec")` — not `req.resolve("spec")`.
+          if (isCreateRequireCall(callee)) {
+            recordLoaderSpecifier(node.arguments[0]);
+          } else if (
+            ts.isIdentifier(callee) &&
+            (callee.text === "require" || requireBinders.has(callee.text))
+          ) {
+            // Free `require("spec")` or aliased `const req = createRequire(…); req("spec")`.
+            recordLoaderSpecifier(node.arguments[0]);
+          }
         }
         ts.forEachChild(node, visit);
       }
 
+      collectBinders(sourceFile);
       visit(sourceFile);
       return { literalSpecifiers, hasUnresolvableModuleReference };
     }
@@ -889,6 +949,32 @@ describe("runtime provider architecture guard", () => {
       "../../runtime/brand-new-owner.js",
     );
 
+    // Immediate createRequire(…)("…") CommonJS load must still be classified.
+    expectForbiddenRuntimeSpec(
+      `import { createRequire } from "node:module";
+       createRequire(import.meta.url)("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Aliased createRequire binder call must still be classified.
+    expectForbiddenRuntimeSpec(
+      `import { createRequire } from "node:module";
+       const req = createRequire(import.meta.url);
+       req("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Renamed createRequire import + binder call must still be classified.
+    expectForbiddenRuntimeSpec(
+      `import { createRequire as cr } from "node:module";
+       const load = cr(import.meta.url);
+       load("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
+    // Free require("…") CommonJS load must still be classified.
+    expectForbiddenRuntimeSpec(`require("../../runtime/brand-new-owner.js");`, "../../runtime/brand-new-owner.js");
+
     // Aliased / multiline static import continues to fail closed.
     const multilineFixture = `
       import {
@@ -911,6 +997,24 @@ describe("runtime provider architecture guard", () => {
     const unresolvableEquals = extractModuleReferences(`import Owner = require(someVar);`);
     expect(unresolvableEquals.hasUnresolvableModuleReference).toBe(true);
     expect(unresolvableEquals.literalSpecifiers).toEqual([]);
+
+    // Non-literal createRequire binder call → fail closed.
+    const unresolvableCjs = extractModuleReferences(`
+      import { createRequire } from "node:module";
+      const req = createRequire(import.meta.url);
+      req(someVar);
+    `);
+    expect(unresolvableCjs.hasUnresolvableModuleReference).toBe(true);
+    expect(unresolvableCjs.literalSpecifiers).toEqual(["node:module"]);
+
+    // Package-resolution `.resolve(...)` is not a direct module-edge load.
+    const resolveOnly = extractModuleReferences(`
+      import { createRequire } from "node:module";
+      const req = createRequire(import.meta.url);
+      req.resolve("../../runtime/brand-new-owner.js");
+    `);
+    expect(resolveOnly.hasUnresolvableModuleReference).toBe(false);
+    expect(resolveOnly.literalSpecifiers).toEqual(["node:module"]);
 
     const mustUseProviderSupport = [
       "handlers/claude-code.ts",
