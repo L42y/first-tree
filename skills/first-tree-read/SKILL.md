@@ -286,11 +286,15 @@ Leave one blank line between the preceding answer and the note. Write the note
 as one Markdown blockquote with exactly three **logical Markdown lines** and
 information levels: what the note explains, the effect plus one objective
 sentence naming the concrete impact, and the inspectable source. Put the fixed
-effect label at the start of the middle line and keep the colon inside the bold
-text. In English, use a half-width colon followed by one space, for example
-bold `Options narrowed:`. In Chinese, use a full-width colon with no following
-space, for example bold `收窄可选范围：`. Natural wrapping at narrow display
-widths is expected; never truncate or weaken the impact or source merely to
+effect label at the start of the middle line.
+In English, keep the colon inside the bold text and follow it with one space,
+for example bold `Options narrowed:`.
+In Chinese, put the full-width colon immediately after the bold text with no
+space before the sentence, for example `**收窄可选范围**：`. The Chinese colon
+sits outside the bold because Markdown cannot close `**` when the closing
+delimiter is preceded by punctuation and followed by a CJK character, so the
+colon-inside form renders as literal asterisks.
+Natural wrapping at narrow display widths is expected; never truncate or weaken the impact or source merely to
 keep three physical display lines. End the first two logical lines with a
 backslash so Markdown renders a portable hard line break without trailing
 whitespace; do not use HTML. For example:
@@ -315,15 +319,16 @@ For an unresolved conflict in a Chinese response, the complete note looks like:
 
 ```markdown
 > **Context Tree 如何影响本次工作**\
-> **发现约束冲突：**固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\
-> **Context Tree 来源：**[发布安全门槛](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/operations/release/safety-gates.md)
+> **发现约束冲突**：固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\
+> **Context Tree 来源**：[发布安全门槛](https://github.com/example/context-tree/blob/0123456789abcdef0123456789abcdef01234567/operations/release/safety-gates.md)
 ```
 
 Show one to three sources on the final line. In English, use bold
 `Context Tree source:` for one and bold `Context Tree sources:` for more than
-one. In Chinese, use bold `Context Tree 来源：` for either count, with no space
-before the first link. In English, follow the label with one space. Separate
-multiple Markdown links with ` · ` in either language.
+one. In Chinese, use bold `Context Tree 来源` followed by a full-width colon
+outside the bold, with no space before the first link. In English, follow the
+label with one space. Separate multiple Markdown links with ` · ` in either
+language.
 Build each readable label from the node's frontmatter title plus the relevant
 heading when that adds meaning, for example `Rollout Policy · Expansion gates`.
 For a root `NODE.md`, use the root title or the relevant heading — never display

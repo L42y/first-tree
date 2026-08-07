@@ -92,9 +92,13 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("Match the note's language to the surrounding final response");
     expect(skill).toContain("one Markdown blockquote with exactly three **logical Markdown lines**");
     expect(skill).toMatch(/Natural wrapping at narrow display\s+widths is expected; never truncate/);
-    expect(skill).toContain("keep the colon inside the bold\ntext");
+    expect(skill).toContain("In English, keep the colon inside the bold text");
+    // The Chinese colon must stay outside the bold: Markdown cannot close `**`
+    // before a CJK character, so the old form rendered literal asterisks.
+    expect(skill).toContain("put the full-width colon immediately after the bold text");
+    expect(skill).not.toContain("**发现约束冲突：**");
     expect(skill).toContain("bold `Options narrowed:`");
-    expect(skill).toContain("bold `收窄可选范围：`");
+    expect(skill).toContain("`**收窄可选范围**：`");
     expect(skill).toContain("Leave one blank line between the preceding answer and the note");
     expect(skill).toMatch(
       /a\s+backslash so Markdown renders a\s+portable hard line break without trailing\s+whitespace; do not use HTML/,
@@ -110,7 +114,7 @@ describe("first-tree-read floor contract", () => {
     );
     expect(skill).toContain("For `conflicted`, name the two incompatible constraints and the\nunresolved tradeoff");
     expect(skill).toContain("do not imply that the plan changed or the conflict was\nresolved");
-    expect(skill).toContain("In Chinese, use bold `Context Tree 来源：` for either count, with no space");
+    expect(skill).toContain("In Chinese, use bold `Context Tree 来源` followed by a full-width colon");
     expect(skill).toContain("For a root `NODE.md`, use the root title or the relevant heading — never display\n`Node`");
     expect(skill).toContain("When two cited labels would be identical, prefix the nearest meaningful\nparent title");
     expect(skill).toContain("Never link to a mutable branch");
@@ -163,9 +167,9 @@ describe("first-tree-read floor contract", () => {
     const conflictBlock = markdownBlocks.find((block) => block.includes("Context Tree 如何影响本次工作")) ?? "";
     expect(conflictBlock.split("\n")).toHaveLength(3);
     expect(conflictBlock).toContain(
-      "**发现约束冲突：**固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定",
+      "**发现约束冲突**：固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定",
     );
-    expect(conflictBlock).toContain("**Context Tree 来源：**[发布安全门槛]");
+    expect(conflictBlock).toContain("**Context Tree 来源**：[发布安全门槛]");
   });
 
   it("keeps version metadata aligned", () => {

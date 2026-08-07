@@ -783,8 +783,8 @@ describe("first-tree-read metrics pass criteria", () => {
     const body = `需要你决定如何处理冲突。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`;
+> **发现约束冲突**：固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`;
     const expectation: ImpactNoteExpectation = {
       effect: "conflicted",
       language: "zh",
@@ -846,12 +846,12 @@ describe("first-tree-read metrics pass criteria", () => {
 
   it.each([
     {
-      effectLine: "> **发现约束冲突：** 固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
-      sourceLine: `> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
+      effectLine: "> **发现约束冲突**： 固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
+      sourceLine: `> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
     },
     {
-      effectLine: "> **发现约束冲突：**固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
-      sourceLine: `> **Context Tree 来源：** [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
+      effectLine: "> **发现约束冲突**：固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
+      sourceLine: `> **Context Tree 来源**： [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
     },
   ])("rejects a space after either Chinese scaffolding colon", ({ effectLine, sourceLine }) => {
     const body = `需要你决定如何处理冲突。
@@ -964,8 +964,8 @@ ${source}`),
         assistantTextEvent(`不能直接发布。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+> **发现约束冲突**：固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
       ],
       expectation,
     );
@@ -974,8 +974,8 @@ ${source}`),
         assistantTextEvent(`方案如下。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**发布日期与安全审计发生冲突，方案已调整并已解决。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+> **发现约束冲突**：发布日期与安全审计发生冲突，方案已调整并已解决。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
       ],
       expectation,
     );

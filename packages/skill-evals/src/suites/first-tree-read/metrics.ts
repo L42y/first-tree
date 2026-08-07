@@ -197,16 +197,19 @@ function parseImpactNotes(texts: readonly string[]): readonly ImpactNoteObservat
       const thirdLine = lines[index + 2] ?? "";
       const effectMatch =
         language === "zh"
-          ? /^> \*\*([^*]+)：\*\*([^\s].*)\\$/u.exec(secondLine)
+          ? /^> \*\*([^*]+)\*\*：([^\s].*)\\$/u.exec(secondLine)
           : /^> \*\*([^*]+):\*\* (.+)\\$/u.exec(secondLine);
       const sourcePrefix =
-        language === "zh" ? /^> \*\*Context Tree 来源：\*\*/u : /^> \*\*Context Tree (source|sources):\*\* /u;
+        language === "zh" ? /^> \*\*Context Tree 来源\*\*：/u : /^> \*\*Context Tree (source|sources):\*\* /u;
       const sourcePrefixMatch = sourcePrefix.exec(thirdLine);
       const markdownLinks = [...thirdLine.matchAll(/\[([^\]\n]+)\]\(([^)\s]+)\)/gu)];
       const exactLinks = markdownLinks.filter((match) => parseExactCredentialFreeSourceLink(match[2] ?? "") !== null);
       const expectedEnglishSource = markdownLinks.length === 1 ? "source" : "sources";
-      const sourceLabel = language === "zh" ? "Context Tree 来源：" : `Context Tree ${expectedEnglishSource}:`;
-      const sourceSeparator = language === "zh" ? "" : " ";
+      // Chinese keeps the full-width colon OUTSIDE the bold: Markdown cannot
+      // close `**` when the delimiter is preceded by punctuation and followed
+      // by a CJK character, so `**…：**文字` would render literal asterisks.
+      const sourceLabel = language === "zh" ? "Context Tree 来源" : `Context Tree ${expectedEnglishSource}:`;
+      const sourceSeparator = language === "zh" ? "：" : " ";
       const expectedSourceLine = `> **${sourceLabel}**${sourceSeparator}${markdownLinks.map((match) => match[0]).join(" · ")}`;
       const sourceScaffoldingOk =
         titleMatch !== null &&
