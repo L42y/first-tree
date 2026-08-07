@@ -809,6 +809,30 @@ describe("runtime provider architecture guard", () => {
         return false;
       }
 
+      /** Any `*.createRequire` / `*["createRequire"]` access, tracked or not. */
+      function isCreateRequirePropertyAccess(expr: ts.Expression): boolean {
+        if (ts.isPropertyAccessExpression(expr) && expr.name.text === "createRequire") return true;
+        if (
+          ts.isElementAccessExpression(expr) &&
+          expr.argumentExpression &&
+          ts.isStringLiteralLike(expr.argumentExpression) &&
+          expr.argumentExpression.text === "createRequire"
+        ) {
+          return true;
+        }
+        return false;
+      }
+
+      /**
+       * Classify a `*.createRequire` property/element access:
+       * - tracked `import * as ns from "node:module"` receiver → supported
+       * - any other receiver → unsupported escape (fail closed)
+       */
+      function classifyCreateRequirePropertyAccess(expr: ts.Expression): "tracked" | "untracked" | false {
+        if (!isCreateRequirePropertyAccess(expr)) return false;
+        return isNamespaceCreateRequireProp(expr) ? "tracked" : "untracked";
+      }
+
       /**
        * `true` = known createRequire callee; `"unresolvable"` = `*.createRequire`
        * form that is not a tracked node:module namespace (fail closed);
@@ -816,16 +840,9 @@ describe("runtime provider architecture guard", () => {
        */
       function classifyCreateRequireCallee(expr: ts.Expression): true | false | "unresolvable" {
         if (ts.isIdentifier(expr) && createRequireNames.has(expr.text)) return true;
-        if (isNamespaceCreateRequireProp(expr)) return true;
-        if (ts.isPropertyAccessExpression(expr) && expr.name.text === "createRequire") return "unresolvable";
-        if (
-          ts.isElementAccessExpression(expr) &&
-          expr.argumentExpression &&
-          ts.isStringLiteralLike(expr.argumentExpression) &&
-          expr.argumentExpression.text === "createRequire"
-        ) {
-          return "unresolvable";
-        }
+        const prop = classifyCreateRequirePropertyAccess(expr);
+        if (prop === "tracked") return true;
+        if (prop === "untracked") return "unresolvable";
         return false;
       }
 
@@ -929,7 +946,11 @@ describe("runtime provider architecture guard", () => {
           } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
             createRequireNames.add(name);
           } else if (isNamespaceCreateRequireProp(init)) {
+            // Tracked namespace factory property alias: `const cr = ns.createRequire`
             createRequireNames.add(name);
+          } else if (isCreateRequirePropertyAccess(init)) {
+            // Untracked receiver property alias (default import / dynamic import / unknown)
+            hasUnresolvableModuleReference = true;
           } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
             hasUnresolvableModuleReference = true;
           }
@@ -946,6 +967,8 @@ describe("runtime provider architecture guard", () => {
             createRequireNames.add(name);
           } else if (isNamespaceCreateRequireProp(init)) {
             createRequireNames.add(name);
+          } else if (isCreateRequirePropertyAccess(init)) {
+            hasUnresolvableModuleReference = true;
           } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
             hasUnresolvableModuleReference = true;
           }
@@ -1021,11 +1044,14 @@ describe("runtime provider architecture guard", () => {
           if (!isAllowedBinderOrFactoryUse(node)) {
             hasUnresolvableModuleReference = true;
           }
-        } else if (
-          (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) &&
-          isNamespaceCreateRequireProp(node)
-        ) {
-          if (!isAllowedNamespaceCreateRequireUse(node)) {
+        } else if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+          const prop = classifyCreateRequirePropertyAccess(node);
+          if (prop === "tracked") {
+            if (!isAllowedNamespaceCreateRequireUse(node)) {
+              hasUnresolvableModuleReference = true;
+            }
+          } else if (prop === "untracked") {
+            // Untracked receiver `*.createRequire` — direct call or property alias.
             hasUnresolvableModuleReference = true;
           }
         }
@@ -1207,6 +1233,26 @@ describe("runtime provider architecture guard", () => {
       req("../../runtime/brand-new-owner.js");
     `);
     expect(unresolvableNsCreateRequire.hasUnresolvableModuleReference).toBe(true);
+
+    // Default-import property alias is untracked → fail closed (not namespace import).
+    const defaultImportPropAlias = extractModuleReferences(`
+      import moduleApi from "node:module";
+      const cr = moduleApi.createRequire;
+      const load = cr(import.meta.url);
+      load("../../runtime/brand-new-owner.js");
+    `);
+    expect(defaultImportPropAlias.hasUnresolvableModuleReference).toBe(true);
+    expect(defaultImportPropAlias.literalSpecifiers).toEqual(["node:module"]);
+
+    // Dynamic-import namespace property alias is untracked → fail closed.
+    const dynamicImportPropAlias = extractModuleReferences(`
+      const moduleApi = await import("node:module");
+      const cr = moduleApi.createRequire;
+      const load = cr(import.meta.url);
+      load("../../runtime/brand-new-owner.js");
+    `);
+    expect(dynamicImportPropAlias.hasUnresolvableModuleReference).toBe(true);
+    expect(dynamicImportPropAlias.literalSpecifiers).toEqual(["node:module"]);
 
     // Free `require` alias must still classify the literal load.
     expectForbiddenRuntimeSpec(
