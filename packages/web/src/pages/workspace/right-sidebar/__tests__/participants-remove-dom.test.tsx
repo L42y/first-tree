@@ -49,30 +49,82 @@ vi.mock("../../../../components/avatar.js", () => ({
   Avatar: ({ name }: { name: string }) => <span>{name.slice(0, 1)}</span>,
 }));
 
-vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
-  AgentStatusPanel: ({
-    agents,
-    canRemove,
-    onRemove,
-  }: {
-    agents: ChatParticipantDetail[];
-    canRemove?: (agentId: string) => boolean;
-    onRemove?: (agent: ChatParticipantDetail) => void;
-  }) => (
-    <div data-testid="agent-status-panel">
-      {agents.map((agent) => (
-        <div key={agent.agentId}>
-          <span>{agent.displayName}</span>
-          {canRemove?.(agent.agentId) ? (
-            <button type="button" aria-label={removeLabel(agent.displayName)} onClick={() => onRemove?.(agent)}>
-              Remove
-            </button>
+/** Lightweight stand-in: open details, then optional Remove — mirrors card flow. */
+vi.mock("../../../../components/chat/agent-hovercard.js", async () => {
+  const React = await import("react");
+  return {
+    removeFromChatAriaLabel: (displayName: string) => removeLabel(displayName),
+    AgentHovercard: ({
+      name,
+      removeFromChat,
+      children,
+    }: {
+      name: string;
+      removeFromChat?: { onRequest: () => void };
+      children: React.ReactNode;
+    }) => {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <div data-testid="agent-hovercard">
+          <button type="button" aria-label={`Show details for ${name}`} onClick={() => setOpen(true)}>
+            {children}
+          </button>
+          {open ? (
+            <div role="dialog">
+              {removeFromChat ? (
+                <button
+                  type="button"
+                  aria-label={removeLabel(name)}
+                  onClick={() => {
+                    setOpen(false);
+                    removeFromChat.onRequest();
+                  }}
+                >
+                  Remove from chat
+                </button>
+              ) : null}
+            </div>
           ) : null}
         </div>
-      ))}
-    </div>
-  ),
-}));
+      );
+    },
+  };
+});
+
+vi.mock("../../../../components/chat/agent-status-panel.js", async () => {
+  const { AgentHovercard } = await import("../../../../components/chat/agent-hovercard.js");
+  return {
+    AgentStatusPanel: ({
+      chatId,
+      agents,
+      canRemove,
+      onRemove,
+    }: {
+      chatId: string;
+      agents: ChatParticipantDetail[];
+      canRemove?: (agentId: string) => boolean;
+      onRemove?: (agent: ChatParticipantDetail) => void;
+    }) => (
+      <div data-testid="agent-status-panel">
+        {agents.map((agent) => (
+          <div key={agent.agentId}>
+            <AgentHovercard
+              agentId={agent.agentId}
+              chatId={chatId}
+              name={agent.displayName}
+              participantType="agent"
+              removeFromChat={
+                canRemove?.(agent.agentId) && onRemove ? { onRequest: () => onRemove(agent) } : undefined
+              }
+            >
+              <span>{agent.displayName}</span>
+            </AgentHovercard>
+          </div>
+        ))}
+      </div>
+    ),
+  };
+});
 
 /** Presence-like Dialog: once opened, keep children mounted after close so
  *  post-success exit races (second Confirm) are deterministic in happy-dom. */
@@ -150,6 +202,11 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
   return [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
 }
 
+async function openCardRemove(displayName: string): Promise<void> {
+  await click(buttonByLabel(`Show details for ${displayName}`));
+  await click(buttonByLabel(removeLabel(displayName)));
+}
+
 async function renderSection(opts: {
   participants: ChatParticipantDetail[];
   readOnly?: boolean;
@@ -184,7 +241,7 @@ afterEach(async () => {
 });
 
 describe("ParticipantsSection remove affordance", () => {
-  it("shows Remove for other agents and humans, not for self, with unique aria-labels", async () => {
+  it("offers Remove only inside the identity card for other agents/humans, never self or roster rows", async () => {
     await renderSection({
       participants: [
         participant("agent-1", "agent", "Byte"),
@@ -194,8 +251,18 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
+    // Roster itself never surfaces a Remove control.
+    expect(buttonByLabel(removeLabel("Byte"))).toBeNull();
+    expect(buttonByLabel(removeLabel("Teammate"))).toBeNull();
+    expect(buttonByLabel(removeLabel("Me"))).toBeNull();
+
+    await click(buttonByLabel("Show details for Byte"));
     expect(buttonByLabel(removeLabel("Byte"))).not.toBeNull();
+
+    await click(buttonByLabel("Show details for Teammate"));
     expect(buttonByLabel(removeLabel("Teammate"))).not.toBeNull();
+
+    await click(buttonByLabel("Show details for Me"));
     expect(buttonByLabel(removeLabel("Me"))).toBeNull();
   });
 
@@ -209,7 +276,9 @@ describe("ParticipantsSection remove affordance", () => {
       readOnly: true,
     });
     await flush();
+    await click(buttonByLabel("Show details for Byte"));
     expect(buttonByLabel(removeLabel("Byte"))).toBeNull();
+    await click(buttonByLabel("Show details for Teammate"));
     expect(buttonByLabel(removeLabel("Teammate"))).toBeNull();
   });
 
@@ -221,7 +290,9 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
+    await click(buttonByLabel("Show details for Byte"));
     expect(buttonByLabel(removeLabel("Byte"))).toBeNull();
+    await click(buttonByLabel("Show details for Teammate"));
     expect(buttonByLabel(removeLabel("Teammate"))).toBeNull();
   });
 
@@ -233,13 +304,13 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonByLabel(removeLabel("Byte")));
+    await openCardRemove("Byte");
     expect(document.body.textContent).toContain('Remove "Byte"?');
 
     await click(buttonByText("Cancel"));
     expect(meChatMocks.removeMeChatParticipant).not.toHaveBeenCalled();
 
-    await click(buttonByLabel(removeLabel("Byte")));
+    await openCardRemove("Byte");
     await click(buttonByLabel("Confirm remove participant"));
     await flush();
 
@@ -263,7 +334,7 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonByLabel(removeLabel("Byte")));
+    await openCardRemove("Byte");
     const confirm = buttonByLabel("Confirm remove participant");
     expect(confirm).not.toBeNull();
 
@@ -297,7 +368,7 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonByLabel(removeLabel("Byte")));
+    await openCardRemove("Byte");
     expect(document.body.textContent).toContain('Remove "Byte"?');
     expect(document.body.textContent).not.toContain('Remove ""?');
 
@@ -336,7 +407,7 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonByLabel(removeLabel("Byte")));
+    await openCardRemove("Byte");
     await click(buttonByLabel("Confirm remove participant"));
     expect(meChatMocks.removeMeChatParticipant).toHaveBeenCalledTimes(1);
 
@@ -370,7 +441,7 @@ describe("ParticipantsSection remove affordance", () => {
     });
     await flush();
 
-    await click(buttonByLabel(removeLabel("Teammate")));
+    await openCardRemove("Teammate");
     await click(buttonByLabel("Confirm remove participant"));
     await flush();
 

@@ -97,12 +97,15 @@ vi.mock("../../../components/avatar.js", () => ({
   ),
 }));
 
+vi.mock("../../../components/chat/agent-hovercard.js", () => ({
+  removeFromChatAriaLabel: (displayName: string) => `Remove ${displayName} from this chat`,
+  AgentHovercard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 vi.mock("../../../components/chat/agent-status-panel.js", () => ({
   AgentStatusPanel: ({
     agents,
     canManage,
-    canRemove,
-    onRemove,
   }: {
     agents: ChatParticipantDetail[];
     canManage: (agentId: string) => boolean;
@@ -113,15 +116,6 @@ vi.mock("../../../components/chat/agent-status-panel.js", () => ({
       {agents.map((agent) => (
         <div key={agent.agentId}>
           {agent.displayName} · {canManage(agent.agentId) ? "manageable" : "readonly"}
-          {canRemove?.(agent.agentId) ? (
-            <button
-              type="button"
-              aria-label={`Remove ${agent.displayName} from this chat`}
-              onClick={() => onRemove?.(agent)}
-            >
-              Remove
-            </button>
-          ) : null}
         </div>
       ))}
     </div>

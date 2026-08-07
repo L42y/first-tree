@@ -5,6 +5,7 @@ import { removeMeChatParticipant } from "../../../api/me-chats.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { AddParticipantDropdown } from "../../../components/add-participant-dropdown.js";
 import { Avatar as RealAvatar } from "../../../components/avatar.js";
+import { AgentHovercard, removeFromChatAriaLabel } from "../../../components/chat/agent-hovercard.js";
 import { AgentStatusPanel } from "../../../components/chat/agent-status-panel.js";
 import { Button } from "../../../components/ui/button.js";
 import {
@@ -16,6 +17,8 @@ import {
   DialogTitle,
 } from "../../../components/ui/dialog.js";
 import { useToast } from "../../../components/ui/toast.js";
+
+export const removeParticipantAriaLabel = removeFromChatAriaLabel;
 
 /** Roster rows shown before the "Show all" fold. The rail is a calm
  *  inspection surface, not a member-management screen — a long roster
@@ -181,6 +184,7 @@ export function ParticipantsSection({
             {visibleHumans.map((p) => (
               <HumanRow
                 key={p.agentId}
+                chatId={chatId}
                 participant={p}
                 showRemove={canRemove(p.agentId)}
                 onRemove={() => openRemoveDialog(p)}
@@ -237,14 +241,17 @@ function RosterToggle({ onClick, children }: { onClick: () => void; children: Re
 }
 
 function HumanRow({
+  chatId,
   participant,
   showRemove,
   onRemove,
 }: {
+  chatId: string;
   participant: ChatParticipantDetail;
   showRemove: boolean;
   onRemove: () => void;
 }) {
+  const removeFromChat = showRemove ? { onRequest: onRemove } : undefined;
   return (
     <div
       className="flex items-center"
@@ -254,53 +261,39 @@ function HumanRow({
         borderRadius: "var(--radius-input)",
       }}
     >
-      <RealAvatar
-        src={participant.avatarImageUrl}
+      <AgentHovercard
+        agentId={participant.agentId}
+        chatId={chatId}
         name={participant.displayName}
-        seed={participant.agentId}
-        colorToken={participant.avatarColorToken}
-        size={28}
-      />
+        placement="left"
+        triggerClassName="block shrink-0 cursor-pointer rounded-full"
+        participantType="human"
+        removeFromChat={removeFromChat}
+      >
+        <span className="block" style={{ width: 28, height: 28 }}>
+          <RealAvatar
+            src={participant.avatarImageUrl}
+            name={participant.displayName}
+            seed={participant.agentId}
+            colorToken={participant.avatarColorToken}
+            size={28}
+          />
+        </span>
+      </AgentHovercard>
       <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
-        <div className="truncate text-subtitle">{participant.displayName}</div>
+        <AgentHovercard
+          agentId={participant.agentId}
+          chatId={chatId}
+          name={participant.displayName}
+          placement="left"
+          triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+          participantType="human"
+          removeFromChat={removeFromChat}
+        >
+          {participant.displayName}
+        </AgentHovercard>
       </div>
-      {showRemove ? <RemoveButton displayName={participant.displayName} onClick={onRemove} /> : null}
     </div>
-  );
-}
-
-/** Unique accessible name shared by human and agent Remove controls. */
-export function removeParticipantAriaLabel(displayName: string): string {
-  return `Remove ${displayName} from this chat`;
-}
-
-export function RemoveButton({
-  displayName,
-  onClick,
-  disabled = false,
-}: {
-  displayName: string;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={removeParticipantAriaLabel(displayName)}
-      title="Remove from this chat"
-      className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] hover:border-[var(--fg-error-strong)] disabled:opacity-50"
-      style={{
-        padding: "var(--sp-0_5) var(--sp-2_25)",
-        borderRadius: "var(--radius-input)",
-        border: "var(--hairline) solid var(--border)",
-        background: "transparent",
-        color: "var(--fg-3)",
-      }}
-    >
-      Remove
-    </button>
   );
 }
 

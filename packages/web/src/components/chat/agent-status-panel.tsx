@@ -83,8 +83,9 @@ export function AgentStatusPanel({
           agent={agent}
           status={byAgent.get(agent.agentId) ?? null}
           canManage={canManage(agent.agentId)}
-          showRemove={canRemove?.(agent.agentId) === true}
-          onRemove={onRemove ? () => onRemove(agent) : undefined}
+          removeFromChat={
+            canRemove?.(agent.agentId) === true && onRemove ? { onRequest: () => onRemove(agent) } : undefined
+          }
           compact={compact}
         />
       ))}
@@ -128,16 +129,14 @@ function AgentStatusRow({
   agent,
   status,
   canManage,
-  showRemove,
-  onRemove,
+  removeFromChat,
   compact,
 }: {
   chatId: string;
   agent: ChatParticipantDetail;
   status: AgentChatStatus | null;
   canManage: boolean;
-  showRemove: boolean;
-  onRemove?: () => void;
+  removeFromChat?: { onRequest: () => void };
   compact: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -220,7 +219,9 @@ function AgentStatusRow({
           name={agent.displayName}
           placement="left"
           triggerClassName="block shrink-0 cursor-pointer rounded-full"
+          participantType="agent"
           sessionReset={sessionReset}
+          removeFromChat={removeFromChat}
         >
           <span className="relative block" style={{ width: 28, height: 28 }}>
             <Avatar
@@ -258,7 +259,9 @@ function AgentStatusRow({
             name={agent.displayName}
             placement="left"
             triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+            participantType="agent"
             sessionReset={sessionReset}
+            removeFromChat={removeFromChat}
           >
             {agent.displayName}
           </AgentHovercard>
@@ -267,7 +270,6 @@ function AgentStatusRow({
 
         {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
         {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
-        {showRemove && onRemove ? <RowRemoveButton displayName={agent.displayName} onClick={onRemove} /> : null}
       </div>
       {sessionReset || resetOpen ? (
         // Mounted on `resetOpen` too: after a failed reset the server may
@@ -338,29 +340,6 @@ function StatePill({ tone, label }: { tone: "blocked" | "error" | "idle"; label:
     >
       {label}
     </span>
-  );
-}
-
-/** Compact Remove control for the sidebar roster. Confirm lives in the
- *  Participants section so agent and human rows share one dialog. */
-function RowRemoveButton({ displayName, onClick }: { displayName: string; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={`Remove ${displayName} from this chat`}
-      title="Remove from this chat"
-      className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] hover:border-[var(--fg-error-strong)]"
-      style={{
-        padding: "var(--sp-0_5) var(--sp-2_25)",
-        borderRadius: "var(--radius-input)",
-        border: "var(--hairline) solid var(--border)",
-        background: "transparent",
-        color: "var(--fg-3)",
-      }}
-    >
-      Remove
-    </button>
   );
 }
 
