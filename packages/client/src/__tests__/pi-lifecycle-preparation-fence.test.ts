@@ -13,8 +13,12 @@ import { mockCtxPlumbing } from "./test-helpers.js";
  *
  * Covers:
  * - post-chat-context / pre-projection (suspend while fetch is pending)
- * - post-fetch microtask gap before sync atProjectionEntry
  * - post-skills / pre-briefing (suspend mid-reconcile)
+ *
+ * The post-assert / pre-reconcile non-yielding invariant is proven in
+ * `prepare-managed-session.test.ts` (same-turn entry+reconcile + thenable
+ * fail-closed). A `queueMicrotask(suspend)` inside `getChatDetail` is not a
+ * valid stand-in for that gap — fetch's Promise.all is still unsettled then.
  *
  * `start()` catches `PiLifecycleCancelledError` and retries delivery rather
  * than rethrowing — assert admission side effects stayed closed.
@@ -147,52 +151,6 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
     // endLifecycle bumps generation without joining the in-flight preparation.
     await handler.suspend("test_suspend");
     releaseFetch?.();
-
-    const result = await started;
-    expect(result).toMatchObject({ route: { kind: "owned", mode: "processing" } });
-    expect(token.retried).toContain("pi_turn_cancelled");
-
-    expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
-    expect(ensureAgentBootstrap).not.toHaveBeenCalled();
-    expect(existsSync(join(workspaceRoot, INIT_COMPLETE_SENTINEL_REL))).toBe(false);
-
-    await handler.shutdown();
-  });
-
-  it("cancels in the post-fetch microtask gap before sync projection entry", async () => {
-    const logs: string[] = [];
-
-    vi.mocked(reconcileManagedSkillsForConfig).mockImplementation(async () => {
-      throw new Error("reconcileManagedSkillsForConfig must not run after post-fetch suspend");
-    });
-
-    const handler = createPiHandler({
-      workspaceRoot,
-      runtimeProvider: "pi",
-      piBinaryResolver: () => ({ ok: true as const, binary: "/usr/bin/pi", version: "0.0.0" }),
-      providerProcessSupervisor: {
-        spawn: () => {
-          throw new Error("provider must not spawn during this fence test");
-        },
-      },
-    });
-
-    const token = makeToken();
-    const started = handler.start(
-      makeMessage(),
-      makeCtx(logs, {
-        getChatDetail: async () => {
-          // Queue suspend after chat-context settles but before the sync
-          // atProjectionEntry inside projectManagedWorkspace — the old
-          // `await beforeProjection` window. Sync revalidation must catch it.
-          queueMicrotask(() => {
-            void handler.suspend("test_suspend");
-          });
-          return { id: "chat-pi", title: "t", topic: null, description: null };
-        },
-      }),
-      token,
-    );
 
     const result = await started;
     expect(result).toMatchObject({ route: { kind: "owned", mode: "processing" } });

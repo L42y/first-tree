@@ -50,12 +50,18 @@ export type PrepareManagedSessionParams = {
   /**
    * Optional provider-owned **synchronous** checkpoint at Managed Skills
    * projection entry (first statement inside {@link projectManagedWorkspace},
-   * before any await). Must not return a Promise: an `await` boundary here
-   * would reopen a microtask window where `suspend()` can advance lifecycle
-   * generation before reconcile begins. Callers use this for Pi generation
-   * fences after chat-context fetch.
+   * before any await).
+   *
+   * Contract (enforced):
+   * - Return type is `undefined` (not `void`) so `async` callbacks are a
+   *   TypeScript error — `async () => …` is assignable to `() => void` but
+   *   not to `() => undefined`.
+   * - Runtime fail-closed: a returned thenable throws before reconcile.
+   *
+   * An `await` boundary here would reopen a microtask window where `suspend()`
+   * can advance lifecycle generation before reconcile begins.
    */
-  atProjectionEntry?: (args: { workspace: string; chatContext: ChatContext | undefined }) => void;
+  atProjectionEntry?: (args: { workspace: string; chatContext: ChatContext | undefined }) => undefined;
   /**
    * Optional provider-owned work after Managed Skills settle and before the
    * shared briefing / bootstrap / init-complete sentinel. Callers use this for
@@ -105,10 +111,11 @@ export type ProjectManagedWorkspaceParams = {
   markInitComplete: boolean;
   /**
    * Optional provider-owned **synchronous** checkpoint at projection entry —
-   * invoked before any await (including Managed Skills reconcile). Must not
-   * return a Promise; see {@link PrepareManagedSessionParams.atProjectionEntry}.
+   * invoked before any await (including Managed Skills reconcile).
+   * Return `undefined` (not `void`); runtime rejects thenables. See
+   * {@link PrepareManagedSessionParams.atProjectionEntry}.
    */
-  atProjectionEntry?: (args: { workspace: string }) => void;
+  atProjectionEntry?: (args: { workspace: string }) => undefined;
   /**
    * Optional provider-owned checkpoint after Managed Skills settle and before
    * briefing / bootstrap / sentinel. Used for lifecycle fences and landing
@@ -143,6 +150,27 @@ export async function fetchChatContextOrLog(sessionCtx: SessionContext): Promise
   }
 }
 
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    (typeof value === "object" || typeof value === "function") &&
+    typeof (value as PromiseLike<unknown>).then === "function"
+  );
+}
+
+/**
+ * Invoke a projection-entry checkpoint without awaiting. TypeScript already
+ * rejects `async` callbacks via the `() => undefined` return type; this rejects
+ * thenables at runtime so a type-escape cannot reopen the microtask race.
+ */
+function invokeSyncProjectionEntry(hook: (() => undefined) | undefined): void {
+  if (!hook) return;
+  const result: unknown = hook();
+  if (isThenable(result)) {
+    throw new Error("atProjectionEntry must be synchronous (must not return a thenable)");
+  }
+}
+
 /**
  * Reconcile Managed Skills, build the shared briefing, run agent bootstrap, and
  * optionally mark init-complete — without acquiring a home or fetching chat
@@ -168,7 +196,7 @@ export async function projectManagedWorkspace(
   // Sync fence — must run before any await so a queued suspend after a prior
   // await boundary cannot enter reconcile on a stale generation.
   if (atProjectionEntry) {
-    atProjectionEntry({ workspace });
+    invokeSyncProjectionEntry(() => atProjectionEntry({ workspace }));
   }
 
   const sourceRepos = declaredSourceRepos(workspace, payload);
@@ -265,7 +293,13 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     markInitComplete: true,
     atProjectionEntry: atProjectionEntry
       ? () => {
-          atProjectionEntry({ workspace, chatContext });
+          // Must not discard a thenable return — that would recreate the
+          // `async () => …` assignable-to-void escape the sync contract forbids.
+          const result: unknown = atProjectionEntry({ workspace, chatContext });
+          if (isThenable(result)) {
+            throw new Error("atProjectionEntry must be synchronous (must not return a thenable)");
+          }
+          return undefined;
         }
       : undefined,
     beforeBriefing: beforeBriefing ? (args) => beforeBriefing({ ...args, chatContext }) : undefined,

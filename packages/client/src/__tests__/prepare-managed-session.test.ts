@@ -398,8 +398,9 @@ describe("prepareManagedSession", () => {
 
   it("runs atProjectionEntry sync before skills projection", async () => {
     const prepareManagedSession = await loadPrepare();
-    const atProjectionEntry = vi.fn(() => {
+    const atProjectionEntry = vi.fn((): undefined => {
       callOrder.push("atProjectionEntry");
+      return undefined;
     });
     const beforeBriefing = vi.fn(async () => {
       callOrder.push("beforeBriefing");
@@ -441,6 +442,103 @@ describe("prepareManagedSession", () => {
     ]);
   });
 
+  it("rejects thenable atProjectionEntry before reconcile (fail-closed sync contract)", async () => {
+    const prepareManagedSession = await loadPrepare();
+
+    await expect(
+      prepareManagedSession({
+        sessionCtx: sessionCtx(),
+        workspaceRoot,
+        runtimeProvider: "cursor",
+        runtimeConfig: null,
+        payload: {
+          kind: "cursor",
+          prompt: { append: "" },
+          model: "",
+          mcpServers: [],
+          env: [],
+          gitRepos: [],
+          resourceSkills: [],
+        },
+        payloadResolved: false,
+        contextTree: { path: null, repoUrl: null, branch: null },
+        // Type escape: async is assignable to `() => void` but not `() => undefined`.
+        // Cast to prove runtime still fail-closes if a thenable slips through.
+        atProjectionEntry: (async () => {
+          callOrder.push("atProjectionEntry");
+        }) as unknown as () => undefined,
+      }),
+    ).rejects.toThrow(/atProjectionEntry must be synchronous/);
+
+    expect(callOrder).toEqual(["acquire", "chatContext", "atProjectionEntry"]);
+    expect(declaredSourceRepos).not.toHaveBeenCalled();
+    expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
+  });
+
+  it("enters reconcile in the same synchronous turn as atProjectionEntry", async () => {
+    const prepareManagedSession = await loadPrepare();
+    let turn: "start" | "microtask" = "start";
+    const events: string[] = [];
+
+    reconcileManagedSkillsForConfig.mockImplementation(async () => {
+      events.push(`reconcile:${turn}`);
+      callOrder.push("skills");
+      return {
+        ok: true,
+        resourceConfigVersion: 3,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [
+          {
+            key: "resource:skill",
+            name: "team-skill",
+            description: "desc",
+            revision: "r1",
+            installedDigest: "sha256:abc",
+            target: "/tmp/skill-target",
+          },
+        ],
+        failures: [],
+        staleTeamSnapshot: false,
+      };
+    });
+
+    await prepareManagedSession({
+      sessionCtx: sessionCtx(),
+      workspaceRoot,
+      runtimeProvider: "cursor",
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor",
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+      atProjectionEntry: (): undefined => {
+        events.push(`entry:${turn}`);
+        // Queued cancellation / generation bump — must not run before reconcile
+        // is invoked. An `await` after the checkpoint (old beforeProjection gap)
+        // would let this microtask advance `turn` first and fail the assertion.
+        queueMicrotask(() => {
+          turn = "microtask";
+          events.push("microtask");
+        });
+        return undefined;
+      },
+    });
+
+    expect(events[0]).toBe("entry:start");
+    expect(events[1]).toBe("reconcile:start");
+    await Promise.resolve();
+    expect(events).toContain("microtask");
+  });
+
   it("leaves skills/briefing/bootstrap/sentinel untouched when atProjectionEntry throws", async () => {
     const prepareManagedSession = await loadPrepare();
 
@@ -461,7 +559,7 @@ describe("prepareManagedSession", () => {
         },
         payloadResolved: false,
         contextTree: { path: null, repoUrl: null, branch: null },
-        atProjectionEntry: () => {
+        atProjectionEntry: (): undefined => {
           callOrder.push("atProjectionEntry");
           throw new Error("lifecycle cancelled at prepare_before_projection");
         },

@@ -1480,8 +1480,9 @@ export const createPiHandler: HandlerFactory = (config) => {
         branch: contextTreeBranch,
       },
       markInitComplete: false,
-      atProjectionEntry: () => {
+      atProjectionEntry: (): undefined => {
         assertLifecycleGeneration(generation, "prepared_refresh_projection");
+        return undefined;
       },
       beforeBriefing: () => {
         assertLifecycleGeneration(generation, "prepared_refresh_skills");
@@ -1836,12 +1837,14 @@ export const createPiHandler: HandlerFactory = (config) => {
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
       },
-      atProjectionEntry: () => {
+      atProjectionEntry: (): undefined => {
         // Sync fence at projection entry (first statement of
         // projectManagedWorkspace, before any await) — closes the microtask
         // window after chat-context fetch where suspend could otherwise advance
         // generation before reconcile. Must stay synchronous (no async/await).
+        // Return type is `undefined` (not `void`) so async callbacks are a type error.
         assertLifecycleGeneration(generation, "prepare_before_projection");
+        return undefined;
       },
       beforeBriefing: () => {
         // Sync lifecycle fence after Managed Skills and before briefing/bootstrap/
