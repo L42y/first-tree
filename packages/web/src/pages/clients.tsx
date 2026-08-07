@@ -610,7 +610,7 @@ export function ClientsPage({ embedded = false }: { embedded?: boolean } = {}) {
  *
  * Previous PR-B used a `repeat(auto-fit, minmax(35rem, 1fr))` 2-up grid
  * — that fights the Settings tab's single-column hairline-separated
- * vocabulary (see /settings/github, /settings/messaging), so it was
+ * vocabulary (see /settings/integrations/github, /settings/messaging), so it was
  * collapsed to a stack here.
  */
 function CardStack({ children }: { children: React.ReactNode }) {

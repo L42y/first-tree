@@ -54,9 +54,6 @@ function errorEntry(err: unknown): CapabilityEntry {
   return {
     state: "error",
     available: false,
-    // Deprecated wire-compat for older servers (see client-capabilities schema).
-    authenticated: false,
-    authMethod: "none",
     error: err instanceof Error ? err.message : String(err),
     detectedAt: new Date().toISOString(),
   };

@@ -34,6 +34,12 @@ export type SelectProps = {
   searchable?: boolean;
   /** Monospace the trigger + options (model ids, transports, ...). */
   mono?: boolean;
+  /**
+   * Places an option hint beneath its label in both the trigger and list.
+   * Keep the default inline layout for compact metadata such as context size;
+   * use stacked for two-line identities such as connected computers.
+   */
+  hintLayout?: "inline" | "stacked";
   id?: string;
   "aria-label"?: string;
   className?: string;
@@ -48,6 +54,7 @@ export function Select({
   placeholder,
   searchable,
   mono,
+  hintLayout = "inline",
   id,
   "aria-label": ariaLabel,
   className,
@@ -298,9 +305,20 @@ export function Select({
         aria-controls={open ? listboxId : undefined}
         aria-label={ariaLabel}
       >
-        <span className="truncate" style={{ color: selected ? undefined : "var(--fg-3)" }}>
-          {selected?.label ?? placeholder ?? value}
-        </span>
+        {hintLayout === "stacked" && selected ? (
+          <span className="min-w-0 flex-1 text-left">
+            <span className="block truncate">{selected.label}</span>
+            {selected.hint && (
+              <span className="block truncate text-caption" style={{ color: "var(--fg-4)" }}>
+                {selected.hint}
+              </span>
+            )}
+          </span>
+        ) : (
+          <span className="truncate" style={{ color: selected ? undefined : "var(--fg-3)" }}>
+            {selected?.label ?? placeholder ?? value}
+          </span>
+        )}
         <ChevronDown
           className="ml-2 h-3.5 w-3.5 transition-transform"
           style={{ color: "var(--fg-3)", transform: open ? "rotate(180deg)" : undefined }}
@@ -378,7 +396,8 @@ export function Select({
                     onClick={() => commit(o)}
                     onMouseEnter={() => !o.disabled && setActiveIndex(i)}
                     className={cn(
-                      "flex w-full cursor-pointer items-center gap-2 bg-transparent px-3 py-1.5 text-body text-left transition-colors focus-visible:outline-none",
+                      "flex w-full cursor-pointer gap-2 bg-transparent px-3 py-1.5 text-body text-left transition-colors focus-visible:outline-none",
+                      hintLayout === "stacked" ? "items-start" : "items-center",
                       mono && "mono",
                       isActive && "bg-accent text-accent-foreground",
                       o.disabled && "cursor-not-allowed opacity-50",
@@ -386,14 +405,27 @@ export function Select({
                     style={{ color: o.value === "" ? "var(--fg-3)" : undefined }}
                   >
                     <Check
-                      className="h-3.5 w-3.5 flex-shrink-0"
+                      className={cn("h-3.5 w-3.5 flex-shrink-0", hintLayout === "stacked" && "mt-0.5")}
                       style={{ visibility: isSelected ? "visible" : "hidden", color: "var(--success)" }}
                     />
-                    <span className="flex-1 truncate">{o.label}</span>
-                    {o.hint && (
-                      <span className="text-caption" style={{ color: "var(--fg-4)" }}>
-                        {o.hint}
+                    {hintLayout === "stacked" ? (
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{o.label}</span>
+                        {o.hint && (
+                          <span className="block truncate text-caption" style={{ color: "var(--fg-4)" }}>
+                            {o.hint}
+                          </span>
+                        )}
                       </span>
+                    ) : (
+                      <>
+                        <span className="flex-1 truncate">{o.label}</span>
+                        {o.hint && (
+                          <span className="text-caption" style={{ color: "var(--fg-4)" }}>
+                            {o.hint}
+                          </span>
+                        )}
+                      </>
                     )}
                   </button>
                 );

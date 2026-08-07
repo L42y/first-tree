@@ -81,9 +81,7 @@
   },
   "devDependencies": {
     "@first-tree/client": "workspace:*",
-    "@first-tree/server": "workspace:*",
     "@first-tree/shared": "workspace:*",
-    "@first-tree/web": "workspace:*",
     "@types/ejs": "^3.1.5",
     "@types/node": "^22.16.0",
     "@types/semver": "^7.5.8",

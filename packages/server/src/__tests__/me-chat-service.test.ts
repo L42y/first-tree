@@ -883,26 +883,20 @@ describe("chat-first workspace service layer", () => {
     expect(page2.rows[0]?.chatId).toBe(c1.chatId);
   });
 
-  it("listMeChats recovers a legacy cursor as a first-page request but 400s an invalid one", async () => {
+  it("listMeChats rejects unversioned and unsupported cursor versions", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    // A recognized pre-PR legacy cursor restarts from page 1 so an already-open
-    // client recovers across the rollout instead of looping its load-more Retry.
-    // Use the deployed null-tail shape `|<chatId>` (empty timestamp) the old
-    // encoder emitted for a `last_message_at IS NULL` boundary.
-    const legacy = Buffer.from("|old-chat", "utf8").toString("base64url");
-    const recovered = await listMeChats(app.db, admin.humanAgentUuid, admin.memberId, admin.organizationId, {
-      limit: 50,
-      filter: "all",
-      engagement: "all",
-      cursor: legacy,
-    });
-    expect(recovered.priorityRows).toEqual({ pinned: [], attention: [] });
-    expect(Array.isArray(recovered.rows)).toBe(true);
+    const unversioned = Buffer.from("|old-chat", "utf8").toString("base64url");
+    await expect(
+      listMeChats(app.db, admin.humanAgentUuid, admin.memberId, admin.organizationId, {
+        limit: 50,
+        filter: "all",
+        engagement: "all",
+        cursor: unversioned,
+      }),
+    ).rejects.toThrow(/invalid cursor/i);
 
-    // A genuinely invalid cursor (here: an unsupported version) still surfaces as
-    // a typed 400 so a real client/API bug is not masked as a first-page request.
     const invalid = Buffer.from("v9|2026-05-06T10:24:00.000Z|chat", "utf8").toString("base64url");
     await expect(
       listMeChats(app.db, admin.humanAgentUuid, admin.memberId, admin.organizationId, {

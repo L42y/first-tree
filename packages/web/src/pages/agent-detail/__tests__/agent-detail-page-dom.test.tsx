@@ -260,7 +260,7 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
     status: overrides.status ?? "connected",
     authState: overrides.authState ?? "ok",
     binName: overrides.binName ?? "first-tree-dev",
-    sdkVersion: overrides.sdkVersion ?? "0.5.11",
+    sdkVersion: overrides.sdkVersion === undefined ? "0.5.12" : overrides.sdkVersion,
     hostname: overrides.hostname ?? "gandy-macbook",
     os: overrides.os ?? "darwin",
     agentCount: overrides.agentCount ?? 1,
@@ -1513,6 +1513,38 @@ describe("AgentDetailPage", () => {
       runtimeProvider: "codex",
       confirmLocalDataLoss: true,
     });
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("blocks runtime-switch candidates below the chronological 0.5.12 release floor", async () => {
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    activityMocks.listClients.mockResolvedValue([
+      client({ id: "client-old", hostname: "old-cli", sdkVersion: "0.5.11" }),
+      client({ id: "client-legacy", hostname: "legacy-cli", sdkVersion: "0.14.8" }),
+      client({ id: "client-old-staging", hostname: "old-staging-cli", sdkVersion: "0.5.12-staging.123.1" }),
+      client({ id: "client-unknown", hostname: "unknown-cli", sdkVersion: null }),
+      client({ id: "client-supported", hostname: "supported-cli", sdkVersion: "0.5.12" }),
+      client({ id: "client-staging", hostname: "release-preview", sdkVersion: "0.5.20-staging.123.1" }),
+    ]);
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
+    await waitForText(view.container, "Switch runtime");
+    await click(buttonByText(view.container, "Switch runtime"));
+    await waitForText(document.body, "old-cli");
+    await waitForText(document.body, "legacy-cli");
+    await waitForText(document.body, "old-staging-cli");
+    await waitForText(document.body, "unknown-cli");
+    await waitForText(document.body, "supported-cli");
+    await waitForText(document.body, "release-preview");
+
+    expect(buttonByText(document.body, "old-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "legacy-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "old-staging-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "unknown-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "supported-cli")?.disabled).toBe(false);
+    expect(buttonByText(document.body, "release-preview")?.disabled).toBe(false);
+    expect(document.body.textContent).toContain("Requires CLI 0.5.12+");
 
     await act(async () => view.root.unmount());
   });

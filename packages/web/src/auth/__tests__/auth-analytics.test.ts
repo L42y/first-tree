@@ -154,7 +154,7 @@ describe("auth analytics", () => {
     expect(authProviderForCallbackPath("/auth/complete")).toBe("google");
     expect(authProviderForCallbackPath("/auth/github/complete")).toBe("github");
     expect(authEntryPoint("/")).toBe("login");
-    expect(authEntryPoint("/settings/github")).toBe("deep_link");
+    expect(authEntryPoint("/settings/integrations/github")).toBe("deep_link");
     expect(normalizeAuthFailureReason("provider-denied")).toBe("provider-denied");
   });
 });

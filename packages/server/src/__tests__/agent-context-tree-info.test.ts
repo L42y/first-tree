@@ -1,10 +1,12 @@
 import crypto from "node:crypto";
+import { AGENT_RUNTIME_SESSION_HEADER } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
+import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import * as orgSettingsService from "../services/org-settings.js";
 import { uuidv7 } from "../uuid.js";
@@ -41,6 +43,7 @@ describe("agent context tree info route", () => {
       version: 1,
       updatedBy: admin.userId,
     });
+    const runtimeSessionToken = await bindAgentRuntimeSession(app.db, runtimeAgent.uuid, clientId);
 
     await expect(
       orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree_features"),
@@ -55,7 +58,11 @@ describe("agent context tree info route", () => {
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/agent/context-tree/info",
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": runtimeAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": runtimeAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -105,6 +112,7 @@ describe("agent context tree info route", () => {
       organizationId: sideOrgId,
       clientId: sideClientId,
     });
+    const runtimeSessionToken = await bindAgentRuntimeSession(app.db, sideAgent.uuid, sideClientId);
     const installationId = Number.parseInt(crypto.randomUUID().replaceAll("-", "").slice(0, 10), 16);
     await upsertInstallationFromMetadata(app.db, {
       installation: {
@@ -144,7 +152,11 @@ describe("agent context tree info route", () => {
     const agentMe = await app.inject({
       method: "GET",
       url: "/api/v1/agent/me",
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": sideAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
     });
     expect(agentMe.statusCode).toBe(200);
     const derivedOrgId = agentMe.json<{ organizationId: string }>().organizationId;
@@ -153,7 +165,11 @@ describe("agent context tree info route", () => {
     const updatedSide = await app.inject({
       method: "PUT",
       url: `/api/v1/orgs/${encodeURIComponent(derivedOrgId)}/settings/context_tree`,
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": sideAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
       payload: { repo: "git@github.com:example/updated-side-context.git", branch: "updated-side" },
     });
     expect(updatedSide.statusCode).toBe(200);
@@ -166,7 +182,11 @@ describe("agent context tree info route", () => {
     const agentScoped = await app.inject({
       method: "GET",
       url: "/api/v1/agent/context-tree/info",
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": sideAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
     });
     expect(agentScoped.statusCode).toBe(200);
     expect(agentScoped.json()).toEqual({
@@ -192,7 +212,11 @@ describe("agent context tree info route", () => {
     const invalidAgentScoped = await app.inject({
       method: "GET",
       url: "/api/v1/agent/context-tree/info",
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": sideAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
     });
     expect(invalidAgentScoped.statusCode).toBe(200);
     expect(invalidAgentScoped.json()).toEqual({
@@ -213,7 +237,11 @@ describe("agent context tree info route", () => {
     const demotedManager = await app.inject({
       method: "GET",
       url: "/api/v1/agent/context-tree/info",
-      headers: { authorization: `Bearer ${admin.accessToken}`, "x-agent-id": sideAgent.uuid },
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": sideAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
     });
     expect(demotedManager.statusCode).toBe(200);
     expect(demotedManager.json()).toMatchObject({

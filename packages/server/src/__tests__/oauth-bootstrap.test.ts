@@ -96,7 +96,7 @@ describe("provider-neutral OAuth bootstrap", () => {
     );
 
     const result = await completeExternalAccountBootstrap(app.db, account, {
-      next: "/settings/github",
+      next: "/settings/integrations/github",
       allowedOrganizationId: null,
       ip: null,
       userAgent: null,
@@ -262,7 +262,7 @@ describe("shouldPreserveSoloSignupNext", () => {
     // Fragment.
     expect(shouldPreserveSoloSignupNext("/templates/pr-engineer?use=1#details")).toBe(false);
     // Anything else, including ordinary deep links.
-    expect(shouldPreserveSoloSignupNext("/settings/github")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/settings/integrations/github")).toBe(false);
     expect(shouldPreserveSoloSignupNext("/")).toBe(false);
     expect(shouldPreserveSoloSignupNext("/templates")).toBe(false);
   });

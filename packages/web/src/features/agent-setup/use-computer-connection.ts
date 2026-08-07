@@ -1,13 +1,9 @@
-import {
-  type ClientCapabilities,
-  enabledOkRuntimeProviders,
-  pickPreferredRuntimeProvider,
-  type RuntimeProvider,
-} from "@first-tree/shared";
+import { type ClientCapabilities, enabledOkRuntimeProviders, type RuntimeProvider } from "@first-tree/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ConnectTokenResponse, getClientCapabilities, type HubClient, listClients } from "../../api/activity.js";
 import { api } from "../../api/client.js";
 import { runVisibilityAwareInterval } from "../../lib/visibility-interval.js";
+import { resolveComputerSelection, resolveRuntimeSelection } from "./computer-selection.js";
 
 const CLIENT_DETECT_POLL_MS = 5_000;
 
@@ -18,16 +14,20 @@ const CLIENT_DETECT_POLL_MS = 5_000;
  * Lifecycle (mirrors the proven logic from the legacy Step2Body):
  *   1. Mint a short-lived connect token + bootstrap command (the command block
  *      the user pastes into their terminal).
- *   2. Poll `listClients()`; the most-recently-seen connected client wins.
- *   3. Once a client is connected, fetch its capabilities to learn which AI
- *      runtimes are ready, and auto-pick via the shared Codex-first catalog
- *      selection priority.
+ *   2. Poll `listClients()` and keep the connected-computer roster current.
+ *      A sole computer is automatic; multi-computer creation can require an
+ *      explicit choice instead of using heartbeat order.
+ *   3. Fetch capabilities for the selected computer to learn which runtimes
+ *      are ready, and auto-pick via the shared Codex-first catalog priority.
  *
  * Pure presentation state is returned; the React step renders it. Polling
  * pauses while the tab is hidden (`runVisibilityAwareInterval`) and stops
  * entirely when `enabled` is false.
  */
 export type ComputerConnection = {
+  connectedClients: HubClient[];
+  selectedClientId: string | null;
+  setSelectedClientId: (next: string | null) => void;
   connectedClient: HubClient | null;
   capabilitiesLoaded: boolean;
   /** Enabled `ok` providers in catalog display order. */
@@ -57,6 +57,12 @@ export type UseComputerConnectionOptions = {
    * running on the same computer represented by the Web's global signal.
    */
   prepareBootstrapWhenConnected?: boolean;
+  /**
+   * Do not silently choose between multiple connected computers. The one-
+   * computer path remains automatic; callers render a picker when this leaves
+   * `selectedClientId` null.
+   */
+  requireExplicitSelectionWhenMultiple?: boolean;
 };
 
 /** Silent auto-retries before surfacing a token-mint failure to the user. */
@@ -71,10 +77,11 @@ export function useComputerConnection(
   enabled: boolean,
   options: UseComputerConnectionOptions = {},
 ): ComputerConnection {
-  const [connectedClient, setConnectedClient] = useState<HubClient | null>(null);
+  const [connectedClients, setConnectedClients] = useState<HubClient[]>([]);
+  const [selectedClientIdState, setSelectedClientIdState] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<ClientCapabilities | null>(null);
   const [capabilitiesClientId, setCapabilitiesClientId] = useState<string | null>(null);
-  const [selectedRuntime, setSelectedRuntime] = useState<RuntimeProvider | null>(null);
+  const [selectedRuntimeState, setSelectedRuntimeState] = useState<RuntimeProvider | null>(null);
   const [connectToken, setConnectToken] = useState<string | null>(null);
   const [connectTokenExpiresAt, setConnectTokenExpiresAt] = useState<number | null>(null);
   const [bootstrapCommand, setBootstrapCommand] = useState<string | null>(null);
@@ -82,45 +89,28 @@ export function useComputerConnection(
   // Bumped by retry() to force a fresh mint attempt from the effect below.
   const [retryNonce, setRetryNonce] = useState(0);
 
-  const capabilitiesClientIdRef = useRef<string | null>(null);
-  const detectSeqRef = useRef(0);
+  const clientDetectSeqRef = useRef(0);
+  const capabilitiesDetectSeqRef = useRef(0);
+  const explicitlySelectedClientIdRef = useRef<string | null>(null);
+  const runtimeSelectionIsManualRef = useRef(false);
   const onTokenMintFailedRef = useRef(options.onTokenMintFailed);
   onTokenMintFailedRef.current = options.onTokenMintFailed;
 
-  // Detect the connected computer + its capabilities.
+  // Detect all connected computers. Selection and capability polling are
+  // separate so a multi-computer create step can pause for an explicit choice
+  // instead of fetching from the most-recent heartbeat implicitly.
   useEffect(() => {
     if (!enabled) return;
     let cancelled = false;
     const detect = async (): Promise<void> => {
-      const seq = ++detectSeqRef.current;
+      const seq = ++clientDetectSeqRef.current;
       try {
         const clients = await listClients();
-        if (cancelled || seq !== detectSeqRef.current) return;
+        if (cancelled || seq !== clientDetectSeqRef.current) return;
         const connected = clients
           .filter((c) => c.status === "connected")
           .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt));
-        const latest = connected[0] ?? null;
-        setConnectedClient((prev) => (prev?.id === latest?.id ? prev : latest));
-        if (latest) {
-          if (capabilitiesClientIdRef.current !== latest.id) {
-            capabilitiesClientIdRef.current = null;
-            setCapabilitiesClientId(null);
-            setCapabilities(null);
-          }
-          try {
-            const withCaps = await getClientCapabilities(latest.id);
-            if (cancelled || seq !== detectSeqRef.current) return;
-            capabilitiesClientIdRef.current = latest.id;
-            setCapabilitiesClientId(latest.id);
-            setCapabilities(withCaps.capabilities);
-          } catch {
-            // transient — try again next tick
-          }
-        } else {
-          capabilitiesClientIdRef.current = null;
-          setCapabilitiesClientId(null);
-          setCapabilities(null);
-        }
+        setConnectedClients(connected);
       } catch {
         // best-effort
       }
@@ -132,6 +122,67 @@ export function useComputerConnection(
     };
   }, [enabled]);
 
+  const clientIds = useMemo(() => connectedClients.map((client) => client.id), [connectedClients]);
+  const selectedClientId = resolveComputerSelection({
+    clientIds,
+    currentClientId: selectedClientIdState,
+    explicitlySelectedClientId: explicitlySelectedClientIdRef.current,
+    requireExplicitWhenMultiple: options.requireExplicitSelectionWhenMultiple === true,
+  });
+
+  const setSelectedClientId = useCallback((next: string | null): void => {
+    explicitlySelectedClientIdRef.current = next;
+    setSelectedClientIdState(next);
+  }, []);
+
+  // Keep storage aligned with the synchronously-derived effective choice. The
+  // render never exposes a stale automatic choice while this effect catches up.
+  useEffect(() => {
+    const explicitClientId = explicitlySelectedClientIdRef.current;
+    if (explicitClientId && !clientIds.includes(explicitClientId)) {
+      explicitlySelectedClientIdRef.current = null;
+    }
+    setSelectedClientIdState((prev) => (prev === selectedClientId ? prev : selectedClientId));
+  }, [clientIds, selectedClientId]);
+
+  const connectedClient = useMemo(
+    () => connectedClients.find((client) => client.id === selectedClientId) ?? null,
+    [connectedClients, selectedClientId],
+  );
+
+  // Poll capabilities only for the chosen computer. A stale response from a
+  // previous choice cannot become active because both sequence and client id
+  // are checked before committing it.
+  useEffect(() => {
+    if (!enabled || !selectedClientId) {
+      capabilitiesDetectSeqRef.current += 1;
+      setCapabilitiesClientId(null);
+      setCapabilities(null);
+      return;
+    }
+    let cancelled = false;
+    setCapabilitiesClientId(null);
+    setCapabilities(null);
+    const detectCapabilities = async (): Promise<void> => {
+      const seq = ++capabilitiesDetectSeqRef.current;
+      try {
+        const withCaps = await getClientCapabilities(selectedClientId);
+        if (cancelled || seq !== capabilitiesDetectSeqRef.current) return;
+        setCapabilitiesClientId(selectedClientId);
+        setCapabilities(withCaps.capabilities);
+      } catch {
+        // The interval owns retry timing; an explicit return keeps the last
+        // successful snapshot inactive only when the selected client changed.
+        return;
+      }
+    };
+    const dispose = runVisibilityAwareInterval(detectCapabilities, CLIENT_DETECT_POLL_MS);
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, [enabled, selectedClientId]);
+
   // Mint / refresh the connect token while no computer is connected yet.
   // retryNonce in the deps is an intentional re-run trigger (bumped by retry()
   // after a failure); it isn't read inside, hence the suppression.
@@ -139,7 +190,7 @@ export function useComputerConnection(
   useEffect(() => {
     if (!enabled) return;
     if (options.allowBootstrapMint === false) return;
-    if (connectedClient && !options.prepareBootstrapWhenConnected) return;
+    if (connectedClients.length > 0 && !options.prepareBootstrapWhenConnected) return;
     if (connectToken && connectTokenExpiresAt && connectTokenExpiresAt > Date.now()) {
       const refreshAt = Math.max(connectTokenExpiresAt - Date.now(), 0);
       const handle = window.setTimeout(() => {
@@ -187,7 +238,7 @@ export function useComputerConnection(
     };
   }, [
     enabled,
-    connectedClient,
+    connectedClients.length,
     connectToken,
     connectTokenExpiresAt,
     options.allowBootstrapMint,
@@ -216,20 +267,33 @@ export function useComputerConnection(
   // Auto-pick via the catalog preference prefix while preserving Client order;
   // keep a still-valid prior choice.
   useEffect(() => {
-    setSelectedRuntime((prev) => {
+    setSelectedRuntimeState((prev) => {
       if (!activeCapabilities) return prev;
-      if (prev && okRuntimes.includes(prev)) return prev;
-      return pickPreferredRuntimeProvider(activeCapabilities);
+      const next = resolveRuntimeSelection({
+        currentRuntime: prev,
+        selectionIsManual: runtimeSelectionIsManualRef.current,
+        readyRuntimes: okRuntimes,
+      });
+      runtimeSelectionIsManualRef.current = next.selectionIsManual;
+      return next.runtime;
     });
   }, [activeCapabilities, okRuntimes]);
+
+  const setSelectedRuntime = useCallback((next: RuntimeProvider | null): void => {
+    runtimeSelectionIsManualRef.current = next !== null;
+    setSelectedRuntimeState(next);
+  }, []);
 
   const cliCommand = bootstrapCommand;
 
   return {
+    connectedClients,
+    selectedClientId,
+    setSelectedClientId,
     connectedClient,
     capabilitiesLoaded: activeCapabilities !== null,
     okRuntimes,
-    selectedRuntime,
+    selectedRuntime: selectedRuntimeState,
     setSelectedRuntime,
     cliCommand,
     tokenError,

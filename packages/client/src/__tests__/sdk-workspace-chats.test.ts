@@ -108,7 +108,7 @@ describe("FirstTreeHubSDK workspace chat APIs", () => {
   });
 
   it("listWorkspaceChats composes the URL with engagement/with/limit/cursor", async () => {
-    const fetchMock = makeFetchMock([jsonResponse({ rows: [], nextCursor: null })]);
+    const fetchMock = makeFetchMock([jsonResponse({ priorityRows: { pinned: [] }, rows: [], nextCursor: null })]);
 
     await makeSdk().listWorkspaceChats("org-1", {
       engagement: "archived",
@@ -124,7 +124,7 @@ describe("FirstTreeHubSDK workspace chat APIs", () => {
   });
 
   it("listWorkspaceChats omits `with` when no agent is given and always sends engagement", async () => {
-    const fetchMock = makeFetchMock([jsonResponse({ rows: [], nextCursor: null })]);
+    const fetchMock = makeFetchMock([jsonResponse({ priorityRows: { pinned: [] }, rows: [], nextCursor: null })]);
 
     await makeSdk().listWorkspaceChats("org-1", { engagement: "all" });
 
@@ -134,7 +134,7 @@ describe("FirstTreeHubSDK workspace chat APIs", () => {
 
   it("listWorkspaceChats maps rows to items with the id alias and passes attention fields through", async () => {
     const row = makeWorkspaceRow();
-    makeFetchMock([jsonResponse({ rows: [row], nextCursor: "cursor-2" })]);
+    makeFetchMock([jsonResponse({ priorityRows: { pinned: [] }, rows: [row], nextCursor: "cursor-2" })]);
 
     const result = await makeSdk().listWorkspaceChats("org-1", { engagement: "active", withAgentId: "agent-1" });
 
@@ -144,7 +144,7 @@ describe("FirstTreeHubSDK workspace chat APIs", () => {
   });
 
   it("listWorkspaceChats passes a null nextCursor through", async () => {
-    makeFetchMock([jsonResponse({ rows: [makeWorkspaceRow()], nextCursor: null })]);
+    makeFetchMock([jsonResponse({ priorityRows: { pinned: [] }, rows: [makeWorkspaceRow()], nextCursor: null })]);
 
     const result = await makeSdk().listWorkspaceChats("org-1", { engagement: "active" });
 
@@ -167,7 +167,7 @@ describe("FirstTreeHubSDK workspace chat APIs", () => {
       engagementStatus: "archived",
       liveActivity: null,
     };
-    makeFetchMock([jsonResponse({ rows: [minimalRow], nextCursor: null })]);
+    makeFetchMock([jsonResponse({ priorityRows: { pinned: [] }, rows: [minimalRow], nextCursor: null })]);
 
     const result = await makeSdk().listWorkspaceChats("org-1", { engagement: "archived" });
 

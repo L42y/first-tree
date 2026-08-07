@@ -77,7 +77,7 @@ describe("GET /api/v1/orgs/:orgId/github-app-installation/install-url", () => {
     const cookieNonce = readStateCookie(app, res.headers["set-cookie"]);
     expect(cookieNonce).toBeTruthy();
     const verified = await verifyOAuthState(TEST_JWT_SECRET, state ?? "", cookieNonce);
-    expect(verified.next).toBe("/settings/github");
+    expect(verified.next).toBe("/settings/integrations/github");
     // The signed state pins both the org the install binds to AND the
     // kickoff admin whose (re-checked) authority the callback bind rests
     // on — the browser's github.com identity at callback time may differ.
@@ -121,7 +121,7 @@ describe("GET /api/v1/orgs/:orgId/github-app-installation/install-url", () => {
     const state = new URL(res.json<{ installUrl: string }>().installUrl).searchParams.get("state");
     const cookieNonce = readStateCookie(app, res.headers["set-cookie"]);
     const verified = await verifyOAuthState(TEST_JWT_SECRET, state ?? "", cookieNonce);
-    expect(verified.next).toBe("/settings/github");
+    expect(verified.next).toBe("/settings/integrations/github");
   });
 
   it("403s for a non-admin member of the org", async () => {

@@ -170,12 +170,7 @@ describe("Agent WS — agent:pinned push on create/bind", () => {
       expect(pinned.agentId).toBe(body.uuid);
       expect(pinned.name).toBe(name);
       expect(pinned.displayName).toBe("Pin Created");
-      // Wire-compat: every non-human `agent` row is rendered as
-      // `personal_assistant` on the wire so clients on ≤ 0.5.1 (strict
-      // zod enum) still decode the frame. The legacy label is
-      // intentionally not derived from `visibility` — see
-      // `agentService.legacyWireAgentType` for the rationale.
-      expect(pinned.agentType).toBe("personal_assistant");
+      expect(pinned.agentType).toBe("agent");
     } finally {
       ws.close();
       await new Promise<void>((r) => ws.once("close", () => r()));
@@ -212,8 +207,7 @@ describe("Agent WS — agent:pinned push on create/bind", () => {
       const pinned = await pinnedPromise;
       expect(pinned.agentId).toBe(unbound.uuid);
       expect(pinned.name).toBe(unbound.name);
-      // Wire-compat: see comment in the "create" test above.
-      expect(pinned.agentType).toBe("personal_assistant");
+      expect(pinned.agentType).toBe("agent");
     } finally {
       ws.close();
       await new Promise<void>((r) => ws.once("close", () => r()));
@@ -332,8 +326,7 @@ describe("Agent WS — agent:pinned push on create/bind", () => {
       const a = seenPinned.get(offlineCreated.uuid);
       expect(a).toBeDefined();
       expect(a?.name).toBe(offlineCreated.name);
-      // Wire-compat: see comment in the "create" test above.
-      expect(a?.agentType).toBe("personal_assistant");
+      expect(a?.agentType).toBe("agent");
       const b = seenPinned.get(offlineCreated2.uuid);
       expect(b).toBeDefined();
       expect(b?.name).toBe(offlineCreated2.name);
@@ -506,7 +499,7 @@ describe("Agent WS — agent:pinned push on create/bind", () => {
         agentId: agent.uuid,
         name: agent.name,
         displayName: agent.displayName,
-        agentType: "personal_assistant",
+        agentType: "agent",
         oldClientId: seed.clientId,
         targetClientId: seed.clientId,
         runtimeProvider: "codex",

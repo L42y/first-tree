@@ -25,7 +25,7 @@ describe("user authentication provider management", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/me/auth-providers/github/link/start?next=%2Fsettings%2Fgithub",
+      url: "/api/v1/me/auth-providers/github/link/start?next=%2Fsettings%2Fintegrations%2Fgithub",
       headers: { authorization: `Bearer ${tokens.accessToken}` },
     });
 
@@ -41,15 +41,15 @@ describe("user authentication provider management", () => {
       intent: "link",
       provider: "github",
       userId,
-      next: "/settings/github",
+      next: "/settings/integrations/github",
     });
   });
 
   it.each([
-    "https://evil.example/settings/github",
-    "//evil.example/settings/github",
+    "https://evil.example/settings/integrations/github",
+    "//evil.example/settings/integrations/github",
     "/settings/team",
-    "/settings/github?org=another-team",
+    "/settings/integrations/github?org=another-team",
   ])("falls back to Account settings for unsupported account-link return path %s", async (next) => {
     const app = getApp();
     const userId = uuidv7();
@@ -75,7 +75,7 @@ describe("user authentication provider management", () => {
       app.config.secrets.encryptionKey,
     );
     const verified = await verifyOAuthState(app.config.secrets.jwtSecret, state, cookieNonce);
-    expect(verified.next).toBe("/user-settings");
+    expect(verified.next).toBe("/settings/account");
   });
 
   it("reports configured providers without exposing raw subjects", async () => {
@@ -217,7 +217,7 @@ describe("user authentication provider management", () => {
       provider: "google",
       userId,
       targetIdentityId: googleIdentityId,
-      next: "/user-settings",
+      next: "/settings/account",
     });
   });
 });

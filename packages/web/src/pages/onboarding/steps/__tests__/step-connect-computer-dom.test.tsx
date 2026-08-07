@@ -17,6 +17,9 @@ const BOOTSTRAP_COMMAND =
 
 function computer(overrides: Partial<ComputerConnection> = {}): ComputerConnection {
   return {
+    connectedClients: [],
+    selectedClientId: null,
+    setSelectedClientId: vi.fn(),
     connectedClient: null,
     capabilitiesLoaded: false,
     okRuntimes: [],

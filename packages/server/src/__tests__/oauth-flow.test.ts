@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import { protectOAuthStateNonce } from "../api/auth/oauth-cookie.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import * as githubAppInstallations from "../services/github-app-installations.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
+
+function oauthStateCookie(app: FastifyInstance, nonce: string): string {
+  return `oauth_state_nonce=${encodeURIComponent(protectOAuthStateNonce(nonce, app.config.secrets.encryptionKey))}`;
+}
 
 function stubGithubAppOauth(opts: {
   tokenStatus?: number;
@@ -73,7 +79,7 @@ describe("GitHub OAuth onboarding flow", () => {
 
     const res = await app.inject({
       method: "GET",
-      url: `/api/v1/auth/github/start?next=${encodeURIComponent("/settings/github")}`,
+      url: `/api/v1/auth/github/start?next=${encodeURIComponent("/settings/integrations/github")}`,
     });
 
     expect(res.statusCode).toBe(302);
@@ -217,7 +223,7 @@ describe("GitHub OAuth onboarding flow", () => {
     const app = getApp();
     const res = await app.inject({
       method: "GET",
-      url: `/api/v1/auth/github/dev-callback?githubId=44&login=settingsnext&next=${encodeURIComponent("/settings/github")}`,
+      url: `/api/v1/auth/github/dev-callback?githubId=44&login=settingsnext&next=${encodeURIComponent("/settings/integrations/github")}`,
     });
 
     expect(res.statusCode).toBe(302);
@@ -510,7 +516,7 @@ describe("GitHub account-link return path", () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `link-return-${randomUUID().slice(0, 8)}` });
     const { signOAuthState } = await import("../services/oauth-state.js");
-    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/github", {
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
       userId: admin.userId,
@@ -520,11 +526,11 @@ describe("GitHub account-link return path", () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
-        headers: { cookie: `oauth_state_nonce=${nonce}` },
+        headers: { cookie: oauthStateCookie(app, nonce) },
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/settings/github?connection=github-linked");
+      expect(res.headers.location).toBe("/settings/integrations/github?connection=github-linked");
     } finally {
       restore();
     }
@@ -543,7 +549,7 @@ describe("GitHub account-link return path", () => {
       metadata: { accountName: "already-linked" },
     });
     const { signOAuthState } = await import("../services/oauth-state.js");
-    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/github", {
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
       userId: target.userId,
@@ -553,11 +559,11 @@ describe("GitHub account-link return path", () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
-        headers: { cookie: `oauth_state_nonce=${nonce}` },
+        headers: { cookie: oauthStateCookie(app, nonce) },
       });
 
       expect(res.statusCode).toBe(302);
-      expect(res.headers.location).toBe("/settings/github?error=identity-conflict");
+      expect(res.headers.location).toBe("/settings/integrations/github?error=identity-conflict");
       expect(res.headers.location).not.toContain("access=");
       const targetIdentities = await app.db
         .select({ provider: authIdentities.provider })
@@ -573,7 +579,7 @@ describe("GitHub account-link return path", () => {
     const app = getApp();
     const target = await createTestAdmin(app, { username: `link-cancel-${randomUUID().slice(0, 8)}` });
     const { signOAuthState } = await import("../services/oauth-state.js");
-    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/github", {
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
       userId: target.userId,
@@ -582,13 +588,13 @@ describe("GitHub account-link return path", () => {
     const res = await app.inject({
       method: "GET",
       url: `/api/v1/auth/github/callback?error=access_denied&state=${token}`,
-      headers: { cookie: `oauth_state_nonce=${nonce}` },
+      headers: { cookie: oauthStateCookie(app, nonce) },
     });
 
     expect(res.statusCode).toBe(302);
     const fragment = new URLSearchParams(res.headers.location?.split("#")[1] ?? "");
     expect(fragment.get("error")).toBe("provider-denied");
-    expect(fragment.get("next")).toBe("/settings/github");
+    expect(fragment.get("next")).toBe("/settings/integrations/github");
     expect(fragment.get("callbackIntent")).toBe("link");
     expect(fragment.get("access")).toBeNull();
     expect(res.headers["set-cookie"]).toContain("Max-Age=0");
@@ -657,7 +663,7 @@ describe("OAuth callback rejects malformed state", () => {
       const res = await app.inject({
         method: "GET",
         url: `/api/v1/auth/github/callback?code=bad-code&state=${token}`,
-        headers: { cookie: `oauth_state_nonce=${nonce}` },
+        headers: { cookie: oauthStateCookie(app, nonce) },
       });
 
       expect(res.statusCode).toBe(302);
@@ -681,7 +687,7 @@ describe("OAuth callback rejects malformed state", () => {
     const res = await app.inject({
       method: "GET",
       url: `/api/v1/auth/github/callback?error=access_denied&state=${token}`,
-      headers: { cookie: `oauth_state_nonce=${nonce}` },
+      headers: { cookie: oauthStateCookie(app, nonce) },
     });
 
     expect(res.statusCode).toBe(302);
@@ -704,7 +710,7 @@ describe("OAuth callback rejects malformed state", () => {
       const first = await app.inject({
         method: "GET",
         url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
-        headers: { cookie: `oauth_state_nonce=${nonce}` },
+        headers: { cookie: oauthStateCookie(app, nonce) },
       });
 
       expect(first.statusCode).toBe(302);
@@ -721,7 +727,7 @@ describe("OAuth callback rejects malformed state", () => {
       const retry = await app.inject({
         method: "GET",
         url: `/api/v1/auth/github/callback?code=retry-code&state=${retryState.token}`,
-        headers: { cookie: `oauth_state_nonce=${retryState.nonce}` },
+        headers: { cookie: oauthStateCookie(app, retryState.nonce) },
       });
       expect(retry.statusCode).toBe(302);
       const retryParams = new URLSearchParams(retry.headers.location?.split("#")[1] ?? "");

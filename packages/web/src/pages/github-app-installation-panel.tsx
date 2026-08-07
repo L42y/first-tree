@@ -250,7 +250,7 @@ function ConnectPanel({
       if (!organizationId) throw new Error("No organization selected");
       rememberGithubAccountLinkReturn(organizationId);
       try {
-        return await startProviderLink("github", "/settings/github");
+        return await startProviderLink("github", "/settings/integrations/github");
       } catch (error) {
         clearGithubAccountLinkReturn();
         throw error;
@@ -315,7 +315,7 @@ function ConnectPanel({
     const installTab = window.open("", "_blank");
     // Popup opened → the new tab returns to the self-closing connected page;
     // popup blocked → the full-page redirect must return THIS tab to Settings →
-    // GitHub (undefined lets the server apply its `/settings/github` default).
+    // GitHub (undefined lets the server apply its canonical Settings default).
     const next = installTab ? "/onboarding/connected" : undefined;
     installUrlMutation.mutate(next, {
       onSuccess: (installUrl) => {

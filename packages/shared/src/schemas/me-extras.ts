@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { landingCampaignActionContextSchema, landingCampaignRepoSlugSchema } from "./landing-campaign.js";
+import { landingCampaignActionContextSchema } from "./landing-campaign.js";
 
 /**
  * Inferred onboarding step returned by `GET /me`. The server derives this
@@ -70,8 +70,7 @@ export const kickoffOnboardingSchema = z
     /**
      * Web capability handshake for the optional first-chat Orientation UI.
      * Version 1 asks the server to mark the visible bootstrap and defer the
-     * target agent until the user's next visible turn. Omitted preserves the
-     * legacy immediate-wake behavior during a rolling deployment.
+     * target agent until the user's next visible turn.
      */
     orientation: z.literal(1).optional(),
     // How the membership's onboarding state is stamped once the kickoff chat
@@ -86,24 +85,10 @@ export const kickoffOnboardingSchema = z
     // Trusted landing-campaign action context. Direct and onboarding paths use
     // the same server-composed idempotency key for this campaign + repo.
     campaignAction: landingCampaignActionContextSchema.optional(),
-    // Compatibility for already-deployed production-scan clients.
-    scanFixRepoSlug: landingCampaignRepoSlugSchema.optional(),
-    // Retained only so stale quickstart clients receive a controlled
-    // moved/disabled response from /me/onboarding/kickoff. Current campaign
-    // quickstart uses /me/landing-campaigns/start; this field must not create an
-    // onboarding kickoff chat or campaign idempotency key.
-    campaign: z
-      .string()
-      .regex(/^[a-z0-9][a-z0-9-]*$/)
-      .max(50)
-      .optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.campaignAction && value.scanFixRepoSlug) {
-      ctx.addIssue({ code: "custom", message: "Use campaignAction or scanFixRepoSlug, not both." });
-    }
-    if (value.orientation && (value.campaignAction || value.scanFixRepoSlug || value.campaign)) {
+    if (value.orientation && value.campaignAction) {
       ctx.addIssue({
         code: "custom",
         path: ["orientation"],

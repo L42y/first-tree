@@ -79,22 +79,10 @@ export type AuthControlFrame = z.infer<typeof authControlFrameSchema>;
  * frame. Older clients drop the `capabilities` field silently because the
  * frame is `.passthrough()`.
  *
- * Required by clients in the 0.10.4 ~ 0.14.2 range: those builds read
- * `wsInboxDeliver` here to decide whether to skip the local HTTP poll loop
- * and rely on `inbox:deliver` push frames. The 0.14.3+ runtime ignores the
- * field (push is the only path) but the server still emits it so middle-
- * version clients keep working.
+ * The inbox push path is mandatory rather than negotiated.
  */
 export const serverCapabilitiesSchema = z
   .object({
-    /**
-     * Server pushes inbox entries as `inbox:deliver` WS frames and accepts
-     * `inbox:ack` over the same socket. Always `true` on the current server
-     * build — the legacy `new_message` doorbell path was removed in 0.14.3,
-     * so there is no negotiation: it's signalled to the client purely so
-     * 0.10.4 ~ 0.14.2 clients suppress their local 5s HTTP poll.
-     */
-    wsInboxDeliver: z.boolean().default(false),
     /**
      * Server confirms `inbox:ack` frames that include a client-generated
      * `ref` with `inbox:ack:accepted` / `inbox:ack:rejected`. New clients use

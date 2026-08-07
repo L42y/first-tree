@@ -19,8 +19,9 @@ one task chat whether the user reaches it before or after onboarding.
 Use a public test repository and an unguessable disposable report key. Exercise
 the same action URL as a new user and as an already-onboarded user. Re-open it,
 then cross from the onboarding path to the direct path. Also try an unknown
-action value and a malformed report key. During rollout, repeat one path with a
-client that still sends the legacy Production Scan `scanFixRepoSlug` field.
+action value and a malformed report key. Also verify that an obsolete
+Production Scan `scanFixRepoSlug` request is rejected instead of being mapped
+to the current contract.
 
 Do not put source contents or report data in hidden prompt metadata. The first
 message must be the same visible task text that the agent receives.
@@ -33,8 +34,8 @@ message must be the same visible task text that the agent receives.
   optional validated report key, and repo slug in session-scoped storage.
 - Both paths create or reuse one task chat with the configured topic and visible
   repository/report instructions.
-- Re-entry, mixed path order, case differences in `owner/repo`, and the legacy
-  Production Scan field all resolve to the same Production Scan launcher key.
+- Re-entry, mixed path order, and case differences in `owner/repo` all resolve
+  to the same Production Scan launcher key; the obsolete field returns 400.
 - A malformed report key degrades to explicit no-report instructions and never
   becomes a path or URL controlled by the caller.
 - The public agent SDK request type does not offer campaign action fields, and a

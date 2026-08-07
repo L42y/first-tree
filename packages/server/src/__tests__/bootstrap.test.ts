@@ -53,7 +53,6 @@ const baseServerConfig: ServerConfig = {
   },
   observability: { logging: { level: "error", format: "json", bridgeToSpanLevel: "off" } },
   runtime: {
-    agentHttpTokenEnforcement: false,
     runtimeSwitchFaultInjection: false,
     pollingIntervalSeconds: 5,
     presenceCleanupSeconds: 60,
@@ -69,7 +68,7 @@ const baseServerConfig: ServerConfig = {
 };
 
 describe("server bootstrap", () => {
-  it("normalizes built-in, simplified, and deprecated GitLab egress configuration", () => {
+  it("normalizes built-in and configured GitLab egress configuration", () => {
     expect(buildRuntimeConfig(baseServerConfig, "12345678-1234", undefined).gitlab?.egressAllowlist).toEqual([
       { origin: "https://gitlab.com", addressPolicy: { kind: "public" } },
     ]);
@@ -81,7 +80,6 @@ describe("server bootstrap", () => {
           egressAllowlist: [
             { origin: "https://gitlab.example", addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] } },
           ],
-          legacyEgressAllowlist: undefined,
         },
       },
       "12345678-1234",
@@ -91,37 +89,6 @@ describe("server bootstrap", () => {
       { origin: "https://gitlab.com", addressPolicy: { kind: "public" } },
       { origin: "https://gitlab.example", addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] } },
     ]);
-
-    const legacy = buildRuntimeConfig(
-      {
-        ...baseServerConfig,
-        gitlab: {
-          egressAllowlist: undefined,
-          legacyEgressAllowlist: [{ origin: "https://gitlab.legacy", addressPolicy: { kind: "public" } }],
-        },
-      },
-      "12345678-1234",
-      undefined,
-    );
-    expect(legacy.gitlab?.egressAllowlist).toEqual([
-      { origin: "https://gitlab.legacy", addressPolicy: { kind: "public" } },
-    ]);
-  });
-
-  it("rejects simultaneous new and deprecated GitLab egress variables", () => {
-    expect(() =>
-      buildRuntimeConfig(
-        {
-          ...baseServerConfig,
-          gitlab: {
-            egressAllowlist: [],
-            legacyEgressAllowlist: [],
-          },
-        },
-        "12345678-1234",
-        undefined,
-      ),
-    ).toThrow(/not both/u);
   });
 
   it("allows generated server secrets only for the dev channel", () => {

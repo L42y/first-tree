@@ -52,7 +52,6 @@ import {
   hasTreeSetupKickoffMessage,
   kickoffOnboarding,
   recordCampaignActionConversion,
-  resolveCampaignActionContext,
 } from "../services/onboarding-kickoff.js";
 import {
   getOrgContextReviewRuntime,
@@ -390,29 +389,9 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post("/me/onboarding/kickoff", async (request, reply) => {
     const { userId } = requireUser(request);
-    if (hasRetiredKickoffKind(request.body)) {
-      return reply.status(409).send({
-        error:
-          'This onboarding kickoff request uses the retired "kind" contract. Refresh the First Tree web app and retry.',
-        code: "stale_onboarding_kickoff_contract",
-      });
-    }
     const body = kickoffOnboardingSchema.parse(request.body);
-    const campaign = body.campaign;
-    if (campaign) {
-      if (!app.config.growth.landingPagesEnabled) {
-        return reply.status(404).send({
-          error: "Growth landing pages are disabled on this First Tree deployment.",
-          code: "feature_disabled",
-        });
-      }
-      return reply.status(410).send({
-        error: "Campaign quickstart moved to /me/landing-campaigns/start.",
-        code: "campaign_kickoff_moved",
-      });
-    }
     const { memberId, humanAgentId, organizationId } = await resolveOnboardingMember(app, userId, body.organizationId);
-    const campaignAction = resolveCampaignActionContext(body.campaignAction, body.scanFixRepoSlug);
+    const campaignAction = body.campaignAction ?? null;
     const result = await kickoffOnboarding(app.db, {
       memberId,
       humanAgentId,
@@ -450,19 +429,6 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       app.log.info({ event: "onboarding.kickoff", userId, chatId: result.chatId }, "onboarding funnel: kickoff");
     }
     return reply.status(200).send({ chatId: result.chatId });
-  });
-
-  /**
-   * Retired browser contract. Keep an authenticated, non-mutating boundary so
-   * a tab loaded before the setup-chat migration receives a controlled answer
-   * instead of an ambiguous route-level 404.
-   */
-  app.post("/me/onboarding/tree-setup/kickoff", async (request, reply) => {
-    requireUser(request);
-    return reply.status(410).send({
-      error: "Context Tree setup moved to the team-scoped setup-chat endpoint. Refresh First Tree and try again.",
-      code: "tree_setup_kickoff_moved",
-    });
   });
 
   /**
@@ -887,8 +853,4 @@ async function resolveOnboardingMember(
     .limit(1);
   if (!row) throw new NotFoundError("Membership not found");
   return { memberId, humanAgentId: row.agentId, organizationId: row.organizationId };
-}
-
-function hasRetiredKickoffKind(body: unknown): boolean {
-  return typeof body === "object" && body !== null && "kind" in body;
 }

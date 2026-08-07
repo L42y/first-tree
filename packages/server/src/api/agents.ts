@@ -107,10 +107,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       agentId: agent.uuid,
       name: agent.name,
       displayName: agent.displayName,
-      // Wire-compat: translate `type=agent` back to the pre-merge
-      // `personal_assistant` so clients on ≤ 0.5.1 (strict zod) still
-      // decode the frame. See agentService.legacyWireAgentType.
-      agentType: agentService.legacyWireAgentType(agent.type),
+      agentType: agent.type,
       runtimeProvider: agent.runtimeProvider,
     });
     if (!parsed.success) {
@@ -141,7 +138,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         agentId: result.agent.uuid,
         name: result.agent.name,
         displayName: result.agent.displayName,
-        agentType: agentService.legacyWireAgentType(result.agent.type),
+        agentType: result.agent.type,
         oldClientId: result.recoveryAction === "aborted" || !result.oldClientId ? null : result.oldClientId,
         targetClientId: result.agent.clientId,
         runtimeProvider: result.agent.runtimeProvider,
@@ -204,7 +201,6 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         { clientId: body.clientId, runtimeProvider: body.runtimeProvider },
         { userId: scope.userId, memberId: scope.memberId },
         {
-          runtimeHttpTokenEnforced: app.config.runtime.agentHttpTokenEnforcement,
           notifier: app.notifier,
           fault: readRuntimeSwitchFaultHeader(request),
         },
@@ -228,7 +224,6 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       const { agent: existingAgent } = await requireAgentAccess(request, app.db, "manage");
       assertMutableAgentIsNotLandingCampaignTrial(existingAgent);
       const result = await agentRuntimeSwitchService.recoverAgentRuntimeSwitch(app.db, request.params.uuid, {
-        runtimeHttpTokenEnforced: app.config.runtime.agentHttpTokenEnforcement,
         notifier: app.notifier,
         fault: readRuntimeSwitchFaultHeader(request),
       });

@@ -12,15 +12,6 @@ import { members } from "../db/schema/members.js";
 import { ForbiddenError, UnauthorizedError } from "../errors.js";
 import { validateAgentRuntimeSession } from "../services/agent-runtime-session.js";
 
-type AgentSelectorOptions = {
-  enforceRuntimeSession?: boolean;
-  logger?: {
-    warn: (obj: Record<string, unknown>, msg: string) => void;
-  };
-};
-
-const legacyRuntimeHttpWarnedAgentIds = new Set<string>();
-
 /**
  * Agent-scoped HTTP authentication hook. Must run **after** userAuthHook
  * so `request.user` is populated.
@@ -37,7 +28,7 @@ const legacyRuntimeHttpWarnedAgentIds = new Set<string>();
  *   5. Populates `request.agent` so downstream handlers can keep using the
  *      same `AgentIdentity` shape.
  */
-export function agentSelectorHook(db: Database, options: AgentSelectorOptions = {}) {
+export function agentSelectorHook(db: Database) {
   return async (request: FastifyRequest, _reply: FastifyReply): Promise<void> => {
     const user = request.user;
     if (!user) {
@@ -109,30 +100,17 @@ export function agentSelectorHook(db: Database, options: AgentSelectorOptions = 
       // caller's user.
       throw new ForbiddenError("Agent not runnable by this user");
     } else if (!agentOutbox) {
-      const warnLegacyRuntimeHttpAccepted = (reason: "missing_token" | "invalid_token"): void => {
-        if (legacyRuntimeHttpWarnedAgentIds.has(row.uuid)) return;
-        legacyRuntimeHttpWarnedAgentIds.add(row.uuid);
-        options.logger?.warn(
-          { agentId: row.uuid, clientId: row.clientId, reason },
-          "legacy agent-scoped HTTP accepted without a valid runtime session token",
-        );
-      };
       const runtimeSessionToken = request.headers[AGENT_RUNTIME_SESSION_HEADER];
       if (typeof runtimeSessionToken === "string" && runtimeSessionToken.length > 0) {
         if (!(await validateAgentRuntimeSession(db, row.uuid, row.clientId, runtimeSessionToken))) {
-          if (options.enforceRuntimeSession) {
-            throw new ForbiddenError("Invalid agent runtime session", {
-              code: AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID,
-            });
-          }
-          warnLegacyRuntimeHttpAccepted("invalid_token");
+          throw new ForbiddenError("Invalid agent runtime session", {
+            code: AGENT_RUNTIME_SESSION_ERROR_CODES.INVALID,
+          });
         }
-      } else if (options.enforceRuntimeSession) {
+      } else {
         throw new ForbiddenError(`Missing ${AGENT_RUNTIME_SESSION_HEADER} header`, {
           code: AGENT_RUNTIME_SESSION_ERROR_CODES.MISSING,
         });
-      } else {
-        warnLegacyRuntimeHttpAccepted("missing_token");
       }
     } else {
       // `agent_outbox` JWTs are already route-scoped by userAuthHook to

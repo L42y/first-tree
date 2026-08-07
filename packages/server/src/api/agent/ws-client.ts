@@ -50,7 +50,6 @@ import {
   withWsMessageSpan,
 } from "../../observability/index.js";
 import * as activityService from "../../services/activity.js";
-import * as agentService from "../../services/agent.js";
 import * as agentRuntimeSessionService from "../../services/agent-runtime-session.js";
 import * as agentRuntimeSwitchService from "../../services/agent-runtime-switch.js";
 import * as clientService from "../../services/client.js";
@@ -490,10 +489,7 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
           agentId: agent.uuid,
           name: agent.name,
           displayName: agent.displayName,
-          // Wire-compat: translate `type=agent` back to the pre-merge
-          // `personal_assistant` so clients on ≤ 0.5.1 (strict zod)
-          // still decode the frame. See agentService.legacyWireAgentType.
-          agentType: agentService.legacyWireAgentType(agent.type),
+          agentType: agent.type,
           runtimeProvider: agent.runtimeProvider,
         });
         if (!parsed.success) {
@@ -1063,18 +1059,12 @@ export function clientWsRoutes(notifier: Notifier, instanceId: string) {
             // only honest once it knows which Reset protocol version this
             // server speaks — so the advertisement must arrive first.
             // Wire-additive: older clients drop the unknown type; newer ones
-            // use it to detect version drift. `capabilities.wsInboxDeliver`
-            // must stay `true` here so 0.10.4 ~ 0.14.2 clients suppress
-            // their local 5s HTTP poll on bootstrap — without this flag they
-            // would fall back to `GET /inbox` + `POST /inbox/:id/ack` and
-            // the missing ack endpoint would loop messages forever. 0.14.3+
-            // clients ignore the field entirely.
+            // use it to detect version drift.
             sendJsonOrThrow(socket, {
               type: "server:welcome",
               serverCommandVersion: app.commandVersion(),
               serverTimeMs: Date.now(),
               capabilities: {
-                wsInboxDeliver: true,
                 wsInboxAckConfirm: true,
                 wsSessionEventConfirm: true,
                 wsSessionResetV1: true,

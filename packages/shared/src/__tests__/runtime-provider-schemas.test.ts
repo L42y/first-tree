@@ -106,22 +106,18 @@ describe("capabilityEntrySchema", () => {
   // the capability schema (detection is install-only, no auth probe).
 });
 
-describe("capabilityEntrySchema — cross-version wire compat (rolling upgrade)", () => {
-  it("coerces a legacy `unauthenticated` state from an older daemon to `ok` (not rejected)", () => {
-    // Reject-on-one-bad-entry would drop a client's whole snapshot; an old
-    // daemon's `unauthenticated` (installed-but-logged-out, available:true) must
-    // be accepted and normalized to the canonical install-only `ok`.
-    const parsed = capabilityEntrySchema.parse({
-      state: "unauthenticated",
-      available: true,
-      authenticated: false,
-      authMethod: "none",
-      detectedAt: new Date().toISOString(),
-    });
-    expect(parsed.state).toBe("ok");
+describe("capabilityEntrySchema — canonical wire shape", () => {
+  it("rejects the retired `unauthenticated` state", () => {
+    expect(() =>
+      capabilityEntrySchema.parse({
+        state: "unauthenticated",
+        available: true,
+        detectedAt: new Date().toISOString(),
+      }),
+    ).toThrow();
   });
 
-  it("accepts (and keeps) the deprecated `authenticated` / `authMethod` an older server requires", () => {
+  it("ignores obsolete extra auth fields", () => {
     const parsed = capabilityEntrySchema.parse({
       state: "ok",
       available: true,
@@ -129,34 +125,17 @@ describe("capabilityEntrySchema — cross-version wire compat (rolling upgrade)"
       authMethod: "oauth",
       detectedAt: new Date().toISOString(),
     });
-    expect(parsed.authenticated).toBe(true);
-    expect(parsed.authMethod).toBe("oauth");
+    expect(parsed).not.toHaveProperty("authenticated");
+    expect(parsed).not.toHaveProperty("authMethod");
   });
 
-  it("accepts a new-shape entry that omits the deprecated auth fields", () => {
+  it("round-trips the canonical state shape", () => {
     const parsed = capabilityEntrySchema.parse({
       state: "ok",
       available: true,
       detectedAt: new Date().toISOString(),
     });
-    expect(parsed.authenticated).toBeUndefined();
-    expect(parsed.authMethod).toBeUndefined();
-  });
-
-  it("a legacy `unauthenticated` entry does not poison the rest of the snapshot", () => {
-    const parsed = clientCapabilitiesSchema.parse({
-      "claude-code": { state: "ok", available: true, detectedAt: new Date().toISOString() },
-      codex: {
-        state: "unauthenticated",
-        available: true,
-        authenticated: false,
-        authMethod: "none",
-        detectedAt: new Date().toISOString(),
-      },
-    });
-    // Both entries survive; the legacy one is normalized to `ok`.
-    expect(parsed["claude-code"]?.state).toBe("ok");
-    expect(parsed.codex?.state).toBe("ok");
+    expect(parsed).toMatchObject({ state: "ok", available: true });
   });
 });
 

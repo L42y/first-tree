@@ -1341,7 +1341,8 @@ After selection, the projected Skill uses:
 ```text
 first-tree --json context snapshot --candidate CANDIDATE
 first-tree --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
-first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed
+first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed \
+  [--github-login LOGIN]
 first-tree --json context write-status --team TEAM --plan-anchor DIGEST
 first-tree --json context write-finish --team TEAM --operation OPERATION
 ```
@@ -2044,7 +2045,6 @@ server secrets even if `FIRST_TREE_CHANNEL` is omitted or defaults to `dev`.
 | Variable | Purpose | Default |
 |---|---|---|
 | `FIRST_TREE_GITLAB_ALLOWED_ORIGINS` | Additional exact GitLab origins that Cloud may read anonymously over HTTPS. | `[]` plus built-in `https://gitlab.com` |
-| `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST` | Deprecated compatibility input using the former `{ origin, addressPolicy }` shape. | — |
 
 Public origins are strings. Private destinations attach explicit IPv4/IPv6
 CIDRs:
@@ -2066,11 +2066,7 @@ connection and save a matching Context Tree binding without extending this
 policy; Web Context then reports an actionable unavailable state until the
 deployment authorizes that origin.
 
-The deprecated `FIRST_TREE_GITLAB_EGRESS_ALLOWLIST` remains accepted so
-existing deployments can upgrade without rewriting configuration immediately.
-When it is set, its exact legacy list is preserved and the built-in
-`gitlab.com` origin is not added. Setting both old and new variables fails
-startup instead of choosing an ambiguous precedence. Invalid JSON, duplicate
+Invalid JSON, duplicate
 origins, empty or malformed CIDR policy, and any CIDR rooted in a permanently
 blocked range also fail server startup.
 

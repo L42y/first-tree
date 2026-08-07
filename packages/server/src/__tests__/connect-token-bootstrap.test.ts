@@ -1,18 +1,16 @@
 import { execFile } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import { connectCodes } from "../db/schema/connect-codes.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { createTestAdmin, createTestApp, useTestApp } from "./helpers.js";
 
-const TEST_JWT_SECRET = "test-jwt-secret-key-for-vitest";
 const execFileAsync = promisify(execFile);
 async function writeExecutable(path: string, contents: string): Promise<void> {
   await writeFile(path, contents);
@@ -77,15 +75,6 @@ function expectShortConnectCode(token: string): string {
   expect(token).not.toContain(".");
   expect(token).not.toContain("/");
   return token;
-}
-
-async function signLegacyConnectJwt(userId: string): Promise<string> {
-  return new SignJWT({ sub: userId, type: "connect", iss: "http://first-tree.test" })
-    .setProtectedHeader({ alg: "HS256" })
-    .setIssuedAt()
-    .setJti(randomUUID())
-    .setExpirationTime("10m")
-    .sign(new TextEncoder().encode(TEST_JWT_SECRET));
 }
 
 describe("POST /me/connect-tokens bootstrap command", () => {
@@ -547,27 +536,6 @@ describe("POST /me/connect-tokens bootstrap command", () => {
 
       expect(res.statusCode).toBe(401);
       expect(res.json<{ error: string }>().error).toMatch(/No active membership/);
-    });
-
-    it("keeps accepting legacy JWT connect tokens during rollout", async () => {
-      const app = getApp();
-      const admin = await createTestAdmin(app);
-      const token = await signLegacyConnectJwt(admin.userId);
-
-      const first = await app.inject({
-        method: "POST",
-        url: "/api/v1/auth/connect-token",
-        payload: { token },
-      });
-      expect(first.statusCode).toBe(200);
-
-      const second = await app.inject({
-        method: "POST",
-        url: "/api/v1/auth/connect-token",
-        payload: { token },
-      });
-      expect(second.statusCode).toBe(401);
-      expect(second.json<{ error: string }>().error).toMatch(/already been used/);
     });
   });
 });

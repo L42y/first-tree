@@ -48,18 +48,6 @@ function wireCapabilities(metadata: unknown): Record<string, unknown> | undefine
   return (metadata as Record<string, unknown> | null)?.wireCapabilities as Record<string, unknown> | undefined;
 }
 
-/**
- * The LEGACY apply-only flag out of a `clients.metadata` blob. It identifies
- * a pre-v1 client and is NOT a Reset verdict: such a client answers the
- * apply-ack and then waits for a post-apply terminal disposition
- * (`finalized` / `aborted`) it does not understand. Kept so this server can
- * recognise old clients (and so the mixed-fleet regression can prove a current
- * client is not mistaken for one).
- */
-export function metadataHasLegacyApplyAckCapability(metadata: unknown): boolean {
-  return wireCapabilities(metadata)?.wsSessionTerminateApplyAck === true;
-}
-
 /** The composite `wsSessionResetV1` flag out of a `clients.metadata` blob. */
 export function metadataHasSessionResetV1Capability(metadata: unknown): boolean {
   return wireCapabilities(metadata)?.wsSessionResetV1 === true;
@@ -73,12 +61,8 @@ export function metadataHasSessionResetV1Capability(metadata: unknown): boolean 
  * (`finalized` for a durable eviction and `aborted` when the server could not
  * finalize) — so there is no way to negotiate half of it.
  *
- * The legacy apply-only flag deliberately does NOT count, in either
- * direction. An old client that declares it would park its intervening rows
- * behind a fence this server lifts with a frame the client never answers, so
- * Reset stays hidden and fails closed before anything destructive is applied
- * locally; and a current client never sends it, so an older server offering
- * the legacy flow finds no consent either.
+ * Missing `wsSessionResetV1` never counts, so unsupported clients stay hidden
+ * and fail closed before anything destructive is applied locally.
  */
 export function metadataSupportsSessionReset(metadata: unknown): boolean {
   return metadataHasSessionResetV1Capability(metadata);

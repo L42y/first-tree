@@ -487,6 +487,9 @@ function createFlowValue(overrides: FlowOverrides = {}): OnboardingFlowValue {
     teamDisplayName: "Acme",
     orgHasOtherMembers: true,
     computer: {
+      connectedClients: CLIENTS[0] ? [CLIENTS[0]] : [],
+      selectedClientId: CLIENTS[0]?.id ?? null,
+      setSelectedClientId: vi.fn(),
       connectedClient: CLIENTS[0] ?? null,
       capabilitiesLoaded: true,
       okRuntimes: ["claude-code", "codex"],
@@ -1448,7 +1451,7 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#error=state-expired&next=/settings/github",
+        hash: "#error=state-expired&next=/settings/integrations/github",
         pathname: "/auth/github/complete",
       },
     });
@@ -1456,7 +1459,7 @@ describe("web DOM interaction coverage", () => {
     const expired = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("took too long or was already used", expired.container);
     const back = expired.container.querySelector<HTMLAnchorElement>("a");
-    expect(back?.getAttribute("href")).toBe("/settings/github?error=state-expired&flow=link");
+    expect(back?.getAttribute("href")).toBe("/settings/integrations/github?error=state-expired&flow=link");
     await unmountRoot(expired.root);
 
     // Provider cancellation closes the paired sign-in attempt with a fixed,
@@ -1490,14 +1493,14 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#error=install-not-verified&next=/settings/github&expectedGithubLogin=linked-user&callbackIntent=install",
+        hash: "#error=install-not-verified&next=/settings/integrations/github&expectedGithubLogin=linked-user&callbackIntent=install",
         pathname: "/auth/github/complete",
       },
     });
     const mismatch = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("Use @linked-user, then try again", mismatch.container);
     expect(mismatch.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
-      "/settings/github?error=install-not-verified&flow=install",
+      "/settings/integrations/github?error=install-not-verified&flow=install",
     );
     await unmountRoot(mismatch.root);
 
@@ -1516,7 +1519,7 @@ describe("web DOM interaction coverage", () => {
     const expiredInstall = await renderDom(<OAuthCompletePage />, "/auth/github/complete");
     await waitForText("took too long or was already used", expiredInstall.container);
     expect(expiredInstall.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe(
-      "/settings/github?error=state-expired&flow=install",
+      "/settings/integrations/github?error=state-expired&flow=install",
     );
     expect(hasGithubInstallAttempt()).toBe(true);
     await unmountRoot(expiredInstall.root);
@@ -1538,7 +1541,7 @@ describe("web DOM interaction coverage", () => {
       configurable: true,
       value: {
         ...window.location,
-        hash: "#access=a&refresh=r&next=/settings/github&joinPath=returning&org=org-b&orgPinned=1&callbackIntent=install",
+        hash: "#access=a&refresh=r&next=/settings/integrations/github&joinPath=returning&org=org-b&orgPinned=1&callbackIntent=install",
         pathname: "/auth/github/complete",
       },
     });
@@ -2074,6 +2077,9 @@ describe("web DOM interaction coverage", () => {
       setVisibility,
       createAgent,
       computer: {
+        connectedClients: CLIENTS[0] ? [CLIENTS[0]] : [],
+        selectedClientId: CLIENTS[0]?.id ?? null,
+        setSelectedClientId: vi.fn(),
         connectedClient: CLIENTS[0] ?? null,
         capabilitiesLoaded: true,
         okRuntimes: ["claude-code", "codex"],
@@ -2117,6 +2123,96 @@ describe("web DOM interaction coverage", () => {
     await unmountRoot(root);
   });
 
+  it("requires a computer choice before showing runtime options when several are online", async () => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: false };
+    const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
+    const setSelectedClientId = vi.fn();
+    const firstClient = CLIENTS[0];
+    const secondClientBase = CLIENTS[1];
+    if (!firstClient || !secondClientBase) throw new Error("Expected two connected client fixtures");
+    const secondClient: HubClient = {
+      ...secondClientBase,
+      status: "connected",
+      authState: "ok",
+    };
+    const { container, root } = await renderOnboardingDom(<StepCreateAgent />, {
+      activeStep: "create-agent",
+      computer: {
+        connectedClients: [firstClient, secondClient],
+        selectedClientId: null,
+        setSelectedClientId,
+        connectedClient: null,
+        capabilitiesLoaded: false,
+        okRuntimes: [],
+        selectedRuntime: null,
+        setSelectedRuntime: vi.fn(),
+        cliCommand: "first-tree-dev login token",
+        tokenError: null,
+        retry: vi.fn(),
+      },
+    });
+
+    await waitForText("Choose a computer", container);
+    expect(container.textContent).not.toContain("Not ready");
+    expect(container.textContent).not.toContain("isn't connected");
+    expect(container.querySelectorAll('input[name="onboarding-coding-agent"]')).toHaveLength(0);
+    const create = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Create agent"),
+    );
+    expect(create?.disabled).toBe(true);
+
+    await click(container.querySelector("#onboarding-agent-computer"));
+    await click(
+      [...document.body.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+        button.textContent?.includes("alice-linux"),
+      ) ?? null,
+    );
+    expect(setSelectedClientId).toHaveBeenCalledWith("client-2");
+    await unmountRoot(root);
+  });
+
+  it("explains how to recover when the selected computer has no ready runtime", async () => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: false };
+    const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
+    const firstClient = CLIENTS[0];
+    const secondClientBase = CLIENTS[1];
+    if (!firstClient || !secondClientBase) throw new Error("Expected two connected client fixtures");
+    const secondClient: HubClient = {
+      ...secondClientBase,
+      status: "connected",
+      authState: "ok",
+    };
+    const { container, root } = await renderOnboardingDom(<StepCreateAgent />, {
+      activeStep: "create-agent",
+      computer: {
+        connectedClients: [firstClient, secondClient],
+        selectedClientId: secondClient.id,
+        setSelectedClientId: vi.fn(),
+        connectedClient: secondClient,
+        capabilitiesLoaded: true,
+        okRuntimes: [],
+        selectedRuntime: null,
+        setSelectedRuntime: vi.fn(),
+        cliCommand: "first-tree-dev login token",
+        tokenError: null,
+        retry: vi.fn(),
+      },
+    });
+
+    await waitForText("Nothing is ready to run on this computer", container);
+    expect(container.textContent).not.toContain("Not ready");
+    expect(container.querySelectorAll('input[name="onboarding-coding-agent"]')).toHaveLength(0);
+    const recoveryLink = container.querySelector<HTMLAnchorElement>('a[href="/settings/computers"]');
+    expect(recoveryLink?.textContent).toContain("Finish setup in Settings → Computers");
+    expect(recoveryLink?.target).toBe("_blank");
+    expect(recoveryLink?.rel).toContain("noopener");
+    const create = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Create agent"),
+    );
+    expect(create?.disabled).toBe(true);
+    await unmountRoot(root);
+  });
+
   it("handles create-agent timeout actions", async () => {
     const { StepCreateAgent } = await import("../onboarding/steps/step-create-agent.js");
     const retryAgent = vi.fn(async () => undefined);
@@ -2151,6 +2247,9 @@ describe("web DOM interaction coverage", () => {
       activeStep: "create-agent",
       goTo,
       computer: {
+        connectedClients: [],
+        selectedClientId: null,
+        setSelectedClientId: vi.fn(),
         connectedClient: null,
         capabilitiesLoaded: true,
         okRuntimes: [],

@@ -704,7 +704,6 @@ describe("small API route handlers", () => {
       clearAgentAvatarImage: vi.fn(),
       fetchUserAvatarForHumanAgent: vi.fn().mockResolvedValue(null),
       getAgentAvatarImage: vi.fn(),
-      legacyWireAgentType: vi.fn(() => "personal_assistant"),
       resolveAvatarImageUrl: vi.fn(() => null),
       setAgentAvatarImage: vi.fn(),
       stripReservedAgentMetadata: vi.fn((metadata: unknown) => metadata ?? {}),
@@ -731,7 +730,7 @@ describe("small API route handlers", () => {
     const notifyAgentRouteChange = vi.fn().mockResolvedValue(undefined);
     const { agentRoutes } = await import("../api/agents.js");
     const { app, routes } = makeApp({
-      config: { runtime: { agentHttpTokenEnforcement: true, runtimeSwitchFaultInjection: true } },
+      config: { runtime: { runtimeSwitchFaultInjection: true } },
       log: { warn },
       notifier: { notifyAgentRouteChange },
     });
@@ -751,7 +750,7 @@ describe("small API route handlers", () => {
     expect(routeMocks.recoverAgentRuntimeSwitch).toHaveBeenCalledWith(
       { name: "db" },
       "agent_1",
-      expect.objectContaining({ runtimeHttpTokenEnforced: true }),
+      expect.objectContaining({ notifier: expect.any(Object) }),
     );
     expect(notifyAgentRouteChange).toHaveBeenCalledWith(expect.objectContaining({ targetClientId: "client_new" }));
     expect(warn).toHaveBeenCalledWith(expect.any(Object), "agent:pinned frame failed schema validation — not sending");
@@ -775,7 +774,6 @@ describe("small API route handlers", () => {
         createdAt,
         updatedAt: createdAt,
       }),
-      legacyWireAgentType: vi.fn(() => "personal_assistant"),
       resolveAvatarImageUrl: vi.fn(() => null),
       stripReservedAgentMetadata: vi.fn((metadata: unknown) => metadata ?? {}),
     }));

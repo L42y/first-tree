@@ -46,7 +46,7 @@ async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, ap
 }
 
 describe("Context Reviewer App publisher", () => {
-  const getApp = useTestApp({ githubAppPrivateKeyPem: privateKeyPem, runtimeHttpTokenEnforcement: false });
+  const getApp = useTestApp({ githubAppPrivateKeyPem: privateKeyPem });
 
   it("publishes one App review for GitHub's current head and records durable audit state", async () => {
     const fixture = await createRunFixture(getApp());
@@ -304,7 +304,7 @@ describe("Context Reviewer App publisher", () => {
       payload: { event: "APPROVE", body: "Approved" },
     });
     expect(missingProof.statusCode).toBe(403);
-    expect(missingProof.json()).toMatchObject({ code: "CONTEXT_REVIEW_RUNTIME_SESSION_REQUIRED" });
+    expect(missingProof.json()).toMatchObject({ code: "AGENT_RUNTIME_SESSION_MISSING" });
 
     vi.stubGlobal("fetch", successfulGithubFetcher());
     const accepted = await fixture.app.inject({

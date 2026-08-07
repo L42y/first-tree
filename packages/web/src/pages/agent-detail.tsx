@@ -1,4 +1,8 @@
-import type { RuntimeProvider } from "@first-tree/shared";
+import {
+  MIN_RUNTIME_SWITCH_CLIENT_VERSION,
+  type RuntimeProvider,
+  supportsRuntimeSwitchClientVersion,
+} from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageSquare, Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -47,10 +51,8 @@ import {
   type TabDef,
 } from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
-import { useLegacyAnchorRedirect } from "./agent-detail/use-legacy-anchor-redirect.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
 
-const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.11";
 type RuntimeSwitchDialogStep = "target" | "confirm";
 
 export function AgentDetailPage() {
@@ -69,8 +71,6 @@ function AgentDetailPageView() {
   const { memberId, role } = useAuth();
   // Narrow web viewports trade the local navigation rail for a section selector.
   const isNarrow = useWorkspaceViewport() === "narrow";
-  useLegacyAnchorRedirect();
-
   const agentQuery = useQuery({
     queryKey: ["agent", uuid],
     queryFn: () => getAgent(uuid),
@@ -956,27 +956,6 @@ function readRuntimeSwitchClaim(metadata: Record<string, unknown>): RuntimeSwitc
   };
 }
 
-function isVersionAtLeast(version: string | null, minimum: string): boolean {
-  if (!version) return false;
-  const parse = (value: string) =>
-    value
-      .replace(/^v/, "")
-      .split(/[.-]/)
-      .slice(0, 3)
-      .map((part) => Number.parseInt(part, 10));
-  const actual = parse(version);
-  const required = parse(minimum);
-  for (let i = 0; i < 3; i += 1) {
-    const actualPart = actual[i] ?? 0;
-    const requiredPart = required[i] ?? 0;
-    const a = Number.isFinite(actualPart) ? actualPart : 0;
-    const b = Number.isFinite(requiredPart) ? requiredPart : 0;
-    if (a > b) return true;
-    if (a < b) return false;
-  }
-  return true;
-}
-
 function capabilitiesReported(client: HubClient): boolean {
   return Object.keys(client.capabilities ?? {}).length > 0;
 }
@@ -989,14 +968,14 @@ export function runtimeSwitchAvailableProviders(client: HubClient): RuntimeProvi
 function isRuntimeSwitchCandidateClient(client: HubClient): boolean {
   return (
     client.authState === "ok" &&
-    isVersionAtLeast(client.sdkVersion, MIN_RUNTIME_SWITCH_CLIENT_VERSION) &&
+    supportsRuntimeSwitchClientVersion(client.sdkVersion) &&
     runtimeSwitchAvailableProviders(client).length > 0
   );
 }
 
 function runtimeSwitchClientBlocker(client: HubClient): string | null {
   if (client.authState !== "ok") return "Credentials expired";
-  if (!isVersionAtLeast(client.sdkVersion, MIN_RUNTIME_SWITCH_CLIENT_VERSION)) {
+  if (!supportsRuntimeSwitchClientVersion(client.sdkVersion)) {
     return `Requires CLI ${MIN_RUNTIME_SWITCH_CLIENT_VERSION}+`;
   }
   if (runtimeSwitchAvailableProviders(client).length === 0) return "No available runtime provider";
