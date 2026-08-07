@@ -83,15 +83,9 @@ importers:
       '@first-tree/client':
         specifier: workspace:*
         version: link:../../packages/client
-      '@first-tree/server':
-        specifier: workspace:*
-        version: link:../../packages/server
       '@first-tree/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@first-tree/web':
-        specifier: workspace:*
-        version: link:../../packages/web
       '@types/ejs':
         specifier: ^3.1.5
         version: 3.1.5

@@ -42,6 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      cli: ${{ steps.filter.outputs.cli }}
       skills: ${{ steps.filter.outputs.skills }}
     steps:
       - uses: actions/checkout@v4
@@ -57,6 +58,20 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'tsconfig.json'
               - 'biome.json'
+              - 'turbo.json'
+              - '.github/**'
+            cli:
+              - 'apps/cli/**'
+              - 'packages/client/**'
+              - 'packages/shared/**'
+              - 'skills/**'
+              - 'scripts/**'
+              - 'patches/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'tsconfig.json'
+              - 'tsconfig.base.json'
               - 'turbo.json'
               - '.github/**'
             skills:
@@ -185,15 +200,21 @@ jobs:
         run: pnpm exec turbo run test --filter='!@first-tree/server' --filter='!first-tree-dev' --concurrency=2
 
   test_cli:
-    name: Test CLI
+    name: Test CLI (${{ matrix.shard }}/2)
     needs: changes
-    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    if: needs.changes.outputs.cli == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       # The CLI suite previously exhausted a single worker's ~4GB V8 heap.
-      # Keep its bounded batches serial and isolate them from every other
-      # package on a dedicated runner.
+      # Each shard keeps bounded batches serial on its own runner. The two
+      # independent heaps halve wall time without returning to a monolithic
+      # Vitest process or stacking both shards inside one ~7GB runner.
       VITEST_MAX_FORKS: "1"
+      FIRST_TREE_CLI_TEST_SHARD: ${{ matrix.shard }}/2
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -205,9 +226,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .turbo
-          key: ${{ runner.os }}-turbo-test-cli-${{ github.sha }}
+          key: ${{ runner.os }}-turbo-test-cli-${{ matrix.shard }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-turbo-test-cli-
+            ${{ runner.os }}-turbo-test-cli-${{ matrix.shard }}-
       - run: pnpm install --frozen-lockfile
       # `post-bundle-channel-home.test.ts` spawns the built CLI dist
       # binary to verify channel-home resolution. Without an explicit
@@ -218,7 +239,34 @@ jobs:
       # Timeout calling "onTaskUpdate"`), failing the job even though
       # all 233 tests passed. Building before vitest starts keeps the
       # heavy work outside the worker IPC window.
-      - run: pnpm build
+      - run: pnpm exec turbo run build --filter=first-tree-dev...
+      # Keep the CLI behind Turbo so each unchanged shard can use its own
+      # cache while the package script releases heap between bounded batches.
+      - run: pnpm exec turbo run test --filter=first-tree-dev --concurrency=1
+
+  test_cli_release_smoke:
+    name: Test CLI Release Smoke
+    needs: changes
+    # Keep the exact pre-sharding cadence: every code-affecting PR and every
+    # main push. This job is intentionally broader than changes.cli.
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+      - name: Restore Turborepo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-turbo-test-cli-release-smoke-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-test-cli-release-smoke-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec turbo run build --filter=first-tree-dev...
       # The npm release surface packs with a bundled Kimi SDK; npm's
       # trusted-publishing client is pinned to the exact version QA qualifies
       # (a floated range already broke this boundary upstream). Smoke the real
@@ -233,17 +281,15 @@ jobs:
         run: npm install -g npm@11.5.1
       - name: Release pack smoke (bundled Kimi SDK + turbo context-integration cache)
         run: node scripts/release-pack-smoke.mjs selftest-turbo-context-integration-cache
-      # Keep the CLI behind Turbo so an unchanged first-tree-dev#test task can
-      # use cache while its package script releases heap between batches.
-      - run: pnpm exec turbo run test --filter=first-tree-dev --concurrency=1
 
   test:
     name: Test
-    needs: [changes, test_server, test_client_web, test_cli]
+    needs: [changes, test_server, test_client_web, test_cli, test_cli_release_smoke]
     if: >-
       always() &&
       (needs.changes.result != 'success' ||
        needs.changes.outputs.code == 'true' ||
+       needs.changes.outputs.cli == 'true' ||
        github.event_name == 'push')
     runs-on: ubuntu-latest
     steps:
@@ -255,14 +301,32 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           SERVER_RESULT: ${{ needs.test_server.result }}
           CLIENT_WEB_RESULT: ${{ needs.test_client_web.result }}
+          CODE_REQUIRED: ${{ needs.changes.outputs.code == 'true' || github.event_name == 'push' }}
           CLI_RESULT: ${{ needs.test_cli.result }}
+          CLI_REQUIRED: ${{ needs.changes.outputs.cli }}
+          CLI_RELEASE_SMOKE_RESULT: ${{ needs.test_cli_release_smoke.result }}
         run: |
-          for result in "$CHANGES_RESULT" "$SERVER_RESULT" "$CLIENT_WEB_RESULT" "$CLI_RESULT"; do
-            if [ "$result" != "success" ]; then
-              echo "::error::A required test job finished with result: $result"
+          require_result() {
+            name="$1"
+            result="$2"
+            required="$3"
+            expected="skipped"
+            if [ "$required" = "true" ]; then
+              expected="success"
+            fi
+            if [ "$result" != "$expected" ]; then
+              echo "::error::$name result was $result; expected $expected"
               exit 1
             fi
-          done
+          }
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::Detect Changes result was $CHANGES_RESULT; expected success"
+            exit 1
+          fi
+          require_result "Test Server" "$SERVER_RESULT" "$CODE_REQUIRED"
+          require_result "Test Client & Web" "$CLIENT_WEB_RESULT" "$CODE_REQUIRED"
+          require_result "Test CLI" "$CLI_RESULT" "$CLI_REQUIRED"
+          require_result "Test CLI Release Smoke" "$CLI_RELEASE_SMOKE_RESULT" "$CODE_REQUIRED"
 
   portable-smoke:
     name: Portable CLI Smoke
