@@ -576,7 +576,7 @@ describe("runtime provider architecture guard", () => {
     for (const rel of CATALOG_CONSUMER_FILES) {
       const source = readFileSync(join(repoRoot, rel), "utf8");
       if (rel.endsWith("new-agent-dialog.tsx")) {
-        expect(source).toContain("pickPreferredRuntimeProvider");
+        expect(source).toMatch(/\b(?:pickPreferredRuntimeProvider|resolveRuntimeSelection)\b/);
         expect(source).toContain("enabledOkRuntimeProviders");
         expect(source).toContain("runtimeProviderLabel");
         expect(source).toContain("PREFERRED_RUNTIME_PROVIDER");
@@ -587,7 +587,7 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toMatch(/function asRuntimeProvider/);
       }
       if (rel.endsWith("use-computer-connection.ts")) {
-        expect(source).toContain("pickPreferredRuntimeProvider");
+        expect(source).toMatch(/\b(?:pickPreferredRuntimeProvider|resolveRuntimeSelection)\b/);
         expect(source).toContain("enabledOkRuntimeProviders");
         expect(source).not.toContain("Object.entries(activeCapabilities)");
         expect(source).not.toMatch(/Object\.entries\([^)]*capabilities/);
