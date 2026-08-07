@@ -1,9 +1,13 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import {
+  PROVIDER_SUPPORT_EXPORT_ALLOWLISTS,
+  TRANSITIONAL_PROVIDER_FAMILY_FILES,
+} from "./provider-support-export-allowlists.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const clientSrc = join(here, "..");
@@ -686,37 +690,32 @@ describe("runtime provider architecture guard", () => {
     /**
      * Fail-closed classification for provider-side production code.
      *
-     * Provider-side files: handlers/**, providers/**, and transitional
-     * provider-family modules still under runtime/ (binaries, login,
-     * capabilities, OpenCode private config). For any import that resolves
-     * into `runtime/`, the only legal targets are:
+     * Provider-side files: handlers/**, providers/**, and the exact
+     * transitional provider-family modules listed in
+     * TRANSITIONAL_PROVIDER_FAMILY_FILES. For any import that resolves into
+     * `runtime/`, the only legal targets are:
      *   - runtime/contracts.js
      *   - runtime/provider-support/index.js
-     *   - an exact transitional provider-owned module (family code)
-     * Every other runtime path — including provider-support/<group>.js —
-     * fails closed. A newly added Runtime owner is rejected automatically
-     * because it is absent from the transitional allowlist (not because it
-     * must be added to a blacklist).
+     *   - an exact transitional provider-owned module from that list
+     * Every other runtime path — including provider-support/<group>.js and
+     * newly named `*-login` / `*-binary` files — fails closed because it is
+     * absent from the explicit allowlist.
      */
-    const transitionalTargets = new Set<string>();
-    for (const file of listFilesRecursive(join(clientSrc, "runtime"), (p) => p.endsWith(".ts"))) {
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
-      const name = rel.split("/").pop() ?? "";
-      if (
-        name.endsWith("-binary.ts") ||
-        name.endsWith("-login.ts") ||
-        rel.startsWith("runtime/capabilities/") ||
-        name === "opencode-private-config.ts"
-      ) {
-        transitionalTargets.add(rel.replace(/\.ts$/, ".js"));
-      }
+    const transitionalTargets = new Set(TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => rel.replace(/\.ts$/, ".js")));
+
+    // Explicit list must stay in sync with on-disk transitional modules.
+    for (const rel of TRANSITIONAL_PROVIDER_FAMILY_FILES) {
+      expect(existsSync(join(clientSrc, rel)), `missing transitional file ${rel}`).toBe(true);
     }
+    // Pattern-shaped newcomers are NOT automatically trusted.
+    expect(transitionalTargets.has("runtime/brand-new-login.js")).toBe(false);
+    expect(transitionalTargets.has("runtime/brand-new-binary.js")).toBe(false);
 
     function listProviderSideFiles(): string[] {
       return [
         ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
         ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-        ...[...transitionalTargets].map((js) => join(clientSrc, js.replace(/\.js$/, ".ts"))),
+        ...TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => join(clientSrc, rel)),
       ];
     }
 
@@ -859,6 +858,8 @@ describe("runtime provider architecture guard", () => {
     expect(classifyRuntimeImport("runtime/provider-support/binary-failure.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/agent-io.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/install-locations.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/brand-new-login.js")).toBe("forbidden");
+    expect(classifyRuntimeImport("runtime/brand-new-binary.js")).toBe("forbidden");
 
     const cursorHandler = join(clientSrc, "handlers/cursor/index.ts");
     function expectForbiddenRuntimeSpec(source: string, expectedSpec: string): void {
@@ -937,46 +938,152 @@ describe("runtime provider architecture guard", () => {
     }
   });
 
-  it("keeps provider-support entry an explicit allowlist without session/runtime owners or concrete providers", () => {
-    const entry = readFileSync(join(clientSrc, "runtime/provider-support/index.ts"), "utf8");
-    expect(entry).toContain("prepareManagedSession");
-    expect(entry).toContain("./preparation.js");
-    expect(entry).toContain("./process-supervision.js");
-    expect(entry).toContain("./failure-policy.js");
-    expect(entry).toContain("./turn-prompt.js");
-    expect(entry).toContain("./turn-input.js");
-    expect(entry).toContain("./tree-tracking.js");
-    expect(entry).toContain("./host-runtime.js");
-    expect(entry).not.toMatch(/export\s+\*\s+from/);
-    for (const banned of [
-      "SessionManager",
-      "SessionRegistry",
-      "AgentSlot",
-      "AgentRuntime",
-      "createBuiltinHandlerRegistry",
-      "HANDLER_REGISTRY",
-    ]) {
-      expect(entry, `provider-support must not export ${banned}`).not.toMatch(new RegExp(`\\b${banned}\\b`));
+  it("pins provider-support entry and group modules to exact AST export allowlists", () => {
+    /**
+     * Exact `(kind, exportedName, originalName, sourceModule)` tuples — not
+     * substring / banned-name predicates. Adding any seam symbol requires an
+     * explicit allowlist edit in provider-support-export-allowlists.ts.
+     */
+    function isExported(node: ts.HasModifiers): boolean {
+      return !!ts.getModifiers(node)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
     }
-    // No concrete provider binary / login / capability re-exports.
-    expect(entry).not.toMatch(/codex-binary|cursor-binary|grok-binary|pi-binary|opencode-binary|kimi-binary/);
-    expect(entry).not.toMatch(/claude-login|codex-login|cursor-login|grok-login/);
-    expect(entry).not.toMatch(/capabilities\//);
 
-    // Group modules stay allowlists too.
-    for (const group of [
-      "preparation.ts",
-      "process-supervision.ts",
-      "failure-policy.ts",
-      "turn-prompt.ts",
-      "turn-input.ts",
-      "tree-tracking.ts",
-      "host-runtime.ts",
-    ] as const) {
-      const source = readFileSync(join(clientSrc, "runtime/provider-support", group), "utf8");
-      expect(source, `${group} must not export *`).not.toMatch(/export\s+\*\s+from/);
-      expect(source, `${group} must not mention SessionManager`).not.toMatch(/\bSessionManager\b/);
+    function extractExportTuples(source: string): {
+      tuples: string[];
+      violations: string[];
+    } {
+      const sourceFile = ts.createSourceFile("exports.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const tuples: string[] = [];
+      const violations: string[] = [];
+
+      for (const node of sourceFile.statements) {
+        if (ts.isExportDeclaration(node)) {
+          if (node.moduleSpecifier && !ts.isStringLiteralLike(node.moduleSpecifier)) {
+            violations.push("non-literal export module specifier");
+            continue;
+          }
+          if (!node.exportClause && node.moduleSpecifier) {
+            violations.push(
+              `export * from ${ts.isStringLiteralLike(node.moduleSpecifier) ? node.moduleSpecifier.text : "?"}`,
+            );
+            continue;
+          }
+          if (node.exportClause && ts.isNamespaceExport(node.exportClause)) {
+            violations.push("export * as namespace");
+            continue;
+          }
+          if (node.exportClause && ts.isNamedExports(node.exportClause)) {
+            const sourceModule =
+              node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)
+                ? node.moduleSpecifier.text
+                : "<local>";
+            for (const el of node.exportClause.elements) {
+              const kind = node.isTypeOnly || el.isTypeOnly ? "type" : "value";
+              const exportedName = el.name.text;
+              const originalName = el.propertyName ? el.propertyName.text : exportedName;
+              tuples.push(`${kind}|${exportedName}|${originalName}|${sourceModule}`);
+            }
+            continue;
+          }
+          violations.push("unsupported ExportDeclaration shape");
+          continue;
+        }
+
+        if (ts.isExportAssignment(node)) {
+          violations.push(node.isExportEquals ? "export =" : "export default");
+          continue;
+        }
+
+        if (ts.isFunctionDeclaration(node) && isExported(node)) {
+          if (!node.name) violations.push("unnamed exported function");
+          else tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
+          continue;
+        }
+        if (ts.isClassDeclaration(node) && isExported(node)) {
+          if (!node.name) violations.push("unnamed exported class");
+          else tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
+          continue;
+        }
+        if (ts.isInterfaceDeclaration(node) && isExported(node)) {
+          tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
+          continue;
+        }
+        if (ts.isTypeAliasDeclaration(node) && isExported(node)) {
+          tuples.push(`type|${node.name.text}|${node.name.text}|<local>`);
+          continue;
+        }
+        if (ts.isEnumDeclaration(node) && isExported(node)) {
+          tuples.push(`value|${node.name.text}|${node.name.text}|<local>`);
+          continue;
+        }
+        if (ts.isVariableStatement(node) && isExported(node)) {
+          for (const decl of node.declarationList.declarations) {
+            if (ts.isIdentifier(decl.name)) {
+              tuples.push(`value|${decl.name.text}|${decl.name.text}|<local>`);
+            } else {
+              violations.push("exported binding pattern");
+            }
+          }
+          continue;
+        }
+        if (ts.isModuleDeclaration(node) && isExported(node)) {
+          violations.push("exported namespace/module");
+        }
+      }
+
+      return { tuples: [...tuples].sort(), violations };
     }
+
+    const supportDir = join(clientSrc, "runtime/provider-support");
+    let totalTuples = 0;
+    for (const [relKey, expected] of Object.entries(PROVIDER_SUPPORT_EXPORT_ALLOWLISTS)) {
+      const fileRel = `runtime/provider-support/${relKey}.ts`;
+      const absolute = join(supportDir, `${relKey}.ts`);
+      expect(existsSync(absolute), `missing support module ${fileRel}`).toBe(true);
+      const source = readFileSync(absolute, "utf8");
+      const { tuples, violations } = extractExportTuples(source);
+      expect(violations, `${fileRel} export-shape violations:\n${violations.join("\n")}`).toEqual([]);
+      expect(tuples, `${fileRel} export tuple mismatch`).toEqual([...expected]);
+      totalTuples += tuples.length;
+    }
+    expect(totalTuples).toBeGreaterThan(100);
+
+    // Negative: registry owner named re-export on the entry must diverge.
+    const entrySource = readFileSync(join(supportDir, "index.ts"), "utf8");
+    const registryInjection = `${entrySource}\nexport { getChildProcessRegistry } from "../child-process-registry.js";\n`;
+    const injected = extractExportTuples(registryInjection);
+    expect(injected.violations).toEqual([]);
+    expect(injected.tuples).not.toEqual([...PROVIDER_SUPPORT_EXPORT_ALLOWLISTS.index]);
+    expect(injected.tuples).toContain(
+      "value|getChildProcessRegistry|getChildProcessRegistry|../child-process-registry.js",
+    );
+
+    // Negative: extra local symbol on a group module must diverge.
+    const prepSource = readFileSync(join(supportDir, "preparation.ts"), "utf8");
+    const sneakyLocal = `${prepSource}\nexport function sneakyExtraHelper(): void {}\n`;
+    const sneaky = extractExportTuples(sneakyLocal);
+    expect(sneaky.violations).toEqual([]);
+    expect(sneaky.tuples).not.toEqual([...PROVIDER_SUPPORT_EXPORT_ALLOWLISTS.preparation]);
+    expect(sneaky.tuples).toContain("value|sneakyExtraHelper|sneakyExtraHelper|<local>");
+
+    // Negative: export * fail-closed.
+    const starExport = extractExportTuples(`export * from "../child-process-registry.js";`);
+    expect(starExport.violations).toContain("export * from ../child-process-registry.js");
+  });
+
+  it("keeps provider-support value re-exports identical to their owning group modules", async () => {
+    const entry = await import("../runtime/provider-support/index.js");
+    const preparation = await import("../runtime/provider-support/preparation.js");
+    const hostRuntime = await import("../runtime/provider-support/host-runtime.js");
+    const turnInput = await import("../runtime/provider-support/turn-input.js");
+    const failurePolicy = await import("../runtime/provider-support/failure-policy.js");
+
+    expect(entry.prepareManagedSession).toBe(preparation.prepareManagedSession);
+    expect(entry.projectManagedWorkspace).toBe(preparation.projectManagedWorkspace);
+    expect(entry.wellKnownBinDirs).toBe(hostRuntime.wellKnownBinDirs);
+    expect(entry.acquireWorkspaceFileLock).toBe(hostRuntime.acquireWorkspaceFileLock);
+    expect(entry.InputController).toBe(turnInput.InputController);
+    expect(entry.recognizeProviderBinaryFailure).toBe(failurePolicy.recognizeProviderBinaryFailure);
   });
 
   it("keeps generic Runtime free of handler and concrete provider implementation imports", () => {
@@ -985,27 +1092,15 @@ describe("runtime provider architecture guard", () => {
       runtimeRoot,
       (p) => p.endsWith(".ts") && !p.includes("__tests__") && !p.includes(`${sep}capabilities${sep}`),
     );
-    // Transitional provider-family modules currently under runtime/ may name
-    // their own family; the generic Runtime surface must not import handlers
-    // or those concrete implementations.
-    const transitionalProviderModules = new Set([
-      "codex-binary.ts",
-      "cursor-binary.ts",
-      "grok-binary.ts",
-      "pi-binary.ts",
-      "opencode-binary.ts",
-      "kimi-binary.ts",
-      "claude-login.ts",
-      "codex-login.ts",
-      "cursor-login.ts",
-      "grok-login.ts",
-      "opencode-private-config.ts",
-    ]);
+    const transitionalProviderModules = new Set(
+      TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => rel.split("/").pop() ?? ""),
+    );
+    const transitionalRelPaths = new Set<string>(TRANSITIONAL_PROVIDER_FAMILY_FILES);
 
     for (const file of runtimeFiles) {
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
       const base = rel.split("/").pop() ?? "";
-      if (transitionalProviderModules.has(base)) continue;
+      if (transitionalProviderModules.has(base) || transitionalRelPaths.has(rel)) continue;
       if (rel.startsWith("runtime/capabilities/")) continue;
       const source = readFileSync(file, "utf8");
       expect(source, `${rel} must not import handlers/**`).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
