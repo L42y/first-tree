@@ -49,9 +49,10 @@ export type PrepareManagedSessionParams = {
   contextTree: ContextTreeCoordinates;
   /**
    * Optional provider-owned work after Managed Skills settle and before the
-   * shared briefing / bootstrap / init-complete sentinel. Used today only by
-   * Codex app-server landing-campaign workspace-only env setup so that failure
-   * still leaves no sentinel and no provider admission.
+   * shared briefing / bootstrap / init-complete sentinel. Callers use this for
+   * lifecycle fences (e.g. Pi generation checkpoints) and landing-campaign
+   * sandbox env setup (Codex app-server) so cancellation/failure still leaves
+   * no sentinel and no provider admission.
    */
   beforeBriefing?: (args: {
     workspace: string;

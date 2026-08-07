@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -738,14 +739,50 @@ describe("runtime provider architecture guard", () => {
       return rel;
     }
 
-    /** Extract every `from "..."` / `from '...'` module specifier, including multiline imports. */
-    function extractImportSpecifiers(source: string): string[] {
-      const specs: string[] = [];
-      for (const match of source.matchAll(/\bfrom\s+["']([^"']+)["']/g)) {
-        const spec = match[1];
-        if (spec !== undefined) specs.push(spec);
+    /**
+     * `ts.isImportCall` is @internal; a dynamic import is a CallExpression whose
+     * callee is the bare `import` keyword.
+     */
+    function isDynamicImportCall(node: ts.Node): node is ts.CallExpression {
+      return ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword;
+    }
+
+    /**
+     * AST-level module references: ImportDeclaration (including bare
+     * side-effect), ExportDeclaration re-exports, and dynamic `import()`.
+     * Non-literal dynamic import arguments are recorded separately so the
+     * production scan can fail closed instead of silently skipping them.
+     */
+    function extractModuleReferences(source: string): {
+      literalSpecifiers: string[];
+      hasUnresolvableDynamicImport: boolean;
+    } {
+      const sourceFile = ts.createSourceFile("source.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const literalSpecifiers: string[] = [];
+      let hasUnresolvableDynamicImport = false;
+
+      function visit(node: ts.Node): void {
+        if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+          literalSpecifiers.push(node.moduleSpecifier.text);
+        } else if (
+          ts.isExportDeclaration(node) &&
+          node.moduleSpecifier &&
+          ts.isStringLiteralLike(node.moduleSpecifier)
+        ) {
+          literalSpecifiers.push(node.moduleSpecifier.text);
+        } else if (isDynamicImportCall(node)) {
+          const [arg] = node.arguments;
+          if (arg && ts.isStringLiteralLike(arg)) {
+            literalSpecifiers.push(arg.text);
+          } else {
+            hasUnresolvableDynamicImport = true;
+          }
+        }
+        ts.forEachChild(node, visit);
       }
-      return specs;
+
+      visit(sourceFile);
+      return { literalSpecifiers, hasUnresolvableDynamicImport };
     }
 
     function classifyRuntimeImport(runtimeRel: string): "ok" | "forbidden" {
@@ -766,7 +803,13 @@ describe("runtime provider architecture guard", () => {
     for (const file of listProviderSideFiles()) {
       const source = readFileSync(file, "utf8");
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
-      for (const spec of extractImportSpecifiers(source)) {
+      const refs = extractModuleReferences(source);
+      if (refs.hasUnresolvableDynamicImport) {
+        violations.push(
+          `${rel} has a non-literal dynamic import(); provider-side Runtime edges must be statically classifiable (fail-closed)`,
+        );
+      }
+      for (const spec of refs.literalSpecifiers) {
         const runtimeRel = resolveRuntimeImport(file, spec);
         if (!runtimeRel) continue;
         const verdict = classifyRuntimeImport(runtimeRel);
@@ -793,20 +836,40 @@ describe("runtime provider architecture guard", () => {
     expect(classifyRuntimeImport("runtime/provider-support/binary-failure.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/agent-io.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/install-locations.js")).toBe("forbidden");
-    // Aliased / multiline forms still expose a normal `from "..."` specifier.
+
+    const cursorHandler = join(clientSrc, "handlers/cursor/index.ts");
+    function expectForbiddenRuntimeSpec(source: string, expectedSpec: string): void {
+      const refs = extractModuleReferences(source);
+      expect(refs.hasUnresolvableDynamicImport).toBe(false);
+      expect(refs.literalSpecifiers).toContain(expectedSpec);
+      const resolved = resolveRuntimeImport(cursorHandler, expectedSpec);
+      expect(resolved).toBe("runtime/brand-new-owner.js");
+      expect(classifyRuntimeImport(resolved ?? "")).toBe("forbidden");
+    }
+
+    // Bare side-effect import (no bindings) must still be classified.
+    expectForbiddenRuntimeSpec(`import "../../runtime/brand-new-owner.js";`, "../../runtime/brand-new-owner.js");
+
+    // Literal dynamic import must still be classified.
+    expectForbiddenRuntimeSpec(`await import("../../runtime/brand-new-owner.js");`, "../../runtime/brand-new-owner.js");
+
+    // Aliased / multiline static import continues to fail closed.
     const multilineFixture = `
       import {
         prepareManagedSession as prep,
         type ChatContext as Ctx,
       } from "../../runtime/agent-bootstrap.js";
     `;
-    const specs = extractImportSpecifiers(multilineFixture);
-    expect(specs).toEqual(["../../runtime/agent-bootstrap.js"]);
-    const multilineSpec = specs[0];
-    expect(multilineSpec).toBeDefined();
-    const resolvedMultiline = resolveRuntimeImport(join(clientSrc, "handlers/cursor/index.ts"), multilineSpec ?? "");
+    const multilineRefs = extractModuleReferences(multilineFixture);
+    expect(multilineRefs.literalSpecifiers).toEqual(["../../runtime/agent-bootstrap.js"]);
+    const resolvedMultiline = resolveRuntimeImport(cursorHandler, multilineRefs.literalSpecifiers[0] ?? "");
     expect(resolvedMultiline).toBe("runtime/agent-bootstrap.js");
     expect(classifyRuntimeImport(resolvedMultiline ?? "")).toBe("forbidden");
+
+    // Non-literal dynamic import cannot be classified → fail closed.
+    const unresolvableDynamic = extractModuleReferences(`const p = "./x.js"; await import(p);`);
+    expect(unresolvableDynamic.hasUnresolvableDynamicImport).toBe(true);
+    expect(unresolvableDynamic.literalSpecifiers).toEqual([]);
 
     const mustUseProviderSupport = [
       "handlers/claude-code.ts",
