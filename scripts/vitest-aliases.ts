@@ -2,12 +2,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Re-point intra-monorepo imports to the source `.ts` entry instead of the
-// built `./dist/*.mjs`. Without this, vitest must resolve cross-package
-// imports through each package.json's `import` condition, which forces
-// `turbo test` to declare `dependsOn: ["^build"]` and `tsdown`-builds every
-// dependency before tests can run. With these aliases, vite/vitest compile
-// the .ts source on the fly via its own transform, so the `^build` step
-// (5-15s on a cold CI run) drops out entirely.
+// built `./dist/*.mjs`, so vite/vitest compile workspace sources on the fly.
+// `turbo test` still deliberately declares `dependsOn: ["^build"]`: tests do
+// not consume those build outputs, but the upstream task hashes ensure that
+// package changes invalidate downstream test caches. The cold-CI build cost is
+// intentional because replaying tests against stale dependency code is worse.
 //
 // The runtime / publish paths (the `import` condition consumed by Node, by
 // `tsdown` when it inlines `client`/`shared` into the published `command`
