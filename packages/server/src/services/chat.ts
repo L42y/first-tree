@@ -24,7 +24,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { resolveAvatarImageUrl } from "./agent.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
 import { lockChatMembershipMutation } from "./chat-membership-lock.js";
-import { resolveChatTitle } from "./me-chat.js";
+import { extractChatSummary, resolveChatTitle } from "./chat-read-model.js";
 import {
   type DeferredSendMessagePostCommitEffects,
   preflightMessageSendIntent,
@@ -36,7 +36,6 @@ import {
 import { WIRE_RECIPIENT_MODE } from "./message-dispatcher.js";
 import { inviteParticipantsToChat, rejectedPrivateTargets } from "./participant-invite.js";
 import { addChatParticipants, applyMembershipWrite, recomputeChatWatchers } from "./participant-mode.js";
-import { extractSummary } from "./session.js";
 import { leaveAsParticipant } from "./watcher.js";
 
 const SELF_TARGET_EFFECTIVE_SENDER_REASON = "self_target_manager_human" as const;
@@ -836,7 +835,7 @@ export async function getChatDetail(db: Database, chatId: string, selfAgentId: s
     .where(eq(messages.chatId, chatId))
     .orderBy(messages.createdAt, messages.id)
     .limit(1);
-  const firstMessagePreview = firstMessageRow ? extractSummary(firstMessageRow.content) : null;
+  const firstMessagePreview = firstMessageRow ? extractChatSummary(firstMessageRow.content) : null;
   const title = resolveChatTitle(chat.topic, firstMessagePreview, participantRows, selfAgentId ?? "");
 
   // Preserve the resolved name / displayName / type / avatar fields on
