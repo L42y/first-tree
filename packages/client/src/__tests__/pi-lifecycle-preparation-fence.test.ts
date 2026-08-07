@@ -49,8 +49,9 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
   function makeCtx(
     logs: string[],
     sdkOverrides?: {
-      getChatDetail?: SessionContext["sdk"]["getChatDetail"];
-      listChatParticipants?: SessionContext["sdk"]["listChatParticipants"];
+      // Test stubs only need the fields fetchChatContext reads.
+      getChatDetail?: (chatId: string) => Promise<unknown>;
+      listChatParticipants?: (chatId: string) => Promise<unknown>;
     },
   ): SessionContext {
     const sendMessage = vi.fn().mockResolvedValue(undefined);
