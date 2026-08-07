@@ -401,13 +401,7 @@ describe("AgentHovercard", () => {
     mocks.getAgent.mockResolvedValue(AGENT_DTO);
     const onRequest = vi.fn();
     render(
-      <AgentHovercard
-        agentId="a1"
-        chatId="chat-1"
-        name="Aria"
-        participantType="agent"
-        removeFromChat={{ onRequest }}
-      >
+      <AgentHovercard agentId="a1" chatId="chat-1" name="Aria" participantType="agent" removeFromChat={{ onRequest }}>
         <span>Aria</span>
       </AgentHovercard>,
     );
@@ -415,8 +409,7 @@ describe("AgentHovercard", () => {
     const card = await openCard();
     let remove: HTMLButtonElement | undefined;
     await waitFor(() => {
-      remove =
-        card.querySelector<HTMLButtonElement>('button[aria-label="Remove Aria from this chat"]') ?? undefined;
+      remove = card.querySelector<HTMLButtonElement>('button[aria-label="Remove Aria from this chat"]') ?? undefined;
       if (!remove) throw new Error("Remove not rendered yet");
     });
     expect(card.querySelector("[data-participant-danger]")).not.toBeNull();

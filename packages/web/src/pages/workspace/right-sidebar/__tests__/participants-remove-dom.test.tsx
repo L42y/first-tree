@@ -113,9 +113,7 @@ vi.mock("../../../../components/chat/agent-status-panel.js", async () => {
               chatId={chatId}
               name={agent.displayName}
               participantType="agent"
-              removeFromChat={
-                canRemove?.(agent.agentId) && onRemove ? { onRequest: () => onRemove(agent) } : undefined
-              }
+              removeFromChat={canRemove?.(agent.agentId) && onRemove ? { onRequest: () => onRemove(agent) } : undefined}
             >
               <span>{agent.displayName}</span>
             </AgentHovercard>
