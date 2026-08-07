@@ -33,6 +33,8 @@ export function AgentStatusPanel({
   chatId,
   agents,
   canManage,
+  canRemove,
+  onRemove,
   order = "fixed",
   compact = false,
 }: {
@@ -41,6 +43,10 @@ export function AgentStatusPanel({
   agents: ChatParticipantDetail[];
   /** Whether the caller may pause a given agent. */
   canManage: (agentId: string) => boolean;
+  /** Whether the caller may remove a given agent from the chat roster. */
+  canRemove?: (agentId: string) => boolean;
+  /** Opens the remove-confirm flow for the given agent row. */
+  onRemove?: (agent: ChatParticipantDetail) => void;
   /** `fixed` keeps `agents` order (sidebar); `priority` sorts by attention
    *  (compose) so the most urgent agent is on top. */
   order?: "fixed" | "priority";
@@ -77,6 +83,8 @@ export function AgentStatusPanel({
           agent={agent}
           status={byAgent.get(agent.agentId) ?? null}
           canManage={canManage(agent.agentId)}
+          showRemove={canRemove?.(agent.agentId) === true}
+          onRemove={onRemove ? () => onRemove(agent) : undefined}
           compact={compact}
         />
       ))}
@@ -120,12 +128,16 @@ function AgentStatusRow({
   agent,
   status,
   canManage,
+  showRemove,
+  onRemove,
   compact,
 }: {
   chatId: string;
   agent: ChatParticipantDetail;
   status: AgentChatStatus | null;
   canManage: boolean;
+  showRemove: boolean;
+  onRemove?: () => void;
   compact: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -255,6 +267,7 @@ function AgentStatusRow({
 
         {showPause ? <PauseButton onClick={() => suspendMut.mutate()} isPending={suspendMut.isPending} /> : null}
         {showResume ? <ResumeButton onClick={() => resumeMut.mutate()} isPending={resumeMut.isPending} /> : null}
+        {showRemove && onRemove ? <RowRemoveButton onClick={onRemove} /> : null}
       </div>
       {sessionReset || resetOpen ? (
         // Mounted on `resetOpen` too: after a failed reset the server may
@@ -325,6 +338,29 @@ function StatePill({ tone, label }: { tone: "blocked" | "error" | "idle"; label:
     >
       {label}
     </span>
+  );
+}
+
+/** Compact Remove control for the sidebar roster. Confirm lives in the
+ *  Participants section so agent and human rows share one dialog. */
+function RowRemoveButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Remove participant"
+      title="Remove from this chat"
+      className="text-label inline-flex shrink-0 items-center transition-colors hover:bg-[var(--bg-error-soft)] hover:text-[var(--fg-error-strong)] hover:border-[var(--fg-error-strong)]"
+      style={{
+        padding: "var(--sp-0_5) var(--sp-2_25)",
+        borderRadius: "var(--radius-input)",
+        border: "var(--hairline) solid var(--border)",
+        background: "transparent",
+        color: "var(--fg-3)",
+      }}
+    >
+      Remove
+    </button>
   );
 }
 

@@ -338,6 +338,7 @@ describe("api wrapper paths", () => {
     await meChats.markMeChatRead("chat/id");
     await meChats.markMeChatUnread("chat/id");
     await meChats.addMeChatParticipants("chat/id", { participantIds: ["agent-2"] });
+    await meChats.removeMeChatParticipant("chat/id", "agent/2");
     await meChats.joinMeChat("chat/id");
     await meChats.leaveMeChat("chat/id");
 
@@ -419,6 +420,7 @@ describe("api wrapper paths", () => {
       "/chats/chat%2Fid/docs/preview?agentId=agent%2Fid&path=docs%2Fplan.md&basePath=%2Fworkspace",
     );
     expect(apiMock.post).toHaveBeenCalledWith("/me/memberships/member%2Fid/leave");
+    expect(apiMock.delete).toHaveBeenCalledWith("/chats/chat%2Fid/participants/agent%2F2");
     expect(apiMock.get).toHaveBeenCalledWith(
       "/agents/agent/id/sessions/chat/id/events?limit=30&cursor=5&direction=asc",
     );
