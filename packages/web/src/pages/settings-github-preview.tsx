@@ -1,20 +1,12 @@
-import {
-  ArrowRight,
-  Bot,
-  Building2,
-  ChevronRight,
-  ExternalLink,
-  FolderGit2,
-  Github,
-  PauseCircle,
-  User,
-} from "lucide-react";
+import type { GithubAppInstallationOutput } from "@first-tree/shared";
+import { ArrowRight, Bot, Building2, ExternalLink, FolderGit2, Github, PauseCircle, User } from "lucide-react";
 import { useState } from "react";
 import { Button } from "../components/ui/button.js";
 import { PageHeader } from "../components/ui/page-header.js";
 import { Section } from "../components/ui/section.js";
 import { Select } from "../components/ui/select.js";
 import { SettingRow } from "../components/ui/setting-row.js";
+import { GithubConnectionDetails } from "./github-connection-details.js";
 
 /**
  * DEV-only visual review for Settings → GitHub (the connected GitHub App
@@ -38,9 +30,11 @@ import { SettingRow } from "../components/ui/setting-row.js";
  * enough to review their hierarchy without a live GitHub installation.
  */
 
-const MOCK = {
+const MOCK: GithubAppInstallationOutput = {
+  installationId: 131952074,
+  accountType: "Organization",
   accountLogin: "agent-team-foundation",
-  accountType: "Organization" as const,
+  accountGithubId: 987654,
   permissions: {
     issues: "write",
     members: "read",
@@ -49,10 +43,18 @@ const MOCK = {
     contents: "write",
     pull_requests: "write",
     administration: "write",
-  } as Record<string, string>,
+  },
   events: ["issues", "issue_comment", "member", "pull_request", "pull_request_review", "push"],
+  suspended: false,
   manageUrl: "https://github.com/organizations/agent-team-foundation/settings/installations/131952074",
-  installationId: 131952074,
+  createdAt: "2026-08-03T09:12:00.000Z",
+  updatedAt: "2026-08-06T16:41:00.000Z",
+};
+
+/** Same installation with a downgraded scope — the one state worth acting on. */
+const MOCK_MISSING_PERMISSION: GithubAppInstallationOutput = {
+  ...MOCK,
+  permissions: { ...MOCK.permissions, pull_requests: "read" },
 };
 
 const AccountIcon = MOCK.accountType === "Organization" ? Building2 : User;
@@ -74,85 +76,6 @@ function SuspendedBanner() {
         This installation is suspended upstream. GitHub is not delivering webhooks and First Tree can't act as the App
         on this account. Unsuspend it from the GitHub side to restore service.
       </span>
-    </div>
-  );
-}
-
-function ConnectionDetails({ defaultOpen = false }: { defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const permissionEntries = Object.entries(MOCK.permissions);
-  const regionId = "github-connection-details";
-
-  return (
-    <div style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: "var(--sp-3)" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-controls={open ? regionId : undefined}
-        className="inline-flex items-center text-label"
-        style={{
-          gap: "var(--sp-1)",
-          color: "var(--fg-3)",
-          background: "transparent",
-          border: "none",
-          padding: 0,
-          cursor: "pointer",
-        }}
-      >
-        <ChevronRight
-          aria-hidden
-          className="h-3 w-3 transition-transform"
-          style={{ transform: open ? "rotate(90deg)" : "none" }}
-        />
-        Connection details
-      </button>
-
-      {open && (
-        <div
-          id={regionId}
-          style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)", marginTop: "var(--sp-3)" }}
-        >
-          {permissionEntries.length > 0 && (
-            <div>
-              <div className="text-label" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1)" }}>
-                Permissions granted
-              </div>
-              <ul
-                className="text-body"
-                style={{
-                  listStyle: "none",
-                  padding: 0,
-                  margin: 0,
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "var(--sp-1)",
-                  color: "var(--fg-2)",
-                }}
-              >
-                {permissionEntries.map(([key, value]) => (
-                  <li key={key} className="mono">
-                    {key}: <strong style={{ color: "var(--fg)" }}>{value}</strong>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {MOCK.events.length > 0 && (
-            <div>
-              <div className="text-label" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1)" }}>
-                Subscribed events
-              </div>
-              <div className="text-body mono" style={{ color: "var(--fg-2)" }}>
-                {MOCK.events.join(", ")}
-              </div>
-            </div>
-          )}
-          <span className="text-label" style={{ color: "var(--fg-3)" }}>
-            Installation #{MOCK.installationId}
-          </span>
-        </div>
-      )}
     </div>
   );
 }
@@ -226,7 +149,15 @@ function PageShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-function InstalledCard({ suspended = false, detailsOpen = false }: { suspended?: boolean; detailsOpen?: boolean }) {
+function InstalledCard({
+  suspended = false,
+  detailsOpen = false,
+  data = MOCK,
+}: {
+  suspended?: boolean;
+  detailsOpen?: boolean;
+  data?: GithubAppInstallationOutput;
+}) {
   return (
     <PageShell>
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)" }}>
@@ -238,9 +169,9 @@ function InstalledCard({ suspended = false, detailsOpen = false }: { suspended?:
             <span className="inline-flex flex-wrap items-center" style={{ gap: "var(--sp-1_5)" }}>
               <span className="inline-flex items-center" style={{ gap: "var(--sp-1)" }}>
                 <AccountIcon className="h-3 w-3 shrink-0" aria-hidden />
-                Connected to github.com/{MOCK.accountLogin}
+                Connected to github.com/{data.accountLogin}
               </span>
-              <span style={{ color: "var(--fg-4)" }}>{MOCK.accountType}</span>
+              <span style={{ color: "var(--fg-4)" }}>{data.accountType}</span>
             </span>
           }
           control={
@@ -249,7 +180,7 @@ function InstalledCard({ suspended = false, detailsOpen = false }: { suspended?:
                 Manage connection
               </Button>
               <Button asChild variant="outline" size="sm">
-                <a href={MOCK.manageUrl} target="_blank" rel="noreferrer">
+                <a href={data.manageUrl} target="_blank" rel="noreferrer">
                   Manage on GitHub
                   <ExternalLink className="h-3 w-3" />
                 </a>
@@ -257,7 +188,9 @@ function InstalledCard({ suspended = false, detailsOpen = false }: { suspended?:
             </>
           }
         >
-          <ConnectionDetails defaultOpen={detailsOpen} />
+          {/* The real component, not a copy: the gallery is only useful while it
+              can't drift from what ships. */}
+          <GithubConnectionDetails data={data} defaultOpen={detailsOpen} />
         </SettingRow>
       </div>
     </PageShell>
@@ -366,8 +299,25 @@ export function SettingsGithubPreviewPage() {
         <InstalledCard />
       </Frame>
 
-      <Frame label="Connected — details expanded" note="the disclosure open: scopes, events, installation id">
+      <Frame
+        label="Connected — details expanded"
+        note="required scopes checked off, other grants secondary, events named, installation facts"
+      >
         <InstalledCard detailsOpen />
+      </Frame>
+
+      <Frame
+        label="Connected — a required scope is missing"
+        note="pull_requests downgraded to read: marked blocked, with what it costs and where to fix it"
+      >
+        <InstalledCard detailsOpen data={MOCK_MISSING_PERMISSION} />
+      </Frame>
+
+      <Frame
+        label="Missing scope — collapsed"
+        note="the shortfall still marks the closed disclosure, so it isn't hidden behind a click"
+      >
+        <InstalledCard data={MOCK_MISSING_PERMISSION} />
       </Frame>
 
       <Frame label="Suspended upstream" note="webhook delivery paused on GitHub's side — banner preserved">

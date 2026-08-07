@@ -192,16 +192,15 @@ describe("GithubAppInstallationPanel", () => {
     // the admin opens it.
     const detailsToggle = buttonByText(container, "Connection details");
     expect(detailsToggle?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).not.toContain("contents:");
-    expect(container.textContent).not.toContain(`Installation ${"#"}123`);
+    expect(container.textContent).not.toContain("Also granted");
 
     await click(detailsToggle);
 
     expect(detailsToggle?.getAttribute("aria-expanded")).toBe("true");
-    expect(container.textContent).toContain("contents:");
-    expect(container.textContent).toContain("issues:");
-    expect(container.textContent).toContain("pull_request");
-    expect(container.textContent).toContain(`Installation ${"#"}123`);
+    expect(container.textContent).toContain("Required by First Tree");
+    expect(container.textContent).toContain("Also granted");
+    expect(container.textContent).toContain("Contents");
+    expect(container.textContent).toContain("Issues");
 
     await act(async () => root.unmount());
   });

@@ -1,6 +1,6 @@
 import type { GithubAppConnectPanelInstallation, GithubAppInstallationOutput } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Building2, ChevronRight, ExternalLink, Github, PauseCircle, User } from "lucide-react";
+import { ArrowLeft, Building2, ExternalLink, Github, PauseCircle, User } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { ApiError } from "../api/client.js";
 import {
@@ -20,6 +20,7 @@ import {
   hasGithubInstallAttemptForOrganization,
   rememberGithubInstallAttempt,
 } from "../lib/github-install-attempt.js";
+import { GithubConnectionDetails } from "./github-connection-details.js";
 
 /**
  * How often the open connect panel refreshes its installation list. Two
@@ -195,7 +196,7 @@ function InstalledState({
       >
         {/* Expandable details sit directly under the connected account they
             describe, not below the action buttons. */}
-        <ConnectionDetails data={data} />
+        <GithubConnectionDetails data={data} readOnly={readOnly} />
       </SettingRow>
     </div>
   );
@@ -717,89 +718,6 @@ function InstallationRow({
         )}
       </div>
       <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-/**
- * Collapsed-by-default disclosure for the developer-facing connection
- * metadata: the granted permission scopes, the subscribed webhook events,
- * and the installation id. Kept off the default view (most admins only need
- * "who's connected" + Manage) but one click away for scope auditing. A plain
- * `aria-expanded` button — there's no shared collapsible primitive in this app,
- * and the controlled toggle keeps the chevron and the mounted content in
- * lockstep.
- */
-function ConnectionDetails({ data }: { data: GithubAppInstallationOutput }) {
-  const [open, setOpen] = useState(false);
-  const permissionEntries = Object.entries(data.permissions);
-  const regionId = "github-connection-details";
-
-  return (
-    <div style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: "var(--sp-3)" }}>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-controls={open ? regionId : undefined}
-      >
-        <ChevronRight
-          aria-hidden
-          className="h-3 w-3 transition-transform"
-          style={{ transform: open ? "rotate(90deg)" : "none" }}
-        />
-        Connection details
-      </Button>
-
-      {open && (
-        <div
-          id={regionId}
-          style={{ display: "flex", flexDirection: "column", gap: "var(--sp-3)", marginTop: "var(--sp-3)" }}
-        >
-          {permissionEntries.length > 0 && (
-            <div>
-              <div className="text-label" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1)" }}>
-                Permissions granted
-              </div>
-              <ul
-                className="text-body"
-                style={{
-                  listStyle: "none",
-                  padding: 0,
-                  margin: 0,
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "var(--sp-1)",
-                  color: "var(--fg-2)",
-                }}
-              >
-                {permissionEntries.map(([key, value]) => (
-                  <li key={key} className="mono">
-                    {key}: <strong style={{ color: "var(--fg)" }}>{value}</strong>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {data.events.length > 0 && (
-            <div>
-              <div className="text-label" style={{ color: "var(--fg-3)", marginBottom: "var(--sp-1)" }}>
-                Subscribed events
-              </div>
-              <div className="text-body mono" style={{ color: "var(--fg-2)" }}>
-                {data.events.join(", ")}
-              </div>
-            </div>
-          )}
-
-          <span className="text-label" style={{ color: "var(--fg-3)" }}>
-            Installation #{data.installationId}
-          </span>
-        </div>
-      )}
     </div>
   );
 }
