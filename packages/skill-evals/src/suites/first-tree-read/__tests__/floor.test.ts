@@ -114,7 +114,7 @@ describe("first-tree-read floor contract", () => {
     );
     expect(skill).toContain("For `conflicted`, name the two incompatible constraints and the\nunresolved tradeoff");
     expect(skill).toContain("do not imply that the plan changed or the conflict was\nresolved");
-    expect(skill).toContain("In Chinese, use bold `Context Tree 来源` followed by a full-width colon");
+    expect(skill).toContain("The source label is plain text,\nnever bold");
     expect(skill).toContain("For a root `NODE.md`, use the root title or the relevant heading — never display\n`Node`");
     expect(skill).toContain("When two cited labels would be identical, prefix the nearest meaningful\nparent title");
     expect(skill).toContain("Never link to a mutable branch");
@@ -153,12 +153,12 @@ describe("first-tree-read floor contract", () => {
     const noteLines = noteBlock.split("\n");
     expect(noteLines).toHaveLength(3);
     expect(noteLines.every((line) => line.startsWith("> "))).toBe(true);
-    expect(noteLines[0]).toBe("> **How Context Tree affected this work**\\");
+    expect(noteLines[0]).toBe("> How Context Tree affected this work\\");
     expect(noteLines[1]).toBe(
       "> **Options narrowed:** The organization-isolation rule ruled out a global shared index.\\",
     );
     expect(noteLines[2]).toContain(
-      "> **Context Tree source:** [Organization isolation](https://github.com/example/context-tree/blob/",
+      "> Context Tree source: [Organization isolation](https://github.com/example/context-tree/blob/",
     );
     expect(noteLines[2]).toContain("/system/cloud/team/tenancy-and-identity.md)");
     expect(noteLines[2]?.match(/\/blob\/([0-9a-f]+)\//u)?.[1]).toMatch(/^[0-9a-f]{40}$/);
@@ -169,11 +169,11 @@ describe("first-tree-read floor contract", () => {
     expect(conflictBlock).toContain(
       "**发现约束冲突**：固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定",
     );
-    expect(conflictBlock).toContain("**Context Tree 来源**：[发布安全门槛]");
+    expect(conflictBlock).toContain("Context Tree 来源：[发布安全门槛]");
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.7.0");
+    expect(skillVersion).toBe("0.8.0");
     expect(skill).toContain(`version: ${skillVersion}`);
   });
 });
