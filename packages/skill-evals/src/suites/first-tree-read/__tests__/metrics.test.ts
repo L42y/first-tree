@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { gradingFailureMessages } from "../../../core/grading.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
-import { buildGrading } from "../summary.js";
+import { buildGrading, driftNote } from "../summary.js";
 import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport } from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
@@ -783,8 +783,8 @@ describe("first-tree-read metrics pass criteria", () => {
     const body = `需要你决定如何处理冲突。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`;
+> **发现约束冲突**：固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`;
     const expectation: ImpactNoteExpectation = {
       effect: "conflicted",
       language: "zh",
@@ -802,20 +802,56 @@ describe("first-tree-read metrics pass criteria", () => {
 
     expect(sentForBlockingCase.impactNoteBehaviorOk).toBe(true);
     expect(sentForBlockingCase.managedFinalTransportOk).toBe(false);
-    expect(askedForBlockingCase.impactNoteBehaviorOk).toBe(true);
+    // A blocking question must stay decision-self-sufficient: the note never
+    // rides an ask body, even when the ask is the correct final transport.
+    expect(askedForBlockingCase.impactNoteBehaviorOk).toBe(false);
+    expect(askedForBlockingCase.impactNoteOutsideBlockingAsk).toBe(false);
     expect(askedForBlockingCase.managedFinalTransportOk).toBe(true);
     expect(sentForTerminalCase.impactNoteBehaviorOk).toBe(true);
+    expect(sentForTerminalCase.impactNoteOutsideBlockingAsk).toBe(true);
     expect(sentForTerminalCase.managedFinalTransportOk).toBe(true);
+  });
+
+  it("reports the transport a case actually requires, not a fixed one", () => {
+    const body = `Answer.
+
+> **How Context Tree affected this work**\\
+> **Options narrowed:** The isolation rule ruled out a shared index.\\
+> **Context Tree source:** [Organization isolation](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/systems/server/auth/scopes/NODE.md)`;
+    const expectation: ImpactNoteExpectation = {
+      effect: "constrained",
+      language: "en",
+      mode: "present",
+      sourceAuthority: TEST_SOURCE_AUTHORITY,
+      sourceCount: { max: 1, min: 1 },
+    };
+    // An ask-contract case that wrongly finished with `send` must be told that
+    // `ask` was required — the previous fixed wording said the opposite.
+    const wrongSendForAskCase = impactMetrics(managedMessage(body), expectation, "ask");
+    const askNote = driftNote(wrongSendForAskCase, true, "managed") ?? "";
+    expect(askNote).toContain("requires chat ask");
+    expect(askNote).not.toContain("requires chat send");
+    expect(askNote).toContain("final managed delivery was send");
+
+    // A placement-only failure must name the failing predicate, otherwise every
+    // displayed shape/authority field reads true with no visible cause.
+    const noteInsideAsk = impactMetrics(
+      managedMessage(body, ["chat", "ask", "gandy2025", "-F", "question.md"]),
+      expectation,
+      "ask",
+    );
+    expect(noteInsideAsk.impactNoteBehaviorOk).toBe(false);
+    expect(driftNote(noteInsideAsk, true, "managed") ?? "").toContain("outside blocking ask=false");
   });
 
   it.each([
     {
-      effectLine: "> **发现约束冲突：** 固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
-      sourceLine: `> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
+      effectLine: "> **发现约束冲突**： 固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
+      sourceLine: `> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
     },
     {
-      effectLine: "> **发现约束冲突：**固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
-      sourceLine: `> **Context Tree 来源：** [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
+      effectLine: "> **发现约束冲突**：固定发布日期与发布前安全审计无法同时满足，取舍仍待决定。\\",
+      sourceLine: `> **Context Tree 来源**： [Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`,
     },
   ])("rejects a space after either Chinese scaffolding colon", ({ effectLine, sourceLine }) => {
     const body = `需要你决定如何处理冲突。
@@ -928,8 +964,8 @@ ${source}`),
         assistantTextEvent(`不能直接发布。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+> **发现约束冲突**：固定发布日期与发布前必须完成安全审计的规则无法同时满足，取舍仍待决定。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
       ],
       expectation,
     );
@@ -938,8 +974,8 @@ ${source}`),
         assistantTextEvent(`方案如下。
 
 > **Context Tree 如何影响本次工作**\\
-> **发现约束冲突：**发布日期与安全审计发生冲突，方案已调整并已解决。\\
-> **Context Tree 来源：**[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
+> **发现约束冲突**：发布日期与安全审计发生冲突，方案已调整并已解决。\\
+> **Context Tree 来源**：[Rollout Policy](https://github.com/example/context-tree/blob/${EXACT_COMMIT}/product/release/rollout-policy/NODE.md)`),
       ],
       expectation,
     );
