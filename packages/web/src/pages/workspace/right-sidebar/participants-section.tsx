@@ -56,9 +56,34 @@ export function partitionRoster(
 }
 
 /**
+ * Best-effort Web affordance for the owner-side / own-agent removal matrix.
+ * Server remains the authority; this only hides controls the roster +
+ * `managedByMe` map can prove are disallowed. Owner rows are never removable.
+ * When the owner speaker is absent from the roster (watcher owner), only
+ * own-agent recalls remain visible.
+ */
+export function canRequestRemoveParticipant(input: {
+  selfAgentId: string | null | undefined;
+  target: ChatParticipantDetail;
+  participants: ChatParticipantDetail[];
+  managedByMe: Map<string, boolean>;
+}): boolean {
+  const { selfAgentId, target, participants, managedByMe } = input;
+  if (!selfAgentId || target.agentId === selfAgentId) return false;
+  if (target.role === "owner") return false;
+  const selfRow = participants.find((p) => p.agentId === selfAgentId);
+  if (!selfRow) return false;
+  const ownerRow = participants.find((p) => p.role === "owner");
+  const ownerSide = selfRow.role === "owner" || Boolean(ownerRow && (managedByMe.get(ownerRow.agentId) ?? false));
+  if (ownerSide) return true;
+  return target.type !== "human" && (managedByMe.get(target.agentId) ?? false);
+}
+
+/**
  * Participants section — full chat membership (humans + agents), the top
  * section of the rail. Speakers other than the current user expose a Remove
- * action; watchers / read-only / self do not.
+ * action when the owner-side / own-agent matrix allows; watchers / read-only /
+ * self / owners do not.
  */
 export function ParticipantsSection({
   chatId,
@@ -90,6 +115,9 @@ export function ParticipantsSection({
     () => partitionRoster(participants, showAll),
     [participants, showAll],
   );
+
+  const allowRemove = (target: ChatParticipantDetail): boolean =>
+    canRemoveSpeakers && canRequestRemoveParticipant({ selfAgentId, target, participants, managedByMe });
 
   const removeMut = useMutation({
     mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
@@ -129,7 +157,7 @@ export function ParticipantsSection({
   });
 
   const requestRemove = (target: ChatParticipantDetail): void => {
-    if (!canRemoveSpeakers || target.agentId === selfAgentId) return;
+    if (!allowRemove(target)) return;
     setPendingRemove(target);
   };
 
@@ -156,14 +184,8 @@ export function ParticipantsSection({
                 agents={visibleAgents}
                 canManage={(id) => isAdmin || (managedByMe.get(id) ?? false)}
                 compact
-                onRequestRemove={
-                  canRemoveSpeakers
-                    ? (agent) => {
-                        if (agent.agentId === selfAgentId) return;
-                        requestRemove(agent);
-                      }
-                    : undefined
-                }
+                onRequestRemove={canRemoveSpeakers ? requestRemove : undefined}
+                canRemoveAgent={allowRemove}
                 selfAgentId={selfAgentId}
               />
             ) : null}
@@ -171,7 +193,7 @@ export function ParticipantsSection({
               <HumanRow
                 key={p.agentId}
                 participant={p}
-                canRemove={canRemoveSpeakers && p.agentId !== selfAgentId}
+                canRemove={allowRemove(p)}
                 onRequestRemove={() => requestRemove(p)}
               />
             ))}

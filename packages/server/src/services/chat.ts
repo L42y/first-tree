@@ -1179,7 +1179,11 @@ export async function removeParticipant(
   chatId: string,
   requesterId: string,
   targetAgentId: string,
-  options?: { notifier?: import("./notifier.js").Notifier; instanceId?: string },
+  options?: {
+    notifier?: import("./notifier.js").Notifier;
+    instanceId?: string;
+    afterAuthoritySnapshotForTest?: () => Promise<void>;
+  },
 ) {
   return removeChatParticipant(db, chatId, requesterId, targetAgentId, options);
 }

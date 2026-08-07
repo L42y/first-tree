@@ -16,18 +16,24 @@ import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
-import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { cronJobs } from "../db/schema/cron-jobs.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
+import { messages } from "../db/schema/messages.js";
 import { sessionEvents } from "../db/schema/session-events.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { isChatSpeaker, lockChatMembershipMutation, lockChatMembershipShared } from "./chat-membership-lock.js";
+import {
+  isChatSpeaker,
+  lockChatMembershipMutation,
+  lockChatMembershipShared,
+  lockChatSpeakerAndAgentSnapshot,
+} from "./chat-membership-lock.js";
 import { sendToAgent } from "./connection-manager.js";
 import { lockOwnerChatCronBarrier } from "./cron-job.js";
+import { openRequestPredicate } from "./need-you.js";
 import type { Notifier } from "./notifier.js";
 import { recomputeChatWatchers } from "./participant-mode.js";
 
@@ -36,6 +42,12 @@ export type RemoveChatParticipantOptions = {
   notifier?: Notifier;
   /** This server replica's instance id — used for soft terminate routing. */
   instanceId?: string;
+  /**
+   * Test-only barrier after the authority snapshot is locked and before
+   * authorization / mutation, so concurrent manager_id updates can be proven
+   * to wait on the same FOR UPDATE set.
+   */
+  afterAuthoritySnapshotForTest?: () => Promise<void>;
 };
 
 type TxOutcome = RemoveChatParticipantResponse & {
@@ -59,7 +71,9 @@ type TxOutcome = RemoveChatParticipantResponse & {
 
 /**
  * Remove `targetAgentId` as a speaker of `chatId`. Caller must already be a
- * direct speaker. Returns the target's final membership kind for Web toasting.
+ * direct speaker. Authorization follows the owner-side / own-agent matrix
+ * (chat owner row is never removable). Returns the target's final membership
+ * kind for Web toasting.
  */
 export async function removeChatParticipant(
   db: Database,
@@ -70,20 +84,39 @@ export async function removeChatParticipant(
 ): Promise<RemoveChatParticipantResponse> {
   const outcome = await db.transaction(async (rawTx) => {
     const tx = rawTx as unknown as Database;
+    // Take the membership fence first so the owner row cannot move, read who
+    // the owner is (including a watcher owner), then lock caller / target /
+    // owner agent rows with the speakers in one UUID-sorted FOR UPDATE set.
+    // Authorization reads `agents.manager_id`; without that lock a concurrent
+    // manager reassignment can invalidate the decision mid-transaction.
     await lockChatMembershipMutation(tx, [chatId]);
+    const chatOwnerAgentId = await loadChatOwnerAgentId(tx, chatId);
+    const authorityAgentIds = chatOwnerAgentId
+      ? [requesterId, targetAgentId, chatOwnerAgentId]
+      : [requesterId, targetAgentId];
+    const authority = await lockChatSpeakerAndAgentSnapshot(tx, [chatId], authorityAgentIds);
+    if (options.afterAuthoritySnapshotForTest) {
+      await options.afterAuthoritySnapshotForTest();
+    }
 
-    const [chat] = await tx
-      .select({ id: chats.id, organizationId: chats.organizationId, metadata: chats.metadata })
-      .from(chats)
-      .where(eq(chats.id, chatId))
-      .limit(1);
+    const chat = authority.chats.find((row) => row.id === chatId);
     if (!chat) throw new NotFoundError(`Chat "${chatId}" not found`);
-    if (parseLandingCampaignTrialChatMetadata(chat.metadata)) {
+    const [chatMeta] = await tx.select({ metadata: chats.metadata }).from(chats).where(eq(chats.id, chatId)).limit(1);
+    if (parseLandingCampaignTrialChatMetadata(chatMeta?.metadata)) {
       throw new ForbiddenError("Landing campaign trial chats are managed by First Tree.");
     }
 
-    const [caller] = await tx
-      .select({ agentId: chatMembership.agentId })
+    if (requesterId === targetAgentId) {
+      throw new BadRequestError("Cannot remove yourself from a chat");
+    }
+
+    const callerLocked = authority.agents.find((row) => row.agentId === requesterId);
+    const targetLocked = authority.agents.find((row) => row.agentId === targetAgentId);
+    if (!callerLocked) throw new NotFoundError(`Agent "${requesterId}" not found`);
+    if (!targetLocked) throw new NotFoundError(`Agent "${targetAgentId}" not found`);
+
+    const [callerSpeaker] = await tx
+      .select({ role: chatMembership.role })
       .from(chatMembership)
       .where(
         and(
@@ -93,46 +126,66 @@ export async function removeChatParticipant(
         ),
       )
       .limit(1);
-    if (!caller) throw new ForbiddenError("Not a participant of this chat");
-
-    if (requesterId === targetAgentId) {
-      throw new BadRequestError("Cannot remove yourself from a chat");
-    }
-
-    const [targetAgent] = await tx
-      .select({
-        uuid: agents.uuid,
-        type: agents.type,
-        inboxId: agents.inboxId,
-        managerId: agents.managerId,
-      })
-      .from(agents)
-      .where(eq(agents.uuid, targetAgentId))
-      .limit(1);
-    if (!targetAgent) throw new NotFoundError(`Agent "${targetAgentId}" not found`);
+    if (!callerSpeaker) throw new ForbiddenError("Not a participant of this chat");
 
     const [targetSpeaker] = await tx
-      .select({ agentId: chatMembership.agentId, accessMode: chatMembership.accessMode })
+      .select({ role: chatMembership.role, accessMode: chatMembership.accessMode })
       .from(chatMembership)
       .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.agentId, targetAgentId)))
       .limit(1);
     if (!targetSpeaker || targetSpeaker.accessMode !== "speaker") {
       throw new NotFoundError(`Agent "${targetAgentId}" is not a participant of this chat`);
     }
+    if (targetSpeaker.role === "owner") {
+      throw new ForbiddenError("The chat owner cannot be removed from their own chat");
+    }
 
-    if (targetAgent.type === "human") {
-      const [openReq] = await tx
-        .select({ openRequestCount: chatUserState.openRequestCount })
-        .from(chatUserState)
-        .where(and(eq(chatUserState.chatId, chatId), eq(chatUserState.agentId, targetAgentId)))
-        .limit(1);
-      if ((openReq?.openRequestCount ?? 0) > 0) {
-        throw new ConflictError(
-          "Cannot remove a participant who still has an unanswered request in this chat. Answer or skip the request first.",
-          { code: REMOVE_PARTICIPANT_OPEN_REQUEST_CODE },
-        );
+    const ownerLocked = chatOwnerAgentId ? authority.agents.find((row) => row.agentId === chatOwnerAgentId) : undefined;
+    const callerIsOwnerSide =
+      callerSpeaker.role === "owner" || (ownerLocked != null && ownerLocked.managerId === callerLocked.managerId);
+    const targetIsCallersOwnAgent = targetLocked.type !== "human" && targetLocked.managerId === callerLocked.managerId;
+    if (!callerIsOwnerSide && !targetIsCallersOwnAgent) {
+      throw new ForbiddenError(
+        "Only the chat owner's side can remove a participant, or the agent's own manager can recall it",
+      );
+    }
+
+    // Open-request guard uses durable request/resolution rows (Need You), not
+    // `chat_user_state.open_request_count`. 409 only when removal would fully
+    // detach the Human — a retained watcher can still see and answer.
+    if (targetLocked.type === "human") {
+      const keepsMembership = await keepsMembershipAfterRemoval(tx, chatId, {
+        type: targetLocked.type,
+        agentId: targetAgentId,
+      });
+      if (!keepsMembership) {
+        const [openRequest] = await tx
+          .select({ id: messages.id })
+          .from(messages)
+          .where(and(eq(messages.chatId, chatId), openRequestPredicate(targetAgentId)))
+          .limit(1);
+        if (openRequest) {
+          throw new ConflictError(
+            "Cannot remove a participant who still has an unanswered request in this chat. Answer or skip the request first.",
+            { code: REMOVE_PARTICIPANT_OPEN_REQUEST_CODE },
+          );
+        }
       }
     }
+
+    const targetAgent = {
+      uuid: targetLocked.agentId,
+      type: targetLocked.type,
+      inboxId: null as string | null,
+    };
+    // Inbox id is not part of the authority snapshot; read it under the same
+    // txn after the agent row is locked.
+    const [inboxRow] = await tx
+      .select({ inboxId: agents.inboxId })
+      .from(agents)
+      .where(eq(agents.uuid, targetAgentId))
+      .limit(1);
+    targetAgent.inboxId = inboxRow?.inboxId ?? null;
 
     let membershipKind: "watching" | null = null;
     let detachedHumanAgentId: string | null = null;
@@ -143,20 +196,10 @@ export async function removeChatParticipant(
       // Same visibility rule as leaveAsParticipant: still manage a non-human
       // speaker → downgrade to watcher; otherwise fully detach. chat_user_state
       // is never touched.
-      const visible = (await tx.execute(sql`
-        SELECT EXISTS (
-          SELECT 1
-            FROM chat_membership cm
-            JOIN agents  a ON a.uuid = cm.agent_id
-            JOIN members m ON m.id   = a.manager_id
-           WHERE cm.chat_id = ${chatId}
-             AND cm.access_mode = 'speaker'
-             AND m.agent_id = ${targetAgentId}
-             AND m.status   = 'active'
-             AND a.type    <> 'human'
-        ) AS visible
-      `)) as unknown as Array<{ visible: boolean }>;
-      const stillVisible = Boolean(visible[0]?.visible);
+      const stillVisible = await keepsMembershipAfterRemoval(tx, chatId, {
+        type: targetAgent.type,
+        agentId: targetAgentId,
+      });
 
       if (stillVisible) {
         await tx
@@ -337,6 +380,45 @@ export async function removeChatParticipant(
     targetAgentId: outcome.targetAgentId,
     membershipKind: outcome.membershipKind,
   };
+}
+
+async function loadChatOwnerAgentId(db: Database, chatId: string): Promise<string | null> {
+  // Unfiltered on access_mode: leave/workspace-leave may flip a departing
+  // owner to watcher while preserving role='owner'.
+  const [row] = await db
+    .select({ agentId: chatMembership.agentId })
+    .from(chatMembership)
+    .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.role, "owner")))
+    .limit(1);
+  return row?.agentId ?? null;
+}
+
+/**
+ * Would the target still hold a membership row after their speaker row goes
+ * away? Mirrors recomputeChatWatchers: a human keeps a watcher while they
+ * manage an active non-human speaker in the chat.
+ */
+async function keepsMembershipAfterRemoval(
+  db: Database,
+  chatId: string,
+  target: { type: string; agentId: string },
+): Promise<boolean> {
+  if (target.type !== "human") return false;
+  const rows = (await db.execute(sql`
+    SELECT EXISTS (
+      SELECT 1
+        FROM chat_membership cm
+        JOIN agents  a ON a.uuid = cm.agent_id
+        JOIN members m ON m.id   = a.manager_id
+       WHERE cm.chat_id = ${chatId}
+         AND cm.access_mode = 'speaker'
+         AND cm.agent_id <> ${target.agentId}
+         AND m.agent_id = ${target.agentId}
+         AND m.status   = 'active'
+         AND a.type    <> 'human'
+    ) AS anchored
+  `)) as unknown as Array<{ anchored: boolean }>;
+  return Boolean(rows[0]?.anchored);
 }
 
 async function listWatcherHumanAgentIds(db: Database, chatId: string): Promise<string[]> {

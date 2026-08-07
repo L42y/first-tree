@@ -38,6 +38,7 @@ export function AgentStatusPanel({
   compact = false,
   onRequestRemove,
   selfAgentId,
+  canRemoveAgent,
 }: {
   chatId: string;
   /** Non-human agent participants, in display order. */
@@ -50,9 +51,11 @@ export function AgentStatusPanel({
   /** Tighter row padding for the dense sidebar roster. The compose-bar usage
    *  keeps the roomier default. */
   compact?: boolean;
-  /** When set, non-self agent rows expose a Remove action. */
+  /** When set, non-self agent rows may expose a Remove action. */
   onRequestRemove?: (agent: ChatParticipantDetail) => void;
   selfAgentId?: string | null;
+  /** Optional per-agent gate for Remove (owner-side / own-agent matrix). */
+  canRemoveAgent?: (agent: ChatParticipantDetail) => boolean;
 }) {
   const { data: statuses } = useQuery({
     queryKey: chatAgentStatusQueryKey(chatId),
@@ -84,7 +87,9 @@ export function AgentStatusPanel({
           status={byAgent.get(agent.agentId) ?? null}
           canManage={canManage(agent.agentId)}
           compact={compact}
-          canRemove={Boolean(onRequestRemove) && agent.agentId !== selfAgentId}
+          canRemove={
+            Boolean(onRequestRemove) && agent.agentId !== selfAgentId && (canRemoveAgent ? canRemoveAgent(agent) : true)
+          }
           onRequestRemove={onRequestRemove ? () => onRequestRemove(agent) : undefined}
         />
       ))}

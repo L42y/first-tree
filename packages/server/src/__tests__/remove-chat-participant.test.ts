@@ -6,6 +6,7 @@ import type { WebSocket } from "ws";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
+import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { clients } from "../db/schema/clients.js";
@@ -29,6 +30,7 @@ import {
 import { createCronJob, loadOutstanding, lockOwnerChatCronBarrier, updateCronJob } from "../services/cron-job.js";
 import { sweepCronJobs } from "../services/cron-scheduler.js";
 import { ackThroughEntryIdForBoundAgents, pollInbox, pruneStaleSilentEntries } from "../services/inbox.js";
+import { leaveMeChat } from "../services/me-chat.js";
 import { sendMessage } from "../services/message.js";
 import {
   softTerminateRemovedAgentSession,
@@ -1746,5 +1748,260 @@ describe("remove chat participant — canonical mutation + Web Class C", () => {
     expect(watcher?.accessMode).toBe("watcher");
     expect(meChatsSpy).not.toHaveBeenCalledWith(manager.humanAgentUuid, manager.organizationId, chat.id);
     meChatsSpy.mockRestore();
+  });
+});
+
+describe("remove chat participant — owner-side / own-agent authorization", () => {
+  const getApp = useTestApp();
+
+  async function membershipOf(app: ReturnType<typeof getApp>, chatId: string, agentId: string) {
+    const [row] = await app.db
+      .select({ accessMode: chatMembership.accessMode, role: chatMembership.role })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chatId), eq(chatMembership.agentId, agentId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function ownedAgent(app: ReturnType<typeof getApp>, memberId: string, orgId: string, label: string) {
+    return createAgent(app.db, {
+      name: `rm-auth-${label}-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      displayName: `Auth ${label}`,
+      managerId: memberId,
+      organizationId: orgId,
+    });
+  }
+
+  it("refuses to remove the chat owner and leaves the owner row intact", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const other = await createTestAdmin(app);
+    const otherAgent = await ownedAgent(app, other.memberId, other.organizationId, "other");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [otherAgent.uuid, other.humanAgentUuid],
+    });
+
+    await expect(removeParticipant(app.db, chat.id, other.humanAgentUuid, owner.humanAgentUuid)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+
+    expect(await membershipOf(app, chat.id, owner.humanAgentUuid)).toEqual({
+      accessMode: "speaker",
+      role: "owner",
+    });
+  });
+
+  it("lets owner-side remove Human and Agent targets; refuses bystander speakers", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const bystander = await createTestAdmin(app);
+    const victimOwner = await createTestAdmin(app);
+    const victim = await ownedAgent(app, victimOwner.memberId, victimOwner.organizationId, "victim");
+    const bystanderAgent = await ownedAgent(app, bystander.memberId, bystander.organizationId, "bystander");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [victim.uuid, bystanderAgent.uuid, victimOwner.humanAgentUuid, bystander.humanAgentUuid],
+    });
+
+    await expect(
+      removeParticipant(app.db, chat.id, bystander.humanAgentUuid, victimOwner.humanAgentUuid),
+    ).rejects.toMatchObject({ statusCode: 403 });
+    await expect(removeParticipant(app.db, chat.id, bystanderAgent.uuid, victim.uuid)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+
+    await removeParticipant(app.db, chat.id, owner.humanAgentUuid, victim.uuid);
+    expect(await membershipOf(app, chat.id, victim.uuid)).toBeNull();
+    await removeParticipant(app.db, chat.id, owner.humanAgentUuid, victimOwner.humanAgentUuid);
+    expect(await membershipOf(app, chat.id, victimOwner.humanAgentUuid)).toBeNull();
+  });
+
+  it("lets a manager recall their own agent and refuses recalling an unrelated agent", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const manager = await createTestAdmin(app);
+    const mine = await ownedAgent(app, manager.memberId, manager.organizationId, "mine");
+    const theirs = await ownedAgent(app, owner.memberId, owner.organizationId, "theirs");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [mine.uuid, theirs.uuid, manager.humanAgentUuid],
+    });
+
+    await expect(removeParticipant(app.db, chat.id, manager.humanAgentUuid, theirs.uuid)).rejects.toMatchObject({
+      statusCode: 403,
+    });
+    await removeParticipant(app.db, chat.id, manager.humanAgentUuid, mine.uuid);
+    expect(await membershipOf(app, chat.id, mine.uuid)).toBeNull();
+  });
+
+  it("resolves owner-side through an agent owner and through an owner watcher", async () => {
+    const app = getApp();
+    const boss = await createTestAdmin(app);
+    const creator = await ownedAgent(app, boss.memberId, boss.organizationId, "creator");
+    const guestOwner = await createTestAdmin(app);
+    const guest = await ownedAgent(app, guestOwner.memberId, guestOwner.organizationId, "guest");
+
+    const agentOwned = await createChat(app.db, creator.uuid, {
+      type: "group",
+      participantIds: [guest.uuid, boss.humanAgentUuid],
+    });
+    await removeParticipant(app.db, agentOwned.id, boss.humanAgentUuid, guest.uuid);
+    expect(await membershipOf(app, agentOwned.id, guest.uuid)).toBeNull();
+
+    const owner = await createTestAdmin(app);
+    const ownerBot = await ownedAgent(app, owner.memberId, owner.organizationId, "ownerbot");
+    const guest2 = await ownedAgent(app, guestOwner.memberId, guestOwner.organizationId, "guest2");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [ownerBot.uuid, guest2.uuid],
+    });
+    await leaveMeChat(app.db, chat.id, owner.humanAgentUuid);
+    expect(await membershipOf(app, chat.id, owner.humanAgentUuid)).toEqual({
+      accessMode: "watcher",
+      role: "owner",
+    });
+    await removeParticipant(app.db, chat.id, ownerBot.uuid, guest2.uuid);
+    expect(await membershipOf(app, chat.id, guest2.uuid)).toBeNull();
+  });
+
+  it("409s only on full detach with a durable open request; ignores open_request_count drift", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const other = await createTestAdmin(app);
+    const theirAgent = await ownedAgent(app, other.memberId, other.organizationId, "anchor");
+    const ownerAgent = await ownedAgent(app, owner.memberId, owner.organizationId, "asker");
+
+    // Retained watcher: durable open request must NOT block.
+    const retained = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [theirAgent.uuid, other.humanAgentUuid],
+    });
+    await app.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      chatId: retained.id,
+      senderId: ownerAgent.uuid,
+      format: "request",
+      content: "need a decision",
+      metadata: { mentions: [other.humanAgentUuid] },
+      source: "agent",
+    });
+    await app.db
+      .insert(chatUserState)
+      .values({ chatId: retained.id, agentId: other.humanAgentUuid, openRequestCount: 0 })
+      .onConflictDoUpdate({
+        target: [chatUserState.chatId, chatUserState.agentId],
+        set: { openRequestCount: 0 },
+      });
+    await removeParticipant(app.db, retained.id, owner.humanAgentUuid, other.humanAgentUuid);
+    expect((await membershipOf(app, retained.id, other.humanAgentUuid))?.accessMode).toBe("watcher");
+
+    // Full detach + durable request → 409 even when counter drifted to 0.
+    const stranded = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [ownerAgent.uuid, other.humanAgentUuid],
+    });
+    await app.db.insert(messages).values({
+      id: crypto.randomUUID(),
+      chatId: stranded.id,
+      senderId: ownerAgent.uuid,
+      format: "request",
+      content: "need a decision",
+      metadata: { mentions: [other.humanAgentUuid] },
+      source: "agent",
+    });
+    await app.db
+      .insert(chatUserState)
+      .values({ chatId: stranded.id, agentId: other.humanAgentUuid, openRequestCount: 0 })
+      .onConflictDoUpdate({
+        target: [chatUserState.chatId, chatUserState.agentId],
+        set: { openRequestCount: 0 },
+      });
+    await expect(
+      removeParticipant(app.db, stranded.id, owner.humanAgentUuid, other.humanAgentUuid),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      attrs: { code: REMOVE_PARTICIPANT_OPEN_REQUEST_CODE },
+    });
+
+    // Full detach + inflated counter but no durable request → allow.
+    const peer = await createTestAdmin(app);
+    const drifted = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [peer.humanAgentUuid],
+    });
+    await app.db
+      .insert(chatUserState)
+      .values({ chatId: drifted.id, agentId: peer.humanAgentUuid, openRequestCount: 3 })
+      .onConflictDoUpdate({
+        target: [chatUserState.chatId, chatUserState.agentId],
+        set: { openRequestCount: 3 },
+      });
+    await removeParticipant(app.db, drifted.id, owner.humanAgentUuid, peer.humanAgentUuid);
+    expect(await membershipOf(app, drifted.id, peer.humanAgentUuid)).toBeNull();
+  });
+
+  it("waits on concurrent FOR UPDATE of an authority agent row before deciding removal", async () => {
+    const app = getApp();
+    const owner = await createTestAdmin(app);
+    const manager = await createTestAdmin(app);
+    const mine = await ownedAgent(app, manager.memberId, manager.organizationId, "race");
+    const chat = await createChat(app.db, owner.humanAgentUuid, {
+      type: "group",
+      participantIds: [mine.uuid, manager.humanAgentUuid],
+    });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for authority race test");
+
+    const holdAppName = `rm_auth_hold_${crypto.randomUUID().slice(0, 8)}`;
+    const removeAppName = `rm_auth_rm_${crypto.randomUUID().slice(0, 8)}`;
+    const holdPool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, holdAppName));
+    const removePool = connectDatabase(databaseUrlWithApplicationName(databaseUrl, removeAppName));
+    const observer = postgres(databaseUrl, { max: 1, idle_timeout: 5, ...(sslOptions(databaseUrl) ?? {}) });
+
+    try {
+      let releaseHold!: () => void;
+      const holdReleased = new Promise<void>((resolve) => {
+        releaseHold = resolve;
+      });
+      let holdReady!: () => void;
+      const holdReadyP = new Promise<void>((resolve) => {
+        holdReady = resolve;
+      });
+
+      // Hold the target agent row the way a concurrent manager_id transfer would,
+      // so remove's authority snapshot must wait on the same FOR UPDATE set.
+      const holdPromise = holdPool.transaction(async (tx) => {
+        await tx.select({ uuid: agents.uuid }).from(agents).where(eq(agents.uuid, mine.uuid)).for("update").limit(1);
+        holdReady();
+        await holdReleased;
+      });
+
+      await Promise.race([
+        holdReadyP,
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("authority hold barrier timeout")), 10_000);
+        }),
+      ]);
+
+      const removePromise = removeParticipant(removePool, chat.id, manager.humanAgentUuid, mine.uuid);
+      await waitForPostgresLockWait(observer, removeAppName);
+
+      releaseHold();
+      await Promise.race([
+        Promise.all([holdPromise, removePromise]),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("authority race deadlock timeout")), 15_000);
+        }),
+      ]);
+
+      expect(await membershipOf(app, chat.id, mine.uuid)).toBeNull();
+    } finally {
+      await holdPool.end();
+      await removePool.end();
+      await observer.end();
+    }
   });
 });

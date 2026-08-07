@@ -45,14 +45,16 @@ vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
     agents,
     onRequestRemove,
     selfAgentId,
+    canRemoveAgent,
   }: {
     agents: ChatParticipantDetail[];
     onRequestRemove?: (agent: ChatParticipantDetail) => void;
     selfAgentId?: string | null;
+    canRemoveAgent?: (agent: ChatParticipantDetail) => boolean;
   }) => (
     <div data-testid="agent-status-panel">
       {agents.map((agent) =>
-        onRequestRemove && agent.agentId !== selfAgentId ? (
+        onRequestRemove && agent.agentId !== selfAgentId && (canRemoveAgent ? canRemoveAgent(agent) : true) ? (
           <button
             key={agent.agentId}
             type="button"
@@ -69,10 +71,10 @@ vi.mock("../../../../components/chat/agent-status-panel.js", () => ({
   ),
 }));
 
-function participant(id: string, type: "human" | "agent", displayName = id): ChatParticipantDetail {
+function participant(id: string, type: "human" | "agent", displayName = id, role = "member"): ChatParticipantDetail {
   return {
     agentId: id,
-    role: "member",
+    role,
     mode: "default",
     joinedAt: "2026-06-16T00:00:00.000Z",
     name: id,
@@ -114,7 +116,7 @@ describe("ParticipantsSection remove affordance", () => {
 
   it("hides Remove for self and in read-only mode", () => {
     const roster = [
-      participant("human-self", "human", "Me"),
+      participant("human-self", "human", "Me", "owner"),
       participant("human-other", "human", "Other"),
       participant("agent-1", "agent", "Nova"),
     ];
@@ -168,6 +170,32 @@ describe("ParticipantsSection remove affordance", () => {
     expect(outsider.container.querySelector('[aria-label="Actions for Nova"]')).toBeNull();
   });
 
+  it("hides Remove for the owner row and for bystander targets outside own-agent", () => {
+    authMock.agentId = "human-bystander";
+    const roster = [
+      participant("human-owner", "human", "Owner", "owner"),
+      participant("human-bystander", "human", "Bystander"),
+      participant("human-peer", "human", "Peer"),
+      participant("agent-mine", "agent", "Mine"),
+      participant("agent-theirs", "agent", "Theirs"),
+    ];
+    const { container, root } = render(
+      <ParticipantsSection
+        chatId="chat-1"
+        participants={roster}
+        participantsLoading={false}
+        managedByMe={new Map([["agent-mine", true]])}
+        onAdded={() => undefined}
+        readOnly={false}
+      />,
+    );
+    mounted = { container, root };
+    expect(container.querySelector('[aria-label="Actions for Owner"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Actions for Peer"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Actions for Theirs"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Actions for Mine"]')).not.toBeNull();
+  });
+
   it("shows confirm copy, submits once, and toasts watching vs detached", async () => {
     meChatMocks.removeMeChatParticipant.mockResolvedValueOnce({
       chatId: "chat-1",
@@ -177,7 +205,7 @@ describe("ParticipantsSection remove affordance", () => {
     const { container, root } = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={[participant("human-self", "human", "Me"), participant("human-other", "human", "Other")]}
+        participants={[participant("human-self", "human", "Me", "owner"), participant("human-other", "human", "Other")]}
         participantsLoading={false}
         managedByMe={new Map()}
         onAdded={() => undefined}
@@ -227,7 +255,7 @@ describe("ParticipantsSection remove affordance", () => {
     const section = render(
       <ParticipantsSection
         chatId="chat-1"
-        participants={[participant("human-self", "human", "Me"), participant("human-other", "human", "Other")]}
+        participants={[participant("human-self", "human", "Me", "owner"), participant("human-other", "human", "Other")]}
         participantsLoading={false}
         managedByMe={new Map()}
         onAdded={() => undefined}
