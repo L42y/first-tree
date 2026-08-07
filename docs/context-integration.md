@@ -309,29 +309,41 @@ Session-only means no persistent grant, Plugin or Hook and no automatic future
 activation. It does not promise continuity across clear, compact, resume, exit,
 or a new session.
 
-## Release qualification
+## Qualification status
 
-Before production qualification, real Claude Code and Codex surfaces must
-record evidence for:
+BYO Context ships on the public `latest` channel. Its real-provider
+qualification is incomplete: no recorded Claude Code or Codex surface evidence
+exists for any of the scenarios below. #2143 carried this as an explicit
+release risk and it has not since been discharged.
+
+Current coverage comes from three layers, none of which is provider-surface
+evidence:
+
+- deterministic behavior — per-package Vitest;
+- skill-eval structure — the `@first-tree/skill-evals` no-model floors, which
+  validate the coverage matrix, Skill frontmatter and case schema only. They
+  execute no Codex, Claude Code, or LLM-judge case, so they are not evidence of
+  agent behavior; the model-backed gate, quality and periodic suites are
+  human-requested and have no recorded run for BYO Context;
+- scenario definitions — the prose cases under `packages/qa/cases/`, which are
+  prompts for a human-requested QA run, not execution records.
+
+The release bar is recorded evidence from real Claude Code and Codex surfaces
+for:
 
 1. global, directory and session-only setup;
-2. dynamic setup choices for pathless, Codex scratch, default managed-worktree,
-   and ordinary-project locations, plus `/hooks` consent and same-conversation
-   continuation;
-3. two or more real Teams with clear, overlapping, missing and non-matching
+2. two or more real Teams with clear, overlapping, missing and non-matching
    SCOPE bodies;
-4. a non-programming SCOPE and imperative text treated only as routing data;
-5. membership revocation, binding movement, offline authority and scope-commit
-   movement;
-6. single- and multi-Team BYO writes with the mandatory new user confirmation;
-7. SCOPE admin approval, rejection, changed head/digest and manager demotion;
-8. v2 store backup and explicit reauthorization;
-9. legacy full Plugin migration with the Claude next-session adoption gate,
-   followed by a Core-only CLI upgrade that leaves adapter bytes and provider
-   trust unchanged;
-10. same-organization cross-provider repo reuse, cross-organization isolation,
-    A→B→A Client switching, and active-write switch refusal;
-11. concise bootstrap progress, bounded typed-error recovery, and unchanged
-    human confirmation boundaries.
+3. single- and multi-Team BYO writes with the mandatory new user confirmation.
 
 Unit tests and mock QA do not replace these real-provider checks.
+
+The remaining scenarios — dynamic setup choices and `/hooks` consent,
+membership revocation and binding movement, SCOPE admin approval, v2 store
+backup, legacy Plugin migration, cross-organization isolation and Client
+switching, and bootstrap error recovery — stay defined in `packages/qa/cases/`
+and are qualified when a change touches them rather than on every release.
+Dynamic directory choice additionally depends on #2208.
+
+#2239 owns the environment these checks need and the current per-scenario
+status.
