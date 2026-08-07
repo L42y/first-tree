@@ -56,6 +56,7 @@ describe("context activate command", () => {
     vi.clearAllMocks();
     vi.stubEnv("FIRST_TREE_AGENT_ID", "");
     vi.stubEnv("FIRST_TREE_CHAT_ID", "");
+    vi.stubEnv("FIRST_TREE_SERVER_URL", "https://first-tree.example");
     mocks.readInstall.mockReturnValue({
       accountClientId: "client_1234abcd",
       channel: "dev",
