@@ -2586,6 +2586,55 @@ describe("ChatView", () => {
     await act(async () => preview.root.unmount());
   });
 
+  it("self-only roster keeps history and Participants but locks the composer (no self recipient)", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const { SELF_ONLY_COMPOSER_PLACEHOLDER } = await import("../../../../utils/requires-mention.js");
+    localStorage.setItem("first-tree:chat-right-sidebar:open:v1", "1");
+    const history = message({
+      id: "msg-before-remove",
+      senderId: "human-agent-self",
+      content: "hello before last-other remove",
+      metadata: { mentions: ["human-agent-alice"] },
+    });
+    const solo = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+      ],
+    });
+    chatMocks.listChatMessages.mockResolvedValue(messages([history]));
+    chatMocks.getChat.mockResolvedValue(solo);
+    agentMocks.getAgentSkills.mockClear();
+
+    const { container, root } = await renderDom(
+      // agentId = viewer is only a ChatById mount anchor, not a recipient.
+      <ChatView agentId="human-agent-self" chatId="chat-1" initialChatDetail={solo} />,
+      (queryClient) => seedChat(queryClient, solo, messages([history])),
+      "/",
+    );
+
+    await waitForText(container, "hello before last-other remove");
+    await waitForText(container, "Participants");
+    expect(container.textContent).toContain("Add a participant before you can send.");
+    expect(container.textContent).not.toContain("Resolving participants");
+    expect(container.textContent).not.toContain("Hi Gandy!");
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    expect(textarea.disabled).toBe(true);
+    expect(textarea.placeholder).toBe(SELF_ONLY_COMPOSER_PLACEHOLDER);
+    expect(textarea.value).toBe("");
+
+    const send = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
+    expect(send?.disabled).toBe(true);
+    await click(send);
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    expect(agentMocks.getAgentSkills).not.toHaveBeenCalled();
+    expect(container.textContent).not.toMatch(/\bPause\b/);
+    expect(container.textContent).not.toMatch(/\bResume\b/);
+
+    await act(async () => root.unmount());
+  });
+
   it("sends text, blocks unaddressed image sends, then sends uploaded image batches", async () => {
     const { ChatView } = await import("../chat-view.js");
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, undefined, "/");

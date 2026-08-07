@@ -31,6 +31,25 @@ export function computeRequiresMention(
 }
 
 /**
+ * True when the loaded speaker roster is only the current viewer.
+ *
+ * After Web Remove of the last other speaker the chat must stay usable
+ * (history + Participants), but there is no addressable recipient — the
+ * composer must not treat the viewer's own agent id as a DM peer (no
+ * "Hi &lt;self&gt;" prefill, no recipientless POST).
+ */
+export function isSelfOnlySpeakerRoster(
+  participantAgentIds: readonly string[],
+  myAgentId: string | null | undefined,
+): boolean {
+  if (myAgentId == null) return false;
+  return participantAgentIds.length === 1 && participantAgentIds[0] === myAgentId;
+}
+
+/** Composer placeholder when {@link isSelfOnlySpeakerRoster} is true. */
+export const SELF_ONLY_COMPOSER_PLACEHOLDER = "Add a participant to send a message";
+
+/**
  * Whether composer focus should auto-insert `@` to pop the recipient picker.
  *
  * Primes only when an explicit @mention is genuinely required for this send:

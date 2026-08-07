@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeRequiresMention, shouldPrimeMentionOnFocus } from "../requires-mention.js";
+import {
+  computeRequiresMention,
+  isSelfOnlySpeakerRoster,
+  shouldPrimeMentionOnFocus,
+} from "../requires-mention.js";
 
 const ME = "me-agent";
 const A = "agent-a";
@@ -51,6 +55,16 @@ describe("computeRequiresMention", () => {
 
   it("handles an empty participant list", () => {
     expect(computeRequiresMention([], ME)).toBe(false);
+  });
+});
+
+describe("isSelfOnlySpeakerRoster", () => {
+  it("is true only for a single speaker that is the viewer", () => {
+    expect(isSelfOnlySpeakerRoster([ME], ME)).toBe(true);
+    expect(isSelfOnlySpeakerRoster([ME, A], ME)).toBe(false);
+    expect(isSelfOnlySpeakerRoster([A], ME)).toBe(false);
+    expect(isSelfOnlySpeakerRoster([ME], null)).toBe(false);
+    expect(isSelfOnlySpeakerRoster([], ME)).toBe(false);
   });
 });
 
