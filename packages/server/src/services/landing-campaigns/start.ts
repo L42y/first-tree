@@ -25,7 +25,7 @@ import {
   ServiceUnavailableError,
 } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
-import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent, legacyWireAgentType } from "../agent.js";
+import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent } from "../agent.js";
 import { computeWorking } from "../agent-chat-status.js";
 import { pickDefaultMembership } from "../auth.js";
 import { createChat } from "../chat.js";
@@ -354,7 +354,7 @@ function notifyClientAgentPinned(app: FastifyInstance, agent: Awaited<ReturnType
     agentId: agent.uuid,
     name: agent.name,
     displayName: agent.displayName,
-    agentType: legacyWireAgentType(agent.type),
+    agentType: agent.type,
     runtimeProvider: agent.runtimeProvider,
   });
   if (!parsed.success) {

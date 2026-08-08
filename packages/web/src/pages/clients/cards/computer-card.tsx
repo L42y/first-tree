@@ -40,7 +40,7 @@ export type ComputerCardProps = {
  * `<Section>` ("Your computers" / "Team computers") — no raised
  * background, no shadow, no border. The visual vocabulary matches the
  * rest of Settings (Section → fields → hairline separators) so this tab
- * sits next to /settings/github and /settings/messaging without looking
+ * sits next to /settings/integrations/github and /settings/messaging without looking
  * like an outlier.
  *
  * Multiple machines stack vertically; the parent `CardStack` paints a

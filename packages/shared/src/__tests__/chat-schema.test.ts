@@ -71,7 +71,7 @@ describe("chat write schemas", () => {
     });
   });
 
-  it("accepts one campaign action contract and rejects it alongside the legacy field", () => {
+  it("accepts the canonical campaign action contract and rejects the obsolete field", () => {
     const base = {
       mode: "task" as const,
       initialRecipientAgentIds: ["agent-1"],
@@ -86,7 +86,6 @@ describe("chat write schemas", () => {
     expect(
       createWebTaskChatSchema.safeParse({
         ...base,
-        campaignAction: { campaign: "production-scan", repoSlug: "acme/api" },
         scanFixRepoSlug: "acme/api",
       }).success,
     ).toBe(false);

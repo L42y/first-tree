@@ -49,10 +49,7 @@ export async function listMeChats(
   // `opts.signal` lets React Query cancel the in-flight request when the
   // filter/cursor changes, so a superseded page never lands.
   //
-  // Parse (not just cast): the schema's version-skew `.default`s only run when
-  // something actually parses the payload. A web bundle ahead of a server that
-  // predates `priorityRows` therefore reads it as the empty default rather than
-  // `undefined`. Zod ignores unknown keys, so a newer server stays compatible.
+  // Parse the canonical response at the network boundary.
   const res = await api.get<unknown>(withOrg(`/chats${query ? `?${query}` : ""}`), opts);
   return listMeChatsResponseSchema.parse(res);
 }

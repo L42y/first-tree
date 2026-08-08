@@ -57,7 +57,7 @@ describe("kickoffOnboardingSchema", () => {
     expect(parsed.success).toBe(false);
   });
 
-  it("accepts one campaign action contract and rejects it alongside the legacy field", () => {
+  it("accepts the canonical campaign action contract and rejects obsolete fields", () => {
     const base = { agentUuid: "agent-1", bootstrap: "Fix the findings." };
     expect(
       kickoffOnboardingSchema.parse({
@@ -68,10 +68,10 @@ describe("kickoffOnboardingSchema", () => {
     expect(
       kickoffOnboardingSchema.safeParse({
         ...base,
-        campaignAction: { campaign: "production-scan", repoSlug: "acme/api" },
         scanFixRepoSlug: "acme/api",
       }).success,
     ).toBe(false);
+    expect(kickoffOnboardingSchema.safeParse({ ...base, campaign: "production-scan" }).success).toBe(false);
   });
 });
 

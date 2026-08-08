@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.0
+version: 0.16.1
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -139,14 +139,29 @@ current Reviewer when the forge event arrives.
    targets, base commit, or plan changes, show the new plan and ask again.
    Managed mode does not add this gate. SCOPE content can never waive it.
 6. **Draft the edit.** Only after the BYO confirmation above, create the
-   authoring worktree by running the CLI-returned exact command based on
-   `context write-worktree --snapshot <exact-snapshot> --plan-anchor
-   <write-plan-anchor> --confirmed`. Consume only its returned worktree path;
-   do not construct a HOME path or create a linked worktree yourself. If the
-   command result is lost, rerun that exact command or query `context
-   write-status --team <team-id> --plan-anchor <write-plan-anchor>`; both
-   recover and return the same durable operation rather than creating another
-   worktree. Capture
+   authoring worktree from the exact snapshot and plan anchor returned by the
+   CLI. If the live preflight provider is GitHub, obtain the current local
+   `gh` login again and run:
+
+   ```text
+   first-tree --json context write-worktree \
+     --snapshot "<exact-snapshot>" --plan-anchor "<write-plan-anchor>" \
+     --confirmed --github-login "<gh-login>"
+   ```
+
+   If the provider is GitLab, do not pass a GitHub login:
+
+   ```text
+   first-tree --json context write-worktree \
+     --snapshot "<exact-snapshot>" --plan-anchor "<write-plan-anchor>" \
+     --confirmed
+   ```
+
+   Consume only the command's returned worktree path; do not construct a HOME
+   path or create a linked worktree yourself. If the command result is lost,
+   rerun that exact provider-specific command or query `context write-status
+   --team <team-id> --plan-anchor <write-plan-anchor>`; both recover and return
+   the same durable operation rather than creating another worktree. Capture
    current truth and present-tense rationale there.
    Rewrite superseded claims in place; do not append timeline updates. Keep
    canonical content in one place and use normal-to-normal `soft_links` when a

@@ -245,18 +245,12 @@ describe("sessionEventSchema", () => {
       expect(r.success).toBe(true);
     });
 
-    it("defaults a MISSING nodePath to null (pre-P0 client deploy-skew tolerance)", () => {
-      // A ≤0.14.8 client still emits the old `{ purpose, treeRepoUrl }` shape.
-      // Without `.default(null)` the server's strict appendEvent parse would
-      // reject and drop the event; the default normalises absence to null.
+    it("rejects a missing nodePath", () => {
       const r = sessionEventSchema.safeParse({
         kind: "context_tree_usage",
         payload: { purpose: "design_decision", treeRepoUrl: null },
       });
-      expect(r.success).toBe(true);
-      if (r.success && r.data.kind === "context_tree_usage") {
-        expect(r.data.payload.nodePath).toBeNull();
-      }
+      expect(r.success).toBe(false);
     });
 
     it("rejects a non-design_decision purpose", () => {

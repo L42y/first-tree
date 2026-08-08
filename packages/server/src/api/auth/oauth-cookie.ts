@@ -30,10 +30,7 @@ export function readOAuthStateNonce(
   encryptionKey: string,
 ): string | null {
   const value = parseCookieHeader(header, name);
-  if (!value) return null;
-  // States expire after ten minutes, so a plaintext cookie minted by the
-  // previous release is accepted only while its signed state remains valid.
-  if (!isEncryptedValue(value)) return value;
+  if (!value || !isEncryptedValue(value)) return null;
   try {
     return decryptValue(value, encryptionKey);
   } catch {

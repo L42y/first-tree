@@ -49,5 +49,5 @@ export function clearGithubAccountLinkReturn(): void {
 }
 
 export function githubSettingsErrorReturnPath(code: string, flow: "install" | "link"): string {
-  return `/settings/github?error=${encodeURIComponent(code)}&flow=${flow}`;
+  return `/settings/integrations/github?error=${encodeURIComponent(code)}&flow=${flow}`;
 }

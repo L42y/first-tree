@@ -201,34 +201,6 @@ function defaultVisibility(type: AgentType): AgentVisibility {
 }
 
 /**
- * Translate a post-merge `agents.type` value into the 3-value enum older
- * clients (≤ 0.5.1) expect on the wire. The pre-merge type enum was
- * `human | personal_assistant | autonomous_agent`; this PR collapsed the
- * latter two into a single `agent` row. Old clients deserialise the
- * `agent:pinned` WS frame via a strict zod enum that rejects the unknown
- * `agent` value — pushing the legacy label keeps them working without an
- * upgrade. Drop this helper (and emit `agentTypeSchema` directly) once
- * every deployed client is on a release that accepts `agent`.
- *
- * Non-human rows are uniformly mapped to `personal_assistant`. The
- * `(visibility=private) ⇔ personal_assistant` invariant the 0018
- * backfill established is *not* preserved going forward (the product
- * allows a PA to be `visibility=organization` and vice versa), so any
- * visibility-based reverse mapping would be misleading. `personal_assistant`
- * is picked because today's data is overwhelmingly PA — for the rare
- * autonomous bot the only knock-on effect on a 0.5.1 client is a cosmetic
- * "personal assistant" string in the generated `CLAUDE.md` self-description.
- * The frame still parses, the daemon still writes its local `agent.yaml`,
- * the runtime still starts.
- *
- * `type` is `string` because callers source it from a drizzle text column;
- * narrowing to `AgentType` at every call site would be needless ceremony.
- */
-export function legacyWireAgentType(type: string): "human" | "personal_assistant" {
-  return type === "human" ? "human" : "personal_assistant";
-}
-
-/**
  * Resolve + validate the client that will own the new agent.
  *
  * Rule (unified-user-token, post-first-bind relaxation):

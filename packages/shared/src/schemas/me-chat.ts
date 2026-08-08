@@ -66,10 +66,7 @@ export const listMeChatsQuerySchema = z.object({
    * query params (`?origin=manual&origin=pr`) and the comma-joined
    * form (`?origin=manual,pr`) the workspace URL uses.
    *
-   * Replaces the Phase A `source` single-enum field. Web parsers
-   * upgrade `?source=foo` → `?origin=foo` for backward compatibility
-   * with shared links and bookmarks; this schema deliberately does NOT
-   * accept the legacy single-value name so the wire stays canonical.
+   * The wire accepts only the canonical multi-value `origin` field.
    */
   origin: z.preprocess(csvArrayPreprocess, z.array(chatSourceSchema).optional()),
   /**
@@ -365,46 +362,19 @@ export const meChatRowSchema = z.object({
 });
 export type MeChatRow = z.infer<typeof meChatRowSchema>;
 
-function sortMeChatRowsByActivity(rows: readonly MeChatRow[]): MeChatRow[] {
-  return [...rows].sort((a, b) => {
-    const aAt = Date.parse(a.activityAt ?? a.lastMessageAt ?? "") || 0;
-    const bAt = Date.parse(b.activityAt ?? b.lastMessageAt ?? "") || 0;
-    return bAt - aAt || b.chatId.localeCompare(a.chatId);
-  });
-}
-
 /**
  * The viewer's complete pin projection across the full matching set, populated
- * on the first page only and ordered by real-work activity DESC. Ordinary `rows` remain
- * additive for rolling compatibility, so clients de-duplicate pinned ids before
- * rendering the recency stream.
+ * on the first page only and ordered by real-work activity DESC. Ordinary `rows`
+ * remain additive so CLI Workspace listings include pinned chats.
  *
  * Open asks and recovery are row status signals, not list tiers. Open asks have
  * their own request-level Need you queue; recovery never changes chat ordering.
- *
- * A web-ahead rolling deploy can still receive the retired `attention` bucket
- * from an older server. That server made Attention win over Pinned, so a pinned
- * chat with an open request was absent from `pinned` even though its row still
- * carried `pinnedAt`. Treat that legacy bucket only as a transport fallback:
- * recover its pinned rows into the canonical pin projection, then discard the
- * bucket. Unpinned Attention rows stay in additive `rows` and retain ordinary
- * activity ordering; the retired tier never reappears in the parsed contract.
  */
 export const meChatPriorityRowsSchema = z
   .object({
-    pinned: z.array(meChatRowSchema).default([]),
-    attention: z.array(meChatRowSchema).default([]),
+    pinned: z.array(meChatRowSchema),
   })
-  .default({ pinned: [], attention: [] })
-  .transform(({ pinned, attention }) => {
-    const canonicalByChatId = new Map(pinned.map((row) => [row.chatId, row]));
-    for (const row of attention) {
-      if (row.pinnedAt !== null && !canonicalByChatId.has(row.chatId)) {
-        canonicalByChatId.set(row.chatId, row);
-      }
-    }
-    return { pinned: sortMeChatRowsByActivity([...canonicalByChatId.values()]) };
-  });
+  .strict();
 export type MeChatPriorityRows = z.infer<typeof meChatPriorityRowsSchema>;
 
 export const listMeChatsResponseSchema = z.object({

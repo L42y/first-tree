@@ -24,25 +24,10 @@ import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 describe("Rule R-RUN on agent-scoped HTTP", () => {
   const getApp = useTestApp();
 
-  it("accepts a request pinned to the caller's client", async () => {
-    const app = getApp();
-    const { agent, accessToken } = await createTestAgent(app);
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/v1/agent/me",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "x-agent-id": agent.uuid,
-      },
-    });
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("accepts a valid runtime session token before enforcement is enabled", async () => {
+  it("accepts a request pinned to the caller's client with a valid runtime session token", async () => {
     const app = getApp();
     const { agent, clientId, accessToken } = await createTestAgent(app);
     const runtimeSessionToken = await bindAgentRuntimeSession(app.db, agent.uuid, clientId);
-
     const res = await app.inject({
       method: "GET",
       url: "/api/v1/agent/me",
@@ -52,25 +37,6 @@ describe("Rule R-RUN on agent-scoped HTTP", () => {
         [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
       },
     });
-
-    expect(res.statusCode).toBe(200);
-  });
-
-  it("accepts an invalid runtime session token before enforcement is enabled", async () => {
-    const app = getApp();
-    const { agent, clientId, accessToken } = await createTestAgent(app);
-    await bindAgentRuntimeSession(app.db, agent.uuid, clientId);
-
-    const res = await app.inject({
-      method: "GET",
-      url: "/api/v1/agent/me",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "x-agent-id": agent.uuid,
-        [AGENT_RUNTIME_SESSION_HEADER]: "not-current-token",
-      },
-    });
-
     expect(res.statusCode).toBe(200);
   });
 
@@ -222,7 +188,7 @@ describe("Rule R-RUN on agent-scoped HTTP", () => {
 });
 
 describe("runtime-bound agent HTTP enforcement", () => {
-  const getApp = useTestApp({ runtimeHttpTokenEnforcement: true });
+  const getApp = useTestApp();
 
   it("rejects non-human agent HTTP without a runtime session token", async () => {
     const app = getApp();

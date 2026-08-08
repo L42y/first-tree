@@ -27,6 +27,7 @@ import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require
 import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
 import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat.js";
+import { extractChatSummary, resolveChatTitle } from "../services/chat-read-model.js";
 import { declareEntityFollow, listChatGithubEntities, removeEntityFollow } from "../services/github-entity-follow.js";
 import {
   declareGitlabEntityFollowWithStatus,
@@ -48,7 +49,6 @@ import {
   markMeChatRead,
   markMeChatUnread,
   pinMeChat,
-  resolveChatTitle,
   setChatEngagement,
 } from "../services/me-chat.js";
 import {
@@ -62,7 +62,6 @@ import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
 import { listRequestThread } from "../services/need-you.js";
 import { notifyRecipients } from "../services/notifier.js";
 import { resolveHumanScmBindingPair } from "../services/scm-attention-line.js";
-import { extractSummary } from "../services/session.js";
 import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/session-event.js";
 import { sendFollowResult } from "./github-entity-reply.js";
 
@@ -136,7 +135,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
        ORDER BY created_at ASC
        LIMIT 1
     `)) as unknown as Array<{ content: unknown }>;
-    const firstMessagePreview = firstMsgRows[0] ? extractSummary(firstMsgRows[0].content) : null;
+    const firstMessagePreview = firstMsgRows[0] ? extractChatSummary(firstMsgRows[0].content) : null;
 
     const participantsForTitle = participants.map((p) => ({
       agentId: p.agentId,

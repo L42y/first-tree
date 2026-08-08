@@ -73,30 +73,13 @@ describe("/auth/refresh failure attrs (issue #246)", () => {
 });
 
 describe("/auth/connect-token failure attrs", () => {
-  it("classifies an expired connect token and stamps untrusted sub on the connect namespace", async () => {
-    const pastEpoch = Math.floor(Date.now() / 1000) - 60;
-    const expired = await signRefreshToken({ sub: "user-cx", type: "connect", expiry: pastEpoch });
-
-    await expect(exchangeConnectToken(NEVER_USED_DB, expired, SECRET, EXPIRIES)).rejects.toMatchObject({
-      statusCode: 401,
-      attrs: expect.objectContaining({
-        "auth.connect.reason": "jwt_expired",
-        "auth.connect.untrusted.sub": "user-cx",
-      }),
-    });
-  });
-
-  it("rejects a refresh token presented as a connect token with wrong_token_type + actual_type", async () => {
-    // Valid signature, valid claims, but `type: "refresh"` — `exchangeConnectToken`
-    // hits its post-verify type guard and we want the dashboard to be able to tell
-    // "wrong type" from "verify failed" without stack-grepping.
+  it("rejects JWT-looking input as an invalid short code without JWT-specific attributes", async () => {
     const refreshTypedToken = await signRefreshToken({ sub: "user-rt", type: "refresh" });
 
     await expect(exchangeConnectToken(NEVER_USED_DB, refreshTypedToken, SECRET, EXPIRIES)).rejects.toMatchObject({
       statusCode: 401,
       attrs: expect.objectContaining({
-        "auth.connect.reason": "wrong_token_type",
-        "auth.connect.actual_type": "refresh",
+        "auth.connect.reason": "code_invalid_or_expired",
       }),
     });
   });

@@ -46,29 +46,10 @@ export function buildRuntimeConfig(
   webDistPath: string | undefined,
 ): Config {
   const configuredAllowlist = serverConfig.gitlab?.egressAllowlist;
-  const legacyAllowlist = serverConfig.gitlab?.legacyEgressAllowlist;
-  if (configuredAllowlist !== undefined && legacyAllowlist !== undefined) {
-    throw new Error(
-      "Set only FIRST_TREE_GITLAB_ALLOWED_ORIGINS or deprecated FIRST_TREE_GITLAB_EGRESS_ALLOWLIST, not both.",
-    );
-  }
-  if (legacyAllowlist !== undefined) {
-    log.warn("FIRST_TREE_GITLAB_EGRESS_ALLOWLIST is deprecated; migrate to FIRST_TREE_GITLAB_ALLOWED_ORIGINS.");
-  }
-  const egressAllowlist =
-    legacyAllowlist !== undefined
-      ? legacyAllowlist.map((entry) =>
-          entry.addressPolicy.kind === "public"
-            ? { origin: entry.origin, addressPolicy: { kind: "public" as const } }
-            : {
-                origin: entry.origin,
-                addressPolicy: { kind: "cidrs" as const, cidrs: entry.addressPolicy.cidrs },
-              },
-        )
-      : withDefaultGitlabOrigin(configuredAllowlist ?? []);
+  const egressAllowlist = withDefaultGitlabOrigin(configuredAllowlist ?? []);
   return {
     ...serverConfig,
-    gitlab: { egressAllowlist, legacyEgressAllowlist: undefined },
+    gitlab: { egressAllowlist },
     instanceId: `srv_${instanceId.slice(0, 8)}`,
     webDistPath: webDistPath && webDistPath.length > 0 ? webDistPath : undefined,
   };

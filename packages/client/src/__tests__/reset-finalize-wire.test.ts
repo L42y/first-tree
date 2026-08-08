@@ -263,7 +263,6 @@ class FakeServer {
             serverCommandVersion: "1.0.0",
             serverTimeMs: Date.now(),
             capabilities: {
-              wsInboxDeliver: true,
               wsInboxAckConfirm: true,
               wsSessionEventConfirm: true,
               ...(this.advertiseSessionResetV1 ? { wsSessionResetV1: true } : {}),

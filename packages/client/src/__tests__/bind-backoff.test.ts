@@ -128,7 +128,7 @@ describe("ClientConnection — bind per-agent backoff (Bug 5)", () => {
             runtimeProvider: "claude-code",
             name: "fresh-agent",
             displayName: "Fresh Agent",
-            agentType: "autonomous_agent",
+            agentType: "agent",
           }),
         );
       }, 100);

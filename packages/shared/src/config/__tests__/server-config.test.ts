@@ -134,33 +134,6 @@ describe("server config", () => {
         addressPolicy: { kind: "cidrs", cidrs: ["10.20.0.0/16"] },
       },
     ]);
-    expect(configured.gitlab?.legacyEgressAllowlist).toBeUndefined();
-  });
-
-  it("loads the deprecated GitLab egress allowlist for bootstrap compatibility", async () => {
-    const configDir = makeTempConfigDir();
-    stubRequiredProductionConfig();
-    vi.stubEnv(
-      "FIRST_TREE_GITLAB_EGRESS_ALLOWLIST",
-      JSON.stringify([
-        {
-          origin: "https://GITLAB.LEGACY.EXAMPLE",
-          addressPolicy: { kind: "public" },
-        },
-      ]),
-    );
-    const configured = await initConfig({
-      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
-      role: "server",
-      configDir,
-    });
-    expect(configured.gitlab?.egressAllowlist).toBeUndefined();
-    expect(configured.gitlab?.legacyEgressAllowlist).toEqual([
-      {
-        origin: "https://gitlab.legacy.example",
-        addressPolicy: { kind: "public" },
-      },
-    ]);
   });
 
   it("rejects malformed GitLab origin JSON during config initialization", async () => {

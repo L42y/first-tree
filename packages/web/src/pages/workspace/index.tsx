@@ -30,18 +30,6 @@ import { ConversationList, DRAFT_CHAT_ID, type RailFilter } from "./conversation
  *   - `?with=agent-x,agent-y` (default empty = unfiltered) — participants
  *   - `?group=recency|source` — list grouping; when absent, falls back to
  *     the remembered per-device choice (`localStorage`), then `recency`
- *
- * Phase B replaces the Phase A single-value `?source=` with the multi-select
- * `?origin=`; the legacy key is still accepted on first load and upgraded
- * in-place so shared links / bookmarks keep working without expanding the
- * wire surface.
- *
- * Legacy URL compat:
- *   - `?a=<agentId>&c=<chatId>` redirects to `?c=<chatId>` (a is ignored).
- *   - `?a=<agentId>` (no chat) clears to `/` — agents are no longer the
- *     primary navigation key.
- *   - `?source=<value>` upgrades to `?origin=<value>` (single-value to
- *     multi-select wire). Skipped if `?origin=` is already present.
  */
 const engagementViewParser = chatEngagementViewSchema.catch("active");
 
@@ -162,8 +150,6 @@ export function WorkspaceBody() {
   // filter affordances) and show the chat full-bleed.
   const isTrial = isLandingTrialSurface(location.pathname);
   const selectedChatId = searchParams.get("c");
-  const legacyAgentId = searchParams.get("a");
-  const legacySource = searchParams.get("source");
   const engagement: ChatEngagementView = engagementViewParser.parse(searchParams.get("engagement"));
   const { unread, watching } = parseUnreadWatching(searchParams);
   const origin = parseOriginList(searchParams);
@@ -205,39 +191,6 @@ export function WorkspaceBody() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [convOverlayOpen]);
-
-  // One-shot legacy redirects, all batched into a single setSearchParams so
-  // they don't race on stale `searchParams` snapshots. Each branch returns
-  // after staging its mutation; the effect re-runs once the URL settles.
-  useEffect(() => {
-    if (legacyAgentId && selectedChatId) {
-      // `?a=&c=` → `?c=` — drop the agent hint, keep the chat.
-      const next = new URLSearchParams(searchParams);
-      next.delete("a");
-      next.set("c", selectedChatId);
-      setSearchParams(next, { replace: true });
-      return;
-    }
-    if (legacyAgentId && !selectedChatId) {
-      // `?a=` alone → `/` — agents aren't navigation targets.
-      const next = new URLSearchParams(searchParams);
-      next.delete("a");
-      next.delete("c");
-      setSearchParams(next, { replace: true });
-      return;
-    }
-    if (legacySource && !searchParams.has("origin")) {
-      // `?source=foo` → `?origin=foo`. The Phase B wire dropped the
-      // single-value name; this upgrade keeps Phase A bookmarks /
-      // shared links working without resurrecting the legacy key.
-      // Skipped if `?origin=` is already present — never overwrite a
-      // multi-select that the user (or an upstream redirect) has set.
-      const next = new URLSearchParams(searchParams);
-      next.delete("source");
-      next.set("origin", legacySource);
-      setSearchParams(next, { replace: true });
-    }
-  }, [legacyAgentId, legacySource, searchParams, selectedChatId, setSearchParams]);
 
   const selectChat = useCallback(
     (chatId: string) => {

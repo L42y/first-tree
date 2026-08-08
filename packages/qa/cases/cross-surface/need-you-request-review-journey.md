@@ -16,8 +16,8 @@ an explicit Submit or Skip.
 
 Deterministic product tests own keyboard semantics, disabled controls, schema compatibility, route authorization, and
 draft restoration. This case owns the real boundaries those tests cannot prove alone: Client delivery and wake-up,
-WebSocket/cache convergence, navigation between desktop and mobile review surfaces, attachment upload custody, an
-agent's clarification reply, and independently deployed Web/Server version skew.
+WebSocket/cache convergence, navigation between desktop and mobile review surfaces, attachment upload custody, and an
+agent's clarification reply.
 
 ## Preconditions
 
@@ -27,8 +27,6 @@ agent's clarification reply, and independently deployed Web/Server version skew.
   who is not in the chat and an authenticated member in Team B.
 - A request with two options plus an attached image, followed by a second free-text request so FIFO advancement can be
   observed. Keep browser network, WebSocket, and a short screen recording available.
-- When rollout compatibility is in scope, run both supported mixed-version directions: previous Web with candidate
-  Server, then candidate Web with previous Server. Do not infer compatibility from schemas alone.
 
 ## Operate and observe
 
@@ -46,35 +44,29 @@ agent's clarification reply, and independently deployed Web/Server version skew.
 - Submit the preserved answer. Confirm exactly one resolving reply carries the option/note/attachments, the first
   request leaves both Chat and Need you, and the second request becomes current. Exercise explicit Skip on that second
   item and confirm it resolves once.
-- Repeat the essential block, Escape, Ask-agent wait, and Submit branches in the mobile Chat surface. Direct `/m/chat`
-  entry, PWA launch, and old `/m/work` or `/m/now` links must all end at `/m/chat` while preserving query/hash state.
+- Repeat the essential block, Escape, Ask-agent wait, and Submit branches in the canonical mobile Chat surface. Direct
+  `/m/chat` entry and PWA launch must preserve query/hash state.
 - In Team A, the same-org nonparticipant must receive the anti-enumerating failure for request thread and Ask-agent
   routes. The Team B caller must not read Team A's queue, thread, or request. No request content, count, or existence
   hint may cross the boundary.
-- For mixed versions, verify the previous Web can load the candidate Server's conversation list without a missing
-  `priorityRows.attention` failure, and candidate Web still treats open requests as row status rather than restoring an
-  Attention ordering tier.
 
 ## Evidence
 
 Keep the target SHAs and component versions; request, clarification, agent-reply, resolving-message, upload, and queue
 item IDs; redacted network responses for queue/thread/Ask-agent/resolve; the relevant WebSocket/cache events; and a
 screen recording showing focus takeover, frozen wait state, non-resolving Escape, draft restoration, and FIFO advance.
-For mobile, retain the final pathname and a standalone-launch capture. For mixed versions, retain the two version pairs
-and the conversation-list response shape. Never retain tokens, cookies, private attachment contents, or unredacted
-cross-tenant data.
+For mobile, retain the final pathname and a standalone-launch capture. Never retain tokens, cookies, private attachment
+contents, or unredacted cross-tenant data.
 
 ## Expected result
 
 `PASS` requires exclusive answer ownership, non-resolving Escape, a fully frozen Ask-agent wait, complete draft
 restoration including attachments, one durable clarification thread, exactly-once FIFO resolution, canonical
-`/m/chat`, tenant isolation, and both supported mixed-version directions.
+`/m/chat`, and tenant isolation.
 
 `FAIL` includes any background send, implicit Escape resolution, editable/resolving controls during the wait, lost
-draft material, premature or duplicate resolution, queue drift, legacy-route loop, version-skew load failure, or
-cross-tenant disclosure.
+draft material, premature or duplicate resolution, queue drift, or cross-tenant disclosure.
 
 `BLOCKED` applies when the isolated cell cannot start a real Server/Web/Client path, the agent runtime cannot produce a
-clarification reply, or a required previous build is unavailable. `INCONCLUSIVE` applies when partial evidence cannot
-attribute a visible result to the target versions. Source inspection or mocked component events alone cannot upgrade
-this cross-surface journey to `PASS`.
+clarification reply. `INCONCLUSIVE` applies when partial evidence cannot attribute a visible result to the candidate
+build. Source inspection or mocked component events alone cannot upgrade this cross-surface journey to `PASS`.

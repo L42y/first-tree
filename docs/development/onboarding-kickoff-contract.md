@@ -1,7 +1,7 @@
 # Onboarding Kickoff Contract
 
-This note defines the compatibility boundary for web-created onboarding kickoff
-chats and the adjacent campaign quickstart handoff.
+This note defines the current contract for web-created onboarding kickoff chats
+and the adjacent campaign quickstart handoff.
 
 ## Current Contract
 
@@ -53,11 +53,8 @@ chats and the adjacent campaign quickstart handoff.
   attribution pair. The pair is stored only on the trial chat's JSON metadata
   and included in the internal campaign export; it does not change trial
   idempotency, quota, or runtime behavior and requires no schema migration.
-- A `/me/onboarding/kickoff` request carrying `campaign` is a stale quickstart
-  request. It must not create an onboarding kickoff chat or campaign idempotency
-  key; it returns `410 campaign_kickoff_moved` when landing campaigns are enabled
-  and `404 feature_disabled` when they are disabled.
-- The first-chat endpoint does not accept the retired `kind` discriminator.
+- The first-chat endpoint is strict and rejects obsolete `campaign` and `kind`
+  request fields.
 - `POST /api/v1/orgs/:orgId/context-tree/setup-chat` is the only Context Tree
   setup kickoff entry. It requires an org admin, accepts only the selected
   agent, owns the canonical topic/bootstrap on the server, uses an initiating
@@ -84,12 +81,11 @@ chats and the adjacent campaign quickstart handoff.
   through either `/me/onboarding/kickoff` or the already-onboarded direct task
   path (`POST /api/v1/orgs/:orgId/chats`). Both endpoints compose the same
   server-owned `chats.onboarding_kickoff_key`, so re-entering an action link
-  through either path reuses one launcher. Production Scan retains its deployed
-  `<humanAgent>:scan-fix:<repoSlug>` key; this keeps existing chats and stale web
-  bundles compatible without a data migration. `scanFixRepoSlug` remains a
-  legacy input that normalizes to `{ campaign: "production-scan", repoSlug }`;
-  requests must not send both fields. An onboarding action still stamps
-  completion like any onboarding kickoff.
+  through either path reuses one launcher. Production Scan retains its stored
+  `<humanAgent>:scan-fix:<repoSlug>` key so existing chats keep their durable
+  idempotency identity without a data migration. `scanFixRepoSlug` is not an
+  accepted request field. An onboarding action still stamps completion like any
+  onboarding kickoff.
 - A successfully created campaign action chat is best-effort recorded on the
   caller's matching trial-chat metadata. This keeps conversion measurement
   inside the existing trial-export authorization boundary; ordinary action
@@ -102,19 +98,16 @@ chats and the adjacent campaign quickstart handoff.
 
 ## Retired Contract Boundary
 
-Older web bundles posted `kind: "intro" | "work" | "tree"` to
-`/me/onboarding/kickoff`, and older server/client pairs used
-`metadata.systemSender: "first_tree_onboarding"` plus optional `metadata.campaign`
-as an agent-only activation directive.
+Historical server/client pairs used `metadata.systemSender:
+"first_tree_onboarding"` plus optional `metadata.campaign` as an agent-only
+activation directive.
 
 Those request and prompt contracts are intentionally retired:
 
-- A `/me/onboarding/kickoff` request carrying `kind` is rejected with
-  `409 stale_onboarding_kickoff_contract`. The recovery is to refresh the web app
-  and retry through the current endpoint contract.
-- The retired `/me/onboarding/tree-setup/kickoff` route is authenticated and
-  non-mutating; it returns `410 tree_setup_kickoff_moved` so a stale browser tab
-  gets an explicit refresh boundary rather than an ambiguous 404.
+- Obsolete `kind`, `campaign`, and `scanFixRepoSlug` fields are rejected by the
+  current strict schemas.
+- `/me/onboarding/tree-setup/kickoff` is not registered; the canonical
+  team-scoped setup endpoint is the only route.
 - The client renders legacy onboarding metadata as ordinary message metadata; it
   does not append hidden instructions to the agent prompt. Campaign skill
   activation must not rely on a client-appended directive.
@@ -122,6 +115,6 @@ Those request and prompt contracts are intentionally retired:
   recognized by tree setup status reads so existing completed tree setup chats do
   not reappear as setup debt.
 
-Do not reintroduce a compatibility shim that maps retired `kind` requests, routes
-campaign quickstart through onboarding kickoff, or turns legacy onboarding
+Do not reintroduce a compatibility shim that maps obsolete request fields, routes
+campaign quickstart through onboarding kickoff, or turns historical onboarding
 metadata into agent-only prompt text without a new product decision.

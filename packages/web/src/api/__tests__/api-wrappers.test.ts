@@ -84,18 +84,18 @@ describe("api wrapper paths", () => {
   it("carries the GitHub Settings return through authenticated account linking", async () => {
     const userSettings = await import("../user-settings.js");
 
-    await userSettings.startProviderLink("github", "/settings/github");
+    await userSettings.startProviderLink("github", "/settings/integrations/github");
     await userSettings.startProviderLink("github");
 
     expect(apiMock.post).toHaveBeenNthCalledWith(
       1,
-      "/me/auth-providers/github/link/start?next=%2Fsettings%2Fgithub",
+      "/me/auth-providers/github/link/start?next=%2Fsettings%2Fintegrations%2Fgithub",
       {},
     );
     expect(apiMock.post).toHaveBeenNthCalledWith(2, "/me/auth-providers/github/link/start", {});
   });
 
-  it("normalizes a legacy Attention pin without reviving the retired tier", async () => {
+  it("parses the canonical pin projection and additive rows", async () => {
     const meChats = await import("../me-chats.js");
     const pinnedRequest = meChatRow({
       chatId: "pinned-request",
@@ -108,8 +108,7 @@ describe("api wrapper paths", () => {
     });
     apiMock.get.mockResolvedValueOnce({
       priorityRows: {
-        pinned: [],
-        attention: [pinnedRequest, unpinnedRequest],
+        pinned: [pinnedRequest],
       },
       rows: [pinnedRequest, unpinnedRequest],
       nextCursor: null,
@@ -119,7 +118,6 @@ describe("api wrapper paths", () => {
 
     expect(listed.priorityRows).toEqual({ pinned: [pinnedRequest] });
     expect(listed.rows.map((row) => row.chatId)).toEqual(["pinned-request", "unpinned-request"]);
-    expect("attention" in listed.priorityRows).toBe(false);
   });
 
   it("formats activity, org setting, organization, and overview requests", async () => {
@@ -310,11 +308,7 @@ describe("api wrapper paths", () => {
     await chats.createAgentChat("agent/id");
     await chats.listChatMessages("chat/id", { limit: 20, cursor: "older" });
 
-    // listMeChats now parses the response, so it needs a valid payload. Seed the
-    // shape an OLDER server (pre-priorityRows) would return and assert the schema
-    // fills the version-skew default — that both keeps this request-shape test
-    // reaching its assertion and proves the fallback the parse exists to provide.
-    apiMock.get.mockResolvedValueOnce({ rows: [], nextCursor: null });
+    apiMock.get.mockResolvedValueOnce({ priorityRows: { pinned: [] }, rows: [], nextCursor: null });
     const listed = await meChats.listMeChats({
       limit: 10,
       cursor: "next",

@@ -4,7 +4,7 @@ import type { Agent, AgentResourcesOutput, AgentRuntimeConfig } from "@first-tre
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, Navigate, Route, Routes, useLocation } from "react-router";
+import { MemoryRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
@@ -260,7 +260,7 @@ function client(overrides: Partial<HubClient> = {}): HubClient {
     status: overrides.status ?? "connected",
     authState: overrides.authState ?? "ok",
     binName: overrides.binName ?? "first-tree-dev",
-    sdkVersion: overrides.sdkVersion ?? "0.5.11",
+    sdkVersion: overrides.sdkVersion === undefined ? "0.5.12" : overrides.sdkVersion,
     hostname: overrides.hostname ?? "gandy-macbook",
     os: overrides.os ?? "darwin",
     agentCount: overrides.agentCount ?? 1,
@@ -390,6 +390,20 @@ async function renderDom(
 function LocationEcho() {
   const location = useLocation();
   return <div>{location.pathname + location.search}</div>;
+}
+
+/** Tab body that reports where it is and can walk the history back. */
+function LocationEchoWithBack() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <div>
+      <div data-testid="here">{location.pathname}</div>
+      <button type="button" onClick={() => navigate(-1)}>
+        Go back
+      </button>
+    </div>
+  );
 }
 
 async function click(element: Element | null): Promise<void> {
@@ -1503,6 +1517,38 @@ describe("AgentDetailPage", () => {
     await act(async () => view.root.unmount());
   });
 
+  it("blocks runtime-switch candidates below the chronological 0.5.12 release floor", async () => {
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    activityMocks.listClients.mockResolvedValue([
+      client({ id: "client-old", hostname: "old-cli", sdkVersion: "0.5.11" }),
+      client({ id: "client-legacy", hostname: "legacy-cli", sdkVersion: "0.14.8" }),
+      client({ id: "client-old-staging", hostname: "old-staging-cli", sdkVersion: "0.5.12-staging.123.1" }),
+      client({ id: "client-unknown", hostname: "unknown-cli", sdkVersion: null }),
+      client({ id: "client-supported", hostname: "supported-cli", sdkVersion: "0.5.12" }),
+      client({ id: "client-staging", hostname: "release-preview", sdkVersion: "0.5.20-staging.123.1" }),
+    ]);
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />);
+    await waitForText(view.container, "Switch runtime");
+    await click(buttonByText(view.container, "Switch runtime"));
+    await waitForText(document.body, "old-cli");
+    await waitForText(document.body, "legacy-cli");
+    await waitForText(document.body, "old-staging-cli");
+    await waitForText(document.body, "unknown-cli");
+    await waitForText(document.body, "supported-cli");
+    await waitForText(document.body, "release-preview");
+
+    expect(buttonByText(document.body, "old-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "legacy-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "old-staging-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "unknown-cli")?.disabled).toBe(true);
+    expect(buttonByText(document.body, "supported-cli")?.disabled).toBe(false);
+    expect(buttonByText(document.body, "release-preview")?.disabled).toBe(false);
+    expect(document.body.textContent).toContain("Requires CLI 0.5.12+");
+
+    await act(async () => view.root.unmount());
+  });
+
   it("offers runtime switch for suspended unbound agents cleared by client retirement", async () => {
     const { RuntimeTab } = await import("../runtime-tab.js");
     agentConfigMocks.getAgentClientStatus.mockResolvedValue({
@@ -1686,5 +1732,45 @@ describe("AgentDetailPage", () => {
     expect(profile.container.textContent).not.toContain("Reactivate");
     expect(profile.container.textContent).not.toContain("Delete");
     await act(async () => profile.root.unmount());
+  });
+  it("switches agents from the breadcrumb, keeping the section and leaving a history entry", async () => {
+    agentMocks.getAgent.mockImplementation(async (uuid: string) =>
+      uuid === "agent-2" ? agent({ uuid: "agent-2", name: "nova", displayName: "Nova" }) : agent(),
+    );
+
+    const view = await renderDom("/agents/agent-1/runtime", <LocationEchoWithBack />);
+    const breadcrumb = view.container.querySelector('nav[aria-label="Breadcrumb"]');
+    await click(breadcrumb?.querySelector('button[aria-haspopup="menu"]') ?? null);
+
+    const nova = [...document.querySelectorAll<HTMLButtonElement>('button[role="menuitemradio"]')].find(
+      (row) => row.textContent?.trim() === "Nova",
+    );
+    await click(nova ?? null);
+
+    // Same section on the new agent, not a bounce back to Profile.
+    await waitForCondition(
+      () => view.container.querySelector('[data-testid="here"]')?.textContent === "/agents/agent-2/runtime",
+      "Expected the switch to land on the same section of the target agent",
+    );
+    await waitForText(view.container, "Nova");
+
+    // Pushed, not replaced: Back returns to the agent we came from.
+    await click(exactButtonByText(view.container, "Go back"));
+    await waitForCondition(
+      () => view.container.querySelector('[data-testid="here"]')?.textContent === "/agents/agent-1/runtime",
+      "Expected Back to return to the previous agent",
+    );
+    await act(async () => view.root.unmount());
+  });
+
+  it("leaves the breadcrumb plain for a human member, who is never a switch target", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ type: "human", displayName: "Gandy", name: "gandy" }));
+
+    const view = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    const breadcrumb = view.container.querySelector('nav[aria-label="Breadcrumb"]');
+    expect(breadcrumb?.querySelector('button[aria-haspopup="menu"]')).toBeNull();
+    expect(breadcrumb?.querySelector('[aria-current="page"]')?.textContent).toBe("Gandy");
+    await act(async () => view.root.unmount());
   });
 });

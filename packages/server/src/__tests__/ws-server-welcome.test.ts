@@ -90,7 +90,6 @@ describe("WS server:welcome — wire-additive frame before auth:ok", () => {
       serverCommandVersion: string;
       serverTimeMs: number;
       capabilities?: {
-        wsInboxDeliver?: boolean;
         wsInboxAckConfirm?: boolean;
         wsSessionEventConfirm?: boolean;
         wsSessionResetV1?: boolean;
@@ -103,7 +102,6 @@ describe("WS server:welcome — wire-additive frame before auth:ok", () => {
     expect(welcome.serverCommandVersion.length).toBeGreaterThan(0);
     expect(typeof welcome.serverTimeMs).toBe("number");
     expect(welcome.serverTimeMs).toBeGreaterThan(0);
-    expect(welcome.capabilities?.wsInboxDeliver).toBe(true);
     expect(welcome.capabilities?.wsInboxAckConfirm).toBe(true);
     expect(welcome.capabilities?.wsSessionEventConfirm).toBe(true);
     // Versioned composite Reset: one flag covers apply-ack + finalize

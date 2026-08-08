@@ -72,38 +72,15 @@ describe("listMeChatsQuerySchema", () => {
 });
 
 describe("meChatPriorityRowsSchema", () => {
-  it("defaults to a pin-only projection and drops the retired attention bucket", () => {
-    expect(meChatPriorityRowsSchema.parse(undefined)).toEqual({ pinned: [] });
-    expect(meChatPriorityRowsSchema.parse({ pinned: [], attention: [] })).toEqual({ pinned: [] });
-  });
-
-  it("recovers legacy Attention pins without restoring Attention ordering", () => {
+  it("accepts only the canonical pin projection", () => {
     const canonicalPin = chatRow({
       chatId: "canonical-pin",
       title: "Canonical pin",
       pinnedAt: "2026-07-09T08:00:00.000Z",
       activityAt: "2026-07-09T10:00:00.000Z",
     });
-    const staleLegacyCopy = { ...canonicalPin, title: "Stale legacy copy" };
-    const recoveredPin = chatRow({
-      chatId: "recovered-pin",
-      title: "Recovered pin",
-      pinnedAt: "2026-07-09T09:00:00.000Z",
-      activityAt: "2026-07-09T11:00:00.000Z",
-      openRequestCount: 1,
-    });
-    const ordinaryAttention = chatRow({
-      chatId: "ordinary-attention",
-      title: "Ordinary attention",
-      openRequestCount: 1,
-    });
-
-    const parsed = meChatPriorityRowsSchema.parse({
-      pinned: [canonicalPin],
-      attention: [staleLegacyCopy, recoveredPin, ordinaryAttention],
-    });
-
-    expect(parsed).toEqual({ pinned: [recoveredPin, canonicalPin] });
-    expect("attention" in parsed).toBe(false);
+    expect(meChatPriorityRowsSchema.parse({ pinned: [canonicalPin] })).toEqual({ pinned: [canonicalPin] });
+    expect(meChatPriorityRowsSchema.safeParse(undefined).success).toBe(false);
+    expect(meChatPriorityRowsSchema.safeParse({ pinned: [], attention: [] }).success).toBe(false);
   });
 });

@@ -141,7 +141,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
     githubAppMocks.getGithubAppInstallation.mockResolvedValue({ installationId: 7, accountLogin: "acme" });
     const { SettingsGithubPage } = await import("../github.js");
 
-    const { container, root } = await renderAt("/settings/github?from=context", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github?from=context", <SettingsGithubPage />);
     await waitForText(container, "GitHub is connected");
     const back = container.querySelector('a[href="/context"]');
     expect(back).not.toBeNull();
@@ -154,7 +154,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
     githubAppMocks.getGithubAppInstallation.mockResolvedValue(null);
     const { SettingsGithubPage } = await import("../github.js");
 
-    const { container, root } = await renderAt("/settings/github?from=context", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github?from=context", <SettingsGithubPage />);
     await waitForText(container, "then head back to build");
     expect(container.querySelector('a[href="/context"]')).toBeNull();
 
@@ -164,7 +164,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
   it("shows no Context return affordance (and skips the probe) when not arriving from Context", async () => {
     const { SettingsGithubPage } = await import("../github.js");
 
-    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
     await waitForText(container, "panel"); // page rendered
     expect(container.querySelector('a[href="/context"]')).toBeNull();
     expect(container.textContent).not.toContain("then head back to build");
@@ -178,7 +178,10 @@ describe("SettingsGithubPage — Context round-trip return", () => {
 
   it("reopens and focuses Connection after a GitHub account-link return", async () => {
     const { SettingsGithubPage } = await import("../github.js");
-    const { container, root } = await renderAt("/settings/github?connection=github-linked", <SettingsGithubPage />);
+    const { container, root } = await renderAt(
+      "/settings/integrations/github?connection=github-linked",
+      <SettingsGithubPage />,
+    );
     const connection = await waitForSelector<HTMLElement>(container, "#connection");
 
     expect(panelMock.props).toHaveBeenLastCalledWith(
@@ -198,7 +201,10 @@ describe("SettingsGithubPage — Context round-trip return", () => {
       authMock.value.organizationId = organizationId;
     });
     const { SettingsGithubPage } = await import("../github.js");
-    const { container, root } = await renderAt("/settings/github?connection=github-linked", <SettingsGithubPage />);
+    const { container, root } = await renderAt(
+      "/settings/integrations/github?connection=github-linked",
+      <SettingsGithubPage />,
+    );
 
     await waitForText(container, "panel");
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
@@ -219,7 +225,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
     });
     const { SettingsGithubPage } = await import("../github.js");
     const { container, root } = await renderAt(
-      "/settings/github?error=install-not-verified&flow=install",
+      "/settings/integrations/github?error=install-not-verified&flow=install",
       <SettingsGithubPage />,
     );
 
@@ -237,7 +243,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
     const { rememberGithubInstallAttempt } = await import("../../../lib/github-install-attempt.js");
     rememberGithubInstallAttempt("org-1");
     const { SettingsGithubPage } = await import("../github.js");
-    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
     const connection = await waitForSelector<HTMLElement>(container, "#connection");
 
     expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
@@ -259,7 +265,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
       authMock.value.organizationId = organizationId;
     });
     const { SettingsGithubPage } = await import("../github.js");
-    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
 
     await waitForText(container, "panel");
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");
@@ -277,7 +283,7 @@ describe("SettingsGithubPage — Context round-trip return", () => {
     authMock.value.organizationId = "org-other";
     authMock.value.selectOrganization.mockRejectedValueOnce(new Error("membership changed"));
     const { SettingsGithubPage } = await import("../github.js");
-    const { container, root } = await renderAt("/settings/github", <SettingsGithubPage />);
+    const { container, root } = await renderAt("/settings/integrations/github", <SettingsGithubPage />);
 
     await waitForText(container, "We couldn't return to the Team where you started");
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-original");

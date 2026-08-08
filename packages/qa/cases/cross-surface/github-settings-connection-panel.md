@@ -74,10 +74,10 @@ only touches the webhook where an `installation.created` delivery records the ro
 - An active Team admin with no linked GitHub identity sees `Connect your GitHub account` and one `Continue with GitHub`
   action in the existing panel; Install is absent. `install-url` fails 409 `github_identity_required` before signing state
   or setting a nonce cookie. A member sees neither capability action.
-- Account-link success returns to the same Team's `/settings/github` Connection section, shows `GitHub connected as
-  @<login>`, and exposes Install as a second explicit action. Cancel, conflict, and expired-state returns preserve the
-  First Tree session and one clear retry path. An external, protocol-relative, unrelated, or malformed `next` falls back
-  to the supported Account settings route instead of becoming a redirect.
+- Account-link success returns to the same Team's `/settings/integrations/github` Connection section, shows `GitHub
+  connected as @<login>`, and exposes Install as a second explicit action. Cancel, conflict, and expired-state returns
+  preserve the First Tree session and one clear retry path. An external, protocol-relative, unrelated, or malformed
+  `next` falls back to the supported Account settings route instead of becoming a redirect.
 - `install-url` (linked admin, slug configured): 200 with a GitHub OAuth authorize URL carrying a signed identity-phase
   `state`, plus a protected `oauth_state_nonce` cookie. The callback must re-read the kickoff user's active Team-admin
   membership and linked numeric GitHub ID. A matching github.com account receives a fresh installation-phase state/cookie

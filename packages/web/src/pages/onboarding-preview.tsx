@@ -73,6 +73,13 @@ const HOST: HubClient = {
   lastSeenAt: NOW_ISO,
   capabilities: {},
 };
+const SECOND_HOST: HubClient = {
+  ...HOST,
+  id: "client-2c8b40",
+  hostname: "gandys-studio",
+  os: "linux",
+  lastSeenAt: new Date(Date.now() - 60_000).toISOString(),
+};
 
 const REPO_WEB = "https://github.com/acme/web.git";
 
@@ -182,11 +189,15 @@ const COMPUTER: Record<
   | "ready"
   | "readyCodex"
   | "readyMulti"
+  | "readyMultipleComputers"
   | "unsupportedByo"
   | "lostWhileReady",
   ComputerConnection
 > = {
   waiting: {
+    connectedClients: [],
+    selectedClientId: null,
+    setSelectedClientId: NOOP,
     connectedClient: null,
     capabilitiesLoaded: false,
     okRuntimes: [],
@@ -197,6 +208,9 @@ const COMPUTER: Record<
     retry: NOOP,
   },
   tokenError: {
+    connectedClients: [],
+    selectedClientId: null,
+    setSelectedClientId: NOOP,
     connectedClient: null,
     capabilitiesLoaded: false,
     okRuntimes: [],
@@ -207,6 +221,9 @@ const COMPUTER: Record<
     retry: NOOP,
   },
   detecting: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: false,
     okRuntimes: [],
@@ -217,6 +234,9 @@ const COMPUTER: Record<
     retry: NOOP,
   },
   noRuntime: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: [],
@@ -228,6 +248,9 @@ const COMPUTER: Record<
   },
   // Exactly one runtime → the step renders a confirmation line (no picker).
   ready: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: ["claude-code"],
@@ -239,6 +262,9 @@ const COMPUTER: Record<
   },
   // BYO provider projection with Codex as the only supported local surface.
   readyCodex: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: ["codex"],
@@ -250,9 +276,27 @@ const COMPUTER: Record<
   },
   // Multiple runtimes → the step renders the single-select runtime list.
   readyMulti: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: ["claude-code", "codex", "opencode", "pi"],
+    selectedRuntime: "codex",
+    setSelectedRuntime: NOOP,
+    cliCommand: SAMPLE_CLI,
+    tokenError: null,
+    retry: NOOP,
+  },
+  // Multiple online computers require an explicit choice before runtime
+  // options become actionable.
+  readyMultipleComputers: {
+    connectedClients: [HOST, SECOND_HOST],
+    selectedClientId: null,
+    setSelectedClientId: NOOP,
+    connectedClient: null,
+    capabilitiesLoaded: true,
+    okRuntimes: ["codex", "claude-code", "opencode", "pi"],
     selectedRuntime: "codex",
     setSelectedRuntime: NOOP,
     cliCommand: SAMPLE_CLI,
@@ -264,6 +308,9 @@ const COMPUTER: Record<
   // narrower handoff capability without implying the tools themselves are
   // unsupported by First Tree.
   unsupportedByo: {
+    connectedClients: [HOST],
+    selectedClientId: HOST.id,
+    setSelectedClientId: NOOP,
     connectedClient: HOST,
     capabilitiesLoaded: true,
     okRuntimes: ["cursor", "kimi-code"],
@@ -277,6 +324,9 @@ const COMPUTER: Record<
   // are gone (okRuntimes empties) but the last pick is remembered, so create-agent
   // shows that coding agent DISABLED rather than letting the field vanish.
   lostWhileReady: {
+    connectedClients: [],
+    selectedClientId: null,
+    setSelectedClientId: NOOP,
     connectedClient: null,
     capabilitiesLoaded: false,
     okRuntimes: [],
@@ -712,6 +762,13 @@ export const ONBOARDING_PREVIEW_SCENARIOS: Scenario[] = [
     role: "admin",
     view: "flow",
     wizard: { step: "create-agent", flow: { computer: COMPUTER.ready, agentPhase: "idle" } },
+  },
+  {
+    id: "admin-ca-multiple-computers",
+    label: "Create agent · choose computer",
+    group: "Create-agent states",
+    role: "admin",
+    wizard: { step: "create-agent", flow: { computer: COMPUTER.readyMultipleComputers, agentPhase: "idle" } },
   },
   {
     id: "admin-ca-creating",
@@ -1615,6 +1672,7 @@ function WizardScenarioView({ spec, role }: { spec: WizardSpec; role: Role }) {
   const [selectedRuntime, setSelectedRuntime] = useState<RuntimeProvider | null>(
     init.computer?.selectedRuntime ?? null,
   );
+  const [selectedClientId, setSelectedClientId] = useState<string | null>(init.computer?.selectedClientId ?? null);
 
   const queryClient = useMemo(
     () => new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } }),
@@ -1622,6 +1680,8 @@ function WizardScenarioView({ spec, role }: { spec: WizardSpec; role: Role }) {
   );
 
   const base = baseFlow(path);
+  const selectedConnectedClient =
+    init.computer?.connectedClients.find((client) => client.id === selectedClientId) ?? null;
   const flow: OnboardingFlowValue = {
     ...base,
     ...init,
@@ -1641,9 +1701,21 @@ function WizardScenarioView({ spec, role }: { spec: WizardSpec; role: Role }) {
     setTreeUrl,
     treeAutoDetectDone,
     markTreeAutoDetectDone: () => setTreeAutoDetectDone(true),
-    // Override the injected computer's runtime selection with the stateful
-    // pair so clicking a runtime pill re-renders with the new choice.
-    computer: init.computer ? { ...init.computer, selectedRuntime, setSelectedRuntime } : base.computer,
+    // Keep both choices stateful. Deriving the active computer from the id
+    // lets the multi-computer preview move from placeholder → selected host →
+    // runtime pills exactly like production.
+    computer: init.computer
+      ? {
+          ...init.computer,
+          selectedClientId,
+          setSelectedClientId,
+          connectedClient: selectedConnectedClient,
+          capabilitiesLoaded: selectedConnectedClient ? init.computer.capabilitiesLoaded : false,
+          okRuntimes: selectedConnectedClient ? init.computer.okRuntimes : [],
+          selectedRuntime,
+          setSelectedRuntime,
+        }
+      : base.computer,
   };
 
   const Shell = OnboardingShell;

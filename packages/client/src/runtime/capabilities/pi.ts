@@ -43,7 +43,6 @@ export async function probePiCapability(deps: PiProbeDeps = {}): Promise<Capabil
     ...detected,
     state: "error",
     available: false,
-    authenticated: false,
     error:
       "Pi is installed, but First Tree cannot run it on Windows until the client-wide " +
       "pre-admission Job Object supervisor is available.",
