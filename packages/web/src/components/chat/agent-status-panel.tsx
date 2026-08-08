@@ -33,6 +33,8 @@ export function AgentStatusPanel({
   chatId,
   agents,
   canManage,
+  canRemove,
+  onRemove,
   order = "fixed",
   compact = false,
 }: {
@@ -41,6 +43,10 @@ export function AgentStatusPanel({
   agents: ChatParticipantDetail[];
   /** Whether the caller may pause a given agent. */
   canManage: (agentId: string) => boolean;
+  /** Whether the caller may remove a given agent from the chat roster. */
+  canRemove?: (agentId: string) => boolean;
+  /** Opens the remove-confirm flow for the given agent row. */
+  onRemove?: (agent: ChatParticipantDetail) => void;
   /** `fixed` keeps `agents` order (sidebar); `priority` sorts by attention
    *  (compose) so the most urgent agent is on top. */
   order?: "fixed" | "priority";
@@ -77,6 +83,9 @@ export function AgentStatusPanel({
           agent={agent}
           status={byAgent.get(agent.agentId) ?? null}
           canManage={canManage(agent.agentId)}
+          removeFromChat={
+            canRemove?.(agent.agentId) === true && onRemove ? { onRequest: () => onRemove(agent) } : undefined
+          }
           compact={compact}
         />
       ))}
@@ -120,12 +129,14 @@ function AgentStatusRow({
   agent,
   status,
   canManage,
+  removeFromChat,
   compact,
 }: {
   chatId: string;
   agent: ChatParticipantDetail;
   status: AgentChatStatus | null;
   canManage: boolean;
+  removeFromChat?: { onRequest: () => void };
   compact: boolean;
 }) {
   const queryClient = useQueryClient();
@@ -208,7 +219,9 @@ function AgentStatusRow({
           name={agent.displayName}
           placement="left"
           triggerClassName="block shrink-0 cursor-pointer rounded-full"
+          participantType="agent"
           sessionReset={sessionReset}
+          removeFromChat={removeFromChat}
         >
           <span className="relative block" style={{ width: 28, height: 28 }}>
             <Avatar
@@ -246,7 +259,9 @@ function AgentStatusRow({
             name={agent.displayName}
             placement="left"
             triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+            participantType="agent"
             sessionReset={sessionReset}
+            removeFromChat={removeFromChat}
           >
             {agent.displayName}
           </AgentHovercard>

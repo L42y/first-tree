@@ -110,6 +110,11 @@ export function addMeChatParticipants(chatId: string, body: AddMeChatParticipant
   return api.post<void>(`/chats/${encodeURIComponent(chatId)}/participants`, body);
 }
 
+/** Remove another speaking participant. Self-removal uses `leaveMeChat`. */
+export function removeMeChatParticipant(chatId: string, agentId: string): Promise<void> {
+  return api.delete<void>(`/chats/${encodeURIComponent(chatId)}/participants/${encodeURIComponent(agentId)}`);
+}
+
 export function joinMeChat(chatId: string): Promise<void> {
   return api.post<void>(`/chats/${encodeURIComponent(chatId)}/workspace-join`);
 }

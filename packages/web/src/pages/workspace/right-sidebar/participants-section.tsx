@@ -1,10 +1,24 @@
 import type { ChatParticipantDetail } from "@first-tree/shared";
-import type { ReactNode } from "react";
-import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useMemo, useState } from "react";
+import { removeMeChatParticipant } from "../../../api/me-chats.js";
 import { useAuth } from "../../../auth/auth-context.js";
 import { AddParticipantDropdown } from "../../../components/add-participant-dropdown.js";
 import { Avatar as RealAvatar } from "../../../components/avatar.js";
+import { AgentHovercard, removeFromChatAriaLabel } from "../../../components/chat/agent-hovercard.js";
 import { AgentStatusPanel } from "../../../components/chat/agent-status-panel.js";
+import { Button } from "../../../components/ui/button.js";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../../../components/ui/dialog.js";
+import { useToast } from "../../../components/ui/toast.js";
+
+export const removeParticipantAriaLabel = removeFromChatAriaLabel;
 
 /** Roster rows shown before the "Show all" fold. The rail is a calm
  *  inspection surface, not a member-management screen — a long roster
@@ -44,11 +58,12 @@ export function partitionRoster(
 /**
  * Participants section — full chat membership (humans + agents), the top
  * section of the rail. Agents render first (their live status is the
- * glanceable pulse of the work) through <AgentStatusPanel> (one
+ * glanceable pulse) through <AgentStatusPanel> (one
  * /chats/:id/agent-status call drives every agent's composite status +
  * per-row Pause when the caller can manage). Humans follow as a simplified
- * roster (no session state, no actions in v1 — Remove / Change role are
- * deferred alongside the missing backend routes for member-side removal).
+ * roster. Only a viewer who is themselves a speaker in the passed roster
+ * (and not read-only) can Remove any other speaker; supervisor-only views
+ * must not show Remove. Self-removal stays on Leave.
  *
  * The roster is capped at VISIBLE_LIMIT; the remainder collapses behind a
  * "Show all" toggle so a crowded chat can't dominate the rail.
@@ -75,14 +90,69 @@ export function ParticipantsSection({
   onAdded: () => void;
   readOnly: boolean;
 }) {
-  const { role } = useAuth();
+  const { role, agentId: selfAgentId } = useAuth();
+  const queryClient = useQueryClient();
+  const { addToast } = useToast();
   const [showAll, setShowAll] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<ChatParticipantDetail | null>(null);
+  // Decouple dialog open from target so a successful close can start the exit
+  // animation without clearing the title to `Remove ""?` mid-transition.
+  const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+  const [removeDialogLabel, setRemoveDialogLabel] = useState("");
 
   const isAdmin = role === "admin";
   const { total, visibleAgents, visibleHumans, hiddenCount } = useMemo(
     () => partitionRoster(participants, showAll),
     [participants, showAll],
   );
+
+  // Gate on speaker membership in the roster props — not org role / managedByMe.
+  // Supervisor views (`viewerMembershipKind === null`) still have a selfAgentId
+  // and may leave `readOnly` false, but they are absent from `participants`.
+  const selfIsSpeaker = Boolean(selfAgentId && participants.some((p) => p.agentId === selfAgentId));
+  const canRemoveOthers = !readOnly && selfIsSpeaker;
+  const canRemove = (agentId: string) => canRemoveOthers && agentId !== selfAgentId;
+
+  const openRemoveDialog = (target: ChatParticipantDetail) => {
+    setRemoveTarget(target);
+    setRemoveDialogLabel(target.displayName);
+    setRemoveDialogOpen(true);
+  };
+
+  const closeRemoveDialog = () => {
+    setRemoveDialogOpen(false);
+    setRemoveTarget(null);
+    // Keep `removeDialogLabel` through the exit animation (and after Cancel).
+    // The next `openRemoveDialog` overwrites it; an empty string must never
+    // drive the title while DialogContent is still mounted.
+  };
+
+  const removeMut = useMutation({
+    mutationFn: (target: ChatParticipantDetail) => removeMeChatParticipant(chatId, target.agentId),
+    onSuccess: (_data, target) => {
+      // Close the dialog and drop the actionable target immediately so a second
+      // Confirm during Radix exit presence cannot re-fire DELETE. Keep only the
+      // display label for the ~200ms close animation (never `Remove ""?`).
+      setRemoveDialogOpen(false);
+      setRemoveTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["chat-detail", chatId] });
+      queryClient.invalidateQueries({ queryKey: ["activity"] });
+      onAdded();
+      addToast({
+        title: "Participant removed",
+        description: `${target.displayName} can no longer participate or be addressed in this chat. Existing messages are kept.`,
+      });
+    },
+    onError: (error) => {
+      addToast({
+        title: "Couldn't remove participant",
+        description: error instanceof Error ? error.message : "Something went wrong. Try again.",
+      });
+    },
+  });
+
+  // Confirm stays inert once the actionable target is cleared (post-success exit).
+  const removeConfirmLocked = removeMut.isPending || removeTarget === null;
 
   return (
     <section style={{ borderBottom: "var(--hairline) solid var(--border-faint)" }}>
@@ -106,11 +176,19 @@ export function ParticipantsSection({
                 chatId={chatId}
                 agents={visibleAgents}
                 canManage={(id) => isAdmin || (managedByMe.get(id) ?? false)}
+                canRemove={canRemove}
+                onRemove={openRemoveDialog}
                 compact
               />
             ) : null}
             {visibleHumans.map((p) => (
-              <HumanRow key={p.agentId} participant={p} />
+              <HumanRow
+                key={p.agentId}
+                chatId={chatId}
+                participant={p}
+                showRemove={canRemove(p.agentId)}
+                onRemove={() => openRemoveDialog(p)}
+              />
             ))}
             {hiddenCount > 0 ? (
               <RosterToggle onClick={() => setShowAll(true)}>Show all · {total}</RosterToggle>
@@ -131,6 +209,20 @@ export function ParticipantsSection({
           />
         </div>
       )}
+
+      <RemoveParticipantConfirmDialog
+        open={removeDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !removeMut.isPending) closeRemoveDialog();
+        }}
+        label={removeDialogLabel}
+        onConfirm={() => {
+          if (!removeTarget || removeMut.isPending) return;
+          removeMut.mutate(removeTarget);
+        }}
+        pending={removeMut.isPending}
+        locked={removeConfirmLocked}
+      />
     </section>
   );
 }
@@ -148,7 +240,18 @@ function RosterToggle({ onClick, children }: { onClick: () => void; children: Re
   );
 }
 
-function HumanRow({ participant }: { participant: ChatParticipantDetail }) {
+function HumanRow({
+  chatId,
+  participant,
+  showRemove,
+  onRemove,
+}: {
+  chatId: string;
+  participant: ChatParticipantDetail;
+  showRemove: boolean;
+  onRemove: () => void;
+}) {
+  const removeFromChat = showRemove ? { onRequest: onRemove } : undefined;
   return (
     <div
       className="flex items-center"
@@ -158,16 +261,87 @@ function HumanRow({ participant }: { participant: ChatParticipantDetail }) {
         borderRadius: "var(--radius-input)",
       }}
     >
-      <RealAvatar
-        src={participant.avatarImageUrl}
+      <AgentHovercard
+        agentId={participant.agentId}
+        chatId={chatId}
         name={participant.displayName}
-        seed={participant.agentId}
-        colorToken={participant.avatarColorToken}
-        size={28}
-      />
+        placement="left"
+        triggerClassName="block shrink-0 cursor-pointer rounded-full"
+        participantType="human"
+        removeFromChat={removeFromChat}
+      >
+        <span className="block" style={{ width: 28, height: 28 }}>
+          <RealAvatar
+            src={participant.avatarImageUrl}
+            name={participant.displayName}
+            seed={participant.agentId}
+            colorToken={participant.avatarColorToken}
+            size={28}
+          />
+        </span>
+      </AgentHovercard>
       <div className="flex min-w-0 flex-1 flex-col" style={{ gap: 2 }}>
-        <div className="truncate text-subtitle">{participant.displayName}</div>
+        <AgentHovercard
+          agentId={participant.agentId}
+          chatId={chatId}
+          name={participant.displayName}
+          placement="left"
+          triggerClassName="block max-w-full cursor-pointer truncate text-left text-subtitle hover:underline"
+          participantType="human"
+          removeFromChat={removeFromChat}
+        >
+          {participant.displayName}
+        </AgentHovercard>
       </div>
     </div>
+  );
+}
+
+function RemoveParticipantConfirmDialog({
+  open,
+  onOpenChange,
+  label,
+  onConfirm,
+  pending,
+  locked,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  label: string;
+  onConfirm: () => void;
+  pending: boolean;
+  /** True while mutating or once the actionable target has been cleared. */
+  locked: boolean;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Remove "{label}"?</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <DialogDescription style={{ color: "var(--fg-2)" }}>
+            They will no longer participate or be addressable in this chat.
+          </DialogDescription>
+          <p className="text-body" style={{ color: "var(--fg-2)" }}>
+            Existing messages stay in the history. They may still see the chat if watcher access remains.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={pending}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={onConfirm}
+            disabled={locked}
+            aria-label={pending ? "Removing participant" : "Confirm remove participant"}
+          >
+            {pending ? "Removing…" : "Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

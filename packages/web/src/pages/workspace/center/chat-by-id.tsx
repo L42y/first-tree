@@ -18,6 +18,10 @@ import { ChatView } from "./chat-view.js";
  *   1. The first non-self, non-human participant (the conversation's
  *      autonomous/personal agent).
  *   2. Fallback: the first non-self participant.
+ *   3. Self-only roster (e.g. after Web Remove of the last other speaker):
+ *      the viewer's own agent id as a **render anchor only** so history /
+ *      composer shell / Participants stay mounted — never as a message
+ *      recipient (ChatView locks the composer when the roster is self-only).
  *
  * Reads everything off `chatDetail` — speaker/watcher distinction comes
  * from `chatDetail.viewerMembershipKind`, participant `type` comes from
@@ -32,11 +36,15 @@ import { ChatView } from "./chat-view.js";
  * drop without the user having to leave + return).
  */
 
-function pickPrimaryAgent(participants: { agentId: string; type: string }[], myAgentId: string | null): string | null {
+export function pickPrimaryAgent(
+  participants: { agentId: string; type: string }[],
+  myAgentId: string | null,
+): string | null {
   const nonSelf = participants.filter((p) => p.agentId !== myAgentId);
   const nonHuman = nonSelf.find((p) => p.type !== "human");
   if (nonHuman) return nonHuman.agentId;
-  return nonSelf[0]?.agentId ?? null;
+  if (nonSelf[0]) return nonSelf[0].agentId;
+  return myAgentId;
 }
 
 type MeChatsCache = InfiniteData<ListMeChatsResponse> | ListMeChatsResponse;
@@ -242,7 +250,10 @@ export function ChatByIdView({
     return <ChatUnavailableState onClearChat={onClearChat} />;
   }
 
-  if (!primaryAgent) {
+  // Wait only while chat detail itself is unresolved. A loaded self-only
+  // roster must not stay on this placeholder — `pickPrimaryAgent` falls back
+  // to `myAgentId` so Remove of the last other speaker keeps ChatView up.
+  if (!chatDetail || !primaryAgent) {
     return (
       <div className="flex-1 flex items-center justify-center" style={{ padding: "var(--sp-8)" }}>
         <div className="text-center" style={{ color: "var(--fg-3)" }}>

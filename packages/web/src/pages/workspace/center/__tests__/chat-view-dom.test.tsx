@@ -2586,6 +2586,81 @@ describe("ChatView", () => {
     await act(async () => preview.root.unmount());
   });
 
+  it("self-only roster locks composer without destroying draft, then restores after peer returns", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    localStorage.setItem("first-tree:chat-right-sidebar:open:v1", "1");
+    const history = message({
+      id: "msg-before-remove",
+      senderId: "human-agent-self",
+      content: "hello before last-other remove",
+      metadata: { mentions: ["human-agent-alice"] },
+    });
+    const withPeer = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "human-agent-alice", type: "human", name: "alice", displayName: "Alice" }),
+      ],
+    });
+    const solo = chatDetail({
+      participants: [participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" })],
+    });
+    chatMocks.listChatMessages.mockResolvedValue(messages([history]));
+    chatMocks.getChat.mockResolvedValue(withPeer);
+    agentMocks.getAgentSkills.mockClear();
+
+    const { container, queryClient, root } = await renderDom(
+      <ChatView agentId="human-agent-alice" chatId="chat-1" initialChatDetail={withPeer} />,
+      (qc) => seedChat(qc, withPeer, messages([history])),
+      "/",
+    );
+
+    await waitForText(container, "hello before last-other remove");
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await setValue(textarea, "keep this draft after remove");
+    expect(textarea.value).toBe("keep this draft after remove");
+    agentMocks.getAgentSkills.mockClear();
+    chatMocks.sendChatMessage.mockClear();
+    agentStatusMocks.fetchChatAgentStatuses.mockClear();
+
+    // Roster shrinks to self-only (Remove last other) — draft must survive.
+    chatMocks.getChat.mockResolvedValue(solo);
+    await act(async () => {
+      queryClient.setQueryData(["chat-detail", "chat-1"], solo);
+    });
+    await flush();
+
+    await waitForText(container, "Add a participant to send a message");
+    expect(container.textContent).toContain("Your draft is kept until you add someone.");
+    expect(container.textContent).toContain("Participants");
+    expect(container.textContent).not.toContain("Resolving participants");
+    expect(container.textContent).not.toContain("Hi Gandy!");
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.querySelector('button[aria-label="Send"]')).toBeNull();
+    expect(container.querySelector('[data-composer-state="no-recipient"]')).not.toBeNull();
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    expect(agentMocks.getAgentSkills).not.toHaveBeenCalled();
+    expect(agentStatusMocks.fetchChatAgentStatuses).not.toHaveBeenCalled();
+    expect(container.textContent).not.toMatch(/\bPause\b/);
+    expect(container.textContent).not.toMatch(/\bResume\b/);
+
+    // Peer returns (Add participant) — draft comes back in the editable composer.
+    // Add another human still leaves agents=[] — no agent-status poll.
+    agentStatusMocks.fetchChatAgentStatuses.mockClear();
+    chatMocks.getChat.mockResolvedValue(withPeer);
+    await act(async () => {
+      queryClient.setQueryData(["chat-detail", "chat-1"], withPeer);
+    });
+    await flush();
+    await waitForCondition(() => container.querySelector("textarea") != null, "Expected composer restored");
+    const restored = container.querySelector<HTMLTextAreaElement>("textarea");
+    expect(restored?.value).toBe("keep this draft after remove");
+    expect(container.querySelector('[data-composer-state="no-recipient"]')).toBeNull();
+    expect(agentStatusMocks.fetchChatAgentStatuses).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("sends text, blocks unaddressed image sends, then sends uploaded image batches", async () => {
     const { ChatView } = await import("../chat-view.js");
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, undefined, "/");

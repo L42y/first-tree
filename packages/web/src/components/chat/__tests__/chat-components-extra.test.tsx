@@ -174,6 +174,67 @@ describe("ComposeStatusBar extra DOM coverage", () => {
     expect(h.container.querySelector('[role="status"]')?.textContent).toContain("0 actionable agents");
   });
 
+  it("does not fetch or show cached attention when agents is empty", async () => {
+    const queryClient = createQueryClient();
+    queryClient.setQueryData(
+      ["chat-agent-status", "chat-1"],
+      [
+        status("agent-nova", {
+          working: true,
+          activity: activity("agent-nova", { turnText: "Stale working from removed agent" }),
+        }),
+      ],
+    );
+
+    h.render(withProviders(<ComposeStatusBar chatId="chat-1" agents={[]} />, queryClient));
+    await h.flush();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+    expect(agentStatusApiMocks.fetchChatAgentStatuses).not.toHaveBeenCalled();
+    expect(h.container.querySelector("[data-compose-status-bar]")).toBeNull();
+    expect(h.container.textContent).not.toContain("Stale working from removed agent");
+    expect(h.container.textContent).not.toContain("Nova");
+    expect(h.container.querySelector('[role="status"]')?.textContent).toContain("0 actionable agents");
+  });
+
+  it("stops fetching and clears attention when agents rerender to empty", async () => {
+    agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([
+      status("agent-nova", {
+        working: true,
+        activity: activity("agent-nova", { turnText: "Checking the rollout path." }),
+      }),
+    ]);
+
+    function AgentsToggle() {
+      const [agents, setAgents] = useState([agent("agent-nova", "Nova")]);
+      return (
+        <>
+          <button type="button" data-testid="clear-agents" onClick={() => setAgents([])}>
+            clear-agents
+          </button>
+          <ComposeStatusBar chatId="chat-1" agents={agents} />
+        </>
+      );
+    }
+
+    h.render(withProviders(<AgentsToggle />));
+    await waitForSettled(h, () => expect(agentStatusApiMocks.fetchChatAgentStatuses).toHaveBeenCalledTimes(1));
+    await waitForSettled(h, () => expect(h.container.querySelector("[data-compose-status-bar]")).not.toBeNull());
+    expect(h.container.textContent).toContain("Checking the rollout path.");
+
+    agentStatusApiMocks.fetchChatAgentStatuses.mockClear();
+    await click(h, h.container.querySelector('[data-testid="clear-agents"]'));
+    await waitForSettled(h, () => expect(h.container.querySelector("[data-compose-status-bar]")).toBeNull());
+    expect(h.container.textContent).not.toContain("Checking the rollout path.");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(agentStatusApiMocks.fetchChatAgentStatuses).not.toHaveBeenCalled();
+  });
+
   it("does not infer working from a residual mounted timeline turn", async () => {
     agentStatusApiMocks.fetchChatAgentStatuses.mockResolvedValue([status("agent-ready", { engagement: "active" })]);
 

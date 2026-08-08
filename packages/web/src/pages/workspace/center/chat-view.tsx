@@ -180,7 +180,12 @@ import { useOrgAgents } from "../../../lib/use-org-agents.js";
 import { usePendingAttachments } from "../../../lib/use-pending-attachments.js";
 import { cn } from "../../../lib/utils.js";
 import { findGapAfterMessageId } from "../../../utils/chat-gap.js";
-import { computeRequiresMention, shouldPrimeMentionOnFocus } from "../../../utils/requires-mention.js";
+import {
+  computeRequiresMention,
+  isSelfOnlySpeakerRoster,
+  SELF_ONLY_COMPOSER_PLACEHOLDER,
+  shouldPrimeMentionOnFocus,
+} from "../../../utils/requires-mention.js";
 import { filterEventsForTimeline } from "../../../utils/session-timeline.js";
 import { PROVIDER_LABEL } from "../../clients/cards/shared/providers.js";
 import { RuntimeAuthControls } from "../../clients/cards/shared/runtime-auth-controls.js";
@@ -2456,6 +2461,10 @@ export function ChatView({
     // (`openRequestsUnverified`): the chat's open-request state is unknown,
     // so no ordinary send may reach the mutation.
     if (openRequestsUnverified) return;
+    // Self-only roster: ChatView stays mounted for history/Participants, but
+    // there is no addressable peer — never POST a recipientless message (and
+    // never treat the viewer's agentId mount anchor as the recipient).
+    if (selfOnlyRoster) return;
     const text = draft.trim();
     // Images ride `content` as ImageRefContent (unchanged); documents/files ride
     // `metadata.attachments[]` as generic AttachmentRefs. A mixed send carries
@@ -4145,6 +4154,15 @@ export function ChatView({
     );
   }, [chatDetail, myAgentId]);
 
+  /** Roster is only the viewer — history stays up, but there is no peer to address. */
+  const selfOnlyRoster = useMemo(() => {
+    if (!chatDetail) return false;
+    return isSelfOnlySpeakerRoster(
+      chatDetail.participants.map((p) => p.agentId),
+      myAgentId,
+    );
+  }, [chatDetail, myAgentId]);
+
   // First-message pre-fill: when the user lands on a brand-new empty chat
   // (typical right after onboarding's "Create" succeeds), drop a friendly
   // "Hi {name}!" into the input so hitting Enter is enough. Group chats are
@@ -4159,11 +4177,16 @@ export function ChatView({
   // agentId` — the name map's fallback is the raw UUID, so an unresolved
   // name would otherwise stamp "Hi <uuid>! …" and the Set guard prevents
   // a fix-up once the map loads. We just wait for it.
+  // Self-only rosters never prefill: `agentId` may be the viewer's own id
+  // as a ChatView mount anchor, not a recipient. Draft/attachments are
+  // preserved across self-only lock so Remove of the last peer cannot
+  // silently destroy unsent content.
   useEffect(() => {
     // Watchers don't see the composer; stamping a greeting into `draft`
     // is invisible at best and at worst contaminates `prefilledChatsRef`
     // so that joining-then-typing skips the greeting on the next mount.
     if (readOnly) return;
+    if (selfOnlyRoster) return;
     if (prefilledChatsRef.current.has(chatId)) return;
     if (!messagesData || !eventFeedsData || !chatDetail) return;
     if (items.length > 0) return;
@@ -4191,6 +4214,7 @@ export function ChatView({
     displayName,
     requiresMention,
     readOnly,
+    selfOnlyRoster,
     setDraft,
   ]);
 
@@ -4301,10 +4325,12 @@ export function ChatView({
   // missing and let handleSend pop the tip. `sendDimmed` carries the greyed-out
   // look for that state.
   const landingCampaignChatLocked = isLandingCampaignTrialChatLocked(chatDetail?.metadata);
+  const composerLockedNoRecipient = selfOnlyRoster;
   const sendDisabled =
     askOverlayActive ||
     openRequestsUnverified ||
     landingCampaignChatLocked ||
+    composerLockedNoRecipient ||
     sendMut.isPending ||
     uploading ||
     (!draft.trim() && pendingAttachments.length === 0);
@@ -4314,7 +4340,7 @@ export function ChatView({
     value: mentionComposer.displayText,
     cursor,
     candidates: mentionCandidates,
-    disabled: landingCampaignChatLocked || sendMut.isPending || uploading,
+    disabled: landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading,
     tokens: mentionComposer.tokens,
     onSelect: (_update, candidate, trigger) => {
       autoPrimedDraftRef.current = false;
@@ -4344,6 +4370,7 @@ export function ChatView({
    *   - group chats with no resolved @ show only system commands
    */
   const slashMentionContext = useMemo<{ agentId: string; displayName: string } | null>(() => {
+    if (selfOnlyRoster) return null;
     // `draft` is canonical text; map the display-space caret back so the
     // `@<name>` scan sees the same position the user does.
     const explicit = resolveMentionContext(draft, mentionComposer.toCanonicalCursor(cursor), mentionCandidates);
@@ -4354,7 +4381,7 @@ export function ChatView({
       return { agentId: c.agentId, displayName: c.displayName ?? c.name ?? c.agentId };
     }
     return null;
-  }, [draft, cursor, mentionCandidates, requiresMention, mentionComposer.toCanonicalCursor]);
+  }, [draft, cursor, mentionCandidates, requiresMention, mentionComposer.toCanonicalCursor, selfOnlyRoster]);
 
   // Phase 1C ships with a single in-product system command (`/clear`).
   // The four-command roadmap from the design doc (`/help`, `/me`,
@@ -4393,7 +4420,7 @@ export function ChatView({
         }
       : null,
     mentionedAgent: slashMentionContext,
-    disabled: sendMut.isPending || uploading,
+    disabled: landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading,
     onSelect: (update, picked) => {
       autoPrimedDraftRef.current = false;
       // Slash inserts plain text (`/<command> `) — a display-space edit the
@@ -5162,6 +5189,31 @@ export function ChatView({
                       Open
                     </span>
                   </button>
+                ) : composerLockedNoRecipient ? (
+                  <div
+                    className="composer-card"
+                    role="status"
+                    data-composer-state="no-recipient"
+                    style={{
+                      border: "var(--hairline) solid var(--border)",
+                      background: "var(--bg-raised)",
+                      padding: "var(--sp-3)",
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      // Always cancel navigation / open-as-file before no-op.
+                      e.preventDefault();
+                    }}
+                  >
+                    <div className="text-body" style={{ color: "var(--fg-3)" }}>
+                      {SELF_ONLY_COMPOSER_PLACEHOLDER}
+                    </div>
+                    {draft.trim().length > 0 || pendingAttachments.length > 0 ? (
+                      <div className="text-caption" style={{ color: "var(--fg-4)", marginTop: "var(--sp-1)" }}>
+                        Your draft is kept until you add someone.
+                      </div>
+                    ) : null}
+                  </div>
                 ) : (
                   <>
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: drop target for image upload */}
@@ -5194,7 +5246,8 @@ export function ChatView({
                       }}
                       onDragOver={(e) => (isTrial ? undefined : e.preventDefault())}
                       onDrop={(e) => {
-                        // No drag-and-drop image attachments on the trial surface.
+                        // Always preventDefault before any early return so a drop
+                        // cannot navigate the tab / open the file.
                         if (isTrial) return;
                         e.preventDefault();
                         addFiles(Array.from(e.dataTransfer.files));
@@ -5531,7 +5584,9 @@ export function ChatView({
                               handleSend();
                             }
                           }}
-                          disabled={landingCampaignChatLocked || sendMut.isPending || uploading}
+                          disabled={
+                            landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                          }
                           className="mention-composer-textarea w-full outline-none text-subtitle font-normal placeholder:text-muted-foreground"
                           style={{
                             // Mobile: the toolbar is a flow row below, not an overlay
@@ -5638,7 +5693,9 @@ export function ChatView({
                                   el.setSelectionRange(start + 1, start + 1);
                                 });
                               }}
-                              disabled={landingCampaignChatLocked || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               title="Mention an agent (or type @)"
                               style={{
                                 background: "none",
@@ -5661,7 +5718,9 @@ export function ChatView({
                             <button
                               type="button"
                               onClick={() => fileInputRef.current?.click()}
-                              disabled={landingCampaignChatLocked || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               title="Attach file"
                               style={{
                                 background: "none",
@@ -5686,7 +5745,9 @@ export function ChatView({
                               type="file"
                               accept={COMPOSER_ACCEPT_ATTRIBUTE}
                               multiple
-                              disabled={landingCampaignChatLocked || sendMut.isPending || uploading}
+                              disabled={
+                                landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading
+                              }
                               style={{ display: "none" }}
                               onChange={(e) => {
                                 if (e.target.files) {
@@ -5720,13 +5781,15 @@ export function ChatView({
                                 ? "Couldn’t check for open questions"
                                 : openRequestsUnverified
                                   ? "Checking for open questions"
-                                  : sendBlockedByMentionGate
-                                    ? "@mention someone to send — a group message must address someone"
-                                    : // On mobile Enter inserts a newline, so the button is
-                                      // the only way to send — don't advertise the Enter shortcut.
-                                      composerMobile
-                                      ? "Send"
-                                      : "Send (Enter)"
+                                  : composerLockedNoRecipient
+                                    ? "Add a participant to send a message"
+                                    : sendBlockedByMentionGate
+                                      ? "@mention someone to send — a group message must address someone"
+                                      : // On mobile Enter inserts a newline, so the button is
+                                        // the only way to send — don't advertise the Enter shortcut.
+                                        composerMobile
+                                        ? "Send"
+                                        : "Send (Enter)"
                             }
                             aria-label={
                               openRequestsMountFailed

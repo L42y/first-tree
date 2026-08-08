@@ -26,6 +26,11 @@ const sessionMocks = vi.hoisted(() => ({
 
 const authMock = vi.hoisted(() => ({
   role: "admin" as "admin" | "member",
+  agentId: "human-1" as string | null,
+}));
+
+const toastMock = vi.hoisted(() => ({
+  addToast: vi.fn(),
 }));
 
 const pulseMock = vi.hoisted(() => ({
@@ -69,7 +74,11 @@ vi.mock("../../../api/sessions.js", async (importOriginal) => ({
 }));
 
 vi.mock("../../../auth/auth-context.js", () => ({
-  useAuth: () => ({ role: authMock.role }),
+  useAuth: () => ({ role: authMock.role, agentId: authMock.agentId }),
+}));
+
+vi.mock("../../../components/ui/toast.js", () => ({
+  useToast: () => ({ addToast: toastMock.addToast }),
 }));
 
 vi.mock("../../../components/add-participant-dropdown.js", () => ({
@@ -88,6 +97,11 @@ vi.mock("../../../components/avatar.js", () => ({
   ),
 }));
 
+vi.mock("../../../components/chat/agent-hovercard.js", () => ({
+  removeFromChatAriaLabel: (displayName: string) => `Remove ${displayName} from this chat`,
+  AgentHovercard: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 vi.mock("../../../components/chat/agent-status-panel.js", () => ({
   AgentStatusPanel: ({
     agents,
@@ -95,6 +109,8 @@ vi.mock("../../../components/chat/agent-status-panel.js", () => ({
   }: {
     agents: ChatParticipantDetail[];
     canManage: (agentId: string) => boolean;
+    canRemove?: (agentId: string) => boolean;
+    onRemove?: (agent: ChatParticipantDetail) => void;
   }) => (
     <div data-testid="agent-status-panel">
       {agents.map((agent) => (

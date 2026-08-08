@@ -395,4 +395,66 @@ describe("AgentHovercard", () => {
     await waitFor(() => expect(card.textContent).toContain("New chat"));
     expect(card.querySelector('button[aria-label="Reset session"]')).toBeNull();
   });
+
+  it("an injected removeFromChat renders a danger action that closes the card and requests confirm", async () => {
+    seedPassA("chat-1", [AGENT_PARTICIPANT], []);
+    mocks.getAgent.mockResolvedValue(AGENT_DTO);
+    const onRequest = vi.fn();
+    render(
+      <AgentHovercard agentId="a1" chatId="chat-1" name="Aria" participantType="agent" removeFromChat={{ onRequest }}>
+        <span>Aria</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    let remove: HTMLButtonElement | undefined;
+    await waitFor(() => {
+      remove = card.querySelector<HTMLButtonElement>('button[aria-label="Remove Aria from this chat"]') ?? undefined;
+      if (!remove) throw new Error("Remove not rendered yet");
+    });
+    expect(card.querySelector("[data-participant-danger]")).not.toBeNull();
+    expect(remove?.textContent).toContain("Remove from chat");
+    await act(async () => {
+      remove?.click();
+      await Promise.resolve();
+    });
+    await flush();
+    expect(onRequest).toHaveBeenCalledOnce();
+    await waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeNull());
+  });
+
+  it("skips agent-status and getAgent when participantType is human", async () => {
+    mocks.getChat.mockResolvedValue({ participants: [HUMAN_PARTICIPANT] });
+    render(
+      <AgentHovercard agentId="h1" chatId="chat-cold" name="Gandy" participantType="human">
+        <span>Gandy</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    await waitFor(() => expect(card.textContent).toContain("Human"));
+    expect(mocks.fetchChatAgentStatuses).not.toHaveBeenCalled();
+    expect(mocks.getAgent).not.toHaveBeenCalled();
+    expect(card.querySelector("[data-participant-danger]")).toBeNull();
+  });
+
+  it("does not show Remove on a self human card even when removeFromChat is passed", async () => {
+    seedPassA("chat-1", [{ ...HUMAN_PARTICIPANT, agentId: "self-human", displayName: "Me" }], []);
+    render(
+      <AgentHovercard
+        agentId="self-human"
+        chatId="chat-1"
+        name="Me"
+        participantType="human"
+        removeFromChat={{ onRequest: vi.fn() }}
+      >
+        <span>Me</span>
+      </AgentHovercard>,
+    );
+    await flush();
+    const card = await openCard();
+    await waitFor(() => expect(card.textContent).toContain("You"));
+    expect(card.querySelector('button[aria-label="Remove Me from this chat"]')).toBeNull();
+    expect(card.querySelector("[data-participant-actions]")).toBeNull();
+  });
 });

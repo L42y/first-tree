@@ -108,15 +108,21 @@ export function ComposeStatusBar({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const focusWithinRef = useRef(false);
   const pointerOriginOutsideRef = useRef<boolean | null>(null);
+  const hasAgentParticipants = agents.length > 0;
   const { data: rawStatuses } = useQuery({
     queryKey: chatAgentStatusQueryKey(chatId),
     queryFn: () => fetchChatAgentStatuses(chatId),
-    refetchInterval: 30_000,
+    // Human-only / self-only rosters have no agent status to project — do not
+    // poll `/agent-status` or keep a 30s interval alive for an empty set.
+    enabled: hasAgentParticipants,
+    refetchInterval: hasAgentParticipants ? 30_000 : false,
   });
   // The server's per-chat composite is the working/failed authority. Timeline
   // events and `activity` only explain that state; an un-ended local workgroup
   // must never resurrect Working after runtime freshness has expired.
-  const statuses = rawStatuses ?? [];
+  // When agents become empty, ignore any cached statuses for this chat key so
+  // a removed agent's attention strip cannot flash back during/after Remove.
+  const statuses = hasAgentParticipants ? (rawStatuses ?? []) : [];
   const attention = useMemo(() => selectAttention(statuses), [statuses]);
   const hasAttention = attention.length > 0;
   const mounted = useMountedAnchors();

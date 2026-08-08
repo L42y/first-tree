@@ -409,7 +409,7 @@ describe("ChatByIdView and CenterPanel", () => {
     await act(async () => root.unmount());
   });
 
-  it("falls back to a non-self human, skips mark-read for supervisor views, and shows loading without participants", async () => {
+  it("falls back to a non-self human, skips mark-read for supervisor views, and mounts ChatView for self-only roster", async () => {
     chatMocks.getChat.mockResolvedValueOnce(
       chatDetail({
         participants: [
@@ -428,9 +428,11 @@ describe("ChatByIdView and CenterPanel", () => {
     chatMocks.getChat.mockResolvedValueOnce(
       chatDetail({ participants: [participant({ agentId: "human-agent-self", type: "human" })] }),
     );
-    const loading = await renderDom(<ChatByIdView chatId="chat-3" narrow={false} onShowConversations={null} />);
-    await waitForText(loading.container, "Resolving participants");
-    await act(async () => loading.root.unmount());
+    const selfOnly = await renderDom(<ChatByIdView chatId="chat-3" narrow={false} onShowConversations={null} />);
+    await waitForText(selfOnly.container, "ChatView human-agent-self chat-3");
+    expect(selfOnly.container.textContent).not.toContain("Resolving participants");
+    expect(chatViewMocks.props.at(-1)?.agentId).toBe("human-agent-self");
+    await act(async () => selfOnly.root.unmount());
   });
 
   it("shows an unavailable empty state when a manual chat URL cannot be loaded", async () => {

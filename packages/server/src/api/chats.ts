@@ -26,7 +26,7 @@ import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
-import { ensureParticipant, leaveChat, updateChatMetadata } from "../services/chat.js";
+import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat.js";
 import { extractChatSummary, resolveChatTitle } from "../services/chat-read-model.js";
 import { declareEntityFollow, listChatGithubEntities, removeEntityFollow } from "../services/github-entity-follow.js";
 import {
@@ -683,6 +683,21 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     await addMeChatParticipants(app.db, request.params.chatId, scope.humanAgentId, scope.organizationId, body);
     return reply.status(204).send();
   });
+
+  /**
+   * DELETE /chats/:chatId/participants/:agentId — remove another speaking
+   * participant. Same membership mutation as the agent-JWT DELETE route:
+   * any speaker may remove any other speaker (human or agent). Self-removal
+   * stays on `workspace-leave` / `leaveMeChat`.
+   */
+  app.delete<{ Params: { chatId: string; agentId: string } }>(
+    "/:chatId/participants/:agentId",
+    async (request, reply) => {
+      const { scope } = await requireChatAccess(request, app.db);
+      await removeParticipant(app.db, request.params.chatId, scope.humanAgentId, request.params.agentId);
+      return reply.status(204).send();
+    },
+  );
 
   /** Watcher → speaking participant. State-carry. */
   app.post<{ Params: { chatId: string } }>("/:chatId/workspace-join", async (request, reply) => {
