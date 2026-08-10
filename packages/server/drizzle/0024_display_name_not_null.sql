@@ -9,7 +9,7 @@
 --      Important: the third branch must NOT be `uuid`, because UUIDs would
 --      surface as human-visible strings in the chat roster and IM bridge.
 --      Only `status = 'deleted'` rows can have both `name` and
---      `display_name` NULL (see `deleteAgent` in services/agent.ts), which
+--      `display_name` NULL (see `deleteAgent` in services/agents/identity.ts), which
 --      is why the literal refers to deletion.
 --
 --   2. Add a temporary empty-string DEFAULT so any old server instance

@@ -12,7 +12,7 @@
 --      raised an exception when any non-human agent was unbacked — that
 --      gated startup on a data state the operator usually can't fix until
 --      the server is up. Relaxed to NOTICE so the loop is broken; runtime
---      enforcement (Rule R-RUN in `services/agent.ts` + `agent-selector.ts`)
+--      enforcement (Rule R-RUN in `services/agents/identity.ts` + `agent-selector.ts`)
 --      still rejects unclaimed agents on the request path.
 --   4. Make `agents.manager_id` NOT NULL after backfilling the first admin
 --      member of each org onto the unmanaged rows.

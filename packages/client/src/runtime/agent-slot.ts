@@ -207,7 +207,7 @@ export class AgentSlot {
     // every subsequent bind-reset replay (see
     // docs/inflight-message-recovery-design.md §4). The
     // `expectedInboxId` follows the agent-inbox naming convention from
-    // `server/services/agent.ts:380` (`inbox_${uuid}`); the live
+    // `server/services/agents/identity.ts` (`inbox_${uuid}`); the live
     // `this.inboxId` from `sdk.register()` overrides once available.
     const expectedInboxId = `inbox_${this.config.agentId}`;
     const earlyDeliverBuffer: InboxDeliverFrame[] = [];
