@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
 import * as orgSettingsService from "../services/org-settings.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("GitLab egress authorization boundaries on Settings writes", () => {

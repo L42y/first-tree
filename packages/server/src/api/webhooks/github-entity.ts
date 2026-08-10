@@ -1,5 +1,5 @@
 import type { GithubEntityType } from "@first-tree/shared";
-import { formatScmAutoTopic, refreshScmAutoTopic } from "../../services/scm-entity-chat-topic.js";
+import { formatScmAutoTopic, refreshScmAutoTopic } from "../../services/scm/shared/entity-chat-topic.js";
 
 /**
  * GitHub entity model — the unit of clustering for webhook → chat routing.

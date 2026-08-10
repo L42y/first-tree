@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

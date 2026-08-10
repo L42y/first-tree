@@ -11,17 +11,17 @@ import {
   getContextTreeSnapshot,
   isGithubRemoteBinding,
 } from "../services/context-tree-snapshot.js";
-import { findInstallationByOrg } from "../services/github-app-installations.js";
-import {
-  type ContextTreeInstallationTokenResult,
-  mintContextTreeInstallationToken,
-  resolveContextTreeRecoveryAction,
-} from "../services/github-app-token.js";
 import {
   getOrgContextReviewRuntime,
   isOrgContextTreeBindingRuntimeCurrent,
   resolveUserPrimaryOrgId,
 } from "../services/org-settings.js";
+import { findInstallationByOrg } from "../services/scm/github/app-installations.js";
+import {
+  type ContextTreeInstallationTokenResult,
+  mintContextTreeInstallationToken,
+  resolveContextTreeRecoveryAction,
+} from "../services/scm/github/app-token.js";
 import { summarizeContextTreeUsage } from "../services/session-event.js";
 
 const querySchema = z

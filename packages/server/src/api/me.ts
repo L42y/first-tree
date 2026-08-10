@@ -34,8 +34,6 @@ import * as clientService from "../services/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/connect-bootstrap-command.js";
 import { validateExternalContextActivation } from "../services/context-activation.js";
 import { issueContextSessionCandidate, verifyContextSessionCandidate } from "../services/context-session-candidate.js";
-import { GithubApiError, listUserRepos } from "../services/github-oauth.js";
-import { GithubUserTokenError, getFreshGithubUserToken } from "../services/github-user-token.js";
 import { buildInviteUrl, findActiveByToken, getActiveInvitation, recordRedemption } from "../services/invitation.js";
 import { isLandingCampaignServiceMembership } from "../services/landing-campaigns/guards.js";
 import { updateOwnProfile } from "../services/member.js";
@@ -58,6 +56,8 @@ import {
   getOrgContextTreeWithMeta,
   projectOrgContextTreeSettingState,
 } from "../services/org-settings.js";
+import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
+import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 import { serializeDate } from "../utils.js";
 import { clientCommandVersionHint } from "./client-command-version.js";

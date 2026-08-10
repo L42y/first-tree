@@ -14,7 +14,7 @@ class MockGithubAppApiError extends Error {
 const refreshMock = vi.fn();
 
 function mockGithubApp(): void {
-  vi.doMock("../services/github-app.js", () => ({
+  vi.doMock("../services/scm/github/app.js", () => ({
     GithubAppApiError: MockGithubAppApiError,
     refreshAppUserToken: refreshMock,
   }));
@@ -52,13 +52,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.doUnmock("../services/github-app.js");
+  vi.doUnmock("../services/scm/github/app.js");
   vi.resetModules();
 });
 
 describe("getFreshGithubUserToken", () => {
   it("returns a decrypted stored token when it is still fresh", async () => {
-    const { getFreshGithubUserToken } = await import("../services/github-user-token.js");
+    const { getFreshGithubUserToken } = await import("../services/scm/github/user-token.js");
     const { db } = makeDb({
       identifier: "123",
       metadata: {
@@ -80,7 +80,7 @@ describe("getFreshGithubUserToken", () => {
   });
 
   it("refreshes expiring App user tokens and stores encrypted replacements", async () => {
-    const { getFreshGithubUserToken } = await import("../services/github-user-token.js");
+    const { getFreshGithubUserToken } = await import("../services/scm/github/user-token.js");
     refreshMock.mockResolvedValue({
       accessToken: "access_2",
       accessTokenExpiresAt: "2026-07-08T12:00:00.000Z",
@@ -112,7 +112,7 @@ describe("getFreshGithubUserToken", () => {
   });
 
   it("fails closed for missing or undecodable GitHub credentials", async () => {
-    const { getFreshGithubUserToken } = await import("../services/github-user-token.js");
+    const { getFreshGithubUserToken } = await import("../services/scm/github/user-token.js");
 
     await expect(
       getFreshGithubUserToken(makeDb(undefined).db as never, "user_1", key, undefined),
@@ -130,7 +130,7 @@ describe("getFreshGithubUserToken", () => {
   });
 
   it("maps refresh failures to reconnectable user-token errors", async () => {
-    const { getFreshGithubUserToken } = await import("../services/github-user-token.js");
+    const { getFreshGithubUserToken } = await import("../services/scm/github/user-token.js");
     const identity = {
       identifier: "123",
       metadata: {

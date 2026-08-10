@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireGitlabIdentityLinkAccess } from "../scope/require-resource.js";
-import { reconfirmGitlabIdentityLink, removeGitlabIdentityLink } from "../services/gitlab-identities.js";
+import { reconfirmGitlabIdentityLink, removeGitlabIdentityLink } from "../services/scm/gitlab/identities.js";
 
 /** Class C — lifecycle transitions for one GitLab identity link. */
 export async function gitlabIdentityLinkRoutes(app: FastifyInstance): Promise<void> {

@@ -1,10 +1,10 @@
 import { and, desc, eq, isNull, lt, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { githubAppInstallations } from "../db/schema/github-app-installations.js";
-import { organizations } from "../db/schema/organizations.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import type { AppInstallation } from "./github-app.js";
+import type { Database } from "../../../db/connection.js";
+import { githubAppInstallations } from "../../../db/schema/github-app-installations.js";
+import { organizations } from "../../../db/schema/organizations.js";
+import { ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
+import type { AppInstallation } from "./app.js";
 
 /** Postgres `unique_violation` SQLSTATE — emitted on UNIQUE constraint trips. */
 const PG_UNIQUE_VIOLATION = "23505";
@@ -21,7 +21,7 @@ function isUniqueViolation(err: unknown): boolean {
  *   1. OAuth-callback install (user just installed the App and landed on
  *      `/auth/github/callback?...&installation_id=...`). The callback
  *      route fetches the installation metadata from GitHub
- *      (`services/github-app.fetchInstallation`) then calls
+ *      (`services/scm/github/app.fetchInstallation`) then calls
  *      `upsertInstallationFromMetadata` here.
  *
  *   2. Webhook (`installation: created` / `installation: deleted` /

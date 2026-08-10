@@ -12,15 +12,15 @@ import { members } from "../db/schema/members.js";
 import { BadRequestError, NotFoundError, ServiceUnavailableError, UnprocessableError } from "../errors.js";
 import { createChat, removeParticipant } from "../services/chat.js";
 import { lockChatMembershipMutation } from "../services/chat-membership-lock.js";
-import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
-import { resolveGithubPersonnelTargetChat } from "../services/github-entity-chat.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import { resolveGithubPersonnelTargetChat } from "../services/scm/github/entity-chat.js";
 import {
   declareEntityFollow,
   type FollowDeps,
   listChatGithubEntities,
   parseEntityReference,
   removeEntityFollow,
-} from "../services/github-entity-follow.js";
+} from "../services/scm/github/entity-follow.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

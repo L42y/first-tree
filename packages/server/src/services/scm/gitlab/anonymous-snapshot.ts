@@ -6,7 +6,7 @@ import {
   GitlabEgressPolicyError,
   type GitlabPinnedDestination,
   resolveAuthorizedGitlabDestination,
-} from "./gitlab-egress-policy.js";
+} from "./egress-policy.js";
 
 /** Build a Git process environment with no ambient proxy or authentication path. */
 export async function anonymousGitEnv(cacheRoot: string): Promise<NodeJS.ProcessEnv> {

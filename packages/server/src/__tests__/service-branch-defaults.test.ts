@@ -17,6 +17,8 @@ import {
 import { assertNoRuntimeSwitchInProgress, getRuntimeSwitchClaim } from "../services/agent-runtime-switch.js";
 import { createChat, resolveAgentIdsByNameInOrg, updateChatMetadata } from "../services/chat.js";
 import { explainContextTreeIoDecision } from "../services/context-tree-io.js";
+import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/message.js";
+import { createResourcesService } from "../services/resources.js";
 import {
   exchangeCodeForAppUserProfile,
   fetchInstallation,
@@ -24,9 +26,7 @@ import {
   listInstallationRepos,
   refreshAppUserToken,
   verifyUserCanAdministerInstallation,
-} from "../services/github-app.js";
-import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/message.js";
-import { createResourcesService } from "../services/resources.js";
+} from "../services/scm/github/app.js";
 import { listAgentTurns, summarizeAgent } from "../services/usage.js";
 
 type ChainRows = unknown[];

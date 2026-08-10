@@ -17,6 +17,11 @@ import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
 import { handleContextReviewerMrEvent } from "../services/context-reviewer-mr.js";
 import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
+import { pollInbox } from "../services/inbox.js";
+import { getCallerEngagement, setChatEngagement } from "../services/me-chat.js";
+import { deleteMember } from "../services/member.js";
+import { deactivateMembership, MEMBER_STATUSES, reactivateMembership } from "../services/membership.js";
+import { putOrgSetting } from "../services/org-settings.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -24,20 +29,15 @@ import {
   parseDeclaredGitlabVersion,
   regenerateGitlabConnectionBearer,
   replaceGitlabConnection,
-} from "../services/gitlab-connections.js";
-import { declareGitlabEntityFollow, removeCurrentGitlabEntityFollow } from "../services/gitlab-entity-follow.js";
+} from "../services/scm/gitlab/connections.js";
+import { declareGitlabEntityFollow, removeCurrentGitlabEntityFollow } from "../services/scm/gitlab/entity-follow.js";
 import {
   createGitlabIdentityLink,
   reconfirmGitlabIdentityLink,
   removeGitlabIdentityLink,
   suspendGitlabLinksForMembership,
-} from "../services/gitlab-identities.js";
-import { applyGitlabPersonnelEvidence, normalizeGitlabWebhook } from "../services/gitlab-webhook.js";
-import { pollInbox } from "../services/inbox.js";
-import { getCallerEngagement, setChatEngagement } from "../services/me-chat.js";
-import { deleteMember } from "../services/member.js";
-import { deactivateMembership, MEMBER_STATUSES, reactivateMembership } from "../services/membership.js";
-import { putOrgSetting } from "../services/org-settings.js";
+} from "../services/scm/gitlab/identities.js";
+import { applyGitlabPersonnelEvidence, normalizeGitlabWebhook } from "../services/scm/gitlab/webhook.js";
 import { createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

@@ -13,7 +13,7 @@ import { runStage } from "./bootstrap-utils.js";
 import type { Config } from "./config.js";
 import { runMigrations } from "./db/migrate.js";
 import { applyLoggerConfig, createLogger, initTelemetry, shutdownTelemetry } from "./observability/index.js";
-import { withDefaultGitlabOrigin } from "./services/gitlab-egress-policy.js";
+import { withDefaultGitlabOrigin } from "./services/scm/gitlab/egress-policy.js";
 
 const log = createLogger("Bootstrap");
 

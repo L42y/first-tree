@@ -29,15 +29,6 @@ import {
   ContextTreeWritePreflightError,
   preflightContextTreeWriteAuthority,
 } from "../../services/context-tree-write-preflight.js";
-import { createRepoFileWithToken, GithubAppApiError, getRepoFileWithToken } from "../../services/github-app.js";
-import { findInstallationByOrg } from "../../services/github-app-installations.js";
-import {
-  type ContextTreeInstallationTokenResult,
-  mintContextTreeInstallationToken,
-  resolveContextTreeRecoveryAction,
-} from "../../services/github-app-token.js";
-import type { GithubCreatedRepo } from "../../services/github-oauth.js";
-import { GithubUserTokenError, getFreshGithubUserToken } from "../../services/github-user-token.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import {
   adoptSafeLegacyTreeSetupChat,
@@ -54,6 +45,15 @@ import {
   putInitializedOrgContextTreeBinding,
 } from "../../services/org-settings.js";
 import { getOrganization } from "../../services/organization.js";
+import { createRepoFileWithToken, GithubAppApiError, getRepoFileWithToken } from "../../services/scm/github/app.js";
+import { findInstallationByOrg } from "../../services/scm/github/app-installations.js";
+import {
+  type ContextTreeInstallationTokenResult,
+  mintContextTreeInstallationToken,
+  resolveContextTreeRecoveryAction,
+} from "../../services/scm/github/app-token.js";
+import type { GithubCreatedRepo } from "../../services/scm/github/oauth.js";
+import { GithubUserTokenError, getFreshGithubUserToken } from "../../services/scm/github/user-token.js";
 
 const BRANCH = "main";
 const ROOT_NODE_PATH = "NODE.md";

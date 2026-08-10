@@ -6,7 +6,7 @@ import {
   createGitlabConnection,
   getGitlabConnectionSummary,
   listGitlabConnections,
-} from "../../services/gitlab-connections.js";
+} from "../../services/scm/gitlab/connections.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 
 export async function orgGitlabConnectionRoutes(app: FastifyInstance): Promise<void> {

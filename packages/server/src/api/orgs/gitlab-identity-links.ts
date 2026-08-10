@@ -1,7 +1,7 @@
 import { gitlabIdentityLinkCreateSchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { requireOrgAdmin } from "../../scope/require-org.js";
-import { createGitlabIdentityLink, listGitlabIdentityLinks } from "../../services/gitlab-identities.js";
+import { createGitlabIdentityLink, listGitlabIdentityLinks } from "../../services/scm/gitlab/identities.js";
 
 /** Class B — admin-only GitLab username bindings for one organization. */
 export async function orgGitlabIdentityLinkRoutes(app: FastifyInstance): Promise<void> {

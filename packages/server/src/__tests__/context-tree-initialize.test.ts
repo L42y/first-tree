@@ -8,9 +8,9 @@ import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
 import { encryptValue } from "../services/crypto.js";
-import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
 import { getOrgContextTreeBinding, getOrgSetting, putOrgSetting } from "../services/org-settings.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

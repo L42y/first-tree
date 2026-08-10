@@ -7,19 +7,19 @@ import type {
 } from "@first-tree/shared";
 import { chatMetadataSchema, normalizeScmEntityState, parseGitlabEntityPath } from "@first-tree/shared";
 import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { chats } from "../db/schema/chats.js";
-import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { BadRequestError, ConflictError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { withCurrentGitlabConnectionFence } from "./gitlab-connections.js";
+import type { Database } from "../../../db/connection.js";
+import { chats } from "../../../db/schema/chats.js";
+import { gitlabEntityChatMappings } from "../../../db/schema/gitlab-entity-chat-mappings.js";
+import { BadRequestError, ConflictError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
 import {
   executeScmFollowLine,
   lockAndResolveAgentScmBindingPair,
   lockAndResolveHumanScmBindingPair,
-} from "./scm-attention-line.js";
-import { lockGitlabEntityAttention } from "./scm-entity-attention-lock.js";
-import { refreshGitlabEntityTopic } from "./scm-entity-chat-topic.js";
+} from "../shared/attention-line.js";
+import { lockGitlabEntityAttention } from "../shared/entity-attention-lock.js";
+import { refreshGitlabEntityTopic } from "../shared/entity-chat-topic.js";
+import { withCurrentGitlabConnectionFence } from "./connections.js";
 
 export type GitlabEntityIdentity = {
   entityType: "issue" | "pull_request";

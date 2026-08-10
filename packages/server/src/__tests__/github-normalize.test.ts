@@ -1,6 +1,6 @@
 import type { ScmIngressContext } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { extractMentions, normalizeGithubEvent, normalizeGithubWebhook } from "../services/github-normalize.js";
+import { extractMentions, normalizeGithubEvent, normalizeGithubWebhook } from "../services/scm/github/normalize.js";
 
 const senderUser = { login: "alice", type: "User" };
 const repository = { full_name: "owner/repo" };

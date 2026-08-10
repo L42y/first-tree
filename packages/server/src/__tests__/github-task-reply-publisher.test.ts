@@ -13,10 +13,10 @@ import { messages } from "../db/schema/messages.js";
 import { createAgent } from "../services/agent.js";
 import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { createChat } from "../services/chat.js";
-import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
-import { submitGithubTaskReply } from "../services/github-task-reply-publisher.js";
 import { sendMessage } from "../services/message.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import { submitGithubTaskReply } from "../services/scm/github/task-reply-publisher.js";
 import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 

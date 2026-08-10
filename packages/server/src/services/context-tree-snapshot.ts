@@ -38,14 +38,14 @@ import {
   isGitlabRedirectFailure,
   revalidateGitlabDestination,
   revalidateGitlabSnapshotPublication,
-} from "./gitlab-anonymous-snapshot.js";
+} from "./scm/gitlab/anonymous-snapshot.js";
 import {
   type GitlabDnsLookup,
   type GitlabEgressAllowlistEntry,
   GitlabEgressPolicyError,
   type GitlabPinnedDestination,
   resolveAuthorizedGitlabDestination,
-} from "./gitlab-egress-policy.js";
+} from "./scm/gitlab/egress-policy.js";
 
 const execFileAsync = promisify(execFile);
 const ROOT_NODE_ID = "root";

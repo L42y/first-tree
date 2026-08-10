@@ -1,5 +1,5 @@
 import { GITHUB_TASK_REPLY_RUN_MARKER_PREFIX } from "@first-tree/shared";
-import { isRecord, readString } from "../api/webhooks/github-entity.js";
+import { isRecord, readString } from "../../../api/webhooks/github-entity.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 

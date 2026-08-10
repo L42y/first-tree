@@ -55,8 +55,8 @@ const mockedModules = [
   "../services/agent-runtime-switch.js",
   "../services/chat.js",
   "../services/connection-manager.js",
-  "../services/github-entity-chat.js",
-  "../services/github-entity-follow.js",
+  "../services/scm/github/entity-chat.js",
+  "../services/scm/github/entity-follow.js",
   "../services/invitation.js",
   "../services/landing-campaigns/guards.js",
   "../services/me-doc.js",
@@ -807,8 +807,8 @@ describe("small API route handlers", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValue({ delegateAgentId: "agent_1", humanAgentId: "human_1", organizationId: "org_1" });
     vi.doMock("../services/chat.js", () => ({ assertParticipant }));
-    vi.doMock("../services/github-entity-chat.js", () => ({ resolveBindingPair }));
-    vi.doMock("../services/github-entity-follow.js", () => ({
+    vi.doMock("../services/scm/github/entity-chat.js", () => ({ resolveBindingPair }));
+    vi.doMock("../services/scm/github/entity-follow.js", () => ({
       declareEntityFollow,
       listChatGithubEntities: vi.fn(),
       removeEntityFollow: vi.fn(),

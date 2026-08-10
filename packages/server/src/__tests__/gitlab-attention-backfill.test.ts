@@ -4,13 +4,17 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { backfillGitlabAttentionPairs } from "../services/gitlab-attention-backfill.js";
-import { createGitlabConnection, hashGitlabUrlBearer, withGitlabIngressFence } from "../services/gitlab-connections.js";
+import { createMeChat } from "../services/me-chat.js";
+import { backfillGitlabAttentionPairs } from "../services/scm/gitlab/attention-backfill.js";
+import {
+  createGitlabConnection,
+  hashGitlabUrlBearer,
+  withGitlabIngressFence,
+} from "../services/scm/gitlab/connections.js";
 import {
   declareGitlabEntityFollowWithStatus,
   observeGitlabEntityAndResolveFollowers,
-} from "../services/gitlab-entity-follow.js";
-import { createMeChat } from "../services/me-chat.js";
+} from "../services/scm/gitlab/entity-follow.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("GitLab attention pair controlled backfill", () => {

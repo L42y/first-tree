@@ -1,27 +1,23 @@
 import { chatMetadataSchema, type GithubEntityBoundVia, githubEntityBoundViaSchema } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
-import type { GithubEntity } from "../api/webhooks/github-entity.js";
-import { formatEntityTitle, refreshEntityTitle } from "../api/webhooks/github-entity.js";
-import type { Database } from "../db/connection.js";
-import { chats } from "../db/schema/chats.js";
-import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
-import { createLogger } from "../observability/index.js";
-import { createChat } from "./chat.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import {
-  canonicalizeGithubEntityKey,
-  githubEntityKeyCandidates,
-  githubEntityKeysEquivalent,
-} from "./github-entity-key.js";
-import type { EntityState, EntityStateSeed } from "./github-entity-state.js";
-import { inviteParticipantsToChatInTransaction } from "./participant-invite.js";
-import { resolveAgentScmBindingPair } from "./scm-attention-line.js";
-import { githubEntityAttentionLockKey, withScmEntityAttentionTransaction } from "./scm-entity-attention-lock.js";
+import type { GithubEntity } from "../../../api/webhooks/github-entity.js";
+import { formatEntityTitle, refreshEntityTitle } from "../../../api/webhooks/github-entity.js";
+import type { Database } from "../../../db/connection.js";
+import { chats } from "../../../db/schema/chats.js";
+import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
+import { createLogger } from "../../../observability/index.js";
+import { createChat } from "../../chat.js";
+import { invalidateChatAudience } from "../../chat-audience-cache.js";
+import { inviteParticipantsToChatInTransaction } from "../../participant-invite.js";
+import { resolveAgentScmBindingPair } from "../shared/attention-line.js";
+import { githubEntityAttentionLockKey, withScmEntityAttentionTransaction } from "../shared/entity-attention-lock.js";
 import {
   decideScmPersonnelTargetChat,
   lockAndValidateScmPersonnelPlacement,
   type ScmTargetChatDecision,
-} from "./scm-target-chat-policy.js";
+} from "../shared/target-chat-policy.js";
+import { canonicalizeGithubEntityKey, githubEntityKeyCandidates, githubEntityKeysEquivalent } from "./entity-key.js";
+import type { EntityState, EntityStateSeed } from "./entity-state.js";
 
 const log = createLogger("GithubEntityChat");
 
@@ -34,7 +30,7 @@ const log = createLogger("GithubEntityChat");
  *   - "agent_declared"  — written by an explicit `github follow` declared by an
  *                         agent (the only agent-side wiring path — creating a
  *                         PR/Issue never auto-follows). See
- *                         `services/github-entity-follow.ts`. Legacy rows
+ *                         `services/scm/github/entity-follow.ts`. Legacy rows
  *                         written by the retired session-event auto-binder
  *                         (`agent_created`) were backfilled into this value;
  *                         the shared schema also normalises the legacy string

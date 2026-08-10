@@ -9,7 +9,7 @@ import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappin
 import {
   resolveGithubPersonnelTargetChat,
   resolveTargetChat as resolveTargetChatRaw,
-} from "../services/github-entity-chat.js";
+} from "../services/scm/github/entity-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

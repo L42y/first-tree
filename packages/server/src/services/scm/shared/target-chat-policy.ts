@@ -1,13 +1,13 @@
 import { AGENT_STATUSES, AGENT_TYPES } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { members } from "../db/schema/members.js";
+import type { Database } from "../../../db/connection.js";
+import { members } from "../../../db/schema/members.js";
 import {
   type LockedChatSpeakerSnapshot,
   lockChatMembershipMutation,
   lockChatSpeakerAndAgentSnapshot,
-} from "./chat-membership-lock.js";
-import { canInviteParticipantsToChatInTransaction } from "./participant-invite.js";
+} from "../../chat-membership-lock.js";
+import { canInviteParticipantsToChatInTransaction } from "../../participant-invite.js";
 
 export type ScmTargetChatDecision =
   | { kind: "reuse_membership"; chatId: string }

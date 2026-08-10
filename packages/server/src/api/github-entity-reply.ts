@@ -1,5 +1,5 @@
 import type { FastifyReply } from "fastify";
-import type { DeclareFollowResult } from "../services/github-entity-follow.js";
+import type { DeclareFollowResult } from "../services/scm/github/entity-follow.js";
 
 /**
  * Translate a `declareEntityFollow` outcome to the wire — shared by the

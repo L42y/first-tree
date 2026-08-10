@@ -1,7 +1,7 @@
 import type { InvolveReason } from "@first-tree/shared";
-import type { ScmAudienceTarget } from "./scm-audience-composition.js";
+import type { ScmAudienceTarget } from "./audience-composition.js";
 
-export type { ScmAudienceTarget } from "./scm-audience-composition.js";
+export type { ScmAudienceTarget } from "./audience-composition.js";
 
 export type ScmWakeEligibility = "eligible" | "actor_echo_suppressed" | "route_only";
 

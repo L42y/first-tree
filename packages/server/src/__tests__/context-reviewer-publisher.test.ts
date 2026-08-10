@@ -14,8 +14,8 @@ import { createAgent } from "../services/agent.js";
 import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { handleContextReviewerPrEvent as handleContextReviewerPrEventService } from "../services/context-reviewer-pr.js";
 import { submitContextReviewOutcome } from "../services/context-reviewer-publisher.js";
-import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 const { privateKey: privateKeyPem } = generateKeyPairSync("rsa", {

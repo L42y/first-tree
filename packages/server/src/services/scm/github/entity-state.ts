@@ -24,8 +24,8 @@
  */
 
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import type { Database } from "../../../db/connection.js";
+import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
 
 export type EntityState = "open" | "draft" | "closed" | "merged";
 

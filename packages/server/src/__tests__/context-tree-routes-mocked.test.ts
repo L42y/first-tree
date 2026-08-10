@@ -132,14 +132,14 @@ async function setupRoute() {
     ContextTreeWritePreflightError,
     preflightContextTreeWriteAuthority,
   }));
-  vi.doMock("../services/github-app.js", () => ({
+  vi.doMock("../services/scm/github/app.js", () => ({
     GithubAppApiError,
     createRepoFileWithToken,
     getRepoFileWithToken,
   }));
-  vi.doMock("../services/github-app-installations.js", () => ({ findInstallationByOrg }));
-  vi.doMock("../services/github-app-token.js", () => ({ mintContextTreeInstallationToken }));
-  vi.doMock("../services/github-user-token.js", () => ({ GithubUserTokenError, getFreshGithubUserToken }));
+  vi.doMock("../services/scm/github/app-installations.js", () => ({ findInstallationByOrg }));
+  vi.doMock("../services/scm/github/app-token.js", () => ({ mintContextTreeInstallationToken }));
+  vi.doMock("../services/scm/github/user-token.js", () => ({ GithubUserTokenError, getFreshGithubUserToken }));
   vi.doMock("../services/org-settings.js", () => ({
     findOrgBoundToContextTreeRepo,
     getOrgContextTreeBinding,

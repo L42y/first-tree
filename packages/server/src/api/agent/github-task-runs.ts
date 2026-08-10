@@ -3,7 +3,10 @@ import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { validateAgentRuntimeSession } from "../../services/agent-runtime-session.js";
 import * as chatService from "../../services/chat.js";
-import { GithubTaskReplyPublisherError, submitGithubTaskReply } from "../../services/github-task-reply-publisher.js";
+import {
+  GithubTaskReplyPublisherError,
+  submitGithubTaskReply,
+} from "../../services/scm/github/task-reply-publisher.js";
 
 export async function agentGithubTaskRunRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { chatId: string; runId: string } }>(

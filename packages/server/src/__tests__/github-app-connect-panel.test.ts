@@ -4,7 +4,10 @@ import { describe, expect, it } from "vitest";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import { findInstallationByGithubId, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
+import {
+  findInstallationByGithubId,
+  upsertInstallationFromMetadata,
+} from "../services/scm/github/app-installations.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

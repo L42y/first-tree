@@ -7,13 +7,13 @@ import {
   resolveGitLabRepositoryWebIdentity,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { gitlabConnections } from "../db/schema/gitlab-connections.js";
-import { organizations } from "../db/schema/organizations.js";
-import { ConflictError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { normalizeGitlabHttpsOrigin } from "./gitlab-egress-policy.js";
-import { getOrgContextTreeBinding } from "./org-settings.js";
+import type { Database } from "../../../db/connection.js";
+import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
+import { organizations } from "../../../db/schema/organizations.js";
+import { ConflictError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
+import { getOrgContextTreeBinding } from "../../org-settings.js";
+import { normalizeGitlabHttpsOrigin } from "./egress-policy.js";
 
 export function mintGitlabUrlBearer(): string {
   return randomBytes(32).toString("base64url");

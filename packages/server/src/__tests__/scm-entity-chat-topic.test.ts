@@ -5,7 +5,7 @@ import {
   formatScmAutoTopic,
   refreshGitlabEntityTopic,
   refreshScmAutoTopic,
-} from "../services/scm-entity-chat-topic.js";
+} from "../services/scm/shared/entity-chat-topic.js";
 
 describe("SCM automatic topics", () => {
   it("renders the provider-neutral head without changing GitHub semantics", () => {

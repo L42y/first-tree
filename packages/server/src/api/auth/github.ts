@@ -21,8 +21,6 @@ import {
   unlinkExternalIdentity,
 } from "../../services/auth-identity.js";
 import { encryptValue } from "../../services/crypto.js";
-import { buildAppAuthorizeUrl, buildAppInstallUrl, exchangeCodeForAppUserProfile } from "../../services/github-app.js";
-import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../../services/github-app-installations.js";
 import { findActiveMembership } from "../../services/membership.js";
 import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/oauth-bootstrap.js";
 import {
@@ -31,6 +29,12 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "../../services/oauth-state.js";
+import {
+  buildAppAuthorizeUrl,
+  buildAppInstallUrl,
+  exchangeCodeForAppUserProfile,
+} from "../../services/scm/github/app.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../../services/scm/github/app-installations.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
@@ -45,7 +49,7 @@ const GITHUB_SETTINGS_RETURN_PATH = "/settings/integrations/github";
  * callback may also carry an `installation_id`, but for a user who has NOT
  * installed it the authorize URL never surfaces the install dialog and
  * never returns an `installation_id` (codex P1-1; see
- * `services/github-app.ts`). So sign-in must not be relied on to install
+ * `services/scm/github/app.ts`). So sign-in must not be relied on to install
  * the App. `GET /orgs/:orgId/github-app-installation/install-url`, surfaced
  * in onboarding and Settings → GitHub, starts a two-phase install: first this
  * authorize endpoint proves the active github.com user matches the kickoff

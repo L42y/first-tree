@@ -96,8 +96,8 @@ async function setupRoute(input: { orgId: string | null; githubRemote?: boolean;
     getContextTreeSnapshot,
     isGithubRemoteBinding,
   }));
-  vi.doMock("../services/github-app-installations.js", () => ({ findInstallationByOrg }));
-  vi.doMock("../services/github-app-token.js", () => ({
+  vi.doMock("../services/scm/github/app-installations.js", () => ({ findInstallationByOrg }));
+  vi.doMock("../services/scm/github/app-token.js", () => ({
     mintContextTreeInstallationToken,
     resolveContextTreeRecoveryAction,
   }));

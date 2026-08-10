@@ -11,15 +11,15 @@ import type { Database } from "../../db/connection.js";
 import { authIdentities } from "../../db/schema/auth-identities.js";
 import { ConflictError, NotFoundError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
-import { buildAppAuthorizeUrl, listInstallationRepos } from "../../services/github-app.js";
+import { STATE_NONCE_COOKIE_NAME, STATE_NONCE_COOKIE_TTL_SECONDS, signOAuthState } from "../../services/oauth-state.js";
+import { buildAppAuthorizeUrl, listInstallationRepos } from "../../services/scm/github/app.js";
 import {
   connectInstallationToOrg,
   disconnectInstallationFromOrg,
   findInstallationByOrg,
   listConnectPanelInstallations,
-} from "../../services/github-app-installations.js";
-import { mintContextTreeInstallationToken } from "../../services/github-app-token.js";
-import { STATE_NONCE_COOKIE_NAME, STATE_NONCE_COOKIE_TTL_SECONDS, signOAuthState } from "../../services/oauth-state.js";
+} from "../../services/scm/github/app-installations.js";
+import { mintContextTreeInstallationToken } from "../../services/scm/github/app-token.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce } from "../auth/oauth-cookie.js";
 

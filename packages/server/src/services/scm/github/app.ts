@@ -1,7 +1,7 @@
 import { importPKCS8, SignJWT } from "jose";
-import type { GithubProfile } from "./auth-identity.js";
-import { GITHUB_API_BASE } from "./github-api-base.js";
-import type { GithubCreatedRepo, GithubRepo } from "./github-oauth.js";
+import type { GithubProfile } from "../../auth-identity.js";
+import { GITHUB_API_BASE } from "./api-base.js";
+import type { GithubCreatedRepo, GithubRepo } from "./oauth.js";
 
 /**
  * GitHub App service helpers. Two surfaces that ride on top of an App's

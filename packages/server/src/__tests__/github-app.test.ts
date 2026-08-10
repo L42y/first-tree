@@ -20,10 +20,10 @@ import {
   mintInstallationToken,
   refreshAppUserToken,
   verifyUserCanAdministerInstallation,
-} from "../services/github-app.js";
+} from "../services/scm/github/app.js";
 
 /**
- * Service-layer unit tests for `services/github-app.ts`. Pure module tests;
+ * Service-layer unit tests for `services/scm/github/app.ts`. Pure module tests;
  * no Fastify test app, no DB. A throwaway RSA-2048 keypair is generated
  * per `describe` block so we never check a real (or even "test-real") key
  * into the repo — there's nothing for a curious reader to mistake for a
@@ -33,7 +33,7 @@ import {
  * `fetcher` so the GitHub round-trip is replaced by an in-process stub.
  * That mirrors the pattern used by `listUserRepos` in `github-oauth.ts`.
  */
-describe("services/github-app", () => {
+describe("services/scm/github/app", () => {
   let appId: string;
   let privateKeyPem: string;
   let publicKeyPem: string;
@@ -785,7 +785,7 @@ describe("services/github-app", () => {
   });
 });
 
-describe("services/github-app › listInstallationRepos", () => {
+describe("services/scm/github/app › listInstallationRepos", () => {
   type FetchInput = Parameters<typeof fetch>[0];
   const urlOf = (input: FetchInput): string =>
     typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -889,7 +889,7 @@ describe("services/github-app › listInstallationRepos", () => {
   });
 });
 
-describe("services/github-app › installation repository helpers", () => {
+describe("services/scm/github/app › installation repository helpers", () => {
   type FetchInput = Parameters<typeof fetch>[0];
   const urlOf = (input: FetchInput): string =>
     typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;

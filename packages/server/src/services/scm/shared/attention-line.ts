@@ -1,9 +1,9 @@
 import { and, asc, eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { type LockedChatSpeakerSnapshot, lockChatSpeakerSnapshot } from "./chat-membership-lock.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { type LockedChatSpeakerSnapshot, lockChatSpeakerSnapshot } from "../../chat-membership-lock.js";
 
 export type ScmBindingPair = {
   organizationId: string;

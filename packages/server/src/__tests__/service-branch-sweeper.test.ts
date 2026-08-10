@@ -2,9 +2,6 @@ import { MESSAGE_FORMATS } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import type { Config } from "../config.js";
 import { BadRequestError, ForbiddenError } from "../errors.js";
-import { parseEntityReference } from "../services/github-entity-follow.js";
-import { githubEntityDedupKey, githubEntityKeyCandidates } from "../services/github-entity-key.js";
-import { extractMentions } from "../services/github-normalize.js";
 import {
   assertMetadataDoesNotClaimLandingCampaignTrial,
   assertMutableAgentIsNotLandingCampaignTrial,
@@ -18,6 +15,9 @@ import {
   withLandingCampaignChatState,
 } from "../services/landing-campaigns/metadata.js";
 import { preflightMessageSendIntent } from "../services/message.js";
+import { parseEntityReference } from "../services/scm/github/entity-follow.js";
+import { githubEntityDedupKey, githubEntityKeyCandidates } from "../services/scm/github/entity-key.js";
+import { extractMentions } from "../services/scm/github/normalize.js";
 
 const trialConfig = {
   growth: {

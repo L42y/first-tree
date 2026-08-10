@@ -6,8 +6,8 @@ import {
   type GithubEntityType,
   githubEntityBoundViaSchema,
 } from "@first-tree/shared";
-import { GITHUB_API_BASE } from "./github-api-base.js";
-import { canonicalizeGithubEntityKey } from "./github-entity-key.js";
+import { GITHUB_API_BASE } from "./api-base.js";
+import { canonicalizeGithubEntityKey } from "./entity-key.js";
 
 /**
  * Per-entity GitHub fetch timeout. GitHub's `api.github.com` is typically

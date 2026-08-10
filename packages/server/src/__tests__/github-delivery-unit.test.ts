@@ -1,8 +1,8 @@
 import type { NormalizedScmEvent } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GithubProviderTaskContext } from "../services/github-audience.js";
-import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
+import type { GithubProviderTaskContext } from "../services/scm/github/audience.js";
+import type { ScmAudienceTarget } from "../services/scm/shared/audience-composition.js";
 
 type MockFn = ReturnType<typeof vi.fn>;
 
@@ -115,7 +115,7 @@ function providerTaskTarget(): ScmAudienceTarget<GithubProviderTaskContext> {
 }
 
 async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
-  deliverGithubEvent: typeof import("../services/github-delivery.js").deliverGithubEvent;
+  deliverGithubEvent: typeof import("../services/scm/github/delivery.js").deliverGithubEvent;
   mocks: MockBag;
 }> {
   vi.resetModules();
@@ -131,13 +131,13 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
     ...overrides,
   };
 
-  vi.doMock("../services/github-entity-chat.js", () => ({
+  vi.doMock("../services/scm/github/entity-chat.js", () => ({
     refreshGithubChatTopic: mocks.refreshGithubChatTopic,
     resolveGithubExistingLineChat: mocks.resolveGithubExistingLineChat,
     resolveGithubPersonnelTargetChat: mocks.resolveTargetChat,
     resolveTargetChat: mocks.resolveTargetChat,
   }));
-  vi.doMock("../services/github-entity-state.js", () => ({
+  vi.doMock("../services/scm/github/entity-state.js", () => ({
     setEntityTitle: mocks.setEntityTitle,
   }));
   vi.doMock("../services/participant-mode.js", () => ({
@@ -150,13 +150,13 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
     notifyRecipients: mocks.notifyRecipients,
   }));
 
-  const { deliverGithubEvent } = await import("../services/github-delivery.js");
+  const { deliverGithubEvent } = await import("../services/scm/github/delivery.js");
   return { deliverGithubEvent, mocks };
 }
 
 afterEach(() => {
-  vi.doUnmock("../services/github-entity-chat.js");
-  vi.doUnmock("../services/github-entity-state.js");
+  vi.doUnmock("../services/scm/github/entity-chat.js");
+  vi.doUnmock("../services/scm/github/entity-state.js");
   vi.doUnmock("../services/participant-mode.js");
   vi.doUnmock("../services/message.js");
   vi.doUnmock("../services/notifier.js");

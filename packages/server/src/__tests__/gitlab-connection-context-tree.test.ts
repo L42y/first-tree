@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { createGitlabConnection, replaceGitlabConnection } from "../services/gitlab-connections.js";
+import { createGitlabConnection, replaceGitlabConnection } from "../services/scm/gitlab/connections.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("GitLab connection and Context Tree origin consistency", () => {

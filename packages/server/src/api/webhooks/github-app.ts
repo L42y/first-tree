@@ -8,20 +8,20 @@ import type { FastifyInstance } from "fastify";
 import { BadRequestError, UnauthorizedError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
 import { handleContextReviewerPrEvent, isContextReviewerCandidateEvent } from "../../services/context-reviewer-pr.js";
-import type { AppInstallation } from "../../services/github-app.js";
+import type { AppInstallation } from "../../services/scm/github/app.js";
 import {
   deleteInstallationByGithubId,
   findInstallationByGithubId,
   markInstallationSuspended,
   markInstallationUnsuspended,
   upsertInstallationFromMetadata,
-} from "../../services/github-app-installations.js";
-import { isGithubAppSelfOutput } from "../../services/github-app-self-output.js";
-import { resolveGithubAudience } from "../../services/github-audience.js";
-import { deliverGithubEvent } from "../../services/github-delivery.js";
-import { setEntityState, setEntityTitle } from "../../services/github-entity-state.js";
-import { normalizeGithubWebhook } from "../../services/github-normalize.js";
-import { processScmWebhookDelivery } from "../../services/scm-webhook-processing.js";
+} from "../../services/scm/github/app-installations.js";
+import { isGithubAppSelfOutput } from "../../services/scm/github/app-self-output.js";
+import { resolveGithubAudience } from "../../services/scm/github/audience.js";
+import { deliverGithubEvent } from "../../services/scm/github/delivery.js";
+import { setEntityState, setEntityTitle } from "../../services/scm/github/entity-state.js";
+import { normalizeGithubWebhook } from "../../services/scm/github/normalize.js";
+import { processScmWebhookDelivery } from "../../services/scm/shared/webhook-processing.js";
 import { isRecord, readString } from "./github-entity.js";
 
 const log = createLogger("GithubAppWebhook");

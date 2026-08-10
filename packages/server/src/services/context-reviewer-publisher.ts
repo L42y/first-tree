@@ -24,6 +24,7 @@ import { uuidv7 } from "../uuid.js";
 import { agentNotLandingCampaignTrialCondition } from "./access-control.js";
 import { validateAgentRuntimeSession } from "./agent-runtime-session.js";
 import { normalizeGithubRepo } from "./context-reviewer-pr.js";
+import { getOrgContextTreeBinding, getOrgSetting } from "./org-settings.js";
 import {
   createAppJwt,
   createPullRequestReview,
@@ -33,8 +34,7 @@ import {
   getPullRequestForReview,
   listPullRequestReviewsForRun,
   mintInstallationToken,
-} from "./github-app.js";
-import { getOrgContextTreeBinding, getOrgSetting } from "./org-settings.js";
+} from "./scm/github/app.js";
 
 type SubmissionState = ContextReviewSubmissionState;
 
