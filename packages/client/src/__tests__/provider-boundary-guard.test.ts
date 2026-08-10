@@ -317,7 +317,9 @@ describe("runtime provider architecture guard", () => {
         if (ret.expression.properties.length !== 2) continue;
         if (!ret.expression.properties.every((prop) => ts.isPropertyAssignment(prop))) continue;
 
-        const [okProp, errorProp] = ret.expression.properties as [ts.PropertyAssignment, ts.PropertyAssignment];
+        const okProp = ret.expression.properties[0];
+        const errorProp = ret.expression.properties[1];
+        if (!okProp || !errorProp || !ts.isPropertyAssignment(okProp) || !ts.isPropertyAssignment(errorProp)) continue;
         if (!ts.isIdentifier(okProp.name) || okProp.name.text !== "ok") continue;
         if (okProp.initializer.kind !== ts.SyntaxKind.FalseKeyword) continue;
         if (!ts.isIdentifier(errorProp.name) || errorProp.name.text !== "error") continue;
