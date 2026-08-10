@@ -10,11 +10,12 @@ import { users } from "../db/schema/users.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { createAgent } from "./agent.js";
+import { lockWatcherProjectionMemberMutation } from "./chat-membership-lock.js";
 import { forceDisconnect } from "./connection-manager.js";
 import { MEMBER_STATUSES, reactivateMembership, syncUserDisplayName } from "./membership.js";
 import * as presenceService from "./presence.js";
 import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
-import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./watcher.js";
+import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "./watcher.js";
 
 const SALT_ROUNDS = 10;
 
@@ -283,6 +284,25 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
       throw new NotFoundError(`Member "${id}" not found`);
     }
 
+    const [projectedFallback] = await tx
+      .select({ id: members.id })
+      .from(members)
+      .where(
+        and(
+          eq(members.organizationId, callerOrgId),
+          eq(members.role, "admin"),
+          eq(members.status, MEMBER_STATUSES.ACTIVE),
+          ne(members.id, id),
+        ),
+      )
+      .orderBy(asc(members.id))
+      .limit(1);
+    await lockWatcherProjectionMemberMutation(tx, [id, ...(projectedFallback ? [projectedFallback.id] : [])]);
+
+    // Match SCM personnel placement: membership fences precede every member
+    // row lock and the later UUID-sorted agent mutations.
+    const watcherChatIds = await lockWatcherProjectionForMemberChanges(tx, [id]);
+
     const activeAdmins = await tx
       .select({ id: members.id })
       .from(members)
@@ -316,6 +336,9 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
     // deterministic order above, so concurrent admin removals serialize before
     // this check and fallback selection.
     const fallback = activeAdmins.find((admin) => admin.id !== id);
+    if ((fallback?.id ?? null) !== (projectedFallback?.id ?? null)) {
+      throw new ConflictError("Membership transfer authority changed; retry the removal");
+    }
     if (member.role === "admin" && !fallback) {
       throw new BadRequestError("Cannot remove the last admin from the organization");
     }
@@ -336,10 +359,6 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
       .where(and(eq(agents.managerId, id), ne(agents.type, AGENT_TYPES.HUMAN)))
       .returning({ uuid: agents.uuid });
 
-    for (const { uuid } of transferred) {
-      await recomputeWatchersForAgent(tx, uuid);
-    }
-
     const [deactivated] = await tx
       .update(members)
       .set({ status: MEMBER_STATUSES.REMOVED })
@@ -353,7 +372,7 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
       .update(agents)
       .set({ status: AGENT_STATUSES.SUSPENDED, clientId: null, updatedAt: new Date() })
       .where(eq(agents.uuid, member.agentId));
-    await recomputeWatchersForMember(tx, id);
+    await recomputeWatcherChats(tx, watcherChatIds);
     return transferred.map((agent) => agent.uuid);
   });
 

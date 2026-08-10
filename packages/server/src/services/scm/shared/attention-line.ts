@@ -3,7 +3,7 @@ import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { chatMembership } from "../../../db/schema/chat-membership.js";
 import { chats } from "../../../db/schema/chats.js";
-import { type LockedChatSpeakerSnapshot, lockChatSpeakerSnapshot } from "../../chat-membership-lock.js";
+import { lockChatMembershipSnapshot, lockChatSpeakerSnapshot } from "../../chat-membership-lock.js";
 
 export type ScmBindingPair = {
   organizationId: string;
@@ -117,39 +117,45 @@ export async function resolveAgentScmBindingPair(
     .where(eq(chatMembership.chatId, chatId))
     .orderBy(asc(chatMembership.agentId));
 
-  const wakeAgent = rows.find((row) => row.agentId === wakeAgentId);
-  if (
-    !wakeAgent ||
-    wakeAgent.agentType === "human" ||
-    wakeAgent.agentStatus !== "active" ||
-    wakeAgent.accessMode !== "speaker"
-  ) {
-    return null;
-  }
-  if (wakeAgent.agentOrganizationId !== wakeAgent.chatOrganizationId) return null;
-
-  const humans = rows.filter(
-    (row) =>
-      row.agentType === "human" && row.agentStatus === "active" && row.agentOrganizationId === row.chatOrganizationId,
-  );
-  const linkedHumans = humans.filter((human) => human.delegateMention === wakeAgentId);
-  const representative = linkedHumans.length === 1 ? linkedHumans[0] : linkedHumans.length === 0 ? humans[0] : null;
-  if (!representative) return null;
-  return {
-    organizationId: representative.chatOrganizationId,
-    humanAgentId: representative.agentId,
+  return resolveAgentPairFromMemberships(
+    rows.map((row) => ({
+      chatId,
+      chatOrganizationId: row.chatOrganizationId,
+      agentId: row.agentId,
+      agentOrganizationId: row.agentOrganizationId,
+      agentType: row.agentType,
+      agentStatus: row.agentStatus,
+      delegateMention: row.delegateMention,
+      accessMode: row.accessMode,
+    })),
     wakeAgentId,
-  };
+  );
 }
 
-/** Resolve an agent-issued pair from a transaction-stable speaker snapshot. */
+/** Resolve an agent-issued pair from a transaction-stable membership snapshot. */
 export async function lockAndResolveAgentScmBindingPair(
   db: Database,
   chatId: string,
   wakeAgentId: string,
 ): Promise<ScmBindingPair | null> {
-  const snapshot = await lockChatSpeakerSnapshot(db, [chatId]);
-  return resolveAgentPairFromLockedSnapshot(snapshot, chatId, wakeAgentId);
+  const snapshot = await lockChatMembershipSnapshot(db, [chatId]);
+  const chat = snapshot.chats.find((row) => row.id === chatId);
+  if (!chat) return null;
+  return resolveAgentPairFromMemberships(
+    snapshot.memberships
+      .filter((row) => row.chatId === chatId)
+      .map((row) => ({
+        chatId,
+        chatOrganizationId: chat.organizationId,
+        agentId: row.agentId,
+        agentOrganizationId: row.organizationId,
+        agentType: row.type,
+        agentStatus: row.status,
+        delegateMention: row.delegateMention,
+        accessMode: row.accessMode,
+      })),
+    wakeAgentId,
+  );
 }
 
 /**
@@ -247,34 +253,38 @@ export async function lockAndResolveHumanScmBindingPair(
   };
 }
 
-function resolveAgentPairFromLockedSnapshot(
-  snapshot: LockedChatSpeakerSnapshot,
-  chatId: string,
+function resolveAgentPairFromMemberships(
+  rows: ReadonlyArray<{
+    chatId: string;
+    chatOrganizationId: string;
+    agentId: string;
+    agentOrganizationId: string;
+    agentType: string;
+    agentStatus: string;
+    delegateMention: string | null;
+    accessMode: string;
+  }>,
   wakeAgentId: string,
 ): ScmBindingPair | null {
-  const chat = snapshot.chats.find((row) => row.id === chatId);
-  const wake = snapshot.speakers.find((row) => row.chatId === chatId && row.agentId === wakeAgentId);
+  const wake = rows.find((row) => row.agentId === wakeAgentId);
   if (
-    !chat ||
     !wake ||
-    wake.type === "human" ||
-    wake.status !== "active" ||
-    wake.organizationId !== chat.organizationId
+    wake.agentType === "human" ||
+    wake.agentStatus !== "active" ||
+    wake.accessMode !== "speaker" ||
+    wake.agentOrganizationId !== wake.chatOrganizationId
   ) {
     return null;
   }
-  const humans = snapshot.speakers.filter(
+  const humans = rows.filter(
     (row) =>
-      row.chatId === chatId &&
-      row.type === "human" &&
-      row.status === "active" &&
-      row.organizationId === chat.organizationId,
+      row.agentType === "human" && row.agentStatus === "active" && row.agentOrganizationId === wake.chatOrganizationId,
   );
   const linkedHumans = humans.filter((human) => human.delegateMention === wakeAgentId);
   const representative = linkedHumans.length === 1 ? linkedHumans[0] : linkedHumans.length === 0 ? humans[0] : null;
   if (!representative) return null;
   return {
-    organizationId: chat.organizationId,
+    organizationId: wake.chatOrganizationId,
     humanAgentId: representative.agentId,
     wakeAgentId,
   };

@@ -6,6 +6,7 @@ import {
   type LockedChatSpeakerSnapshot,
   lockChatMembershipMutation,
   lockChatSpeakerAndAgentSnapshot,
+  lockWatcherProjectionAgentMutation,
 } from "../../chat-membership-lock.js";
 import { canInviteParticipantsToChatInTransaction } from "../../participant-invite.js";
 
@@ -38,15 +39,17 @@ export type LockedScmPersonnelPlacement = {
 
 /**
  * Lock and revalidate personnel authority plus candidate speakers without
- * expanding an already-held pair lock. The membership fence comes first,
- * then the human member row, then one UUID-sorted union of the target pair
- * and every candidate speaker agent row.
+ * expanding an already-held pair lock. The target pair's projection lock
+ * comes first so a later speaker admission cannot invert the order, followed
+ * by membership fences, the human member row, and one UUID-sorted union of
+ * the target pair and every candidate speaker agent row.
  */
 export async function lockAndValidateScmPersonnelPlacement(
   db: Database,
   input: { humanAgentId: string; wakeAgentId: string; candidateChatIds: string[] },
 ): Promise<LockedScmPersonnelPlacement | null> {
   const candidateChatIds = [...new Set(input.candidateChatIds)].sort();
+  await lockWatcherProjectionAgentMutation(db, [input.humanAgentId, input.wakeAgentId]);
   await lockChatMembershipMutation(db, candidateChatIds);
 
   // Match the global membership lifecycle order: members before agent mirrors.

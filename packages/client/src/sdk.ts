@@ -710,11 +710,10 @@ export class FirstTreeHubSDK {
   /**
    * Follow a GitHub entity: wire its webhook event stream into the chat.
    *
-   * Returns a discriminated result instead of throwing on 409 — the conflict
-   * body ("this line already lives in chat X") is decision input for the
-   * caller, not an error: the CLI relays it with a `--rebind` hint. All
-   * other non-2xx statuses throw `SdkError` as usual (404 entity missing,
-   * 422 no App installation, 503 GitHub unreachable).
+   * Returns a discriminated result for the structured elsewhere-follow 409 —
+   * that body is decision input for the caller, so the CLI relays it with a
+   * `--rebind` hint. Every other 409 and non-2xx status throws `SdkError` with
+   * the server's original message.
    */
   async followGithubEntity(
     chatId: string,
@@ -725,18 +724,16 @@ export class FirstTreeHubSDK {
       body: JSON.stringify(body),
     });
     if (response.status === 409) {
-      // Guard the body read: a proxy or middleware can answer 409 with a
-      // non-JSON page, and an unguarded .json() would surface as an opaque
-      // SyntaxError instead of the conflict contract.
-      let conflictBody: unknown;
+      const responseBody = await response.text();
       try {
-        conflictBody = await response.json();
+        const parsed = followGithubEntityConflictSchema.safeParse(JSON.parse(responseBody));
+        if (parsed.success) return { ok: false, conflict: parsed.data };
       } catch {
-        throw new SdkError(409, "Entity already followed in another chat (non-JSON conflict body)");
+        // A proxy or middleware may return a non-JSON 409. It is not an
+        // elsewhere-follow conflict, so preserve the body through the generic
+        // SDK error path instead of inventing rebind guidance.
       }
-      const parsed = followGithubEntityConflictSchema.safeParse(conflictBody);
-      if (parsed.success) return { ok: false, conflict: parsed.data };
-      throw new SdkError(409, "Entity already followed in another chat (malformed conflict body)");
+      throw this.sdkErrorFromBody(response, responseBody);
     }
     if (!response.ok) {
       throw await this.toSdkError(response);
@@ -1240,6 +1237,10 @@ export class FirstTreeHubSDK {
 
   private async toSdkError(response: Response): Promise<SdkError> {
     const body = await response.text();
+    return this.sdkErrorFromBody(response, body);
+  }
+
+  private sdkErrorFromBody(response: Response, body: string): SdkError {
     let message: string;
     let code: string | undefined;
     try {
