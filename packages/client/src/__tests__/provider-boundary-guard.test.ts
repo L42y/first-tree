@@ -55,11 +55,16 @@ const GUARDED_CLIENT_FILES = [
   "handlers/auth-error-hint.ts",
 ] as const;
 
-/** Concrete provider binary / handler implementation modules (not support seams). */
+/**
+ * Concrete provider binary / handler implementation modules (not support seams).
+ * Deleted pre-family Cursor/Kimi owner paths stay forbidden forever alongside the
+ * feature-first family locations — replacing them would let a reintroduction slip
+ * past the generic Runtime scan.
+ */
 const CONCRETE_PROVIDER_BINARY_IMPORT =
-  /from ["'](?:\.\/(?:grok|pi|opencode)-binary\.js|[^"']*providers\/(?:codex|cursor|grok|kimi-code)\/binary\.js)["']/;
+  /from ["'](?:\.\/(?:cursor|grok|pi|kimi|opencode)-binary\.js|[^"']*providers\/(?:codex|cursor|grok|kimi-code)\/binary\.js)["']/;
 const CONCRETE_PROVIDER_HANDLER_IMPORT =
-  /from ["'].*(?:handlers\/(opencode|pi)|providers\/(claude|codex|cursor|grok|kimi-code))/;
+  /from ["'].*(?:handlers\/(cursor|kimi-code|opencode|pi)|providers\/(claude|codex|cursor|grok|kimi-code))/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -1798,5 +1803,33 @@ describe("runtime provider architecture guard", () => {
         );
       }
     }
+  });
+
+  it("permanently forbids deleted Cursor/Kimi owner paths and family paths from generic Runtime", () => {
+    // Negative fixtures: deleted pre-family Cursor/Kimi owners must still match,
+    // and the new family locations must match too — both stay rejected from Runtime.
+    const forbiddenHandlerSnippets = [
+      `import { createCursorHandler } from "../handlers/cursor/index.js";`,
+      `import { createKimiCodeHandler } from "../handlers/kimi-code.js";`,
+      `import { createCursorHandler } from "../providers/cursor/index.js";`,
+      `import { createKimiCodeHandler } from "../providers/kimi-code/index.js";`,
+    ] as const;
+    const forbiddenBinarySnippets = [
+      `import { resolveCursorRuntimeBinary } from "./cursor-binary.js";`,
+      `import { findKimiExecutableOnPath } from "./kimi-binary.js";`,
+      `import { resolveCursorRuntimeBinary } from "../providers/cursor/binary.js";`,
+      `import { findKimiExecutableOnPath } from "../providers/kimi-code/binary.js";`,
+    ] as const;
+
+    for (const source of forbiddenHandlerSnippets) {
+      expect(source).toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+    }
+    for (const source of forbiddenBinarySnippets) {
+      expect(source).toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
+    }
+
+    // Benign Runtime-local imports must not false-positive.
+    expect(`import { something } from "./capabilities/index.js";`).not.toMatch(CONCRETE_PROVIDER_HANDLER_IMPORT);
+    expect(`import { something } from "./provider-support/index.js";`).not.toMatch(CONCRETE_PROVIDER_BINARY_IMPORT);
   });
 });
