@@ -10,14 +10,14 @@ import {
   recordByRuntimeProvider,
 } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClaudeExecutableResolution } from "../handlers/claude-executable.js";
 import {
   type BundledClaudeBinary,
   formatClaudeBinaryMissingMessage,
   probeClaudeCodeCapability,
   resolveBundledClaudeBinary,
-} from "../runtime/capabilities/claude-code.js";
-import { probeClaudeCodeTuiCapability } from "../runtime/capabilities/claude-code-tui.js";
+} from "../providers/claude/capability.js";
+import { probeClaudeCodeTuiCapability } from "../providers/claude/capability-tui.js";
+import type { ClaudeExecutableResolution } from "../providers/claude/executable.js";
 import {
   probeCodexCapability,
   resolveBundledBinaryInPackageRoot,

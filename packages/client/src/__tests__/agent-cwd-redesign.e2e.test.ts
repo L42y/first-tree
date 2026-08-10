@@ -56,7 +56,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   };
 });
 
-import { createClaudeCodeHandler } from "../handlers/claude-code.js";
+import { createClaudeCodeHandler } from "../providers/claude/index.js";
 import { createAgentConfigCache } from "../runtime/agent-config-cache.js";
 import { IDENTITY_JSON_REL } from "../runtime/bootstrap.js";
 import type { SessionContext } from "../runtime/handler.js";

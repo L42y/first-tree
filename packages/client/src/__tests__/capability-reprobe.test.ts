@@ -134,8 +134,8 @@ describe("nextCapabilityRefreshDelayMs", () => {
 
 describe("revalidateCapabilities / reprobeOnReconnect (probe modules mocked)", () => {
   afterEach(() => {
-    vi.doUnmock("../runtime/capabilities/claude-code.js");
-    vi.doUnmock("../runtime/capabilities/claude-code-tui.js");
+    vi.doUnmock("../providers/claude/capability.js");
+    vi.doUnmock("../providers/claude/capability-tui.js");
     vi.doUnmock("../runtime/capabilities/codex.js");
     vi.resetModules();
   });
@@ -154,8 +154,8 @@ describe("revalidateCapabilities / reprobeOnReconnect (probe modules mocked)", (
         return Promise.resolve(results[provider] ?? okEntry());
       });
     vi.resetModules();
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({ probeClaudeCodeCapability: mk("claude-code") }));
-    vi.doMock("../runtime/capabilities/claude-code-tui.js", () => ({
+    vi.doMock("../providers/claude/capability.js", () => ({ probeClaudeCodeCapability: mk("claude-code") }));
+    vi.doMock("../providers/claude/capability-tui.js", () => ({
       probeClaudeCodeTuiCapability: mk("claude-code-tui"),
     }));
     vi.doMock("../runtime/capabilities/codex.js", () => ({ probeCodexCapability: mk("codex") }));

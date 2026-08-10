@@ -31,10 +31,10 @@ describe("Claude browser login invocation resolution", () => {
     vi.resetModules();
     const resolveClaudeCodeExecutable = vi.fn(() => ({ path: "/usr/local/bin/claude", source: "path" }));
     const resolveBundledClaudeBinary = vi.fn();
-    vi.doMock("../handlers/claude-executable.js", () => ({ resolveClaudeCodeExecutable }));
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({ resolveBundledClaudeBinary }));
+    vi.doMock("../providers/claude/executable.js", () => ({ resolveClaudeCodeExecutable }));
+    vi.doMock("../providers/claude/capability.js", () => ({ resolveBundledClaudeBinary }));
 
-    const { resolveClaudeLoginInvocation } = await import("../runtime/claude-login.js");
+    const { resolveClaudeLoginInvocation } = await import("../providers/claude/login.js");
 
     expect(resolveClaudeLoginInvocation({ PATH: "/usr/local/bin" })).toEqual({
       ok: true,
@@ -47,14 +47,14 @@ describe("Claude browser login invocation resolution", () => {
 
   it("uses the bundled legacy cli.js through node when no system claude resolves", async () => {
     vi.resetModules();
-    vi.doMock("../handlers/claude-executable.js", () => ({
+    vi.doMock("../providers/claude/executable.js", () => ({
       resolveClaudeCodeExecutable: vi.fn(() => ({ path: undefined, source: "default" })),
     }));
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({
+    vi.doMock("../providers/claude/capability.js", () => ({
       resolveBundledClaudeBinary: vi.fn(() => ({ kind: "cli-js", path: "/sdk/cli.js" })),
     }));
 
-    const { resolveClaudeLoginInvocation } = await import("../runtime/claude-login.js");
+    const { resolveClaudeLoginInvocation } = await import("../providers/claude/login.js");
 
     expect(resolveClaudeLoginInvocation()).toEqual({
       ok: true,
@@ -65,14 +65,14 @@ describe("Claude browser login invocation resolution", () => {
 
   it("uses the bundled native binary directly when that is the SDK layout", async () => {
     vi.resetModules();
-    vi.doMock("../handlers/claude-executable.js", () => ({
+    vi.doMock("../providers/claude/executable.js", () => ({
       resolveClaudeCodeExecutable: vi.fn(() => ({ path: undefined, source: "default" })),
     }));
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({
+    vi.doMock("../providers/claude/capability.js", () => ({
       resolveBundledClaudeBinary: vi.fn(() => ({ kind: "native", path: "/sdk/claude" })),
     }));
 
-    const { resolveClaudeLoginInvocation } = await import("../runtime/claude-login.js");
+    const { resolveClaudeLoginInvocation } = await import("../providers/claude/login.js");
 
     expect(resolveClaudeLoginInvocation()).toEqual({
       ok: true,
@@ -83,16 +83,16 @@ describe("Claude browser login invocation resolution", () => {
 
   it("returns a readable failure when neither system nor bundled claude can be located", async () => {
     vi.resetModules();
-    vi.doMock("../handlers/claude-executable.js", () => ({
+    vi.doMock("../providers/claude/executable.js", () => ({
       resolveClaudeCodeExecutable: vi.fn(() => ({ path: undefined, source: "default" })),
     }));
-    vi.doMock("../runtime/capabilities/claude-code.js", () => ({
+    vi.doMock("../providers/claude/capability.js", () => ({
       resolveBundledClaudeBinary: vi.fn(() => {
         throw new Error("native package missing");
       }),
     }));
 
-    const { resolveClaudeLoginInvocation } = await import("../runtime/claude-login.js");
+    const { resolveClaudeLoginInvocation } = await import("../providers/claude/login.js");
 
     expect(resolveClaudeLoginInvocation()).toEqual({
       ok: false,
@@ -108,7 +108,7 @@ describe("Claude browser login invocation resolution", () => {
       runBrowserLogin,
     }));
 
-    const { runClaudeBrowserLogin } = await import("../runtime/claude-login.js");
+    const { runClaudeBrowserLogin } = await import("../providers/claude/login.js");
     const onAuthUrl = vi.fn();
     const onRawOutput = vi.fn();
     const spawnFn = vi.fn() as never;
@@ -147,7 +147,7 @@ describe("Claude browser login invocation resolution", () => {
       runBrowserLogin,
     }));
 
-    const { runClaudeBrowserLogin } = await import("../runtime/claude-login.js");
+    const { runClaudeBrowserLogin } = await import("../providers/claude/login.js");
 
     await expect(
       runClaudeBrowserLogin({

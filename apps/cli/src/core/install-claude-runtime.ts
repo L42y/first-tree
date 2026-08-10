@@ -8,7 +8,7 @@ import { print } from "./output.js";
  * globally exposes a `claude` executable on PATH. This is the engine First Tree
  * intentionally does NOT bundle by default — the runtime resolves a system
  * `claude` (env override / PATH / well-known install dirs; see
- * packages/client/src/handlers/claude-executable.ts), and this one-click
+ * packages/client/src/providers/claude/executable.ts), and this one-click
  * install is the remediation when none exists.
  */
 const CLAUDE_RUNTIME_PACKAGE = "@anthropic-ai/claude-code";

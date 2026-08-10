@@ -59,7 +59,7 @@ const GUARDED_CLIENT_FILES = [
 const CONCRETE_PROVIDER_BINARY_IMPORT =
   /from ["'](?:\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary\.js|[^"']*providers\/grok\/binary\.js)["']/;
 const CONCRETE_PROVIDER_HANDLER_IMPORT =
-  /from ["'].*(?:handlers\/(claude-code|codex|cursor|grok|kimi-code|opencode|pi)|providers\/grok)/;
+  /from ["'].*(?:handlers\/(codex|cursor|kimi-code|opencode|pi)|providers\/(claude|grok))/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -73,7 +73,7 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/pages/clients/cards/shared/bound-agents-list.tsx",
   "packages/client/src/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
-  "packages/client/src/runtime/capabilities/claude-code.ts",
+  "packages/client/src/providers/claude/capability.ts",
   "packages/client/src/runtime/codex-binary.ts",
   "packages/client/src/runtime/cursor-binary.ts",
   "packages/client/src/providers/grok/binary.ts",
@@ -439,8 +439,8 @@ describe("runtime provider architecture guard", () => {
 
     // Positive: at least the known contract consumers resolve contracts.js.
     const mustUseContracts = [
-      "handlers/claude-code.ts",
-      "handlers/claude-code-tui/index.ts",
+      "providers/claude/index.ts",
+      "providers/claude/tui/index.ts",
       "handlers/codex/index.ts",
       "handlers/codex/sdk.ts",
       "handlers/codex/app-server/index.ts",
@@ -502,7 +502,7 @@ describe("runtime provider architecture guard", () => {
     // guarantee holds regardless of how - or whether - it is composed into
     // RUNTIME_AUTH_DRIVERS.
     for (const rel of [
-      "runtime/claude-login.ts",
+      "providers/claude/login.ts",
       "runtime/codex-login.ts",
       "runtime/cursor-login.ts",
       "providers/grok/login.ts",
@@ -668,7 +668,7 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toContain("running `pi` and entering `/login`");
         expect(source).not.toContain("`pi` and enter `/login`");
       }
-      if (rel.endsWith("claude-code.ts")) {
+      if (rel.endsWith("providers/claude/capability.ts")) {
         expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderLoginCommand");
         expect(source).toContain("daemon install-claude");
@@ -1316,8 +1316,8 @@ describe("runtime provider architecture guard", () => {
     expect(resolveOnly.literalSpecifiers).toEqual(["node:module"]);
 
     const mustUseProviderSupport = [
-      "handlers/claude-code.ts",
-      "handlers/claude-code-tui/index.ts",
+      "providers/claude/index.ts",
+      "providers/claude/tui/index.ts",
       "handlers/codex/sdk.ts",
       "handlers/codex/app-server/index.ts",
       "handlers/cursor/index.ts",

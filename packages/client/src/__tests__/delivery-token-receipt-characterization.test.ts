@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const handlerSourcePath = join(here, "..", "runtime", "handler.ts");
-const claudeHandlerPath = join(here, "..", "handlers", "claude-code.ts");
+const claudeHandlerPath = join(here, "..", "providers", "claude", "index.ts");
 
 type ProtocolShape = {
   startResultAllowsString: boolean;
