@@ -7,220 +7,27 @@ import {
   classifyContextTreeSetting,
   contextTreeActiveBindingSchema,
   contextTreeBranchSchema,
-  isOrgSettingNamespace,
   ORG_SETTINGS_NAMESPACES,
   type OrgContextTreeFeaturesInput,
-  type OrgContextTreeStorage,
   type OrgSettingInput,
-  type OrgSettingNamespace,
-  type OrgSettingOutput,
   type OrgSettingStorage,
   resolveContextTreeProvider,
   resolveGitLabRepositoryWebIdentity,
 } from "@first-tree/shared";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { githubAppInstallations } from "../db/schema/github-app-installations.js";
-import { gitlabConnections } from "../db/schema/gitlab-connections.js";
-import { members } from "../db/schema/members.js";
-import { organizationSettings } from "../db/schema/organization-settings.js";
-import { organizations } from "../db/schema/organizations.js";
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { pickDefaultMembership } from "./auth.js";
-
-/**
- * Per-organization settings, keyed by `(organizationId, namespace)`. The
- * registry of valid namespaces and their storage / input / output schemas
- * lives in `@first-tree/shared`.
- *
- * Read path:  storage row → output (mask)
- * Write path: input → validate → merge with current storage → upsert (in tx)
- *
- * The generic getter returns the masked output. Per-namespace plaintext
- * accessors live alongside this module when a secret needs to leave the
- * encrypted-at-rest boundary (none today).
- */
-
-function assertNamespace(ns: string): asserts ns is OrgSettingNamespace {
-  if (!isOrgSettingNamespace(ns)) {
-    throw new BadRequestError(`Unknown organization-settings namespace: "${ns}"`);
-  }
-}
-
-async function fetchStorageRow<K extends OrgSettingNamespace>(
-  db: Database,
-  orgId: string,
-  namespace: K,
-): Promise<OrgSettingStorage<K> | null> {
-  const [row] = await db
-    .select({ value: organizationSettings.value })
-    .from(organizationSettings)
-    .where(and(eq(organizationSettings.organizationId, orgId), eq(organizationSettings.namespace, namespace)))
-    .limit(1);
-  if (!row) return null;
-  const schema = ORG_SETTINGS_NAMESPACES[namespace].storage;
-  return schema.parse(row.value) as OrgSettingStorage<K>;
-}
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { githubAppInstallations } from "../../db/schema/github-app-installations.js";
+import { gitlabConnections } from "../../db/schema/gitlab-connections.js";
+import { members } from "../../db/schema/members.js";
+import { organizationSettings } from "../../db/schema/organization-settings.js";
+import { organizations } from "../../db/schema/organizations.js";
+import { BadRequestError, ConflictError, ForbiddenError } from "../../errors.js";
+import { getRawOrgSettingValue, lockOrganizationForSettingsMutation } from "../settings/store.js";
 
 export async function getRawOrgContextTreeSetting(db: Database, orgId: string): Promise<unknown> {
-  const [row] = await db
-    .select({ value: organizationSettings.value })
-    .from(organizationSettings)
-    .where(and(eq(organizationSettings.organizationId, orgId), eq(organizationSettings.namespace, "context_tree")))
-    .limit(1);
+  const row = await getRawOrgSettingValue(db, orgId, "context_tree");
   return row ? row.value : { branch: "main" };
-}
-
-async function lockOrganizationForSettingsMutation(db: Database, orgId: string): Promise<void> {
-  const [org] = await db
-    .select({ id: organizations.id })
-    .from(organizations)
-    .where(eq(organizations.id, orgId))
-    .for("update")
-    .limit(1);
-  if (!org) {
-    throw new NotFoundError(`Organization "${orgId}" not found`);
-  }
-}
-
-function emptyStorage<K extends OrgSettingNamespace>(namespace: K): OrgSettingStorage<K> {
-  // The storage schema's `.parse({})` fills in any defaults (e.g. context_tree.branch="main").
-  const schema = ORG_SETTINGS_NAMESPACES[namespace].storage;
-  return schema.parse({}) as OrgSettingStorage<K>;
-}
-
-function isCompleteContextTreeReplacement(input: OrgSettingInput<"context_tree">): boolean {
-  return input.repo !== undefined && input.branch !== undefined;
-}
-
-/**
- * Merge a validated input into the current storage row for a namespace.
- *
- * Input semantics per nullish field:
- *   `undefined` → unchanged
- *   `null`      → cleared
- *   value       → set / replace (already validated as non-empty by the input schema)
- */
-function applyInputDelta<K extends OrgSettingNamespace>(
-  namespace: K,
-  current: OrgSettingStorage<K>,
-  input: OrgSettingInput<K>,
-): OrgSettingStorage<K> {
-  if (namespace === "context_tree") {
-    const cur = current as OrgSettingStorage<"context_tree">;
-    const inp = input as OrgSettingInput<"context_tree">;
-    const next: OrgSettingStorage<"context_tree"> = {
-      provider: inp.provider === undefined ? cur.provider : (inp.provider ?? undefined),
-      repo: inp.repo === undefined ? cur.repo : (inp.repo ?? undefined),
-      branch: inp.branch === undefined ? cur.branch : (inp.branch ?? "main"),
-    };
-    return next as OrgSettingStorage<K>;
-  }
-  if (namespace === "source_repos") {
-    const cur = current as OrgSettingStorage<"source_repos">;
-    const inp = input as OrgSettingInput<"source_repos">;
-    const next: OrgSettingStorage<"source_repos"> = {
-      repos: inp.repos === undefined ? cur.repos : inp.repos,
-    };
-    return next as OrgSettingStorage<K>;
-  }
-  if (namespace === "context_tree_features") {
-    const cur = current as OrgSettingStorage<"context_tree_features">;
-    const inp = input as OrgSettingInput<"context_tree_features">;
-    const agentUuid = inp.contextReviewer.enabled
-      ? inp.contextReviewer.agentUuid
-      : (inp.contextReviewer.agentUuid ?? cur.contextReviewer.agentUuid);
-    const next: OrgSettingStorage<"context_tree_features"> = {
-      contextReviewer: {
-        enabled: inp.contextReviewer.enabled,
-        agentUuid,
-      },
-    };
-    return next as OrgSettingStorage<K>;
-  }
-  if (namespace === "github_features") {
-    const inp = input as OrgSettingInput<"github_features">;
-    const next: OrgSettingStorage<"github_features"> = {
-      teamAgent: {
-        agentUuid: inp.teamAgent.agentUuid,
-      },
-    };
-    return next as OrgSettingStorage<K>;
-  }
-  // Exhaustiveness — adding a new namespace forces a compile error here.
-  const _exhaustive: never = namespace;
-  return _exhaustive;
-}
-
-/**
- * Project the storage row into the API output for a namespace, masking
- * any secret fields.
- */
-async function toOutput<K extends OrgSettingNamespace>(
-  db: Database,
-  orgId: string,
-  namespace: K,
-  storage: OrgSettingStorage<K>,
-): Promise<OrgSettingOutput<K>> {
-  if (namespace === "context_tree") {
-    const s = storage as OrgSettingStorage<"context_tree">;
-    const out: OrgSettingOutput<"context_tree"> = {
-      provider: s.provider,
-      repo: s.repo,
-      branch: s.branch,
-    };
-    return out as OrgSettingOutput<K>;
-  }
-  if (namespace === "source_repos") {
-    const s = storage as OrgSettingStorage<"source_repos">;
-    const out: OrgSettingOutput<"source_repos"> = {
-      repos: s.repos,
-    };
-    return out as OrgSettingOutput<K>;
-  }
-  if (namespace === "context_tree_features") {
-    const s = storage as OrgSettingStorage<"context_tree_features">;
-    const reviewerAgent = await resolveContextReviewerAgentSummary(db, orgId, s.contextReviewer.agentUuid);
-    const out: OrgSettingOutput<"context_tree_features"> = {
-      contextReviewer: {
-        enabled: s.contextReviewer.enabled,
-        // This namespace is member-readable. A private, deleted, or foreign
-        // historical selection stays in storage for replacement, but its
-        // opaque identity is not a Team-wide fact.
-        agentUuid: reviewerAgent?.uuid ?? null,
-        reviewerAgent,
-      },
-    };
-    return out as OrgSettingOutput<K>;
-  }
-  if (namespace === "github_features") {
-    const s = storage as OrgSettingStorage<"github_features">;
-    const agent = await resolveOrgVisibleAgentSummary(db, orgId, s.teamAgent.agentUuid);
-    const out: OrgSettingOutput<"github_features"> = {
-      teamAgent: {
-        agentUuid: agent?.uuid ?? null,
-        agent,
-      },
-    };
-    return out as OrgSettingOutput<K>;
-  }
-  const _exhaustive: never = namespace;
-  return _exhaustive;
-}
-
-/**
- * Read a setting masked for the API. Missing rows → namespace defaults
- * (parse `{}` against the storage schema).
- */
-export async function getOrgSetting<K extends OrgSettingNamespace>(
-  db: Database,
-  orgId: string,
-  namespace: K,
-): Promise<OrgSettingOutput<K>> {
-  assertNamespace(namespace);
-  const storage = (await fetchStorageRow(db, orgId, namespace)) ?? emptyStorage(namespace);
-  return toOutput(db, orgId, namespace, storage);
 }
 
 /**
@@ -520,98 +327,6 @@ export async function getOrgContextTreeWithMeta(
 }
 
 /**
- * Upsert a setting. Returns the masked output of the resulting row.
- *
- * The transaction locks the stable organization parent row before reading the
- * current JSON value. This also serializes writes when the namespace row does
- * not exist yet, so partial updates cannot lose each other's fields.
- */
-export async function putOrgSetting<K extends OrgSettingNamespace>(
-  db: Database,
-  orgId: string,
-  namespace: K,
-  rawInput: unknown,
-  options: {
-    updatedBy: string;
-    memberId?: string;
-  },
-): Promise<OrgSettingOutput<K>> {
-  assertNamespace(namespace);
-
-  const inputSchema = ORG_SETTINGS_NAMESPACES[namespace].input;
-  const input = inputSchema.parse(rawInput) as OrgSettingInput<K>;
-
-  return db.transaction(async (tx) => {
-    const txDb = tx as unknown as Database;
-    await lockOrganizationForSettingsMutation(txDb, orgId);
-
-    let current: OrgSettingStorage<K>;
-    if (namespace === "context_tree") {
-      const rawCurrent = await getRawOrgContextTreeSetting(txDb, orgId);
-      const parsedCurrent = ORG_SETTINGS_NAMESPACES.context_tree.storage.safeParse(rawCurrent);
-      const contextTreeInput = input as OrgSettingInput<"context_tree">;
-      if (!parsedCurrent.success && !isCompleteContextTreeReplacement(contextTreeInput)) {
-        // A partial update cannot safely preserve fields from malformed JSON.
-        // Re-throw the storage error without changing the historical row.
-        throw parsedCurrent.error;
-      }
-      current = (parsedCurrent.success ? parsedCurrent.data : emptyStorage("context_tree")) as OrgSettingStorage<K>;
-    } else {
-      current = (await fetchStorageRow(txDb, orgId, namespace)) ?? emptyStorage(namespace);
-    }
-    let merged = applyInputDelta(namespace, current, input);
-    if (namespace === "context_tree") {
-      const contextTreeInput = input as OrgSettingInput<"context_tree">;
-      const contextTree = merged as OrgSettingStorage<"context_tree">;
-      merged = (await resolveStoredContextTreeProvider(
-        txDb,
-        orgId,
-        contextTree,
-        contextTreeInput,
-      )) as OrgSettingStorage<K>;
-      await assertContextTreeBindingTargetAuthorized(txDb, orgId, merged as OrgSettingStorage<"context_tree">);
-    }
-    if (namespace === "context_tree_features") {
-      await assertContextReviewerAgentAllowed(txDb, orgId, input as OrgContextTreeFeaturesInput, options.memberId);
-    }
-
-    // Final shape check (defensive — should always pass after applyInputDelta).
-    const storageSchema = ORG_SETTINGS_NAMESPACES[namespace].storage;
-    const validated = storageSchema.parse(merged) as OrgSettingStorage<K>;
-    if (namespace === "context_tree") {
-      const contextTree = validated as OrgContextTreeStorage;
-      if (contextTree.repo === undefined) {
-        contextTreeBranchSchema.parse(contextTree.branch);
-      } else {
-        contextTreeActiveBindingSchema.parse(contextTree);
-      }
-    }
-
-    await tx
-      .insert(organizationSettings)
-      .values({
-        organizationId: orgId,
-        namespace,
-        value: validated as Record<string, unknown>,
-        version: 1,
-        updatedBy: options.updatedBy,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [organizationSettings.organizationId, organizationSettings.namespace],
-        set: {
-          value: validated as Record<string, unknown>,
-          version: sql`${organizationSettings.version} + 1`,
-          updatedBy: options.updatedBy,
-          updatedAt: new Date(),
-        },
-      });
-
-    return toOutput(txDb, orgId, namespace, validated);
-  });
-}
-
-/**
  * Persist an initialized Context Tree binding only while the exact unbound
  * branch observed by the caller is still current. Callers can perform external
  * work between observation and finalization, so this conditional write is the
@@ -691,7 +406,7 @@ export async function putInitializedOrgContextTreeBinding(
   });
 }
 
-async function resolveContextReviewerAgentSummary(
+export async function resolveContextReviewerAgentSummary(
   db: Database,
   orgId: string,
   agentUuid: string | null,
@@ -735,28 +450,7 @@ async function resolveContextReviewerAgentSummary(
   };
 }
 
-async function resolveOrgVisibleAgentSummary(
-  db: Database,
-  orgId: string,
-  agentUuid: string | null,
-): Promise<{ uuid: string; name: string | null; displayName: string } | null> {
-  if (!agentUuid) return null;
-  const [agent] = await db
-    .select({ uuid: agents.uuid, name: agents.name, displayName: agents.displayName })
-    .from(agents)
-    .where(
-      and(
-        eq(agents.uuid, agentUuid),
-        eq(agents.organizationId, orgId),
-        eq(agents.visibility, AGENT_VISIBILITY.ORGANIZATION),
-        ne(agents.status, "deleted"),
-      ),
-    )
-    .limit(1);
-  return agent ?? null;
-}
-
-async function assertContextReviewerAgentAllowed(
+export async function assertContextReviewerAgentAllowed(
   db: Database,
   orgId: string,
   input: OrgContextTreeFeaturesInput,
@@ -837,7 +531,7 @@ async function assertContextReviewerAgentAllowed(
   }
 }
 
-async function resolveStoredContextTreeProvider(
+export async function resolveStoredContextTreeProvider(
   db: Database,
   orgId: string,
   storage: OrgSettingStorage<"context_tree">,
@@ -971,45 +665,4 @@ export async function assertContextTreeBindingTargetAuthorized(
   if (!identity?.originMatchesConnection) {
     throw new BadRequestError("GitLab Context Tree repository origin must match the current GitLab connection origin");
   }
-}
-
-/**
- * Delete a namespace row; subsequent GETs return defaults.
- */
-export async function deleteOrgSetting(db: Database, orgId: string, namespace: string): Promise<void> {
-  assertNamespace(namespace);
-  await db.transaction(async (tx) => {
-    const txDb = tx as unknown as Database;
-    await lockOrganizationForSettingsMutation(txDb, orgId);
-    await tx
-      .delete(organizationSettings)
-      .where(and(eq(organizationSettings.organizationId, orgId), eq(organizationSettings.namespace, namespace)));
-  });
-}
-
-/**
- * Resolve the caller's "primary org" for user-scoped routes that
- * historically didn't take an `:orgId` (e.g. `/context-tree/info`,
- * `/context-tree/snapshot`).
- *
- * Uses the same `pickDefaultMembership` helper that `/me` uses to compute
- * `defaultOrganizationId` (most-recently-active membership, id desc tie-break).
- * That guarantees the org `/me` reports as the default is the same org these
- * server-internal lookups read from — earlier the two sides used opposite
- * orderings (`/me` desc, this fn asc), so multi-org users saw `/info`
- * resolve to a different (often unconfigured) org than the one Team Settings
- * was edited for.
- *
- * Returns `null` for users with no active membership.
- */
-export async function resolveUserPrimaryOrgId(db: Database, userId: string): Promise<string | null> {
-  const rows = await db
-    .select({
-      id: members.id,
-      organizationId: members.organizationId,
-      createdAt: members.createdAt,
-    })
-    .from(members)
-    .where(and(eq(members.userId, userId), eq(members.status, "active")));
-  return pickDefaultMembership(rows)?.organizationId ?? null;
 }

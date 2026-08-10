@@ -13,7 +13,7 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { readContextReviewerAgentReadiness } from "./context-tree/reviewer/readiness.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
+import { getOrgContextReviewRuntime } from "./context-tree/settings.js";
 import {
   createAppJwt,
   GithubAppApiError,

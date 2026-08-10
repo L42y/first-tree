@@ -11,9 +11,9 @@ import { uuidv7 } from "../../../../uuid.js";
 import { createChat } from "../../../chat/conversation.js";
 import { applyMembershipWrite } from "../../../chat/membership/participants.js";
 import { type DeferredSendMessagePostCommitEffects, sendMessage } from "../../../chat/message.js";
-import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "../../../org-settings.js";
 import type { NormalizedGitlabWebhook } from "../../../scm/gitlab/webhook.js";
 import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
+import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "../../settings.js";
 import {
   contextReviewerChatReservationKey,
   findExistingContextReviewerChat,

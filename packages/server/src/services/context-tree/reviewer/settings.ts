@@ -22,13 +22,14 @@ import { organizationSettings } from "../../../db/schema/organization-settings.j
 import { organizations } from "../../../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../../../errors.js";
 import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
-import { getOrgContextReviewRuntime, getOrgSetting, isOrgContextReviewRuntimeCurrent } from "../../org-settings.js";
 import { findInstallationByOrg } from "../../scm/github/app-installations.js";
+import { getOrgSetting } from "../../settings/organization.js";
 import {
   type GithubReviewCredentials,
   type GithubReviewProbeResult,
   getTeamSetupCapabilities,
 } from "../../setup-capabilities.js";
+import { getOrgContextReviewRuntime, isOrgContextReviewRuntimeCurrent } from "../settings.js";
 
 export type ContextReviewerMutationOptions = {
   updatedBy: string;

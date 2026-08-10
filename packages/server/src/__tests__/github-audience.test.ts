@@ -7,7 +7,6 @@ import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { putContextReviewerAssignment } from "../services/context-tree/reviewer/settings.js";
-import { putOrgSetting } from "../services/org-settings.js";
 import { isGithubAppTargetLogin } from "../services/scm/github/app-self-output.js";
 import {
   type GithubProviderTaskContext,
@@ -15,6 +14,7 @@ import {
   resolveGithubActorHumanId,
 } from "../services/scm/github/audience.js";
 import type { ScmAudienceTarget } from "../services/scm/shared/audience-composition.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 

@@ -35,6 +35,11 @@ import {
   issueContextSessionCandidate,
   verifyContextSessionCandidate,
 } from "../services/context-tree/session-candidate.js";
+import {
+  getOrgContextReviewRuntime,
+  getOrgContextTreeWithMeta,
+  projectOrgContextTreeSettingState,
+} from "../services/context-tree/settings.js";
 import { isLandingCampaignServiceMembership } from "../services/landing-campaigns/guards.js";
 import { notifyRecipients } from "../services/notifier.js";
 import {
@@ -43,15 +48,11 @@ import {
   kickoffOnboarding,
   recordCampaignActionConversion,
 } from "../services/onboarding-kickoff.js";
-import {
-  getOrgContextReviewRuntime,
-  getOrgContextTreeWithMeta,
-  projectOrgContextTreeSettingState,
-} from "../services/org-settings.js";
 import * as clientService from "../services/runtime/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/runtime/daemon/bootstrap-command.js";
 import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
+import { pickDefaultMembership } from "../services/team/default-membership.js";
 import {
   buildInviteUrl,
   findActiveByToken,
@@ -202,7 +203,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       .limit(1);
 
     const memberships = await listActiveMemberships(app.db, userId);
-    const defaultMembership = authService.pickDefaultMembership(
+    const defaultMembership = pickDefaultMembership(
       memberships.map((m) => ({ id: m.memberId, createdAt: m.createdAt })),
     );
     const defaultOrgId = defaultMembership
@@ -835,9 +836,7 @@ async function resolveOnboardingMembershipId(
   }
 
   const activeMemberships = await listActiveMemberships(app.db, userId);
-  const picked = authService.pickDefaultMembership(
-    activeMemberships.map((m) => ({ id: m.memberId, createdAt: m.createdAt })),
-  );
+  const picked = pickDefaultMembership(activeMemberships.map((m) => ({ id: m.memberId, createdAt: m.createdAt })));
   if (!picked) throw new NotFoundError("No active membership found");
   return picked.id;
 }

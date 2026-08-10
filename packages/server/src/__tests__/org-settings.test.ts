@@ -13,9 +13,11 @@ import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
 import { signTokensForUser } from "../services/auth.js";
-import * as orgSettingsService from "../services/org-settings.js";
+import * as contextTreeSettingsService from "../services/context-tree/settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
+import * as organizationSettingsService from "../services/settings/organization.js";
+import * as defaultMembershipService from "../services/team/default-membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
 
@@ -121,10 +123,10 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const ct = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
+    const ct = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
     expect(ct).toEqual({ branch: "main" });
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
-    await expect(orgSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId)).resolves.toEqual({
+    await expect(contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
+    await expect(contextTreeSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId)).resolves.toEqual({
       binding: null,
       updatedAt: null,
     });
@@ -142,7 +144,9 @@ describe("org-settings service", () => {
     const select = vi.spyOn(app.db, "select");
 
     try {
-      await expect(orgSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId)).resolves.toMatchObject({
+      await expect(
+        contextTreeSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId),
+      ).resolves.toMatchObject({
         bindingState: "unbound",
         provider: null,
         repo: null,
@@ -169,7 +173,7 @@ describe("org-settings service", () => {
       displayName: "GitLab",
       instanceOrigin: "https://gitlab.internal",
     });
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -183,7 +187,7 @@ describe("org-settings service", () => {
         memberId: admin.memberId,
       },
     );
-    const expectedRuntime = await orgSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId);
+    const expectedRuntime = await contextTreeSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId);
 
     await app.db.insert(organizationSettings).values({
       organizationId: admin.organizationId,
@@ -194,10 +198,10 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.isOrgContextTreeBindingRuntimeCurrent(app.db, admin.organizationId, expectedRuntime),
+      contextTreeSettingsService.isOrgContextTreeBindingRuntimeCurrent(app.db, admin.organizationId, expectedRuntime),
     ).resolves.toBe(true);
     await expect(
-      orgSettingsService.isOrgContextReviewRuntimeCurrent(app.db, admin.organizationId, expectedRuntime),
+      contextTreeSettingsService.isOrgContextReviewRuntimeCurrent(app.db, admin.organizationId, expectedRuntime),
     ).resolves.toBe(false);
   });
 
@@ -205,7 +209,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const out = await orgSettingsService.putOrgSetting(
+    const out = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -214,7 +218,7 @@ describe("org-settings service", () => {
     );
     expect(out).toMatchObject({ repo: "https://github.com/example/tree", branch: "main" });
 
-    const re = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
+    const re = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
     expect(re).toEqual(out);
   });
 
@@ -236,7 +240,7 @@ describe("org-settings service", () => {
         .insert(organizations)
         .values({ id: claimantOrgId, name: `claimant-${randomUUID().slice(0, 8)}`, displayName: "Claimant" });
 
-      await orgSettingsService.putOrgSetting(
+      await organizationSettingsService.putOrgSetting(
         app.db,
         holder.organizationId,
         "context_tree",
@@ -245,7 +249,7 @@ describe("org-settings service", () => {
       );
 
       await expect(
-        orgSettingsService.putOrgSetting(
+        organizationSettingsService.putOrgSetting(
           app.db,
           claimantOrgId,
           "context_tree",
@@ -257,7 +261,7 @@ describe("org-settings service", () => {
   }
 
   it("contextTreeRepoOwnershipIdentity takes the web origin from wherever the reference states it", () => {
-    const identity = orgSettingsService.contextTreeRepoOwnershipIdentity;
+    const identity = contextTreeSettingsService.contextTreeRepoOwnershipIdentity;
     const origin = "https://git.internal:8443";
     const expected = "https://git.internal:8443/group/tree";
 
@@ -313,7 +317,7 @@ describe("org-settings service", () => {
         });
       }
 
-      await orgSettingsService.putOrgSetting(
+      await organizationSettingsService.putOrgSetting(
         app.db,
         holder.organizationId,
         "context_tree",
@@ -322,7 +326,7 @@ describe("org-settings service", () => {
       );
 
       await expect(
-        orgSettingsService.putOrgSetting(
+        organizationSettingsService.putOrgSetting(
           app.db,
           claimantOrgId,
           "context_tree",
@@ -361,7 +365,7 @@ describe("org-settings service", () => {
       }
 
       // The holder binds while connected, then loses its connection entirely.
-      await orgSettingsService.putOrgSetting(
+      await organizationSettingsService.putOrgSetting(
         app.db,
         holder.organizationId,
         "context_tree",
@@ -371,7 +375,7 @@ describe("org-settings service", () => {
       await app.db.delete(gitlabConnections).where(eq(gitlabConnections.organizationId, holder.organizationId));
 
       await expect(
-        orgSettingsService.putOrgSetting(
+        organizationSettingsService.putOrgSetting(
           app.db,
           claimantOrgId,
           "context_tree",
@@ -403,7 +407,7 @@ describe("org-settings service", () => {
       instanceOrigin: "https://git.internal:9443",
     });
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       first.organizationId,
       "context_tree",
@@ -413,7 +417,7 @@ describe("org-settings service", () => {
 
     // Same host and path, different forge — a shared web origin is what makes
     // two references one repository, and these do not share one.
-    const out = await orgSettingsService.putOrgSetting(
+    const out = await organizationSettingsService.putOrgSetting(
       app.db,
       secondOrgId,
       "context_tree",
@@ -427,7 +431,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -436,7 +440,7 @@ describe("org-settings service", () => {
     );
     // Same repository, different spelling: exclusivity is about *other* teams,
     // so a team re-stating its own binding must not lock itself out.
-    const out = await orgSettingsService.putOrgSetting(
+    const out = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -450,7 +454,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -459,7 +463,7 @@ describe("org-settings service", () => {
     );
 
     // undefined `repo` leaves it intact; null `branch` clears (server falls back to "main").
-    const after = await orgSettingsService.putOrgSetting(
+    const after = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -473,7 +477,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -481,7 +485,7 @@ describe("org-settings service", () => {
       { updatedBy: admin.userId },
     );
 
-    const rebound = await orgSettingsService.putOrgSetting(
+    const rebound = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -507,7 +511,7 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.putInitializedOrgContextTreeBinding(
+      contextTreeSettingsService.putInitializedOrgContextTreeBinding(
         app.db,
         admin.organizationId,
         { repo: "https://github.com/example/initialized.git", branch: "main" },
@@ -543,7 +547,7 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.putInitializedOrgContextTreeBinding(
+      contextTreeSettingsService.putInitializedOrgContextTreeBinding(
         app.db,
         admin.organizationId,
         { repo: "https://github.com/example/stale-initializer.git", branch: "main" },
@@ -576,7 +580,7 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.putInitializedOrgContextTreeBinding(
+      contextTreeSettingsService.putInitializedOrgContextTreeBinding(
         app.db,
         admin.organizationId,
         { repo: "https://github.com/example/initialized.git", branch: "main" },
@@ -613,7 +617,7 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.putInitializedOrgContextTreeBinding(
+      contextTreeSettingsService.putInitializedOrgContextTreeBinding(
         app.db,
         admin.organizationId,
         { repo: "https://github.com/example/initialized.git", branch: "main" },
@@ -645,17 +649,19 @@ describe("org-settings service", () => {
       updatedBy: admin.userId,
     });
 
-    await expect(orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree")).resolves.toEqual(
-      historical,
-    );
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
-    await expect(orgSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId)).resolves.toMatchObject({
+    await expect(
+      organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree"),
+    ).resolves.toEqual(historical);
+    await expect(contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
+    await expect(
+      contextTreeSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId),
+    ).resolves.toMatchObject({
       binding: null,
       updatedAt: expect.any(Date),
     });
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -664,11 +670,11 @@ describe("org-settings service", () => {
       ),
     ).rejects.toThrow(/valid Git branch name/);
 
-    await expect(orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree")).resolves.toEqual(
-      historical,
-    );
+    await expect(
+      organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree"),
+    ).resolves.toEqual(historical);
 
-    const repaired = await orgSettingsService.putOrgSetting(
+    const repaired = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -680,7 +686,9 @@ describe("org-settings service", () => {
       repo: "https://github.com/example/repaired.git",
       branch: "main",
     });
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toEqual(repaired);
+    await expect(contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toEqual(
+      repaired,
+    );
 
     const [row] = await app.db
       .select({ value: organizationSettings.value, version: organizationSettings.version })
@@ -706,7 +714,7 @@ describe("org-settings service", () => {
     const admin = await createTestAdmin(app);
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -724,7 +732,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const putRepo = (repo: string) =>
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -749,7 +757,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -767,7 +775,7 @@ describe("org-settings service", () => {
       );
     expect(v1?.version).toBe(1);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -815,7 +823,7 @@ describe("org-settings service", () => {
 
     try {
       if (seedExisting) {
-        await orgSettingsService.putOrgSetting(
+        await organizationSettingsService.putOrgSetting(
           app.db,
           admin.organizationId,
           "context_tree",
@@ -846,14 +854,14 @@ describe("org-settings service", () => {
       });
       await Promise.race([holderLocked, holderFailure]);
 
-      repoUpdate = orgSettingsService.putOrgSetting(
+      repoUpdate = organizationSettingsService.putOrgSetting(
         repoWriter,
         admin.organizationId,
         "context_tree",
         { repo: "https://github.com/example/concurrent.git" },
         { updatedBy: admin.userId },
       );
-      branchUpdate = orgSettingsService.putOrgSetting(
+      branchUpdate = organizationSettingsService.putOrgSetting(
         branchWriter,
         admin.organizationId,
         "context_tree",
@@ -897,16 +905,16 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
       { repo: "https://github.com/example/x" },
       { updatedBy: admin.userId },
     );
-    await orgSettingsService.deleteOrgSetting(app.db, admin.organizationId, "context_tree");
+    await organizationSettingsService.deleteOrgSetting(app.db, admin.organizationId, "context_tree");
 
-    const after = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
+    const after = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree");
     expect(after).toEqual({ branch: "main" });
   });
 
@@ -914,7 +922,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const out = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "source_repos");
+    const out = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "source_repos");
     expect(out).toEqual({ repos: [] });
   });
 
@@ -922,7 +930,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const put = await orgSettingsService.putOrgSetting(
+    const put = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
@@ -941,7 +949,7 @@ describe("org-settings service", () => {
       ],
     });
 
-    const re = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "source_repos");
+    const re = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "source_repos");
     expect(re).toEqual(put);
   });
 
@@ -949,7 +957,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
@@ -958,7 +966,7 @@ describe("org-settings service", () => {
     );
 
     // No `repos` field in the PUT body — current list must survive.
-    const after = await orgSettingsService.putOrgSetting(
+    const after = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
@@ -972,14 +980,14 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
       { repos: [{ url: "https://github.com/example/will-clear" }] },
       { updatedBy: admin.userId },
     );
-    const cleared = await orgSettingsService.putOrgSetting(
+    const cleared = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
@@ -993,7 +1001,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "source_repos",
@@ -1007,7 +1015,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const putUrl = (url: string) =>
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "source_repos",
@@ -1023,7 +1031,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const out = await orgSettingsService.putOrgSetting(
+    const out = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "source_repos",
@@ -1048,7 +1056,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "source_repos",
@@ -1062,7 +1070,7 @@ describe("org-settings service", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
 
-    const out = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree_features");
+    const out = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree_features");
     expect(out).toEqual({ contextReviewer: { enabled: false, agentUuid: null, reviewerAgent: null } });
   });
 
@@ -1073,7 +1081,7 @@ describe("org-settings service", () => {
     const reviewer = await createReviewerAgent(app, { managerId: otherManager.memberId });
     await seedReviewerInstallation(app, admin.organizationId);
 
-    const out = await orgSettingsService.putOrgSetting(
+    const out = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree_features",
@@ -1094,7 +1102,7 @@ describe("org-settings service", () => {
       },
     });
 
-    const re = await orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree_features");
+    const re = await organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree_features");
     expect(re).toEqual(out);
   });
 
@@ -1107,14 +1115,14 @@ describe("org-settings service", () => {
     });
     await seedReviewerInstallation(app, admin.organizationId);
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree_features",
       { contextReviewer: { enabled: true, agentUuid: reviewer.uuid } },
       { updatedBy: admin.userId, memberId: admin.memberId },
     );
-    const disabled = await orgSettingsService.putOrgSetting(
+    const disabled = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree_features",
@@ -1144,7 +1152,7 @@ describe("org-settings service", () => {
       clientId: admin.clientId,
       managerId: admin.memberId,
     });
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -1156,7 +1164,7 @@ describe("org-settings service", () => {
       { updatedBy: admin.userId },
     );
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1167,7 +1175,7 @@ describe("org-settings service", () => {
 
     await seedReviewerInstallation(app, admin.organizationId, { pullRequests: "read" });
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1190,7 +1198,7 @@ describe("org-settings service", () => {
       displayName: "Private GitLab",
       instanceOrigin: "https://gitlab.internal",
     });
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -1206,7 +1214,7 @@ describe("org-settings service", () => {
     );
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1223,7 +1231,7 @@ describe("org-settings service", () => {
     const admin = await createAdminContext(app);
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1242,7 +1250,7 @@ describe("org-settings service", () => {
     });
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1289,7 +1297,7 @@ describe("org-settings service", () => {
     });
 
     const putReviewer = (agentUuid: string) =>
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree_features",
@@ -1305,16 +1313,16 @@ describe("org-settings service", () => {
   it("rejects unknown namespace with BadRequestError", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    await expect(orgSettingsService.getOrgSetting(app.db, admin.organizationId, "nope" as never)).rejects.toThrow(
-      /Unknown organization-settings namespace/,
-    );
+    await expect(
+      organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "nope" as never),
+    ).rejects.toThrow(/Unknown organization-settings namespace/);
   });
 
   it("rejects PUT against unknown org with NotFoundError", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         "00000000-0000-0000-0000-000000000000",
         "context_tree",
@@ -1366,7 +1374,7 @@ describe("resolveUserPrimaryOrgId", () => {
   it("returns the only active membership when user has one org", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const got = await orgSettingsService.resolveUserPrimaryOrgId(app.db, admin.userId);
+    const got = await defaultMembershipService.resolveUserPrimaryOrgId(app.db, admin.userId);
     expect(got).toBe(admin.organizationId);
   });
 
@@ -1382,7 +1390,7 @@ describe("resolveUserPrimaryOrgId", () => {
     // Second org — created "now", which is more recent than `earlier`.
     const later = await addMembership(app, admin.userId, "admin", new Date());
 
-    const got = await orgSettingsService.resolveUserPrimaryOrgId(app.db, admin.userId);
+    const got = await defaultMembershipService.resolveUserPrimaryOrgId(app.db, admin.userId);
     expect(got).toBe(later.orgId);
     expect(got).not.toBe(admin.organizationId);
   });
@@ -1393,7 +1401,7 @@ describe("resolveUserPrimaryOrgId", () => {
     // A more-recent membership the user has since left.
     await addMembership(app, admin.userId, "admin", new Date(Date.now() + 60_000), "left");
 
-    const got = await orgSettingsService.resolveUserPrimaryOrgId(app.db, admin.userId);
+    const got = await defaultMembershipService.resolveUserPrimaryOrgId(app.db, admin.userId);
     expect(got).toBe(admin.organizationId);
   });
 
@@ -1408,7 +1416,7 @@ describe("resolveUserPrimaryOrgId", () => {
       displayName: "No Memberships",
     });
 
-    const got = await orgSettingsService.resolveUserPrimaryOrgId(app.db, userId);
+    const got = await defaultMembershipService.resolveUserPrimaryOrgId(app.db, userId);
     expect(got).toBeNull();
   });
 });
@@ -1902,7 +1910,9 @@ describe("org-settings API (admin gating + masking)", () => {
       branch: "release",
     });
 
-    await expect(orgSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId)).resolves.toMatchObject({
+    await expect(
+      contextTreeSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId),
+    ).resolves.toMatchObject({
       bindingState: "bound",
       provider: null,
       providerSource: "unknown",
@@ -1934,7 +1944,7 @@ describe("org-settings API (admin gating + masking)", () => {
       displayName: "Self-Managed GitLab",
       instanceOrigin: "https://gitlab.internal:8443",
     });
-    const initial = await orgSettingsService.putOrgSetting(
+    const initial = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -1954,7 +1964,7 @@ describe("org-settings API (admin gating + masking)", () => {
       branch: "main",
     });
 
-    const replacement = await orgSettingsService.putOrgSetting(
+    const replacement = await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -1968,7 +1978,9 @@ describe("org-settings API (admin gating + masking)", () => {
       repo: "https://gitlab.internal:9443/acme/context-tree.git",
       branch: "release",
     });
-    await expect(orgSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId)).resolves.toMatchObject({
+    await expect(
+      contextTreeSettingsService.getOrgContextReviewRuntime(app.db, admin.organizationId),
+    ).resolves.toMatchObject({
       bindingState: "bound",
       provider: null,
       providerMatchesRepository: false,
@@ -2078,8 +2090,10 @@ describe("org-settings API (admin gating + masking)", () => {
     });
     expect(rawRead.statusCode).toBe(200);
     expect(rawRead.json()).toBeNull();
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
-    await expect(orgSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId)).resolves.toMatchObject({
+    await expect(contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toBeNull();
+    await expect(
+      contextTreeSettingsService.getOrgContextTreeWithMeta(app.db, admin.organizationId),
+    ).resolves.toMatchObject({
       binding: null,
       updatedAt: expect.any(Date),
     });
@@ -2170,7 +2184,7 @@ describe("org-settings API (admin gating + masking)", () => {
     });
     expect(repaired.statusCode).toBe(200);
     expect(repaired.json()).toEqual(repairedBinding);
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toEqual(
+    await expect(contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toEqual(
       repairedBinding,
     );
     const [afterRepair] = await app.db
@@ -2400,7 +2414,7 @@ describe("org-settings API (admin gating + masking)", () => {
     const admin = await createTestAdmin(app);
     const sideOrgId = await attachOrg(app, admin.userId);
     const sideRepo = "https://127.0.0.1:1/example/current-team-context.git";
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       sideOrgId,
       "context_tree",
@@ -2499,7 +2513,7 @@ describe("org-settings API (admin gating + masking)", () => {
       repo: "https://github.com/example/member-guard.git",
       branch: "main",
     };
-    await orgSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", original, {
+    await organizationSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", original, {
       updatedBy: admin.userId,
     });
 
@@ -2549,7 +2563,7 @@ describe("org-settings API (admin gating + masking)", () => {
       repo: "https://github.com/example/realtime-guard.git",
       branch: "main",
     };
-    await orgSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", original, {
+    await organizationSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", original, {
       updatedBy: admin.userId,
     });
 
@@ -2573,9 +2587,9 @@ describe("org-settings API (admin gating + masking)", () => {
       },
     });
     expect(downgradedFinalize.statusCode).toBe(403);
-    await expect(orgSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree")).resolves.toEqual(
-      original,
-    );
+    await expect(
+      organizationSettingsService.getOrgSetting(app.db, admin.organizationId, "context_tree"),
+    ).resolves.toEqual(original);
 
     await app.db.update(members).set({ role: "admin", status: "left" }).where(eq(members.id, admin.memberId));
     const departed = await app.inject({
@@ -2759,7 +2773,7 @@ describe("org-settings API (admin gating + masking)", () => {
       repo: "https://github.com/example/byo-read-tree.git",
       branch: "main",
     };
-    await orgSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", binding, {
+    await organizationSettingsService.putOrgSetting(app.db, admin.organizationId, "context_tree", binding, {
       updatedBy: admin.userId,
     });
 
@@ -2804,7 +2818,7 @@ describe("org-settings API (admin gating + masking)", () => {
     await seedReviewerInstallation(app, admin.organizationId);
     const url = `/api/v1/orgs/${admin.organizationId}/settings/context_tree_features`;
 
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree_features",

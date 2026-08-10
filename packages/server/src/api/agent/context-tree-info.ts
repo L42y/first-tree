@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
-import { getTeamSafeOrgContextReviewRuntime } from "../../services/org-settings.js";
+import { getTeamSafeOrgContextReviewRuntime } from "../../services/context-tree/settings.js";
 
 export async function agentContextTreeInfoRoutes(app: FastifyInstance): Promise<void> {
   /**

@@ -108,24 +108,6 @@ export async function signAgentOutboxToken(
   return signToken(secret, { sub: userId, type: "agent_outbox", agentId: scope.agentId, chatId: scope.chatId }, expiry);
 }
 
-/**
- * Pick the user's "default" membership for the web client to land on
- * after login. Most-recently-active membership wins; tie-break by the
- * uuidv7 lexicographic order of `members.id` (matches insert order).
- *
- * Used only by `GET /me` to populate `defaultOrganizationId` — the JWT
- * itself does NOT carry org info anymore.
- */
-export function pickDefaultMembership<T extends { id: string; createdAt: Date }>(rows: T[]): T | null {
-  if (rows.length === 0) return null;
-  const sorted = [...rows].sort((a, b) => {
-    const t = b.createdAt.getTime() - a.createdAt.getTime();
-    if (t !== 0) return t;
-    return b.id.localeCompare(a.id);
-  });
-  return sorted[0] ?? null;
-}
-
 export async function login(
   db: Database,
   username: string,

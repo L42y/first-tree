@@ -140,7 +140,7 @@ async function setupRoute() {
   vi.doMock("../services/scm/github/app-installations.js", () => ({ findInstallationByOrg }));
   vi.doMock("../services/scm/github/app-token.js", () => ({ mintContextTreeInstallationToken }));
   vi.doMock("../services/scm/github/user-token.js", () => ({ GithubUserTokenError, getFreshGithubUserToken }));
-  vi.doMock("../services/org-settings.js", () => ({
+  vi.doMock("../services/context-tree/settings.js", () => ({
     findOrgBoundToContextTreeRepo,
     getOrgContextTreeBinding,
     getOrgContextTreeSettingState,

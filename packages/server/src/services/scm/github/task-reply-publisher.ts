@@ -25,7 +25,7 @@ import { uuidv7 } from "../../../uuid.js";
 import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
 import { validateAgentRuntimeSession } from "../../agents/runtime/session.js";
 import { normalizeGithubRepo } from "../../context-tree/reviewer/github/pr.js";
-import { getOrgContextReviewRuntime } from "../../org-settings.js";
+import { getOrgContextReviewRuntime } from "../../context-tree/settings.js";
 import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {
   createAppJwt,

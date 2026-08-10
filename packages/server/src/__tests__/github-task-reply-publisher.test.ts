@@ -14,9 +14,9 @@ import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { createChat } from "../services/chat/conversation.js";
 import { sendMessage } from "../services/chat/message.js";
-import { putOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { submitGithubTaskReply } from "../services/scm/github/task-reply-publisher.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 

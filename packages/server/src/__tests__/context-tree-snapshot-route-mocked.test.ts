@@ -85,10 +85,12 @@ async function setupRoute(input: { orgId: string | null; githubRemote?: boolean;
   vi.doMock("../scope/require-user.js", () => ({
     requireUser: () => ({ userId: "user-1" }),
   }));
-  vi.doMock("../services/org-settings.js", () => ({
+  vi.doMock("../services/context-tree/settings.js", () => ({
     getOrgContextReviewRuntime,
     getOrgContextTreeBinding,
     isOrgContextTreeBindingRuntimeCurrent,
+  }));
+  vi.doMock("../services/team/default-membership.js", () => ({
     resolveUserPrimaryOrgId,
   }));
   vi.doMock("../services/context-tree/snapshot.js", () => ({

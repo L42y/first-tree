@@ -29,7 +29,7 @@ import { sessionEvents } from "../../db/schema/session-events.js";
 import { BadRequestError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
 import { type TimingSink, timeSyncWithSink, timeWithSink } from "../../observability/timing.js";
-import { getOrgContextTreeBinding } from "../org-settings.js";
+import { getOrgContextTreeBinding } from "./settings.js";
 
 const CONTEXT_TREE_IO_FEED_LIMIT = 50;
 // Grep/Glob count as reads at the granularity their refs carry: the client

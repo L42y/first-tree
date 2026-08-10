@@ -62,7 +62,8 @@ const mockedModules = [
   "../services/me-doc.js",
   "../services/team/membership.js",
   "../services/onboarding-kickoff.js",
-  "../services/org-settings.js",
+  "../services/context-tree/settings.js",
+  "../services/team/default-membership.js",
   "../services/team/organization.js",
   "../services/usage.js",
 ];
@@ -85,6 +86,8 @@ function mockRouteDependencies(): void {
   }));
   vi.doMock("../services/auth.js", () => ({
     generateConnectToken: routeMocks.generateConnectToken,
+  }));
+  vi.doMock("../services/team/default-membership.js", () => ({
     pickDefaultMembership: vi.fn(),
   }));
   vi.doMock("../services/team/invitation.js", () => ({
@@ -116,7 +119,7 @@ function mockRouteDependencies(): void {
     hasTreeSetupKickoffMessage: vi.fn(async () => false),
     kickoffOnboarding: vi.fn(async () => ({ chatId: "chat_1", sent: null })),
   }));
-  vi.doMock("../services/org-settings.js", () => ({
+  vi.doMock("../services/context-tree/settings.js", () => ({
     getOrgContextTreeBinding: routeMocks.getOrgContextTreeBinding,
     getTeamSafeOrgContextReviewRuntime: routeMocks.getTeamSafeOrgContextReviewRuntime,
   }));
