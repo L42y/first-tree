@@ -270,9 +270,16 @@ describe("runtime provider architecture guard", () => {
 
     /**
      * Exact approved executable occurrence of the Codex bundled-locate phrase:
-     * `resolveBundledCodexBinary`'s catch return `error` template literal.
-     * Comments are not approved exceptions — rewrite them if they restated the phrase.
+     * the unique exported async `resolveBundledCodexBinary` top-level try/catch
+     * whose catch (`err`) directly returns `{ ok: false, error: <exact template> }`.
+     * Non-recursive: nested functions / descendant returns are never approved.
+     * Comments are not exceptions.
      */
+    const approvedLocateHead =
+      "unable to locate codex CLI binaries (is @openai/codex installed with optional dependencies?): ";
+    const approvedLocateExpression = "err instanceof Error ? err.message : String(err)";
+    const approvedLocateInterpolation = ["$", "{", approvedLocateExpression, "}"].join("");
+
     function approvedCodexBundledLocateErrorSpans(source: string): Array<{ start: number; end: number; text: string }> {
       const sourceFile = ts.createSourceFile(
         "providers/codex/capability.ts",
@@ -281,43 +288,56 @@ describe("runtime provider architecture guard", () => {
         true,
         ts.ScriptKind.TS,
       );
+
+      const candidates = sourceFile.statements.filter(
+        (stmt): stmt is ts.FunctionDeclaration =>
+          ts.isFunctionDeclaration(stmt) &&
+          stmt.name?.text === "resolveBundledCodexBinary" &&
+          !!stmt.body &&
+          !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) &&
+          !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword),
+      );
+      if (candidates.length !== 1) return [];
+      const fn = candidates[0];
+      if (!fn?.body) return [];
+
       const spans: Array<{ start: number; end: number; text: string }> = [];
 
-      function recordIfApprovedErrorTemplate(initializer: ts.Expression): void {
-        const text = initializer.getText(sourceFile);
-        if (!codexBundledLocateMatcher.test(text)) return;
-        if (!(ts.isTemplateExpression(initializer) || ts.isNoSubstitutionTemplateLiteral(initializer))) return;
-        spans.push({ start: initializer.getStart(sourceFile), end: initializer.getEnd(), text });
+      for (const stmt of fn.body.statements) {
+        if (!ts.isTryStatement(stmt) || !stmt.catchClause) continue;
+        const catchDecl = stmt.catchClause.variableDeclaration;
+        if (!catchDecl || !ts.isIdentifier(catchDecl.name) || catchDecl.name.text !== "err") continue;
+
+        const catchStatements = stmt.catchClause.block.statements;
+        if (catchStatements.length !== 1) continue;
+        const ret = catchStatements[0];
+        if (!ret || !ts.isReturnStatement(ret) || !ret.expression || !ts.isObjectLiteralExpression(ret.expression)) {
+          continue;
+        }
+        if (ret.expression.properties.length !== 2) continue;
+        if (!ret.expression.properties.every((prop) => ts.isPropertyAssignment(prop))) continue;
+
+        const [okProp, errorProp] = ret.expression.properties as [ts.PropertyAssignment, ts.PropertyAssignment];
+        if (!ts.isIdentifier(okProp.name) || okProp.name.text !== "ok") continue;
+        if (okProp.initializer.kind !== ts.SyntaxKind.FalseKeyword) continue;
+        if (!ts.isIdentifier(errorProp.name) || errorProp.name.text !== "error") continue;
+        if (!ts.isTemplateExpression(errorProp.initializer)) continue;
+
+        const template = errorProp.initializer;
+        if (template.head.text !== approvedLocateHead) continue;
+        if (template.templateSpans.length !== 1) continue;
+        const templateSpan = template.templateSpans[0];
+        if (!templateSpan) continue;
+        if (templateSpan.expression.getText(sourceFile) !== approvedLocateExpression) continue;
+        if (templateSpan.literal.text !== "") continue;
+
+        spans.push({
+          start: template.getStart(sourceFile),
+          end: template.getEnd(),
+          text: template.getText(sourceFile),
+        });
       }
 
-      function visitCatchBody(node: ts.Node): void {
-        if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
-          for (const prop of node.expression.properties) {
-            if (!ts.isPropertyAssignment(prop)) continue;
-            const name = prop.name;
-            const isError =
-              (ts.isIdentifier(name) && name.text === "error") || (ts.isStringLiteral(name) && name.text === "error");
-            if (!isError) continue;
-            recordIfApprovedErrorTemplate(prop.initializer);
-          }
-        }
-        ts.forEachChild(node, visitCatchBody);
-      }
-
-      function visitFunctionBody(node: ts.Node): void {
-        if (ts.isTryStatement(node) && node.catchClause) {
-          visitCatchBody(node.catchClause.block);
-        }
-        ts.forEachChild(node, visitFunctionBody);
-      }
-
-      function visit(node: ts.Node): void {
-        if (ts.isFunctionDeclaration(node) && node.name?.text === "resolveBundledCodexBinary" && node.body) {
-          visitFunctionBody(node.body);
-        }
-        ts.forEachChild(node, visit);
-      }
-      visit(sourceFile);
       return spans;
     }
 
@@ -331,6 +351,15 @@ describe("runtime provider architecture guard", () => {
       return out;
     }
 
+    function expectRejectedLocateFixture(label: string, snippet: string): void {
+      expect(approvedCodexBundledLocateErrorSpans(snippet), label).toHaveLength(0);
+      expect(codexBundledLocateMatcher.test(snippet), `${label} still matches generic phrase`).toBe(true);
+      expect(
+        codexBundledLocateMatcher.test(maskSpans(snippet, approvedCodexBundledLocateErrorSpans(snippet))),
+        `${label} must not be neutralized by masking`,
+      ).toBe(true);
+    }
+
     for (const file of productionFiles) {
       const source = readFileSync(file, "utf8");
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
@@ -340,9 +369,7 @@ describe("runtime provider architecture guard", () => {
           expect(spans, "Codex capability must expose exactly one approved bundled-locate error template").toHaveLength(
             1,
           );
-          expect(spans[0]?.text).toMatch(
-            /^`unable to locate codex CLI binaries \(is @openai\/codex installed with optional dependencies\?\): \$\{/,
-          );
+          expect(spans[0]?.text).toBe("`" + approvedLocateHead + approvedLocateInterpolation + "`");
           const neutralized = maskSpans(source, spans);
           expect(
             neutralized,
@@ -360,27 +387,122 @@ describe("runtime provider architecture guard", () => {
       }
     }
 
-    // Fail-closed characterization: phrase outside the approved AST shape is not neutralized.
-    const unapproved = [
-      'export function resolveBundledCodexBinary() { return "unable to locate codex CLI binaries"; }',
-      "export function other() { return { ok: false, error: `unable to locate codex CLI binaries elsewhere` }; }",
-      "export async function resolveBundledCodexBinary() { try {} catch { return { ok: false, detail: `unable to locate codex CLI binaries` }; } }",
-    ];
-    for (const snippet of unapproved) {
-      expect(approvedCodexBundledLocateErrorSpans(snippet), snippet).toHaveLength(0);
-      expect(codexBundledLocateMatcher.test(snippet)).toBe(true);
-    }
+    const approvedErrorTemplate = "`" + approvedLocateHead + approvedLocateInterpolation + "`";
     const approvedShape = [
       "export async function resolveBundledCodexBinary() {",
       "  try { throw new Error('x'); } catch (err) {",
-      "    return { ok: false, error: `unable to locate codex CLI binaries (is @openai/codex installed with optional dependencies?): $" +
-        "{err}` };",
+      `    return { ok: false, error: ${approvedErrorTemplate} };`,
       "  }",
       "}",
       "",
     ].join("\n");
-    expect(approvedShape).toContain("${err}");
     expect(approvedCodexBundledLocateErrorSpans(approvedShape)).toHaveLength(1);
+    expect(
+      codexBundledLocateMatcher.test(maskSpans(approvedShape, approvedCodexBundledLocateErrorSpans(approvedShape))),
+    ).toBe(false);
+
+    // QA-reproduced bypasses that must stay rejected.
+    expectRejectedLocateFixture(
+      "second phrase inside approved template tail",
+      [
+        "export async function resolveBundledCodexBinary() {",
+        "  try { throw new Error('x'); } catch (err) {",
+        `    return { ok: false, error: \`${approvedLocateHead}${approvedLocateInterpolation} unable to locate codex CLI binaries\` };`,
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const wrongInterp = ["$", "{", "unrelated", "}"].join("");
+    expectRejectedLocateFixture(
+      "wrong interpolation expression and changed suffix",
+      [
+        "export async function resolveBundledCodexBinary() {",
+        "  try { throw new Error('x'); } catch (err) {",
+        `    return { ok: false, error: \`${approvedLocateHead}${wrongInterp} changed-suffix\` };`,
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedLocateFixture(
+      "matcher returned from nested function inside catch",
+      [
+        "export async function resolveBundledCodexBinary() {",
+        "  try { throw new Error('x'); } catch (err) {",
+        "    function nested() {",
+        `      return { ok: false, error: ${approvedErrorTemplate} };`,
+        "    }",
+        "    return nested();",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // Broader fail-closed shapes.
+    expectRejectedLocateFixture(
+      "plain string return",
+      'export async function resolveBundledCodexBinary() { return "unable to locate codex CLI binaries"; }',
+    );
+    expectRejectedLocateFixture(
+      "wrong function name",
+      [
+        "export async function other() {",
+        "  try { throw new Error('x'); } catch (err) {",
+        `    return { ok: false, error: ${approvedErrorTemplate} };`,
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedLocateFixture(
+      "wrong property name",
+      [
+        "export async function resolveBundledCodexBinary() {",
+        "  try { throw new Error('x'); } catch (err) {",
+        `    return { ok: false, detail: ${approvedErrorTemplate} };`,
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedLocateFixture(
+      "comment-only restatement",
+      [
+        "export async function resolveBundledCodexBinary() {",
+        "  // unable to locate codex CLI binaries",
+        "  return { ok: true, binary: '/bin/codex' };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedLocateFixture(
+      "Claude capability occurrence",
+      [
+        "export async function probeClaudeCapability() {",
+        '  return { installed: false, error: "unable to locate codex CLI binaries" };',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedLocateFixture(
+      "Grok capability occurrence",
+      [
+        "export async function probeGrokCapability() {",
+        '  return { installed: false, error: "unable to locate codex CLI binaries" };',
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    const withExtraOutside = `${approvedShape}const leaked = "unable to locate codex CLI binaries";\n`;
+    expect(approvedCodexBundledLocateErrorSpans(withExtraOutside)).toHaveLength(1);
+    expect(
+      codexBundledLocateMatcher.test(
+        maskSpans(withExtraOutside, approvedCodexBundledLocateErrorSpans(withExtraOutside)),
+      ),
+    ).toBe(true);
 
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
     const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
