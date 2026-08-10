@@ -20,7 +20,7 @@ import { resources } from "../db/schema/resources.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession, validateAgentRuntimeSession } from "../services/agents/runtime/session.js";
-import { signTokensForUser } from "../services/auth.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { sendMessage } from "../services/chat/message.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
 import { completeLandingCampaignTrialAgentTurn } from "../services/landing-campaigns/chat-state.js";

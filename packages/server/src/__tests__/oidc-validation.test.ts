@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exchangeOidcCode, fetchDiscovery } from "../services/oidc.js";
+import { exchangeOidcCode, fetchDiscovery } from "../services/auth/oauth/oidc.js";
 
 describe("OIDC validation", () => {
   let originalEnv: string | undefined;

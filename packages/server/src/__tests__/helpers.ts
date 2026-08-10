@@ -15,7 +15,7 @@ import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
-import { signTokensForUser } from "../services/auth.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { resolveDefaultOrgId } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 

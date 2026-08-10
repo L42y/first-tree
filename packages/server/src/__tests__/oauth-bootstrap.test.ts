@@ -7,8 +7,8 @@ import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import { findOrCreateUserFromExternalAccount } from "../services/auth-identity.js";
-import { completeExternalAccountBootstrap, shouldPreserveSoloSignupNext } from "../services/oauth-bootstrap.js";
+import { findOrCreateUserFromExternalAccount } from "../services/auth/identity.js";
+import { completeExternalAccountBootstrap, shouldPreserveSoloSignupNext } from "../services/auth/oauth/bootstrap.js";
 import { uuidv7 } from "../uuid.js";
 import { useTestApp } from "./helpers.js";
 

@@ -29,7 +29,7 @@ import {
   listOrgsWithUsableNonHumanAgent,
 } from "../services/agents/access-control.js";
 import { resolveAvatarImageUrl } from "../services/agents/identity.js";
-import * as authService from "../services/auth.js";
+import * as authService from "../services/auth/tokens.js";
 import { validateExternalContextActivation } from "../services/context-tree/activation.js";
 import {
   issueContextSessionCandidate,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { signOAuthState, verifyOAuthState } from "../services/oauth-state.js";
+import { signOAuthState, verifyOAuthState } from "../services/auth/oauth/state.js";
 
 const SECRET = "test-jwt-secret-key-for-vitest";
 

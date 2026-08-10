@@ -7,8 +7,8 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
+import { STATE_NONCE_COOKIE_NAME, signOAuthState, verifyOAuthState } from "../services/auth/oauth/state.js";
 import { decryptValue } from "../services/crypto.js";
-import { STATE_NONCE_COOKIE_NAME, signOAuthState, verifyOAuthState } from "../services/oauth-state.js";
 import {
   findInstallationByGithubId,
   upsertInstallationFromMetadata,

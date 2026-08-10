@@ -110,7 +110,7 @@ import {
   createS3AttachmentBlobStore,
   createUnavailableAttachmentBlobStore,
 } from "./services/attachment-blob-store.js";
-import { expiryToSeconds } from "./services/auth.js";
+import { expiryToSeconds } from "./services/auth/tokens.js";
 import {
   type BackgroundTaskOptions,
   type BackgroundTasks,

@@ -15,7 +15,7 @@ const { mockFetchDiscovery, mockExchangeOidcCode, mockVerifyIdToken, mockFetchUs
   }),
 );
 
-vi.mock("../services/oidc.js", () => ({
+vi.mock("../services/auth/oauth/oidc.js", () => ({
   fetchDiscovery: mockFetchDiscovery,
   exchangeOidcCode: mockExchangeOidcCode,
   verifyIdToken: mockVerifyIdToken,
@@ -29,13 +29,13 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
-import { signOAuthState } from "../services/oauth-state.js";
+import { signOAuthState } from "../services/auth/oauth/state.js";
 
 // `createTestApp` is imported dynamically in `beforeAll` AFTER `vi.resetModules()`
-// so the whole `helpers → buildApp → app.js → oidcRoutes → services/oidc.js`
+// so the whole `helpers → buildApp → app.js → oidcRoutes → services/auth/oauth/oidc.js`
 // graph rebuilds against the hoisted mock. Under this repo's `pool: forks` +
 // `isolate: false` vitest config, a static import would let an earlier test
-// file's real `services/oidc.js` win in the shared worker registry, so the
+// file's real `services/auth/oauth/oidc.js` win in the shared worker registry, so the
 // mock would silently miss and `fetchDiscovery` would hit the real network.
 // This type is a signature-only reference to that dynamically-imported factory.
 type CreateTestApp = typeof import("./helpers.js")["createTestApp"];
@@ -117,7 +117,7 @@ describe("OIDC callback — acceptance", () => {
 
   beforeAll(async () => {
     // Reset the shared-worker module registry so the dynamic import below
-    // rebuilds the app graph against the hoisted `vi.mock("../services/oidc.js")`.
+    // rebuilds the app graph against the hoisted `vi.mock("../services/auth/oauth/oidc.js")`.
     vi.resetModules();
     const { createTestApp } = (await import("./helpers.js")) as { createTestApp: CreateTestApp };
     app = await createTestApp({
@@ -128,7 +128,7 @@ describe("OIDC callback — acceptance", () => {
 
   afterAll(async () => {
     await app?.close();
-    vi.doUnmock("../services/oidc.js");
+    vi.doUnmock("../services/auth/oauth/oidc.js");
     vi.resetModules();
   });
 
@@ -422,7 +422,7 @@ describe("OIDC callback — acceptance", () => {
   });
 
   it("pre-existing identity collision: fail-closed — attachment stays with original owner, no membership transfer", async () => {
-    const { findOrCreateUserFromExternalAccount } = await import("../services/auth-identity.js");
+    const { findOrCreateUserFromExternalAccount } = await import("../services/auth/identity.js");
 
     // Create User A and attach the target OIDC identity via the service layer.
     const identityA = await findOrCreateUserFromExternalAccount(app.db, {
@@ -471,7 +471,7 @@ describe("OIDC callback — acceptance", () => {
 
   it("identity-service collision: attaching an owned identity to a different user throws and leaves both users unchanged", async () => {
     const { findOrCreateUserFromExternalAccount, linkExternalIdentity, IdentityConflictError } = await import(
-      "../services/auth-identity.js"
+      "../services/auth/identity.js"
     );
 
     // Create User A and attach the target OIDC identity.

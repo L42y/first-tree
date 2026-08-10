@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildGoogleAuthorizeUrl } from "../services/google-oauth.js";
+import { buildGoogleAuthorizeUrl } from "../services/auth/oauth/google.js";
 
 describe("Google OAuth", () => {
   it("builds an authorization URL with the fixed identity-only scope", () => {

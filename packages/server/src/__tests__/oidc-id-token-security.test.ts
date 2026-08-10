@@ -1,10 +1,10 @@
 import * as jose from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyIdToken } from "../services/oidc.js";
+import { verifyIdToken } from "../services/auth/oauth/oidc.js";
 
 /**
  * ID token security boundary tests using real signed JWTs and the actual
- * verifyIdToken() function from services/oidc.ts.
+ * verifyIdToken() function from services/auth/oauth/oidc.ts.
  *
  * Strategy: Generate real RSA keys, sign JWTs, and mock global.fetch to
  * intercept the jose.createRemoteJWKSet HTTP call. This exercises all of

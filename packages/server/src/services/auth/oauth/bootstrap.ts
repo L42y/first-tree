@@ -1,9 +1,9 @@
 import { isKnownLandingCampaignSlug, parseAgentTemplateIntentPath } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { users } from "../db/schema/users.js";
-import { findActiveByToken, recordRedemption } from "./team/invitation.js";
-import { createPersonalTeam, ensureMembership, pickPrimaryMembership } from "./team/membership.js";
+import type { Database } from "../../../db/connection.js";
+import { users } from "../../../db/schema/users.js";
+import { findActiveByToken, recordRedemption } from "../../team/invitation.js";
+import { createPersonalTeam, ensureMembership, pickPrimaryMembership } from "../../team/membership.js";
 
 export type ExternalAccountBootstrapUser = {
   userId: string;

@@ -95,7 +95,7 @@ describe("Invitation lifecycle", () => {
     const { ensureMembership } = await import("../services/team/membership.js");
     const { uuidv7 } = await import("../uuid.js");
     const { users } = await import("../db/schema/users.js");
-    const { signTokensForUser } = await import("../services/auth.js");
+    const { signTokensForUser } = await import("../services/auth/tokens.js");
     const otherUserId = uuidv7();
     await app.db.insert(users).values({
       id: otherUserId,

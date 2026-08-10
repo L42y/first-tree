@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { protectOAuthStateNonce } from "../api/auth/oauth-cookie.js";
 import { oidcRoutes } from "../api/auth/oidc.js";
-import { signOAuthState } from "../services/oauth-state.js";
+import { signOAuthState } from "../services/auth/oauth/state.js";
 
 describe("OIDC callback security", () => {
   let originalEnv: string | undefined;

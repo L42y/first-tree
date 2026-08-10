@@ -12,7 +12,7 @@ import type { FastifyInstance } from "fastify";
 import { BadGatewayError, GatewayTimeoutError, ServiceUnavailableError } from "../errors.js";
 import { stampClientResource } from "../observability/request-context.js";
 import { requireUser } from "../scope/require-user.js";
-import { expiryToSeconds } from "../services/auth.js";
+import { expiryToSeconds } from "../services/auth/tokens.js";
 import * as clientService from "../services/runtime/client.js";
 import {
   forceDisconnectClient,

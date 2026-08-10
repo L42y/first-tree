@@ -7,12 +7,12 @@ import {
   normalizeExternalProfile,
 } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { authIdentities } from "../db/schema/auth-identities.js";
-import { members } from "../db/schema/members.js";
-import { users } from "../db/schema/users.js";
-import { uuidv7 } from "../uuid.js";
-import { decryptValue } from "./crypto.js";
+import type { Database } from "../../db/connection.js";
+import { authIdentities } from "../../db/schema/auth-identities.js";
+import { members } from "../../db/schema/members.js";
+import { users } from "../../db/schema/users.js";
+import { uuidv7 } from "../../uuid.js";
+import { decryptValue } from "../crypto.js";
 
 export type GithubProfile = {
   githubId: string;

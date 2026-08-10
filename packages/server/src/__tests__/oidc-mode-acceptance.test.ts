@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { protectOAuthStateNonce } from "../api/auth/oauth-cookie.js";
-import { signOAuthState } from "../services/oauth-state.js";
+import { signOAuthState } from "../services/auth/oauth/state.js";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 
 const ISSUER = "https://idp.test";

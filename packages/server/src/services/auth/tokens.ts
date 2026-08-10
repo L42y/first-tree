@@ -2,12 +2,12 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcrypt";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 import { jwtVerify, SignJWT } from "jose";
-import type { Database } from "../db/connection.js";
-import { connectCodes } from "../db/schema/connect-codes.js";
-import { members } from "../db/schema/members.js";
-import { users } from "../db/schema/users.js";
-import { UnauthorizedError } from "../errors.js";
-import { classifyJoseError, decodeJwtForTrace, untrustedAttrs } from "../observability/jwt-trace.js";
+import type { Database } from "../../db/connection.js";
+import { connectCodes } from "../../db/schema/connect-codes.js";
+import { members } from "../../db/schema/members.js";
+import { users } from "../../db/schema/users.js";
+import { UnauthorizedError } from "../../errors.js";
+import { classifyJoseError, decodeJwtForTrace, untrustedAttrs } from "../../observability/jwt-trace.js";
 
 /**
  * Token lifetime configuration. Driven by `FIRST_TREE_AUTH_*_EXPIRY`

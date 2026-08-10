@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { expiryToSeconds } from "../services/auth.js";
+import { expiryToSeconds } from "../services/auth/tokens.js";
 
 /**
  * The connect-token API surfaces `expiresIn` (seconds) to the Web "+ New

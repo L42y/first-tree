@@ -7,7 +7,7 @@ import { connectCodes } from "../db/schema/connect-codes.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { userAuthHook } from "../middleware/user-auth.js";
-import { generateConnectToken, login, refreshAccessToken, signTokensForUser } from "../services/auth.js";
+import { generateConnectToken, login, refreshAccessToken, signTokensForUser } from "../services/auth/tokens.js";
 import { pickDefaultMembership } from "../services/team/default-membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

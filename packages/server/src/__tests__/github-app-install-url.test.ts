@@ -7,8 +7,8 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
-import { signTokensForUser } from "../services/auth.js";
-import { STATE_NONCE_COOKIE_NAME, verifyOAuthState } from "../services/oauth-state.js";
+import { STATE_NONCE_COOKIE_NAME, verifyOAuthState } from "../services/auth/oauth/state.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

@@ -10,7 +10,7 @@ describe("isAutoNamedTeam", () => {
 
   it("matches when the GitHub login was mixed-case (regression caught in review)", () => {
     // GitHub login `Gandy2025` → `users.username = "gandy2025"` (forced
-    // lowercase by `auth-identity.ts`) but
+    // lowercase by `services/auth/identity.ts`) but
     // `team.displayName = "Gandy2025's team"` (original casing preserved
     // by `github.ts::completeOauthFlow`). A case-sensitive `===` here
     // would silently skip Step 1 for the majority of real users —
@@ -36,7 +36,7 @@ describe("isAutoNamedTeam", () => {
   });
 
   it("returns false when the username collision suffix breaks the match", () => {
-    // Username collision path (`auth-identity.ts:181-208`): a second
+    // Username collision path (`services/auth/identity.ts:181-208`): a second
     // `octocat` becomes `octocat-a3f2` but their team was still minted
     // as `octocat's team` (without suffix — see `github.ts` passes
     // `profile.login` verbatim). The predicate intentionally returns

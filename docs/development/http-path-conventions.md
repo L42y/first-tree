@@ -1,7 +1,7 @@
 # HTTP Path Conventions
 
 > **Read this first** if your work touches any of:
-> - `packages/server/src/api/`, `middleware/`, `scope/`, `services/auth.ts`
+> - `packages/server/src/api/`, `middleware/`, `scope/`, `services/auth/tokens.ts`
 > - `packages/web/src/api/`, `packages/client/src/sdk.ts`
 > - Any "cross-org / multi-org / switch-org" bug
 >
