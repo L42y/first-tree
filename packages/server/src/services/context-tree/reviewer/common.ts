@@ -19,6 +19,7 @@ import { members } from "../../../db/schema/members.js";
 import { organizationSettings } from "../../../db/schema/organization-settings.js";
 import { serverInstances } from "../../../db/schema/server-instances.js";
 import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { lockChatMembershipMutation, lockWatcherProjectionAgentMutation } from "../../chat/membership/lock.js";
 import { getOrgContextReviewRuntime } from "../../org-settings.js";
 import { githubAutomaticReviewEventsReady } from "../../setup-capabilities.js";
 import { readContextReviewerAgentReadiness } from "./readiness.js";
@@ -128,14 +129,43 @@ export async function withContextReviewerDispatchAuthority<T>(
       .select({
         uuid: agents.uuid,
         managerId: agents.managerId,
+        managerHumanAgentId: members.agentId,
         clientId: agents.clientId,
       })
       .from(agents)
+      .innerJoin(members, eq(members.id, agents.managerId))
       .where(and(eq(agents.uuid, input.reviewerAgentUuid), agentNotLandingCampaignTrialCondition()))
       .limit(1);
     if (!snapshot) return { authorized: false };
 
-    await tx.select({ id: members.id }).from(members).where(eq(members.id, snapshot.managerId)).for("update").limit(1);
+    // The callback may create or repair the reviewer chat membership. Freeze
+    // both participants before authority row locks so manager transfer and
+    // canonical speaker admission share projection → existing-chat fence →
+    // authority rows ordering.
+    await lockWatcherProjectionAgentMutation(tx, [snapshot.managerHumanAgentId, input.reviewerAgentUuid]);
+
+    // Reuse/repair callbacks can enter the canonical participant writer for an
+    // already-visible reviewer chat. Fence that chat before authority rows so
+    // SCM membership snapshots cannot hold its fence while waiting on the
+    // reviewer row. A fresh chat does not exist outside this transaction yet.
+    const [existingChat] = await tx
+      .select({ id: chats.id })
+      .from(chats)
+      .where(and(eq(chats.organizationId, input.organizationId), eq(chats.onboardingKickoffKey, reservationKey)))
+      .limit(1);
+    if (existingChat) {
+      await lockChatMembershipMutation(tx, [existingChat.id]);
+    }
+
+    const [manager] = await tx
+      .select({ id: members.id, humanAgentId: members.agentId })
+      .from(members)
+      .where(eq(members.id, snapshot.managerId))
+      .for("update")
+      .limit(1);
+    if (!manager || manager.humanAgentId !== snapshot.managerHumanAgentId) {
+      return { authorized: false };
+    }
     const [client] = snapshot.clientId
       ? await tx.select().from(clients).where(eq(clients.id, snapshot.clientId)).for("update").limit(1)
       : [];
