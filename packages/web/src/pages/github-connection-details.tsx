@@ -5,7 +5,7 @@ import {
   githubPermissionSatisfies,
 } from "@first-tree/shared";
 import { Check, ChevronRight, CircleAlert, CircleCheck, Copy, ExternalLink } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import { Button } from "../components/ui/button.js";
 import { useCopyFeedback } from "../lib/use-copy-feedback.js";
 
@@ -126,7 +126,10 @@ export function GithubConnectionDetails({
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  const regionId = "github-connection-details";
+  // Per instance, not a module constant: the DEV gallery renders several of
+  // these on one page, and a shared literal would emit duplicate ids and an
+  // ambiguous `aria-controls`.
+  const regionId = useId();
   const required = readRequiredPermissions(data.permissions);
   const blocked = required.filter((permission) => !permission.satisfied);
   const requiredNames = new Set(required.map((permission) => permission.name));
@@ -253,7 +256,7 @@ function RequiredPermissionRow({
   const Glyph = permission.satisfied ? CircleCheck : CircleAlert;
   const color = permission.satisfied ? "var(--success)" : "var(--state-blocked)";
   return (
-    <div className="flex flex-col gap-1 sm:flex-row sm:items-center" style={{ gap: "var(--sp-2)" }}>
+    <div className="flex flex-col sm:flex-row sm:items-center" style={{ gap: "var(--sp-2)" }}>
       <span className="inline-flex min-w-0 flex-1 items-center" style={{ gap: "var(--sp-2)" }}>
         <Glyph aria-hidden className="h-4 w-4 shrink-0" style={{ color }} />
         <span className="text-label" style={{ color: "var(--fg)" }}>
@@ -280,19 +283,19 @@ function RequiredPermissionRow({
   );
 }
 
+/**
+ * Same shape as the other copy affordances in this app (`inline-command.tsx`,
+ * `invite-link-panel.tsx`): the visible label carries the state, including the
+ * `failed` one `useCopyFeedback` returns in a non-secure context or when the
+ * clipboard permission is denied. An icon-only button that ignores `failed`
+ * looks inert exactly when the copy didn't happen.
+ */
 function CopyInstallationId({ installationId }: { installationId: number }) {
   const { status, copy } = useCopyFeedback();
-  const copied = status === "copied";
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="xs"
-      aria-label={copied ? "Installation id copied" : "Copy installation id"}
-      title="Copy installation id"
-      onClick={() => void copy(String(installationId))}
-    >
-      {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+    <Button type="button" variant="ghost" size="xs" onClick={() => void copy(String(installationId))}>
+      {status === "copied" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+      {status === "failed" ? "Copy failed" : status === "copied" ? "Copied" : "Copy"}
     </Button>
   );
 }

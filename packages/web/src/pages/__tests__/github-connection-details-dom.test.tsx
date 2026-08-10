@@ -101,11 +101,14 @@ describe("GithubConnectionDetails", () => {
     await act(async () => root.unmount());
   });
 
-  it("treats a higher granted level as satisfying the requirement", async () => {
+  it("does not accept a level the rest of the server would reject", async () => {
+    // `github-audience` and the publishers compare exactly, so an `admin` grant
+    // must not read as satisfied here — that would promise delivery the routing
+    // path then refuses.
     const data = installation({ permissions: { issues: "admin", pull_requests: "write" } });
     const { container, root } = await renderDom(<GithubConnectionDetails data={data} defaultOpen />);
 
-    expect(container.textContent).not.toContain("Agents can't post replies on issues.");
+    expect(container.textContent).toContain("Agents can't post replies on issues.");
 
     await act(async () => root.unmount());
   });
@@ -146,7 +149,10 @@ describe("GithubConnectionDetails", () => {
         day: "numeric",
       }),
     );
-    expect(container.querySelector('[aria-label="Copy installation id"]')).not.toBeNull();
+    // House convention (inline-command.tsx / invite-link-panel.tsx): the copy
+    // control carries its state in the visible label, so the `failed` case
+    // `useCopyFeedback` returns can't render as an inert button.
+    expect(buttonByText(container, "Copy")).not.toBeNull();
 
     await act(async () => root.unmount());
   });

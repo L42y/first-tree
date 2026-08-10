@@ -71,17 +71,25 @@ export const GITHUB_APP_REQUIRED_PERMISSIONS = {
 } as const satisfies Record<string, GithubPermissionLevel>;
 
 /**
- * True when `permissions` grants at least every level in
- * `GITHUB_APP_REQUIRED_PERMISSIONS`. `write` satisfies a `read` requirement
- * (GitHub's write implies read); `admin` satisfies both.
+ * True when `granted` meets a required level.
+ *
+ * Deliberately an exact match, not a `read < write < admin` ranking. Every
+ * other installation-permission check in the server compares levels exactly
+ * (`github-audience.ts`, `github-task-reply-publisher.ts`,
+ * `context-reviewer-publisher.ts`, `setup-capabilities.ts`, …). A ranking here
+ * would let the Settings readout and the task-agent gate accept an `admin`
+ * grant that routing and publishing then reject — the exact contradiction this
+ * shared definition exists to prevent. GitHub only ever issues `read` / `write`
+ * for `issues` and `pull_requests`, so a ranking would buy nothing anyway.
+ *
+ * If the ranked semantics are ever wanted, change every call site together,
+ * not just this one.
  */
 export function githubPermissionSatisfies(
   granted: GithubPermissionLevel | undefined,
   required: GithubPermissionLevel,
 ): boolean {
-  if (granted === undefined) return false;
-  const rank: Record<GithubPermissionLevel, number> = { read: 0, write: 1, admin: 2 };
-  return rank[granted] >= rank[required];
+  return granted === required;
 }
 
 /**

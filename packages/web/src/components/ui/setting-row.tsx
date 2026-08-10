@@ -23,7 +23,6 @@ import { cn } from "../../lib/utils.js";
 export function SettingRow({
   icon,
   title,
-  titleId,
   description,
   control,
   children,
@@ -35,8 +34,6 @@ export function SettingRow({
   icon?: ReactNode;
   /** What this row configures. */
   title: ReactNode;
-  /** Set when a control in this row is named by the title (`aria-labelledby`). */
-  titleId?: string;
   /** One line on what the setting does / its current effect. */
   description?: ReactNode;
   /** Right-aligned control — Switch, Select, Button cluster, or a status line. */
@@ -71,7 +68,7 @@ export function SettingRow({
             </span>
           ) : null}
           <div className="min-w-0">
-            <div id={titleId} className="text-body font-medium" style={{ color: "var(--fg)" }}>
+            <div className="text-body font-medium" style={{ color: "var(--fg)" }}>
               {title}
             </div>
             {description ? (
