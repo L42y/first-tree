@@ -401,7 +401,7 @@ describe("GitHub OAuth invite-only single-org entry gate", () => {
 
   async function rotateInviteForOrg(app: ReturnType<typeof getApp>, organizationId: string) {
     const admin = await createTestAdmin(app, { username: `gate-admin-${randomUUID().slice(0, 8)}` });
-    const { rotateInvitation } = await import("../services/invitation.js");
+    const { rotateInvitation } = await import("../services/team/invitation.js");
     return rotateInvitation(app.db, organizationId, admin.userId);
   }
 

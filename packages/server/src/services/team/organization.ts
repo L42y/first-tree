@@ -1,9 +1,9 @@
 import type { CreateOrganizationInput, UpdateOrganization } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { organizations } from "../db/schema/organizations.js";
-import { ConflictError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../db/connection.js";
+import { organizations } from "../../db/schema/organizations.js";
+import { ConflictError, NotFoundError } from "../../errors.js";
+import { uuidv7 } from "../../uuid.js";
 
 /**
  * Resolve the UUID of the "default" organization. Internal use only —

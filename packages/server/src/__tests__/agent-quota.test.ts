@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAgent } from "../services/agents/identity.js";
-import { createMember } from "../services/member.js";
-import { createOrganization } from "../services/organization.js";
+import { createMember } from "../services/team/member.js";
+import { createOrganization } from "../services/team/organization.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 describe("Agent Quota Enforcement", () => {

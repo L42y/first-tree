@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * Default invite-link TTL (days). Authoritative value lives in
- * `services/invitation.ts`; mirrored here so the web UI can surface
+ * `packages/server/src/services/team/invitation.ts`; mirrored here so the web UI can surface
  * "expires in N days" copy without an extra round-trip. Changing one
  * place without the other will only desync UI copy from server behavior
  * — no security impact.

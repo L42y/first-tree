@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { clients } from "../db/schema/clients.js";
-import { resolveDefaultOrgId } from "../services/organization.js";
+import { resolveDefaultOrgId } from "../services/team/organization.js";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 
 /**

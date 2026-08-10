@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 import { sslOptions } from "../db/connection.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { createOrganization } from "../services/organization.js";
+import { createOrganization } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

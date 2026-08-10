@@ -9,7 +9,7 @@ import { attachments } from "../db/schema/attachments.js";
 import { organizations } from "../db/schema/organizations.js";
 import { resources } from "../db/schema/resources.js";
 import { sweepOrphanAttachments } from "../services/attachment.js";
-import { ensureMembership } from "../services/membership.js";
+import { ensureMembership } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedAgentFactory, useTestApp } from "./helpers.js";
 

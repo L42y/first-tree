@@ -148,7 +148,7 @@ async function setupRoute() {
     isOrgContextTreeBindingRuntimeCurrent,
     putInitializedOrgContextTreeBinding,
   }));
-  vi.doMock("../services/organization.js", () => ({ getOrganization }));
+  vi.doMock("../services/team/organization.js", () => ({ getOrganization }));
 
   const { orgContextTreeRoutes } = await import("../api/orgs/context-tree.js");
   const app = Object.assign(Fastify(), {

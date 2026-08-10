@@ -944,8 +944,8 @@ describe("service branch defaults", () => {
       import("../services/chat/conversation.js"),
       import("../services/document.js"),
       import("../services/chat/inbox.js"),
-      import("../services/member.js"),
-      import("../services/membership.js"),
+      import("../services/team/member.js"),
+      import("../services/team/membership.js"),
       import("../services/org-settings.js"),
       import("../services/chat/sessions/lifecycle.js"),
     ]);

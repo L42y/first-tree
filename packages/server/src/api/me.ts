@@ -35,16 +35,7 @@ import {
   issueContextSessionCandidate,
   verifyContextSessionCandidate,
 } from "../services/context-tree/session-candidate.js";
-import { buildInviteUrl, findActiveByToken, getActiveInvitation, recordRedemption } from "../services/invitation.js";
 import { isLandingCampaignServiceMembership } from "../services/landing-campaigns/guards.js";
-import { updateOwnProfile } from "../services/member.js";
-import {
-  countActiveMembersByOrgs,
-  ensureMembership,
-  leaveOrganization,
-  listActiveMemberships,
-  selfCreateOrganization,
-} from "../services/membership.js";
 import { notifyRecipients } from "../services/notifier.js";
 import {
   campaignActionKickoffKey,
@@ -61,6 +52,20 @@ import * as clientService from "../services/runtime/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/runtime/daemon/bootstrap-command.js";
 import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
+import {
+  buildInviteUrl,
+  findActiveByToken,
+  getActiveInvitation,
+  recordRedemption,
+} from "../services/team/invitation.js";
+import { updateOwnProfile } from "../services/team/member.js";
+import {
+  countActiveMembersByOrgs,
+  ensureMembership,
+  leaveOrganization,
+  listActiveMemberships,
+  selfCreateOrganization,
+} from "../services/team/membership.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 import { serializeDate } from "../utils.js";
 import { clientCommandVersionHint } from "./client-command-version.js";

@@ -9,7 +9,7 @@ import type { Database } from "../../db/connection.js";
 import { gitlabConnections } from "../../db/schema/gitlab-connections.js";
 import type { OrgScope } from "../../scope/types.js";
 import { getOrgContextTreeSettingState } from "../org-settings.js";
-import { getOrganization } from "../organization.js";
+import { getOrganization } from "../team/organization.js";
 
 const CONTEXT_TREE_SETTINGS_URL = "/settings/context#binding";
 

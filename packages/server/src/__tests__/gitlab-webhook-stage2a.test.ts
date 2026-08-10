@@ -13,7 +13,6 @@ import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agents/identity.js";
-import { createOrganization } from "../services/organization.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -30,6 +29,7 @@ import * as gitlabEntityFollowService from "../services/scm/gitlab/entity-follow
 import * as scmCardDelivery from "../services/scm/shared/card-delivery.js";
 import { lockGitlabEntityAttention } from "../services/scm/shared/entity-attention-lock.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
+import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, createTestAgent, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 const {

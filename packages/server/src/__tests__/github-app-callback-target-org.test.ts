@@ -8,13 +8,13 @@ import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { decryptValue } from "../services/crypto.js";
-import { ensureMembership } from "../services/membership.js";
 import { STATE_NONCE_COOKIE_NAME, signOAuthState, verifyOAuthState } from "../services/oauth-state.js";
-import { resolveDefaultOrgId } from "../services/organization.js";
 import {
   findInstallationByGithubId,
   upsertInstallationFromMetadata,
 } from "../services/scm/github/app-installations.js";
+import { ensureMembership } from "../services/team/membership.js";
+import { resolveDefaultOrgId } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

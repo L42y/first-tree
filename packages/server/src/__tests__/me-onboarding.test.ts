@@ -5,10 +5,10 @@ import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { encryptValue } from "../services/crypto.js";
-import { createMember } from "../services/member.js";
-import { ensureMembership } from "../services/membership.js";
-import { createOrganization } from "../services/organization.js";
 import * as githubUserToken from "../services/scm/github/user-token.js";
+import { createMember } from "../services/team/member.js";
+import { ensureMembership } from "../services/team/membership.js";
+import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("PATCH /me/onboarding", () => {
@@ -144,7 +144,7 @@ describe("PATCH /me/onboarding", () => {
   it("rejoin starts a fresh onboarding lifecycle — reactivation clears all three stamps", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { ensureMembership } = await import("../services/membership.js");
+    const { ensureMembership } = await import("../services/team/membership.js");
 
     // Live through a full prior lifecycle: complete onboarding (stamps
     // completed + suppressed(reason='completed')), then leave the org.
@@ -198,7 +198,7 @@ describe("PATCH /me/onboarding", () => {
   it("ordinary membership rejoin does not restore an admin-removed member", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { ensureMembership } = await import("../services/membership.js");
+    const { ensureMembership } = await import("../services/team/membership.js");
 
     await app.db.update(members).set({ status: "removed" }).where(eq(members.id, admin.memberId));
 

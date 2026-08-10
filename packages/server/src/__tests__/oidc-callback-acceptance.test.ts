@@ -595,7 +595,7 @@ describe("OIDC callback — acceptance", () => {
   });
 
   it("returning multi-Team user: extra IdP claims do not mutate existing org/member/role state", async () => {
-    const { createPersonalTeam } = await import("../services/membership.js");
+    const { createPersonalTeam } = await import("../services/team/membership.js");
 
     // First sign-in: creates the user + Team1 (personal org via bootstrap).
     mockVerifyIdToken.mockResolvedValue(

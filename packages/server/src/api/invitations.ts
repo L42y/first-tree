@@ -9,7 +9,7 @@ import { UnauthorizedError } from "../errors.js";
  * `api/orgs/invitations.ts` (Class B, admin-gated).
  */
 export async function publicInvitationRoutes(app: FastifyInstance): Promise<void> {
-  const { previewInvitation } = await import("../services/invitation.js");
+  const { previewInvitation } = await import("../services/team/invitation.js");
   app.get<{ Params: { token: string } }>("/:token/preview", async (request, reply) => {
     if (!request.params.token) throw new UnauthorizedError("Token required");
     const preview = await previewInvitation(app.db, request.params.token);

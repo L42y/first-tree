@@ -44,7 +44,6 @@ import {
   isOrgContextTreeBindingRuntimeCurrent,
   putInitializedOrgContextTreeBinding,
 } from "../../services/org-settings.js";
-import { getOrganization } from "../../services/organization.js";
 import { createRepoFileWithToken, GithubAppApiError, getRepoFileWithToken } from "../../services/scm/github/app.js";
 import { findInstallationByOrg } from "../../services/scm/github/app-installations.js";
 import {
@@ -54,6 +53,7 @@ import {
 } from "../../services/scm/github/app-token.js";
 import type { GithubCreatedRepo } from "../../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../../services/scm/github/user-token.js";
+import { getOrganization } from "../../services/team/organization.js";
 
 const BRANCH = "main";
 const ROOT_NODE_PATH = "NODE.md";

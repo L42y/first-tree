@@ -28,7 +28,7 @@ import {
   LANDING_CAMPAIGN_TRIAL_PROMPT,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "../services/landing-campaigns/trial-prompt.js";
-import { createMember } from "../services/member.js";
+import { createMember } from "../services/team/member.js";
 import { uuidv7 } from "../uuid.js";
 import { agentRequest, createTestAdmin, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
 

@@ -2,18 +2,18 @@ import { randomBytes } from "node:crypto";
 import { AGENT_STATUSES, AGENT_TYPES } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { members } from "../db/schema/members.js";
-import { organizations } from "../db/schema/organizations.js";
-import { users } from "../db/schema/users.js";
-import { ConflictError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
-import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
-import { forceDisconnect } from "./runtime/connection-manager.js";
-import * as presenceService from "./runtime/presence.js";
-import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { members } from "../../db/schema/members.js";
+import { organizations } from "../../db/schema/organizations.js";
+import { users } from "../../db/schema/users.js";
+import { ConflictError, NotFoundError } from "../../errors.js";
+import { uuidv7 } from "../../uuid.js";
+import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
+import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
+import { forceDisconnect } from "../runtime/connection-manager.js";
+import * as presenceService from "../runtime/presence.js";
+import { suspendGitlabLinksForMembership } from "../scm/gitlab/identities.js";
 
 /**
  * Helpers used by the SaaS onboarding flow to create / reuse / leave a

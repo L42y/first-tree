@@ -16,7 +16,7 @@ import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { signTokensForUser } from "../services/auth.js";
-import { resolveDefaultOrgId } from "../services/organization.js";
+import { resolveDefaultOrgId } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 
 /**
@@ -534,7 +534,7 @@ export async function createTestAdmin(app: FastifyInstance, opts: { username?: s
 
   // agents.manager_id ↔ members.agent_id is a FK cycle; the unified-user-token
   // migration (0019) makes agents.manager_id deferred so both rows can be
-  // inserted in one transaction. Mirrors services/member.ts::createMember.
+  // inserted in one transaction. Mirrors services/team/member.ts::createMember.
   const agent = await app.db.transaction(async (tx) => {
     await tx.insert(users).values({
       id: userId,
