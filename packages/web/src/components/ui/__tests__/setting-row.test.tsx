@@ -46,7 +46,36 @@ describe("SettingRow", () => {
     expect(control?.parentElement?.className).toContain("sm:justify-end");
     // Extras render below the row line, outside the control cluster.
     const extra = container.querySelector('[data-testid="extra"]');
-    expect(extra?.parentElement?.getAttribute("data-setting-row")).toBe("true");
+    expect(extra?.closest("[data-setting-row]")).not.toBeNull();
+    expect(extra?.parentElement?.contains(control)).toBe(false);
+
+    await act(async () => root.unmount());
+  });
+
+  it("hangs extras off the row's text column when it has a glyph", async () => {
+    const { container, root } = await renderDom(
+      <SettingRow icon={<svg aria-hidden />} title="GitHub App">
+        <span data-testid="extra">Connection details</span>
+      </SettingRow>,
+    );
+
+    // Without this the block resets to the container edge while the title sits
+    // indented past the glyph, leaving two competing left edges.
+    const extraWrapper = container.querySelector('[data-testid="extra"]')?.parentElement;
+    expect(extraWrapper?.style.paddingLeft).toBe("var(--setting-row-indent)");
+
+    await act(async () => root.unmount());
+  });
+
+  it("leaves extras flush when there is no glyph to align to", async () => {
+    const { container, root } = await renderDom(
+      <SettingRow title="Connection">
+        <span data-testid="extra">Detail</span>
+      </SettingRow>,
+    );
+
+    const extraWrapper = container.querySelector('[data-testid="extra"]')?.parentElement;
+    expect(extraWrapper?.style.paddingLeft).toBe("");
 
     await act(async () => root.unmount());
   });

@@ -87,7 +87,20 @@ export function SettingRow({
           </div>
         ) : null}
       </div>
-      {children}
+
+      {/* Extras hang off the row's text column, not the section edge. Without
+          this they reset to the container's left margin while the row's own
+          title sits indented past the glyph, so an expanded block reads as a
+          detached slab with a second, further-left edge. */}
+      {children ? <div style={{ paddingLeft: textColumnOffset(icon) }}>{children}</div> : null}
     </div>
   );
+}
+
+/**
+ * Distance from the row's left edge to where its title starts — the glyph tile
+ * plus the gap after it, or nothing when the row has no glyph.
+ */
+function textColumnOffset(icon: ReactNode): string | undefined {
+  return icon ? "var(--setting-row-indent)" : undefined;
 }

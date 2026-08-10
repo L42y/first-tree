@@ -139,10 +139,13 @@ export function GithubConnectionDetails({
   return (
     <div style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: "var(--sp-3)" }}>
       <div className="flex flex-wrap items-center" style={{ gap: "var(--sp-2)" }}>
+        {/* `-ml-3` cancels the button's own `px-3` so the chevron lands on this
+            block's left edge instead of floating one padding step inside it. */}
         <Button
           type="button"
           variant="ghost"
           size="sm"
+          className="-ml-3"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
           aria-controls={open ? regionId : undefined}
@@ -166,7 +169,16 @@ export function GithubConnectionDetails({
       {open && (
         <div
           id={regionId}
-          style={{ display: "flex", flexDirection: "column", gap: "var(--sp-4)", marginTop: "var(--sp-3)" }}
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "var(--sp-4)",
+            marginTop: "var(--sp-3)",
+            // Line the blocks up under the disclosure's label (chevron + its
+            // gap), so opening the section extends one column rather than
+            // starting a new one further left.
+            paddingLeft: "var(--sp-5)",
+          }}
         >
           <DetailBlock label="Required by First Tree">
             <div className="flex flex-col" style={{ gap: "var(--sp-1_5)" }}>
