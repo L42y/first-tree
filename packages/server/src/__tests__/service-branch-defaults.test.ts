@@ -5,7 +5,6 @@ import {
   agentAvatarImageUrl,
   assertUserAgentMetadataHasNoReservedKeys,
   deleteAgent,
-  ensureClientSupportsRuntimeProvider,
   fetchUserAvatarForHumanAgent,
   listAgents,
   reactivateAgent,
@@ -13,6 +12,7 @@ import {
   stripReservedAgentMetadata,
   suspendAgent,
 } from "../services/agent.js";
+import { ensureClientSupportsRuntimeProvider } from "../services/agent-runtime-binding.js";
 import { assertNoRuntimeSwitchInProgress, getRuntimeSwitchClaim } from "../services/agent-runtime-switch.js";
 import { createChat, resolveAgentIdsByNameInOrg, updateChatMetadata } from "../services/chat/conversation.js";
 import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/chat/message.js";
