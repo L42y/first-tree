@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAgent, getAgent } from "../services/agent.js";
+import { createAgent, getAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { ackEntryByIdForBoundAgents, pollInbox } from "../services/chat/inbox.js";
 import { listMessages, sendMessage } from "../services/chat/message.js";

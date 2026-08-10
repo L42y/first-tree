@@ -17,7 +17,7 @@ import { attachments } from "../db/schema/attachments.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { resources } from "../db/schema/resources.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, createTestAgent, seedAgentFactory, useTestApp } from "./helpers.js";
 

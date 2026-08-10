@@ -9,7 +9,7 @@ import {
   isAgentOrgNameUniqueViolation,
   listAgents,
   suspendAgent,
-} from "../services/agent.js";
+} from "../services/agents/identity.js";
 import { createMember } from "../services/member.js";
 import { createOrganization } from "../services/organization.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";

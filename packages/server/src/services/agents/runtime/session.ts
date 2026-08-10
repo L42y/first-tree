@@ -1,8 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
 
 export const AGENT_RUNTIME_SESSION_METADATA_KEY = "runtimeSession";
 

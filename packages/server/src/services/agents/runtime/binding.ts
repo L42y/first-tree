@@ -1,10 +1,10 @@
 import type { RuntimeProvider } from "@first-tree/shared";
 import { eq, getTableColumns } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import { BadRequestError, ClientRetiredError } from "../errors.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
+import { BadRequestError, ClientRetiredError } from "../../../errors.js";
 
 type SelectDbLike = Pick<PostgresJsDatabase<Record<string, never>>, "select">;
 

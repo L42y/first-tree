@@ -16,7 +16,7 @@ import { chatUserState } from "../../../db/schema/chat-user-state.js";
 import { chats } from "../../../db/schema/chats.js";
 import { messages } from "../../../db/schema/messages.js";
 import { BadRequestError, NotFoundError } from "../../../errors.js";
-import { resolveAvatarImageUrl } from "../../agent.js";
+import { resolveAvatarImageUrl } from "../../agents/identity.js";
 
 const NEED_YOU_CURSOR_VERSION = "v1";
 

@@ -4,7 +4,7 @@ import { agents } from "../db/schema/agents.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { messages } from "../db/schema/messages.js";
 import { BadRequestError } from "../errors.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { editMessage, sendMessage } from "../services/chat/message.js";
 import { listMeChats } from "../services/chat/workspace/me-chat.js";

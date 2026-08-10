@@ -14,7 +14,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { addParticipant, removeParticipant } from "../services/chat/conversation.js";
 import { pollInbox } from "../services/chat/inbox.js";
 import { sendMessage } from "../services/chat/message.js";

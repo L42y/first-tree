@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS "chat_subscriptions" (
   "created_at" timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT "chat_subscriptions_chat_id_fkey"
     FOREIGN KEY ("chat_id") REFERENCES "chats"("id") ON DELETE CASCADE,
-  -- Intentionally NO ON DELETE clause on the agent FK. `services/agent.ts:
+  -- Intentionally NO ON DELETE clause on the agent FK. `services/agents/identity.ts:
   -- deleteAgent` is soft-only (UPDATE status='deleted', name=NULL — never
   -- DELETE), so the row stays. Adding CASCADE would be dead code today and
   -- silently legitimise a future hard-delete path; default RESTRICT instead

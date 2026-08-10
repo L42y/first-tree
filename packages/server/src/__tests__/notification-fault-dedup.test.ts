@@ -5,7 +5,7 @@ import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { notifications } from "../db/schema/notifications.js";
 import { users } from "../db/schema/users.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import * as notificationService from "../services/notification.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestApp } from "./helpers.js";

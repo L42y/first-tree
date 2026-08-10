@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
-import { listOrgsWithPersonalAgent, listOrgsWithUsableNonHumanAgent } from "../services/access-control.js";
+import { listOrgsWithPersonalAgent, listOrgsWithUsableNonHumanAgent } from "../services/agents/access-control.js";
 import { ensureMembership } from "../services/membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

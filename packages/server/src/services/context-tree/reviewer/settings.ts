@@ -21,7 +21,7 @@ import { members } from "../../../db/schema/members.js";
 import { organizationSettings } from "../../../db/schema/organization-settings.js";
 import { organizations } from "../../../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../../../errors.js";
-import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
 import { getOrgContextReviewRuntime, getOrgSetting, isOrgContextReviewRuntimeCurrent } from "../../org-settings.js";
 import { findInstallationByOrg } from "../../scm/github/app-installations.js";
 import {

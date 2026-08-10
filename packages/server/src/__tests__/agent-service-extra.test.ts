@@ -23,8 +23,8 @@ import {
   suspendAgent,
   updateAgent,
   updateAgentSkills,
-} from "../services/agent.js";
-import { ensureClientSupportsRuntimeProvider } from "../services/agent-runtime-binding.js";
+} from "../services/agents/identity.js";
+import { ensureClientSupportsRuntimeProvider } from "../services/agents/runtime/binding.js";
 import { createMember } from "../services/member.js";
 import { createOrganization } from "../services/organization.js";
 import { createAdminContext, useTestApp } from "./helpers.js";

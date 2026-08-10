@@ -33,25 +33,25 @@ import {
   type UpdateTeamResource,
 } from "@first-tree/shared";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
-import { agents } from "../db/schema/agents.js";
-import { attachments } from "../db/schema/attachments.js";
-import { members } from "../db/schema/members.js";
-import { resources } from "../db/schema/resources.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { buildAdoptedTemplateSummaries } from "./agent-templates.js";
-import { deleteAttachmentIfUnreferenced } from "./attachment.js";
-import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "./attachment-blob-store.js";
+import type { Database } from "../../../db/connection.js";
+import { agentConfigs } from "../../../db/schema/agent-configs.js";
+import { agentResourceBindings } from "../../../db/schema/agent-resource-bindings.js";
+import { agents } from "../../../db/schema/agents.js";
+import { attachments } from "../../../db/schema/attachments.js";
+import { members } from "../../../db/schema/members.js";
+import { resources } from "../../../db/schema/resources.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
+import { deleteAttachmentIfUnreferenced } from "../../attachment.js";
+import { type AttachmentBlobStore, createUnavailableAttachmentBlobStore } from "../../attachment-blob-store.js";
 import {
   LANDING_CAMPAIGN_TRIAL_PROMPT,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_DESCRIPTION,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
-} from "./landing-campaigns/trial-prompt.js";
-import type { Notifier } from "./notifier.js";
-import { validateSkillBundle } from "./skill-bundle.js";
+} from "../../landing-campaigns/trial-prompt.js";
+import type { Notifier } from "../../notifier.js";
+import { validateSkillBundle } from "../../skill-bundle.js";
+import { buildAdoptedTemplateSummaries } from "../templates/catalog.js";
 
 type ResourceDbRow = typeof resources.$inferSelect;
 type BindingDbRow = typeof agentResourceBindings.$inferSelect;

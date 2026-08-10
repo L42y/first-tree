@@ -7,7 +7,7 @@ import {
 } from "@first-tree/shared";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import {
   computeErrored,
   computeWorking,

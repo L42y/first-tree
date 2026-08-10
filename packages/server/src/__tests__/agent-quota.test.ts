@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createMember } from "../services/member.js";
 import { createOrganization } from "../services/organization.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
@@ -58,7 +58,7 @@ describe("Agent Quota Enforcement", () => {
 
   it("does not count deleted agents toward quota", async () => {
     const app = getApp();
-    const { suspendAgent, deleteAgent } = await import("../services/agent.js");
+    const { suspendAgent, deleteAgent } = await import("../services/agents/identity.js");
     await createAdminContext(app, { username: `quota-d-${Date.now()}` });
 
     const org = await createOrganization(app.db, { name: "quota-del-org", displayName: "Quota Del", maxAgents: 2 });

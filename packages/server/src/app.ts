@@ -101,6 +101,9 @@ import {
   rootLogger,
 } from "./observability/index.js";
 import { broadcastToAdmins } from "./services/admin-broadcast.js";
+import { createConfigService } from "./services/agents/config.js";
+import { createResourcesService } from "./services/agents/resources/catalog.js";
+import { backfillResourcesPhase1 } from "./services/agents/resources/migration.js";
 import { backfillExternalAttachmentsToPostgres } from "./services/attachment.js";
 import {
   type AttachmentBlobStore,
@@ -119,13 +122,10 @@ import {
 } from "./services/chat/membership/audience-cache.js";
 import { registerChatMessageDispatcher } from "./services/chat/workspace/projection.js";
 import { createCommandVersionPoller } from "./services/command-version-poller.js";
-import { createConfigService } from "./services/config-service.js";
 import { repairMembershipHumanMirrors } from "./services/membership.js";
 import { createNotifier, type Notifier } from "./services/notifier.js";
 import { ensureDefaultOrganization } from "./services/organization.js";
 import { createPulseAggregator } from "./services/pulse-aggregator.js";
-import { createResourcesService } from "./services/resources.js";
-import { backfillResourcesPhase1 } from "./services/resources-migration.js";
 import { backfillGitlabAttentionPairs } from "./services/scm/gitlab/attention-backfill.js";
 import { backfillSkillResourceBundles } from "./services/skill-bundle.js";
 

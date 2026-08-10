@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { bindAgent } from "../services/presence.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, INVALID_BCRYPT_PLACEHOLDER, seedClient, useTestApp } from "./helpers.js";
@@ -174,7 +174,7 @@ describe("GET /orgs/:orgId/activity — managedByMe field", () => {
     });
 
     // Each manager's agent must pin to a client owned by that manager's
-    // user (services/agent.ts::resolveAgentClient enforces this), so bob
+    // user (services/agents/identity.ts::resolveAgentClient enforces this), so bob
     // needs his own seeded client.
     const bobClientId = await seedClient(app, bobUserId, alice.organizationId);
 

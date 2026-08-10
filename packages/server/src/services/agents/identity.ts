@@ -21,17 +21,21 @@ import {
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, asc, count, desc, eq, ilike, isNull, lt, ne, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import { members } from "../db/schema/members.js";
-import { organizations } from "../db/schema/organizations.js";
-import { users } from "../db/schema/users.js";
-import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import type { OrgScope } from "../scope/types.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../db/connection.js";
+import { agentConfigs } from "../../db/schema/agent-configs.js";
+import { agentPresence } from "../../db/schema/agent-presence.js";
+import { agents } from "../../db/schema/agents.js";
+import { clients } from "../../db/schema/clients.js";
+import { members } from "../../db/schema/members.js";
+import { organizations } from "../../db/schema/organizations.js";
+import { users } from "../../db/schema/users.js";
+import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../../errors.js";
+import type { OrgScope } from "../../scope/types.js";
+import { uuidv7 } from "../../uuid.js";
+import type { AttachmentBlobStore } from "../attachment-blob-store.js";
+import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
+import { lockWatcherProjectionForAgentChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
+import { resolveDefaultOrgId } from "../organization.js";
 import {
   agentAddressableCondition,
   agentNotLandingCampaignTrialCondition,
@@ -41,12 +45,8 @@ import {
   type AgentRowWithRuntime,
   ensureClientSupportsRuntimeProvider,
   selectAgentRowWithRuntime,
-} from "./agent-runtime-binding.js";
-import { initializeAdoptedTemplates } from "./agent-template-adoption.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
-import { lockWatcherProjectionForAgentChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
-import { resolveDefaultOrgId } from "./organization.js";
+} from "./runtime/binding.js";
+import { initializeAdoptedTemplates } from "./templates/adoption.js";
 
 /**
  * Names beginning with `__` are reserved for First Tree-internal pseudo agents.

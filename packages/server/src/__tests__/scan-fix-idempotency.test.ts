@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { messages } from "../db/schema/messages.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";

@@ -9,7 +9,7 @@ import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
-import { createAgent } from "./agent.js";
+import { createAgent } from "./agents/identity.js";
 import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
 import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
 import { forceDisconnect } from "./connection-manager.js";

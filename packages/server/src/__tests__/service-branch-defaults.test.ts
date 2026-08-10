@@ -11,14 +11,14 @@ import {
   resolveAvatarImageUrl,
   stripReservedAgentMetadata,
   suspendAgent,
-} from "../services/agent.js";
-import { ensureClientSupportsRuntimeProvider } from "../services/agent-runtime-binding.js";
-import { assertNoRuntimeSwitchInProgress, getRuntimeSwitchClaim } from "../services/agent-runtime-switch.js";
+} from "../services/agents/identity.js";
+import { createResourcesService } from "../services/agents/resources/catalog.js";
+import { ensureClientSupportsRuntimeProvider } from "../services/agents/runtime/binding.js";
+import { assertNoRuntimeSwitchInProgress, getRuntimeSwitchClaim } from "../services/agents/runtime/switch.js";
 import { createChat, resolveAgentIdsByNameInOrg, updateChatMetadata } from "../services/chat/conversation.js";
 import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/chat/message.js";
 import { getActivityOverview } from "../services/chat/sessions/activity.js";
 import { explainContextTreeIoDecision } from "../services/context-tree/io.js";
-import { createResourcesService } from "../services/resources.js";
 import {
   exchangeCodeForAppUserProfile,
   fetchInstallation,
@@ -940,7 +940,7 @@ describe("service branch defaults", () => {
       orgSettingsService,
       sessionService,
     ] = await Promise.all([
-      import("../services/agent.js"),
+      import("../services/agents/identity.js"),
       import("../services/chat/conversation.js"),
       import("../services/document.js"),
       import("../services/chat/inbox.js"),

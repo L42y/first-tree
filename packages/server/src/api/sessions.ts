@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ConflictError, ServiceUnavailableError } from "../errors.js";
 import { requireAgentAccess, requireChatAccess } from "../scope/require-resource.js";
-import * as agentService from "../services/agent.js";
+import * as agentService from "../services/agents/identity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
 import * as sessionService from "../services/chat/sessions/lifecycle.js";
 import * as connectionManager from "../services/connection-manager.js";

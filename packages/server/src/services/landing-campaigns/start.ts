@@ -25,7 +25,7 @@ import {
   ServiceUnavailableError,
 } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
-import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent } from "../agent.js";
+import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent } from "../agents/identity.js";
 import { pickDefaultMembership } from "../auth.js";
 import { createChat } from "../chat/conversation.js";
 import { sendMessage } from "../chat/message.js";

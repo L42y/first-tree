@@ -12,7 +12,7 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { processedEvents } from "../db/schema/processed-events.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createOrganization } from "../services/organization.js";
 import {
   createGitlabConnection,

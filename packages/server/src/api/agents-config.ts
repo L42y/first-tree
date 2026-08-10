@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { requireAgentAccess } from "../scope/require-resource.js";
-import { assertNoRuntimeSwitchInProgress } from "../services/agent-runtime-switch.js";
+import { assertNoRuntimeSwitchInProgress } from "../services/agents/runtime/switch.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "../services/landing-campaigns/guards.js";
 
 /**

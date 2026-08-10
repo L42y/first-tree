@@ -13,7 +13,7 @@ import { githubAppInstallations } from "../db/schema/github-app-installations.js
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { createAgent, updateAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import {
   contextReviewerPrTestInternals,

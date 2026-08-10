@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
-import { createAgent, suspendAgent } from "../services/agent.js";
+import { createAgent, suspendAgent } from "../services/agents/identity.js";
 import * as clientService from "../services/client.js";
 import * as presenceService from "../services/presence.js";
 import { recordClientHeartbeat } from "../services/runtime-liveness.js";

@@ -4,7 +4,7 @@ import { SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientWsRoutes } from "../api/agent/ws-client.js";
 import type { inboxEntries } from "../db/schema/inbox-entries.js";
-import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
+import * as agentRuntimeSessionService from "../services/agents/runtime/session.js";
 import * as inboxService from "../services/chat/inbox.js";
 import * as activityService from "../services/chat/sessions/activity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";

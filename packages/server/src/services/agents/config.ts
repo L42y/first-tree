@@ -11,12 +11,12 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agents } from "../db/schema/agents.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
-import { decryptValue, encryptValue, isEncryptedValue } from "./crypto.js";
-import type { Notifier } from "./notifier.js";
+import type { Database } from "../../db/connection.js";
+import { agentConfigs } from "../../db/schema/agent-configs.js";
+import { agents } from "../../db/schema/agents.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../errors.js";
+import { decryptValue, encryptValue, isEncryptedValue } from "../crypto.js";
+import type { Notifier } from "../notifier.js";
 
 const DEBOUNCE_WINDOW_MS = 300;
 const LEGACY_MCP_WRITE_DISABLED_MESSAGE =

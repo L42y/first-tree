@@ -21,8 +21,8 @@ import { members } from "../../../../db/schema/members.js";
 import { messages } from "../../../../db/schema/messages.js";
 import { organizations } from "../../../../db/schema/organizations.js";
 import { uuidv7 } from "../../../../uuid.js";
-import { agentNotLandingCampaignTrialCondition } from "../../../access-control.js";
-import { validateAgentRuntimeSession } from "../../../agent-runtime-session.js";
+import { agentNotLandingCampaignTrialCondition } from "../../../agents/access-control.js";
+import { validateAgentRuntimeSession } from "../../../agents/runtime/session.js";
 import { getOrgContextTreeBinding, getOrgSetting } from "../../../org-settings.js";
 import {
   createAppJwt,

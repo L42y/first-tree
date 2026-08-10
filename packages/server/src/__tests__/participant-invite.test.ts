@@ -6,7 +6,7 @@ import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import {
   registerChatAudienceDispatcher,

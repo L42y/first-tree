@@ -6,7 +6,7 @@ import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedAgentFactory, useTestApp } from "./helpers.js";
 

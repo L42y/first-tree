@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
-import { createAgent, updateAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

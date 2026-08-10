@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agents } from "../db/schema/agents.js";
-import { createConfigService } from "../services/config-service.js";
+import { createConfigService } from "../services/agents/config.js";
 import { seedAgentFactory, useTestApp } from "./helpers.js";
 
 const ENCRYPTION_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

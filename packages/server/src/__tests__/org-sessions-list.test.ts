@@ -9,7 +9,7 @@ import { chats } from "../db/schema/chats.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { organizations } from "../db/schema/organizations.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createAdminContext, seedClient, useTestApp } from "./helpers.js";
 
 /**

@@ -584,7 +584,7 @@ describe("Admin agent-config API (Step 2)", () => {
     // got "Admin role required" — blocking the documented "manager retains
     // CRUD" semantics from agents schema.
     const app = getApp();
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const { members } = await import("../db/schema/members.js");
     const { users } = await import("../db/schema/users.js");
     const { clients } = await import("../db/schema/clients.js");
@@ -655,7 +655,7 @@ describe("Admin agent-config API (Step 2)", () => {
     // This mirrors ChatGPT Custom GPTs / Poe / Slack bots: "usable by org ≠
     // prompt readable by org".
     const app = getApp();
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const { members } = await import("../db/schema/members.js");
     const { users } = await import("../db/schema/users.js");
     const { clients } = await import("../db/schema/clients.js");

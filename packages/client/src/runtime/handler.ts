@@ -27,7 +27,7 @@ export type AgentIdentity = {
    * personal assistant (private) or an autonomous bot (organization) MUST
    * gate on this field rather than inferring from `delegateMention` — the
    * latter is null on every non-human row (only `human` can carry a
-   * delegate; see `services/agent.ts:assertDelegateMentionAllowed`).
+   * delegate; see `services/agents/identity.ts:assertDelegateMentionAllowed`).
    */
   visibility: AgentVisibility;
   delegateMention: string | null;

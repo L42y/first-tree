@@ -2,8 +2,8 @@ import { AGENT_TYPES, updateAgentResourcesSchema, updateAgentTemplatesSchema } f
 import type { FastifyInstance } from "fastify";
 import { BadRequestError } from "../errors.js";
 import { requireAgentAccess } from "../scope/require-resource.js";
-import { assertNoRuntimeSwitchInProgress } from "../services/agent-runtime-switch.js";
-import { adoptAgentTemplates } from "../services/agent-template-adoption.js";
+import { assertNoRuntimeSwitchInProgress } from "../services/agents/runtime/switch.js";
+import { adoptAgentTemplates } from "../services/agents/templates/adoption.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "../services/landing-campaigns/guards.js";
 
 export async function agentResourcesRoutes(app: FastifyInstance): Promise<void> {

@@ -13,7 +13,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { processedEvents } from "../db/schema/processed-events.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { pollInbox } from "../services/chat/inbox.js";
 import { getCallerEngagement, setChatEngagement } from "../services/chat/workspace/me-chat.js";

@@ -9,19 +9,19 @@ import {
   supportsRuntimeSwitchClientVersion,
 } from "@first-tree/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import { members } from "../db/schema/members.js";
-import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./agent-runtime-binding.js";
-import { revokeAgentRuntimeSession } from "./agent-runtime-session.js";
-import { archiveAllSessionsForAgent } from "./chat/sessions/lifecycle.js";
-import { forceDisconnect } from "./connection-manager.js";
-import type { Notifier } from "./notifier.js";
-import { setOffline } from "./presence.js";
+import type { Database } from "../../../db/connection.js";
+import { agentConfigs } from "../../../db/schema/agent-configs.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
+import { members } from "../../../db/schema/members.js";
+import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
+import { archiveAllSessionsForAgent } from "../../chat/sessions/lifecycle.js";
+import { forceDisconnect } from "../../connection-manager.js";
+import type { Notifier } from "../../notifier.js";
+import { setOffline } from "../../presence.js";
+import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./binding.js";
+import { revokeAgentRuntimeSession } from "./session.js";
 
 type RuntimeSwitchPhase = "claimed" | "committed";
 

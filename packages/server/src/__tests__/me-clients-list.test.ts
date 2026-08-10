@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, seedClient, useTestApp } from "./helpers.js";
 

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { rotateInvitation } from "../services/invitation.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";

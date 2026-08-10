@@ -18,7 +18,7 @@ import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
 import { members } from "../../../db/schema/members.js";
 import { organizationSettings } from "../../../db/schema/organization-settings.js";
 import { serverInstances } from "../../../db/schema/server-instances.js";
-import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
 import { lockChatMembershipMutation, lockWatcherProjectionAgentMutation } from "../../chat/membership/lock.js";
 import { getOrgContextReviewRuntime } from "../../org-settings.js";
 import { githubAutomaticReviewEventsReady } from "../../setup-capabilities.js";

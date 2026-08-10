@@ -9,7 +9,7 @@ import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
-import { createAgent, suspendAgent, updateAgent } from "../services/agent.js";
+import { createAgent, suspendAgent, updateAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { deactivateMembership, MEMBER_STATUSES } from "../services/membership.js";
 import {

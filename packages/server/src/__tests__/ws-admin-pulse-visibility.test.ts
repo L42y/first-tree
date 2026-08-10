@@ -5,7 +5,7 @@ import WebSocket from "ws";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { broadcastToAdmins } from "../services/admin-broadcast.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createOrganization } from "../services/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestApp, seedClient } from "./helpers.js";
