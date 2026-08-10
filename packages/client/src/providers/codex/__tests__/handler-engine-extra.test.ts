@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentHandler, HandlerConfig, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { noopDeliveryToken } from "../runtime/handler.js";
+import type { AgentHandler, HandlerConfig, SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import { noopDeliveryToken } from "../../../runtime/handler.js";
 
 const trialMetadata = {
   landingCampaignTrial: true,
@@ -87,11 +87,11 @@ async function importWithMocks(options: { app?: Partial<MockHandler>; sdk?: Part
   const appHandler = makeMockHandler(options.app);
   const sdkHandler = makeMockHandler(options.sdk);
 
-  vi.doMock("../handlers/codex/app-server/index.js", () => ({
+  vi.doMock("../app-server/index.js", () => ({
     CodexAppServerStartupError: StartupError,
     createCodexAppServerHandler: vi.fn(() => appHandler),
   }));
-  vi.doMock("../handlers/codex/sdk.js", () => ({
+  vi.doMock("../sdk.js", () => ({
     appendGitStatusDeltaRefs: vi.fn(),
     buildCodexAgentBriefing: vi.fn(),
     buildCodexThreadOptions: vi.fn(),
@@ -103,14 +103,14 @@ async function importWithMocks(options: { app?: Partial<MockHandler>; sdk?: Part
     toolFileRefsFromCodexFileChange: vi.fn(),
   }));
 
-  const mod = await import("../handlers/codex/index.js");
+  const mod = await import("../index.js");
   return { createCodexHandler: mod.createCodexHandler, appHandler, sdkHandler, StartupError };
 }
 
 describe("codex handler engine delegation branches", () => {
   afterEach(() => {
-    vi.doUnmock("../handlers/codex/app-server/index.js");
-    vi.doUnmock("../handlers/codex/sdk.js");
+    vi.doUnmock("../app-server/index.js");
+    vi.doUnmock("../sdk.js");
     vi.resetModules();
   });
 

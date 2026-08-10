@@ -4,7 +4,7 @@ import {
   extractCodexStaleRolloutThreadId,
   isCodexStaleRolloutError,
   staleRolloutRecoveryMessage,
-} from "../handlers/codex/stale-rollout.js";
+} from "../stale-rollout.js";
 
 const THREAD_ID = "019f2943-c0af-75b0-9d7b-d58679594749";
 

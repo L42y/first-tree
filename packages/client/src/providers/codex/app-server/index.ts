@@ -9,7 +9,9 @@ import {
   type SessionEvent,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { type CodexBinaryResolution, resolveCodexRuntimeBinary } from "../../../runtime/capabilities/codex.js";
+import { chunkAssistantText } from "../../../handlers/assistant-text.js";
+import { formatAuthHint, isCodexAuthError } from "../../../handlers/auth-error-hint.js";
+import { consumedErrorOutcome, resolveTurnSettlement } from "../../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -20,7 +22,6 @@ import type {
   TurnConsumedErrorReason,
 } from "../../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../../runtime/contracts.js";
-
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
@@ -47,9 +48,7 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../../runtime/provider-support/index.js";
-import { chunkAssistantText } from "../../assistant-text.js";
-import { formatAuthHint, isCodexAuthError } from "../../auth-error-hint.js";
-import { consumedErrorOutcome, resolveTurnSettlement } from "../../turn-settlement.js";
+import { type CodexBinaryResolution, resolveCodexRuntimeBinary } from "../capability.js";
 import {
   buildCodexConfig,
   buildCodexThreadOptions,

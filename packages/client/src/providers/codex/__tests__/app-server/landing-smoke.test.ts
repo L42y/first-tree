@@ -3,15 +3,15 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CodexAppServerClient, type CodexAppServerNotification } from "../handlers/codex/app-server/client.js";
+import { FIRST_TREE_WORKSPACE_MARKER } from "../../../../runtime/bootstrap.js";
+import { setCliBinding } from "../../../../runtime/cli-binding.js";
+import { CodexAppServerClient, type CodexAppServerNotification } from "../../app-server/client.js";
 import {
   buildLandingCodexAppServerArgs,
   buildLandingCodexPermissionProfile,
   buildWorkspaceOnlyAppServerEnvironment,
   LANDING_CODEX_PERMISSIONS_PROFILE,
-} from "../handlers/codex/app-server/workspace-sandbox.js";
-import { FIRST_TREE_WORKSPACE_MARKER } from "../runtime/bootstrap.js";
-import { setCliBinding } from "../runtime/cli-binding.js";
+} from "../../app-server/workspace-sandbox.js";
 
 const RUN_SMOKE = process.env.RUN_CODEX_LANDING_APP_SERVER_SMOKE === "1";
 const PROVIDER_CHECK_ENABLED = process.env.SKIP_CODEX_LANDING_PROVIDER_SMOKE !== "1";

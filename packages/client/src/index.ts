@@ -57,6 +57,17 @@ export {
   runClaudeBrowserLogin,
 } from "./providers/claude/login.js";
 export {
+  type CodexBinaryResolution,
+  probeCodexCapability,
+  resolveCodexRuntimeBinary,
+} from "./providers/codex/capability.js";
+export {
+  type CodexAuthDriverDeps,
+  type CodexBrowserLoginOptions,
+  createCodexAuthDriver,
+  runCodexBrowserLogin,
+} from "./providers/codex/login.js";
+export {
   type DiscoverModelsDeps,
   discoverProviderModels,
   parseCursorModelsOutput,
@@ -98,11 +109,6 @@ export {
   migrateLegacyRuntimeLayout,
   resolveAgentContextTreeBinding,
 } from "./runtime/bootstrap.js";
-export {
-  type CodexBinaryResolution,
-  probeCodexCapability,
-  resolveCodexRuntimeBinary,
-} from "./runtime/capabilities/codex.js";
 export { probeCursorCapability } from "./runtime/capabilities/cursor.js";
 export {
   CAPABILITY_REFRESH_BASE_MS,
@@ -129,12 +135,6 @@ export type {
 export { CHILD_CATEGORIES, getChildProcessRegistry } from "./runtime/child-process-registry.js";
 export type { CliBinding } from "./runtime/cli-binding.js";
 export { setCliBinding } from "./runtime/cli-binding.js";
-export {
-  type CodexAuthDriverDeps,
-  type CodexBrowserLoginOptions,
-  createCodexAuthDriver,
-  runCodexBrowserLogin,
-} from "./runtime/codex-login.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
 export {

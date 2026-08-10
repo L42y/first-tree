@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatContext } from "../runtime/chat-context.js";
-import type { SessionContext, SessionMessage } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { ChatContext } from "../../../runtime/chat-context.js";
+import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
 
 const state = vi.hoisted(() => ({
   chatContextPromise: null as Promise<ChatContext> | null,
@@ -77,7 +77,7 @@ vi.mock("@openai/codex-sdk", () => {
   };
 });
 
-vi.mock("../runtime/bootstrap.js", () => ({
+vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
@@ -100,15 +100,15 @@ vi.mock("../runtime/bootstrap.js", () => ({
   writeContextTreeHead: vi.fn(),
 }));
 
-vi.mock("../runtime/chat-context.js", () => ({
+vi.mock("../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async () => {
     if (!state.chatContextPromise) throw new Error("chat context gate was not initialised");
     return state.chatContextPromise;
   }),
 }));
 
-import { createCodexHandler } from "../handlers/codex/index.js";
-import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "../../../runtime/handler.js";
+import { createCodexHandler } from "../index.js";
 
 const AGENT_ID = "019e71c9-88d2-70be-be67-fdb033b2ef0b";
 

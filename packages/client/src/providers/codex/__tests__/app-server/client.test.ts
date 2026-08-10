@@ -10,7 +10,7 @@ import {
   CodexAppServerRpcError,
   isCodexAppServerTransientError,
   smokeCodexAppServer,
-} from "../handlers/codex/app-server/client.js";
+} from "../../app-server/client.js";
 
 /**
  * Upper-bound request timeout for the success-path tests, where the `initialize`

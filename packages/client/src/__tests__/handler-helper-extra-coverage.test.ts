@@ -1,13 +1,6 @@
 import type { AgentRuntimeConfigPayload, SessionEvent, ToolFileRef } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
-  appendGitStatusDeltaRefs,
-  buildCodexThreadOptions,
-  collectCodexFileChangePaths,
-  toolFileRefsForTerminalCodexTool,
-  toolFileRefsFromCodexFileChange,
-} from "../handlers/codex/index.js";
-import {
   buildClaudeQueryOptions,
   createToolCallProcessor,
   detectClaudeSessionLimitResult,
@@ -16,6 +9,13 @@ import {
   mapMcpServers,
   StreamApiTransientError,
 } from "../providers/claude/index.js";
+import {
+  appendGitStatusDeltaRefs,
+  buildCodexThreadOptions,
+  collectCodexFileChangePaths,
+  toolFileRefsForTerminalCodexTool,
+  toolFileRefsFromCodexFileChange,
+} from "../providers/codex/index.js";
 import type { ChatContext } from "../runtime/chat-context.js";
 import type { ContextTreeGitWriteTracker } from "../runtime/context-tree-git-status.js";
 

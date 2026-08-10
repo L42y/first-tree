@@ -10,7 +10,7 @@ import {
   formatCodexBinaryMissingMessage,
   isCodexBinaryMissingError,
   verifyCodexExecutable,
-} from "../runtime/codex-binary.js";
+} from "../binary.js";
 
 describe("codex binary resolution", () => {
   let tmp: string | null = null;

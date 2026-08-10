@@ -9,7 +9,7 @@ import {
   codexDesktopAppBinDirs,
   getLoginShellPathDirs,
   wellKnownBinDirs,
-} from "./provider-support/index.js";
+} from "../../runtime/provider-support/index.js";
 
 export type CodexRuntimeSource = "bundled" | "path";
 
@@ -94,7 +94,7 @@ export class CodexBinaryVerifyTransientError extends Error {
   }
 }
 
-import { isCodexBinaryMissingError } from "./provider-support/index.js";
+import { isCodexBinaryMissingError } from "../../runtime/provider-support/index.js";
 
 /** Single-owner match rules live in provider-support; re-export for call sites. */
 export { isCodexBinaryMissingError };

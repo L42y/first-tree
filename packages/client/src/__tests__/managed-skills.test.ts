@@ -199,8 +199,8 @@ describe("managed Skill reconciler", () => {
     const handlerSources = [
       "src/providers/claude/index.ts",
       "src/providers/claude/tui/index.ts",
-      "src/handlers/codex/sdk.ts",
-      "src/handlers/codex/app-server/index.ts",
+      "src/providers/codex/sdk.ts",
+      "src/providers/codex/app-server/index.ts",
       "src/handlers/cursor/index.ts",
       "src/handlers/kimi-code.ts",
       "src/handlers/opencode/index.ts",

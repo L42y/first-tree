@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatContext } from "../runtime/chat-context.js";
-import type { SessionContext, SessionMessage } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { ChatContext } from "../../../runtime/chat-context.js";
+import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
 
 type MockState = {
   runInputs: unknown[];
@@ -76,7 +76,7 @@ vi.mock("@openai/codex-sdk", () => {
   };
 });
 
-vi.mock("../runtime/bootstrap.js", () => ({
+vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   bootstrapWorkspace: vi.fn(),
@@ -98,7 +98,7 @@ vi.mock("../runtime/bootstrap.js", () => ({
   writeContextTreeHead: vi.fn(),
 }));
 
-vi.mock("../runtime/chat-context.js", () => ({
+vi.mock("../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async (): Promise<ChatContext> => {
     return {
       chatId: "chat-retry-abort",
@@ -110,8 +110,8 @@ vi.mock("../runtime/chat-context.js", () => ({
   }),
 }));
 
-import { createCodexHandler } from "../handlers/codex/index.js";
-import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "../../../runtime/handler.js";
+import { createCodexHandler } from "../index.js";
 
 const AGENT_ID = "019e71c9-88d2-70be-be67-fdb033b2ef0b";
 

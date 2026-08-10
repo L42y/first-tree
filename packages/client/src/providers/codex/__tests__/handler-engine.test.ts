@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createCodexHandler } from "../handlers/codex/index.js";
-import type { SessionContext, SessionMessage } from "../runtime/handler.js";
-import { noopDeliveryToken } from "../runtime/handler.js";
+import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import { noopDeliveryToken } from "../../../runtime/handler.js";
+import { createCodexHandler } from "../index.js";
 
 const trialMetadata = {
   landingCampaignTrial: true,

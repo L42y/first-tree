@@ -1,12 +1,8 @@
 import type { spawn } from "node:child_process";
 import { RUNTIME_PROVIDERS } from "@first-tree/shared";
-import type {
-  RuntimeAuthDriver,
-  RuntimeAuthLoginResolution,
-  RuntimeAuthProbeResult,
-} from "../providers/auth-driver.js";
-import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "../providers/runtime-login.js";
-import { type CodexBinaryResolution, probeCodexCapability, resolveCodexRuntimeBinary } from "./capabilities/codex.js";
+import type { RuntimeAuthDriver, RuntimeAuthLoginResolution, RuntimeAuthProbeResult } from "../auth-driver.js";
+import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "../runtime-login.js";
+import { type CodexBinaryResolution, probeCodexCapability, resolveCodexRuntimeBinary } from "./capability.js";
 
 /**
  * Codex browser-OAuth login on top of the shared {@link runBrowserLogin}
@@ -16,7 +12,7 @@ import { type CodexBinaryResolution, probeCodexCapability, resolveCodexRuntimeBi
  * outcome and re-probes capabilities.
  */
 
-export { stripAnsi } from "../providers/runtime-login.js";
+export { stripAnsi } from "../runtime-login.js";
 
 export type CodexBrowserLoginOptions = {
   /** Absolute path to the codex binary the runtime resolved (bundled or PATH). */

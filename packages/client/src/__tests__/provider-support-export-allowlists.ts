@@ -228,7 +228,6 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
 } as const satisfies Record<string, readonly string[]>;
 
 export const TRANSITIONAL_PROVIDER_FAMILY_FILES = [
-  "runtime/capabilities/codex.ts",
   "runtime/capabilities/cursor.ts",
   "runtime/capabilities/detect.ts",
   "runtime/capabilities/discover-models.ts",
@@ -237,8 +236,6 @@ export const TRANSITIONAL_PROVIDER_FAMILY_FILES = [
   "runtime/capabilities/launch-probe.ts",
   "runtime/capabilities/opencode.ts",
   "runtime/capabilities/pi.ts",
-  "runtime/codex-binary.ts",
-  "runtime/codex-login.ts",
   "runtime/cursor-binary.ts",
   "runtime/cursor-login.ts",
   "runtime/kimi-binary.ts",

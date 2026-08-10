@@ -3,17 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CodexAppServerRpcError, CodexAppServerTransportError } from "../handlers/codex/app-server/client.js";
-import { createCodexAppServerHandler } from "../handlers/codex/app-server/index.js";
-import { LANDING_TRIAL_TURN_COMPLETION_CONFIRM_FAILED } from "../handlers/codex/turn-completion.js";
-import { writeAgentBriefing } from "../runtime/bootstrap.js";
-import { setCliBinding } from "../runtime/cli-binding.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { deliveryTokenFromSessionContext } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../../__tests__/test-helpers.js";
+import { writeAgentBriefing } from "../../../../runtime/bootstrap.js";
+import { setCliBinding } from "../../../../runtime/cli-binding.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../../runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "../../../../runtime/handler.js";
+import { CodexAppServerRpcError, CodexAppServerTransportError } from "../../app-server/client.js";
+import { createCodexAppServerHandler } from "../../app-server/index.js";
+import { LANDING_TRIAL_TURN_COMPLETION_CONFIRM_FAILED } from "../../turn-completion.js";
 
-vi.mock("../runtime/agent-briefing.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../runtime/agent-briefing.js")>();
+vi.mock("../../../../runtime/agent-briefing.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../../runtime/agent-briefing.js")>();
   return {
     ...actual,
     buildAgentBriefing: vi.fn((options: Parameters<typeof actual.buildAgentBriefing>[0]) =>
@@ -22,7 +22,7 @@ vi.mock("../runtime/agent-briefing.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../runtime/bootstrap.js", () => ({
+vi.mock("../../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
@@ -45,7 +45,7 @@ vi.mock("../runtime/bootstrap.js", () => ({
   writeContextTreeHead: vi.fn(),
 }));
 
-vi.mock("../runtime/chat-context.js", () => ({
+vi.mock("../../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async () => ({
     chatId: "chat-app-server",
     title: "app server",

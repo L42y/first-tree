@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { findCodexExecutableOnPath } from "../runtime/codex-binary.js";
+import { findCodexExecutableOnPath } from "../providers/codex/binary.js";
 import { versionManagerBinDirs, wellKnownBinDirs } from "../runtime/install-locations.js";
 import { getLoginShellPathDirs, resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 

@@ -57,9 +57,9 @@ const GUARDED_CLIENT_FILES = [
 
 /** Concrete provider binary / handler implementation modules (not support seams). */
 const CONCRETE_PROVIDER_BINARY_IMPORT =
-  /from ["'](?:\.\/(?:codex|cursor|grok|pi|kimi|opencode)-binary\.js|[^"']*providers\/grok\/binary\.js)["']/;
+  /from ["'](?:\.\/(?:cursor|grok|pi|kimi|opencode)-binary\.js|[^"']*providers\/(?:codex|grok)\/binary\.js)["']/;
 const CONCRETE_PROVIDER_HANDLER_IMPORT =
-  /from ["'].*(?:handlers\/(codex|cursor|kimi-code|opencode|pi)|providers\/(claude|grok))/;
+  /from ["'].*(?:handlers\/(cursor|kimi-code|opencode|pi)|providers\/(claude|codex|grok))/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -74,7 +74,7 @@ const CATALOG_CONSUMER_FILES = [
   "packages/client/src/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
   "packages/client/src/providers/claude/capability.ts",
-  "packages/client/src/runtime/codex-binary.ts",
+  "packages/client/src/providers/codex/binary.ts",
   "packages/client/src/runtime/cursor-binary.ts",
   "packages/client/src/providers/grok/binary.ts",
   "packages/client/src/runtime/kimi-binary.ts",
@@ -211,7 +211,7 @@ describe("runtime provider architecture guard", () => {
 
   it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {
     for (const [file, symbol] of [
-      ["runtime/codex-binary.ts", "isCodexBinaryMissingError"],
+      ["providers/codex/binary.ts", "isCodexBinaryMissingError"],
       ["runtime/cursor-binary.ts", "isCursorBinaryMissingError"],
       ["providers/grok/binary.ts", "isGrokBinaryMissingError"],
       ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
@@ -236,7 +236,12 @@ describe("runtime provider architecture guard", () => {
       ...listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts")),
       ...listFilesRecursive(
         providersRoot,
-        (p) => p.endsWith(".ts") && !p.endsWith("/binary.ts") && !p.endsWith("\\binary.ts"),
+        (p) =>
+          p.endsWith(".ts") &&
+          !p.endsWith("/binary.ts") &&
+          !p.endsWith("\\binary.ts") &&
+          !p.endsWith("/capability.ts") &&
+          !p.endsWith("\\capability.ts"),
       ),
     ];
     // Local regex / phrase tables that re-recognize provider binary absence.
@@ -441,10 +446,10 @@ describe("runtime provider architecture guard", () => {
     const mustUseContracts = [
       "providers/claude/index.ts",
       "providers/claude/tui/index.ts",
-      "handlers/codex/index.ts",
-      "handlers/codex/sdk.ts",
-      "handlers/codex/app-server/index.ts",
-      "handlers/codex/turn-completion.ts",
+      "providers/codex/index.ts",
+      "providers/codex/sdk.ts",
+      "providers/codex/app-server/index.ts",
+      "providers/codex/turn-completion.ts",
       "handlers/cursor/index.ts",
       "providers/grok/index.ts",
       "handlers/kimi-code.ts",
@@ -503,7 +508,7 @@ describe("runtime provider architecture guard", () => {
     // RUNTIME_AUTH_DRIVERS.
     for (const rel of [
       "providers/claude/login.ts",
-      "runtime/codex-login.ts",
+      "providers/codex/login.ts",
       "runtime/cursor-login.ts",
       "providers/grok/login.ts",
     ]) {
@@ -675,7 +680,7 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toContain("npm install -g @anthropic-ai/claude-code");
         expect(source).not.toContain("then run `claude auth login`");
       }
-      if (rel.endsWith("codex-binary.ts")) {
+      if (rel.endsWith("providers/codex/binary.ts") || rel.endsWith("codex/binary.ts")) {
         expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderLoginCommand");
         expect(source).toContain("daemon install-codex");
@@ -1318,8 +1323,8 @@ describe("runtime provider architecture guard", () => {
     const mustUseProviderSupport = [
       "providers/claude/index.ts",
       "providers/claude/tui/index.ts",
-      "handlers/codex/sdk.ts",
-      "handlers/codex/app-server/index.ts",
+      "providers/codex/sdk.ts",
+      "providers/codex/app-server/index.ts",
       "handlers/cursor/index.ts",
       "providers/grok/index.ts",
       "handlers/kimi-code.ts",
