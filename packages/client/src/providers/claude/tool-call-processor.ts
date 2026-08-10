@@ -12,8 +12,8 @@ import {
 /**
  * Claude provider-family tool-call processor.
  *
- * Shared by the SDK stream handler (`../claude-code.ts`) and the Claude TUI
- * transcript handler (`../claude-code-tui/index.ts`) — both feed raw provider
+ * Shared by the SDK stream handler (`./index.ts`) and the Claude TUI
+ * transcript handler (`./tui/index.ts`) — both feed raw provider
  * messages through `createToolCallProcessor` to project Claude's protocol
  * shapes (assistant/user message blocks) onto First Tree `SessionEvent`s.
  * This is provider-protocol → event projection shared across both Claude

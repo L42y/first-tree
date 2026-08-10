@@ -78,10 +78,10 @@ import {
   treeNodePathOf,
 } from "./tool-call-processor.js";
 
-// Re-exported so `./claude/*` stays the source of truth for these
-// provider-family helpers while every existing import of them from this
-// SDK handler entry point (internal call sites, tests, the Claude TUI
-// handler pre-decoupling) keeps working unchanged.
+// Re-exported so the colocated family helpers (`./tool-call-processor.js`,
+// `./mcp-config.js`, `./sdk-query-options.js`) stay the source of truth while
+// package-root and internal consumers can keep importing these names from
+// this SDK handler entry point.
 export {
   buildClaudeQueryOptions,
   type ClaudeQueryConfigOptions,
