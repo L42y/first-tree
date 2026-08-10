@@ -108,7 +108,11 @@ import {
   createUnavailableAttachmentBlobStore,
 } from "./services/attachment-blob-store.js";
 import { expiryToSeconds } from "./services/auth.js";
-import { type BackgroundTasks, createBackgroundTasks } from "./services/background-tasks.js";
+import {
+  type BackgroundTaskOptions,
+  type BackgroundTasks,
+  createBackgroundTasks,
+} from "./services/background-tasks.js";
 import {
   invalidateChatAudienceLocal,
   registerChatAudienceDispatcher,
@@ -176,6 +180,7 @@ function namePlugin<T extends FastifyPluginAsync>(name: string, fn: T): T {
 
 export type BuildAppOptions = {
   attachmentBlobStore?: AttachmentBlobStore;
+  backgroundTasks?: BackgroundTaskOptions;
 };
 
 export async function buildApp(config: Config, options: BuildAppOptions = {}) {
@@ -707,7 +712,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
   app.decorate("notifier", notifier);
 
   // Background tasks
-  const backgroundTasks = createBackgroundTasks(app, config.instanceId);
+  const backgroundTasks = createBackgroundTasks(app, config.instanceId, options.backgroundTasks);
 
   // NC1 pulse aggregator — 32-bucket rolling window over runtime state
   // transitions. Broadcasts a per-org `pulse:tick` frame every 5s to admin
