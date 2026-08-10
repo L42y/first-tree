@@ -393,6 +393,15 @@ function isForbiddenConcreteProviderModuleTarget(relPosix: string): boolean {
   if (/^handlers\/(cursor|kimi-code|opencode|pi)\//.test(rel)) return true;
   if (/^providers\/(claude|codex|cursor|grok|kimi-code)(\/|$)/.test(rel)) return true;
   if (/^runtime\/(cursor|grok|pi|kimi|opencode|codex)-binary\.js$/.test(rel)) return true;
+  // Deleted Cursor/Kimi Runtime owners relocated by this S3 slice (path existence not required).
+  if (rel === "runtime/cursor-login.js") return true;
+  if (
+    rel === "runtime/capabilities/cursor.js" ||
+    rel === "runtime/capabilities/kimi-code.js" ||
+    rel === "runtime/capabilities/discover-models.js"
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -1864,6 +1873,31 @@ describe("runtime provider architecture guard", () => {
       },
       {
         importer: runtimeRootImporter,
+        source: `import { createCursorAuthDriver } from "./cursor-login.js";\n`,
+        note: "legacy cursor-login static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `await import("../cursor-login.js");\n`,
+        note: "nested legacy cursor-login dynamic",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { probeCursorCapability } from "./capabilities/cursor.js";\n`,
+        note: "legacy capabilities/cursor static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import "./kimi-code.js";\n`,
+        note: "legacy capabilities/kimi-code bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { discoverProviderModels } from "./capabilities/discover-models.js";\n`,
+        note: "legacy capabilities/discover-models export-from",
+      },
+      {
+        importer: runtimeRootImporter,
         source: `export { createCursorHandler } from "../providers/cursor/index.js";\n`,
         note: "family cursor export-from",
       },
@@ -1929,6 +1963,10 @@ describe("runtime provider architecture guard", () => {
     expect(isForbiddenConcreteProviderModuleTarget("providers/kimi-code/binary.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/cursor-binary.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/kimi-binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/cursor-login.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/cursor.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/kimi-code.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/discover-models.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("providers/claude/index.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("providers/codex/binary.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("providers/grok/login.js")).toBe(true);
