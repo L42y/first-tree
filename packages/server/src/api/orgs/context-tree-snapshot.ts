@@ -3,13 +3,13 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createTimingCollector } from "../../observability/timing.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import { buildContextTreeIoSummary } from "../../services/context-tree-io.js";
+import { buildContextTreeIoSummary } from "../../services/context-tree/io.js";
 import {
   type ContextTreeBinding,
   contextTreeSnapshotWindowDays,
   getContextTreeSnapshot,
   isGithubRemoteBinding,
-} from "../../services/context-tree-snapshot.js";
+} from "../../services/context-tree/snapshot.js";
 import { getOrgContextReviewRuntime, isOrgContextTreeBindingRuntimeCurrent } from "../../services/org-settings.js";
 import { findInstallationByOrg } from "../../services/scm/github/app-installations.js";
 import {

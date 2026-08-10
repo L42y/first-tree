@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
+import { contextTreeRepoName } from "../services/context-tree/repo-provisioner.js";
 
 // The repo name carries a per-organization discriminator. Derive the expected
 // names from the real rule so these route tests keep asserting error mapping
@@ -118,17 +118,17 @@ async function setupRoute() {
   });
 
   vi.doMock("../scope/require-org.js", () => ({ requireOrgAdmin, requireOrgMembership }));
-  const actualProvisioner = await vi.importActual<typeof import("../services/context-tree-repo-provisioner.js")>(
-    "../services/context-tree-repo-provisioner.js",
+  const actualProvisioner = await vi.importActual<typeof import("../services/context-tree/repo-provisioner.js")>(
+    "../services/context-tree/repo-provisioner.js",
   );
-  vi.doMock("../services/context-tree-repo-provisioner.js", () => ({
+  vi.doMock("../services/context-tree/repo-provisioner.js", () => ({
     ContextTreeRepoProvisionError,
     // Real derivation: these edge tests assert route error mapping, not repo
     // naming, and a stubbed name would hide a break in the real rule.
     contextTreeRepoName: actualProvisioner.contextTreeRepoName,
     ensureInstallationOwnedContextTreeRepo,
   }));
-  vi.doMock("../services/context-tree-write-preflight.js", () => ({
+  vi.doMock("../services/context-tree/write-preflight.js", () => ({
     ContextTreeWritePreflightError,
     preflightContextTreeWriteAuthority,
   }));

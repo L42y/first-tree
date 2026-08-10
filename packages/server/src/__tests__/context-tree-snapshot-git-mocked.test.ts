@@ -25,7 +25,7 @@ async function loadSnapshotServiceWithGit(handler: GitHandler) {
     cb(null, { stdout: result, stderr: "" });
   });
   vi.doMock("node:child_process", () => ({ execFile }));
-  const service = await import("../services/context-tree-snapshot.js");
+  const service = await import("../services/context-tree/snapshot.js");
   return { execFile, service };
 }
 

@@ -10,7 +10,7 @@ import {
   contextTreeSnapshotTestInternals,
   getContextTreeSnapshot,
   isGithubRemoteBinding,
-} from "../services/context-tree-snapshot.js";
+} from "../services/context-tree/snapshot.js";
 
 const execFileAsync = promisify(execFile);
 

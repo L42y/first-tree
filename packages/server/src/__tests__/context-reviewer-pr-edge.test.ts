@@ -8,7 +8,7 @@ describe("Context Reviewer PR internals", () => {
 
   it("classifies supported and unsupported PR webhook triggers", async () => {
     const { contextReviewerPrTestInternals, isContextReviewerCandidateEvent } = await import(
-      "../services/context-reviewer-pr.js"
+      "../services/context-tree/reviewer/github/pr.js"
     );
 
     expect(contextReviewerPrTestInternals.isSupportedContextReviewerPrEvent("pull_request", "opened")).toBe(true);
@@ -42,7 +42,7 @@ describe("Context Reviewer PR internals", () => {
         readFile: vi.fn(),
       };
     });
-    const { renderContextReviewerPrPrompt } = await import("../services/context-reviewer-pr.js");
+    const { renderContextReviewerPrPrompt } = await import("../services/context-tree/reviewer/github/pr.js");
 
     await expect(
       renderContextReviewerPrPrompt({

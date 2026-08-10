@@ -11,8 +11,8 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
-import { loadValidContextReviewerAgent } from "../../context-reviewer-common.js";
-import { normalizeGithubRepo } from "../../context-reviewer-pr.js";
+import { loadValidContextReviewerAgent } from "../../context-tree/reviewer/common.js";
+import { normalizeGithubRepo } from "../../context-tree/reviewer/github/pr.js";
 import { getOrgContextReviewRuntime } from "../../org-settings.js";
 import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {

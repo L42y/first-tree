@@ -7,7 +7,10 @@ import {
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, UnauthorizedError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
-import { handleContextReviewerPrEvent, isContextReviewerCandidateEvent } from "../../services/context-reviewer-pr.js";
+import {
+  handleContextReviewerPrEvent,
+  isContextReviewerCandidateEvent,
+} from "../../services/context-tree/reviewer/github/pr.js";
 import type { AppInstallation } from "../../services/scm/github/app.js";
 import {
   deleteInstallationByGithubId,

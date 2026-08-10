@@ -26,7 +26,7 @@ import {
 } from "@first-tree/shared";
 import { defaultDataDir } from "@first-tree/shared/config";
 import matter from "gray-matter";
-import { type TimingSink, timeSyncWithSink, timeWithSink } from "../observability/timing.js";
+import { type TimingSink, timeSyncWithSink, timeWithSink } from "../../observability/timing.js";
 import {
   anonymousGitEnv,
   assertAnonymousLocalConfigSafe,
@@ -38,14 +38,14 @@ import {
   isGitlabRedirectFailure,
   revalidateGitlabDestination,
   revalidateGitlabSnapshotPublication,
-} from "./scm/gitlab/anonymous-snapshot.js";
+} from "../scm/gitlab/anonymous-snapshot.js";
 import {
   type GitlabDnsLookup,
   type GitlabEgressAllowlistEntry,
   GitlabEgressPolicyError,
   type GitlabPinnedDestination,
   resolveAuthorizedGitlabDestination,
-} from "./scm/gitlab/egress-policy.js";
+} from "../scm/gitlab/egress-policy.js";
 
 const execFileAsync = promisify(execFile);
 const ROOT_NODE_ID = "root";

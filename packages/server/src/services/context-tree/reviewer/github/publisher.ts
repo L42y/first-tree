@@ -12,19 +12,18 @@ import {
   runtimeProviderSchema,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chats } from "../db/schema/chats.js";
-import { clients } from "../db/schema/clients.js";
-import { githubAppInstallations } from "../db/schema/github-app-installations.js";
-import { members } from "../db/schema/members.js";
-import { messages } from "../db/schema/messages.js";
-import { organizations } from "../db/schema/organizations.js";
-import { uuidv7 } from "../uuid.js";
-import { agentNotLandingCampaignTrialCondition } from "./access-control.js";
-import { validateAgentRuntimeSession } from "./agent-runtime-session.js";
-import { normalizeGithubRepo } from "./context-reviewer-pr.js";
-import { getOrgContextTreeBinding, getOrgSetting } from "./org-settings.js";
+import type { Database } from "../../../../db/connection.js";
+import { agents } from "../../../../db/schema/agents.js";
+import { chats } from "../../../../db/schema/chats.js";
+import { clients } from "../../../../db/schema/clients.js";
+import { githubAppInstallations } from "../../../../db/schema/github-app-installations.js";
+import { members } from "../../../../db/schema/members.js";
+import { messages } from "../../../../db/schema/messages.js";
+import { organizations } from "../../../../db/schema/organizations.js";
+import { uuidv7 } from "../../../../uuid.js";
+import { agentNotLandingCampaignTrialCondition } from "../../../access-control.js";
+import { validateAgentRuntimeSession } from "../../../agent-runtime-session.js";
+import { getOrgContextTreeBinding, getOrgSetting } from "../../../org-settings.js";
 import {
   createAppJwt,
   createPullRequestReview,
@@ -34,7 +33,8 @@ import {
   getPullRequestForReview,
   listPullRequestReviewsForRun,
   mintInstallationToken,
-} from "./scm/github/app.js";
+} from "../../../scm/github/app.js";
+import { normalizeGithubRepo } from "./pr.js";
 
 type SubmissionState = ContextReviewSubmissionState;
 

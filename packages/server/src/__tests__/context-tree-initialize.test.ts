@@ -6,7 +6,7 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
-import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
+import { contextTreeRepoName } from "../services/context-tree/repo-provisioner.js";
 import { encryptValue } from "../services/crypto.js";
 import { getOrgContextTreeBinding, getOrgSetting, putOrgSetting } from "../services/org-settings.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";

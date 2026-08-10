@@ -13,12 +13,15 @@ import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createAgent } from "../services/agent.js";
-import { loadValidContextReviewerAgent } from "../services/context-reviewer-common.js";
+import { loadValidContextReviewerAgent } from "../services/context-tree/reviewer/common.js";
 import {
   listContextReviewerCandidates,
   readContextReviewerAgentReadiness,
-} from "../services/context-reviewer-readiness.js";
-import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
+} from "../services/context-tree/reviewer/readiness.js";
+import {
+  putContextReviewerAssignment,
+  putContextReviewerEnablement,
+} from "../services/context-tree/reviewer/settings.js";
 import { getOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";

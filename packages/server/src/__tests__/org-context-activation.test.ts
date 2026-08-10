@@ -250,7 +250,10 @@ describe("org-scoped member Context activation", () => {
     });
     expect((await validate({ kind: "path", root: "/tmp/changed" })).statusCode).toBe(403);
 
-    const tampered = `${receipt.slice(0, -1)}${receipt.endsWith("a") ? "b" : "a"}`;
+    // Mutate a fully significant Base64URL character rather than trailing pad bits.
+    const signatureStart = receipt.lastIndexOf(".") + 1;
+    const signatureHead = receipt.charAt(signatureStart);
+    const tampered = `${receipt.slice(0, signatureStart)}${signatureHead === "A" ? "B" : "A"}${receipt.slice(signatureStart + 1)}`;
     const rejected = await app.inject({
       method: "POST",
       url: "/api/v1/me/context-activation/session-candidate/validate",

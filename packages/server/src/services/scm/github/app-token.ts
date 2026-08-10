@@ -1,5 +1,5 @@
 import type { ContextTreeRecoveryAction, ContextTreeSnapshot } from "@first-tree/shared";
-import { type ContextTreeBinding, isGithubRemoteBinding } from "../../context-tree-snapshot.js";
+import { type ContextTreeBinding, isGithubRemoteBinding } from "../../context-tree/snapshot.js";
 import {
   createAppJwt,
   GithubAppApiError,

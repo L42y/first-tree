@@ -15,8 +15,11 @@ import { messages } from "../db/schema/messages.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
-import { handleContextReviewerMrEvent } from "../services/context-reviewer-mr.js";
-import { putContextReviewerAssignment, putContextReviewerEnablement } from "../services/context-reviewer-settings.js";
+import { handleContextReviewerMrEvent } from "../services/context-tree/reviewer/gitlab/mr.js";
+import {
+  putContextReviewerAssignment,
+  putContextReviewerEnablement,
+} from "../services/context-tree/reviewer/settings.js";
 import { pollInbox } from "../services/inbox.js";
 import { getCallerEngagement, setChatEngagement } from "../services/me-chat.js";
 import { deleteMember } from "../services/member.js";

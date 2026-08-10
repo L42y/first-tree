@@ -6,7 +6,7 @@ import { agents } from "../db/schema/agents.js";
 import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
+import { putContextReviewerAssignment } from "../services/context-tree/reviewer/settings.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { isGithubAppTargetLogin } from "../services/scm/github/app-self-output.js";
 import {
