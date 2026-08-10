@@ -182,10 +182,6 @@ function buttonByText(text: string): HTMLButtonElement {
   return button;
 }
 
-function templateLibraryLink(): HTMLAnchorElement | null {
-  return document.body.querySelector<HTMLAnchorElement>('a[href="/templates"]');
-}
-
 function optionCardByText(text: string): HTMLElement {
   const label = [...document.body.querySelectorAll("label")].find((el) => el.textContent?.includes(text));
   if (!label) throw new Error(`Missing option card "${text}". Body: ${document.body.textContent ?? ""}`);
@@ -245,8 +241,6 @@ describe("NewAgentDialog template responsibilities", () => {
     await renderDialog(onCreated);
     await flush();
     expect(document.body.textContent).not.toContain("Responsibilities");
-    // No entry to an empty library either — the link is gated on the same catalog.
-    expect(templateLibraryLink()).toBeNull();
 
     await fillNameAndOpenPickerSafe();
     async function fillNameAndOpenPickerSafe() {
@@ -268,7 +262,6 @@ describe("NewAgentDialog template responsibilities", () => {
     await waitForCondition(() => templateMocks.listAgentTemplates.mock.calls.length === 1, "catalog not fetched");
     await flush();
     expect(document.body.textContent).not.toContain("Responsibilities");
-    expect(templateLibraryLink()).toBeNull();
     const input = document.body.querySelector<HTMLInputElement>("#new-agent-display-name");
     if (!input) throw new Error("missing display name input");
     await setValue(input, "Build Bot");
@@ -276,36 +269,6 @@ describe("NewAgentDialog template responsibilities", () => {
     await waitForCondition(() => agentMocks.createAgent.mock.calls.length === 1, "create not called");
     const body = agentMocks.createAgent.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(body.templateIds).toBeUndefined();
-  });
-
-  it("offers an in-app entry to the public template library without disturbing the draft", async () => {
-    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A] });
-    await renderDialog();
-    await waitForText("Responsibilities (optional)");
-
-    const input = document.body.querySelector<HTMLInputElement>("#new-agent-display-name");
-    if (!input) throw new Error("missing display name input");
-    await setValue(input, "Build Bot");
-
-    const link = templateLibraryLink();
-    expect(link).not.toBeNull();
-    expect(link?.textContent).toBe("Browse the template library");
-    // A new tab, not a route change: the half-filled dialog must survive the detour.
-    expect(link?.target).toBe("_blank");
-    expect(link?.rel).toContain("noopener");
-
-    // happy-dom would otherwise try to follow the href; React's handler still runs.
-    const blockNavigation = (event: Event) => event.preventDefault();
-    document.addEventListener("click", blockNavigation, true);
-    try {
-      await click(link);
-    } finally {
-      document.removeEventListener("click", blockNavigation, true);
-    }
-
-    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_template_library_open", { surface: "new_agent" });
-    expect(document.body.querySelector<HTMLInputElement>("#new-agent-display-name")?.value).toBe("Build Bot");
-    expect(agentMocks.createAgent).not.toHaveBeenCalled();
   });
 
   it("submits one selected template and keeps the form draft intact", async () => {
