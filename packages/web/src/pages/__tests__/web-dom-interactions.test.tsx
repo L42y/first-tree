@@ -114,6 +114,15 @@ const contextEnablementMocks = vi.hoisted(() => ({
   getContextEnablementHandoff: vi.fn(),
 }));
 
+const navigateMock = vi.hoisted(() => vi.fn());
+vi.mock("react-router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react-router")>();
+  return { ...actual, useNavigate: () => navigateMock };
+});
+
+const analyticsMocks = vi.hoisted(() => ({ trackEvent: vi.fn() }));
+vi.mock("../../analytics.js", () => analyticsMocks);
+
 const authMock = vi.hoisted(() => {
   const memberships: MeMembership[] = [];
   const currentMembership: MeMembership | null = null;
@@ -1578,6 +1587,78 @@ describe("web DOM interaction coverage", () => {
     await flush();
     expect(plainSelect).not.toHaveBeenCalled();
     await unmountRoot(plain.root);
+  });
+
+  it("tokenless install callback preserves existing session and activates pinned org", async () => {
+    const { OAuthCompletePage } = await import("../oauth-complete.js");
+    Object.defineProperty(window, "history", {
+      configurable: true,
+      value: { replaceState: vi.fn() },
+    });
+    // No access or refresh token — OIDC-mode GitHub install returns metadata only.
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        hash: "#callbackIntent=install&org=org-install&orgPinned=1&next=/settings/integrations/github",
+        pathname: "/auth/complete",
+      },
+    });
+
+    const selectOrg = vi.fn(async () => undefined);
+    const adoptTokens = vi.fn(async () => undefined);
+    authMock.value = { ...authMock.value, adoptTokens, selectOrganization: selectOrg };
+
+    const result = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await flush();
+
+    // Session must NOT be replaced — no tokens in the fragment.
+    expect(adoptTokens).not.toHaveBeenCalled();
+    // Pinned org must be activated.
+    expect(selectOrg).toHaveBeenCalledWith("org-install");
+    // Fragment must be cleared from the URL bar.
+    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "/auth/complete");
+    // Navigation must reach the validated safe next destination.
+    expect(navigateMock).toHaveBeenCalledWith("/settings/integrations/github");
+    await unmountRoot(result.root);
+  });
+
+  it("provider-unavailable fragment renders correct error copy and joins the OIDC attempt", async () => {
+    const { OAuthCompletePage } = await import("../oauth-complete.js");
+    const { beginAuthAttempt } = await import("../../auth/auth-analytics.js");
+    // Start an OIDC attempt so finishAuthAttempt can join and consume it.
+    const attemptId = beginAuthAttempt("oidc", "/login");
+    expect(window.sessionStorage.getItem("first-tree:auth-attempt")).not.toBeNull();
+
+    // Use the full Server-issued fragment shape including callbackIntent=sign-in.
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        ...window.location,
+        hash: "#error=provider-unavailable&next=/login&provider=oidc&callbackIntent=sign-in",
+        pathname: "/auth/complete",
+      },
+    });
+
+    const result = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await waitForText("temporarily unavailable", result.container);
+    // Correct error copy rendered via OAuthCompletePage (not just helper).
+    expect(result.container.textContent).toContain("temporarily unavailable");
+    // The OIDC auth attempt must be consumed (finishAuthAttempt called).
+    expect(window.sessionStorage.getItem("first-tree:auth-attempt")).toBeNull();
+    // trackEvent must emit the exact bounded auth_result payload.
+    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("auth_result", {
+      provider: "oidc",
+      result: "failed",
+      entry_point: "deep_link",
+      join_path: "unknown",
+      account_type: "unknown",
+      auth_attempt_id: attemptId,
+      reason_code: "provider-unavailable",
+    });
+    // No sign_up event for a failed attempt.
+    expect(analyticsMocks.trackEvent.mock.calls.some((call) => call[0] === "sign_up")).toBe(false);
+    await unmountRoot(result.root);
   });
 
   it("switches orgs and exposes focused setup actions from the TeamSwitcher, and signs out from the UserMenu", async () => {
