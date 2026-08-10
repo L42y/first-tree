@@ -1,8 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
+import type { Database } from "../../../db/connection.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
 
 /**
  * The ONE authoritative route + capability condition for the chat-session

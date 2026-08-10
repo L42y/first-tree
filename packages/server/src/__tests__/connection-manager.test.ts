@@ -16,7 +16,7 @@ import {
   setConnection,
   unbindAgentFromClient,
   validateAgentRuntimeSession,
-} from "../services/connection-manager.js";
+} from "../services/runtime/connection-manager.js";
 
 /**
  * Unit tests for connection-manager.ts — pure in-memory state management.

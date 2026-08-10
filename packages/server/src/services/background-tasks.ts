@@ -4,9 +4,9 @@ import { backfillExternalAttachmentsToPostgres, sweepOrphanAttachments } from ".
 import * as inboxService from "./chat/inbox.js";
 import { createCronScheduler } from "./chat/scheduled-jobs/scheduler.js";
 import * as chatArchiveService from "./chat/workspace/archive.js";
-import * as clientService from "./client.js";
 import * as notificationService from "./notification.js";
-import * as presenceService from "./presence.js";
+import * as clientService from "./runtime/client.js";
+import * as presenceService from "./runtime/presence.js";
 import { backfillSkillResourceBundles } from "./skill-bundle.js";
 
 const log = createLogger("BackgroundTasks");

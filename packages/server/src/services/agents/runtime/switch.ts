@@ -17,9 +17,9 @@ import { members } from "../../../db/schema/members.js";
 import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
 import { uuidv7 } from "../../../uuid.js";
 import { archiveAllSessionsForAgent } from "../../chat/sessions/lifecycle.js";
-import { forceDisconnect } from "../../connection-manager.js";
 import type { Notifier } from "../../notifier.js";
-import { setOffline } from "../../presence.js";
+import { forceDisconnect } from "../../runtime/connection-manager.js";
+import { setOffline } from "../../runtime/presence.js";
 import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./binding.js";
 import { revokeAgentRuntimeSession } from "./session.js";
 

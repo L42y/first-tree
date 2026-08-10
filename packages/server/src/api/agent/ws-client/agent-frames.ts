@@ -7,10 +7,10 @@ import { clients } from "../../../db/schema/clients.js";
 import { members } from "../../../db/schema/members.js";
 import * as agentRuntimeSessionService from "../../../services/agents/runtime/session.js";
 import * as inboxService from "../../../services/chat/inbox.js";
-import * as connectionManager from "../../../services/connection-manager.js";
 import * as notificationService from "../../../services/notification.js";
 import type { Notifier } from "../../../services/notifier.js";
-import * as presenceService from "../../../services/presence.js";
+import * as connectionManager from "../../../services/runtime/connection-manager.js";
+import * as presenceService from "../../../services/runtime/presence.js";
 import type { ClientWsConnectionContext } from "./connection-context.js";
 import type { InboxDeliveryCoordinator } from "./inbox-delivery.js";
 

@@ -1,9 +1,9 @@
 import { agentPinnedMessageSchema, PROVIDER_MODELS_LIST_TYPE } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
-import * as connectionManager from "../../../services/connection-manager.js";
 import type { Notifier } from "../../../services/notifier.js";
-import { readModelCatalogRpcResult } from "../../../services/provider-models-rpc.js";
-import { agentRoutedTo, readSessionCommandRpcResult } from "../../../services/session-command-rpc.js";
+import * as connectionManager from "../../../services/runtime/connection-manager.js";
+import { readModelCatalogRpcResult } from "../../../services/runtime/rpc/provider-models.js";
+import { agentRoutedTo, readSessionCommandRpcResult } from "../../../services/runtime/rpc/session-command.js";
 
 export function registerClientWsServerEvents(app: FastifyInstance, notifier: Notifier, instanceId: string): void {
   notifier.onAgentRouteChange((payload) => {

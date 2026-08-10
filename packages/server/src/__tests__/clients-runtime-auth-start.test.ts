@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { clients } from "../db/schema/clients.js";
 import { createAgent } from "../services/agents/identity.js";
-import { removeClientConnection, setClientConnection } from "../services/connection-manager.js";
+import { removeClientConnection, setClientConnection } from "../services/runtime/connection-manager.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 /**

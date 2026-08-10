@@ -19,20 +19,20 @@ import * as agentRuntimeSessionService from "../services/agents/runtime/session.
 import * as agentRuntimeSwitchService from "../services/agents/runtime/switch.js";
 import { createChat } from "../services/chat/conversation.js";
 import { WIRE_RECIPIENT_MODE } from "../services/chat/message-dispatcher.js";
-import * as clientService from "../services/client.js";
+import {
+  assertMetadataDoesNotClaimLandingCampaignTrial,
+  assertMutableAgentIsNotLandingCampaignTrial,
+  assertNoLandingCampaignTrialAgents,
+} from "../services/landing-campaigns/guards.js";
+import * as clientService from "../services/runtime/client.js";
 import {
   forceDisconnect,
   getAgentClientId,
   hasActiveConnection,
   sendToAgent,
   sendToClient,
-} from "../services/connection-manager.js";
-import {
-  assertMetadataDoesNotClaimLandingCampaignTrial,
-  assertMutableAgentIsNotLandingCampaignTrial,
-  assertNoLandingCampaignTrialAgents,
-} from "../services/landing-campaigns/guards.js";
-import * as presenceService from "../services/presence.js";
+} from "../services/runtime/connection-manager.js";
+import * as presenceService from "../services/runtime/presence.js";
 
 type AgentRow = {
   uuid: string;

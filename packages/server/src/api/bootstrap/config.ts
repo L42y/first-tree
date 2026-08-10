@@ -1,6 +1,6 @@
 import { CONNECT_BOOTSTRAP_CODE_PLACEHOLDER } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
-import { buildServerConnectBootstrapCommand } from "../../services/connect-bootstrap-command.js";
+import { buildServerConnectBootstrapCommand } from "../../services/runtime/daemon/bootstrap-command.js";
 
 export async function bootstrapConfigRoutes(app: FastifyInstance): Promise<void> {
   /**

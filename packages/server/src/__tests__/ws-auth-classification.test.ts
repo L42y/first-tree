@@ -8,7 +8,7 @@ import { SignJWT } from "jose";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { users } from "../db/schema/users.js";
-import * as clientService from "../services/client.js";
+import * as clientService from "../services/runtime/client.js";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 
 describe("WS auth handshake classification", () => {

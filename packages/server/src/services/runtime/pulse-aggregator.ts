@@ -1,6 +1,6 @@
 import type { PulseBucket } from "@first-tree/shared";
-import type { AdminBroadcastPayload } from "./admin-broadcast.js";
-import type { Notifier, RuntimeStateChangeHandler } from "./notifier.js";
+import type { AdminBroadcastPayload } from "../admin-broadcast.js";
+import type { Notifier, RuntimeStateChangeHandler } from "../notifier.js";
 
 /**
  * In-memory ring of `bucketCount` PulseBuckets per (org, agent), advanced on

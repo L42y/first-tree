@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agentPresence } from "../db/schema/agent-presence.js";
-import * as presenceService from "../services/presence.js";
+import * as presenceService from "../services/runtime/presence.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("Presence Service", () => {

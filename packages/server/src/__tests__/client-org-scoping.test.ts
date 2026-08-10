@@ -4,7 +4,7 @@ import { clients } from "../db/schema/clients.js";
 import { organizations } from "../db/schema/organizations.js";
 import { ForbiddenError } from "../errors.js";
 import { createAgent } from "../services/agents/identity.js";
-import { assertClientOwner, registerClient } from "../services/client.js";
+import { assertClientOwner, registerClient } from "../services/runtime/client.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

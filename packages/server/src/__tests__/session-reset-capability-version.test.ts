@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { metadataHasSessionResetV1Capability, metadataSupportsSessionReset } from "../services/session-command-rpc.js";
+import {
+  metadataHasSessionResetV1Capability,
+  metadataSupportsSessionReset,
+} from "../services/runtime/rpc/session-command.js";
 
 /**
  * Matrix for the versioned composite Reset capability.

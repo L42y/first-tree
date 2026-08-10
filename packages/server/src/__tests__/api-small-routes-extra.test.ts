@@ -54,7 +54,7 @@ const mockedModules = [
   "../services/auth.js",
   "../services/agents/runtime/switch.js",
   "../services/chat/conversation.js",
-  "../services/connection-manager.js",
+  "../services/runtime/connection-manager.js",
   "../services/scm/github/entity-chat.js",
   "../services/scm/github/entity-follow.js",
   "../services/invitation.js",
@@ -690,7 +690,7 @@ describe("small API route handlers", () => {
   it("recovers a runtime switch and skips malformed immediate pinned frames", async () => {
     const sendToAgent = vi.fn();
     const sendToClient = vi.fn();
-    vi.doMock("../services/connection-manager.js", () => ({
+    vi.doMock("../services/runtime/connection-manager.js", () => ({
       forceDisconnect: vi.fn(),
       getAgentClientId: vi.fn(),
       hasActiveConnection: vi.fn(),
@@ -761,7 +761,7 @@ describe("small API route handlers", () => {
   it("skips malformed org agent pinned frames after create", async () => {
     const sendToClient = vi.fn();
     const createdAt = new Date("2026-07-08T00:00:00.000Z");
-    vi.doMock("../services/connection-manager.js", () => ({ sendToClient }));
+    vi.doMock("../services/runtime/connection-manager.js", () => ({ sendToClient }));
     vi.doMock("../services/agents/identity.js", () => ({
       createAgent: vi.fn().mockResolvedValue({
         uuid: "agent_bad_runtime",

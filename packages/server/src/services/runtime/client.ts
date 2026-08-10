@@ -9,20 +9,20 @@ import {
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import { members } from "../db/schema/members.js";
+import type { Database } from "../../db/connection.js";
+import { agentPresence } from "../../db/schema/agent-presence.js";
+import { agents } from "../../db/schema/agents.js";
+import { clients } from "../../db/schema/clients.js";
+import { members } from "../../db/schema/members.js";
 import {
   BadRequestError,
   ClientRetiredError,
   ClientUserMismatchError,
   ConflictError,
   NotFoundError,
-} from "../errors.js";
+} from "../../errors.js";
+import { recordClientHeartbeat } from "./liveness.js";
 import { runtimeFieldsReset } from "./presence.js";
-import { recordClientHeartbeat } from "./runtime-liveness.js";
 
 /**
  * Assert the caller can act on this client. Throws 404 for both "not found"

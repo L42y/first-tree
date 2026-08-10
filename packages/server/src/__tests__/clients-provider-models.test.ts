@@ -3,20 +3,20 @@ import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { clients } from "../db/schema/clients.js";
-import * as clientService from "../services/client.js";
+import * as clientService from "../services/runtime/client.js";
 import {
   removeClientConnection,
   resolveClientReply,
   setClientConnection,
   setClientReplyTimeoutMsForTests,
   waitForClientReply,
-} from "../services/connection-manager.js";
+} from "../services/runtime/connection-manager.js";
 import {
   countModelCatalogRpcKeys,
   MODEL_CATALOG_RPC_MAX_ENTRIES,
   readModelCatalogRpcResult,
   storeModelCatalogRpcResult,
-} from "../services/provider-models-rpc.js";
+} from "../services/runtime/rpc/provider-models.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 function sampleCatalog(

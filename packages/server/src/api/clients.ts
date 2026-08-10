@@ -13,14 +13,14 @@ import { BadGatewayError, GatewayTimeoutError, ServiceUnavailableError } from ".
 import { stampClientResource } from "../observability/request-context.js";
 import { requireUser } from "../scope/require-user.js";
 import { expiryToSeconds } from "../services/auth.js";
-import * as clientService from "../services/client.js";
+import * as clientService from "../services/runtime/client.js";
 import {
   forceDisconnectClient,
   rejectPendingRepliesForClient,
   sendToClient,
   waitForClientReply,
-} from "../services/connection-manager.js";
-import { isClientConnectedSomewhere, readModelCatalogRpcResult } from "../services/provider-models-rpc.js";
+} from "../services/runtime/connection-manager.js";
+import { isClientConnectedSomewhere, readModelCatalogRpcResult } from "../services/runtime/rpc/provider-models.js";
 import { serializeDate } from "../utils.js";
 import { clientCommandVersionHint } from "./client-command-version.js";
 

@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 import { describe, expect, it } from "vitest";
-import { createCommandVersionPoller } from "../services/command-version-poller.js";
+import { createCommandVersionPoller } from "../services/runtime/daemon/command-version-poller.js";
 
 /**
  * Stub logger that swallows everything. Keeps test output clean — the

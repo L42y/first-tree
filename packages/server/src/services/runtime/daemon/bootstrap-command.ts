@@ -1,7 +1,7 @@
 import { buildLoginCommand, buildPortableBootstrapCommand } from "@first-tree/shared";
 import { type ChannelName, getChannelConfig } from "@first-tree/shared/channel";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { resolvePublicUrl } from "../utils/public-url.js";
+import { resolvePublicUrl } from "../../../utils/public-url.js";
 
 export type ServerConnectBootstrapCommand = {
   command: string;

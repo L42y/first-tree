@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractLastUpdateAttempt } from "../services/client.js";
+import { extractLastUpdateAttempt } from "../services/runtime/client.js";
 
 /**
  * `extractLastUpdateAttempt` is what the admin / `/me/clients` routes call

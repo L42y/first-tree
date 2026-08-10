@@ -5,7 +5,7 @@ import { agents } from "../db/schema/agents.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agents/identity.js";
-import { bindAgent, unbindAgent } from "../services/presence.js";
+import { bindAgent, unbindAgent } from "../services/runtime/presence.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
 

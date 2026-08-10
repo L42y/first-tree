@@ -8,10 +8,10 @@ import * as agentRuntimeSessionService from "../services/agents/runtime/session.
 import * as inboxService from "../services/chat/inbox.js";
 import * as activityService from "../services/chat/sessions/activity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
-import * as clientService from "../services/client.js";
 import * as notificationService from "../services/notification.js";
-import * as presenceService from "../services/presence.js";
-import * as runtimeLivenessService from "../services/runtime-liveness.js";
+import * as clientService from "../services/runtime/client.js";
+import * as runtimeLivenessService from "../services/runtime/liveness.js";
+import * as presenceService from "../services/runtime/presence.js";
 
 type WsHandler = (socket: FakeSocket, request: { headers: Record<string, string | undefined>; ip: string }) => unknown;
 

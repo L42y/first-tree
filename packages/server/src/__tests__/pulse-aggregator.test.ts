@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Notifier, RuntimeStateChangeHandler } from "../services/notifier.js";
-import { createPulseAggregator } from "../services/pulse-aggregator.js";
+import { createPulseAggregator } from "../services/runtime/pulse-aggregator.js";
 
 /**
  * Batch B / S8 — pulse-aggregator unit coverage.

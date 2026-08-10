@@ -11,7 +11,7 @@ import { messages } from "../../../db/schema/messages.js";
 import { sessionEvents } from "../../../db/schema/session-events.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
 import type { Notifier } from "../../notifier.js";
-import { agentRouteGuardSql } from "../../session-command-rpc.js";
+import { agentRouteGuardSql } from "../../runtime/rpc/session-command.js";
 import { extractChatSummary } from "../read-model.js";
 import * as sessionEventService from "./events.js";
 

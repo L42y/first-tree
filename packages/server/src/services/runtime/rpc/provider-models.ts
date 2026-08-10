@@ -1,7 +1,7 @@
 import { type ProviderModelCatalog, providerModelCatalogSchema } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { clients } from "../db/schema/clients.js";
+import type { Database } from "../../../db/connection.js";
+import { clients } from "../../../db/schema/clients.js";
 
 /**
  * Durable rendezvous for host-local model-catalog RPC.

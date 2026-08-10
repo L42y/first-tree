@@ -30,8 +30,6 @@ import {
 } from "../services/agents/access-control.js";
 import { resolveAvatarImageUrl } from "../services/agents/identity.js";
 import * as authService from "../services/auth.js";
-import * as clientService from "../services/client.js";
-import { buildServerConnectBootstrapCommand } from "../services/connect-bootstrap-command.js";
 import { validateExternalContextActivation } from "../services/context-tree/activation.js";
 import {
   issueContextSessionCandidate,
@@ -59,6 +57,8 @@ import {
   getOrgContextTreeWithMeta,
   projectOrgContextTreeSettingState,
 } from "../services/org-settings.js";
+import * as clientService from "../services/runtime/client.js";
+import { buildServerConnectBootstrapCommand } from "../services/runtime/daemon/bootstrap-command.js";
 import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
@@ -643,7 +643,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get("/me/pinned-agents", async (request) => {
     const { userId } = requireUser(request);
-    const { listMyPinnedAgents } = await import("../services/client.js");
+    const { listMyPinnedAgents } = await import("../services/runtime/client.js");
     return listMyPinnedAgents(app.db, { userId });
   });
 
