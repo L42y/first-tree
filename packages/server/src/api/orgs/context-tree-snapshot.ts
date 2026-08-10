@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { createTimingCollector } from "../../observability/timing.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
+import { summarizeContextTreeUsage } from "../../services/chat/sessions/events.js";
 import { buildContextTreeIoSummary } from "../../services/context-tree/io.js";
 import {
   type ContextTreeBinding,
@@ -17,7 +18,6 @@ import {
   mintContextTreeInstallationToken,
   resolveContextTreeRecoveryAction,
 } from "../../services/scm/github/app-token.js";
-import { summarizeContextTreeUsage } from "../../services/session-event.js";
 
 const querySchema = z
   .object({

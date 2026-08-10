@@ -4,14 +4,14 @@ import { SignJWT } from "jose";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clientWsRoutes } from "../api/agent/ws-client.js";
 import type { inboxEntries } from "../db/schema/inbox-entries.js";
-import * as activityService from "../services/activity.js";
 import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
+import * as inboxService from "../services/chat/inbox.js";
+import * as activityService from "../services/chat/sessions/activity.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
 import * as clientService from "../services/client.js";
-import * as inboxService from "../services/inbox.js";
 import * as notificationService from "../services/notification.js";
 import * as presenceService from "../services/presence.js";
 import * as runtimeLivenessService from "../services/runtime-liveness.js";
-import * as sessionEventService from "../services/session-event.js";
 
 type WsHandler = (socket: FakeSocket, request: { headers: Record<string, string | undefined>; ip: string }) => unknown;
 

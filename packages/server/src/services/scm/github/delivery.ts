@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { GithubEntity } from "../../../api/webhooks/github-entity.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
-import { applyMembershipWrite } from "../../participant-mode.js";
+import { applyMembershipWrite } from "../../chat/membership/participants.js";
 import type { ScmAudienceTarget } from "../shared/audience-composition.js";
 import { sendScmSystemCard } from "../shared/card-delivery.js";
 import {

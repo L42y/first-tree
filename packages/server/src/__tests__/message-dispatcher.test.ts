@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createAgent, getAgent } from "../services/agent.js";
-import { addParticipant, createChat } from "../services/chat.js";
-import { buildClientMessagePayload, buildClientMessagePayloadsForInbox } from "../services/message-dispatcher.js";
+import { addParticipant, createChat } from "../services/chat/conversation.js";
+import { buildClientMessagePayload, buildClientMessagePayloadsForInbox } from "../services/chat/message-dispatcher.js";
 import { createAdminContext, createTestApp } from "./helpers.js";
 
 let app: FastifyInstance;

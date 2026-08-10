@@ -7,21 +7,24 @@ import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
-import { registerChatAudienceDispatcher, resetChatAudienceDispatcher } from "../services/chat-audience-cache.js";
-import * as memberService from "../services/member.js";
-import { sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import {
+  registerChatAudienceDispatcher,
+  resetChatAudienceDispatcher,
+} from "../services/chat/membership/audience-cache.js";
 import {
   assertChatVisibleInOrgOrNotFound,
   inviteParticipantsToChat,
   inviteParticipantsToChatInTransaction,
-} from "../services/participant-invite.js";
+} from "../services/chat/membership/invite.js";
+import { sendMessage } from "../services/chat/message.js";
+import * as memberService from "../services/member.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
  * Layer-2 invite service contract. Both the agent-JWT path
- * (`chat.ts::addParticipant`) and the user-JWT web path
- * (`me-chat.ts::addMeChatParticipants`) collapse onto
+ * (`services/chat/conversation.ts::addParticipant`) and the user-JWT web path
+ * (`services/chat/workspace/me-chat.ts::addMeChatParticipants`) collapse onto
  * `inviteParticipantsToChat`. These tests pin the shared contract directly
  * at the service layer so any future entrypoint that delegates here
  * inherits the same behaviour.

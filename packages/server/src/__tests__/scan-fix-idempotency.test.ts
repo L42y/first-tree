@@ -6,8 +6,8 @@ import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent } from "../services/agent.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
-import { createMeChat } from "../services/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

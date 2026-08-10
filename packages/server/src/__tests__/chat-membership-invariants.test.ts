@@ -27,16 +27,21 @@ import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat, joinMeChat, leaveMeChat, markMeChatRead, setChatEngagement } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
-import { addChatParticipants } from "../services/participant-mode.js";
+import { addChatParticipants, recomputeChatWatchers } from "../services/chat/membership/participants.js";
 import {
   ensureCanJoin,
   joinAsParticipant,
   leaveAsParticipant,
-  recomputeChatWatchers,
   recomputeWatchersForAgent,
-} from "../services/watcher.js";
+} from "../services/chat/membership/watcher.js";
+import { sendMessage } from "../services/chat/message.js";
+import {
+  createMeChat,
+  joinMeChat,
+  leaveMeChat,
+  markMeChatRead,
+  setChatEngagement,
+} from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("chat membership invariants", () => {

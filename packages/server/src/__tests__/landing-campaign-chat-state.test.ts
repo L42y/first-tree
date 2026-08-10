@@ -2,12 +2,12 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema/chats.js";
 import { createAgent } from "../services/agent.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import {
   completeLandingCampaignTrialAgentTurn,
   normalizeLandingCampaignTrialChatMetadataForRead,
 } from "../services/landing-campaigns/chat-state.js";
 import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
-import { createMeChat } from "../services/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 function trialMetadata(

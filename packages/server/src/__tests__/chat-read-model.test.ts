@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_SUMMARY_MAX_LENGTH, extractChatSummary, resolveChatTitle } from "../services/chat-read-model.js";
+import { CHAT_SUMMARY_MAX_LENGTH, extractChatSummary, resolveChatTitle } from "../services/chat/read-model.js";
 
 describe("extractChatSummary", () => {
   it("extracts text from JSONB content and string content", () => {

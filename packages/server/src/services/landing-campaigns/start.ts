@@ -26,12 +26,12 @@ import {
 } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
 import { agentMetadataUpdateExpressionPreservingRuntimeState, createAgent } from "../agent.js";
-import { computeWorking } from "../agent-chat-status.js";
 import { pickDefaultMembership } from "../auth.js";
-import { createChat } from "../chat.js";
+import { createChat } from "../chat/conversation.js";
+import { sendMessage } from "../chat/message.js";
+import { computeWorking } from "../chat/sessions/status.js";
 import { sendToClient } from "../connection-manager.js";
 import { MEMBER_STATUSES, reactivateMembership, syncCurrentUserDisplayName } from "../membership.js";
-import { sendMessage } from "../message.js";
 import { notifyRecipients } from "../notifier.js";
 import { assertOfficialLandingCampaignClient, assertTrialQuota, isLandingCampaignServiceOrg } from "./guards.js";
 import {

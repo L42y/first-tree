@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import * as activityService from "../../services/activity.js";
+import * as activityService from "../../services/chat/sessions/activity.js";
 
 /** Class B — `/api/v1/orgs/:orgId/activity`. */
 export async function orgActivityRoutes(app: FastifyInstance): Promise<void> {

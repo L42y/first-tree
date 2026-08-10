@@ -19,7 +19,7 @@
 
 import { sql } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("POST /chats/:chatId/engagement", () => {

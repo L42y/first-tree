@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
+import { sendMessage } from "../services/chat/message.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

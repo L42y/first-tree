@@ -1,9 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, NotFoundError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
-import { invalidateChatAudience } from "../../services/chat-audience-cache.js";
+import { invalidateChatAudience } from "../../services/chat/membership/audience-cache.js";
+import { runDeferredSendMessagePostCommitEffects } from "../../services/chat/message.js";
 import { handleContextReviewerMrEvent } from "../../services/context-tree/reviewer/gitlab/mr.js";
-import { runDeferredSendMessagePostCommitEffects } from "../../services/message.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import {
   findActiveGitlabEndpoint,

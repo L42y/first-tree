@@ -2,8 +2,8 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { suspendAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
-import { sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("sendMessage returns recipients", () => {

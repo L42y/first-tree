@@ -9,6 +9,7 @@ import { contextTreeIoEvents } from "../db/schema/context-tree-io-events.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { sessionEvents } from "../db/schema/session-events.js";
+import { appendEvent } from "../services/chat/sessions/events.js";
 import {
   buildContextTreeIoSummary,
   explainContextTreeIoDecision,
@@ -18,7 +19,6 @@ import {
   summarizeContextTreeIoSkippedEvents,
 } from "../services/context-tree/io.js";
 import { putOrgSetting } from "../services/org-settings.js";
-import { appendEvent } from "../services/session-event.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 const TREE_REPO = "https://github.com/acme/first-tree-context.git";

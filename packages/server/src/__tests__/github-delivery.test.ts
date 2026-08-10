@@ -10,7 +10,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
 import { type GithubProviderTaskContext, resolveGithubAudience } from "../services/scm/github/audience.js";
 import { deliverGithubEvent } from "../services/scm/github/delivery.js";
 import { resolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";

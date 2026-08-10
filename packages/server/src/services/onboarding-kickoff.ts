@@ -16,8 +16,8 @@ import { chats } from "../db/schema/chats.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
-import { createChat } from "./chat.js";
-import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./message.js";
+import { createChat } from "./chat/conversation.js";
+import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./chat/message.js";
 
 /** Shared idempotency key for a landing-campaign action launcher. */
 export function campaignActionKickoffKey(humanAgentId: string, action: LandingCampaignActionContext): string {

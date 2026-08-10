@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { maybeUnwrapDoubleEncoded } from "../services/message.js";
+import { maybeUnwrapDoubleEncoded } from "../services/chat/message.js";
 
 /**
  * Pins the issue-#389 defensive unwrap. Agents occasionally `JSON.stringify`

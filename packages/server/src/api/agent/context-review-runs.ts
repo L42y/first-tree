@@ -2,7 +2,7 @@ import { AGENT_RUNTIME_SESSION_HEADER, contextReviewSubmitRequestSchema } from "
 import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { validateAgentRuntimeSession } from "../../services/agent-runtime-session.js";
-import * as chatService from "../../services/chat.js";
+import * as chatService from "../../services/chat/conversation.js";
 import {
   ContextReviewPublisherError,
   submitContextReviewOutcome,

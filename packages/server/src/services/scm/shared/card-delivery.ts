@@ -4,7 +4,7 @@ import {
   type DeferredSendMessagePostCommitEffects,
   runDeferredSendMessagePostCommitEffects,
   sendMessage,
-} from "../../message.js";
+} from "../../chat/message.js";
 import { notifyRecipients } from "../../notifier.js";
 
 export type DeferredScmCardPostCommitEffects = {

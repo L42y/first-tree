@@ -10,10 +10,10 @@ import { clients } from "../db/schema/clients.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { createAgent } from "../services/agent.js";
 import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import * as clientService from "../services/client.js";
 import * as connectionManager from "../services/connection-manager.js";
-import { sendMessage } from "../services/message.js";
 import * as presenceService from "../services/presence.js";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 

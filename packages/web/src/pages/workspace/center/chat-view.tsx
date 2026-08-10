@@ -2346,7 +2346,7 @@ export function ChatView({
     onSuccess: (saved, _content, ctx) => {
       if (ctx?.tempId) replaceOptimisticMessage(ctx.tempId, saved);
       // Refresh the workspace sidebar the moment the message is durable —
-      // server's predictive Step 1b (in services/message.ts) just upserted an
+      // server's predictive Step 1b (in services/chat/message.ts) just upserted an
       // `active` agent_chat_sessions row, so the new chat now satisfies the
       // listAgentSessions INNER JOIN. Without this invalidate the user would
       // wait up to 10s for the polling refetch. See M plan Step 3 in
@@ -3437,7 +3437,7 @@ export function ChatView({
   // user last left" pointer.
   //
   // Index-based (not lex on message id) because `crypto.randomUUID()`
-  // in `server/src/services/message.ts:188` produces UUID v4, which
+  // in `server/src/services/chat/message.ts:188` produces UUID v4, which
   // is NOT time-sortable. A v4 id for a brand-new message can lex
   // compare LESS than an older anchor's id and silently get
   // classified as "already seen". `mergedMessages` is already sorted
@@ -3646,7 +3646,7 @@ export function ChatView({
   //
   // Comparison is by index in `mergedMessages` (which is sorted by
   // `createdAt` ascending). DO NOT compare by lex order on the
-  // message id: `server/src/services/message.ts:188` generates ids
+  // message id: `server/src/services/chat/message.ts:188` generates ids
   // with `crypto.randomUUID()` (UUID v4, random), so id ordering
   // does not match time ordering. An earlier version used `id > anchor`
   // and silently dropped the divider whenever the freshly-injected
@@ -4142,7 +4142,7 @@ export function ChatView({
    * is created with `type='group'`, so the old `chatDetail.type === "group"`
    * check fired for 1-on-1 DMs too and forced an @mention there — breaking the
    * "DM doesn't need an explicit @mention" UX. The server already keys on
-   * shape (`services/message.ts` `isOneOnOne = participants.length === 2`,
+   * shape (`services/chat/message.ts` `isOneOnOne = participants.length === 2`,
    * speakers only); this mirrors it. `chatDetail.participants` is also
    * speakers-only (`getChatDetail` filters `accessMode = 'speaker'`).
    */

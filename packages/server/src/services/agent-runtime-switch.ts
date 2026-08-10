@@ -18,10 +18,10 @@ import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, Not
 import { uuidv7 } from "../uuid.js";
 import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./agent.js";
 import { revokeAgentRuntimeSession } from "./agent-runtime-session.js";
+import { archiveAllSessionsForAgent } from "./chat/sessions/lifecycle.js";
 import { forceDisconnect } from "./connection-manager.js";
 import type { Notifier } from "./notifier.js";
 import { setOffline } from "./presence.js";
-import { archiveAllSessionsForAgent } from "./session.js";
 
 type RuntimeSwitchPhase = "claimed" | "committed";
 

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
-import { createChat, updateChatMetadata } from "../services/chat.js";
+import { createChat, updateChatMetadata } from "../services/chat/conversation.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**

@@ -48,18 +48,18 @@
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { BadRequestError, NotFoundError } from "../errors.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
-import { backfillSilentContextForNewParticipants } from "./inbox.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { BadRequestError, NotFoundError } from "../../../errors.js";
+import { backfillSilentContextForNewParticipants } from "../inbox.js";
+import { invalidateChatAudience } from "./audience-cache.js";
+import { lockChatMembershipMutation } from "./lock.js";
 
 /**
  * Structural DB type that accepts both the top-level `Database` and a
- * transaction client. Mirrors the widening pattern in `services/watcher.ts`.
+ * transaction client. Mirrors the widening pattern in `services/chat/membership/watcher.ts`.
  */
 // biome-ignore lint/suspicious/noExplicitAny: needed for cross-schema compatibility
 type DbLike = PgDatabase<PgQueryResultHKT, any, any>;

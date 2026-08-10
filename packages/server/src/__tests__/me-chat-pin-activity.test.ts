@@ -15,9 +15,9 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
-import { updateChatMetadata } from "../services/chat.js";
-import { applyAfterFanOut } from "../services/chat-projection.js";
-import { createMeChat, listMeChats, pinMeChat } from "../services/me-chat.js";
+import { updateChatMetadata } from "../services/chat/conversation.js";
+import { createMeChat, listMeChats, pinMeChat } from "../services/chat/workspace/me-chat.js";
+import { applyAfterFanOut } from "../services/chat/workspace/projection.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("pinMeChat + chats.activity_at", () => {

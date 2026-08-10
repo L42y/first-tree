@@ -119,7 +119,7 @@ export function parseWorkspaceDocKey(key: string): { agentSlug: string; chatId: 
 /**
  * Heuristic: does this string have the shape of a First Tree chat id?
  *
- * Chats are minted with `randomUUID()` (services/chat.ts), so a real chatId is
+ * Chats are minted with `randomUUID()` (services/chat/conversation.ts), so a real chatId is
  * always a 36-char canonical UUID — `xxxxxxxx-xxxx-Mxxx-Nxxx-xxxxxxxxxxxx`
  * where M is the version nibble and N is the variant nibble. We accept any
  * canonical UUID (v1-v7) so the check stays correct if the project rotates

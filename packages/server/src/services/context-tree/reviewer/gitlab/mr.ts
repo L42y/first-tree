@@ -8,10 +8,10 @@ import type { Database } from "../../../../db/connection.js";
 import { chats } from "../../../../db/schema/chats.js";
 import { createLogger } from "../../../../observability/index.js";
 import { uuidv7 } from "../../../../uuid.js";
-import { createChat } from "../../../chat.js";
-import { type DeferredSendMessagePostCommitEffects, sendMessage } from "../../../message.js";
+import { createChat } from "../../../chat/conversation.js";
+import { applyMembershipWrite } from "../../../chat/membership/participants.js";
+import { type DeferredSendMessagePostCommitEffects, sendMessage } from "../../../chat/message.js";
 import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "../../../org-settings.js";
-import { applyMembershipWrite } from "../../../participant-mode.js";
 import type { NormalizedGitlabWebhook } from "../../../scm/gitlab/webhook.js";
 import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
 import {

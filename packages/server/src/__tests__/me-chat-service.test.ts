@@ -29,8 +29,9 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { users } from "../db/schema/users.js";
-import { listActiveRuntimeChatIds } from "../services/chat.js";
-import { applyAfterFanOut } from "../services/chat-projection.js";
+import { listActiveRuntimeChatIds } from "../services/chat/conversation.js";
+import { recomputeChatWatchers } from "../services/chat/membership/participants.js";
+import { sendMessage } from "../services/chat/message.js";
 import {
   addMeChatParticipants,
   countUnreadMeChats,
@@ -42,9 +43,8 @@ import {
   markMeChatRead,
   markMeChatUnread,
   setChatEngagement,
-} from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
-import { recomputeChatWatchers } from "../services/watcher.js";
+} from "../services/chat/workspace/me-chat.js";
+import { applyAfterFanOut } from "../services/chat/workspace/projection.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("chat-first workspace service layer", () => {

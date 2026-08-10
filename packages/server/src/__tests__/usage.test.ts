@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BadRequestError } from "../errors.js";
-import * as sessionEventService from "../services/session-event.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
 import * as usageService from "../services/usage.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createAgent, getAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
-import { ackEntryByIdForBoundAgents, pollInbox } from "../services/inbox.js";
-import { listMessages, sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import { ackEntryByIdForBoundAgents, pollInbox } from "../services/chat/inbox.js";
+import { listMessages, sendMessage } from "../services/chat/message.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 /**
@@ -194,7 +194,7 @@ describe("messaging E2E — group-chat mention scenarios", () => {
     expect(b2Before).toHaveLength(1);
     await ackAll(app, b2Before, b2.inboxId);
 
-    const { editMessage } = await import("../services/message.js");
+    const { editMessage } = await import("../services/chat/message.js");
     await editMessage(
       app.db,
       c1.id,

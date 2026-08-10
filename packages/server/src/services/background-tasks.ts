@@ -1,10 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { createLogger } from "../observability/index.js";
 import { backfillExternalAttachmentsToPostgres, sweepOrphanAttachments } from "./attachment.js";
-import * as chatArchiveService from "./chat-archive.js";
+import * as inboxService from "./chat/inbox.js";
+import { createCronScheduler } from "./chat/scheduled-jobs/scheduler.js";
+import * as chatArchiveService from "./chat/workspace/archive.js";
 import * as clientService from "./client.js";
-import { createCronScheduler } from "./cron-scheduler.js";
-import * as inboxService from "./inbox.js";
 import * as notificationService from "./notification.js";
 import * as presenceService from "./presence.js";
 import { backfillSkillResourceBundles } from "./skill-bundle.js";

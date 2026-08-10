@@ -5,7 +5,7 @@
  * Responsibilities:
  *   - Cursor-paginated conversation list (single-stream JOIN over the
  *     unified `chat_membership` + `chat_user_state` tables).
- *   - Create a legacy empty Web chat via `chat.ts::createChat`.
+ *   - Create a legacy empty Web chat via `conversation.ts::createChat`.
  *   - Add participants (delegates to `inviteParticipantsToChat`).
  *   - Mark-read (UPSERT into `chat_user_state`).
  *   - Join → watcher to speaker (delegates to `watcher.ts`).
@@ -36,22 +36,22 @@ import {
   type MeChatUnreadResponse,
 } from "@first-tree/shared";
 import { and, eq, inArray, ne, type SQL, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chatUserState } from "../db/schema/chat-user-state.js";
-import { members } from "../db/schema/members.js";
-import { messages } from "../db/schema/messages.js";
-import { users } from "../db/schema/users.js";
-import { BadRequestError, CallerNotSpeakerError, NotFoundError } from "../errors.js";
-import { resolveAvatarImageUrl } from "./agent.js";
-import { resolveAgentChatStatuses } from "./agent-chat-status.js";
-import { createChat } from "./chat.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { extractChatSummary, resolveChatTitle } from "./chat-read-model.js";
-import { pauseActiveJobsForOwnerChatDelete } from "./cron-job.js";
-import { assertChatVisibleInOrgOrNotFound, inviteParticipantsToChat } from "./participant-invite.js";
-import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMembership } from "./watcher.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chatUserState } from "../../../db/schema/chat-user-state.js";
+import { members } from "../../../db/schema/members.js";
+import { messages } from "../../../db/schema/messages.js";
+import { users } from "../../../db/schema/users.js";
+import { BadRequestError, CallerNotSpeakerError, NotFoundError } from "../../../errors.js";
+import { resolveAvatarImageUrl } from "../../agent.js";
+import { createChat } from "../conversation.js";
+import { invalidateChatAudience } from "../membership/audience-cache.js";
+import { assertChatVisibleInOrgOrNotFound, inviteParticipantsToChat } from "../membership/invite.js";
+import { ensureCanJoin, joinAsParticipant, leaveAsParticipant, resolveChatMembership } from "../membership/watcher.js";
+import { extractChatSummary, resolveChatTitle } from "../read-model.js";
+import { pauseActiveJobsForOwnerChatDelete } from "../scheduled-jobs/job.js";
+import { resolveAgentChatStatuses } from "../sessions/status.js";
 
 // ---------------------------------------------------------------------------
 // Cursor encoding
@@ -395,7 +395,7 @@ function dedupeRawByChatId(rows: RawMeChatRow[]): RawMeChatRow[] {
  *   - `chat_has_explicit_mention_to_me` scans the caller's unread window for a
  *     message whose `metadata.mentions` contains the caller's uuid,
  *     distinguishing an explicit `@me` from the v1 1-on-1 implicit DM
- *     auto-mention (services/message.ts `dmAutoProjection`).
+ *     auto-mention (services/chat/message.ts `dmAutoProjection`).
  *
  * `filters` carries the view-scoped predicates (unread / watching / engagement
  * / origin / participants), computed once and reused verbatim so every group

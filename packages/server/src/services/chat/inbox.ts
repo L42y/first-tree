@@ -10,11 +10,11 @@ import {
 import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import type { Database } from "../db/connection.js";
-import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { messages } from "../db/schema/messages.js";
-import { ForbiddenError } from "../errors.js";
-import { FIRST_TREE_ATTR, withSpan } from "../observability/index.js";
+import type { Database } from "../../db/connection.js";
+import { inboxEntries } from "../../db/schema/inbox-entries.js";
+import { messages } from "../../db/schema/messages.js";
+import { ForbiddenError } from "../../errors.js";
+import { FIRST_TREE_ATTR, withSpan } from "../../observability/index.js";
 import { buildClientMessagePayloadsForInbox, resolveInboxAgentId } from "./message-dispatcher.js";
 
 /** Claimed `inbox_entries` row, typed via Drizzle `$inferSelect` so column-mode

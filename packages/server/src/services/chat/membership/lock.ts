@@ -1,8 +1,8 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
 
 // biome-ignore lint/suspicious/noExplicitAny: accepts both the root database and transaction clients
 type DbLike = PgDatabase<PgQueryResultHKT, any, any>;

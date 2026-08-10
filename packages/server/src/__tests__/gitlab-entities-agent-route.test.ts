@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import {
   listVisibleChatGitlabEntities,

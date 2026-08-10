@@ -70,7 +70,7 @@ export async function fetchChatContext(
   // safe by construction.
   //
   // `listChatParticipants` already filters `access_mode = "speaker"` (the
-  // server-side query in services/chat.ts:listChatParticipantsWithNames does
+  // server-side query in services/chat/conversation.ts:listChatParticipantsWithNames does
   // the WHERE clause) — watcher rows do not surface here, so no additional
   // client-side filter is needed.
   const filteredParticipants: ChatContextParticipant[] = participants

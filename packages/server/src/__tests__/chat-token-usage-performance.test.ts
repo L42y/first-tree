@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { connectDatabase } from "../db/connection.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 let db: ReturnType<typeof connectDatabase> | undefined;

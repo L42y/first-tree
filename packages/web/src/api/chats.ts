@@ -89,7 +89,7 @@ export function patchChatEngagement(
  * Send a text message to a chat.
  *
  * `mentions` carries the routing intent. The server enforces explicit
- * declaration (see services/message.ts "Routing contract"): empty
+ * declaration (see services/chat/message.ts "Routing contract"): empty
  * mentions are rejected with 400, unless this is a final-text send (the
  * web composer never sends those — that's an agent-runtime path).
  *
@@ -215,7 +215,7 @@ export function sendFileMessageBatch(
   // `resolves` rides a file-format send only when the human answers a blocking
   // ask WITH an attached image (the AskTakeover image path). The server's
   // resolution gate is format-agnostic — it authorizes off `senderId === target`
-  // (services/message.ts), so a captioned image from the target resolves the
+  // (services/chat/message.ts), so a captioned image from the target resolves the
   // question exactly like a text answer. Mirrors `sendChatMessage`.
   const meta =
     hasMentions || hasAttachments || opts?.resolves

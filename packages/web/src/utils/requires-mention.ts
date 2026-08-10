@@ -2,7 +2,7 @@
  * Whether the chat composer must carry an explicit `@mention` before a send is
  * allowed.
  *
- * Mirrors the server's membership-shape rule (`services/message.ts`
+ * Mirrors the server's membership-shape rule (`services/chat/message.ts`
  * `isOneOnOne = participants.length === 2`, speakers only): a 1-on-1 never
  * needs an explicit mention; a real group (3+ speakers) does.
  *

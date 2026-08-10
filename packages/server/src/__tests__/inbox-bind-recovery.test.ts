@@ -1,9 +1,9 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createChat } from "../services/chat.js";
-import * as inboxService from "../services/inbox.js";
-import { sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import * as inboxService from "../services/chat/inbox.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**

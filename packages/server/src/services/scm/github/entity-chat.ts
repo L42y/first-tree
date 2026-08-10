@@ -6,9 +6,9 @@ import type { Database } from "../../../db/connection.js";
 import { chats } from "../../../db/schema/chats.js";
 import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
 import { createLogger } from "../../../observability/index.js";
-import { createChat } from "../../chat.js";
-import { invalidateChatAudience } from "../../chat-audience-cache.js";
-import { inviteParticipantsToChatInTransaction } from "../../participant-invite.js";
+import { createChat } from "../../chat/conversation.js";
+import { invalidateChatAudience } from "../../chat/membership/audience-cache.js";
+import { inviteParticipantsToChatInTransaction } from "../../chat/membership/invite.js";
 import { resolveAgentScmBindingPair } from "../shared/attention-line.js";
 import { githubEntityAttentionLockKey, withScmEntityAttentionTransaction } from "../shared/entity-attention-lock.js";
 import {

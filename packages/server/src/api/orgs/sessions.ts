@@ -2,7 +2,7 @@ import { paginationQuerySchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import * as sessionService from "../../services/session.js";
+import * as sessionService from "../../services/chat/sessions/lifecycle.js";
 
 const sessionListFilter = paginationQuerySchema.extend({
   state: z.enum(["active", "suspended", "evicted"]).optional(),

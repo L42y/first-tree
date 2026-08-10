@@ -14,14 +14,14 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import { pollInbox } from "../services/chat/inbox.js";
+import { getCallerEngagement, setChatEngagement } from "../services/chat/workspace/me-chat.js";
 import { handleContextReviewerMrEvent } from "../services/context-tree/reviewer/gitlab/mr.js";
 import {
   putContextReviewerAssignment,
   putContextReviewerEnablement,
 } from "../services/context-tree/reviewer/settings.js";
-import { pollInbox } from "../services/inbox.js";
-import { getCallerEngagement, setChatEngagement } from "../services/me-chat.js";
 import { deleteMember } from "../services/member.js";
 import { deactivateMembership, MEMBER_STATUSES, reactivateMembership } from "../services/membership.js";
 import { putOrgSetting } from "../services/org-settings.js";

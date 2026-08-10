@@ -25,14 +25,18 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agent.js";
-import { getChatAgentStatuses } from "../services/agent-chat-status.js";
-import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat.js";
-import { extractChatSummary, resolveChatTitle } from "../services/chat-read-model.js";
+import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat/conversation.js";
 import {
-  hasRemainingLandingCampaignTrialBudget,
-  normalizeLandingCampaignTrialChatMetadataForRead,
-} from "../services/landing-campaigns/chat-state.js";
-import { assertNoLandingCampaignTrialAgents } from "../services/landing-campaigns/guards.js";
+  encodeMessageHistoryCursor,
+  listOpenRequestsForViewer,
+  messageHistoryOrderBy,
+  messageHistoryWhere,
+  sendMessage,
+} from "../services/chat/message.js";
+import { WIRE_RECIPIENT_MODE } from "../services/chat/message-dispatcher.js";
+import { extractChatSummary, resolveChatTitle } from "../services/chat/read-model.js";
+import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/chat/sessions/events.js";
+import { getChatAgentStatuses } from "../services/chat/sessions/status.js";
 import {
   addMeChatParticipants,
   joinMeChat,
@@ -41,16 +45,13 @@ import {
   markMeChatUnread,
   pinMeChat,
   setChatEngagement,
-} from "../services/me-chat.js";
+} from "../services/chat/workspace/me-chat.js";
+import { listRequestThread } from "../services/chat/workspace/need-you.js";
 import {
-  encodeMessageHistoryCursor,
-  listOpenRequestsForViewer,
-  messageHistoryOrderBy,
-  messageHistoryWhere,
-  sendMessage,
-} from "../services/message.js";
-import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
-import { listRequestThread } from "../services/need-you.js";
+  hasRemainingLandingCampaignTrialBudget,
+  normalizeLandingCampaignTrialChatMetadataForRead,
+} from "../services/landing-campaigns/chat-state.js";
+import { assertNoLandingCampaignTrialAgents } from "../services/landing-campaigns/guards.js";
 import { notifyRecipients } from "../services/notifier.js";
 import {
   declareEntityFollow,
@@ -66,7 +67,6 @@ import {
   removeGitlabEntityFollow,
 } from "../services/scm/gitlab/entity-follow.js";
 import { resolveHumanScmBindingPair } from "../services/scm/shared/attention-line.js";
-import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/session-event.js";
 import { sendFollowResult } from "./github-entity-reply.js";
 
 /**
@@ -583,9 +583,9 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // `POST /:chatId/join` (v1 supervision-check join) was removed alongside
-  // its `chat.ts::joinChat` service — the v2 watcher-based path
+  // its `services/chat/conversation.ts::joinChat` service — the v2 watcher-based path
   // `POST /:chatId/workspace-join` (below, see also
-  // `me-chat.ts::joinMeChat`) supersedes it and is the only "manager joins
+  // `services/chat/workspace/me-chat.ts::joinMeChat`) supersedes it and is the only "manager joins
   // chat" route the web / CLI actually call.
 
   app.post<{ Params: { chatId: string } }>("/:chatId/leave", async (request, reply) => {
@@ -625,7 +625,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     // resolved uuids in `metadata.mentions`. In 2-speaker chats the composer
     // auto-injects the peer's uuid so 1:1 typing without an `@` still reaches
     // the recipient. Either way, `metadata.mentions` is expected to be non-empty
-    // here; the server no longer parses content. See `services/message.ts`
+    // here; the server no longer parses content. See `services/chat/message.ts`
     // Routing contract.
     const result = await sendMessage(app.db, request.params.chatId, scope.humanAgentId, { ...body, source: "web" });
 

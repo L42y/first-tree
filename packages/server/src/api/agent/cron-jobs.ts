@@ -12,7 +12,7 @@ import {
   listCronJobsForChat,
   previewCronSchedule,
   updateCronJob,
-} from "../../services/cron-job.js";
+} from "../../services/chat/scheduled-jobs/job.js";
 import { notifyCronChatUpdated, requireCronAgentCaller, sendCronError } from "../cron-http.js";
 
 /**

@@ -21,14 +21,14 @@ import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agent.js";
 import { bindAgentRuntimeSession, validateAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { signTokensForUser } from "../services/auth.js";
+import { sendMessage } from "../services/chat/message.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
 import { completeLandingCampaignTrialAgentTurn } from "../services/landing-campaigns/chat-state.js";
 import {
   LANDING_CAMPAIGN_TRIAL_PROMPT,
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "../services/landing-campaigns/trial-prompt.js";
 import { createMember } from "../services/member.js";
-import { sendMessage } from "../services/message.js";
-import * as sessionEventService from "../services/session-event.js";
 import { uuidv7 } from "../uuid.js";
 import { agentRequest, createTestAdmin, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
 

@@ -16,7 +16,7 @@ import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("POST /chats/:chatId/pin", () => {

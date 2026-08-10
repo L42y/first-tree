@@ -11,15 +11,15 @@ import { chats } from "../../../../db/schema/chats.js";
 import { messages } from "../../../../db/schema/messages.js";
 import { createLogger } from "../../../../observability/index.js";
 import { uuidv7 } from "../../../../uuid.js";
-import { createChat } from "../../../chat.js";
+import { createChat } from "../../../chat/conversation.js";
+import { applyMembershipWrite } from "../../../chat/membership/participants.js";
 import {
   type DeferredSendMessagePostCommitEffects,
   runDeferredSendMessagePostCommitEffects,
   sendMessage,
-} from "../../../message.js";
+} from "../../../chat/message.js";
 import { notifyRecipients } from "../../../notifier.js";
 import { getOrgContextReviewRuntime } from "../../../org-settings.js";
-import { applyMembershipWrite } from "../../../participant-mode.js";
 import { isGithubAppSelfOutput } from "../../../scm/github/app-self-output.js";
 import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
 import {

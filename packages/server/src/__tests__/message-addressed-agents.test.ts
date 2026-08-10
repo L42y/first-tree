@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { preflightMessageSendIntent, type SendIntentParticipant } from "../services/message.js";
+import { preflightMessageSendIntent, type SendIntentParticipant } from "../services/chat/message.js";
 
 const HUMAN: SendIntentParticipant = {
   agentId: "human-1",

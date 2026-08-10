@@ -14,7 +14,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
 import {
   contextReviewerPrTestInternals,
   handleContextReviewerPrEvent as handleContextReviewerPrEventService,

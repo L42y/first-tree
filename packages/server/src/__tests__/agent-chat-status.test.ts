@@ -16,8 +16,8 @@ import {
   previewAssistantTextFull,
   resolveAgentChatStatuses,
   withTurnNarration,
-} from "../services/agent-chat-status.js";
-import { createMeChat } from "../services/me-chat.js";
+} from "../services/chat/sessions/status.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("agent-chat-status", () => {
