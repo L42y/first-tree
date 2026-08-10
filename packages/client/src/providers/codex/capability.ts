@@ -140,7 +140,7 @@ export async function resolveBundledCodexBinary(): Promise<
 }
 
 /** Resolved runtime binary + provenance — mirrors the handler's bundled-first,
- * external-path-fallback order (PR #1054 `codex-binary.ts`). */
+ * external-path-fallback order (PR #1054 `binary.ts`). */
 export type CodexBinaryResolution =
   | {
       ok: true;
