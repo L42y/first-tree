@@ -3,7 +3,7 @@ import {
   contextSessionCandidateIssueRequestSchema,
 } from "@first-tree/shared";
 import { jwtVerify, SignJWT } from "jose";
-import { UnauthorizedError } from "../errors.js";
+import { UnauthorizedError } from "../../errors.js";
 
 const TOKEN_TYPE = "context_session_candidate";
 const TOKEN_TTL = "24h";

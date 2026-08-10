@@ -4,30 +4,30 @@ import { fileURLToPath } from "node:url";
 import { canonicalGitRepoUrl, chatMetadataSchema } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type * as ejs from "ejs";
-import type { Database } from "../db/connection.js";
-import { chats } from "../db/schema/chats.js";
-import { createLogger } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import { createChat } from "./chat.js";
+import type { Database } from "../../../../db/connection.js";
+import { chats } from "../../../../db/schema/chats.js";
+import { createLogger } from "../../../../observability/index.js";
+import { uuidv7 } from "../../../../uuid.js";
+import { createChat } from "../../../chat.js";
+import { type DeferredSendMessagePostCommitEffects, sendMessage } from "../../../message.js";
+import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "../../../org-settings.js";
+import { applyMembershipWrite } from "../../../participant-mode.js";
+import type { NormalizedGitlabWebhook } from "../../../scm/gitlab/webhook.js";
+import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
 import {
   contextReviewerChatReservationKey,
   findExistingContextReviewerChat,
   loadValidContextReviewerAgent,
   withContextReviewerDispatchAuthority,
-} from "./context-reviewer-common.js";
-import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import { type DeferredSendMessagePostCommitEffects, sendMessage } from "./message.js";
-import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "./org-settings.js";
-import { applyMembershipWrite } from "./participant-mode.js";
-import type { NormalizedGitlabWebhook } from "./scm/gitlab/webhook.js";
-import { formatContextReviewTopic } from "./scm/shared/entity-chat-topic.js";
+} from "../common.js";
+import { readContextReviewerAgentReadiness } from "../readiness.js";
 
 const log = createLogger("ContextReviewerMr");
 const require = createRequire(import.meta.url);
 const ejsRuntime: typeof ejs = require("ejs");
 const TEMPLATE_CANDIDATE_URLS = [
   new URL("./prompts/context-reviewer-mr.ejs", import.meta.url),
-  new URL("../prompts/context-reviewer-mr.ejs", import.meta.url),
+  new URL("../../../../prompts/context-reviewer-mr.ejs", import.meta.url),
 ] as const;
 
 export type ContextReviewerMrSkipReason =

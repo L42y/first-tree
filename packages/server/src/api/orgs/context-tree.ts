@@ -19,16 +19,16 @@ import {
   ContextTreeRepoProvisionError,
   contextTreeRepoName,
   ensureInstallationOwnedContextTreeRepo,
-} from "../../services/context-tree-repo-provisioner.js";
+} from "../../services/context-tree/repo-provisioner.js";
 import {
   type ContextTreeBinding,
   getContextTreeSnapshot,
   isGithubRemoteBinding,
-} from "../../services/context-tree-snapshot.js";
+} from "../../services/context-tree/snapshot.js";
 import {
   ContextTreeWritePreflightError,
   preflightContextTreeWriteAuthority,
-} from "../../services/context-tree-write-preflight.js";
+} from "../../services/context-tree/write-preflight.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import {
   adoptSafeLegacyTreeSetupChat,

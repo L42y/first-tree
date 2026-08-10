@@ -15,7 +15,7 @@ import type { WebSocket } from "ws";
 import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
 import * as activityService from "../../../services/activity.js";
 import * as connectionManager from "../../../services/connection-manager.js";
-import * as contextTreeIoService from "../../../services/context-tree-io.js";
+import * as contextTreeIoService from "../../../services/context-tree/io.js";
 import * as landingCampaignChatStateService from "../../../services/landing-campaigns/chat-state.js";
 import * as notificationService from "../../../services/notification.js";
 import type { Notifier } from "../../../services/notifier.js";

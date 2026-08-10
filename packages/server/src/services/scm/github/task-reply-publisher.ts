@@ -24,7 +24,7 @@ import { organizations } from "../../../db/schema/organizations.js";
 import { uuidv7 } from "../../../uuid.js";
 import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
 import { validateAgentRuntimeSession } from "../../agent-runtime-session.js";
-import { normalizeGithubRepo } from "../../context-reviewer-pr.js";
+import { normalizeGithubRepo } from "../../context-tree/reviewer/github/pr.js";
 import { getOrgContextReviewRuntime } from "../../org-settings.js";
 import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {

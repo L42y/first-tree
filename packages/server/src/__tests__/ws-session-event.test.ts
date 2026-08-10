@@ -10,7 +10,7 @@ import { contextTreeIoEvents } from "../db/schema/context-tree-io-events.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agent.js";
-import * as contextTreeIoService from "../services/context-tree-io.js";
+import * as contextTreeIoService from "../services/context-tree/io.js";
 import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { resolveDefaultOrgId } from "../services/organization.js";

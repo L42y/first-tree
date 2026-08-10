@@ -91,7 +91,7 @@ async function setupRoute(input: { orgId: string | null; githubRemote?: boolean;
     isOrgContextTreeBindingRuntimeCurrent,
     resolveUserPrimaryOrgId,
   }));
-  vi.doMock("../services/context-tree-snapshot.js", () => ({
+  vi.doMock("../services/context-tree/snapshot.js", () => ({
     contextTreeSnapshotWindowDays: () => 7,
     getContextTreeSnapshot,
     isGithubRemoteBinding,
@@ -103,7 +103,7 @@ async function setupRoute(input: { orgId: string | null; githubRemote?: boolean;
   }));
   vi.doMock("../scope/require-resource.js", () => ({ resolveOrgViewer }));
   vi.doMock("../services/session-event.js", () => ({ summarizeContextTreeUsage }));
-  vi.doMock("../services/context-tree-io.js", () => ({ buildContextTreeIoSummary }));
+  vi.doMock("../services/context-tree/io.js", () => ({ buildContextTreeIoSummary }));
 
   const { contextTreeSnapshotRoutes } = await import("../api/context-tree-snapshot.js");
   const app = Object.assign(Fastify(), {

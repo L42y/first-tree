@@ -2,7 +2,7 @@ import { contextActivationRequestSchema, contextActivationResponseSchema } from 
 import type { FastifyInstance } from "fastify";
 import { stampContextActivation } from "../../observability/request-context.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import { validateExternalContextActivation } from "../../services/context-activation.js";
+import { validateExternalContextActivation } from "../../services/context-tree/activation.js";
 
 export async function orgContextActivationRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { orgId: string } }>("/validate", { config: { otelRecordBody: false } }, async (request) => {

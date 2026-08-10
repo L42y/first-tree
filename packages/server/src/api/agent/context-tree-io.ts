@@ -2,7 +2,7 @@ import { agentContextTreeIoQuerySchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { BadRequestError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
-import { listAgentContextTreeIoEvents } from "../../services/context-tree-io.js";
+import { listAgentContextTreeIoEvents } from "../../services/context-tree/io.js";
 
 export async function agentContextTreeIoRoutes(app: FastifyInstance): Promise<void> {
   /**

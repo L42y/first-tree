@@ -6,11 +6,11 @@ import {
 } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { requireOrgAdmin } from "../../scope/require-org.js";
-import { listContextReviewerCandidates } from "../../services/context-reviewer-readiness.js";
+import { listContextReviewerCandidates } from "../../services/context-tree/reviewer/readiness.js";
 import {
   putContextReviewerAssignment,
   putContextReviewerEnablement,
-} from "../../services/context-reviewer-settings.js";
+} from "../../services/context-tree/reviewer/settings.js";
 
 /** Class B — `/api/v1/orgs/:orgId/context-reviewer`. */
 export async function orgContextReviewerRoutes(app: FastifyInstance): Promise<void> {

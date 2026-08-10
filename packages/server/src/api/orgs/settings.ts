@@ -8,7 +8,7 @@ import {
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, ConflictError, GoneError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
-import { putLegacyContextReviewerSetting } from "../../services/context-reviewer-settings.js";
+import { putLegacyContextReviewerSetting } from "../../services/context-tree/reviewer/settings.js";
 import * as orgSettingsService from "../../services/org-settings.js";
 import { putTeamAgentAssignment } from "../../services/team-agent-settings.js";
 
