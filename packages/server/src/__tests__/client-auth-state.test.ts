@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import * as clientService from "../services/client.js";
+import * as clientService from "../services/runtime/client.js";
 
 /**
  * `deriveAuthState` is a pure function that infers whether a client's

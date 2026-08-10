@@ -2,8 +2,8 @@ import { getChannelConfig } from "@first-tree/shared/channel";
 import type { FastifyInstance } from "fastify";
 import { requireOrgAdmin } from "../../scope/require-org.js";
 import { expiryToSeconds } from "../../services/auth.js";
-import * as clientService from "../../services/client.js";
 import { isLandingCampaignServiceMembership } from "../../services/landing-campaigns/guards.js";
+import * as clientService from "../../services/runtime/client.js";
 import { serializeDate } from "../../utils.js";
 import { clientCommandVersionHint } from "../client-command-version.js";
 

@@ -14,10 +14,10 @@ import { createChat } from "../services/chat/conversation.js";
 import * as inboxService from "../services/chat/inbox.js";
 import * as activityService from "../services/chat/sessions/activity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
-import * as clientService from "../services/client.js";
-import * as connectionManager from "../services/connection-manager.js";
 import * as notificationService from "../services/notification.js";
-import * as presenceService from "../services/presence.js";
+import * as clientService from "../services/runtime/client.js";
+import * as connectionManager from "../services/runtime/connection-manager.js";
+import * as presenceService from "../services/runtime/presence.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, createTestApp, seedClient } from "./helpers.js";
 
@@ -1682,7 +1682,7 @@ describe("Agent client WS edge protocol coverage", () => {
     // be able to resolve the waiter or leave a durable result behind.
     const seed = await createAdminContext(app, { username: `ws-cap-ack-${crypto.randomUUID().slice(0, 8)}` });
     const agent = await createPinnedAgent({ ...seed, suffix: "cap-ack" });
-    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+    const { readSessionCommandRpcResult } = await import("../services/runtime/rpc/session-command.js");
 
     const legacyWs = await openRegisteredSocket(seed, {});
     const legacyRef = "550e8400-e29b-41d4-a716-446655440060";
@@ -1868,7 +1868,7 @@ describe("Agent client WS edge protocol coverage", () => {
 
       // Persisted under the finalized phase so a lost result wake still
       // converges, and never readable as an apply-ack.
-      const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+      const { readSessionCommandRpcResult } = await import("../services/runtime/rpc/session-command.js");
       await vi.waitFor(async () => {
         expect(await readSessionCommandRpcResult(app.db, seed.clientId, ackRef, "finalized")).toMatchObject({
           applied: true,
@@ -1942,7 +1942,7 @@ describe("Agent client WS edge protocol coverage", () => {
         phase: "aborted",
       });
 
-      const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+      const { readSessionCommandRpcResult } = await import("../services/runtime/rpc/session-command.js");
       await vi.waitFor(async () => {
         expect(await readSessionCommandRpcResult(app.db, seed.clientId, ackRef, "aborted")).toMatchObject({
           applied: true,
@@ -2023,7 +2023,7 @@ describe("Agent client WS edge protocol coverage", () => {
       );
       // The waiter times out unresolved and nothing was persisted.
       await expect(waiter).rejects.toThrow();
-      const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+      const { readSessionCommandRpcResult } = await import("../services/runtime/rpc/session-command.js");
       expect(await readSessionCommandRpcResult(app.db, seed.clientId, ref)).toBeNull();
     } finally {
       await closeSocket(ws);

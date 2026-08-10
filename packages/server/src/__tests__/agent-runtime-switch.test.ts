@@ -13,7 +13,7 @@ import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { recoverAgentRuntimeSwitch, switchAgentRuntime } from "../services/agents/runtime/switch.js";
 import { createChat } from "../services/chat/conversation.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
-import { retireClient } from "../services/client.js";
+import { retireClient } from "../services/runtime/client.js";
 import { createAdminContext, seedClient, useTestApp } from "./helpers.js";
 
 type GuardedRequest = {

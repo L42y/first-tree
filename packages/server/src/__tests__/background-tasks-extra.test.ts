@@ -22,11 +22,11 @@ const serviceMocks = {
 const mockedModules = [
   "../observability/index.js",
   "../services/chat/workspace/archive.js",
-  "../services/client.js",
+  "../services/runtime/client.js",
   "../services/chat/scheduled-jobs/scheduler.js",
   "../services/chat/inbox.js",
   "../services/notification.js",
-  "../services/presence.js",
+  "../services/runtime/presence.js",
 ];
 
 function mockBackgroundTaskDependencies(): void {
@@ -36,7 +36,7 @@ function mockBackgroundTaskDependencies(): void {
   vi.doMock("../services/chat/workspace/archive.js", () => ({
     sweepChatArchive: serviceMocks.sweepChatArchive,
   }));
-  vi.doMock("../services/client.js", () => ({
+  vi.doMock("../services/runtime/client.js", () => ({
     cleanupStaleClients: serviceMocks.cleanupStaleClients,
   }));
   vi.doMock("../services/chat/scheduled-jobs/scheduler.js", () => ({
@@ -51,7 +51,7 @@ function mockBackgroundTaskDependencies(): void {
   vi.doMock("../services/notification.js", () => ({
     notifyAgentEvent: serviceMocks.notifyAgentEvent,
   }));
-  vi.doMock("../services/presence.js", () => ({
+  vi.doMock("../services/runtime/presence.js", () => ({
     cleanupStalePresence: serviceMocks.cleanupStalePresence,
     heartbeatInstance: serviceMocks.heartbeatInstance,
     markStaleAgents: serviceMocks.markStaleAgents,

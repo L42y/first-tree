@@ -167,12 +167,12 @@ Because they bypass the server's schema with raw SQL, they must mirror what the
 real write produces or the test would advance through a state the daemon can
 never reach. `seed-agent-online.js` therefore writes `runtime_state = 'idle'` and
 `runtime_updated_at`, matching `publishAgentPresence` in
-`packages/server/src/services/presence.ts`.
+`packages/server/src/services/runtime/presence.ts`.
 
 Both fixtures write `last_seen_at` ahead of now on purpose. The server sweeps
 connected clients and agents whose heartbeat is older than
 `presenceCleanupSeconds` (60s by default — see `cleanupStaleClients` in
-`packages/server/src/services/client.ts`). Without a heartbeat loop a plain
+`packages/server/src/services/runtime/client.ts`). Without a heartbeat loop a plain
 `NOW()` would decay mid-run and the flow would regress to "Your computer isn't
 connected".
 

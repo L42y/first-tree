@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { agents } from "../../db/schema/agents.js";
 import { chats } from "../../db/schema/chats.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import * as presenceService from "../../services/presence.js";
+import * as presenceService from "../../services/runtime/presence.js";
 
 /** Class B — `/api/v1/orgs/:orgId/overview`. */
 export async function orgOverviewRoutes(app: FastifyInstance): Promise<void> {

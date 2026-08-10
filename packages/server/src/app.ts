@@ -121,11 +121,11 @@ import {
   registerChatAudienceDispatcher,
 } from "./services/chat/membership/audience-cache.js";
 import { registerChatMessageDispatcher } from "./services/chat/workspace/projection.js";
-import { createCommandVersionPoller } from "./services/command-version-poller.js";
 import { repairMembershipHumanMirrors } from "./services/membership.js";
 import { createNotifier, type Notifier } from "./services/notifier.js";
 import { ensureDefaultOrganization } from "./services/organization.js";
-import { createPulseAggregator } from "./services/pulse-aggregator.js";
+import { createCommandVersionPoller } from "./services/runtime/daemon/command-version-poller.js";
+import { createPulseAggregator } from "./services/runtime/pulse-aggregator.js";
 import { backfillGitlabAttentionPairs } from "./services/scm/gitlab/attention-backfill.js";
 import { backfillSkillResourceBundles } from "./services/skill-bundle.js";
 

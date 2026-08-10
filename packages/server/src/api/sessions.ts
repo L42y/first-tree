@@ -6,9 +6,9 @@ import { requireAgentAccess, requireChatAccess } from "../scope/require-resource
 import * as agentService from "../services/agents/identity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
 import * as sessionService from "../services/chat/sessions/lifecycle.js";
-import * as connectionManager from "../services/connection-manager.js";
-import { sendToAgent } from "../services/connection-manager.js";
-import { readSessionCommandRpcResult, resolveAgentApplyAckRoute } from "../services/session-command-rpc.js";
+import * as connectionManager from "../services/runtime/connection-manager.js";
+import { sendToAgent } from "../services/runtime/connection-manager.js";
+import { readSessionCommandRpcResult, resolveAgentApplyAckRoute } from "../services/runtime/rpc/session-command.js";
 
 const sessionFilterSchema = z.object({
   state: z.enum(["active", "suspended", "evicted"]).optional(),

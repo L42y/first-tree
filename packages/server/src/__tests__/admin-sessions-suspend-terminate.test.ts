@@ -16,8 +16,8 @@ import {
   resolveClientReply,
   setClientConnection,
   setClientReplyTimeoutMsForTests,
-} from "../services/connection-manager.js";
-import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../services/session-command-rpc.js";
+} from "../services/runtime/connection-manager.js";
+import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../services/runtime/rpc/session-command.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => {
@@ -1215,7 +1215,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       LOCAL_INSTANCE,
     );
     expect(stored).toBe(false);
-    const { readSessionCommandRpcResult } = await import("../services/session-command-rpc.js");
+    const { readSessionCommandRpcResult } = await import("../services/runtime/rpc/session-command.js");
     expect(await readSessionCommandRpcResult(app.db, admin.clientId, ref)).toBeNull();
   });
 

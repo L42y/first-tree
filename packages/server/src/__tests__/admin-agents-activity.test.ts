@@ -4,7 +4,7 @@ import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
-import { bindAgent } from "../services/presence.js";
+import { bindAgent } from "../services/runtime/presence.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, INVALID_BCRYPT_PLACEHOLDER, seedClient, useTestApp } from "./helpers.js";
 

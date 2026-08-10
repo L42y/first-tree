@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
-import { retireClient } from "../services/client.js";
+import { retireClient } from "../services/runtime/client.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("retireClient service-layer guard", () => {

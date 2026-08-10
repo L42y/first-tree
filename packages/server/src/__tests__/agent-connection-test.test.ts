@@ -6,7 +6,11 @@ import { agentPresence } from "../db/schema/agent-presence.js";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { messages } from "../db/schema/messages.js";
-import { bindAgentToClient, removeClientConnection, setClientConnection } from "../services/connection-manager.js";
+import {
+  bindAgentToClient,
+  removeClientConnection,
+  setClientConnection,
+} from "../services/runtime/connection-manager.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**

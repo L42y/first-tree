@@ -12,9 +12,9 @@ import { createAgent } from "../services/agents/identity.js";
 import * as agentRuntimeSessionService from "../services/agents/runtime/session.js";
 import { createChat } from "../services/chat/conversation.js";
 import { sendMessage } from "../services/chat/message.js";
-import * as clientService from "../services/client.js";
-import * as connectionManager from "../services/connection-manager.js";
-import * as presenceService from "../services/presence.js";
+import * as clientService from "../services/runtime/client.js";
+import * as connectionManager from "../services/runtime/connection-manager.js";
+import * as presenceService from "../services/runtime/presence.js";
 import { createTestAdmin, createTestApp } from "./helpers.js";
 
 /**

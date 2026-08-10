@@ -19,7 +19,7 @@ const LABELS: Record<PresenceStatus, string> = {
  * non-null value means a runtime client has bound and is reporting state.
  *
  * Why not exclude `"error"`: in production the writers in
- * `services/presence.ts` only flip `runtime_state` back to NULL on unbind /
+ * `services/runtime/presence.ts` only flip `runtime_state` back to NULL on unbind /
  * stale-cleanup. A runtime in `"error"` is still bound and the management
  * surface still has something to act on, so we keep it reachable — distinct
  * from `<StateChip>` which shows the underlying business state.

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { clients } from "../db/schema/clients.js";
 import { ClientRetiredError, ClientUserMismatchError } from "../errors.js";
-import { registerClient } from "../services/client.js";
+import { registerClient } from "../services/runtime/client.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

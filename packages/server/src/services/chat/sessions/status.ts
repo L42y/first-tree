@@ -22,7 +22,7 @@ import { agentPresence } from "../../../db/schema/agent-presence.js";
 import { agents } from "../../../db/schema/agents.js";
 import { chatMembership } from "../../../db/schema/chat-membership.js";
 import { clients } from "../../../db/schema/clients.js";
-import { isConsistentAgentRoute, metadataSupportsSessionReset } from "../../session-command-rpc.js";
+import { isConsistentAgentRoute, metadataSupportsSessionReset } from "../../runtime/rpc/session-command.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.

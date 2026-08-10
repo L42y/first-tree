@@ -12,9 +12,9 @@ import { uuidv7 } from "../uuid.js";
 import { createAgent } from "./agents/identity.js";
 import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
 import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
-import { forceDisconnect } from "./connection-manager.js";
 import { MEMBER_STATUSES, reactivateMembership, syncUserDisplayName } from "./membership.js";
-import * as presenceService from "./presence.js";
+import { forceDisconnect } from "./runtime/connection-manager.js";
+import * as presenceService from "./runtime/presence.js";
 import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
 
 const SALT_ROUNDS = 10;

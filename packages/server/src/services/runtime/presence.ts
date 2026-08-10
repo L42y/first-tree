@@ -1,9 +1,9 @@
 import type { RuntimeState } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { serverInstances } from "../db/schema/server-instances.js";
-import type { Notifier } from "./notifier.js";
+import type { Database } from "../../db/connection.js";
+import { agentPresence } from "../../db/schema/agent-presence.js";
+import { serverInstances } from "../../db/schema/server-instances.js";
+import type { Notifier } from "../notifier.js";
 
 /** Common field reset when agent goes offline or is unbound. */
 export function runtimeFieldsReset(now: Date) {

@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { clients } from "../db/schema/clients.js";
-import * as clientService from "../services/client.js";
+import * as clientService from "../services/runtime/client.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 /**
@@ -60,7 +60,7 @@ describe("GET /me/clients — reconnect path rewrites connectedAt", () => {
     const connectedAt1 = Date.parse(firstRow.connectedAt);
 
     // Simulate WS close — status flips to disconnected. `connectedAt` is
-    // intentionally NOT touched here (see services/client.ts disconnectClient);
+    // intentionally NOT touched here (see services/runtime/client.ts disconnectClient);
     // it stays at T1 until the next register rewrites it.
     await clientService.disconnectClient(app.db, clientId);
 

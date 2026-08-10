@@ -3,8 +3,8 @@ import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import { agents } from "../../../db/schema/agents.js";
 import * as agentRuntimeSwitchService from "../../../services/agents/runtime/switch.js";
-import * as connectionManager from "../../../services/connection-manager.js";
 import type { Notifier } from "../../../services/notifier.js";
+import * as connectionManager from "../../../services/runtime/connection-manager.js";
 
 export type AuthenticatedSession = {
   userId: string;
