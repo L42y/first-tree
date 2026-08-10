@@ -23,17 +23,17 @@ import {
   type UpdateAgentTemplate,
 } from "@first-tree/shared";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Config } from "../config.js";
-import type { Database } from "../db/connection.js";
-import { agentTemplates } from "../db/schema/agent-templates.js";
-import { attachments } from "../db/schema/attachments.js";
-import { members } from "../db/schema/members.js";
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { createLogger } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import { deleteAttachmentIfUnreferenced, loadAttachmentMeta } from "./attachment.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-import { validateSkillBundle } from "./skill-bundle.js";
+import type { Config } from "../../../config.js";
+import type { Database } from "../../../db/connection.js";
+import { agentTemplates } from "../../../db/schema/agent-templates.js";
+import { attachments } from "../../../db/schema/attachments.js";
+import { members } from "../../../db/schema/members.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
+import { createLogger } from "../../../observability/index.js";
+import { uuidv7 } from "../../../uuid.js";
+import { deleteAttachmentIfUnreferenced, loadAttachmentMeta } from "../../attachment.js";
+import type { AttachmentBlobStore } from "../../attachment-blob-store.js";
+import { validateSkillBundle } from "../../skill-bundle.js";
 
 const log = createLogger("agent-templates");
 

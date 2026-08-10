@@ -5,7 +5,7 @@ import { agentPresence } from "../db/schema/agent-presence.js";
 import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { sendMessage } from "../services/chat/message.js";
 import { createMeChat, listMeChats, pinMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { agentPresence } from "../db/schema/agent-presence.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 describe("Admin agent client-status (Step 10)", () => {

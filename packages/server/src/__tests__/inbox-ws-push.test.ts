@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createAgent, getAgent } from "../services/agent.js";
+import { createAgent, getAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import * as inboxService from "../services/chat/inbox.js";
 import { sendMessage } from "../services/chat/message.js";

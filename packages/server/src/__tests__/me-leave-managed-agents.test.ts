@@ -4,7 +4,7 @@ import postgres from "postgres";
 import { describe, expect, it } from "vitest";
 import { agents as agentsTable } from "../db/schema/agents.js";
 import { members as membersTable } from "../db/schema/members.js";
-import { createAgent, updateAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { retireClient } from "../services/client.js";
 import { createMember } from "../services/member.js";
 import { leaveOrganization } from "../services/membership.js";

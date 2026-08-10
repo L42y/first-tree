@@ -5,7 +5,7 @@ import type { WebSocket } from "ws";
 import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
 import { members } from "../../../db/schema/members.js";
-import * as agentRuntimeSessionService from "../../../services/agent-runtime-session.js";
+import * as agentRuntimeSessionService from "../../../services/agents/runtime/session.js";
 import * as inboxService from "../../../services/chat/inbox.js";
 import * as connectionManager from "../../../services/connection-manager.js";
 import * as notificationService from "../../../services/notification.js";

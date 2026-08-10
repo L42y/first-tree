@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { users } from "../db/schema/users.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { createAdminContext, createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 

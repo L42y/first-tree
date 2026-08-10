@@ -26,7 +26,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { addChatParticipants, recomputeChatWatchers } from "../services/chat/membership/participants.js";
 import {
   ensureCanJoin,

@@ -119,7 +119,7 @@ async function seedAgent(
     inboxId: `inbox_${uuid}`,
     managerId,
     delegateMention: opts.delegateMention ?? null,
-    // Match `services/agent.ts::defaultVisibility` — an `autonomous_agent`
+    // Match `services/agents/identity.ts::defaultVisibility` — an `autonomous_agent`
     // created via the service layer is `organization`-visible. The raw
     // INSERT here was implicitly relying on the column default ("private")
     // which made these fixtures private agents, which in turn relied on

@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { agents, chatMembership, chats, clients, members, messages, organizations, users } from "../db/schema/index.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import {
   buildLandingCampaignAgentMetadata,

@@ -28,7 +28,7 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { addChatParticipants } from "../services/chat/membership/participants.js";
 import { listMeChatSourceCounts, listMeChats } from "../services/chat/workspace/me-chat.js";
 import { uuidv7 } from "../uuid.js";
@@ -429,7 +429,7 @@ describe("conversation-list source tags", () => {
     // the PR chat with that managed agent. The result: admin gets a
     // watcher row on the chat (no speaker grant), mirroring the
     // github-entity-chat resolver's behavior for non-direct managers.
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mgr-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",

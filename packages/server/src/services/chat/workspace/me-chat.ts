@@ -44,7 +44,7 @@ import { members } from "../../../db/schema/members.js";
 import { messages } from "../../../db/schema/messages.js";
 import { users } from "../../../db/schema/users.js";
 import { BadRequestError, CallerNotSpeakerError, NotFoundError } from "../../../errors.js";
-import { resolveAvatarImageUrl } from "../../agent.js";
+import { resolveAvatarImageUrl } from "../../agents/identity.js";
 import { createChat } from "../conversation.js";
 import { invalidateChatAudience } from "../membership/audience-cache.js";
 import { assertChatVisibleInOrgOrNotFound, inviteParticipantsToChat } from "../membership/invite.js";

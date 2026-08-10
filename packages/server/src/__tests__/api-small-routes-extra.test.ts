@@ -50,9 +50,9 @@ const mockedModules = [
   "../scope/require-org.js",
   "../scope/require-resource.js",
   "../services/chat/sessions/activity.js",
-  "../services/agent.js",
+  "../services/agents/identity.js",
   "../services/auth.js",
-  "../services/agent-runtime-switch.js",
+  "../services/agents/runtime/switch.js",
   "../services/chat/conversation.js",
   "../services/connection-manager.js",
   "../services/scm/github/entity-chat.js",
@@ -93,7 +93,7 @@ function mockRouteDependencies(): void {
     getActiveInvitation: vi.fn(),
     recordRedemption: routeMocks.recordRedemption,
   }));
-  vi.doMock("../services/agent-runtime-switch.js", () => ({
+  vi.doMock("../services/agents/runtime/switch.js", () => ({
     RUNTIME_SWITCH_FAULTS: ["after_claim", "after_commit"],
     assertNoRuntimeSwitchInProgress: routeMocks.assertNoRuntimeSwitchInProgress,
     recoverAgentRuntimeSwitch: routeMocks.recoverAgentRuntimeSwitch,
@@ -697,7 +697,7 @@ describe("small API route handlers", () => {
       sendToAgent,
       sendToClient,
     }));
-    vi.doMock("../services/agent.js", () => ({
+    vi.doMock("../services/agents/identity.js", () => ({
       MAX_AVATAR_IMAGE_BYTES: 5 * 1024 * 1024,
       SUPPORTED_AVATAR_IMAGE_MIMES: ["image/png"],
       agentAvatarImageUrl: vi.fn(() => "/avatar.png"),
@@ -762,7 +762,7 @@ describe("small API route handlers", () => {
     const sendToClient = vi.fn();
     const createdAt = new Date("2026-07-08T00:00:00.000Z");
     vi.doMock("../services/connection-manager.js", () => ({ sendToClient }));
-    vi.doMock("../services/agent.js", () => ({
+    vi.doMock("../services/agents/identity.js", () => ({
       createAgent: vi.fn().mockResolvedValue({
         uuid: "agent_bad_runtime",
         name: "bad-runtime",

@@ -15,7 +15,7 @@ import {
   requireAgentTemplatePublisher,
   retireAgentTemplate,
   updateAgentTemplate,
-} from "../../services/agent-templates.js";
+} from "../../services/agents/templates/catalog.js";
 
 /**
  * Publisher-internal Agent Template catalog maintenance.

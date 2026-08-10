@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentAvatarImageUrl, resolveAvatarImageUrl } from "../services/agent.js";
+import { agentAvatarImageUrl, resolveAvatarImageUrl } from "../services/agents/identity.js";
 
 describe("agentAvatarImageUrl", () => {
   it("returns null when no upload timestamp", () => {

@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { sendMessage } from "../services/chat/message.js";
 import { createAdminContext, createTestApp } from "./helpers.js";

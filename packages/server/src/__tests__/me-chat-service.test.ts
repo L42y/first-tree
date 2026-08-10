@@ -248,7 +248,7 @@ describe("chat-first workspace service layer", () => {
     const admin = await createTestAdmin(app);
 
     const { agents } = await import("../db/schema/agents.js");
-    const managed = await (await import("../services/agent.js")).createAgent(app.db, {
+    const managed = await (await import("../services/agents/identity.js")).createAgent(app.db, {
       name: `managed-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
       displayName: "Managed Agent",
@@ -281,7 +281,7 @@ describe("chat-first workspace service layer", () => {
   it("watchers never receive inbox_entries, ever", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `managed-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -317,7 +317,7 @@ describe("chat-first workspace service layer", () => {
   it("chat-projection: applyAfterFanOut bumps last_message_at and watcher counter", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -366,7 +366,7 @@ describe("chat-first workspace service layer", () => {
   it("markMeChatRead clears the watcher's counter (and the participant counter)", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng2-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -523,7 +523,7 @@ describe("chat-first workspace service layer", () => {
   it("joinMeChat upgrades watcher → speaker; chat_user_state is preserved across the access_mode flip", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng3-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -571,7 +571,7 @@ describe("chat-first workspace service layer", () => {
   it("leaveMeChat returns to 'watching' if user still manages a chat participant", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng4-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -625,7 +625,7 @@ describe("chat-first workspace service layer", () => {
     // construction, no state-carry transaction needed.
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng-sc-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -760,7 +760,7 @@ describe("chat-first workspace service layer", () => {
     // signal, so admin's manager-watcher `unread_mention_count` stays 0.
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `mng-neg-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",

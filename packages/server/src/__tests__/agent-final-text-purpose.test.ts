@@ -292,7 +292,7 @@ describe("sendMessage — agent-final-text bypass (v1 §四 改造 4 b)", () => 
   it("bumps the manager-watcher's unread when the watched agent emits final text in a group chat", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const managed = await createAgent(app.db, {
       name: `ftw-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",
@@ -398,7 +398,7 @@ describe("sendMessage — agent-final-text bypass (v1 §四 改造 4 b)", () => 
     // Pins the narrow target set: humans + watchers-of-sender only.
     const app = getApp();
     const a = await createTestAgent(app, { name: `ftns-${crypto.randomUUID().slice(0, 6)}` });
-    const { createAgent } = await import("../services/agent.js");
+    const { createAgent } = await import("../services/agents/identity.js");
     const b = await createAgent(app.db, {
       name: `ftnp-${crypto.randomUUID().slice(0, 6)}`,
       type: "agent",

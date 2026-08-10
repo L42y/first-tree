@@ -8,15 +8,15 @@ import { getServerCliBinding } from "@first-tree/shared/channel";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { BadRequestError, ForbiddenError } from "../errors.js";
 import { assertAllAgentsVisibleInOrg, requireAgentAccess } from "../scope/require-resource.js";
-import * as agentService from "../services/agent.js";
+import * as agentService from "../services/agents/identity.js";
 import {
   agentAvatarImageUrl,
   fetchUserAvatarForHumanAgent,
   resolveAvatarImageUrl,
   SUPPORTED_AVATAR_IMAGE_MIMES,
-} from "../services/agent.js";
-import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
-import * as agentRuntimeSwitchService from "../services/agent-runtime-switch.js";
+} from "../services/agents/identity.js";
+import * as agentRuntimeSessionService from "../services/agents/runtime/session.js";
+import * as agentRuntimeSwitchService from "../services/agents/runtime/switch.js";
 import { createChat } from "../services/chat/conversation.js";
 import { WIRE_RECIPIENT_MODE } from "../services/chat/message-dispatcher.js";
 import * as clientService from "../services/client.js";

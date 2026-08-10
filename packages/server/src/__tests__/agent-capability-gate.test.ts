@@ -2,11 +2,11 @@ import type { CapabilityEntry, RuntimeProvider } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { clients } from "../db/schema/clients.js";
-import { createAgent, updateAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 /**
- * Coverage for the post-0026 capability gate in `services/agent.ts`:
+ * Coverage for the post-0026 capability gate in `services/agents/identity.ts`:
  *
  *   - `clientCapabilitiesReported` distinguishes "never probed" (allow,
  *     unknown) from "probed but missing this provider" (block).
@@ -43,7 +43,7 @@ async function setCapabilities(
     .where(eq(clients.id, clientId));
 }
 
-describe("Agent capability gate (services/agent.ts)", () => {
+describe("Agent capability gate (services/agents/identity.ts)", () => {
   const getApp = useTestApp();
 
   it("allows creation when client has not reported capabilities yet (unknown ⇒ allow)", async () => {

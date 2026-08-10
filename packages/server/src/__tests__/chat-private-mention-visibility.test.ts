@@ -24,7 +24,7 @@ import { AGENT_VISIBILITY, type ChatDetail } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { addParticipant as agentAddParticipant, createChat as agentCreateChat } from "../services/chat/conversation.js";
 import { rejectedPrivateTargets } from "../services/chat/membership/invite.js";
 import { addMeChatParticipants, createMeChat } from "../services/chat/workspace/me-chat.js";

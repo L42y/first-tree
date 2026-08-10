@@ -24,7 +24,7 @@ import { users } from "../db/schema/users.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
-import { resolveAvatarImageUrl } from "../services/agent.js";
+import { resolveAvatarImageUrl } from "../services/agents/identity.js";
 import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat/conversation.js";
 import {
   encodeMessageHistoryCursor,

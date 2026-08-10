@@ -16,10 +16,10 @@
 
 import { AGENT_STATUSES, AGENT_TYPES, AGENT_VISIBILITY } from "@first-tree/shared";
 import { and, eq, inArray, ne, or, type SQL, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { members } from "../db/schema/members.js";
-import { users } from "../db/schema/users.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { members } from "../../db/schema/members.js";
+import { users } from "../../db/schema/users.js";
 
 /**
  * SQL WHERE conditions for agents visible to a member.

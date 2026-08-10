@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { afterAll, describe, expect, it } from "vitest";
 import { connectDatabase } from "../db/connection.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

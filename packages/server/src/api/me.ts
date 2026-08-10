@@ -27,8 +27,8 @@ import {
   listAgentsManagedByUser,
   listOrgsWithPersonalAgent,
   listOrgsWithUsableNonHumanAgent,
-} from "../services/access-control.js";
-import { resolveAvatarImageUrl } from "../services/agent.js";
+} from "../services/agents/access-control.js";
+import { resolveAvatarImageUrl } from "../services/agents/identity.js";
 import * as authService from "../services/auth.js";
 import * as clientService from "../services/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/connect-bootstrap-command.js";

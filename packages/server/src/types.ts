@@ -1,9 +1,9 @@
 import type { Database } from "./db/connection.js";
 import type { UserScope } from "./scope/types.js";
+import type { ConfigService } from "./services/agents/config.js";
+import type { ResourcesService } from "./services/agents/resources/catalog.js";
 import type { AttachmentBlobStore } from "./services/attachment-blob-store.js";
-import type { ConfigService } from "./services/config-service.js";
 import type { Notifier } from "./services/notifier.js";
-import type { ResourcesService } from "./services/resources.js";
 
 export type AgentIdentity = {
   uuid: string;

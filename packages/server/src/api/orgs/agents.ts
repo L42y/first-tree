@@ -9,8 +9,8 @@ import {
 import type { FastifyInstance } from "fastify";
 import { BadRequestError, ForbiddenError } from "../../errors.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import * as agentService from "../../services/agent.js";
-import { resolveAvatarImageUrl } from "../../services/agent.js";
+import * as agentService from "../../services/agents/identity.js";
+import { resolveAvatarImageUrl } from "../../services/agents/identity.js";
 import { sendToClient } from "../../services/connection-manager.js";
 import { assertMetadataDoesNotClaimLandingCampaignTrial } from "../../services/landing-campaigns/guards.js";
 

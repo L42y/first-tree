@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { messages } from "../db/schema/messages.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { sendMessage } from "../services/chat/message.js";
 import { createMeChat, pinMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";

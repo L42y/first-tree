@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../app.js";
 import type { Config } from "../config.js";
-import * as resourcesMigration from "../services/resources-migration.js";
+import * as resourcesMigration from "../services/agents/resources/migration.js";
 
 /**
  * Boot-time gate: a typo in `FIRST_TREE_AUTH_*_EXPIRY` must fail the

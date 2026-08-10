@@ -9,7 +9,7 @@ import { clients } from "../db/schema/clients.js";
 import { contextTreeIoEvents } from "../db/schema/context-tree-io-events.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import * as sessionEventService from "../services/chat/sessions/events.js";
 import * as contextTreeIoService from "../services/context-tree/io.js";
 import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";

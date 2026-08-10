@@ -15,7 +15,7 @@ import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
 import { members } from "../../../db/schema/members.js";
 import { serverInstances } from "../../../db/schema/server-instances.js";
-import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
 
 export type ContextReviewerAgentReadiness = {
   reviewerAgent: { uuid: string; displayName: string } | null;

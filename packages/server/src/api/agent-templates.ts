@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { getPublicAgentTemplate, listPublicAgentTemplates } from "../services/agent-templates.js";
+import { getPublicAgentTemplate, listPublicAgentTemplates } from "../services/agents/templates/catalog.js";
 
 /**
  * Public official Agent Template catalog (safe read model only). Mounted

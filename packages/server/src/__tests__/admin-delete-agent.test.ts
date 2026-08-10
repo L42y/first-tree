@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
-import { createAgent, suspendAgent } from "../services/agent.js";
+import { createAgent, suspendAgent } from "../services/agents/identity.js";
 import { createAdminContext, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("Admin DELETE Agent API", () => {

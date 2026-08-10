@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { ClientRetiredError } from "../errors.js";
-import { createAgent, updateAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("retired clients as runtime targets", () => {

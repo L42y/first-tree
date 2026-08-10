@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { addParticipant, createChat, ensureParticipant } from "../services/chat/conversation.js";
 import { addChatParticipants } from "../services/chat/membership/participants.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";

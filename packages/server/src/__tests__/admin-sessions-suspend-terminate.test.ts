@@ -4,7 +4,7 @@ import type { WebSocket } from "ws";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { clients } from "../db/schema/clients.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
 import { sendMessage } from "../services/chat/message.js";
 import * as activityService from "../services/chat/sessions/activity.js";

@@ -6,13 +6,13 @@ import {
   type RepoResourcePayload,
 } from "@first-tree/shared";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
-import { agents } from "../db/schema/agents.js";
-import { organizationSettings } from "../db/schema/organization-settings.js";
-import { resources } from "../db/schema/resources.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../../db/connection.js";
+import { agentConfigs } from "../../../db/schema/agent-configs.js";
+import { agentResourceBindings } from "../../../db/schema/agent-resource-bindings.js";
+import { agents } from "../../../db/schema/agents.js";
+import { organizationSettings } from "../../../db/schema/organization-settings.js";
+import { resources } from "../../../db/schema/resources.js";
+import { uuidv7 } from "../../../uuid.js";
 
 export type ResourcesBackfillResult = {
   teamReposCreated: number;

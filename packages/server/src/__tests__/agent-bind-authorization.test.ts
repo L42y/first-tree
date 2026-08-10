@@ -9,7 +9,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { agentSelectorHook } from "../middleware/agent-selector.js";
-import { bindAgentRuntimeSession, revokeAgentRuntimeSession } from "../services/agent-runtime-session.js";
+import { bindAgentRuntimeSession, revokeAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**

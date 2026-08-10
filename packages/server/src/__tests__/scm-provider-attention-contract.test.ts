@@ -2,7 +2,7 @@ import type { ScmIngressContext } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { resolveGithubAudience } from "../services/scm/github/audience.js";
 import { normalizeGithubWebhook } from "../services/scm/github/normalize.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";

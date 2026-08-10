@@ -10,7 +10,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { ForbiddenError, UnauthorizedError } from "../errors.js";
-import { validateAgentRuntimeSession } from "../services/agent-runtime-session.js";
+import { validateAgentRuntimeSession } from "../services/agents/runtime/session.js";
 
 /**
  * Agent-scoped HTTP authentication hook. Must run **after** userAuthHook

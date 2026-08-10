@@ -9,21 +9,21 @@ import {
   type UpdateAgentTemplates,
 } from "@first-tree/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
-import { agentTemplates } from "../db/schema/agent-templates.js";
-import { agents } from "../db/schema/agents.js";
-import { resources } from "../db/schema/resources.js";
-import { type AppErrorAttrs, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
-import { assertNoRuntimeSwitchInProgress } from "./agent-runtime-switch.js";
-import { assertSkillComponentMatchesBundle } from "./agent-templates.js";
-import { copyAttachmentForOrganization } from "./attachment.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-import { assertMutableAgentIsNotLandingCampaignTrial } from "./landing-campaigns/guards.js";
-import type { Notifier } from "./notifier.js";
-import { assertTeamSkillNameAvailable, lockTeamSkillNames } from "./resources.js";
+import type { Database } from "../../../db/connection.js";
+import { agentConfigs } from "../../../db/schema/agent-configs.js";
+import { agentResourceBindings } from "../../../db/schema/agent-resource-bindings.js";
+import { agentTemplates } from "../../../db/schema/agent-templates.js";
+import { agents } from "../../../db/schema/agents.js";
+import { resources } from "../../../db/schema/resources.js";
+import { type AppErrorAttrs, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
+import { copyAttachmentForOrganization } from "../../attachment.js";
+import type { AttachmentBlobStore } from "../../attachment-blob-store.js";
+import { assertMutableAgentIsNotLandingCampaignTrial } from "../../landing-campaigns/guards.js";
+import type { Notifier } from "../../notifier.js";
+import { assertTeamSkillNameAvailable, lockTeamSkillNames } from "../resources/catalog.js";
+import { assertNoRuntimeSwitchInProgress } from "../runtime/switch.js";
+import { assertSkillComponentMatchesBundle } from "./catalog.js";
 
 /** Conflict that belongs to Template adoption (not name / version CAS). */
 function adoptionConflict(message: string, attrs?: AppErrorAttrs): ConflictError {

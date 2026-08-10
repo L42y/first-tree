@@ -6,7 +6,7 @@ import { agentPresence } from "../../../db/schema/agent-presence.js";
 import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
 import type { OrgScope } from "../../../scope/types.js";
-import { agentVisibilityCondition } from "../../access-control.js";
+import { agentVisibilityCondition } from "../../agents/access-control.js";
 import type { Notifier } from "../../notifier.js";
 
 /**

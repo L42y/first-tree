@@ -7,7 +7,7 @@ import { docDocuments } from "../db/schema/index.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent } from "../services/agents/identity.js";
 import { docAuthorForAgentUuid } from "../services/doc-author.js";
 import { createComment } from "../services/document.js";
 import { uuidv7 } from "../uuid.js";

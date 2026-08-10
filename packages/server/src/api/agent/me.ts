@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
-import * as agentService from "../../services/agent.js";
+import * as agentService from "../../services/agents/identity.js";
 import * as presenceService from "../../services/presence.js";
 
 export async function agentMeRoutes(app: FastifyInstance): Promise<void> {

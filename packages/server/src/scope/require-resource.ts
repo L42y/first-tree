@@ -10,7 +10,7 @@ import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
 import { members } from "../db/schema/members.js";
 import { NotFoundError } from "../errors.js";
 import { stampAgentResource, stampChatResource, stampOrgScope } from "../observability/request-context.js";
-import { selectAgentRowWithRuntime } from "../services/agent-runtime-binding.js";
+import { selectAgentRowWithRuntime } from "../services/agents/runtime/binding.js";
 import { requireUser } from "./require-user.js";
 import type { OrgScope } from "./types.js";
 
@@ -46,7 +46,7 @@ type AgentRow = {
    * the agent has no presence row yet (never bound a runtime client). Used
    * by management surfaces to derive reachability (online/offline) without
    * relying on the legacy `presenceStatus` column. Loaded via the shared
-   * `selectAgentRowWithRuntime` projection (services/agent-runtime-binding.ts).
+   * `selectAgentRowWithRuntime` projection (services/agents/runtime/binding.ts).
    */
   runtimeState: string | null;
   createdAt: Date;
