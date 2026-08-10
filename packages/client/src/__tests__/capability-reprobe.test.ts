@@ -136,7 +136,7 @@ describe("revalidateCapabilities / reprobeOnReconnect (probe modules mocked)", (
   afterEach(() => {
     vi.doUnmock("../providers/claude/capability.js");
     vi.doUnmock("../providers/claude/capability-tui.js");
-    vi.doUnmock("../runtime/capabilities/codex.js");
+    vi.doUnmock("../providers/codex/capability.js");
     vi.resetModules();
   });
 
@@ -158,7 +158,7 @@ describe("revalidateCapabilities / reprobeOnReconnect (probe modules mocked)", (
     vi.doMock("../providers/claude/capability-tui.js", () => ({
       probeClaudeCodeTuiCapability: mk("claude-code-tui"),
     }));
-    vi.doMock("../runtime/capabilities/codex.js", () => ({ probeCodexCapability: mk("codex") }));
+    vi.doMock("../providers/codex/capability.js", () => ({ probeCodexCapability: mk("codex") }));
     const mod = await import("../runtime/capabilities/index.js");
     return { mod, calls };
   }

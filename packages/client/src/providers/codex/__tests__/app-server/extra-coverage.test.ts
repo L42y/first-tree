@@ -6,27 +6,27 @@ import { dirname, join, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import type { AgentRuntimeConfig, AgentRuntimeConfigPayload, SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockCtxPlumbing } from "../../../../__tests__/test-helpers.js";
+import type { AgentConfigCache } from "../../../../runtime/agent-config-cache.js";
+import { setCliBinding } from "../../../../runtime/cli-binding.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../../runtime/handler.js";
+import { noopDeliveryToken } from "../../../../runtime/handler.js";
 import {
   CodexAppServerClient,
   type CodexAppServerClientOptions,
   CodexAppServerRpcError,
   CodexAppServerTransportError,
   isCodexAppServerTransientError,
-} from "../handlers/codex/app-server/client.js";
-import { CodexAppServerStartupError, createCodexAppServerHandler } from "../handlers/codex/app-server/index.js";
+} from "../../app-server/client.js";
+import { CodexAppServerStartupError, createCodexAppServerHandler } from "../../app-server/index.js";
 import {
   buildWorkspaceOnlyAppServerEnvironment,
   buildWorkspaceOnlyBubblewrapArgs,
   createWorkspaceOnlySpawnProcess,
   landingCodexDenyPaths,
-} from "../handlers/codex/app-server/workspace-sandbox.js";
-import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
-import { setCliBinding } from "../runtime/cli-binding.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { noopDeliveryToken } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+} from "../../app-server/workspace-sandbox.js";
 
-vi.mock("../runtime/bootstrap.js", () => ({
+vi.mock("../../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
@@ -49,7 +49,7 @@ vi.mock("../runtime/bootstrap.js", () => ({
   writeContextTreeHead: vi.fn(),
 }));
 
-vi.mock("../runtime/chat-context.js", () => ({
+vi.mock("../../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async () => ({
     chatId: "chat-app-server-extra",
     title: "extra app-server coverage",
@@ -571,7 +571,7 @@ describe("codex app-server handler extra branches", () => {
   });
 
   it("passes cached MCP config and env while logging chat-context fetch failures", async () => {
-    const { fetchChatContext } = await import("../runtime/chat-context.js");
+    const { fetchChatContext } = await import("../../../../runtime/chat-context.js");
     vi.mocked(fetchChatContext).mockRejectedValueOnce(new Error("chat context offline"));
     const fake = new FakeAppServerClient();
     const log = vi.fn<(message: string) => void>();

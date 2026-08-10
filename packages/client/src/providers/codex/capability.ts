@@ -3,14 +3,14 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CapabilityEntry, CapabilityRuntimeSource } from "@first-tree/shared";
+import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { verifyLaunchable } from "../../runtime/capabilities/launch-probe.js";
 import {
   type CodexExecutableVerification,
   findCodexExecutableOnPath,
   formatCodexBinaryMissingMessage,
   verifyCodexExecutable,
-} from "../codex-binary.js";
-import { type DetectOutcome, runDetect } from "./detect.js";
-import { verifyLaunchable } from "./launch-probe.js";
+} from "./binary.js";
 
 /**
  * Platform-package map mirrored from `@openai/codex-sdk`'s own binary
@@ -77,7 +77,7 @@ function isFile(p: string): boolean {
  * the modern layout is used only when BOTH `bin/<codex>` and the
  * `codex-package.json` marker are present; otherwise the legacy
  * `codex/<codex>` layout. Returns null when neither resolves — which is
- * precisely when `new Codex()` throws "Unable to locate Codex CLI binaries"
+ * precisely when `new Codex()` fails its native-package layout check
  * and the handler falls back to an externally installed codex. Existence-only.
  */
 export function resolveBundledBinaryInPackageRoot(packageRoot: string): string | null {
@@ -140,7 +140,7 @@ export async function resolveBundledCodexBinary(): Promise<
 }
 
 /** Resolved runtime binary + provenance — mirrors the handler's bundled-first,
- * external-path-fallback order (PR #1054 `codex-binary.ts`). */
+ * external-path-fallback order (PR #1054 `binary.ts`). */
 export type CodexBinaryResolution =
   | {
       ok: true;

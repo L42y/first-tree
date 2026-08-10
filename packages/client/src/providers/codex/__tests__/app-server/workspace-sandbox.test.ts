@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setCliBinding } from "../../../../runtime/cli-binding.js";
 import {
   assertPathInsideWorkspace,
   buildLandingCodexAppServerArgs,
@@ -21,8 +22,7 @@ import {
   LANDING_CODEX_HOST_CREDENTIAL_DENY_RELATIVE_PATHS,
   LANDING_CODEX_PERMISSIONS_PROFILE,
   prepareWorkspaceOnlyOutboxHome,
-} from "../handlers/codex/app-server/workspace-sandbox.js";
-import { setCliBinding } from "../runtime/cli-binding.js";
+} from "../../app-server/workspace-sandbox.js";
 
 let root: string;
 let workspace: string;

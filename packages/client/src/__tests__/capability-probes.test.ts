@@ -18,15 +18,15 @@ import {
 } from "../providers/claude/capability.js";
 import { probeClaudeCodeTuiCapability } from "../providers/claude/capability-tui.js";
 import type { ClaudeExecutableResolution } from "../providers/claude/executable.js";
+import type { CodexExecutableVerification } from "../providers/codex/binary.js";
 import {
   probeCodexCapability,
   resolveBundledBinaryInPackageRoot,
   resolveBundledCodexBinary,
   resolveCodexRuntimeBinary,
-} from "../runtime/capabilities/codex.js";
+} from "../providers/codex/capability.js";
 import { MAX_ERROR_LENGTH, truncateError } from "../runtime/capabilities/detect.js";
 import { commandFailureDigest, runCommand, verifyLaunchable } from "../runtime/capabilities/launch-probe.js";
-import type { CodexExecutableVerification } from "../runtime/codex-binary.js";
 
 const originalPlatform = process.platform;
 const originalArch = process.arch;
@@ -506,7 +506,7 @@ describe("resolveBundledCodexBinary / resolveCodexRuntimeBinary (real node_modul
         }),
       };
     });
-    const mod = await import("../runtime/capabilities/codex.js");
+    const mod = await import("../providers/codex/capability.js");
 
     const res = await mod.resolveBundledCodexBinary();
 
@@ -544,7 +544,7 @@ describe("resolveBundledCodexBinary / resolveCodexRuntimeBinary (real node_modul
       });
       const vendorRoot = join(root, "node_modules", "@openai", "codex-linux-x64", "vendor");
       mkdirSync(join(vendorRoot, "x86_64-unknown-linux-musl"), { recursive: true });
-      const mod = await import("../runtime/capabilities/codex.js");
+      const mod = await import("../providers/codex/capability.js");
 
       const res = await mod.resolveBundledCodexBinary();
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computePerTurnUsageDelta, isTransientCodexErrorMessage } from "../handlers/codex/index.js";
+import { computePerTurnUsageDelta, isTransientCodexErrorMessage } from "../index.js";
 
 const usage = (input: number, cached: number, output: number, reasoning = 0) => ({
   input_tokens: input,
@@ -18,10 +18,10 @@ const usage = (input: number, cached: number, output: number, reasoning = 0) => 
  *
  * The full `runTurn` retry loop needs a mock Codex + Thread + SessionContext,
  * so the targeted regression for that state machine lives in
- * `codex-retry-abort.test.ts`. The classifier path's correctness here rests on:
+ * `retry-abort.test.ts`. The classifier path's correctness here rests on:
  *   1. typecheck (covers `usageBox` narrowing + control flow)
  *   2. `isTransientCodexErrorMessage` table (this file)
- *   3. the existing `codex-bootstrap.test.ts` / `codex-thread-options.test.ts`
+ *   3. the existing `bootstrap.test.ts` / `thread-options.test.ts`
  *      coverage of the bootstrap + options paths it touches.
  */
 

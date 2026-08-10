@@ -17,7 +17,7 @@ describe("resolveBundledCodexBinary — platform edge mapping", () => {
 
   it("reports unsupported platforms before resolving SDK packages", async () => {
     setProcessTarget("freebsd", "x64");
-    const { resolveBundledCodexBinary } = await import("../runtime/capabilities/codex.js");
+    const { resolveBundledCodexBinary } = await import("../capability.js");
 
     await expect(resolveBundledCodexBinary()).resolves.toEqual({
       ok: false,
@@ -48,7 +48,7 @@ describe("resolveBundledCodexBinary — platform edge mapping", () => {
         }),
       };
     });
-    const { resolveBundledCodexBinary } = await import("../runtime/capabilities/codex.js");
+    const { resolveBundledCodexBinary } = await import("../capability.js");
 
     const result = await resolveBundledCodexBinary();
 

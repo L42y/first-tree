@@ -1,6 +1,6 @@
 import type { AgentRuntimeConfigPayload } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { buildCodexConfig, buildCodexThreadOptions, codexServiceTiersEquivalent } from "../handlers/codex/index.js";
+import { buildCodexConfig, buildCodexThreadOptions, codexServiceTiersEquivalent } from "../index.js";
 
 /**
  * Codex CLI's two auth modes accept different model slugs:

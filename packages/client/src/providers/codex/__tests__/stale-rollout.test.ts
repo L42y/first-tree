@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ChatContext } from "../runtime/chat-context.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { ChatContext } from "../../../runtime/chat-context.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
 
 const STALE_THREAD_ID = "019f2943-c0af-75b0-9d7b-d58679594749";
 
@@ -58,7 +58,7 @@ vi.mock("@openai/codex-sdk", () => {
   };
 });
 
-vi.mock("../runtime/bootstrap.js", () => ({
+vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   bootstrapWorkspace: vi.fn(),
@@ -80,7 +80,7 @@ vi.mock("../runtime/bootstrap.js", () => ({
   writeContextTreeHead: vi.fn(),
 }));
 
-vi.mock("../runtime/chat-context.js", () => ({
+vi.mock("../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async (): Promise<ChatContext> => {
     return {
       chatId: "chat-stale-rollout",
@@ -92,7 +92,7 @@ vi.mock("../runtime/chat-context.js", () => ({
   }),
 }));
 
-import { createCodexSdkHandler } from "../handlers/codex/index.js";
+import { createCodexSdkHandler } from "../index.js";
 
 const AGENT_ID = "019e71c9-88d2-70be-be67-fdb033b2ef0b";
 

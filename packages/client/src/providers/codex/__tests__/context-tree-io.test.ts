@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toolFileRefsFromShellCommand } from "../../../runtime/context-tree-file-refs.js";
+import { clearGitRepoIdentityCacheForTests } from "../../../runtime/git-repo-identity.js";
 import {
   appendGitStatusDeltaRefs,
   collectCodexFileChangePaths,
   toolFileRefsForTerminalCodexTool,
   toolFileRefsFromCodexFileChange,
-} from "../handlers/codex/index.js";
-import { toolFileRefsFromShellCommand } from "../runtime/context-tree-file-refs.js";
-import { clearGitRepoIdentityCacheForTests } from "../runtime/git-repo-identity.js";
+} from "../index.js";
 
 describe("Codex Context Tree file refs", () => {
   it("collects explicit path fields and object keys from file_change payloads", () => {
