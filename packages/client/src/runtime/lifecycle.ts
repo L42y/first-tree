@@ -13,7 +13,7 @@
  * ChildProcessRegistry's `killAll` so any subprocess the client spawned
  * (git, npm install, etc.) is reaped before the host process exits. The
  * design doc allows this to degrade to "git + npm only" if the Claude SDK
- * does not expose its subprocesses — see notes in claude-code.ts.
+ * does not expose its subprocesses — see notes in providers/claude/index.ts.
  */
 
 import { getChildProcessRegistry } from "./child-process-registry.js";
