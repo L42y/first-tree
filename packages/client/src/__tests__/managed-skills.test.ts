@@ -197,8 +197,8 @@ describe("managed Skill reconciler", () => {
 
   it("keeps every provider reconcile call on the unsafe-discovery throwing contract", () => {
     const handlerSources = [
-      "src/handlers/claude-code.ts",
-      "src/handlers/claude-code-tui/index.ts",
+      "src/providers/claude/index.ts",
+      "src/providers/claude/tui/index.ts",
       "src/handlers/codex/sdk.ts",
       "src/handlers/codex/app-server/index.ts",
       "src/handlers/cursor/index.ts",

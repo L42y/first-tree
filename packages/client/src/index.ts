@@ -12,8 +12,6 @@ export {
   ClientRetiredError,
   ClientUserMismatchError,
 } from "./client-connection.js";
-// Handlers
-export { detectStreamApiError, StreamApiTransientError } from "./handlers/claude-code.js";
 export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./handlers/kimi-code.js";
 export {
   buildOpenCodeConfigContent,
@@ -45,6 +43,19 @@ export {
   createBuiltinHandlerRegistry,
   resolveAndLogClaudeExecutable,
 } from "./providers/builtin-registry.js";
+// Capabilities
+export { probeClaudeCodeCapability } from "./providers/claude/capability.js";
+export { probeClaudeCodeTuiCapability } from "./providers/claude/capability-tui.js";
+// Handlers
+export { detectStreamApiError, StreamApiTransientError } from "./providers/claude/index.js";
+export {
+  type ClaudeAuthDriverDeps,
+  type ClaudeBrowserLoginOptions,
+  type ClaudeLoginInvocation,
+  createClaudeAuthDriver,
+  resolveClaudeLoginInvocation,
+  runClaudeBrowserLogin,
+} from "./providers/claude/login.js";
 export {
   type DiscoverModelsDeps,
   discoverProviderModels,
@@ -87,9 +98,6 @@ export {
   migrateLegacyRuntimeLayout,
   resolveAgentContextTreeBinding,
 } from "./runtime/bootstrap.js";
-// Capabilities
-export { probeClaudeCodeCapability } from "./runtime/capabilities/claude-code.js";
-export { probeClaudeCodeTuiCapability } from "./runtime/capabilities/claude-code-tui.js";
 export {
   type CodexBinaryResolution,
   probeCodexCapability,
@@ -119,14 +127,6 @@ export type {
   RegistrySpawnOptions,
 } from "./runtime/child-process-registry.js";
 export { CHILD_CATEGORIES, getChildProcessRegistry } from "./runtime/child-process-registry.js";
-export {
-  type ClaudeAuthDriverDeps,
-  type ClaudeBrowserLoginOptions,
-  type ClaudeLoginInvocation,
-  createClaudeAuthDriver,
-  resolveClaudeLoginInvocation,
-  runClaudeBrowserLogin,
-} from "./runtime/claude-login.js";
 export type { CliBinding } from "./runtime/cli-binding.js";
 export { setCliBinding } from "./runtime/cli-binding.js";
 export {
