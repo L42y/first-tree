@@ -25,7 +25,7 @@ export type ComputerStatus = {
  *   4. `setup_incomplete` — connected but no runtime is `ok` yet.
  *
  * Note on the relationship between `auth_expired` and `offline`: the
- * server contract in `services/client.ts:deriveAuthState` only returns
+ * server contract in `services/runtime/client.ts:deriveAuthState` only returns
  * `expired` when `status=disconnected` AND offline duration exceeds
  * the refresh-token TTL. So `expired ⊂ disconnected` today and the
  * step-2 `status !== "connected"` branch is unreachable when step 1

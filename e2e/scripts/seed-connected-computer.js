@@ -11,7 +11,7 @@
  *
  * `last_seen_at` is dated forward on purpose: the server sweeps connected
  * clients whose heartbeat is older than `presenceCleanupSeconds` (60s default,
- * see `cleanupStaleClients` in packages/server/src/services/client.ts). Without
+ * see `cleanupStaleClients` in packages/server/src/services/runtime/client.ts). Without
  * a heartbeat loop a "now" timestamp flips the row to disconnected mid-run and
  * the flow regresses to "Your computer isn't connected".
  *

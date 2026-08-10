@@ -9,7 +9,7 @@
  * onboarding.
  *
  * The row mirrors what the real bind writes (`publishAgentPresence` in
- * packages/server/src/services/presence.ts): `runtime_state` is `idle`, the only
+ * packages/server/src/services/runtime/presence.ts): `runtime_state` is `idle`, the only
  * state a freshly bound runtime can be in — `runtimeStateSchema` allows
  * `idle | working | blocked | error`, so seeding anything else would advance the
  * test through a state the daemon can never produce and could mask a
