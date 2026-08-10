@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { addParticipant, createChat } from "../services/chat.js";
-import { sendMessage } from "../services/message.js";
+import { addParticipant, createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**

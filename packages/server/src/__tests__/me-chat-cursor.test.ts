@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { decodeCursor, encodeCursor } from "../services/me-chat.js";
+import { decodeCursor, encodeCursor } from "../services/chat/workspace/me-chat.js";
 
 describe("me-chat encodeCursor / decodeCursor", () => {
   it("round-trips a timestamp + chat id as an `ok` cursor", () => {

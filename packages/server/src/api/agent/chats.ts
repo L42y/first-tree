@@ -16,9 +16,9 @@ import { members } from "../../db/schema/members.js";
 import { BadRequestError, ForbiddenError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { createLogger } from "../../observability/index.js";
-import * as chatService from "../../services/chat.js";
-import { setChatEngagement } from "../../services/me-chat.js";
-import { WIRE_RECIPIENT_MODE } from "../../services/message-dispatcher.js";
+import * as chatService from "../../services/chat/conversation.js";
+import { WIRE_RECIPIENT_MODE } from "../../services/chat/message-dispatcher.js";
+import { setChatEngagement } from "../../services/chat/workspace/me-chat.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import { resolveBindingPair } from "../../services/scm/github/entity-chat.js";
 import {

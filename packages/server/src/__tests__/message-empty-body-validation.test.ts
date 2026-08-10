@@ -2,7 +2,7 @@ import type { SendMessage } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { BadRequestError } from "../errors.js";
-import { preflightMessageSendIntent, type SendIntentParticipant, sendMessage } from "../services/message.js";
+import { preflightMessageSendIntent, type SendIntentParticipant, sendMessage } from "../services/chat/message.js";
 
 // `validateMessageContent` fires at the very top of `sendMessage`, before the
 // transaction opens, so a doomed write never reaches the DB. The empty stub is

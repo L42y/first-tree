@@ -12,19 +12,21 @@ import {
   withFirstChatOrientationChatState,
 } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, lt, type SQL, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chatUserState } from "../db/schema/chat-user-state.js";
-import { chats } from "../db/schema/chats.js";
-import { members } from "../db/schema/members.js";
-import { messages } from "../db/schema/messages.js";
-import { users } from "../db/schema/users.js";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
-import { resolveAvatarImageUrl } from "./agent.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
-import { extractChatSummary, resolveChatTitle } from "./chat-read-model.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { chatMembership } from "../../db/schema/chat-membership.js";
+import { chatUserState } from "../../db/schema/chat-user-state.js";
+import { chats } from "../../db/schema/chats.js";
+import { members } from "../../db/schema/members.js";
+import { messages } from "../../db/schema/messages.js";
+import { users } from "../../db/schema/users.js";
+import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
+import { resolveAvatarImageUrl } from "../agent.js";
+import { invalidateChatAudience } from "./membership/audience-cache.js";
+import { inviteParticipantsToChat, rejectedPrivateTargets } from "./membership/invite.js";
+import { lockChatMembershipMutation } from "./membership/lock.js";
+import { addChatParticipants, applyMembershipWrite, recomputeChatWatchers } from "./membership/participants.js";
+import { leaveAsParticipant } from "./membership/watcher.js";
 import {
   type DeferredSendMessagePostCommitEffects,
   preflightMessageSendIntent,
@@ -34,9 +36,7 @@ import {
   sendMessage,
 } from "./message.js";
 import { WIRE_RECIPIENT_MODE } from "./message-dispatcher.js";
-import { inviteParticipantsToChat, rejectedPrivateTargets } from "./participant-invite.js";
-import { addChatParticipants, applyMembershipWrite, recomputeChatWatchers } from "./participant-mode.js";
-import { leaveAsParticipant } from "./watcher.js";
+import { extractChatSummary, resolveChatTitle } from "./read-model.js";
 
 const SELF_TARGET_EFFECTIVE_SENDER_REASON = "self_target_manager_human" as const;
 
@@ -247,7 +247,7 @@ async function createLegacyEmptyChat(
   // so a private agent legitimately creating a chat with itself as a
   // participant isn't tripped up.
   //
-  // The predicate lives in `participant-invite.ts::rejectedPrivateTargets`
+  // The predicate lives in `membership/invite.ts::rejectedPrivateTargets`
   // alongside the Layer-2 invite gate so the invariant has exactly one
   // source of truth — see that file's comment for the PR #601 → PR #608
   // strict-vs-shared history.
@@ -297,7 +297,7 @@ async function createLegacyEmptyChat(
     }
 
     // Mode is derived per-row by `addChatParticipants` from
-    // `(chats.type, agents.type)` — `services/participant-mode.ts` is the
+    // `(chats.type, agents.type)` — `services/chat/membership/participants.ts` is the
     // single authoritative encoder. The helper also encloses the watcher
     // recompute (so every active manager whose managed non-human agent is
     // now in the chat lands in the "Watching" set) and the silent-context
@@ -804,7 +804,7 @@ export async function getChatDetail(db: Database, chatId: string, selfAgentId: s
   // §4.3.3.
   // v2: chat_membership.mode is decision-inert; the wire `mode` field is
   // populated below from the WIRE_RECIPIENT_MODE constant (mirrors the
-  // strategy in services/message-dispatcher.ts), so we no longer SELECT
+  // strategy in services/chat/message-dispatcher.ts), so we no longer SELECT
   // the column. Drop together with the wire field in v3 — see
   // proposals/hub-chat-message-v2-simplify-mode.20260520.md §七.
   const participantRows = await db

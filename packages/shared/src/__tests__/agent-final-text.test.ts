@@ -9,7 +9,7 @@ import {
 /**
  * `isAgentFinalTextMetadata` is the shared reader the web uses to identify a
  * stored agent final-text mirror row. The server stamps the matching flag at
- * send time (see services/message.ts); both sides key off the same constant.
+ * send time (see services/chat/message.ts); both sides key off the same constant.
  */
 describe("isAgentFinalTextMetadata", () => {
   it("is true only when the flag is the boolean true", () => {

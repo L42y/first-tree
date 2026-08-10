@@ -2,9 +2,9 @@ import { and, asc, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { addParticipant, createChat } from "../services/chat.js";
-import { PRECEDING_CONTEXT_MAX_ENTRIES, pollInbox } from "../services/inbox.js";
-import { sendMessage } from "../services/message.js";
+import { addParticipant, createChat } from "../services/chat/conversation.js";
+import { PRECEDING_CONTEXT_MAX_ENTRIES, pollInbox } from "../services/chat/inbox.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**

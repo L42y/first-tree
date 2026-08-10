@@ -49,11 +49,11 @@ const mockedModules = [
   "../middleware/require-identity.js",
   "../scope/require-org.js",
   "../scope/require-resource.js",
-  "../services/activity.js",
+  "../services/chat/sessions/activity.js",
   "../services/agent.js",
   "../services/auth.js",
   "../services/agent-runtime-switch.js",
-  "../services/chat.js",
+  "../services/chat/conversation.js",
   "../services/connection-manager.js",
   "../services/scm/github/entity-chat.js",
   "../services/scm/github/entity-follow.js",
@@ -80,7 +80,7 @@ function mockRouteDependencies(): void {
     requireAgentAccess: routeMocks.requireAgentAccess,
     requireChatAccess: routeMocks.requireChatAccess,
   }));
-  vi.doMock("../services/activity.js", () => ({
+  vi.doMock("../services/chat/sessions/activity.js", () => ({
     resetActivity: routeMocks.resetActivity,
   }));
   vi.doMock("../services/auth.js", () => ({
@@ -806,7 +806,7 @@ describe("small API route handlers", () => {
       .fn()
       .mockResolvedValueOnce(null)
       .mockResolvedValue({ delegateAgentId: "agent_1", humanAgentId: "human_1", organizationId: "org_1" });
-    vi.doMock("../services/chat.js", () => ({ assertParticipant }));
+    vi.doMock("../services/chat/conversation.js", () => ({ assertParticipant }));
     vi.doMock("../services/scm/github/entity-chat.js", () => ({ resolveBindingPair }));
     vi.doMock("../services/scm/github/entity-follow.js", () => ({
       declareEntityFollow,

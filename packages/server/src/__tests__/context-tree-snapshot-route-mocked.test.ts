@@ -102,7 +102,7 @@ async function setupRoute(input: { orgId: string | null; githubRemote?: boolean;
     resolveContextTreeRecoveryAction,
   }));
   vi.doMock("../scope/require-resource.js", () => ({ resolveOrgViewer }));
-  vi.doMock("../services/session-event.js", () => ({ summarizeContextTreeUsage }));
+  vi.doMock("../services/chat/sessions/events.js", () => ({ summarizeContextTreeUsage }));
   vi.doMock("../services/context-tree/io.js", () => ({ buildContextTreeIoSummary }));
 
   const { contextTreeSnapshotRoutes } = await import("../api/context-tree-snapshot.js");

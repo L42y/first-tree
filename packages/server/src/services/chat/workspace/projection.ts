@@ -2,7 +2,7 @@
  * Chat-first workspace — append-only post-fan-out projection.
  *
  * The single sanctioned extension point on the message hot path. Called
- * from `services/message.ts` AFTER existing fan-out completes, inside the
+ * from `services/chat/message.ts` AFTER existing fan-out completes, inside the
  * same transaction. Four responsibilities:
  *
  *   1. Chats projection: roll forward `chats.last_message_at`,
@@ -40,7 +40,7 @@
 import { CHAT_ENGAGEMENT_STATUSES } from "@first-tree/shared";
 import { eq, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import { chats } from "../db/schema/chats.js";
+import { chats } from "../../../db/schema/chats.js";
 
 const { ACTIVE, ARCHIVED } = CHAT_ENGAGEMENT_STATUSES;
 
@@ -55,7 +55,7 @@ export const CHAT_MESSAGE_EVENTS_CHANNEL = "chat_message_events";
 // ---------------------------------------------------------------------------
 //
 // Mirrors the pattern in `services/admin-broadcast.ts`. Registered once at
-// app boot with the live notifier so the message hot path (services/message.ts)
+// app boot with the live notifier so the message hot path (services/chat/message.ts)
 // can fire the kick without taking on a new constructor parameter.
 
 type ChatMessageDispatcher = (chatId: string, messageId: string) => void;
@@ -126,7 +126,7 @@ export async function applyAfterFanOut(tx: DbLike, input: ApplyAfterFanOutInput)
   // → timestamptz binding goes through drizzle's column-type serializer.
   // (Raw `sql` template hands the Date straight to postgres-js, which can't
   // serialize it without an explicit serializer setting.)
-  // NOTE: `updated_at` is intentionally NOT touched here. `services/message.ts`
+  // NOTE: `updated_at` is intentionally NOT touched here. `services/chat/message.ts`
   // step 5 has already set `chats.updated_at = NOW()` earlier in the same
   // transaction; setting it again to `messageCreatedAt` would be a
   // redundant write that may leave the value slightly behind real time.

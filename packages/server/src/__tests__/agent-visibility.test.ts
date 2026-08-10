@@ -4,7 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { beforeEach, describe, expect, it } from "vitest";
 import { agents as agentsTable } from "../db/schema/agents.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
 import { createAdminContext, seedClient, useTestApp } from "./helpers.js";
 
 /**

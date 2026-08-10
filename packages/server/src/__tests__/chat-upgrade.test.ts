@@ -2,8 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
-import { addParticipant, createChat, ensureParticipant } from "../services/chat.js";
-import { joinMeChat } from "../services/me-chat.js";
+import { addParticipant, createChat, ensureParticipant } from "../services/chat/conversation.js";
+import { joinMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**

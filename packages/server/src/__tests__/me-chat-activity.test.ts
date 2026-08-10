@@ -1,8 +1,8 @@
 import { ASSISTANT_TEXT_PREVIEW_MAX } from "@first-tree/shared";
 import { sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { previewAssistantText, previewToolArgs, toLiveActivity } from "../services/agent-chat-status.js";
-import { createMeChat, listMeChats } from "../services/me-chat.js";
+import { previewAssistantText, previewToolArgs, toLiveActivity } from "../services/chat/sessions/status.js";
+import { createMeChat, listMeChats } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("listMeChats: liveActivity derivation from session_events", () => {

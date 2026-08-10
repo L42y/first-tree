@@ -31,8 +31,8 @@
  */
 
 import { sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { createLogger } from "../observability/index.js";
+import type { Database } from "../../../db/connection.js";
+import { createLogger } from "../../../observability/index.js";
 
 const log = createLogger("ChatAudienceCache");
 

@@ -11,9 +11,9 @@ import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappin
 import { members } from "../db/schema/members.js";
 import { BadRequestError, NotFoundError, ServiceUnavailableError, UnprocessableError } from "../errors.js";
 import { updateAgent } from "../services/agent.js";
-import { createChat, removeParticipant } from "../services/chat.js";
-import { lockChatMembershipMutation } from "../services/chat-membership-lock.js";
-import { applyMembershipWrite } from "../services/participant-mode.js";
+import { createChat, removeParticipant } from "../services/chat/conversation.js";
+import { lockChatMembershipMutation } from "../services/chat/membership/lock.js";
+import { applyMembershipWrite, recomputeChatWatchers } from "../services/chat/membership/participants.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { resolveGithubPersonnelTargetChat } from "../services/scm/github/entity-chat.js";
 import {
@@ -23,7 +23,6 @@ import {
   parseEntityReference,
   removeEntityFollow,
 } from "../services/scm/github/entity-follow.js";
-import { recomputeChatWatchers } from "../services/watcher.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

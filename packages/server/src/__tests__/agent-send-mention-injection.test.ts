@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { messages } from "../db/schema/messages.js";
 import { BadRequestError } from "../errors.js";
-import { createChat } from "../services/chat.js";
-import { sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**
@@ -15,7 +15,7 @@ import { createTestAgent, useTestApp } from "./helpers.js";
  * layer) plus one HTTP-level integration test per endpoint to guard the
  * wiring.
  *
- * Spec (post-retire of content extraction — see services/message.ts
+ * Spec (post-retire of content extraction — see services/chat/message.ts
  * "Routing contract"):
  *
  *   Explicit-recipient enforcement (DEFAULT ON) — reject sends where no

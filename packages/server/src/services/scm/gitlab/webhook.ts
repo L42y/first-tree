@@ -18,13 +18,13 @@ import { gitlabIdentityLinks } from "../../../db/schema/gitlab-identity-links.js
 import { BadRequestError } from "../../../errors.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
-import { createChat } from "../../chat.js";
+import { createChat } from "../../chat/conversation.js";
+import { inviteParticipantsToChatInTransaction } from "../../chat/membership/invite.js";
 import {
   lockChatMembershipMutation,
   lockChatSpeakerAndAgentSnapshot,
   lockWatcherProjectionAgentMutation,
-} from "../../chat-membership-lock.js";
-import { inviteParticipantsToChatInTransaction } from "../../participant-invite.js";
+} from "../../chat/membership/lock.js";
 import { composeScmAudience, type ScmAudienceTarget, type ScmPersonnelTarget } from "../shared/audience-composition.js";
 import { type DeferredScmCardPostCommitEffects, sendScmSystemCard } from "../shared/card-delivery.js";
 import {

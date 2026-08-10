@@ -23,7 +23,7 @@ const SESSION_RUNTIME_CHANNEL = "session_runtime_changes";
 const CHAT_MESSAGE_CHANNEL = "chat_message_events";
 /**
  * Cross-replica chat-audience invalidation. Carries the bare `<chatId>`.
- * The push-audience cache (`chat-audience-cache.ts`) is process-local, so a
+ * The push-audience cache (`chat/membership/audience-cache.ts`) is process-local, so a
  * membership change on one replica only drops THAT replica's cache. This
  * channel fans the invalidation to every replica so the one hosting a viewer's
  * admin WS doesn't keep serving a stale audience (and dropping `chat:message`

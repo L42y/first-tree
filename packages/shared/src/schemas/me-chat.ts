@@ -217,7 +217,7 @@ export const meChatRowSchema = z.object({
   /**
    * Coarse-grained origin — `manual` / `github`. Mirrors the
    * projection driven by `chatSourceSqlExpression` in
-   * `services/me-chat.ts`. Drives the rail's filter popover and
+   * `services/chat/workspace/me-chat.ts`. Drives the rail's filter popover and
    * the Group-by-Source bucket assignment.
    *
    * Defaulted to `"manual"` for parse-side defence-in-depth: this
@@ -327,7 +327,7 @@ export const meChatRowSchema = z.object({
    * chat ordering or feeds the request-level Need you queue.
    *
    * Distinguishes explicit `@<me>` from the v1 1-on-1 implicit DM
-   * auto-mention (`services/message.ts:282 dmAutoProjection`): the latter
+   * auto-mention (`services/chat/message.ts:282 dmAutoProjection`): the latter
    * still bumps `unreadMentionCount` for the red dot but never writes the
    * recipient into `metadata.mentions`, so a 1-on-1 agent → human plain
    * final message correctly leaves `chatHasExplicitMentionToMe = false`.

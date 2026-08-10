@@ -1,7 +1,6 @@
 import { MESSAGE_FORMATS } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import { BadRequestError, ClientRetiredError, ConflictError } from "../errors.js";
-import { getActivityOverview } from "../services/activity.js";
 import {
   agentAvatarImageUrl,
   assertUserAgentMetadataHasNoReservedKeys,
@@ -15,9 +14,10 @@ import {
   suspendAgent,
 } from "../services/agent.js";
 import { assertNoRuntimeSwitchInProgress, getRuntimeSwitchClaim } from "../services/agent-runtime-switch.js";
-import { createChat, resolveAgentIdsByNameInOrg, updateChatMetadata } from "../services/chat.js";
+import { createChat, resolveAgentIdsByNameInOrg, updateChatMetadata } from "../services/chat/conversation.js";
+import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/chat/message.js";
+import { getActivityOverview } from "../services/chat/sessions/activity.js";
 import { explainContextTreeIoDecision } from "../services/context-tree/io.js";
-import { maybeUnwrapDoubleEncoded, preflightMessageSendIntent } from "../services/message.js";
 import { createResourcesService } from "../services/resources.js";
 import {
   exchangeCodeForAppUserProfile,
@@ -573,7 +573,7 @@ describe("service branch defaults", () => {
     ).rejects.toThrow("Unexpected: missing name after validation");
 
     await expect(
-      (await import("../services/chat.js")).listChatsForMember(
+      (await import("../services/chat/conversation.js")).listChatsForMember(
         queuedSelectDb([
           [[agentRow({ id: undefined, uuid: "human_1", type: "human" })]],
           [{ chatId: "chat_1", agentId: "ghost_agent", role: "member" }],
@@ -941,13 +941,13 @@ describe("service branch defaults", () => {
       sessionService,
     ] = await Promise.all([
       import("../services/agent.js"),
-      import("../services/chat.js"),
+      import("../services/chat/conversation.js"),
       import("../services/document.js"),
-      import("../services/inbox.js"),
+      import("../services/chat/inbox.js"),
       import("../services/member.js"),
       import("../services/membership.js"),
       import("../services/org-settings.js"),
-      import("../services/session.js"),
+      import("../services/chat/sessions/lifecycle.js"),
     ]);
     const orgScope = {
       userId: "user_1",

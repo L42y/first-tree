@@ -2,14 +2,14 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema/chats.js";
 import { NotFoundError } from "../errors.js";
-import { createChat } from "../services/chat.js";
-import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
+import { createChat } from "../services/chat/conversation.js";
 import {
   maybeUnwrapDoubleEncoded,
   preflightMessageSendIntent,
   type SendIntentParticipant,
   sendMessage,
-} from "../services/message.js";
+} from "../services/chat/message.js";
+import { buildLandingCampaignChatMetadata } from "../services/landing-campaigns/metadata.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("message service edge coverage", () => {
