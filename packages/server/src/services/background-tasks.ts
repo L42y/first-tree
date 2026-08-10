@@ -16,12 +16,20 @@ export type BackgroundTasks = {
   stop(): Promise<void>;
 };
 
-export function createBackgroundTasks(app: FastifyInstance, instanceId: string): BackgroundTasks {
+export type BackgroundTaskOptions = {
+  cronSchedulerEnabled?: boolean;
+};
+
+export function createBackgroundTasks(
+  app: FastifyInstance,
+  instanceId: string,
+  options: BackgroundTaskOptions = {},
+): BackgroundTasks {
   let inboxTimer: ReturnType<typeof setInterval> | null = null;
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let archiveSweepTimer: ReturnType<typeof setInterval> | null = null;
   let attachmentSweepTimer: ReturnType<typeof setInterval> | null = null;
-  const cronScheduler = createCronScheduler(app);
+  const cronScheduler = options.cronSchedulerEnabled === false ? null : createCronScheduler(app);
 
   async function maintainAttachments(): Promise<void> {
     const legacyAttachments = await backfillExternalAttachmentsToPostgres(app.db, app.attachmentBlobStore);
@@ -93,7 +101,7 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
         60 * 60 * 1000,
       );
 
-      cronScheduler.start();
+      cronScheduler?.start();
 
       presenceService.heartbeatInstance(app.db, instanceId).catch((err) => {
         log.error({ err }, "failed initial heartbeat");
@@ -104,7 +112,7 @@ export function createBackgroundTasks(app: FastifyInstance, instanceId: string):
     },
 
     async stop() {
-      await cronScheduler.stop();
+      await cronScheduler?.stop();
       if (inboxTimer) {
         clearInterval(inboxTimer);
         inboxTimer = null;

@@ -158,4 +158,17 @@ describe("createBackgroundTasks", () => {
 
     await tasks.stop();
   });
+
+  it("allows tests to disable the periodic cron scheduler", async () => {
+    const { createBackgroundTasks } = await import("../services/background-tasks.js");
+    const tasks = createBackgroundTasks(makeApp(), "srv_3", { cronSchedulerEnabled: false });
+
+    tasks.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await tasks.stop();
+
+    expect(serviceMocks.cronStart).not.toHaveBeenCalled();
+    expect(serviceMocks.cronStop).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

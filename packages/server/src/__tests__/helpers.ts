@@ -94,6 +94,8 @@ export type CreateTestAppOptions = {
   connectBootstrap?: Config["connectBootstrap"];
   inbox?: Partial<NonNullable<Config["inbox"]>>;
   runtimeSwitchFaultInjection?: boolean;
+  /** Enable the periodic cron scheduler. Disabled by default so tests that drive sweeps explicitly cannot race it. */
+  cronSchedulerEnabled?: boolean;
   allowedOrganizationId?: string;
   /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
   agentTemplatePublisherOrgId?: string;
@@ -272,7 +274,10 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
   // test scaffolding bypasses it and builds the Config object manually, so
   // we set the singleton ourselves here.
   setConfig(config);
-  const app = await buildApp(config, { attachmentBlobStore: new MemoryAttachmentBlobStore() });
+  const app = await buildApp(config, {
+    attachmentBlobStore: new MemoryAttachmentBlobStore(),
+    backgroundTasks: { cronSchedulerEnabled: opts.cronSchedulerEnabled ?? false },
+  });
   await app.ready();
   return app;
 }
