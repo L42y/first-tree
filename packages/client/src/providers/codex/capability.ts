@@ -77,7 +77,7 @@ function isFile(p: string): boolean {
  * the modern layout is used only when BOTH `bin/<codex>` and the
  * `codex-package.json` marker are present; otherwise the legacy
  * `codex/<codex>` layout. Returns null when neither resolves — which is
- * precisely when `new Codex()` throws "Unable to locate Codex CLI binaries"
+ * precisely when `new Codex()` fails its native-package layout check
  * and the handler falls back to an externally installed codex. Existence-only.
  */
 export function resolveBundledBinaryInPackageRoot(packageRoot: string): string | null {

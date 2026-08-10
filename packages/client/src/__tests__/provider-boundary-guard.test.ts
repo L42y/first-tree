@@ -236,21 +236,24 @@ describe("runtime provider architecture guard", () => {
       ...listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts")),
       ...listFilesRecursive(
         providersRoot,
-        (p) =>
-          p.endsWith(".ts") &&
-          !p.endsWith("/binary.ts") &&
-          !p.endsWith("\\binary.ts") &&
-          !p.endsWith("/capability.ts") &&
-          !p.endsWith("\\capability.ts"),
+        (p) => p.endsWith(".ts") && !p.endsWith("/binary.ts") && !p.endsWith("\\binary.ts"),
       ),
     ];
+    const productionRels = productionFiles.map((file) => relative(clientSrc, file).replaceAll("\\", "/"));
+    // Capability modules stay in the scan set after S3 family moves — never
+    // exempt by basename (that would fail-open Claude/Grok capability owners).
+    expect(productionRels).toContain("providers/claude/capability.ts");
+    expect(productionRels).toContain("providers/codex/capability.ts");
+    expect(productionRels).toContain("providers/grok/capability.ts");
+
     // Local regex / phrase tables that re-recognize provider binary absence.
+    const codexBundledLocateMatcher = /unable to locate codex cli binaries/i;
     const secondOwnerMatchers = [
       /pi cli is missing/i,
       /no pi binary/i,
       /BINARY_MISSING_PATTERNS/,
       /codex runtime binary is missing/i,
-      /unable to locate codex cli binaries/i,
+      codexBundledLocateMatcher,
       /cursor agent cli is missing/i,
       /grok build cli is missing/i,
     ] as const;
@@ -265,10 +268,88 @@ describe("runtime provider architecture guard", () => {
       "'pi_binary_missing'",
     ] as const;
 
+    /**
+     * Exact approved executable occurrence of the Codex bundled-locate phrase:
+     * `resolveBundledCodexBinary`'s catch return `error` template literal.
+     * Comments are not approved exceptions — rewrite them if they restated the phrase.
+     */
+    function approvedCodexBundledLocateErrorSpans(source: string): Array<{ start: number; end: number; text: string }> {
+      const sourceFile = ts.createSourceFile(
+        "providers/codex/capability.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const spans: Array<{ start: number; end: number; text: string }> = [];
+
+      function recordIfApprovedErrorTemplate(initializer: ts.Expression): void {
+        const text = initializer.getText(sourceFile);
+        if (!codexBundledLocateMatcher.test(text)) return;
+        if (!(ts.isTemplateExpression(initializer) || ts.isNoSubstitutionTemplateLiteral(initializer))) return;
+        spans.push({ start: initializer.getStart(sourceFile), end: initializer.getEnd(), text });
+      }
+
+      function visitCatchBody(node: ts.Node): void {
+        if (ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression)) {
+          for (const prop of node.expression.properties) {
+            if (!ts.isPropertyAssignment(prop)) continue;
+            const name = prop.name;
+            const isError =
+              (ts.isIdentifier(name) && name.text === "error") || (ts.isStringLiteral(name) && name.text === "error");
+            if (!isError) continue;
+            recordIfApprovedErrorTemplate(prop.initializer);
+          }
+        }
+        ts.forEachChild(node, visitCatchBody);
+      }
+
+      function visitFunctionBody(node: ts.Node): void {
+        if (ts.isTryStatement(node) && node.catchClause) {
+          visitCatchBody(node.catchClause.block);
+        }
+        ts.forEachChild(node, visitFunctionBody);
+      }
+
+      function visit(node: ts.Node): void {
+        if (ts.isFunctionDeclaration(node) && node.name?.text === "resolveBundledCodexBinary" && node.body) {
+          visitFunctionBody(node.body);
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(sourceFile);
+      return spans;
+    }
+
+    function maskSpans(source: string, spans: Array<{ start: number; end: number }>): string {
+      if (spans.length === 0) return source;
+      const ordered = [...spans].sort((a, b) => b.start - a.start);
+      let out = source;
+      for (const span of ordered) {
+        out = `${out.slice(0, span.start)}${" ".repeat(span.end - span.start)}${out.slice(span.end)}`;
+      }
+      return out;
+    }
+
     for (const file of productionFiles) {
       const source = readFileSync(file, "utf8");
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
       for (const matcher of secondOwnerMatchers) {
+        if (rel === "providers/codex/capability.ts" && matcher === codexBundledLocateMatcher) {
+          const spans = approvedCodexBundledLocateErrorSpans(source);
+          expect(spans, "Codex capability must expose exactly one approved bundled-locate error template").toHaveLength(
+            1,
+          );
+          expect(spans[0]?.text).toMatch(
+            /^`unable to locate codex CLI binaries \(is @openai\/codex installed with optional dependencies\?\): \$\{/,
+          );
+          const neutralized = maskSpans(source, spans);
+          expect(
+            neutralized,
+            `${rel} must not re-own binary-missing recognition outside the approved resolveBundledCodexBinary catch (${matcher})`,
+          ).not.toMatch(matcher);
+          continue;
+        }
         expect(source, `${rel} must not re-own binary-missing recognition (${matcher})`).not.toMatch(matcher);
       }
       for (const literal of reasonLiterals) {
@@ -278,6 +359,28 @@ describe("runtime provider architecture guard", () => {
         ).not.toContain(literal);
       }
     }
+
+    // Fail-closed characterization: phrase outside the approved AST shape is not neutralized.
+    const unapproved = [
+      'export function resolveBundledCodexBinary() { return "unable to locate codex CLI binaries"; }',
+      "export function other() { return { ok: false, error: `unable to locate codex CLI binaries elsewhere` }; }",
+      "export async function resolveBundledCodexBinary() { try {} catch { return { ok: false, detail: `unable to locate codex CLI binaries` }; } }",
+    ];
+    for (const snippet of unapproved) {
+      expect(approvedCodexBundledLocateErrorSpans(snippet), snippet).toHaveLength(0);
+      expect(codexBundledLocateMatcher.test(snippet)).toBe(true);
+    }
+    const approvedShape = [
+      "export async function resolveBundledCodexBinary() {",
+      "  try { throw new Error('x'); } catch (err) {",
+      "    return { ok: false, error: `unable to locate codex CLI binaries (is @openai/codex installed with optional dependencies?): $" +
+        "{err}` };",
+      "  }",
+      "}",
+      "",
+    ].join("\n");
+    expect(approvedShape).toContain("${err}");
+    expect(approvedCodexBundledLocateErrorSpans(approvedShape)).toHaveLength(1);
 
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
     const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
