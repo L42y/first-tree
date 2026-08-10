@@ -16,7 +16,7 @@ import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
-import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./agent.js";
+import { ensureClientSupportsRuntimeProvider, selectAgentRowWithRuntime } from "./agent-runtime-binding.js";
 import { revokeAgentRuntimeSession } from "./agent-runtime-session.js";
 import { archiveAllSessionsForAgent } from "./chat/sessions/lifecycle.js";
 import { forceDisconnect } from "./connection-manager.js";
