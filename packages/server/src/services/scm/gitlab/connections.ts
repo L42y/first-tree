@@ -12,7 +12,7 @@ import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
 import { organizations } from "../../../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../../../errors.js";
 import { uuidv7 } from "../../../uuid.js";
-import { getOrgContextTreeBinding } from "../../org-settings.js";
+import { getOrgContextTreeBinding } from "../../context-tree/settings.js";
 import { normalizeGitlabHttpsOrigin } from "./egress-policy.js";
 
 export function mintGitlabUrlBearer(): string {

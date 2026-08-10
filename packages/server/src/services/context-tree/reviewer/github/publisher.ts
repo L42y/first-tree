@@ -23,7 +23,6 @@ import { organizations } from "../../../../db/schema/organizations.js";
 import { uuidv7 } from "../../../../uuid.js";
 import { agentNotLandingCampaignTrialCondition } from "../../../agents/access-control.js";
 import { validateAgentRuntimeSession } from "../../../agents/runtime/session.js";
-import { getOrgContextTreeBinding, getOrgSetting } from "../../../org-settings.js";
 import {
   createAppJwt,
   createPullRequestReview,
@@ -34,6 +33,8 @@ import {
   listPullRequestReviewsForRun,
   mintInstallationToken,
 } from "../../../scm/github/app.js";
+import { getOrgSetting } from "../../../settings/organization.js";
+import { getOrgContextTreeBinding } from "../../settings.js";
 import { normalizeGithubRepo } from "./pr.js";
 
 type SubmissionState = ContextReviewSubmissionState;

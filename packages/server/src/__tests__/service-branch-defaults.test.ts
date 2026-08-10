@@ -946,7 +946,7 @@ describe("service branch defaults", () => {
       import("../services/chat/inbox.js"),
       import("../services/team/member.js"),
       import("../services/team/membership.js"),
-      import("../services/org-settings.js"),
+      import("../services/context-tree/settings.js"),
       import("../services/chat/sessions/lifecycle.js"),
     ]);
     const orgScope = {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import * as orgSettingsService from "../services/org-settings.js";
+import * as contextTreeSettingsService from "../services/context-tree/settings.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
+import * as organizationSettingsService from "../services/settings/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("GitLab egress authorization boundaries on Settings writes", () => {
@@ -54,7 +55,7 @@ describe("GitLab egress authorization boundaries on Settings writes", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -74,7 +75,7 @@ describe("GitLab egress authorization boundaries on Settings writes", () => {
       instanceOrigin: "https://gitlab.other",
     });
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -97,7 +98,7 @@ describe("GitLab egress authorization boundaries on Settings writes", () => {
       displayName: "Authorized GitLab",
       instanceOrigin: "https://gitlab.authorized:8443",
     });
-    await orgSettingsService.putOrgSetting(
+    await organizationSettingsService.putOrgSetting(
       app.db,
       admin.organizationId,
       "context_tree",
@@ -110,7 +111,7 @@ describe("GitLab egress authorization boundaries on Settings writes", () => {
     );
 
     await expect(
-      orgSettingsService.putOrgSetting(
+      organizationSettingsService.putOrgSetting(
         app.db,
         admin.organizationId,
         "context_tree",
@@ -118,7 +119,9 @@ describe("GitLab egress authorization boundaries on Settings writes", () => {
         { updatedBy: admin.userId },
       ),
     ).resolves.toMatchObject({ branch: "trunk", provider: "gitlab" });
-    await expect(orgSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId)).resolves.toMatchObject({
+    await expect(
+      contextTreeSettingsService.getOrgContextTreeBinding(app.db, admin.organizationId),
+    ).resolves.toMatchObject({
       branch: "trunk",
       provider: "gitlab",
     });

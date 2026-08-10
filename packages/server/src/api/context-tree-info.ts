@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { requireUser } from "../scope/require-user.js";
-import { getOrgContextTreeBinding, resolveUserPrimaryOrgId } from "../services/org-settings.js";
+import { getOrgContextTreeBinding } from "../services/context-tree/settings.js";
+import { resolveUserPrimaryOrgId } from "../services/team/default-membership.js";
 
 export async function contextTreeInfoRoutes(app: FastifyInstance): Promise<void> {
   /**

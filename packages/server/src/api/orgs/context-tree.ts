@@ -21,6 +21,14 @@ import {
   ensureInstallationOwnedContextTreeRepo,
 } from "../../services/context-tree/repo-provisioner.js";
 import {
+  findOrgBoundToContextTreeRepo,
+  getOrgContextReviewRuntime,
+  getOrgContextTreeBinding,
+  getOrgContextTreeSettingState,
+  isOrgContextTreeBindingRuntimeCurrent,
+  putInitializedOrgContextTreeBinding,
+} from "../../services/context-tree/settings.js";
+import {
   type ContextTreeBinding,
   getContextTreeSnapshot,
   isGithubRemoteBinding,
@@ -36,14 +44,6 @@ import {
   kickoffOnboarding,
   type TreeSetupRecoveryMessage,
 } from "../../services/onboarding-kickoff.js";
-import {
-  findOrgBoundToContextTreeRepo,
-  getOrgContextReviewRuntime,
-  getOrgContextTreeBinding,
-  getOrgContextTreeSettingState,
-  isOrgContextTreeBindingRuntimeCurrent,
-  putInitializedOrgContextTreeBinding,
-} from "../../services/org-settings.js";
 import { createRepoFileWithToken, GithubAppApiError, getRepoFileWithToken } from "../../services/scm/github/app.js";
 import { findInstallationByOrg } from "../../services/scm/github/app-installations.js";
 import {

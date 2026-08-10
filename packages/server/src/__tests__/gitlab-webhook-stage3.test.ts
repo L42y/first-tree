@@ -22,7 +22,6 @@ import {
   putContextReviewerAssignment,
   putContextReviewerEnablement,
 } from "../services/context-tree/reviewer/settings.js";
-import { putOrgSetting } from "../services/org-settings.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -39,6 +38,7 @@ import {
   suspendGitlabLinksForMembership,
 } from "../services/scm/gitlab/identities.js";
 import { applyGitlabPersonnelEvidence, normalizeGitlabWebhook } from "../services/scm/gitlab/webhook.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { deleteMember } from "../services/team/member.js";
 import { deactivateMembership, MEMBER_STATUSES, reactivateMembership } from "../services/team/membership.js";
 import { createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";

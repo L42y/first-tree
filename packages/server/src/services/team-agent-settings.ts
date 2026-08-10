@@ -12,8 +12,8 @@ import { organizations } from "../db/schema/organizations.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { loadValidContextReviewerAgent } from "./context-tree/reviewer/common.js";
 import { listContextReviewerCandidates } from "./context-tree/reviewer/readiness.js";
-import { getOrgSetting } from "./org-settings.js";
 import { findInstallationByOrg, type InstallationRow } from "./scm/github/app-installations.js";
+import { getOrgSetting } from "./settings/organization.js";
 
 export class TeamAgentSettingsError extends ConflictError {
   constructor(

@@ -13,7 +13,7 @@ import { agents } from "../../../db/schema/agents.js";
 import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
 import { loadValidContextReviewerAgent } from "../../context-tree/reviewer/common.js";
 import { normalizeGithubRepo } from "../../context-tree/reviewer/github/pr.js";
-import { getOrgContextReviewRuntime } from "../../org-settings.js";
+import { getOrgContextReviewRuntime } from "../../context-tree/settings.js";
 import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {
   composeScmAudience,

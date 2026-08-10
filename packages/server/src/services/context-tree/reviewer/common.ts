@@ -20,8 +20,8 @@ import { organizationSettings } from "../../../db/schema/organization-settings.j
 import { serverInstances } from "../../../db/schema/server-instances.js";
 import { agentNotLandingCampaignTrialCondition } from "../../agents/access-control.js";
 import { lockChatMembershipMutation, lockWatcherProjectionAgentMutation } from "../../chat/membership/lock.js";
-import { getOrgContextReviewRuntime } from "../../org-settings.js";
 import { githubAutomaticReviewEventsReady } from "../../setup-capabilities.js";
+import { getOrgContextReviewRuntime } from "../settings.js";
 import { readContextReviewerAgentReadiness } from "./readiness.js";
 
 export type ContextReviewerAgent = {

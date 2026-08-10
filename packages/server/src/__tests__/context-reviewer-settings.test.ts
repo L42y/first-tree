@@ -22,9 +22,9 @@ import {
   putContextReviewerAssignment,
   putContextReviewerEnablement,
 } from "../services/context-tree/reviewer/settings.js";
-import { getOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
+import { getOrgSetting } from "../services/settings/organization.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
 import { listTeamAgentCandidates, putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { uuidv7 } from "../uuid.js";

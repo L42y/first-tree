@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { putOrgSetting } from "../services/org-settings.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

@@ -14,9 +14,9 @@ import { agents } from "../../db/schema/agents.js";
 import { authIdentities } from "../../db/schema/auth-identities.js";
 import { members } from "../../db/schema/members.js";
 import { ForbiddenError } from "../../errors.js";
-import { getOrgContextReviewRuntime } from "../org-settings.js";
 import { loadValidContextReviewerAgent } from "./reviewer/common.js";
 import { readContextReviewerAgentReadiness } from "./reviewer/readiness.js";
+import { getOrgContextReviewRuntime } from "./settings.js";
 
 type RequesterIdentity = {
   userId: string;

@@ -7,8 +7,8 @@ import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
-import * as orgSettingsService from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import * as orgSettingsService from "../services/settings/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 

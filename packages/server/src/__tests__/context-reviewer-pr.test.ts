@@ -22,9 +22,9 @@ import {
   normalizeGithubRepo,
   renderContextReviewerPrPrompt,
 } from "../services/context-tree/reviewer/github/pr.js";
-import { putOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { createMember } from "../services/team/member.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 

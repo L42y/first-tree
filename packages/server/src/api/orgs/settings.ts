@@ -9,7 +9,8 @@ import type { FastifyInstance } from "fastify";
 import { BadRequestError, ConflictError, GoneError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
 import { putLegacyContextReviewerSetting } from "../../services/context-tree/reviewer/settings.js";
-import * as orgSettingsService from "../../services/org-settings.js";
+import * as contextTreeSettingsService from "../../services/context-tree/settings.js";
+import * as orgSettingsService from "../../services/settings/organization.js";
 import { putTeamAgentAssignment } from "../../services/team-agent-settings.js";
 
 /**
@@ -34,7 +35,7 @@ import { putTeamAgentAssignment } from "../../services/team-agent-settings.js";
 export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { orgId: string } }>("/context_tree/raw", async (request, reply) => {
     const scope = await requireOrgAdmin(request, app.db);
-    const value = await orgSettingsService.getRawOrgContextTreeSetting(app.db, scope.organizationId);
+    const value = await contextTreeSettingsService.getRawOrgContextTreeSetting(app.db, scope.organizationId);
     const serialized = JSON.stringify(value);
     if (serialized === undefined) {
       throw new Error("Context Tree raw setting could not be serialized as JSON");
@@ -48,7 +49,7 @@ export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
     async (request) => {
       const scope = await requireOrgAdmin(request, app.db);
       const input = orgContextTreeFinalizeInputSchema.parse(request.body);
-      return orgSettingsService.putInitializedOrgContextTreeBinding(
+      return contextTreeSettingsService.putInitializedOrgContextTreeBinding(
         app.db,
         scope.organizationId,
         { provider: input.provider, repo: input.repo, branch: input.branch },
@@ -67,8 +68,8 @@ export async function orgSettingsRoutes(app: FastifyInstance): Promise<void> {
         ? await requireOrgMembership(request, app.db)
         : await requireOrgAdmin(request, app.db);
     if (namespace === "context_tree") {
-      const runtime = await orgSettingsService.getOrgContextReviewRuntime(app.db, scope.organizationId);
-      const tree = orgSettingsService.projectOrgContextTreeSettingState(runtime);
+      const runtime = await contextTreeSettingsService.getOrgContextReviewRuntime(app.db, scope.organizationId);
+      const tree = contextTreeSettingsService.projectOrgContextTreeSettingState(runtime);
       if (tree.kind === "bound") return tree.binding;
       if (tree.kind === "unbound") return { branch: tree.branch };
       throw new ConflictError("Context Tree setting contains invalid historical data and must be repaired by an admin");

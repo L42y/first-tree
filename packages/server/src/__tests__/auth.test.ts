@@ -7,13 +7,8 @@ import { connectCodes } from "../db/schema/connect-codes.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { userAuthHook } from "../middleware/user-auth.js";
-import {
-  generateConnectToken,
-  login,
-  pickDefaultMembership,
-  refreshAccessToken,
-  signTokensForUser,
-} from "../services/auth.js";
+import { generateConnectToken, login, refreshAccessToken, signTokensForUser } from "../services/auth.js";
+import { pickDefaultMembership } from "../services/team/default-membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 const TEST_JWT_SECRET = "test-jwt-secret-key-for-vitest";
@@ -153,7 +148,7 @@ describe("Admin Auth", () => {
       );
     });
 
-    // Regression: services/auth.ts::pickDefaultMembership picks the most-recently-
+    // Regression: services/team/default-membership.ts::pickDefaultMembership picks the most-recently-
     // joined active membership as the /me default. Without `ORDER BY created_at DESC,
     // id DESC` the multi-org user gets a non-deterministic default each request.
     it("picks the most-recently-joined active membership as the default org", async () => {

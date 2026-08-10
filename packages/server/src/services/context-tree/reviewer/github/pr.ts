@@ -19,9 +19,9 @@ import {
   sendMessage,
 } from "../../../chat/message.js";
 import { notifyRecipients } from "../../../notifier.js";
-import { getOrgContextReviewRuntime } from "../../../org-settings.js";
 import { isGithubAppSelfOutput } from "../../../scm/github/app-self-output.js";
 import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
+import { getOrgContextReviewRuntime } from "../../settings.js";
 import {
   type ContextReviewerAgent,
   contextReviewerChatReservationKey,

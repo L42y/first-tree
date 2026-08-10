@@ -18,7 +18,7 @@ import {
   summarizeContextTreeIo,
   summarizeContextTreeIoSkippedEvents,
 } from "../services/context-tree/io.js";
-import { putOrgSetting } from "../services/org-settings.js";
+import { putOrgSetting } from "../services/settings/organization.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 const TREE_REPO = "https://github.com/acme/first-tree-context.git";
