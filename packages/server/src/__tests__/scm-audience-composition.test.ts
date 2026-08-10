@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { composeScmAudience, type ScmProviderTaskTarget } from "../services/scm-audience-composition.js";
+import { composeScmAudience, type ScmProviderTaskTarget } from "../services/scm/shared/audience-composition.js";
 
 function existing(humanAgentId: string, wakeAgentId: string, chatId: string) {
   return {

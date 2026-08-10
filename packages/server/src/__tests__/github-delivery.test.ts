@@ -11,10 +11,10 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { users } from "../db/schema/users.js";
 import { createChat } from "../services/chat.js";
-import { type GithubProviderTaskContext, resolveGithubAudience } from "../services/github-audience.js";
-import { deliverGithubEvent } from "../services/github-delivery.js";
-import { resolveAgentScmBindingPair } from "../services/scm-attention-line.js";
-import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
+import { type GithubProviderTaskContext, resolveGithubAudience } from "../services/scm/github/audience.js";
+import { deliverGithubEvent } from "../services/scm/github/delivery.js";
+import { resolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
+import type { ScmAudienceTarget } from "../services/scm/shared/audience-composition.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

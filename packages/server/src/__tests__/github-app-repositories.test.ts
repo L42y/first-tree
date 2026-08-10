@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/github-app-installations.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 // A real RSA key so `createAppJwt` (which mints the installation token) can

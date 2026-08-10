@@ -5,10 +5,10 @@ import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { members } from "../db/schema/members.js";
 import { encryptValue } from "../services/crypto.js";
-import * as githubUserToken from "../services/github-user-token.js";
 import { createMember } from "../services/member.js";
 import { ensureMembership } from "../services/membership.js";
 import { createOrganization } from "../services/organization.js";
+import * as githubUserToken from "../services/scm/github/user-token.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("PATCH /me/onboarding", () => {

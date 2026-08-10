@@ -1,11 +1,11 @@
 import type { FastifyInstance } from "fastify";
-import type { Database } from "../db/connection.js";
+import type { Database } from "../../../db/connection.js";
 import {
   type DeferredSendMessagePostCommitEffects,
   runDeferredSendMessagePostCommitEffects,
   sendMessage,
-} from "./message.js";
-import { notifyRecipients } from "./notifier.js";
+} from "../../message.js";
+import { notifyRecipients } from "../../notifier.js";
 
 export type DeferredScmCardPostCommitEffects = {
   messageId: string;

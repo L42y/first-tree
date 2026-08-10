@@ -7,7 +7,7 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
-import * as githubAppInstallations from "../services/github-app-installations.js";
+import * as githubAppInstallations from "../services/scm/github/app-installations.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 function oauthStateCookie(app: FastifyInstance, nonce: string): string {
@@ -766,7 +766,7 @@ describe("OAuth callback rejects malformed state", () => {
     });
     expect(res.statusCode).toBe(302);
 
-    const { findInstallationByGithubId } = await import("../services/github-app-installations.js");
+    const { findInstallationByGithubId } = await import("../services/scm/github/app-installations.js");
     const row = await findInstallationByGithubId(app.db, installationId);
     expect(row).not.toBeNull();
     expect(row?.accountLogin).toBe("devappuser");

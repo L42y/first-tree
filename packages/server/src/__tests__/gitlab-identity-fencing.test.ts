@@ -11,26 +11,26 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent, suspendAgent, updateAgent } from "../services/agent.js";
 import { createChat } from "../services/chat.js";
+import { deactivateMembership, MEMBER_STATUSES } from "../services/membership.js";
 import {
   createGitlabConnection,
   findActiveGitlabEndpoint,
   withGitlabIngressFence,
-} from "../services/gitlab-connections.js";
-import { declareGitlabEntityFollow } from "../services/gitlab-entity-follow.js";
+} from "../services/scm/gitlab/connections.js";
+import { declareGitlabEntityFollow } from "../services/scm/gitlab/entity-follow.js";
 import {
   createGitlabIdentityLink,
   reconfirmGitlabIdentityLink,
   removeGitlabIdentityLink,
   suspendGitlabLinksForMembership,
-} from "../services/gitlab-identities.js";
+} from "../services/scm/gitlab/identities.js";
 import {
   applyGitlabPersonnelEvidence,
   deliverGitlabCards,
   normalizeGitlabWebhook,
   resolveGitlabAudience,
-} from "../services/gitlab-webhook.js";
-import { deactivateMembership, MEMBER_STATUSES } from "../services/membership.js";
-import { lockAndResolveAgentScmBindingPair } from "../services/scm-attention-line.js";
+} from "../services/scm/gitlab/webhook.js";
+import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

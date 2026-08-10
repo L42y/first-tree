@@ -1,19 +1,11 @@
 import type { GithubEventCard, InvolveReason, NormalizedScmEvent } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
-import type { GithubEntity } from "../api/webhooks/github-entity.js";
-import { createLogger } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import type { GithubProviderTaskContext } from "./github-audience.js";
-import {
-  refreshGithubChatTopic,
-  resolveGithubExistingLineChat,
-  resolveGithubPersonnelTargetChat,
-  resolveTargetChat,
-} from "./github-entity-chat.js";
-import { type EntityStateSeed, setEntityTitle } from "./github-entity-state.js";
-import { applyMembershipWrite } from "./participant-mode.js";
-import type { ScmAudienceTarget } from "./scm-audience-composition.js";
-import { sendScmSystemCard } from "./scm-card-delivery.js";
+import type { GithubEntity } from "../../../api/webhooks/github-entity.js";
+import { createLogger } from "../../../observability/index.js";
+import { uuidv7 } from "../../../uuid.js";
+import { applyMembershipWrite } from "../../participant-mode.js";
+import type { ScmAudienceTarget } from "../shared/audience-composition.js";
+import { sendScmSystemCard } from "../shared/card-delivery.js";
 import {
   compareScmDeliveryEntries,
   planScmChatDeliveries,
@@ -23,7 +15,15 @@ import {
   scmWakeAgentIds,
   selectScmCardContext,
   selectScmSenderId,
-} from "./scm-chat-delivery-plan.js";
+} from "../shared/chat-delivery-plan.js";
+import type { GithubProviderTaskContext } from "./audience.js";
+import {
+  refreshGithubChatTopic,
+  resolveGithubExistingLineChat,
+  resolveGithubPersonnelTargetChat,
+  resolveTargetChat,
+} from "./entity-chat.js";
+import { type EntityStateSeed, setEntityTitle } from "./entity-state.js";
 
 const log = createLogger("GithubDelivery");
 

@@ -2,12 +2,12 @@ import { generateKeyPairSync } from "node:crypto";
 import type { ContextTreeSnapshot } from "@first-tree/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { ContextTreeBinding } from "../services/context-tree-snapshot.js";
-import type { InstallationRow } from "../services/github-app-installations.js";
+import type { InstallationRow } from "../services/scm/github/app-installations.js";
 import {
   type ContextTreeInstallationTokenResult,
   mintContextTreeInstallationToken,
   resolveContextTreeRecoveryAction,
-} from "../services/github-app-token.js";
+} from "../services/scm/github/app-token.js";
 
 /**
  * `mintContextTreeInstallationToken` is a pure transform: given an
@@ -16,7 +16,7 @@ import {
  * lookup and pass the row in. Tests construct fixtures directly and
  * inject a `fetcher` for the GitHub round-trip.
  */
-describe("services/github-app-token", () => {
+describe("services/scm/github/app-token", () => {
   let appId: string;
   let privateKeyPem: string;
 

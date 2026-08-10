@@ -1,10 +1,10 @@
 import { and, asc, eq, isNotNull, isNull, or } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { gitlabConnections } from "../db/schema/gitlab-connections.js";
-import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { withGitlabConnectionMaintenanceFence } from "./gitlab-connections.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
+import { gitlabEntityChatMappings } from "../../../db/schema/gitlab-entity-chat-mappings.js";
+import { withGitlabConnectionMaintenanceFence } from "./connections.js";
 
 const ATTENTION_BACKFILL_VERSION = 1;
 

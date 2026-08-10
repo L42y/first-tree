@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Database } from "../db/connection.js";
-import { insertMappingIfAbsent, refreshGithubChatTopic } from "../services/github-entity-chat.js";
+import { insertMappingIfAbsent, refreshGithubChatTopic } from "../services/scm/github/entity-chat.js";
 
 describe("github entity chat service edge cases", () => {
   it("throws when a conflict winner vanishes before the re-read", async () => {

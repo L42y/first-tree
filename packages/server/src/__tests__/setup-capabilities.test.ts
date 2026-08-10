@@ -10,7 +10,7 @@ import { members } from "../db/schema/members.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
-import { projectGitlabConnectionReadiness } from "../services/gitlab-connections.js";
+import { projectGitlabConnectionReadiness } from "../services/scm/gitlab/connections.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";

@@ -7,7 +7,7 @@ import { chatMembership } from "../db/schema/chat-membership.js";
 import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { organizations } from "../db/schema/organizations.js";
-import { resolveBindingPair, resolveTargetChat } from "../services/github-entity-chat.js";
+import { resolveBindingPair, resolveTargetChat } from "../services/scm/github/entity-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

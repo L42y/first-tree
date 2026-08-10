@@ -13,6 +13,7 @@ import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { processedEvents } from "../db/schema/processed-events.js";
 import { createAgent } from "../services/agent.js";
+import { createOrganization } from "../services/organization.js";
 import {
   createGitlabConnection,
   deleteGitlabConnection,
@@ -24,11 +25,10 @@ import {
   replaceGitlabConnection,
   withCurrentGitlabConnectionFence,
   withGitlabIngressFence,
-} from "../services/gitlab-connections.js";
-import * as gitlabEntityFollowService from "../services/gitlab-entity-follow.js";
-import { createOrganization } from "../services/organization.js";
-import * as scmCardDelivery from "../services/scm-card-delivery.js";
-import { lockGitlabEntityAttention } from "../services/scm-entity-attention-lock.js";
+} from "../services/scm/gitlab/connections.js";
+import * as gitlabEntityFollowService from "../services/scm/gitlab/entity-follow.js";
+import * as scmCardDelivery from "../services/scm/shared/card-delivery.js";
+import { lockGitlabEntityAttention } from "../services/scm/shared/entity-attention-lock.js";
 import { getTeamSetupCapabilities } from "../services/setup-capabilities.js";
 import { createTestAdmin, createTestAgent, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 

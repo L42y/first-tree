@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateDelegateTarget } from "../services/github-audience.js";
+import { evaluateDelegateTarget } from "../services/scm/github/audience.js";
 
 describe("evaluateDelegateTarget", () => {
   const orgA = "org-aaaaaa";

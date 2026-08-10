@@ -1,5 +1,5 @@
 import type { ContextTreeRecoveryAction, ContextTreeSnapshot } from "@first-tree/shared";
-import { type ContextTreeBinding, isGithubRemoteBinding } from "./context-tree-snapshot.js";
+import { type ContextTreeBinding, isGithubRemoteBinding } from "../../context-tree-snapshot.js";
 import {
   createAppJwt,
   GithubAppApiError,
@@ -7,8 +7,8 @@ import {
   getRepository,
   type InstallationToken,
   mintInstallationToken,
-} from "./github-app.js";
-import type { InstallationRow } from "./github-app-installations.js";
+} from "./app.js";
+import type { InstallationRow } from "./app-installations.js";
 
 /**
  * Outcome of minting a Context Tree installation token for an org.

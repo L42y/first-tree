@@ -11,9 +11,9 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { users } from "../db/schema/users.js";
 import { requireUser } from "../scope/require-user.js";
 import { type AuthCredentialSnapshot, hasUsableAuthentication } from "../services/auth-identity.js";
-import { buildAppAuthorizeUrl } from "../services/github-app.js";
 import { buildGoogleAuthorizeUrl } from "../services/google-oauth.js";
 import { STATE_NONCE_COOKIE_NAME, STATE_NONCE_COOKIE_TTL_SECONDS, signOAuthState } from "../services/oauth-state.js";
+import { buildAppAuthorizeUrl } from "../services/scm/github/app.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce } from "./auth/oauth-cookie.js";
 

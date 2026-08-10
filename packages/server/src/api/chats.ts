@@ -28,15 +28,6 @@ import { resolveAvatarImageUrl } from "../services/agent.js";
 import { getChatAgentStatuses } from "../services/agent-chat-status.js";
 import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat.js";
 import { extractChatSummary, resolveChatTitle } from "../services/chat-read-model.js";
-import { declareEntityFollow, listChatGithubEntities, removeEntityFollow } from "../services/github-entity-follow.js";
-import {
-  declareGitlabEntityFollowWithStatus,
-  listChatGitlabEntities,
-  listVisibleChatGitlabEntities,
-  projectChatGitlabEntity,
-  removeCurrentGitlabEntityFollow,
-  removeGitlabEntityFollow,
-} from "../services/gitlab-entity-follow.js";
 import {
   hasRemainingLandingCampaignTrialBudget,
   normalizeLandingCampaignTrialChatMetadataForRead,
@@ -61,7 +52,20 @@ import {
 import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
 import { listRequestThread } from "../services/need-you.js";
 import { notifyRecipients } from "../services/notifier.js";
-import { resolveHumanScmBindingPair } from "../services/scm-attention-line.js";
+import {
+  declareEntityFollow,
+  listChatGithubEntities,
+  removeEntityFollow,
+} from "../services/scm/github/entity-follow.js";
+import {
+  declareGitlabEntityFollowWithStatus,
+  listChatGitlabEntities,
+  listVisibleChatGitlabEntities,
+  projectChatGitlabEntity,
+  removeCurrentGitlabEntityFollow,
+  removeGitlabEntityFollow,
+} from "../services/scm/gitlab/entity-follow.js";
+import { resolveHumanScmBindingPair } from "../services/scm/shared/attention-line.js";
 import { listChatSpeakerEvents, summarizeChatTokenUsage } from "../services/session-event.js";
 import { sendFollowResult } from "./github-entity-reply.js";
 

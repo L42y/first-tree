@@ -8,7 +8,7 @@ import {
   executeScmFollowLine,
   resolveAgentScmBindingPair,
   resolveHumanScmBindingPair,
-} from "../services/scm-attention-line.js";
+} from "../services/scm/shared/attention-line.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("SCM attention binding pair policy", () => {

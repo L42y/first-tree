@@ -7,7 +7,7 @@ import { createChat } from "../services/chat.js";
 import {
   decideScmPersonnelTargetChat,
   lockAndValidateScmPersonnelPlacement,
-} from "../services/scm-target-chat-policy.js";
+} from "../services/scm/shared/target-chat-policy.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("SCM personnel target chat policy", () => {

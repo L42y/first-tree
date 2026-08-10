@@ -4,10 +4,10 @@ import {
   GithubAppApiError,
   getRepository,
   verifyUserCanAdministerInstallation,
-} from "./github-app.js";
-import type { InstallationRow } from "./github-app-installations.js";
-import { createUserRepo, GithubApiError, type GithubCreatedRepo } from "./github-oauth.js";
-import type { GithubUserToken } from "./github-user-token.js";
+} from "./scm/github/app.js";
+import type { InstallationRow } from "./scm/github/app-installations.js";
+import { createUserRepo, GithubApiError, type GithubCreatedRepo } from "./scm/github/oauth.js";
+import type { GithubUserToken } from "./scm/github/user-token.js";
 
 /**
  * Owner-agnostic Context Tree repo provisioner.

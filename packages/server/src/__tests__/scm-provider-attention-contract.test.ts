@@ -3,21 +3,21 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { createAgent } from "../services/agent.js";
-import { resolveGithubAudience } from "../services/github-audience.js";
-import { normalizeGithubWebhook } from "../services/github-normalize.js";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
-import { createGitlabIdentityLink } from "../services/gitlab-identities.js";
+import { resolveGithubAudience } from "../services/scm/github/audience.js";
+import { normalizeGithubWebhook } from "../services/scm/github/normalize.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
+import { createGitlabIdentityLink } from "../services/scm/gitlab/identities.js";
 import {
   applyGitlabPersonnelEvidence,
   normalizeGitlabWebhook,
   resolveGitlabAudience,
-} from "../services/gitlab-webhook.js";
+} from "../services/scm/gitlab/webhook.js";
 import {
   planScmChatDeliveries,
   type ScmAudienceTarget,
   scmWakeAgentIds,
   selectScmSenderId,
-} from "../services/scm-chat-delivery-plan.js";
+} from "../services/scm/shared/chat-delivery-plan.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe.each(["github", "gitlab"] as const)("%s SCM attention conformance", (provider) => {

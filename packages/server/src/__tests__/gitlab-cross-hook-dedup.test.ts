@@ -6,7 +6,7 @@ import {
   rememberSuccessfulGitlabHookEvent,
   resetGitlabCrossHookDedupForTests,
   withGitlabCrossHookDedupFence,
-} from "../services/gitlab-cross-hook-dedup.js";
+} from "../services/scm/gitlab/cross-hook-dedup.js";
 
 const occurrence = {
   connectionId: "connection-1",

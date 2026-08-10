@@ -1,6 +1,6 @@
 import type { NormalizedScmEvent, ScmIngressContext } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
-import { processScmWebhookDelivery } from "../services/scm-webhook-processing.js";
+import { processScmWebhookDelivery } from "../services/scm/shared/webhook-processing.js";
 import { useTestApp } from "./helpers.js";
 
 function makeIngress(stableDeliveryId: string | null): ScmIngressContext {

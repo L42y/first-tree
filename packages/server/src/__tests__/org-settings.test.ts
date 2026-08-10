@@ -13,9 +13,9 @@ import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agent.js";
 import { signTokensForUser } from "../services/auth.js";
-import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
 import * as orgSettingsService from "../services/org-settings.js";
+import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
 

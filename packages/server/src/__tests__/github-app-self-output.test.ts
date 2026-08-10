@@ -4,7 +4,7 @@ import {
   hasValidGithubTaskReplyRunMarker,
   isGithubAppSelfOutput,
   isGithubAppTargetLogin,
-} from "../services/github-app-self-output.js";
+} from "../services/scm/github/app-self-output.js";
 
 const RUN_ID = "019f63c6-b7ba-7a41-80ac-88077c9a8dbb";
 const MARKER = `${GITHUB_TASK_REPLY_RUN_MARKER_PREFIX}${RUN_ID} -->`;

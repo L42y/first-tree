@@ -12,19 +12,21 @@ import {
   runtimeProviderSchema,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { clients } from "../db/schema/clients.js";
-import { githubAppInstallations } from "../db/schema/github-app-installations.js";
-import { members } from "../db/schema/members.js";
-import { messages } from "../db/schema/messages.js";
-import { organizations } from "../db/schema/organizations.js";
-import { uuidv7 } from "../uuid.js";
-import { agentNotLandingCampaignTrialCondition } from "./access-control.js";
-import { validateAgentRuntimeSession } from "./agent-runtime-session.js";
-import { normalizeGithubRepo } from "./context-reviewer-pr.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { clients } from "../../../db/schema/clients.js";
+import { githubAppInstallations } from "../../../db/schema/github-app-installations.js";
+import { members } from "../../../db/schema/members.js";
+import { messages } from "../../../db/schema/messages.js";
+import { organizations } from "../../../db/schema/organizations.js";
+import { uuidv7 } from "../../../uuid.js";
+import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { validateAgentRuntimeSession } from "../../agent-runtime-session.js";
+import { normalizeGithubRepo } from "../../context-reviewer-pr.js";
+import { getOrgContextReviewRuntime } from "../../org-settings.js";
+import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {
   createAppJwt,
   createIssueComment,
@@ -33,11 +35,9 @@ import {
   type GithubIssueComment,
   listIssueCommentsForRun,
   mintInstallationToken,
-} from "./github-app.js";
-import { isGithubAppTargetLogin } from "./github-audience.js";
-import { extractMentions } from "./github-normalize.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
-import { getTeamAgentUuid } from "./team-agent-settings.js";
+} from "./app.js";
+import { isGithubAppTargetLogin } from "./audience.js";
+import { extractMentions } from "./normalize.js";
 
 type SubmissionState = GithubTaskReplySubmissionState;
 

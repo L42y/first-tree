@@ -7,14 +7,14 @@ import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
 import { putContextReviewerAssignment } from "../services/context-reviewer-settings.js";
-import { isGithubAppTargetLogin } from "../services/github-app-self-output.js";
+import { putOrgSetting } from "../services/org-settings.js";
+import { isGithubAppTargetLogin } from "../services/scm/github/app-self-output.js";
 import {
   type GithubProviderTaskContext,
   resolveGithubAudience as resolveAudienceResolution,
   resolveGithubActorHumanId,
-} from "../services/github-audience.js";
-import { putOrgSetting } from "../services/org-settings.js";
-import type { ScmAudienceTarget } from "../services/scm-audience-composition.js";
+} from "../services/scm/github/audience.js";
+import type { ScmAudienceTarget } from "../services/scm/shared/audience-composition.js";
 import { putTeamAgentAssignment } from "../services/team-agent-settings.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 

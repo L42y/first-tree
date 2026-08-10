@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { githubAppInstallations } from "../db/schema/github-app-installations.js";
 import { organizations } from "../db/schema/organizations.js";
-import type { AppInstallation } from "../services/github-app.js";
+import type { AppInstallation } from "../services/scm/github/app.js";
 import {
   bindInstallationToOrg,
   countInstallationsForOrg,
@@ -12,7 +12,7 @@ import {
   markInstallationSuspended,
   markInstallationUnsuspended,
   upsertInstallationFromMetadata,
-} from "../services/github-app-installations.js";
+} from "../services/scm/github/app-installations.js";
 import { uuidv7 } from "../uuid.js";
 import { useTestApp } from "./helpers.js";
 
@@ -26,7 +26,7 @@ const baseInstallation: AppInstallation = {
   suspendedAt: null,
 };
 
-describe("services/github-app-installations", () => {
+describe("services/scm/github/app-installations", () => {
   const getApp = useTestApp();
 
   // UUIDv7's first 8 hex chars are ms-timestamp bits; consecutive calls

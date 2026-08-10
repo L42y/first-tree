@@ -13,16 +13,16 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { gitlabConnections } from "../db/schema/gitlab-connections.js";
 import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
+import { getOrgContextReviewRuntime } from "./org-settings.js";
 import {
   createAppJwt,
   GithubAppApiError,
   type GithubAppCredentials,
   getRepository,
   mintInstallationToken,
-} from "./github-app.js";
-import { findInstallationByOrg, type InstallationRow } from "./github-app-installations.js";
-import { projectGitlabConnectionReadiness } from "./gitlab-connections.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
+} from "./scm/github/app.js";
+import { findInstallationByOrg, type InstallationRow } from "./scm/github/app-installations.js";
+import { projectGitlabConnectionReadiness } from "./scm/gitlab/connections.js";
 
 export type GithubReviewProbeResult = "ready" | "permission_required" | "repo_not_covered" | "failed";
 export type GithubReviewCredentials = GithubAppCredentials & { slug?: string; webhookSecret?: string };

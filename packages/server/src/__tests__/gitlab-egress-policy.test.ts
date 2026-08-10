@@ -5,7 +5,7 @@ import {
   isGitlabOriginAuthorized,
   resolveAuthorizedGitlabDestination,
   withDefaultGitlabOrigin,
-} from "../services/gitlab-egress-policy.js";
+} from "../services/scm/gitlab/egress-policy.js";
 
 const publicEntry = {
   origin: "https://gitlab.example:8443",

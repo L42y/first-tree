@@ -65,13 +65,13 @@ async function setupProvisioner() {
   const verifyUserCanAdministerInstallation = vi.fn();
   const createUserRepo = vi.fn();
 
-  vi.doMock("../services/github-app.js", () => ({
+  vi.doMock("../services/scm/github/app.js", () => ({
     GithubAppApiError,
     createOrganizationRepo,
     getRepository,
     verifyUserCanAdministerInstallation,
   }));
-  vi.doMock("../services/github-oauth.js", () => ({
+  vi.doMock("../services/scm/github/oauth.js", () => ({
     GithubApiError,
     createUserRepo,
   }));

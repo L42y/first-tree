@@ -10,8 +10,8 @@ import { users } from "../db/schema/users.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { forceDisconnect } from "./connection-manager.js";
-import { suspendGitlabLinksForMembership } from "./gitlab-identities.js";
 import * as presenceService from "./presence.js";
+import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
 import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./watcher.js";
 
 /**

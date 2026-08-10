@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
+import type { Database } from "../../../db/connection.js";
 
 export type ScmEntityAttentionLock = {
   provider: "github" | "gitlab";

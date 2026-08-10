@@ -8,31 +8,31 @@ import type {
 } from "@first-tree/shared";
 import { githubEntityBoundViaSchema } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { chats } from "../db/schema/chats.js";
-import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import type { Database } from "../../../db/connection.js";
+import { chats } from "../../../db/schema/chats.js";
+import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
 import {
   BadRequestError,
   ConflictError,
   NotFoundError,
   ServiceUnavailableError,
   UnprocessableError,
-} from "../errors.js";
-import { createLogger } from "../observability/index.js";
-import { GITHUB_API_BASE } from "./github-api-base.js";
-import type { GithubAppCredentials } from "./github-app.js";
-import { findInstallationByOrg } from "./github-app-installations.js";
-import { mintContextTreeInstallationToken } from "./github-app-token.js";
-import { insertMappingIfAbsent } from "./github-entity-chat.js";
-import { githubEntityDedupKey, githubEntityKeyCandidates, legacyDiscussionEntityKey } from "./github-entity-key.js";
-import { materializeChatGithubEntity } from "./github-entity-live.js";
-import { type EntityState, setEntityTitle } from "./github-entity-state.js";
+} from "../../../errors.js";
+import { createLogger } from "../../../observability/index.js";
 import {
   executeScmFollowLine,
   lockAndResolveAgentScmBindingPair,
   lockAndResolveHumanScmBindingPair,
-} from "./scm-attention-line.js";
-import { githubEntityAttentionLockKey, withScmEntityAttentionTransaction } from "./scm-entity-attention-lock.js";
+} from "../shared/attention-line.js";
+import { githubEntityAttentionLockKey, withScmEntityAttentionTransaction } from "../shared/entity-attention-lock.js";
+import { GITHUB_API_BASE } from "./api-base.js";
+import type { GithubAppCredentials } from "./app.js";
+import { findInstallationByOrg } from "./app-installations.js";
+import { mintContextTreeInstallationToken } from "./app-token.js";
+import { insertMappingIfAbsent } from "./entity-chat.js";
+import { githubEntityDedupKey, githubEntityKeyCandidates, legacyDiscussionEntityKey } from "./entity-key.js";
+import { materializeChatGithubEntity } from "./entity-live.js";
+import { type EntityState, setEntityTitle } from "./entity-state.js";
 
 const log = createLogger("GithubEntityFollow");
 

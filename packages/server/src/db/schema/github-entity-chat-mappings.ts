@@ -16,8 +16,8 @@ import { organizations } from "./organizations.js";
  * (`human_fallback`), or an explicit `github follow` (`agent_declared` /
  * `human_declared`). Routing logic ignores the distinction; it exists for
  * audit and the narrow `pull_request.opened` carve-out in
- * `services/github-audience.ts`. Canonical value docs: `BoundVia` in
- * `services/github-entity-chat.ts`.
+ * `services/scm/github/audience.ts`. Canonical value docs: `BoundVia` in
+ * `services/scm/github/entity-chat.ts`.
  *
  * `entity_state` (added 0048) tracks the upstream PR/Issue lifecycle so
  * sidebar reads and the auto-archive sweeper can avoid GitHub API calls.

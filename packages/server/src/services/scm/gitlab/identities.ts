@@ -1,13 +1,13 @@
 import type { GitlabIdentityLinkSummary } from "@first-tree/shared";
 import { and, asc, eq, inArray, or } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { gitlabConnections } from "../db/schema/gitlab-connections.js";
-import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
-import { members } from "../db/schema/members.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
+import { gitlabEntityChatMappings } from "../../../db/schema/gitlab-entity-chat-mappings.js";
+import { gitlabIdentityLinks } from "../../../db/schema/gitlab-identity-links.js";
+import { members } from "../../../db/schema/members.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
+import { uuidv7 } from "../../../uuid.js";
 
 const PG_UNIQUE_VIOLATION = "23505";
 

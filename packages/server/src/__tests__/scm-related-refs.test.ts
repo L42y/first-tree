@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSameProjectClosingIssueRefs } from "../services/scm-related-refs.js";
+import { parseSameProjectClosingIssueRefs } from "../services/scm/shared/related-refs.js";
 
 describe("parseSameProjectClosingIssueRefs", () => {
   it("parses and deduplicates the shared same-project closing subset", () => {

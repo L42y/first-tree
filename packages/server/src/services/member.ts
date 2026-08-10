@@ -11,9 +11,9 @@ import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
 import { createAgent } from "./agent.js";
 import { forceDisconnect } from "./connection-manager.js";
-import { suspendGitlabLinksForMembership } from "./gitlab-identities.js";
 import { MEMBER_STATUSES, reactivateMembership, syncUserDisplayName } from "./membership.js";
 import * as presenceService from "./presence.js";
+import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
 import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./watcher.js";
 
 const SALT_ROUNDS = 10;

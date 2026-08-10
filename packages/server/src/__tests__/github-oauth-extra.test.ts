@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { GITHUB_API_BASE } from "../services/github-api-base.js";
-import { createRepoFile, createUserRepo, GithubApiError, listUserRepos } from "../services/github-oauth.js";
+import { GITHUB_API_BASE } from "../services/scm/github/api-base.js";
+import { createRepoFile, createUserRepo, GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -15,7 +15,7 @@ describe("github-oauth helpers", () => {
     try {
       process.env.FIRST_TREE_GITHUB_API_BASE_URL = "https://github-api.example///";
       vi.resetModules();
-      const module = await import("../services/github-api-base.js");
+      const module = await import("../services/scm/github/api-base.js");
       expect(module.GITHUB_API_BASE).toBe("https://github-api.example");
     } finally {
       if (previous === undefined) {

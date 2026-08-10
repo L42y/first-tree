@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { GITHUB_API_BASE } from "../services/github-api-base.js";
-import { __testing, materializeChatGithubEntity, resolveChatGithubEntity } from "../services/github-entity-live.js";
+import { GITHUB_API_BASE } from "../services/scm/github/api-base.js";
+import { __testing, materializeChatGithubEntity, resolveChatGithubEntity } from "../services/scm/github/entity-live.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });

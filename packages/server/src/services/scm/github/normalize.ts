@@ -6,9 +6,9 @@ import type {
   ScmIngressContext,
   ScmNormalizedWebhook,
 } from "@first-tree/shared";
-import { extractEventEntity, type GithubEntity, isRecord } from "../api/webhooks/github-entity.js";
-import type { EntityStateSeed } from "./github-entity-state.js";
-import { parseSameProjectClosingIssueRefs } from "./scm-related-refs.js";
+import { extractEventEntity, type GithubEntity, isRecord } from "../../../api/webhooks/github-entity.js";
+import { parseSameProjectClosingIssueRefs } from "../shared/related-refs.js";
+import type { EntityStateSeed } from "./entity-state.js";
 
 const MENTION_REGEX = /(?<!\w)@([a-zA-Z0-9][\w-]*)(\/)?/g;
 

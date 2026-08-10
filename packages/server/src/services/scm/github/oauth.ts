@@ -1,4 +1,4 @@
-import { GITHUB_API_BASE } from "./github-api-base.js";
+import { GITHUB_API_BASE } from "./api-base.js";
 
 /**
  * Direct GitHub API helpers — what used to be the legacy-OAuth client
@@ -16,7 +16,7 @@ import { GITHUB_API_BASE } from "./github-api-base.js";
  * The legacy OAuth flow helpers (`buildAuthorizeUrl`,
  * `exchangeCodeForProfile`) were removed in the D3 cutover (this file no
  * longer participates in sign-in). The App-flavoured equivalents live in
- * `services/github-app.ts`.
+ * `services/scm/github/app.ts`.
  */
 
 /** Minimal repo descriptor returned by `GET /user/repos`. */

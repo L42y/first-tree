@@ -24,9 +24,9 @@ import { chats } from "../db/schema/chats.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
 import { sweepChatArchive } from "../services/chat-archive.js";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
-import { createGitlabIdentityLink } from "../services/gitlab-identities.js";
 import { createMeChat } from "../services/me-chat.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
+import { createGitlabIdentityLink } from "../services/scm/gitlab/identities.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

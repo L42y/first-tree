@@ -16,11 +16,11 @@ import {
   withContextReviewerDispatchAuthority,
 } from "./context-reviewer-common.js";
 import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import type { NormalizedGitlabWebhook } from "./gitlab-webhook.js";
 import { type DeferredSendMessagePostCommitEffects, sendMessage } from "./message.js";
 import { getOrgContextReviewRuntime, type OrgContextReviewRuntime } from "./org-settings.js";
 import { applyMembershipWrite } from "./participant-mode.js";
-import { formatContextReviewTopic } from "./scm-entity-chat-topic.js";
+import type { NormalizedGitlabWebhook } from "./scm/gitlab/webhook.js";
+import { formatContextReviewTopic } from "./scm/shared/entity-chat-topic.js";
 
 const log = createLogger("ContextReviewerMr");
 const require = createRequire(import.meta.url);

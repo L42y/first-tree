@@ -17,21 +17,21 @@ import { BadRequestError, ForbiddenError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { createLogger } from "../../observability/index.js";
 import * as chatService from "../../services/chat.js";
-import { resolveBindingPair } from "../../services/github-entity-chat.js";
+import { setChatEngagement } from "../../services/me-chat.js";
+import { WIRE_RECIPIENT_MODE } from "../../services/message-dispatcher.js";
+import { notifyRecipients } from "../../services/notifier.js";
+import { resolveBindingPair } from "../../services/scm/github/entity-chat.js";
 import {
   declareEntityFollow,
   listChatGithubEntities,
   removeEntityFollow,
-} from "../../services/github-entity-follow.js";
+} from "../../services/scm/github/entity-follow.js";
 import {
   declareCurrentGitlabEntityFollow,
   listCurrentChatGitlabEntities,
   removeCurrentGitlabEntityFollow,
-} from "../../services/gitlab-entity-follow.js";
-import { setChatEngagement } from "../../services/me-chat.js";
-import { WIRE_RECIPIENT_MODE } from "../../services/message-dispatcher.js";
-import { notifyRecipients } from "../../services/notifier.js";
-import { resolveAgentScmBindingPair } from "../../services/scm-attention-line.js";
+} from "../../services/scm/gitlab/entity-follow.js";
+import { resolveAgentScmBindingPair } from "../../services/scm/shared/attention-line.js";
 import { sendFollowResult } from "../github-entity-reply.js";
 
 const log = createLogger("AgentChatsRoute");

@@ -1,8 +1,8 @@
 import { and, eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { authIdentities } from "../db/schema/auth-identities.js";
-import { decryptValue, encryptValue } from "./crypto.js";
-import { GithubAppApiError, refreshAppUserToken } from "./github-app.js";
+import type { Database } from "../../../db/connection.js";
+import { authIdentities } from "../../../db/schema/auth-identities.js";
+import { decryptValue, encryptValue } from "../../crypto.js";
+import { GithubAppApiError, refreshAppUserToken } from "./app.js";
 
 const REFRESH_BUFFER_MS = 60_000;
 

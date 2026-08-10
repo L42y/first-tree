@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildClaimReadyGitlabDeliveryId } from "../services/gitlab-connections.js";
+import { buildClaimReadyGitlabDeliveryId } from "../services/scm/gitlab/connections.js";
 import {
   applyGitlabPersonnelEvidence,
   extractStableGitlabDeliveryId,
   MAX_GITLAB_PERSONNEL_TARGETS,
   normalizeGitlabWebhook,
-} from "../services/gitlab-webhook.js";
+} from "../services/scm/gitlab/webhook.js";
 
 const base = {
   organizationId: "org-1",

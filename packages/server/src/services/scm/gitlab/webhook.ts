@@ -12,29 +12,17 @@ import type {
 import { chatMetadataSchema } from "@first-tree/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import type { Database } from "../db/connection.js";
-import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { gitlabIdentityLinks } from "../db/schema/gitlab-identity-links.js";
-import { BadRequestError } from "../errors.js";
-import { createLogger } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import { createChat } from "./chat.js";
-import { lockChatMembershipMutation, lockChatSpeakerAndAgentSnapshot } from "./chat-membership-lock.js";
-import { buildClaimReadyGitlabDeliveryId } from "./gitlab-connections.js";
-import { buildGitlabCrossHookFingerprint, type GitlabHookSource } from "./gitlab-cross-hook-dedup.js";
-import {
-  type GitlabEntityIdentity,
-  normalizeGitlabProjectPath,
-  observeGitlabEntityAndResolveFollowers,
-} from "./gitlab-entity-follow.js";
-import {
-  lockGitlabIdentityAuthoritySet,
-  normalizeGitlabUsername,
-  resolveActiveGitlabIdentity,
-} from "./gitlab-identities.js";
-import { inviteParticipantsToChatInTransaction } from "./participant-invite.js";
-import { composeScmAudience, type ScmAudienceTarget, type ScmPersonnelTarget } from "./scm-audience-composition.js";
-import { type DeferredScmCardPostCommitEffects, sendScmSystemCard } from "./scm-card-delivery.js";
+import type { Database } from "../../../db/connection.js";
+import { gitlabEntityChatMappings } from "../../../db/schema/gitlab-entity-chat-mappings.js";
+import { gitlabIdentityLinks } from "../../../db/schema/gitlab-identity-links.js";
+import { BadRequestError } from "../../../errors.js";
+import { createLogger } from "../../../observability/index.js";
+import { uuidv7 } from "../../../uuid.js";
+import { createChat } from "../../chat.js";
+import { lockChatMembershipMutation, lockChatSpeakerAndAgentSnapshot } from "../../chat-membership-lock.js";
+import { inviteParticipantsToChatInTransaction } from "../../participant-invite.js";
+import { composeScmAudience, type ScmAudienceTarget, type ScmPersonnelTarget } from "../shared/audience-composition.js";
+import { type DeferredScmCardPostCommitEffects, sendScmSystemCard } from "../shared/card-delivery.js";
 import {
   compareScmDeliveryEntries,
   planScmChatDeliveries,
@@ -43,11 +31,19 @@ import {
   scmWakeAgentIds,
   selectScmCardContext,
   selectScmSenderId,
-} from "./scm-chat-delivery-plan.js";
-import { lockGitlabEntityAttention } from "./scm-entity-attention-lock.js";
-import { formatGitlabEntityTopic } from "./scm-entity-chat-topic.js";
-import { parseSameProjectClosingIssueRefs } from "./scm-related-refs.js";
-import { decideScmPersonnelTargetChat, lockAndValidateScmPersonnelPlacement } from "./scm-target-chat-policy.js";
+} from "../shared/chat-delivery-plan.js";
+import { lockGitlabEntityAttention } from "../shared/entity-attention-lock.js";
+import { formatGitlabEntityTopic } from "../shared/entity-chat-topic.js";
+import { parseSameProjectClosingIssueRefs } from "../shared/related-refs.js";
+import { decideScmPersonnelTargetChat, lockAndValidateScmPersonnelPlacement } from "../shared/target-chat-policy.js";
+import { buildClaimReadyGitlabDeliveryId } from "./connections.js";
+import { buildGitlabCrossHookFingerprint, type GitlabHookSource } from "./cross-hook-dedup.js";
+import {
+  type GitlabEntityIdentity,
+  normalizeGitlabProjectPath,
+  observeGitlabEntityAndResolveFollowers,
+} from "./entity-follow.js";
+import { lockGitlabIdentityAuthoritySet, normalizeGitlabUsername, resolveActiveGitlabIdentity } from "./identities.js";
 
 const log = createLogger("GitlabWebhook");
 

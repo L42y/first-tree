@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractMentions } from "../services/github-normalize.js";
+import { extractMentions } from "../services/scm/github/normalize.js";
 
 describe("extractMentions", () => {
   it("extracts single mention", () => {

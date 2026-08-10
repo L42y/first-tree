@@ -8,24 +8,24 @@ import {
   type ScmAudienceEntry,
 } from "@first-tree/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
-import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
-import { normalizeGithubRepo } from "./context-reviewer-pr.js";
-import { isGithubAppTargetLogin } from "./github-app-self-output.js";
-import { githubEntityKeyCandidates } from "./github-entity-key.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { githubEntityChatMappings } from "../../../db/schema/github-entity-chat-mappings.js";
+import { loadValidContextReviewerAgent } from "../../context-reviewer-common.js";
+import { normalizeGithubRepo } from "../../context-reviewer-pr.js";
+import { getOrgContextReviewRuntime } from "../../org-settings.js";
+import { getTeamAgentUuid } from "../../team-agent-settings.js";
 import {
   composeScmAudience,
   type ScmAudienceTarget,
   type ScmPersonnelTarget,
   type ScmProviderTaskTarget,
-} from "./scm-audience-composition.js";
-import { getTeamAgentUuid } from "./team-agent-settings.js";
+} from "../shared/audience-composition.js";
+import { isGithubAppTargetLogin } from "./app-self-output.js";
+import { githubEntityKeyCandidates } from "./entity-key.js";
 
 /** Preserve the existing internal import surface while identity logic stays canonical. */
-export { isGithubAppTargetLogin } from "./github-app-self-output.js";
+export { isGithubAppTargetLogin } from "./app-self-output.js";
 
 /**
  * Why a delegate-target lookup did or didn't qualify. Hoisted to a discrete
@@ -240,7 +240,7 @@ export async function resolveGithubAudience(
   //   - declared bindings (`agent_declared` / `human_declared`): the mapping
   //     was explicitly followed BEFORE the `opened` webhook arrived — the
   //     canonical case is an agent that just created the PR and followed it
-  //     in the same breath (see `services/github-entity-follow.ts`). The
+  //     in the same breath (see `services/scm/github/entity-follow.ts`). The
   //     "opened this" card is the deliberate creation confirmation / first
   //     signal of the declared watch, not a review-routing echo.
   //   - the target is explicitly named (mention / assignee) in the `opened`

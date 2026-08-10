@@ -22,9 +22,9 @@ import {
   normalizeGithubRepo,
   renderContextReviewerPrPrompt,
 } from "../services/context-reviewer-pr.js";
-import { upsertInstallationFromMetadata } from "../services/github-app-installations.js";
 import { createMember } from "../services/member.js";
 import { putOrgSetting } from "../services/org-settings.js";
+import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

@@ -1,7 +1,7 @@
 import type { NormalizedScmEvent, ScmEntityObservation, ScmIngressContext } from "@first-tree/shared";
-import type { Database } from "../db/connection.js";
-import { createLogger } from "../observability/index.js";
-import { claimEvent, unclaimEvent } from "./event-dedup.js";
+import type { Database } from "../../../db/connection.js";
+import { createLogger } from "../../../observability/index.js";
+import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 
 const log = createLogger("ScmWebhookProcessing");
 

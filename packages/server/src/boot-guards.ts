@@ -1,6 +1,6 @@
 import type { Config } from "./config.js";
 import { assertEncryptionKeyValid } from "./services/crypto.js";
-import { assertGitlabEgressAllowlistValid } from "./services/gitlab-egress-policy.js";
+import { assertGitlabEgressAllowlistValid } from "./services/scm/gitlab/egress-policy.js";
 
 /**
  * Boot-time configuration sanity checks. Called from `buildApp` (and thus

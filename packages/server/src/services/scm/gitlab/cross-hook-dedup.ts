@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createLogger } from "../observability/index.js";
+import { createLogger } from "../../../observability/index.js";
 
 const log = createLogger("GitlabCrossHookDedup");
 

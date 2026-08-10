@@ -14,8 +14,8 @@ const { mockExchangeCode } = vi.hoisted(() => ({
   mockExchangeCode: vi.fn(),
 }));
 
-vi.mock("../services/github-app.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/github-app.js")>();
+vi.mock("../services/scm/github/app.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/scm/github/app.js")>();
   return { ...actual, exchangeCodeForAppUserProfile: mockExchangeCode };
 });
 
@@ -64,7 +64,7 @@ describe("GitHub install — oidc-required mode session preservation", () => {
 
   beforeAll(async () => {
     // Reset the shared-worker module registry so the dynamic import below
-    // rebuilds the app graph against the hoisted `vi.mock("../services/github-app.js")`.
+    // rebuilds the app graph against the hoisted `vi.mock("../services/scm/github/app.js")`.
     vi.resetModules();
     const { createTestApp } = (await import("./helpers.js")) as { createTestApp: CreateTestApp };
     app = await createTestApp({
@@ -244,6 +244,6 @@ describe("GitHub install — standard mode mints session", () => {
 
 // File-level cleanup: unmock and reset modules after all tests finish.
 afterAll(() => {
-  vi.doUnmock("../services/github-app.js");
+  vi.doUnmock("../services/scm/github/app.js");
   vi.resetModules();
 });

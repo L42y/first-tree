@@ -20,7 +20,6 @@ import {
   withContextReviewerDispatchAuthority,
 } from "./context-reviewer-common.js";
 import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import { isGithubAppSelfOutput } from "./github-app-self-output.js";
 import {
   type DeferredSendMessagePostCommitEffects,
   runDeferredSendMessagePostCommitEffects,
@@ -29,7 +28,8 @@ import {
 import { notifyRecipients } from "./notifier.js";
 import { getOrgContextReviewRuntime } from "./org-settings.js";
 import { applyMembershipWrite } from "./participant-mode.js";
-import { formatContextReviewTopic } from "./scm-entity-chat-topic.js";
+import { isGithubAppSelfOutput } from "./scm/github/app-self-output.js";
+import { formatContextReviewTopic } from "./scm/shared/entity-chat-topic.js";
 
 const log = createLogger("ContextReviewerPr");
 const require = createRequire(import.meta.url);

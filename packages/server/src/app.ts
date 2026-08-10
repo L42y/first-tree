@@ -113,13 +113,13 @@ import { invalidateChatAudienceLocal, registerChatAudienceDispatcher } from "./s
 import { registerChatMessageDispatcher } from "./services/chat-projection.js";
 import { createCommandVersionPoller } from "./services/command-version-poller.js";
 import { createConfigService } from "./services/config-service.js";
-import { backfillGitlabAttentionPairs } from "./services/gitlab-attention-backfill.js";
 import { repairMembershipHumanMirrors } from "./services/membership.js";
 import { createNotifier, type Notifier } from "./services/notifier.js";
 import { ensureDefaultOrganization } from "./services/organization.js";
 import { createPulseAggregator } from "./services/pulse-aggregator.js";
 import { createResourcesService } from "./services/resources.js";
 import { backfillResourcesPhase1 } from "./services/resources-migration.js";
+import { backfillGitlabAttentionPairs } from "./services/scm/gitlab/attention-backfill.js";
 import { backfillSkillResourceBundles } from "./services/skill-bundle.js";
 
 // Fastify type augmentation

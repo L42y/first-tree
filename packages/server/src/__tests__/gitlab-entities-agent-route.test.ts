@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { createGitlabConnection } from "../services/gitlab-connections.js";
+import { createMeChat } from "../services/me-chat.js";
+import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import {
   listVisibleChatGitlabEntities,
   observeGitlabEntityAndResolveFollowers,
-} from "../services/gitlab-entity-follow.js";
-import { createGitlabIdentityLink } from "../services/gitlab-identities.js";
-import { createMeChat } from "../services/me-chat.js";
+} from "../services/scm/gitlab/entity-follow.js";
+import { createGitlabIdentityLink } from "../services/scm/gitlab/identities.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("GitLab entity attention agent routes", () => {

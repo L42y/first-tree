@@ -3,6 +3,8 @@ import { BadRequestError, NotFoundError } from "../../errors.js";
 import { createLogger } from "../../observability/index.js";
 import { invalidateChatAudience } from "../../services/chat-audience-cache.js";
 import { handleContextReviewerMrEvent } from "../../services/context-reviewer-mr.js";
+import { runDeferredSendMessagePostCommitEffects } from "../../services/message.js";
+import { notifyRecipients } from "../../services/notifier.js";
 import {
   findActiveGitlabEndpoint,
   markGitlabInboundSeen,
@@ -14,17 +16,17 @@ import {
   parseDeclaredGitlabVersion,
   resolveGitlabReviewerMode,
   withGitlabIngressFence,
-} from "../../services/gitlab-connections.js";
+} from "../../services/scm/gitlab/connections.js";
 import {
   isGitlabCrossHookDuplicate,
   rememberSuccessfulGitlabHookEvent,
   withGitlabCrossHookDedupFence,
-} from "../../services/gitlab-cross-hook-dedup.js";
+} from "../../services/scm/gitlab/cross-hook-dedup.js";
 import {
   normalizeGitlabProjectPath,
   observeGitlabEntityAndResolveFollowers,
   refreshGitlabChatTopics,
-} from "../../services/gitlab-entity-follow.js";
+} from "../../services/scm/gitlab/entity-follow.js";
 import {
   applyGitlabPersonnelEvidence,
   deliverGitlabCards,
@@ -32,12 +34,10 @@ import {
   GitlabPersonnelTargetLimitError,
   normalizeGitlabWebhook,
   resolveGitlabAudience,
-} from "../../services/gitlab-webhook.js";
-import { runDeferredSendMessagePostCommitEffects } from "../../services/message.js";
-import { notifyRecipients } from "../../services/notifier.js";
-import { runDeferredScmCardPostCommitEffects } from "../../services/scm-card-delivery.js";
-import { lockGitlabEntityAttention } from "../../services/scm-entity-attention-lock.js";
-import { processScmWebhookDelivery } from "../../services/scm-webhook-processing.js";
+} from "../../services/scm/gitlab/webhook.js";
+import { runDeferredScmCardPostCommitEffects } from "../../services/scm/shared/card-delivery.js";
+import { lockGitlabEntityAttention } from "../../services/scm/shared/entity-attention-lock.js";
+import { processScmWebhookDelivery } from "../../services/scm/shared/webhook-processing.js";
 
 const MAX_GITLAB_WEBHOOK_BYTES = 512 * 1024;
 const GITLAB_CONNECTION_RATE_LIMIT = 120;
