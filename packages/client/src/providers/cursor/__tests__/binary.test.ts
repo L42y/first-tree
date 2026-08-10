@@ -8,7 +8,7 @@ import {
   formatCursorBinaryMissingMessage,
   isCursorBinaryMissingError,
   resolveCursorRuntimeBinary,
-} from "../runtime/cursor-binary.js";
+} from "../binary.js";
 
 let dir: string;
 

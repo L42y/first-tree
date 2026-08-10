@@ -22,6 +22,8 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
+import { chunkAssistantText } from "../../handlers/assistant-text.js";
+import { formatAuthHint, isKimiCodeAuthError } from "../../handlers/auth-error-hint.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -29,15 +31,14 @@ import type {
   ReplayFenceWriter,
   SessionContext,
   SessionMessage,
-} from "../runtime/contracts.js";
-import { noopDeliveryToken, requireDeliveryToken } from "../runtime/contracts.js";
-
+} from "../../runtime/contracts.js";
+import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
   ContextTreeGitWriteTracker,
   ProviderAttemptSettlement,
-} from "../runtime/provider-support/index.js";
+} from "../../runtime/provider-support/index.js";
 import {
   createContextTreeGitWriteTracker,
   maxProviderTurnRetryAttempts,
@@ -48,9 +49,7 @@ import {
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
-} from "../runtime/provider-support/index.js";
-import { chunkAssistantText } from "./assistant-text.js";
-import { formatAuthHint, isKimiCodeAuthError } from "./auth-error-hint.js";
+} from "../../runtime/provider-support/index.js";
 
 const RESULT_PREVIEW_LIMIT = 400;
 const KIMI_IDENTITY_VERSION = "0.1.2";

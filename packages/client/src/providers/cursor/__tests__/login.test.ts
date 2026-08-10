@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { runCursorBrowserLogin } from "../runtime/cursor-login.js";
+import { runCursorBrowserLogin } from "../login.js";
 
 /** Minimal stand-in for a spawned child: stdout/stderr emitters + kill(). */
 class FakeChild extends EventEmitter {

@@ -57,9 +57,9 @@ const GUARDED_CLIENT_FILES = [
 
 /** Concrete provider binary / handler implementation modules (not support seams). */
 const CONCRETE_PROVIDER_BINARY_IMPORT =
-  /from ["'](?:\.\/(?:cursor|grok|pi|kimi|opencode)-binary\.js|[^"']*providers\/(?:codex|grok)\/binary\.js)["']/;
+  /from ["'](?:\.\/(?:grok|pi|opencode)-binary\.js|[^"']*providers\/(?:codex|cursor|grok|kimi-code)\/binary\.js)["']/;
 const CONCRETE_PROVIDER_HANDLER_IMPORT =
-  /from ["'].*(?:handlers\/(cursor|kimi-code|opencode|pi)|providers\/(claude|codex|grok))/;
+  /from ["'].*(?:handlers\/(opencode|pi)|providers\/(claude|codex|cursor|grok|kimi-code))/;
 
 /** Live presentation consumers that must derive catalog-owned copy. */
 const CATALOG_CONSUMER_FILES = [
@@ -75,9 +75,9 @@ const CATALOG_CONSUMER_FILES = [
   "packages/client/src/runtime/runtime-notice.ts",
   "packages/client/src/providers/claude/capability.ts",
   "packages/client/src/providers/codex/binary.ts",
-  "packages/client/src/runtime/cursor-binary.ts",
+  "packages/client/src/providers/cursor/binary.ts",
   "packages/client/src/providers/grok/binary.ts",
-  "packages/client/src/runtime/kimi-binary.ts",
+  "packages/client/src/providers/kimi-code/binary.ts",
   "packages/client/src/runtime/opencode-binary.ts",
   "packages/client/src/runtime/pi-binary.ts",
 ] as const;
@@ -212,7 +212,7 @@ describe("runtime provider architecture guard", () => {
   it("keeps binary modules as re-export delegates for missing-error matchers (single owner)", () => {
     for (const [file, symbol] of [
       ["providers/codex/binary.ts", "isCodexBinaryMissingError"],
-      ["runtime/cursor-binary.ts", "isCursorBinaryMissingError"],
+      ["providers/cursor/binary.ts", "isCursorBinaryMissingError"],
       ["providers/grok/binary.ts", "isGrokBinaryMissingError"],
       ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
     ] as const) {
@@ -677,9 +677,9 @@ describe("runtime provider architecture guard", () => {
       "providers/codex/sdk.ts",
       "providers/codex/app-server/index.ts",
       "providers/codex/turn-completion.ts",
-      "handlers/cursor/index.ts",
+      "providers/cursor/index.ts",
       "providers/grok/index.ts",
-      "handlers/kimi-code.ts",
+      "providers/kimi-code/index.ts",
       "handlers/opencode/index.ts",
       "handlers/pi/index.ts",
       "handlers/turn-settlement.ts",
@@ -736,7 +736,7 @@ describe("runtime provider architecture guard", () => {
     for (const rel of [
       "providers/claude/login.ts",
       "providers/codex/login.ts",
-      "runtime/cursor-login.ts",
+      "providers/cursor/login.ts",
       "providers/grok/login.ts",
     ]) {
       const source = readFileSync(join(clientSrc, rel), "utf8");
@@ -883,7 +883,8 @@ describe("runtime provider architecture guard", () => {
         expect(source).toContain("runtimeProviderLabel");
       }
       if (
-        rel.endsWith("cursor-binary.ts") ||
+        rel.endsWith("providers/cursor/binary.ts") ||
+        rel.endsWith("cursor/binary.ts") ||
         rel.endsWith("providers/grok/binary.ts") ||
         rel.endsWith("grok/binary.ts")
       ) {
@@ -914,7 +915,7 @@ describe("runtime provider architecture guard", () => {
         expect(source).not.toContain("npm install -g @openai/codex");
         expect(source).not.toContain("then run `codex login`");
       }
-      if (rel.endsWith("kimi-binary.ts")) {
+      if (rel.endsWith("providers/kimi-code/binary.ts") || rel.endsWith("kimi-code/binary.ts")) {
         expect(source).toContain("KIMI_NPM_PACKAGE");
         expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderInteractiveLoginCue");
@@ -1367,7 +1368,7 @@ describe("runtime provider architecture guard", () => {
     expect(classifyRuntimeImport("runtime/brand-new-login.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/brand-new-binary.js")).toBe("forbidden");
 
-    const cursorHandler = join(clientSrc, "handlers/cursor/index.ts");
+    const cursorHandler = join(clientSrc, "providers/cursor/index.ts");
     function expectForbiddenRuntimeSpec(source: string, expectedSpec: string): void {
       const refs = extractModuleReferences(source);
       expect(refs.hasUnresolvableModuleReference).toBe(false);
@@ -1552,9 +1553,9 @@ describe("runtime provider architecture guard", () => {
       "providers/claude/tui/index.ts",
       "providers/codex/sdk.ts",
       "providers/codex/app-server/index.ts",
-      "handlers/cursor/index.ts",
+      "providers/cursor/index.ts",
       "providers/grok/index.ts",
-      "handlers/kimi-code.ts",
+      "providers/kimi-code/index.ts",
       "handlers/opencode/index.ts",
       "handlers/pi/index.ts",
     ] as const;

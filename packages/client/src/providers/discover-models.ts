@@ -1,25 +1,47 @@
 import type { ProviderModelCatalog, RuntimeProvider } from "@first-tree/shared";
 import {
+  type CursorDiscoverModelsDeps,
   discoverCursorModels,
-  discoverKimiModels,
-  type HostDiscoverModelsDeps,
   parseCursorModelsOutput,
+} from "./cursor/discover-models.js";
+import { discoverGrokModels, type GrokDiscoverModelsDeps } from "./grok/discover-models.js";
+import {
+  discoverKimiModels,
+  type KimiDiscoverModelsDeps,
   parseKimiConfigModels,
   resolveKimiConfigPath,
-  unavailableCatalog,
-} from "../runtime/capabilities/discover-models.js";
-import { discoverGrokModels, type GrokDiscoverModelsDeps } from "./grok/discover-models.js";
+} from "./kimi-code/discover-models.js";
 
 /**
- * Composition-owned model discovery deps. Host (Cursor/Kimi) helpers remain
- * transitional under Runtime capabilities; Grok discovery lives in the Grok
- * family. This module is the only place that wires concrete provider discovery
- * into a single dispatcher — Runtime must not reverse-import Grok.
+ * Composition-owned model discovery deps. Cursor/Kimi/Grok discovery live in
+ * their provider families. This module is the only place that wires concrete
+ * provider discovery into a single dispatcher — Runtime must not reverse-import
+ * those families.
  */
+export type HostDiscoverModelsDeps = CursorDiscoverModelsDeps & KimiDiscoverModelsDeps;
 export type DiscoverModelsDeps = HostDiscoverModelsDeps & GrokDiscoverModelsDeps;
 
-export type { GrokDiscoverModelsDeps, HostDiscoverModelsDeps };
+export type { CursorDiscoverModelsDeps, GrokDiscoverModelsDeps, KimiDiscoverModelsDeps };
 export { parseCursorModelsOutput, parseKimiConfigModels, resolveKimiConfigPath };
+
+function fetchedAt(deps: { now?: () => Date }): string {
+  return (deps.now ?? (() => new Date()))().toISOString();
+}
+
+export function unavailableCatalog(
+  provider: RuntimeProvider,
+  error: string,
+  deps: { now?: () => Date },
+): ProviderModelCatalog {
+  return {
+    provider,
+    models: [],
+    defaultModelId: null,
+    fetchedAt: fetchedAt(deps),
+    source: "unavailable",
+    error,
+  };
+}
 
 /**
  * Discover the model catalog for a runtime provider from the host-local

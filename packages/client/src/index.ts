@@ -12,7 +12,6 @@ export {
   ClientRetiredError,
   ClientUserMismatchError,
 } from "./client-connection.js";
-export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./handlers/kimi-code.js";
 export {
   buildOpenCodeConfigContent,
   buildOpenCodeTurnArgs,
@@ -68,6 +67,20 @@ export {
   runCodexBrowserLogin,
 } from "./providers/codex/login.js";
 export {
+  CURSOR_INSTALL_COMMAND,
+  type CursorRuntimeBinaryResolution,
+  findCursorExecutableOnPath,
+  formatCursorBinaryMissingMessage,
+  resolveCursorRuntimeBinary,
+} from "./providers/cursor/binary.js";
+export { probeCursorCapability } from "./providers/cursor/capability.js";
+export {
+  type CursorAuthDriverDeps,
+  type CursorBrowserLoginOptions,
+  createCursorAuthDriver,
+  runCursorBrowserLogin,
+} from "./providers/cursor/login.js";
+export {
   type DiscoverModelsDeps,
   discoverProviderModels,
   parseCursorModelsOutput,
@@ -87,6 +100,7 @@ export {
   type GrokBrowserLoginOptions,
   runGrokBrowserLogin,
 } from "./providers/grok/login.js";
+export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./providers/kimi-code/index.js";
 // Runtime-auth (browser OAuth)
 export {
   AUTH_URL_TOKEN_MAX,
@@ -109,7 +123,6 @@ export {
   migrateLegacyRuntimeLayout,
   resolveAgentContextTreeBinding,
 } from "./runtime/bootstrap.js";
-export { probeCursorCapability } from "./runtime/capabilities/cursor.js";
 export {
   CAPABILITY_REFRESH_BASE_MS,
   CAPABILITY_REFRESH_MAX_MS,
@@ -137,19 +150,6 @@ export type { CliBinding } from "./runtime/cli-binding.js";
 export { setCliBinding } from "./runtime/cli-binding.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
-export {
-  CURSOR_INSTALL_COMMAND,
-  type CursorRuntimeBinaryResolution,
-  findCursorExecutableOnPath,
-  formatCursorBinaryMissingMessage,
-  resolveCursorRuntimeBinary,
-} from "./runtime/cursor-binary.js";
-export {
-  type CursorAuthDriverDeps,
-  type CursorBrowserLoginOptions,
-  createCursorAuthDriver,
-  runCursorBrowserLogin,
-} from "./runtime/cursor-login.js";
 export { Deduplicator } from "./runtime/deduplicator.js";
 export type { AttachmentUploader, SelfFence, WorkspaceFence } from "./runtime/doc-snapshots.js";
 export { buildMessageDocumentSnapshots } from "./runtime/doc-snapshots.js";

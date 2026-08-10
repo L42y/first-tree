@@ -1,6 +1,6 @@
 import type { CapabilityEntry } from "@first-tree/shared";
-import { findKimiExecutableOnPath, formatKimiBinaryMissingMessage } from "../kimi-binary.js";
-import { type DetectOutcome, runDetect } from "./detect.js";
+import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { findKimiExecutableOnPath, formatKimiBinaryMissingMessage } from "./binary.js";
 
 /** Exact SDK build bundled with the client and used by the runtime handler. */
 export const KIMI_CODE_SDK_VERSION = "0.26.0-botiverse.2";
