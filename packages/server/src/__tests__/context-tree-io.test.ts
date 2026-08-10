@@ -16,7 +16,7 @@ import {
   recordFromSessionEvent,
   summarizeContextTreeIo,
   summarizeContextTreeIoSkippedEvents,
-} from "../services/context-tree-io.js";
+} from "../services/context-tree/io.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { appendEvent } from "../services/session-event.js";
 import { createTestAgent, useTestApp } from "./helpers.js";

@@ -9,14 +9,14 @@ import {
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { ZodError } from "zod";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { authIdentities } from "../db/schema/auth-identities.js";
-import { members } from "../db/schema/members.js";
-import { ForbiddenError } from "../errors.js";
-import { loadValidContextReviewerAgent } from "./context-reviewer-common.js";
-import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { authIdentities } from "../../db/schema/auth-identities.js";
+import { members } from "../../db/schema/members.js";
+import { ForbiddenError } from "../../errors.js";
+import { getOrgContextReviewRuntime } from "../org-settings.js";
+import { loadValidContextReviewerAgent } from "./reviewer/common.js";
+import { readContextReviewerAgentReadiness } from "./reviewer/readiness.js";
 
 type RequesterIdentity = {
   userId: string;

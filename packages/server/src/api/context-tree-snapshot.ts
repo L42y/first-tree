@@ -4,13 +4,13 @@ import { z } from "zod";
 import { createTimingCollector } from "../observability/timing.js";
 import { resolveOrgViewer } from "../scope/require-resource.js";
 import { requireUser } from "../scope/require-user.js";
-import { buildContextTreeIoSummary } from "../services/context-tree-io.js";
+import { buildContextTreeIoSummary } from "../services/context-tree/io.js";
 import {
   type ContextTreeBinding,
   contextTreeSnapshotWindowDays,
   getContextTreeSnapshot,
   isGithubRemoteBinding,
-} from "../services/context-tree-snapshot.js";
+} from "../services/context-tree/snapshot.js";
 import {
   getOrgContextReviewRuntime,
   isOrgContextTreeBindingRuntimeCurrent,

@@ -7,21 +7,21 @@ import {
   runtimeProviderSchema,
 } from "@first-tree/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { authIdentities } from "../db/schema/auth-identities.js";
-import { chats } from "../db/schema/chats.js";
-import { clients } from "../db/schema/clients.js";
-import { githubAppInstallations } from "../db/schema/github-app-installations.js";
-import { gitlabConnections } from "../db/schema/gitlab-connections.js";
-import { members } from "../db/schema/members.js";
-import { organizationSettings } from "../db/schema/organization-settings.js";
-import { serverInstances } from "../db/schema/server-instances.js";
-import { agentNotLandingCampaignTrialCondition } from "./access-control.js";
-import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
-import { githubAutomaticReviewEventsReady } from "./setup-capabilities.js";
+import type { Database } from "../../../db/connection.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { authIdentities } from "../../../db/schema/auth-identities.js";
+import { chats } from "../../../db/schema/chats.js";
+import { clients } from "../../../db/schema/clients.js";
+import { githubAppInstallations } from "../../../db/schema/github-app-installations.js";
+import { gitlabConnections } from "../../../db/schema/gitlab-connections.js";
+import { members } from "../../../db/schema/members.js";
+import { organizationSettings } from "../../../db/schema/organization-settings.js";
+import { serverInstances } from "../../../db/schema/server-instances.js";
+import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
+import { getOrgContextReviewRuntime } from "../../org-settings.js";
+import { githubAutomaticReviewEventsReady } from "../../setup-capabilities.js";
+import { readContextReviewerAgentReadiness } from "./readiness.js";
 
 export type ContextReviewerAgent = {
   uuid: string;

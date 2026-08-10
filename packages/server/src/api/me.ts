@@ -32,8 +32,11 @@ import { resolveAvatarImageUrl } from "../services/agent.js";
 import * as authService from "../services/auth.js";
 import * as clientService from "../services/client.js";
 import { buildServerConnectBootstrapCommand } from "../services/connect-bootstrap-command.js";
-import { validateExternalContextActivation } from "../services/context-activation.js";
-import { issueContextSessionCandidate, verifyContextSessionCandidate } from "../services/context-session-candidate.js";
+import { validateExternalContextActivation } from "../services/context-tree/activation.js";
+import {
+  issueContextSessionCandidate,
+  verifyContextSessionCandidate,
+} from "../services/context-tree/session-candidate.js";
 import { buildInviteUrl, findActiveByToken, getActiveInvitation, recordRedemption } from "../services/invitation.js";
 import { isLandingCampaignServiceMembership } from "../services/landing-campaigns/guards.js";
 import { updateOwnProfile } from "../services/member.js";

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { contextTreeRepoName } from "../services/context-tree-repo-provisioner.js";
+import { contextTreeRepoName } from "../services/context-tree/repo-provisioner.js";
 
 type ProvisionerContext = Awaited<ReturnType<typeof setupProvisioner>>;
 
@@ -76,7 +76,7 @@ async function setupProvisioner() {
     createUserRepo,
   }));
 
-  const provisioner = await import("../services/context-tree-repo-provisioner.js");
+  const provisioner = await import("../services/context-tree/repo-provisioner.js");
   return {
     ...provisioner,
     classes: { GithubAppApiError, GithubApiError },

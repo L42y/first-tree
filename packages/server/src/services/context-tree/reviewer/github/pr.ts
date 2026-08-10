@@ -5,31 +5,31 @@ import { chatMetadataSchema } from "@first-tree/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type * as ejs from "ejs";
 import type { FastifyInstance } from "fastify";
-import { isRecord, readNumber, readString } from "../api/webhooks/github-entity.js";
-import type { Database } from "../db/connection.js";
-import { chats } from "../db/schema/chats.js";
-import { messages } from "../db/schema/messages.js";
-import { createLogger } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import { createChat } from "./chat.js";
+import { isRecord, readNumber, readString } from "../../../../api/webhooks/github-entity.js";
+import type { Database } from "../../../../db/connection.js";
+import { chats } from "../../../../db/schema/chats.js";
+import { messages } from "../../../../db/schema/messages.js";
+import { createLogger } from "../../../../observability/index.js";
+import { uuidv7 } from "../../../../uuid.js";
+import { createChat } from "../../../chat.js";
+import {
+  type DeferredSendMessagePostCommitEffects,
+  runDeferredSendMessagePostCommitEffects,
+  sendMessage,
+} from "../../../message.js";
+import { notifyRecipients } from "../../../notifier.js";
+import { getOrgContextReviewRuntime } from "../../../org-settings.js";
+import { applyMembershipWrite } from "../../../participant-mode.js";
+import { isGithubAppSelfOutput } from "../../../scm/github/app-self-output.js";
+import { formatContextReviewTopic } from "../../../scm/shared/entity-chat-topic.js";
 import {
   type ContextReviewerAgent,
   contextReviewerChatReservationKey,
   findExistingContextReviewerChat,
   loadValidContextReviewerAgent,
   withContextReviewerDispatchAuthority,
-} from "./context-reviewer-common.js";
-import { readContextReviewerAgentReadiness } from "./context-reviewer-readiness.js";
-import {
-  type DeferredSendMessagePostCommitEffects,
-  runDeferredSendMessagePostCommitEffects,
-  sendMessage,
-} from "./message.js";
-import { notifyRecipients } from "./notifier.js";
-import { getOrgContextReviewRuntime } from "./org-settings.js";
-import { applyMembershipWrite } from "./participant-mode.js";
-import { isGithubAppSelfOutput } from "./scm/github/app-self-output.js";
-import { formatContextReviewTopic } from "./scm/shared/entity-chat-topic.js";
+} from "../common.js";
+import { readContextReviewerAgentReadiness } from "../readiness.js";
 
 const log = createLogger("ContextReviewerPr");
 const require = createRequire(import.meta.url);
@@ -41,9 +41,9 @@ const TEMPLATE_CANDIDATE_URLS = [
   // Built tsdown chunks live directly under `dist/`; copied assets live in
   // `dist/prompts/`.
   new URL("./prompts/context-reviewer-pr.ejs", import.meta.url),
-  // Dev tsx execution keeps this file under `src/services/`; assets live in
+  // Dev tsx execution keeps this file under `src/services/context-tree/reviewer/github/`; assets live in
   // `src/prompts/`.
-  new URL("../prompts/context-reviewer-pr.ejs", import.meta.url),
+  new URL("../../../../prompts/context-reviewer-pr.ejs", import.meta.url),
 ] as const;
 
 export type ContextReviewerPrTemplateInput = {

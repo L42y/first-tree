@@ -3,7 +3,10 @@ import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { validateAgentRuntimeSession } from "../../services/agent-runtime-session.js";
 import * as chatService from "../../services/chat.js";
-import { ContextReviewPublisherError, submitContextReviewOutcome } from "../../services/context-reviewer-publisher.js";
+import {
+  ContextReviewPublisherError,
+  submitContextReviewOutcome,
+} from "../../services/context-tree/reviewer/github/publisher.js";
 
 export async function agentContextReviewRunRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { chatId: string; runId: string } }>(

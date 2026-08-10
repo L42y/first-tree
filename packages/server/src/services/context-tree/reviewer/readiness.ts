@@ -9,13 +9,13 @@ import {
   type SetupBlocker,
 } from "@first-tree/shared";
 import { and, asc, eq, ne } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import { members } from "../db/schema/members.js";
-import { serverInstances } from "../db/schema/server-instances.js";
-import { agentNotLandingCampaignTrialCondition } from "./access-control.js";
+import type { Database } from "../../../db/connection.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
+import { members } from "../../../db/schema/members.js";
+import { serverInstances } from "../../../db/schema/server-instances.js";
+import { agentNotLandingCampaignTrialCondition } from "../../access-control.js";
 
 export type ContextReviewerAgentReadiness = {
   reviewerAgent: { uuid: string; displayName: string } | null;

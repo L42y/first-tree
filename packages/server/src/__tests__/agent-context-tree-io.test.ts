@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { chats } from "../db/schema/chats.js";
 import { contextTreeIoEvents } from "../db/schema/context-tree-io-events.js";
-import { listAgentContextTreeIoEvents } from "../services/context-tree-io.js";
+import { listAgentContextTreeIoEvents } from "../services/context-tree/io.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 const TREE_REPO = "https://github.com/acme/first-tree-context.git";
