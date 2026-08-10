@@ -156,12 +156,17 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("`name` plus `skillDigest`");
     expect(copiedPrompt).toContain("full text is still directly available");
     expect(copiedPrompt).toContain("Do not run an independent hash check or persist a Core cache");
-    expect(copiedPrompt).toContain("Claude `/reload-plugins`");
+    expect(copiedPrompt).toContain("start a new Claude session");
+    expect(copiedPrompt).toContain("carries no handoff is a normal terminal state");
     expect(copiedPrompt).toContain("Codex Hook trust");
     expect(copiedPrompt).toContain("at most twice");
     expect(copiedPrompt).toContain("Never show raw JSON");
     expect(copiedPrompt).not.toContain("--scope global|directory|session");
     expect(copiedPrompt).not.toContain("Exit and start a new Codex session");
+    // The in-session reload/receipt adoption path was retired; the prompt must
+    // never teach it back, because the CLI now only offers a new-session boundary.
+    expect(copiedPrompt).not.toContain("/reload-plugins");
+    expect(copiedPrompt).not.toContain("--reload-receipt");
   });
 
   it("does not copy an onboarding prompt after its readiness is revoked", async () => {
