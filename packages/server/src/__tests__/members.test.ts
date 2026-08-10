@@ -9,9 +9,9 @@ import { members as membersTable } from "../db/schema/members.js";
 import { organizations as organizationsTable } from "../db/schema/organizations.js";
 import { users as usersTable } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
-import * as memberService from "../services/member.js";
-import { ensureMembership, repairMembershipHumanMirrors, selfCreateOrganization } from "../services/membership.js";
-import { createOrganization } from "../services/organization.js";
+import * as memberService from "../services/team/member.js";
+import { ensureMembership, repairMembershipHumanMirrors, selfCreateOrganization } from "../services/team/membership.js";
+import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 function databaseUrlWithApplicationName(url: string, applicationName: string): string {

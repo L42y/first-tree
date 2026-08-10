@@ -22,8 +22,8 @@ import { createAgent } from "../services/agents/identity.js";
 import { backfillResourcesPhase1 } from "../services/agents/resources/migration.js";
 import { createAttachment } from "../services/attachment.js";
 import { LANDING_CAMPAIGN_TRIAL_PROMPT } from "../services/landing-campaigns/trial-prompt.js";
-import { createOrganization } from "../services/organization.js";
 import { buildLegacySkillBundle } from "../services/skill-bundle.js";
+import { createOrganization } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

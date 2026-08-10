@@ -22,10 +22,10 @@ import {
   normalizeGithubRepo,
   renderContextReviewerPrPrompt,
 } from "../services/context-tree/reviewer/github/pr.js";
-import { createMember } from "../services/member.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
+import { createMember } from "../services/team/member.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

@@ -6,7 +6,7 @@ import {
 import { type ChannelConfig, getServerCliBinding } from "@first-tree/shared/channel";
 import type { FastifyInstance } from "fastify";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import { getOrganization } from "../../services/organization.js";
+import { getOrganization } from "../../services/team/organization.js";
 
 export async function orgContextEnablementRoutes(app: FastifyInstance): Promise<void> {
   app.get<{

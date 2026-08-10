@@ -17,8 +17,8 @@ import {
   listChatsForMember,
   resolveAgentIdsByNameInOrg,
 } from "../services/chat/conversation.js";
-import { createMember } from "../services/member.js";
-import { createOrganization } from "../services/organization.js";
+import { createMember } from "../services/team/member.js";
+import { createOrganization } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestApp } from "./helpers.js";
 

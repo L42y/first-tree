@@ -1,11 +1,11 @@
 import { randomBytes } from "node:crypto";
 import { INVITATION_DEFAULT_TTL_DAYS } from "@first-tree/shared";
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { invitationRedemptions, invitations } from "../db/schema/invitations.js";
-import { organizations } from "../db/schema/organizations.js";
-import { NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../db/connection.js";
+import { invitationRedemptions, invitations } from "../../db/schema/invitations.js";
+import { organizations } from "../../db/schema/organizations.js";
+import { NotFoundError } from "../../errors.js";
+import { uuidv7 } from "../../uuid.js";
 
 const TOKEN_BYTES = 32;
 

@@ -30,9 +30,9 @@ import { pickDefaultMembership } from "../auth.js";
 import { createChat } from "../chat/conversation.js";
 import { sendMessage } from "../chat/message.js";
 import { computeWorking } from "../chat/sessions/status.js";
-import { MEMBER_STATUSES, reactivateMembership, syncCurrentUserDisplayName } from "../membership.js";
 import { notifyRecipients } from "../notifier.js";
 import { sendToClient } from "../runtime/connection-manager.js";
+import { MEMBER_STATUSES, reactivateMembership, syncCurrentUserDisplayName } from "../team/membership.js";
 import { assertOfficialLandingCampaignClient, assertTrialQuota, isLandingCampaignServiceOrg } from "./guards.js";
 import {
   buildLandingCampaignAgentMetadata,

@@ -18,7 +18,7 @@ import {
   inviteParticipantsToChatInTransaction,
 } from "../services/chat/membership/invite.js";
 import { sendMessage } from "../services/chat/message.js";
-import * as memberService from "../services/member.js";
+import * as memberService from "../services/team/member.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**

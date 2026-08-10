@@ -35,7 +35,7 @@ import { uuidv7 } from "../../uuid.js";
 import type { AttachmentBlobStore } from "../attachment-blob-store.js";
 import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
 import { lockWatcherProjectionForAgentChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
-import { resolveDefaultOrgId } from "../organization.js";
+import { resolveDefaultOrgId } from "../team/organization.js";
 import {
   agentAddressableCondition,
   agentNotLandingCampaignTrialCondition,
@@ -341,7 +341,7 @@ export async function createAgent(
   //      we silently fell back to the `default` org, stranding agents in the
   //      wrong tenant.
   //
-  //   2. Bootstrap (services/member.ts::createMember, test helpers) — caller
+  //   2. Bootstrap (services/team/member.ts::createMember, test helpers) — caller
   //      passes BOTH `managerId` and `organizationId` inside the same
   //      transaction where the member row is being inserted right after the
   //      agent. The member doesn't exist yet in this tx, so a members lookup

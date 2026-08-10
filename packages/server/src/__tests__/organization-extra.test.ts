@@ -5,7 +5,7 @@ import {
   getOrganization,
   resolveDefaultOrgId,
   updateOrganization,
-} from "../services/organization.js";
+} from "../services/team/organization.js";
 
 function makeSelectDb(rows: unknown[]): unknown {
   const chain = {

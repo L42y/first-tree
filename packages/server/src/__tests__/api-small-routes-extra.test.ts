@@ -57,13 +57,13 @@ const mockedModules = [
   "../services/runtime/connection-manager.js",
   "../services/scm/github/entity-chat.js",
   "../services/scm/github/entity-follow.js",
-  "../services/invitation.js",
+  "../services/team/invitation.js",
   "../services/landing-campaigns/guards.js",
   "../services/me-doc.js",
-  "../services/membership.js",
+  "../services/team/membership.js",
   "../services/onboarding-kickoff.js",
   "../services/org-settings.js",
-  "../services/organization.js",
+  "../services/team/organization.js",
   "../services/usage.js",
 ];
 
@@ -87,7 +87,7 @@ function mockRouteDependencies(): void {
     generateConnectToken: routeMocks.generateConnectToken,
     pickDefaultMembership: vi.fn(),
   }));
-  vi.doMock("../services/invitation.js", () => ({
+  vi.doMock("../services/team/invitation.js", () => ({
     buildInviteUrl: vi.fn((_base: string, token: string) => `https://invite.example/${token}`),
     findActiveByToken: routeMocks.findActiveByToken,
     getActiveInvitation: vi.fn(),
@@ -105,7 +105,7 @@ function mockRouteDependencies(): void {
   vi.doMock("../services/me-doc.js", () => ({
     getMeDocPreview: routeMocks.getMeDocPreview,
   }));
-  vi.doMock("../services/membership.js", () => ({
+  vi.doMock("../services/team/membership.js", () => ({
     countActiveMembersByOrgs: vi.fn(async () => new Map()),
     ensureMembership: routeMocks.ensureMembership,
     leaveOrganization: routeMocks.leaveOrganization,
@@ -120,7 +120,7 @@ function mockRouteDependencies(): void {
     getOrgContextTreeBinding: routeMocks.getOrgContextTreeBinding,
     getTeamSafeOrgContextReviewRuntime: routeMocks.getTeamSafeOrgContextReviewRuntime,
   }));
-  vi.doMock("../services/organization.js", () => ({
+  vi.doMock("../services/team/organization.js", () => ({
     getOrganization: routeMocks.getOrganization,
     updateOrganization: routeMocks.updateOrganization,
   }));

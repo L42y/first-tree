@@ -21,7 +21,6 @@ import {
   unlinkExternalIdentity,
 } from "../../services/auth-identity.js";
 import { encryptValue } from "../../services/crypto.js";
-import { findActiveMembership } from "../../services/membership.js";
 import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/oauth-bootstrap.js";
 import {
   STATE_NONCE_COOKIE_NAME,
@@ -35,6 +34,7 @@ import {
   exchangeCodeForAppUserProfile,
 } from "../../services/scm/github/app.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../../services/scm/github/app-installations.js";
+import { findActiveMembership } from "../../services/team/membership.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 

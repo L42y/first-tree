@@ -6,9 +6,9 @@ import { publicInvitationRoutes } from "../api/invitations.js";
 import { readyzRoutes } from "../api/readyz.js";
 import { bootstrapState } from "../bootstrap-state.js";
 import { UnauthorizedError } from "../errors.js";
-import { previewInvitation } from "../services/invitation.js";
+import { previewInvitation } from "../services/team/invitation.js";
 
-vi.mock("../services/invitation.js", () => ({
+vi.mock("../services/team/invitation.js", () => ({
   previewInvitation: vi.fn(),
 }));
 

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
-import { buildInviteUrl, ensureActiveInvitation, rotateInvitation } from "../../services/invitation.js";
+import { buildInviteUrl, ensureActiveInvitation, rotateInvitation } from "../../services/team/invitation.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 
 /**

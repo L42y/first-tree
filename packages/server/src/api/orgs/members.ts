@@ -5,7 +5,7 @@ import {
   assertMemberIsNotLandingCampaignServiceMember,
   isLandingCampaignServiceMembership,
 } from "../../services/landing-campaigns/guards.js";
-import * as memberService from "../../services/member.js";
+import * as memberService from "../../services/team/member.js";
 
 /** Class B — `/api/v1/orgs/:orgId/members`. */
 export async function orgMemberRoutes(app: FastifyInstance): Promise<void> {

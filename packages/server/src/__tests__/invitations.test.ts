@@ -35,7 +35,7 @@ describe("Invitation lifecycle", () => {
     // now()); ensureActive's delegation to rotate handles it.
     const app = getApp();
     const admin = await createTestAdmin(app);
-    const { ensureActiveInvitation, getActiveInvitation } = await import("../services/invitation.js");
+    const { ensureActiveInvitation, getActiveInvitation } = await import("../services/team/invitation.js");
     const { uuidv7 } = await import("../uuid.js");
 
     // Plant an expired row by hand — same shape as a stale rotation.
@@ -92,7 +92,7 @@ describe("Invitation lifecycle", () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     // Demote: create a second member with role=member via raw insert
-    const { ensureMembership } = await import("../services/membership.js");
+    const { ensureMembership } = await import("../services/team/membership.js");
     const { uuidv7 } = await import("../uuid.js");
     const { users } = await import("../db/schema/users.js");
     const { signTokensForUser } = await import("../services/auth.js");
@@ -169,7 +169,7 @@ describe("Invitation lifecycle", () => {
     const body = preview.json<{ organizationName: string; role: string; expiresAt: string | null }>();
     expect(body.role).toBe("member");
     // expiresAt is exposed so the invite page can render an "Expires in N days" hint.
-    // Default invitations carry a 7-day TTL (services/invitation.ts), so this is a string,
+    // Default invitations carry a 7-day TTL (services/team/invitation.ts), so this is a string,
     // not null. Parse to verify it's a valid future ISO timestamp.
     expect(typeof body.expiresAt).toBe("string");
     if (body.expiresAt) {

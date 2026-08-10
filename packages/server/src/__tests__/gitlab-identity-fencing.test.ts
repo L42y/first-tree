@@ -11,7 +11,6 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { createAgent, suspendAgent, updateAgent } from "../services/agents/identity.js";
 import { createChat } from "../services/chat/conversation.js";
-import { deactivateMembership, MEMBER_STATUSES } from "../services/membership.js";
 import {
   createGitlabConnection,
   findActiveGitlabEndpoint,
@@ -31,6 +30,7 @@ import {
   resolveGitlabAudience,
 } from "../services/scm/gitlab/webhook.js";
 import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
+import { deactivateMembership, MEMBER_STATUSES } from "../services/team/membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;

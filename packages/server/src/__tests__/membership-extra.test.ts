@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPersonalTeam, deactivateMembership, MEMBER_STATUSES } from "../services/membership.js";
+import { createPersonalTeam, deactivateMembership, MEMBER_STATUSES } from "../services/team/membership.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 describe("membership service edge coverage", () => {
