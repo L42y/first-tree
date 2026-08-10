@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
-import { createMeChat } from "../services/me-chat.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { backfillGitlabAttentionPairs } from "../services/scm/gitlab/attention-backfill.js";
 import {
   createGitlabConnection,

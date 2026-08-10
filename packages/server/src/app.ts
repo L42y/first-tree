@@ -109,8 +109,11 @@ import {
 } from "./services/attachment-blob-store.js";
 import { expiryToSeconds } from "./services/auth.js";
 import { type BackgroundTasks, createBackgroundTasks } from "./services/background-tasks.js";
-import { invalidateChatAudienceLocal, registerChatAudienceDispatcher } from "./services/chat-audience-cache.js";
-import { registerChatMessageDispatcher } from "./services/chat-projection.js";
+import {
+  invalidateChatAudienceLocal,
+  registerChatAudienceDispatcher,
+} from "./services/chat/membership/audience-cache.js";
+import { registerChatMessageDispatcher } from "./services/chat/workspace/projection.js";
 import { createCommandVersionPoller } from "./services/command-version-poller.js";
 import { createConfigService } from "./services/config-service.js";
 import { repairMembershipHumanMirrors } from "./services/membership.js";

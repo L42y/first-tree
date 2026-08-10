@@ -11,11 +11,11 @@ import { cronJobs } from "../db/schema/cron-jobs.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
-import { createChat, ensureParticipant } from "../services/chat.js";
-import { createCronJob, deleteCronJob, updateCronJob } from "../services/cron-job.js";
-import { computeDueToCommitMs, createCronScheduler, sweepCronJobs } from "../services/cron-scheduler.js";
-import { setChatEngagement } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
+import { createChat, ensureParticipant } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
+import { createCronJob, deleteCronJob, updateCronJob } from "../services/chat/scheduled-jobs/job.js";
+import { computeDueToCommitMs, createCronScheduler, sweepCronJobs } from "../services/chat/scheduled-jobs/scheduler.js";
+import { setChatEngagement } from "../services/chat/workspace/me-chat.js";
 import { createNotifier } from "../services/notifier.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 

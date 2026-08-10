@@ -55,7 +55,7 @@ import { cn } from "../../../lib/utils.js";
  *     `metadata.mentions` so a bare body still passes; for groups
  *     (2+ chips) the body must explicitly `@` at least one chip and
  *     send is gated client-side to mirror that. See
- *     `services/message.ts` "Routing contract".
+ *     `services/chat/message.ts` "Routing contract".
  *
  *   - Typing `@` in the textarea opens the autocomplete (candidates =
  *     all org agents). Picking an agent that isn't in the chip row
@@ -593,7 +593,7 @@ export function NewChatDraft({
     // server (no such participant). Compute the union here so the
     // committed audience always reflects what the user just typed.
     const participantIds = Array.from(new Set([...chips, ...bodyMentions]));
-    // Explicit-only routing contract (services/message.ts): the server
+    // Explicit-only routing contract (services/chat/message.ts): the server
     // no longer infers wake targets from content. For 1:1 chats (one
     // peer), auto-inject the peer's uuid so a bare "hi" still wakes
     // them — this mirrors the in-chat composer's `effectiveSendMentions`

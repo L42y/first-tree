@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { requireAgentAccess } from "../scope/require-resource.js";
-import * as activityService from "../services/activity.js";
+import * as activityService from "../services/chat/sessions/activity.js";
 
 /** Class C — `/api/v1/agents/:uuid/reset-activity`. */
 export async function agentActivityRoutes(app: FastifyInstance): Promise<void> {

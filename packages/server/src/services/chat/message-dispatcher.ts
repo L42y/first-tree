@@ -7,8 +7,8 @@ import {
 } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { agentConfigs } from "../db/schema/agent-configs.js";
-import { agents } from "../db/schema/agents.js";
+import { agentConfigs } from "../../db/schema/agent-configs.js";
+import { agents } from "../../db/schema/agents.js";
 
 /**
  * Use a structurally-typed DB so both `Database` and `PgTransaction` from
@@ -41,7 +41,7 @@ function normaliseSource(source: string | null): Message["source"] {
  * on a post-v2 release (see proposals/hub-chat-message-v2-simplify-mode.20260520.md §七).
  *
  * Exported so chat-detail / participant-list wire-payload builders in
- * `services/chat.ts` + `api/chats.ts` use the same constant and the v3
+ * `services/chat/conversation.ts` + `api/chats.ts` use the same constant and the v3
  * cleanup is one grep away.
  */
 export const WIRE_RECIPIENT_MODE: ParticipantMode = "mention_only";

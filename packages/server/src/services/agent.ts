@@ -40,8 +40,8 @@ import {
 } from "./access-control.js";
 import { initializeAdoptedTemplates } from "./agent-template-adoption.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
+import { recomputeWatchersForAgent } from "./chat/membership/watcher.js";
 import { resolveDefaultOrgId } from "./organization.js";
-import { recomputeWatchersForAgent } from "./watcher.js";
 
 /**
  * Names beginning with `__` are reserved for First Tree-internal pseudo agents.

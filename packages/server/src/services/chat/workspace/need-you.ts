@@ -9,14 +9,14 @@ import {
   type RequestThreadResponse,
 } from "@first-tree/shared";
 import { and, asc, count, eq, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chatUserState } from "../db/schema/chat-user-state.js";
-import { chats } from "../db/schema/chats.js";
-import { messages } from "../db/schema/messages.js";
-import { BadRequestError, NotFoundError } from "../errors.js";
-import { resolveAvatarImageUrl } from "./agent.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chatUserState } from "../../../db/schema/chat-user-state.js";
+import { chats } from "../../../db/schema/chats.js";
+import { messages } from "../../../db/schema/messages.js";
+import { BadRequestError, NotFoundError } from "../../../errors.js";
+import { resolveAvatarImageUrl } from "../../agent.js";
 
 const NEED_YOU_CURSOR_VERSION = "v1";
 

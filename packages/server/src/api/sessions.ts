@@ -4,11 +4,11 @@ import { z } from "zod";
 import { ConflictError, ServiceUnavailableError } from "../errors.js";
 import { requireAgentAccess, requireChatAccess } from "../scope/require-resource.js";
 import * as agentService from "../services/agent.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
+import * as sessionService from "../services/chat/sessions/lifecycle.js";
 import * as connectionManager from "../services/connection-manager.js";
 import { sendToAgent } from "../services/connection-manager.js";
-import * as sessionService from "../services/session.js";
 import { readSessionCommandRpcResult, resolveAgentApplyAckRoute } from "../services/session-command-rpc.js";
-import * as sessionEventService from "../services/session-event.js";
 
 const sessionFilterSchema = z.object({
   state: z.enum(["active", "suspended", "evicted"]).optional(),

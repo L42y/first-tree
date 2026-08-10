@@ -1,7 +1,7 @@
 import { inboxPollQuerySchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { requireAgent } from "../../middleware/require-identity.js";
-import * as inboxService from "../../services/inbox.js";
+import * as inboxService from "../../services/chat/inbox.js";
 
 // GET /inbox is retained for admin / curl debugging only — the client runtime
 // drains entries via the WS `inbox:deliver` data plane and acks them with the

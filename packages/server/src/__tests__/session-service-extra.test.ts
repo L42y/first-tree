@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { upsertSessionState } from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
-import { filterSessionsByParticipant, listAgentSessions } from "../services/session.js";
+import { sendMessage } from "../services/chat/message.js";
+import { upsertSessionState } from "../services/chat/sessions/activity.js";
+import { filterSessionsByParticipant, listAgentSessions } from "../services/chat/sessions/lifecycle.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("session service extra edges", () => {

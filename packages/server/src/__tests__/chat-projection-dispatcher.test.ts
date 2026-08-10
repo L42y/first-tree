@@ -3,7 +3,7 @@ import {
   fireChatMessageKick,
   registerChatMessageDispatcher,
   resetChatMessageDispatcher,
-} from "../services/chat-projection.js";
+} from "../services/chat/workspace/projection.js";
 
 describe("chat-projection dispatcher accessor", () => {
   afterEach(() => {

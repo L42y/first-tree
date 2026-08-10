@@ -4,7 +4,7 @@
  * Replaces the immediate-archive bypass that lived in the webhook handler
  * (deleted with `github-archive-on-merge.ts`). The webhook now only records
  * "is this PR/Issue still open" — the chat-archive sweeper
- * (`services/chat-archive.ts`) decides when a chat actually flips into a
+ * (`services/chat/workspace/archive.ts`) decides when a chat actually flips into a
  * user's archived view.
  *
  * Behaviour:

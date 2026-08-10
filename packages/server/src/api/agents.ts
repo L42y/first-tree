@@ -17,7 +17,8 @@ import {
 } from "../services/agent.js";
 import * as agentRuntimeSessionService from "../services/agent-runtime-session.js";
 import * as agentRuntimeSwitchService from "../services/agent-runtime-switch.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import { WIRE_RECIPIENT_MODE } from "../services/chat/message-dispatcher.js";
 import * as clientService from "../services/client.js";
 import {
   forceDisconnect,
@@ -31,7 +32,6 @@ import {
   assertMutableAgentIsNotLandingCampaignTrial,
   assertNoLandingCampaignTrialAgents,
 } from "../services/landing-campaigns/guards.js";
-import { WIRE_RECIPIENT_MODE } from "../services/message-dispatcher.js";
 import * as presenceService from "../services/presence.js";
 
 type AgentRow = {

@@ -5,9 +5,9 @@ import { agents } from "../db/schema/agents.js";
 import { chats } from "../db/schema/chats.js";
 import { organizations } from "../db/schema/organizations.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat, setChatEngagement } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
-import { listNeedYouRequests, listRequestThread } from "../services/need-you.js";
+import { sendMessage } from "../services/chat/message.js";
+import { createMeChat, setChatEngagement } from "../services/chat/workspace/me-chat.js";
+import { listNeedYouRequests, listRequestThread } from "../services/chat/workspace/need-you.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("Need you request queue and Ask agent protocol", () => {

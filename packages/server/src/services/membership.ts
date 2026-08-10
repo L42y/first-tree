@@ -9,10 +9,10 @@ import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
+import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./chat/membership/watcher.js";
 import { forceDisconnect } from "./connection-manager.js";
 import * as presenceService from "./presence.js";
 import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
-import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./watcher.js";
 
 /**
  * Helpers used by the SaaS onboarding flow to create / reuse / leave a

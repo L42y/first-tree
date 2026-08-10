@@ -169,7 +169,7 @@ export type CallerWritableChatMetadata = z.infer<typeof callerWritableChatMetada
  *    chats created by an agent/CLI/dispatcher workflow.
  *
  * The projection itself lives next to the WHERE clause that consumes
- * it (`packages/server/src/services/me-chat.ts::chatSourceSqlExpression`)
+ * it (`packages/server/src/services/chat/workspace/me-chat.ts::chatSourceSqlExpression`)
  * so the SQL CASE and any TS classifier stay textually adjacent to the
  * predicates they feed. Add a new variant on the metadata side first,
  * then extend this enum, then both the SQL CASE and the

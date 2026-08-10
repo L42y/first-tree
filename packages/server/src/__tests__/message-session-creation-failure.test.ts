@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 // Hoist a single mock function so we can drive the failure injection from
@@ -9,36 +9,36 @@ import { createTestAgent, useTestApp } from "./helpers.js";
 // `vi.mock` factory below.
 const { mockedUpsert } = vi.hoisted(() => ({ mockedUpsert: vi.fn() }));
 
-vi.mock("../services/activity.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../services/activity.js")>();
+vi.mock("../services/chat/sessions/activity.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/chat/sessions/activity.js")>();
   // Default behavior: forward to the real implementation. Tests opt in to
   // failure with `mockedUpsert.mockRejectedValueOnce(...)`.
   mockedUpsert.mockImplementation(actual.upsertSessionState);
   return { ...actual, upsertSessionState: mockedUpsert };
 });
 
-// `services/message.js` may already be cached by the worker (vitest config
+// `services/chat/message.js` may already be cached by the worker (vitest config
 // uses `pool: forks` with `isolate: false`), in which case it holds a
 // reference to the real `upsertSessionState` and our mock would be ignored.
 // Reset the module graph and re-import so the mocked binding wins.
 //
 // IMPORTANT: this is an isolation hack. If a future test in this same file
-// (or a test runner ordering quirk) imports `services/message.js` BEFORE the
+// (or a test runner ordering quirk) imports `services/chat/message.js` BEFORE the
 // `vi.mock` factory runs, the mock will silently miss. Symptoms:
 // `expect(mockedUpsert).toHaveBeenCalled()` fails with `0 times`. If you hit
 // that, reach for `vi.spyOn(activityService, "upsertSessionState")` won't
 // work either (ESM named exports are readonly bindings) — instead, ensure
 // no top-level import of message.js exists in this file and rely on the
 // dynamic import below.
-let sendMessage: typeof import("../services/message.js")["sendMessage"];
+let sendMessage: typeof import("../services/chat/message.js")["sendMessage"];
 beforeAll(async () => {
   vi.resetModules();
-  const m = await import("../services/message.js");
+  const m = await import("../services/chat/message.js");
   sendMessage = m.sendMessage;
 });
 
 afterAll(() => {
-  vi.doUnmock("../services/activity.js");
+  vi.doUnmock("../services/chat/sessions/activity.js");
   vi.resetModules();
 });
 

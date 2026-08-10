@@ -1,19 +1,19 @@
 import type { SessionState } from "@first-tree/shared";
 import { and, desc, eq, inArray, lt, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { messages } from "../db/schema/messages.js";
-import { sessionEvents } from "../db/schema/session-events.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../errors.js";
-import { extractChatSummary } from "./chat-read-model.js";
-import type { Notifier } from "./notifier.js";
-import { agentRouteGuardSql } from "./session-command-rpc.js";
-import * as sessionEventService from "./session-event.js";
+import type { Database } from "../../../db/connection.js";
+import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { inboxEntries } from "../../../db/schema/inbox-entries.js";
+import { messages } from "../../../db/schema/messages.js";
+import { sessionEvents } from "../../../db/schema/session-events.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
+import type { Notifier } from "../../notifier.js";
+import { agentRouteGuardSql } from "../../session-command-rpc.js";
+import { extractChatSummary } from "../read-model.js";
+import * as sessionEventService from "./events.js";
 
 export type SessionListItem = {
   agentId: string;

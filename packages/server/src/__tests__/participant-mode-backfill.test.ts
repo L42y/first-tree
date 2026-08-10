@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { createChat, ensureParticipant } from "../services/chat.js";
-import { PRECEDING_CONTEXT_MAX_ENTRIES } from "../services/inbox.js";
-import { addMeChatParticipants } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
-import { addChatParticipants } from "../services/participant-mode.js";
+import { createChat, ensureParticipant } from "../services/chat/conversation.js";
+import { PRECEDING_CONTEXT_MAX_ENTRIES } from "../services/chat/inbox.js";
+import { addChatParticipants } from "../services/chat/membership/participants.js";
+import { sendMessage } from "../services/chat/message.js";
+import { addMeChatParticipants } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
@@ -16,13 +16,13 @@ import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
  * row-write helper, not service entrypoints).
  *
  * Companion to `add-participant-backfill.test.ts` (which pins the
- * `chat.ts::addParticipant` entrypoint specifically). The cases here pin the
+ * `services/chat/conversation.ts::addParticipant` entrypoint specifically). The cases here pin the
  * helper-layer contract so any new join entrypoint that routes through
  * `addChatParticipants` inherits backfill automatically.
  *
  * Why this exists: PR #393 originally hooked backfill at
- * `chat.ts::addParticipant`. The web "add member" button went through
- * `me-chat.ts::addMeChatParticipants` instead, silently regressing the
+ * `services/chat/conversation.ts::addParticipant`. The web "add member" button went through
+ * `services/chat/workspace/me-chat.ts::addMeChatParticipants` instead, silently regressing the
  * invariant. Sinking backfill into the helper closes that whole class of
  * bug. These tests are the guard rail.
  */
@@ -75,7 +75,7 @@ describe("addChatParticipants — silent-context backfill invariant", () => {
   });
 
   it("watcher → speaker upgrade is treated as a join and triggers backfill", async () => {
-    // Watchers do not receive inbox fan-out (message.ts only joins
+    // Watchers do not receive inbox fan-out (services/chat/message.ts only joins
     // access_mode='speaker'), so the moment they become speakers everything
     // before that moment is unreachable without the silent replay.
     const app = getApp();

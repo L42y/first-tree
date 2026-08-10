@@ -5,9 +5,9 @@ import { chatUserState } from "../db/schema/chat-user-state.js";
 import { messages } from "../db/schema/messages.js";
 import { BadRequestError } from "../errors.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
-import { listMeChats } from "../services/me-chat.js";
-import { editMessage, sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import { editMessage, sendMessage } from "../services/chat/message.js";
+import { listMeChats } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**

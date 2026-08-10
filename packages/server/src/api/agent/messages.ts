@@ -4,8 +4,8 @@ import { z } from "zod";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { requireUser } from "../../scope/require-user.js";
 import { expiryToSeconds, signAgentOutboxToken } from "../../services/auth.js";
-import * as chatService from "../../services/chat.js";
-import * as messageService from "../../services/message.js";
+import * as chatService from "../../services/chat/conversation.js";
+import * as messageService from "../../services/chat/message.js";
 import { notifyRecipients } from "../../services/notifier.js";
 
 const editMessageSchema = z.object({
@@ -56,7 +56,7 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
           // `chat send`, result-sink, etc.) declare routing via `receiverNames`
           // or `metadata.mentions`, or set `purpose: "agent-final-text"` for
           // silent history-only sends. The server no longer parses `@<name>`
-          // out of content — see `services/message.ts` Routing contract.
+          // out of content — see `services/chat/message.ts` Routing contract.
           //
           // Auto-prepend `@<name>` for declared mentions missing from the
           // body so the rendered message matches the routing decision

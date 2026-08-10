@@ -11,9 +11,9 @@ import { sessionEvents } from "../db/schema/session-events.js";
 import { createAgent } from "../services/agent.js";
 import { bindAgentRuntimeSession } from "../services/agent-runtime-session.js";
 import { recoverAgentRuntimeSwitch, switchAgentRuntime } from "../services/agent-runtime-switch.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
 import { retireClient } from "../services/client.js";
-import * as sessionEventService from "../services/session-event.js";
 import { createAdminContext, seedClient, useTestApp } from "./helpers.js";
 
 type GuardedRequest = {

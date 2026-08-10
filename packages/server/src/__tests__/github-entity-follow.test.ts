@@ -10,8 +10,8 @@ import { githubAppInstallations } from "../db/schema/github-app-installations.js
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { members } from "../db/schema/members.js";
 import { BadRequestError, NotFoundError, ServiceUnavailableError, UnprocessableError } from "../errors.js";
-import { createChat, removeParticipant } from "../services/chat.js";
-import { lockChatMembershipMutation } from "../services/chat-membership-lock.js";
+import { createChat, removeParticipant } from "../services/chat/conversation.js";
+import { lockChatMembershipMutation } from "../services/chat/membership/lock.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { resolveGithubPersonnelTargetChat } from "../services/scm/github/entity-chat.js";
 import {

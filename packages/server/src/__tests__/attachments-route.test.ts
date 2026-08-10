@@ -15,9 +15,9 @@ import {
   MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER,
 } from "../services/attachment.js";
 import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
+import { editMessage, lockFileAttachmentRefsIfPresent, sendMessage } from "../services/chat/message.js";
 import { validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
 import { ensureMembership } from "../services/membership.js";
-import { editMessage, lockFileAttachmentRefsIfPresent, sendMessage } from "../services/message.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
 

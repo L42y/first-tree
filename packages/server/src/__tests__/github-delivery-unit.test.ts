@@ -140,10 +140,10 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
   vi.doMock("../services/scm/github/entity-state.js", () => ({
     setEntityTitle: mocks.setEntityTitle,
   }));
-  vi.doMock("../services/participant-mode.js", () => ({
+  vi.doMock("../services/chat/membership/participants.js", () => ({
     applyMembershipWrite: mocks.applyMembershipWrite,
   }));
-  vi.doMock("../services/message.js", () => ({
+  vi.doMock("../services/chat/message.js", () => ({
     sendMessage: mocks.sendMessage,
   }));
   vi.doMock("../services/notifier.js", () => ({
@@ -157,8 +157,8 @@ async function loadDelivery(overrides: Partial<MockBag> = {}): Promise<{
 afterEach(() => {
   vi.doUnmock("../services/scm/github/entity-chat.js");
   vi.doUnmock("../services/scm/github/entity-state.js");
-  vi.doUnmock("../services/participant-mode.js");
-  vi.doUnmock("../services/message.js");
+  vi.doUnmock("../services/chat/membership/participants.js");
+  vi.doUnmock("../services/chat/message.js");
   vi.doUnmock("../services/notifier.js");
   vi.resetModules();
   vi.restoreAllMocks();

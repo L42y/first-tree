@@ -16,13 +16,13 @@ import {
   type ToolCallEventPayload,
 } from "@first-tree/shared";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { clients } from "../db/schema/clients.js";
-import { isConsistentAgentRoute, metadataSupportsSessionReset } from "./session-command-rpc.js";
+import type { Database } from "../../../db/connection.js";
+import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { clients } from "../../../db/schema/clients.js";
+import { isConsistentAgentRoute, metadataSupportsSessionReset } from "../../session-command-rpc.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -30,7 +30,7 @@ import { isConsistentAgentRoute, metadataSupportsSessionReset } from "./session-
  * `resolveAgentChatStatuses` is the ONE producer behind every chat surface:
  *   - `GET /chats/:chatId/agent-status` (this file's `getChatAgentStatuses`),
  *   - the chat-list `failedAgentIds` / `liveActivity`
- *     projections in `services/me-chat.ts`.
+ *     projections in `services/chat/workspace/me-chat.ts`.
  *
  * It folds the orthogonal axes per agent and reduces them via the shared
  * `buildAgentChatStatus` (so `main` is always derived, never hand-set):

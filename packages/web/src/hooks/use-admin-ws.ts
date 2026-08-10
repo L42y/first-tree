@@ -53,7 +53,7 @@ let refCount = 0;
 //
 // Each cache key gets its OWN leading + trailing pair via the factory
 // below so bursts in one channel don't starve another. The server's
-// `session:state` short-circuit (services/activity.ts) is the primary
+// `session:state` short-circuit (services/chat/sessions/activity.ts) is the primary
 // defence — this throttle is the client-side safety net for any frame
 // that does reach us (and for `chat:message` which has no server-side
 // dedupe).

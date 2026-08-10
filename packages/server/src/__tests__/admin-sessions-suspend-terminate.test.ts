@@ -4,9 +4,12 @@ import type { WebSocket } from "ws";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
 import { clients } from "../db/schema/clients.js";
-import * as activityService from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
+import * as activityService from "../services/chat/sessions/activity.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
+import * as sessionService from "../services/chat/sessions/lifecycle.js";
 import {
   bindAgentToClient,
   removeClientConnection,
@@ -14,10 +17,7 @@ import {
   setClientConnection,
   setClientReplyTimeoutMsForTests,
 } from "../services/connection-manager.js";
-import { sendMessage } from "../services/message.js";
-import * as sessionService from "../services/session.js";
 import { readSessionCommandRpcResult, storeSessionCommandRpcResult } from "../services/session-command-rpc.js";
-import * as sessionEventService from "../services/session-event.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 
 describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => {

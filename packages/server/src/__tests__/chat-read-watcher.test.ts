@@ -21,8 +21,8 @@ import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat } from "../services/me-chat.js";
-import { recomputeChatWatchers } from "../services/watcher.js";
+import { recomputeChatWatchers } from "../services/chat/membership/participants.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("issue #394 — watcher mark-read", () => {

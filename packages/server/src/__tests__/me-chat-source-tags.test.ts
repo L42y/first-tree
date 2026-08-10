@@ -29,8 +29,8 @@ import { describe, expect, it } from "vitest";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
 import { createAgent } from "../services/agent.js";
-import { listMeChatSourceCounts, listMeChats } from "../services/me-chat.js";
-import { addChatParticipants } from "../services/participant-mode.js";
+import { addChatParticipants } from "../services/chat/membership/participants.js";
+import { listMeChatSourceCounts, listMeChats } from "../services/chat/workspace/me-chat.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -447,7 +447,7 @@ describe("conversation-list source tags", () => {
     });
 
     const chatId = uuidv7();
-    const { recomputeChatWatchers } = await import("../services/watcher.js");
+    const { recomputeChatWatchers } = await import("../services/chat/membership/participants.js");
     await app.db.transaction(async (tx) => {
       await tx.insert(chats).values({
         id: chatId,

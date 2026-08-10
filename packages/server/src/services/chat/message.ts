@@ -26,22 +26,26 @@ import {
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { inboxEntries } from "../db/schema/inbox-entries.js";
-import { messages } from "../db/schema/messages.js";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
-import { createLogger, messageAttrs, withSpan } from "../observability/index.js";
-import { uuidv7 } from "../uuid.js";
-import { upsertSessionState } from "./activity.js";
-import { type AttachmentReader, deleteAttachmentIfUnreferenced, loadAttachmentMetaForReference } from "./attachment.js";
-import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-import { applyAfterFanOut, fireChatMessageKick } from "./chat-projection.js";
-import { validateDocumentContext, validateMessageAttachmentRefs } from "./doc-snapshots.js";
-import { hasRemainingLandingCampaignTrialBudget } from "./landing-campaigns/chat-state.js";
-import { getLandingCampaignTrialChat, withLandingCampaignChatState } from "./landing-campaigns/metadata.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { chatMembership } from "../../db/schema/chat-membership.js";
+import { chats } from "../../db/schema/chats.js";
+import { inboxEntries } from "../../db/schema/inbox-entries.js";
+import { messages } from "../../db/schema/messages.js";
+import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
+import { createLogger, messageAttrs, withSpan } from "../../observability/index.js";
+import { uuidv7 } from "../../uuid.js";
+import {
+  type AttachmentReader,
+  deleteAttachmentIfUnreferenced,
+  loadAttachmentMetaForReference,
+} from "../attachment.js";
+import type { AttachmentBlobStore } from "../attachment-blob-store.js";
+import { validateDocumentContext, validateMessageAttachmentRefs } from "../doc-snapshots.js";
+import { hasRemainingLandingCampaignTrialBudget } from "../landing-campaigns/chat-state.js";
+import { getLandingCampaignTrialChat, withLandingCampaignChatState } from "../landing-campaigns/metadata.js";
+import { upsertSessionState } from "./sessions/activity.js";
+import { applyAfterFanOut, fireChatMessageKick } from "./workspace/projection.js";
 
 const log = createLogger("message");
 const ADDRESSED_AGENT_IDS_METADATA_KEY = "addressedAgentIds";
@@ -1113,7 +1117,7 @@ async function sendMessageInner(
     // notify=true entries serve two consumers:
     //   - `recipients` (inboxIds) — feeds the route-layer PG NOTIFY for
     //     wake-up. Silent entries piggy-back on the next active delivery
-    //     (see services/inbox.ts pollInbox).
+    //     (see services/chat/inbox.ts pollInbox).
     //   - `recipientAgentIds` — feeds the post-transaction predictive
     //     session-activation block (Step 1b below; M-plan N1-B range).
     const notified = fanout.filter((f) => f.notify);

@@ -17,7 +17,7 @@ export type ChatType = z.infer<typeof chatTypeSchema>;
  *
  *   active   — default; chat is in the user's active conversation list.
  *   archived — user-snoozed; auto-revives to `active` when a new message
- *              lands in the chat (see `services/chat-projection.ts`).
+ *              lands in the chat (see `services/chat/workspace/projection.ts`).
  *   deleted  — user-removed; never auto-revives. Restorable only by the
  *              user from the chat detail page.
  */
@@ -177,7 +177,7 @@ export const chatDetailSchema = chatSchema.extend({
   /** Caller's chat-membership view: `"participant"` (speaker), `"watching"`
    *  (watcher), or `null` for supervisor / admin views where the caller has
    *  no direct row in `chat_membership` (access granted via managed agents).
-   *  Mirrors the value `services/me-chat.ts` puts on `MeChatRow.membershipKind`
+   *  Mirrors the value `services/chat/workspace/me-chat.ts` puts on `MeChatRow.membershipKind`
    *  so the chat-detail page can decide between speaker UI and watcher UI
    *  without round-tripping through the conversation-list query. */
   viewerMembershipKind: z.enum(["participant", "watching"]).nullable(),
@@ -188,7 +188,7 @@ export const chatDetailSchema = chatSchema.extend({
    * description write has landed yet, in which case the summary renders the
    * description with no freshness line rather than a fabricated one.
    * `.default(null)`: version skew, and the agent-route detail payload
-   * (`services/chat.ts:getChatDetail`) does not populate it.
+   * (`services/chat/conversation.ts:getChatDetail`) does not populate it.
    */
   descriptionUpdatedAt: z.string().nullable().default(null),
   /**
@@ -225,7 +225,7 @@ export type UpdateChat = z.infer<typeof updateChatSchema>;
 /**
  * Public API body for `POST /api/v1/agent/chats/:chatId/participants`.
  * Phase 1 removed the `mode` field: participant mode is derived server-side
- * from `(chats.type, agents.type)` via `services/participant-mode.ts` and
+ * from `(chats.type, agents.type)` via `services/chat/membership/participants.ts` and
  * cannot be overridden by the caller. The handler still inspects the raw
  * body and rejects with `400 MODE_FIELD_DEPRECATED` if `mode` is present,
  * so an out-of-tree caller that still sends it gets a clear error and a

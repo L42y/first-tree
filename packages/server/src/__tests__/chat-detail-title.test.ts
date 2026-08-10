@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createChat, getChatDetail } from "../services/chat.js";
-import { sendMessage } from "../services/message.js";
+import { createChat, getChatDetail } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 /**
  * v1.7 follow-up to §四 改造 3 — server-resolved `title` field on
  * `GET /agent/chats/:chatId`.
  *
- * Previous implementation: `services/chat.ts:getChatDetail` returned the
+ * Previous implementation: `services/chat/conversation.ts:getChatDetail` returned the
  * chat row + raw chatMembership participants but NO `title` /
  * `firstMessagePreview`. The shared `chatDetailSchema` required both,
  * but the agent route handler never validated the response shape so

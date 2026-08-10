@@ -25,9 +25,9 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { createAgent } from "../services/agent.js";
-import { addParticipant as agentAddParticipant, createChat as agentCreateChat } from "../services/chat.js";
-import { addMeChatParticipants, createMeChat } from "../services/me-chat.js";
-import { rejectedPrivateTargets } from "../services/participant-invite.js";
+import { addParticipant as agentAddParticipant, createChat as agentCreateChat } from "../services/chat/conversation.js";
+import { rejectedPrivateTargets } from "../services/chat/membership/invite.js";
+import { addMeChatParticipants, createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 describe("chat-scoped identity rendering vs discovery visibility", () => {
@@ -158,7 +158,7 @@ describe("chat-scoped identity rendering vs discovery visibility", () => {
   });
 
   it("agent-SDK createChat rejects a private target owned by a different member", async () => {
-    // Agent-SDK path (POST /api/v1/agent/chats) hits services/chat.ts
+    // Agent-SDK path (POST /api/v1/agent/chats) hits services/chat/conversation.ts
     // createChat; without the owner-exclusive gate, an autonomous agent
     // controlled by Bob could pull Alice's private agent into a fresh
     // chat purely on the agent SDK.
@@ -321,7 +321,7 @@ describe("chat-scoped identity rendering vs discovery visibility", () => {
 
     // M spins up a chat with privateA — 2 speakers is a legal v2 chat
     // (group is the only `chats.type` First Tree writes now; 1:1 behaviour is
-    // derived from `participants.length === 2`, see chat.ts).
+    // derived from `participants.length === 2`, see services/chat/conversation.ts).
     const chat = await agentCreateChat(app.db, m.humanAgentUuid, {
       type: "group",
       participantIds: [mPrivateA.uuid],
@@ -419,7 +419,7 @@ describe("chat-scoped identity rendering vs discovery visibility", () => {
     // private agent uuid without getting a 404. But the Layer-2 service
     // gate has no admin override, so the call still 403s. This is the
     // "admin is a discovery-side affordance, not a consent-side one"
-    // invariant explicit in `participant-invite.ts`.
+    // invariant explicit in `services/chat/membership/invite.ts`.
     const app = getApp();
     const alice = await createTestAdmin(app); // both Alice and Bob have role=admin
     const bob = await createTestAdmin(app);

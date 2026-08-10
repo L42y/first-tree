@@ -2,7 +2,7 @@ import { MAX_BATCH_ATTACHMENTS, type SendMessage } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import { BadRequestError } from "../errors.js";
-import { sendMessage } from "../services/message.js";
+import { sendMessage } from "../services/chat/message.js";
 
 // `validateFileContent` fires at the very top of `sendMessage`, before the
 // transaction opens, so a doomed `format: "file"` write never reaches the DB.

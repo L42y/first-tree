@@ -1,13 +1,13 @@
 import { RUNTIME_STALE_MS, type RuntimeState, type SessionState } from "@first-tree/shared";
 import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
-import { agentPresence } from "../db/schema/agent-presence.js";
-import { agents } from "../db/schema/agents.js";
-import { clients } from "../db/schema/clients.js";
-import type { OrgScope } from "../scope/types.js";
-import { agentVisibilityCondition } from "./access-control.js";
-import type { Notifier } from "./notifier.js";
+import type { Database } from "../../../db/connection.js";
+import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
+import { agents } from "../../../db/schema/agents.js";
+import { clients } from "../../../db/schema/clients.js";
+import type { OrgScope } from "../../../scope/types.js";
+import { agentVisibilityCondition } from "../../access-control.js";
+import type { Notifier } from "../../notifier.js";
 
 /**
  * Upsert session state + refresh presence aggregates + NOTIFY.
@@ -51,7 +51,7 @@ export async function upsertSessionState(
     // `session:state` frames off the wire when an already-active session
     // receives a burst of steady-state messages (e.g. an agent emitting
     // many intermediate chat results into the same chat) — without this
-    // short-circuit, the predictive Step 1b in services/message.ts would
+    // short-circuit, the predictive Step 1b in services/chat/message.ts would
     // NOTIFY once per message and the admin WS would invalidate
     // `["activity"]` / `["sessions"]` dozens of times per second. The
     // client's `heartbeat` frame is the canonical lastSeenAt refresh

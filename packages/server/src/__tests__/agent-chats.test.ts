@@ -7,7 +7,7 @@ import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { suspendAgent } from "../services/agent.js";
-import { createMeChat, leaveMeChat, setChatEngagement } from "../services/me-chat.js";
+import { createMeChat, leaveMeChat, setChatEngagement } from "../services/chat/workspace/me-chat.js";
 import { resolveTargetChat } from "../services/scm/github/entity-chat.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 

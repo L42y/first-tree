@@ -798,7 +798,7 @@ export class SessionManager {
    * No routing guards run client-side any more: the cross-chat
    * reply-routing mechanism (`replyToChat` / `shouldSuppressEcho`) has been
    * removed (see first-tree-context PR #281), and the mention filter moved
-   * server-side to fan-out (`services/message.ts sendMessage`). Anything
+   * server-side to fan-out (`services/chat/message.ts sendMessage`). Anything
    * reaching dispatch is, by construction, meant for this agent.
    */
   async dispatch(entry: InboxEntryWithMessage): Promise<void> {
@@ -870,7 +870,7 @@ export class SessionManager {
         if (!this.inboxDelivery.hasEntry(work)) return;
 
         // Note: the "mention_only" filter now lives on the server (see
-        // services/message.ts sendMessage fan-out). If an entry reaches dispatch
+        // services/chat/message.ts sendMessage fan-out). If an entry reaches dispatch
         // we assume server already decided we should handle it — this avoids a
         // double-guard that drifted between server / client in early M1.
 

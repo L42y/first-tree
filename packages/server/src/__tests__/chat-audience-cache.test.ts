@@ -6,7 +6,7 @@ import {
   invalidateChatAudienceLocal,
   registerChatAudienceDispatcher,
   resetChatAudienceDispatcher,
-} from "../services/chat-audience-cache.js";
+} from "../services/chat/membership/audience-cache.js";
 
 const touchedChatIds = new Set<string>();
 

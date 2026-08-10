@@ -1070,7 +1070,7 @@ describe("SessionManager", () => {
 });
 
 /**
- * Mention-only filtering lives on the server (see services/message.ts
+ * Mention-only filtering lives on the server (see services/chat/message.ts
  * fan-out). With cross-chat reply routing removed (see
  * first-tree-context PR #281), the client has no remaining routing
  * guard — any entry that reaches dispatch must dispatch.

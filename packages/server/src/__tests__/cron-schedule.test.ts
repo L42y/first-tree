@@ -6,8 +6,8 @@ import {
   InvalidCronScheduleError,
   matchesScheduledWallTime,
   previewOccurrences,
-} from "../services/cron-schedule.js";
-import { computeDueToCommitMs } from "../services/cron-scheduler.js";
+} from "../services/chat/scheduled-jobs/schedule.js";
+import { computeDueToCommitMs } from "../services/chat/scheduled-jobs/scheduler.js";
 
 describe("cron-schedule", () => {
   it("lists five future occurrences with normalized schedule/timezone", () => {

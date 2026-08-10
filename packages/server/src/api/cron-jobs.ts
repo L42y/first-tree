@@ -15,7 +15,7 @@ import {
   previewCronSchedule,
   projectCronJob,
   updateCronJob,
-} from "../services/cron-job.js";
+} from "../services/chat/scheduled-jobs/job.js";
 import { notifyCronChatUpdated, sendCronError } from "./cron-http.js";
 
 /**

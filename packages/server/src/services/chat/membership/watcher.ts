@@ -15,9 +15,8 @@
  *      These translate a manager reassignment or member-status flip into a
  *      set of chat-scoped recomputes. The underlying chat-scoped
  *      operation `recomputeChatWatchers` itself lives in
- *      `participant-mode.ts` next to the speaker writer that owns
- *      the derivation invariant; we re-export it from here so
- *      historical callers keep working.
+ *      `participants.ts` next to the speaker writer that owns
+ *      the derivation invariant.
  *
  *   2. Speaker ↔ watcher transitions (`joinAsParticipant`,
  *      `leaveAsParticipant`). Single-table UPDATE on
@@ -29,19 +28,13 @@
 
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { lockChatMembershipMutation } from "./chat-membership-lock.js";
-import { addChatParticipants, recomputeChatWatchers } from "./participant-mode.js";
-
-// Re-export so historical callers that reach for
-// `watcher.ts::recomputeChatWatchers` keep compiling. The canonical home
-// for this function is now `participant-mode.ts` — anchored next to the
-// speaker writer whose write triggers the derivation.
-export { recomputeChatWatchers };
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
+import { invalidateChatAudience } from "./audience-cache.js";
+import { lockChatMembershipMutation } from "./lock.js";
+import { addChatParticipants, recomputeChatWatchers } from "./participants.js";
 
 /**
  * Structural DB type that accepts both the top-level `Database` and a

@@ -21,10 +21,10 @@ const serviceMocks = {
 
 const mockedModules = [
   "../observability/index.js",
-  "../services/chat-archive.js",
+  "../services/chat/workspace/archive.js",
   "../services/client.js",
-  "../services/cron-scheduler.js",
-  "../services/inbox.js",
+  "../services/chat/scheduled-jobs/scheduler.js",
+  "../services/chat/inbox.js",
   "../services/notification.js",
   "../services/presence.js",
 ];
@@ -33,19 +33,19 @@ function mockBackgroundTaskDependencies(): void {
   vi.doMock("../observability/index.js", () => ({
     createLogger: () => loggerMocks,
   }));
-  vi.doMock("../services/chat-archive.js", () => ({
+  vi.doMock("../services/chat/workspace/archive.js", () => ({
     sweepChatArchive: serviceMocks.sweepChatArchive,
   }));
   vi.doMock("../services/client.js", () => ({
     cleanupStaleClients: serviceMocks.cleanupStaleClients,
   }));
-  vi.doMock("../services/cron-scheduler.js", () => ({
+  vi.doMock("../services/chat/scheduled-jobs/scheduler.js", () => ({
     createCronScheduler: () => ({
       start: serviceMocks.cronStart,
       stop: serviceMocks.cronStop,
     }),
   }));
-  vi.doMock("../services/inbox.js", () => ({
+  vi.doMock("../services/chat/inbox.js", () => ({
     pruneStaleSilentEntries: serviceMocks.pruneStaleSilentEntries,
   }));
   vi.doMock("../services/notification.js", () => ({

@@ -6,8 +6,8 @@ import { chats } from "../db/schema/chats.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { createAgent } from "../services/agent.js";
-import { createMeChat, listMeChats, pinMeChat } from "../services/me-chat.js";
-import { sendMessage } from "../services/message.js";
+import { sendMessage } from "../services/chat/message.js";
+import { createMeChat, listMeChats, pinMeChat } from "../services/chat/workspace/me-chat.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 /**

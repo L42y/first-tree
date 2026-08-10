@@ -1,8 +1,8 @@
 /**
  * Single Layer-2 entry for "speaker A invites agent B (or many Bs) into chat C".
  *
- * Both the agent-JWT path (`chat.ts::addParticipant` — single target by uuid
- * or by name) and the user-JWT web path (`me-chat.ts::addMeChatParticipants`
+ * Both the agent-JWT path (`conversation.ts::addParticipant` — single target by uuid
+ * or by name) and the user-JWT web path (`workspace/me-chat.ts::addMeChatParticipants`
  * — batch by uuid) collapse onto this service. The previous arrangement —
  * two near-identical services with mirrored cross-org / owner-exclusive
  * checks — is what let PR #393's silent-context backfill regress when the
@@ -11,11 +11,11 @@
  * "duplicate writers go out of sync" bug.
  *
  * Caller-side adapter shells (Layer 3) keep their wire-shape responsibilities:
- *   - `chat.ts::addParticipant` resolves a single `{ agentId | agentName }`
+ *   - `conversation.ts::addParticipant` resolves a single `{ agentId | agentName }`
  *     to a uuid, then calls this service with `targetAgentIds: [uuid]` and
  *     `errorOnAlreadySpeaker: true` (the agent SDK contract treats "already
  *     in the chat" as a hard 409 with a recognisable name).
- *   - `me-chat.ts::addMeChatParticipants` does the web-path "chat in caller's
+ *   - `workspace/me-chat.ts::addMeChatParticipants` does the web-path "chat in caller's
  *     org" probing-protection 404 pre-check, then calls this service with
  *     `targetAgentIds: body.participantIds` and `errorOnAlreadySpeaker:
  *     false` (the batch UI is partial-idempotent: re-adding someone already
@@ -70,11 +70,11 @@ import {
   parseLandingCampaignTrialChatMetadata,
 } from "@first-tree/shared";
 import { and, eq, inArray } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { members } from "../db/schema/members.js";
+import type { Database } from "../../../db/connection.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { members } from "../../../db/schema/members.js";
 import {
   AppError,
   BadRequestError,
@@ -82,9 +82,9 @@ import {
   ConflictError,
   ForbiddenError,
   NotFoundError,
-} from "../errors.js";
-import { invalidateChatAudience } from "./chat-audience-cache.js";
-import { addChatParticipants } from "./participant-mode.js";
+} from "../../../errors.js";
+import { invalidateChatAudience } from "./audience-cache.js";
+import { addChatParticipants } from "./participants.js";
 
 export type InviteParticipantsArgs = {
   chatId: string;
@@ -149,7 +149,7 @@ export type PrivateGateTarget = {
  *     hole. Cross-manager admission of a private agent remains refused;
  *     same-manager admission via any owned agent is now intended.
  *
- * Why this lives in `participant-invite.ts` (not on a shared util): the
+ * Why this lives in `invite.ts` (not on a shared util): the
  * Layer-2 invite service is the canonical chat-membership gate, and
  * `createChat` / `createMeChat` run the same predicate on their initial-
  * participants set. Co-locating the rule with `inviteParticipantsToChat`
@@ -363,7 +363,7 @@ export async function inviteParticipantsToChat(db: Database, args: InvitePartici
  * "this chat exists but you can't see it" — both "chat doesn't exist" and
  * "chat exists but not in your org" surface as the same 404.
  *
- * Used by the `me-chat.ts::addMeChatParticipants` shell (and any other web
+ * Used by the `workspace/me-chat.ts::addMeChatParticipants` shell (and any other web
  * entrypoint that wants the same shape) before delegating to
  * `inviteParticipantsToChat`. Kept here so the assertion lives next to the
  * service whose error semantics it adjusts.

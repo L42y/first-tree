@@ -7,7 +7,7 @@ import { chats } from "../db/schema/chats.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
 import { sessionEvents } from "../db/schema/session-events.js";
-import * as sessionEventService from "../services/session-event.js";
+import * as sessionEventService from "../services/chat/sessions/events.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 

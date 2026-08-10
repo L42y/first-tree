@@ -5,8 +5,8 @@ import { ZodError } from "zod";
 import { members } from "../db/schema/members.js";
 import { ForbiddenError } from "../errors.js";
 import { requireAgent } from "../middleware/require-identity.js";
-import * as chatService from "../services/chat.js";
-import { assertCronAgentRouteAccess, CronJobAppError } from "../services/cron-job.js";
+import * as chatService from "../services/chat/conversation.js";
+import { assertCronAgentRouteAccess, CronJobAppError } from "../services/chat/scheduled-jobs/job.js";
 
 export function sendCronError(reply: { status: (code: number) => { send: (body: unknown) => unknown } }, err: unknown) {
   if (err instanceof CronJobAppError) {

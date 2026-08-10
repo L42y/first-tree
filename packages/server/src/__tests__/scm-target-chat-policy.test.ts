@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
 import {
   decideScmPersonnelTargetChat,
   lockAndValidateScmPersonnelPlacement,

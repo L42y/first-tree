@@ -3,11 +3,11 @@ import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { agents, chatMembership, chats, clients, members, messages, organizations, users } from "../db/schema/index.js";
 import { createAgent } from "../services/agent.js";
+import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import {
   buildLandingCampaignAgentMetadata,
   buildLandingCampaignChatMetadata,
 } from "../services/landing-campaigns/metadata.js";
-import { createMeChat } from "../services/me-chat.js";
 import { uuidv7 } from "../uuid.js";
 import { createAdminContext, createTestApp, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
 

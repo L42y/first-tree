@@ -168,7 +168,7 @@ describe("parseWorkspaceDocKey", () => {
 
 describe("looksLikeChatId", () => {
   it("accepts canonical UUID v4 / v7 chat ids (the shape `randomUUID` mints)", () => {
-    // Real chat ids — services/chat.ts uses `randomUUID()` from node:crypto.
+    // Real chat ids — services/chat/conversation.ts uses `randomUUID()` from node:crypto.
     expect(looksLikeChatId("11111111-1111-4111-8111-111111111111")).toBe(true);
     // UUID v7 (time-ordered) — used elsewhere in the project for message ids;
     // chatIds may rotate to v7 in the future, so the check must accept it.

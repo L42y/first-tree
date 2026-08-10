@@ -13,8 +13,8 @@ import {
   startWsConnectionSpan,
 } from "../../observability/index.js";
 import { registerAdminBroadcaster } from "../../services/admin-broadcast.js";
-import { getChatAgentStatuses } from "../../services/agent-chat-status.js";
-import { getCachedAudience } from "../../services/chat-audience-cache.js";
+import { getCachedAudience } from "../../services/chat/membership/audience-cache.js";
+import { getChatAgentStatuses } from "../../services/chat/sessions/status.js";
 import type { Notifier } from "../../services/notifier.js";
 
 const log = createLogger("OrgWs");

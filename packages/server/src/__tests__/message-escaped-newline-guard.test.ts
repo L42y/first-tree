@@ -2,8 +2,8 @@ import { CLI_BODY_ORIGIN_METADATA_KEY, CLI_BODY_ORIGINS } from "@first-tree/shar
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { messages } from "../db/schema/messages.js";
-import { createChat } from "../services/chat.js";
-import { sendMessage } from "../services/message.js";
+import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 describe("sendMessage escaped-newline guard", () => {

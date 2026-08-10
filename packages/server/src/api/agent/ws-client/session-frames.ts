@@ -13,7 +13,8 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
-import * as activityService from "../../../services/activity.js";
+import * as activityService from "../../../services/chat/sessions/activity.js";
+import * as sessionEventService from "../../../services/chat/sessions/events.js";
 import * as connectionManager from "../../../services/connection-manager.js";
 import * as contextTreeIoService from "../../../services/context-tree/io.js";
 import * as landingCampaignChatStateService from "../../../services/landing-campaigns/chat-state.js";
@@ -21,7 +22,6 @@ import * as notificationService from "../../../services/notification.js";
 import type { Notifier } from "../../../services/notifier.js";
 import * as presenceService from "../../../services/presence.js";
 import { type SessionCommandRpcPhase, storeSessionCommandRpcResult } from "../../../services/session-command-rpc.js";
-import * as sessionEventService from "../../../services/session-event.js";
 import { KeyedOperationQueue } from "../../../utils/keyed-operation-queue.js";
 import type { ClientWsConnectionContext } from "./connection-context.js";
 

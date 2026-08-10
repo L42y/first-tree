@@ -7,7 +7,7 @@ import {
 } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
-import * as inboxService from "../../../services/inbox.js";
+import * as inboxService from "../../../services/chat/inbox.js";
 import type { InboxPushHandler } from "../../../services/notifier.js";
 import type { ClientWsConnectionContext } from "./connection-context.js";
 

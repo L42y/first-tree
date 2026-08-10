@@ -34,7 +34,7 @@
  */
 
 import { sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
+import type { Database } from "../../../db/connection.js";
 
 export const DEFAULT_MAPPED_IDLE_SECONDS = 60 * 60; // 1 hour
 export const DEFAULT_SWEEP_BATCH_SIZE = 1000;

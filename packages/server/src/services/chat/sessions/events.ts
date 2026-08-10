@@ -7,13 +7,13 @@ import type {
 } from "@first-tree/shared";
 import { sessionEventSchema } from "@first-tree/shared";
 import { and, asc, desc, eq, gt, gte, inArray, lt, lte, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
-import { agents } from "../db/schema/agents.js";
-import { chatMembership } from "../db/schema/chat-membership.js";
-import { chats } from "../db/schema/chats.js";
-import { sessionEvents } from "../db/schema/session-events.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../../db/connection.js";
+import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
+import { agents } from "../../../db/schema/agents.js";
+import { chatMembership } from "../../../db/schema/chat-membership.js";
+import { chats } from "../../../db/schema/chats.js";
+import { sessionEvents } from "../../../db/schema/session-events.js";
+import { uuidv7 } from "../../../uuid.js";
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;

@@ -3,9 +3,14 @@ import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../db/schema/agent-presence.js";
-import { getAgentWithRuntime, resetActivity, setSessionRuntime, upsertSessionState } from "../services/activity.js";
 import { createAgent } from "../services/agent.js";
-import { createChat } from "../services/chat.js";
+import { createChat } from "../services/chat/conversation.js";
+import {
+  getAgentWithRuntime,
+  resetActivity,
+  setSessionRuntime,
+  upsertSessionState,
+} from "../services/chat/sessions/activity.js";
 import type { Notifier } from "../services/notifier.js";
 import { createAdminContext, useTestApp } from "./helpers.js";
 import { readPresence, seedPresence } from "./session-state-helpers.js";
@@ -150,7 +155,7 @@ describe("upsertSessionState — touchPresenceLastSeen option", () => {
   // Steady-state guard: when the (agent, chat) row is already at the target
   // state, a repeat upsert must NOT push a `session:state` NOTIFY and must
   // NOT churn `agent_presence.lastSeenAt` — otherwise the predictive Step 1b
-  // in services/message.ts (called once per message) fans into N session:state
+  // in services/chat/message.ts (called once per message) fans into N session:state
   // frames per N messages, which the admin WS then re-broadcasts into a
   // matching N invalidations of `["activity"]` / `["sessions"]` in every open
   // dashboard tab. The client's `heartbeat` frame remains the canonical

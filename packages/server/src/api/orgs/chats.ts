@@ -12,10 +12,10 @@ import { chats } from "../../db/schema/chats.js";
 import { BadRequestError, ForbiddenError } from "../../errors.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
 import { assertAllAgentsVisibleInOrg } from "../../scope/require-resource.js";
-import { createChat, listChatsForMember, resolveAgentIdsByNameInOrg } from "../../services/chat.js";
+import { createChat, listChatsForMember, resolveAgentIdsByNameInOrg } from "../../services/chat/conversation.js";
+import { createMeChat, listMeChatSourceCounts, listMeChats } from "../../services/chat/workspace/me-chat.js";
+import { listNeedYouRequests } from "../../services/chat/workspace/need-you.js";
 import { assertNoLandingCampaignTrialAgents } from "../../services/landing-campaigns/guards.js";
-import { createMeChat, listMeChatSourceCounts, listMeChats } from "../../services/me-chat.js";
-import { listNeedYouRequests } from "../../services/need-you.js";
 import { notifyRecipients } from "../../services/notifier.js";
 import { campaignActionKickoffKey, recordCampaignActionConversion } from "../../services/onboarding-kickoff.js";
 
@@ -201,7 +201,7 @@ export async function orgChatRoutes(app: FastifyInstance): Promise<void> {
     const body = createMeChatSchema.parse(rawBody);
     const targetIds = [...new Set(body.participantIds)].filter((id) => id !== scope.humanAgentId);
     if (targetIds.length === 0) {
-      // Service layer also enforces this (services/me-chat.ts), but bail at
+      // Service layer also enforces this (services/chat/workspace/me-chat.ts), but bail at
       // the handler so the visibility query below isn't run on an empty list.
       throw new BadRequestError("At least one non-self participant required");
     }
