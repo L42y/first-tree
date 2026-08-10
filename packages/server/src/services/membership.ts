@@ -9,7 +9,8 @@ import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { ConflictError, NotFoundError } from "../errors.js";
 import { uuidv7 } from "../uuid.js";
-import { recomputeWatchersForAgent, recomputeWatchersForMember } from "./chat/membership/watcher.js";
+import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
+import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
 import { forceDisconnect } from "./connection-manager.js";
 import * as presenceService from "./presence.js";
 import { suspendGitlabLinksForMembership } from "./scm/gitlab/identities.js";
@@ -241,6 +242,9 @@ export async function reactivateMembership(
   if (!identity) throw new NotFoundError(`Membership "${existing.id}" not found`);
 
   const mutateRows = async () => {
+    // SCM personnel placement takes membership fences before member rows.
+    // Preserve that order while the user identity lock remains outermost.
+    const watcherChatIds = await lockWatcherProjectionForMemberChanges(db, [existing.id]);
     // The caller may have classified this membership before waiting on the
     // user identity lock. Re-read and lock the lifecycle row now so a
     // concurrently completed rejoin/restore is observed instead of being
@@ -253,7 +257,7 @@ export async function reactivateMembership(
     if (current.status !== MEMBER_STATUSES.LEFT && current.status !== MEMBER_STATUSES.REMOVED) {
       throw new ConflictError(`User "${options.username}" has an unsupported membership status`);
     }
-    await reactivateMembershipRows(db, current, options);
+    await reactivateMembershipRows(db, current, options, watcherChatIds);
   };
   if (options.displayName !== undefined) {
     await syncUserDisplayName(db, identity.userId, options.displayName, mutateRows);
@@ -266,7 +270,11 @@ async function reactivateMembershipRows(
   db: DbLike,
   existing: ExistingMembershipForLifecycle,
   options: ReactivateMembershipOptions,
+  lockedWatcherChatIds?: ReadonlyArray<string>,
 ): Promise<void> {
+  const watcherChatIds = lockedWatcherChatIds
+    ? [...lockedWatcherChatIds]
+    : await lockWatcherProjectionForMemberChanges(db, [existing.id]);
   const memberUpdate = {
     ...(options.role ? { role: options.role } : {}),
     status: MEMBER_STATUSES.ACTIVE,
@@ -307,7 +315,7 @@ async function reactivateMembershipRows(
       .where(eq(agents.uuid, existing.agentId));
   }
 
-  await recomputeWatchersForMember(db, existing.id);
+  await recomputeWatcherChats(db, watcherChatIds);
 }
 
 async function resolveRestoredAgentName(
@@ -379,6 +387,25 @@ export async function deactivateMembership(
       .limit(1);
     if (!targetRef) throw new NotFoundError(`Membership "${memberId}" not found`);
 
+    const [projectedFallback] = await tx
+      .select({ id: members.id })
+      .from(members)
+      .where(
+        and(
+          eq(members.organizationId, targetRef.organizationId),
+          eq(members.role, "admin"),
+          eq(members.status, MEMBER_STATUSES.ACTIVE),
+          ne(members.id, memberId),
+        ),
+      )
+      .orderBy(asc(members.id))
+      .limit(1);
+    await lockWatcherProjectionMemberMutation(tx, [memberId, ...(projectedFallback ? [projectedFallback.id] : [])]);
+
+    // Match SCM personnel placement: fence every affected chat before taking
+    // active-admin or target-member row locks.
+    const watcherChatIds = await lockWatcherProjectionForMemberChanges(tx, [memberId]);
+
     const activeAdmins = await tx
       .select({ id: members.id })
       .from(members)
@@ -420,6 +447,9 @@ export async function deactivateMembership(
     let transferredAgentIds: string[] = [];
     if (managed.length > 0) {
       const fallback = activeAdmins.find((admin) => admin.id !== memberId);
+      if ((fallback?.id ?? null) !== (projectedFallback?.id ?? null)) {
+        throw new ConflictError("Membership transfer authority changed; retry leaving the organization");
+      }
       if (!fallback) {
         throw new ConflictError(
           `Cannot leave the organization — you manage ${managed.length} agent(s) here and there is no other ` +
@@ -431,9 +461,6 @@ export async function deactivateMembership(
         .set({ managerId: fallback.id, clientId: null, updatedAt: new Date() })
         .where(managedFilter)
         .returning({ uuid: agents.uuid });
-      for (const { uuid } of transferred) {
-        await recomputeWatchersForAgent(tx, uuid);
-      }
       transferredAgentIds = transferred.map((agent) => agent.uuid);
     }
 
@@ -445,7 +472,7 @@ export async function deactivateMembership(
       .update(agents)
       .set({ status: AGENT_STATUSES.SUSPENDED, clientId: null, updatedAt: new Date() })
       .where(eq(agents.uuid, existing.agentId));
-    await recomputeWatchersForMember(tx, memberId);
+    await recomputeWatcherChats(tx, watcherChatIds);
     return { existing, transferredAgentIds };
   });
 

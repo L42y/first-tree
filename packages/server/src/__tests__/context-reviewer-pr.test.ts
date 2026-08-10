@@ -3,7 +3,7 @@ import { and, desc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
-import { connectDatabase, sslOptions } from "../db/connection.js";
+import { connectDatabase, type Database, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
@@ -13,7 +13,7 @@ import { githubAppInstallations } from "../db/schema/github-app-installations.js
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { organizationSettings } from "../db/schema/organization-settings.js";
-import { createAgent } from "../services/agent.js";
+import { createAgent, updateAgent } from "../services/agent.js";
 import { createChat } from "../services/chat/conversation.js";
 import {
   contextReviewerPrTestInternals,
@@ -25,6 +25,7 @@ import {
 import { createMember } from "../services/member.js";
 import { putOrgSetting } from "../services/org-settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
+import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
 import { createAdminContext, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
@@ -830,6 +831,158 @@ describe("handleContextReviewerPrEvent", () => {
       expect.arrayContaining(["pull_request.opened", "pull_request.synchronize"]),
     );
   });
+
+  it("serializes reviewer chat creation before a concurrent reviewer manager transfer", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const reviewer = await createReviewer(app, admin);
+    await enableReviewer(app, admin, reviewer.uuid);
+    const replacementManager = await createMember(app.db, admin.organizationId, {
+      username: `review-manager-${randomUUID().slice(0, 8)}`,
+      displayName: "Replacement Review Manager",
+      role: "admin",
+    });
+    const [installation] = await app.db
+      .select({ installationId: githubAppInstallations.installationId })
+      .from(githubAppInstallations)
+      .where(eq(githubAppInstallations.hubOrganizationId, admin.organizationId))
+      .limit(1);
+    if (!installation) throw new Error("review installation missing");
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const dispatchApplicationName = `context_review_dispatch_projection_${suffix}`;
+    const managerApplicationName = `context_review_manager_projection_${suffix}`;
+    const dispatchDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, dispatchApplicationName));
+    const managerDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, managerApplicationName));
+    const dispatchApp = {
+      db: dispatchDb,
+      config: app.config,
+      notifier: app.notifier,
+    } as FastifyInstance;
+    const installationHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let installationHolderCommitted = false;
+    try {
+      await installationHolder`BEGIN`;
+      await installationHolder`
+        SELECT id
+        FROM github_app_installations
+        WHERE hub_organization_id = ${admin.organizationId}
+        FOR UPDATE
+      `;
+
+      let dispatchSettled = false;
+      const dispatch = handleContextReviewerPrEventService(dispatchApp, {
+        eventType: "pull_request",
+        payload: pullRequestPayload(),
+        organizationId: admin.organizationId,
+        installationId: installation.installationId,
+      }).then((result) => {
+        dispatchSettled = true;
+        return result;
+      });
+      await waitForPostgresLockWait(observer, dispatchApplicationName);
+
+      let managerTransferSettled = false;
+      const managerTransfer = updateAgent(managerDb, reviewer.uuid, {
+        managerId: replacementManager.id,
+      }).then((updated) => {
+        managerTransferSettled = true;
+        return updated;
+      });
+      await waitForPostgresLockWait(observer, managerApplicationName);
+      expect(dispatchSettled).toBe(false);
+      expect(managerTransferSettled).toBe(false);
+
+      await installationHolder`COMMIT`;
+      installationHolderCommitted = true;
+      const [dispatchResult, updatedReviewer] = await Promise.all([dispatch, managerTransfer]);
+      expect(dispatchResult).toMatchObject({ handled: true, reused: false });
+      expect(updatedReviewer.managerId).toBe(replacementManager.id);
+      expect(await app.db.select({ id: chats.id }).from(chats)).toHaveLength(1);
+    } finally {
+      if (!installationHolderCommitted) await installationHolder`ROLLBACK`;
+      await dispatchDb.end();
+      await managerDb.end();
+      await installationHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
+
+  it("fences a reused reviewer chat before authority rows while an agent follow snapshot races", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app);
+    const reviewer = await createReviewer(app, admin);
+    await enableReviewer(app, admin, reviewer.uuid);
+    const initial = await handleContextReviewerPrEvent(app, {
+      eventType: "pull_request",
+      payload: pullRequestPayload(),
+      organizationId: admin.organizationId,
+    });
+    if (!initial.handled) throw new Error("expected initial reviewer dispatch handled");
+    const [installation] = await app.db
+      .select({ installationId: githubAppInstallations.installationId })
+      .from(githubAppInstallations)
+      .where(eq(githubAppInstallations.hubOrganizationId, admin.organizationId))
+      .limit(1);
+    if (!installation) throw new Error("review installation missing");
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const dispatchApplicationName = `context_review_reuse_fence_${suffix}`;
+    const followApplicationName = `context_review_follow_fence_${suffix}`;
+    const dispatchDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, dispatchApplicationName));
+    const followDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, followApplicationName));
+    const dispatchApp = {
+      db: dispatchDb,
+      config: app.config,
+      notifier: app.notifier,
+    } as FastifyInstance;
+    const installationHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let installationHolderCommitted = false;
+    try {
+      await installationHolder`BEGIN`;
+      await installationHolder`
+        SELECT id
+        FROM github_app_installations
+        WHERE hub_organization_id = ${admin.organizationId}
+        FOR UPDATE
+      `;
+
+      const dispatch = handleContextReviewerPrEventService(dispatchApp, {
+        eventType: "pull_request",
+        payload: pullRequestPayload({ action: "synchronize" }),
+        organizationId: admin.organizationId,
+        installationId: installation.installationId,
+      });
+      await waitForPostgresLockWait(observer, dispatchApplicationName);
+
+      const followSnapshot = followDb.transaction(async (rawTx) => {
+        return lockAndResolveAgentScmBindingPair(rawTx as unknown as Database, initial.chatId, reviewer.uuid);
+      });
+      await waitForPostgresLockWait(observer, followApplicationName);
+
+      await installationHolder`COMMIT`;
+      installationHolderCommitted = true;
+      const [dispatchResult, pair] = await Promise.all([dispatch, followSnapshot]);
+      expect(dispatchResult).toMatchObject({ handled: true, reused: true, chatId: initial.chatId });
+      expect(pair).toEqual({
+        organizationId: admin.organizationId,
+        humanAgentId: admin.humanAgentUuid,
+        wakeAgentId: reviewer.uuid,
+      });
+    } finally {
+      if (!installationHolderCommitted) await installationHolder`ROLLBACK`;
+      await dispatchDb.end();
+      await followDb.end();
+      await installationHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
 
   it("does not suppress a delayed opened task after the configured reviewer changes", async () => {
     const app = getApp();

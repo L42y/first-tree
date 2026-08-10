@@ -26,15 +26,21 @@
  *      (read state remembered for re-add).
  */
 
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { chatMembership } from "../../../db/schema/chat-membership.js";
 import { ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
 import { invalidateChatAudience } from "./audience-cache.js";
-import { lockChatMembershipMutation } from "./lock.js";
+import {
+  lockChatMembershipMutation,
+  lockWatcherProjectionAgentMutation,
+  lockWatcherProjectionMemberMutation,
+} from "./lock.js";
 import { addChatParticipants, recomputeChatWatchers } from "./participants.js";
+
+export { recomputeChatWatchers };
 
 /**
  * Structural DB type that accepts both the top-level `Database` and a
@@ -55,11 +61,65 @@ type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
  * manager picks up watcher rows and the old manager's are dropped.
  */
 export async function recomputeWatchersForAgent(db: DbLike, agentId: string): Promise<void> {
+  const chatIds = await lockWatcherProjectionForAgentChanges(db, [agentId]);
+  await recomputeWatcherChats(db, chatIds);
+}
+
+/**
+ * Fence every existing speaker chat affected by an agent manager change.
+ * Call this before updating the agent row, then pass the returned ids to
+ * `recomputeWatcherChats` after the authority mutation in the same transaction.
+ */
+export async function lockWatcherProjectionForAgentChanges(
+  db: DbLike,
+  agentIds: ReadonlyArray<string>,
+): Promise<string[]> {
+  const stableAgentIds = [...new Set(agentIds)].sort();
+  if (stableAgentIds.length === 0) return [];
+  await lockWatcherProjectionAgentMutation(db, stableAgentIds);
   const chatRows = await db
-    .select({ chatId: chatMembership.chatId })
+    .selectDistinct({ chatId: chatMembership.chatId })
     .from(chatMembership)
-    .where(and(eq(chatMembership.agentId, agentId), eq(chatMembership.accessMode, "speaker")));
-  for (const { chatId } of chatRows) {
+    .where(and(inArray(chatMembership.agentId, stableAgentIds), eq(chatMembership.accessMode, "speaker")))
+    .orderBy(asc(chatMembership.chatId));
+  const chatIds = chatRows.map((row) => row.chatId);
+  await lockChatMembershipMutation(db, chatIds);
+  return chatIds;
+}
+
+/**
+ * Fence every existing speaker chat affected by a member lifecycle change.
+ * The fence must be acquired before changing member status or transferring
+ * managed agents so follow snapshots cannot observe a stale watcher set.
+ */
+export async function lockWatcherProjectionForMemberChanges(
+  db: DbLike,
+  memberIds: ReadonlyArray<string>,
+): Promise<string[]> {
+  const stableMemberIds = [...new Set(memberIds)].sort();
+  if (stableMemberIds.length === 0) return [];
+  await lockWatcherProjectionMemberMutation(db, stableMemberIds);
+  const managedAgents = await db
+    .select({ agentId: agents.uuid })
+    .from(agents)
+    .where(and(inArray(agents.managerId, stableMemberIds), ne(agents.type, "human")))
+    .orderBy(asc(agents.uuid));
+  const managedAgentIds = managedAgents.map((row) => row.agentId);
+  if (managedAgentIds.length === 0) return [];
+  await lockWatcherProjectionAgentMutation(db, managedAgentIds);
+  const chatRows = await db
+    .selectDistinct({ chatId: chatMembership.chatId })
+    .from(chatMembership)
+    .where(and(inArray(chatMembership.agentId, managedAgentIds), eq(chatMembership.accessMode, "speaker")))
+    .orderBy(asc(chatMembership.chatId));
+  const chatIds = chatRows.map((row) => row.chatId);
+  await lockChatMembershipMutation(db, chatIds);
+  return chatIds;
+}
+
+/** Recompute an already-fenced set of watcher projections in stable order. */
+export async function recomputeWatcherChats(db: DbLike, chatIds: ReadonlyArray<string>): Promise<void> {
+  for (const chatId of [...new Set(chatIds)].sort()) {
     await recomputeChatWatchers(db, chatId);
   }
 }
@@ -69,15 +129,8 @@ export async function recomputeWatchersForAgent(db: DbLike, agentId: string): Pr
  * Triggered when the member's status flips active ↔ left.
  */
 export async function recomputeWatchersForMember(db: DbLike, memberId: string): Promise<void> {
-  const rows = await db
-    .selectDistinct({ chatId: chatMembership.chatId })
-    .from(chatMembership)
-    .innerJoin(agents, eq(chatMembership.agentId, agents.uuid))
-    .where(and(eq(chatMembership.accessMode, "speaker"), eq(agents.managerId, memberId), ne(agents.type, "human")));
-
-  for (const { chatId } of rows) {
-    await recomputeChatWatchers(db, chatId);
-  }
+  const chatIds = await lockWatcherProjectionForMemberChanges(db, [memberId]);
+  await recomputeWatcherChats(db, chatIds);
 }
 
 // ---------------------------------------------------------------------------

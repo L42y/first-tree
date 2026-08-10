@@ -424,6 +424,126 @@ describe("GitLab identity authority fencing", () => {
     }
   }, 20_000);
 
+  it("serializes GitLab personnel placement before a manager transfer without a projection/fence deadlock", async () => {
+    const app = getApp();
+    const fixture = await setup(app);
+    const replacementManager = await createTestAdmin(app, {
+      username: `gitlab-placement-manager-${randomUUID().slice(0, 8)}`,
+    });
+    const follower = await createAgent(app.db, {
+      name: `gitlab-placement-follower-${randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "GitLab placement follower",
+      managerId: fixture.admin.memberId,
+      organizationId: fixture.admin.organizationId,
+    });
+    const iid = 92;
+    const chat = await createChat(app.db, fixture.admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [fixture.delegate.uuid, follower.uuid],
+      topic: "GitLab personnel placement lock order",
+      metadata: {},
+    });
+    await declareGitlabEntityFollow(app.db, {
+      organizationId: fixture.admin.organizationId,
+      connectionId: fixture.connection.connectionId,
+      chatId: chat.id,
+      declaredByAgentId: follower.uuid,
+      humanAgentId: fixture.admin.humanAgentUuid,
+      delegateAgentId: follower.uuid,
+      boundVia: "agent_declared",
+      entityUrl: `https://gitlab.internal/Acme/Fenced/-/merge_requests/${iid}`,
+    });
+    const normalized = normalizeGitlabWebhook({
+      organizationId: fixture.admin.organizationId,
+      connectionId: fixture.connection.connectionId,
+      instanceOrigin: "https://gitlab.internal",
+      stableDeliveryId: null,
+      eventHeader: "System Hook",
+      body: mrPayload([{ username: "Reviewer.One" }], "author", iid),
+    });
+    const applied = applyGitlabPersonnelEvidence(normalized, "reviewers");
+    const identity = normalized.entityIdentity;
+    const event = applied.event;
+    if (!identity || !event) throw new Error("normalized GitLab personnel MR missing");
+    const audience = await resolveGitlabAudience(app.db, {
+      organizationId: fixture.admin.organizationId,
+      connectionId: fixture.connection.connectionId,
+      event,
+      entityIdentity: identity,
+    });
+    expect(
+      audience.targets.some(
+        (target) =>
+          target.entry.kind === "personnel_target" &&
+          target.entry.humanAgentId === fixture.admin.humanAgentUuid &&
+          target.entry.wakeAgentId === fixture.delegate.uuid,
+      ),
+    ).toBe(true);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const gitlabApplicationName = `gitlab_placement_lock_${suffix}`;
+    const managerApplicationName = `manager_transfer_lock_${suffix}`;
+    const gitlabDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, gitlabApplicationName));
+    const managerDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, managerApplicationName));
+    const memberHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let memberHolderCommitted = false;
+    try {
+      await memberHolder`BEGIN`;
+      const [memberHolderBackend] = await memberHolder<{ pid: number }[]>`
+        SELECT pg_backend_pid()::int AS pid
+      `;
+      if (!memberHolderBackend) throw new Error("member holder backend missing");
+      await memberHolder`
+        SELECT id
+        FROM members
+        WHERE id = ${fixture.admin.memberId}
+        FOR UPDATE
+      `;
+
+      const gitlabDelivery = deliverGitlabCards(app, {
+        event,
+        identity,
+        audience,
+        organizationId: fixture.admin.organizationId,
+        connectionId: fixture.connection.connectionId,
+        database: gitlabDb,
+      });
+      await waitForPostgresBlocker(observer, gitlabApplicationName, memberHolderBackend.pid);
+
+      let managerTransferSettled = false;
+      const managerTransfer = updateAgent(managerDb, fixture.delegate.uuid, {
+        managerId: replacementManager.memberId,
+      }).then((updated) => {
+        managerTransferSettled = true;
+        return updated;
+      });
+      await waitForPostgresLockWait(observer, managerApplicationName);
+      expect(managerTransferSettled).toBe(false);
+
+      await memberHolder`COMMIT`;
+      memberHolderCommitted = true;
+      const [delivery, updatedDelegate] = await Promise.all([gitlabDelivery, managerTransfer]);
+      expect(delivery).toMatchObject({ delivered: 1, failed: 0 });
+      expect(updatedDelegate.managerId).toBe(replacementManager.memberId);
+      expect(
+        await app.db
+          .select()
+          .from(messages)
+          .where(and(eq(messages.chatId, chat.id), eq(messages.source, "gitlab"))),
+      ).toHaveLength(1);
+    } finally {
+      if (!memberHolderCommitted) await memberHolder`ROLLBACK`;
+      await gitlabDb.end();
+      await managerDb.end();
+      await memberHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
+
   it.each([
     { transition: "remove" as const, existing: true },
     { transition: "remove" as const, existing: false },

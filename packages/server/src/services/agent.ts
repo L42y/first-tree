@@ -44,7 +44,8 @@ import {
 } from "./agent-runtime-binding.js";
 import { initializeAdoptedTemplates } from "./agent-template-adoption.js";
 import type { AttachmentBlobStore } from "./attachment-blob-store.js";
-import { recomputeWatchersForAgent } from "./chat/membership/watcher.js";
+import { lockWatcherProjectionMemberMutation } from "./chat/membership/lock.js";
+import { lockWatcherProjectionForAgentChanges, recomputeWatcherChats } from "./chat/membership/watcher.js";
 import { resolveDefaultOrgId } from "./organization.js";
 
 /**
@@ -457,6 +458,7 @@ export async function createAgent(
       // the member-bootstrap transaction before the member row exists, so there
       // is nothing to lock and the deferred FK validates them at commit.
       if (data.type !== AGENT_TYPES.HUMAN) {
+        await lockWatcherProjectionMemberMutation(tx, [managerId]);
         const [stillActive] = await tx
           .select({ id: members.id, userId: members.userId })
           .from(members)
@@ -1037,12 +1039,20 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
   const gatingManagerId = reassigningManager && newManagerId !== undefined ? newManagerId : agent.managerId;
 
   await db.transaction(async (tx) => {
+    if (reassigningManager && newManagerId !== undefined) {
+      await lockWatcherProjectionMemberMutation(tx, [agent.managerId, newManagerId]);
+    }
+    // The global SCM order is membership fence → member row → agent rows.
+    // Discover and fence every watcher projection before taking the gating
+    // manager row lock so personnel placement cannot form member↔fence cycles.
+    const watcherChatIds = reassigningManager ? await lockWatcherProjectionForAgentChanges(tx, [agent.uuid]) : [];
+
     // Close the reassignment/leave and first-bind/leave races. When this update
     // reassigns the manager or first-binds a client, lock the gating member row
-    // FOR UPDATE and re-confirm it is active — in the SAME member→agent lock
-    // order `deactivateMembership` (leave) and `deleteMember` (admin removal)
-    // use (member row first, then the agent rows they scan/transfer), so the
-    // paths serialize without deadlocking. A departure of the gating member is
+    // FOR UPDATE and re-confirm it is active — after the membership fence and
+    // before agent rows, matching `deactivateMembership`, `deleteMember`, and
+    // SCM personnel placement so the paths serialize without deadlocking. A
+    // departure of the gating member is
     // then mutually exclusive with this write: it either commits first (and the
     // departure's scan transfers/unpins the agent) or blocks until the departure
     // commits and aborts here on the now-inactive manager. This prevents both a
@@ -1088,7 +1098,7 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
     // chats. Inside the transaction so the manager change and its watcher
     // fan-out commit atomically.
     if (reassigningManager) {
-      await recomputeWatchersForAgent(tx, agent.uuid);
+      await recomputeWatcherChats(tx, watcherChatIds);
     }
     return row;
   });

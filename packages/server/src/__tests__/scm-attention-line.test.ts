@@ -3,9 +3,11 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
+import { leaveAsParticipant } from "../services/chat/membership/watcher.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import {
   executeScmFollowLine,
+  lockAndResolveAgentScmBindingPair,
   resolveAgentScmBindingPair,
   resolveHumanScmBindingPair,
 } from "../services/scm/shared/attention-line.js";
@@ -59,6 +61,24 @@ describe("SCM attention binding pair policy", () => {
       humanAgentId: representativeHumanId,
       wakeAgentId: runtime.agent.uuid,
     });
+  });
+
+  it("keeps a supervising human watcher as the transaction-locked agent representative", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: `pair-watcher-${randomUUID().slice(0, 8)}` });
+    const { chatId } = await createMeChat(app.db, runtime.humanAgentUuid, runtime.organizationId, {
+      participantIds: [runtime.agent.uuid],
+    });
+    await leaveAsParticipant(app.db, chatId, runtime.humanAgentUuid);
+
+    const expected = {
+      organizationId: runtime.organizationId,
+      humanAgentId: runtime.humanAgentUuid,
+      wakeAgentId: runtime.agent.uuid,
+    };
+    await expect(resolveAgentScmBindingPair(app.db, chatId, runtime.agent.uuid)).resolves.toEqual(expected);
+    await expect(lockAndResolveAgentScmBindingPair(app.db, chatId, runtime.agent.uuid)).resolves.toEqual(expected);
+    await expect(resolveHumanScmBindingPair(app.db, chatId, runtime.humanAgentUuid)).resolves.toBeNull();
   });
 
   it("fails closed when multiple humans explicitly link the same wake agent", async () => {

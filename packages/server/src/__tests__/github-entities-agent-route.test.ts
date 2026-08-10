@@ -1,10 +1,18 @@
-import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { describe, expect, it, vi } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
+import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
+
+const { privateKey: githubAppPrivateKeyPem } = generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  publicKeyEncoding: { type: "spki", format: "pem" },
+});
 
 /**
  * Class D wiring for `first-tree github follow|unfollow|following`:
@@ -14,7 +22,7 @@ type App = ReturnType<ReturnType<typeof useTestApp>>;
  * idempotent-unfollow HTTP contract.
  */
 describe("agent github-entities routes", () => {
-  const getApp = useTestApp();
+  const getApp = useTestApp({ githubAppPrivateKeyPem });
 
   async function seedOrgAgent(app: App, orgId: string, memberId: string): Promise<string> {
     const uuid = randomUUID();
@@ -37,6 +45,61 @@ describe("agent github-entities routes", () => {
     return (res.json() as { id: string }).id;
   }
 
+  async function seedInstallation(app: App, organizationId: string): Promise<void> {
+    const githubAccountId = Math.floor(Math.random() * 1_000_000_000) + 1;
+    const installation = await upsertInstallationFromMetadata(app.db, {
+      installation: {
+        id: Math.floor(Math.random() * 1_000_000) + 1,
+        accountType: "Organization",
+        accountLogin: `acme-${githubAccountId}`,
+        accountGithubId: githubAccountId,
+        permissions: { contents: "read" },
+        events: ["pull_request", "issues"],
+        suspendedAt: null,
+      },
+    });
+    await bindInstallationToOrg(app.db, installation.installationId, organizationId);
+  }
+
+  function githubFollowFetcher(input: string | URL | Request): Promise<Response> {
+    const url = String(input).toLowerCase();
+    const json = (body: unknown, status = 200) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+    if (url.includes("/access_tokens")) {
+      return json(
+        {
+          token: "ghs_test_token",
+          expires_at: "2099-01-01T00:00:00Z",
+          permissions: { contents: "read" },
+          repository_selection: "selected",
+        },
+        201,
+      );
+    }
+    if (url.includes("/repos/acme/api/issues/42")) {
+      return json({
+        number: 42,
+        state: "open",
+        title: "Watcher follow",
+        html_url: "https://github.com/Acme/Api/pull/42",
+        pull_request: { merged_at: null },
+        draft: false,
+      });
+    }
+    if (url.includes("/repos/acme/api/pulls/42")) {
+      return json({
+        number: 42,
+        state: "open",
+        title: "Watcher follow",
+        html_url: "https://github.com/Acme/Api/pull/42",
+        merged: false,
+        draft: false,
+      });
+    }
+    if (url.includes("/repos/acme/api")) return json({ full_name: "Acme/Api" });
+    return json({ message: "Not Found" }, 404);
+  }
+
   it("follow without an App installation is 422 with operator guidance", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { name: `gh-a-${randomUUID().slice(0, 6)}` });
@@ -55,17 +118,28 @@ describe("agent github-entities routes", () => {
     const a = await createTestAgent(app, { name: `gh-b-${randomUUID().slice(0, 6)}` });
     const peerAgent = await seedOrgAgent(app, a.organizationId, a.memberId);
     const chatId = await createChatWith(a, [peerAgent]);
+    await seedInstallation(app, a.organizationId);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(githubFollowFetcher);
 
-    const res = await a.request("POST", `/api/v1/agent/chats/${chatId}/github-entities`, {
-      entity: "acme/api#42",
-    });
-    // No human SPEAKER is present, but `createChat` recomputes watcher rows
-    // for supervising humans and `resolveBindingPair` deliberately considers
-    // all membership rows — the manager human is the natural representative.
-    // Pair resolution therefore succeeds and the request proceeds to the
-    // installation gate (422 here: the test org has no GitHub App), NOT the
-    // 400 no-binding-pair branch.
-    expect(res.statusCode).toBe(422);
+    try {
+      const res = await a.request("POST", `/api/v1/agent/chats/${chatId}/github-entities`, {
+        entity: "acme/api#42",
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(res.json()).toMatchObject({ status: "created", entity: { entityKey: "Acme/Api#42" } });
+      expect(
+        await app.db.select().from(githubEntityChatMappings).where(eq(githubEntityChatMappings.chatId, chatId)),
+      ).toEqual([
+        expect.objectContaining({
+          humanAgentId: a.humanAgentUuid,
+          delegateAgentId: a.agent.uuid,
+          boundVia: "agent_declared",
+        }),
+      ]);
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 
   it("a non-participant is rejected", async () => {

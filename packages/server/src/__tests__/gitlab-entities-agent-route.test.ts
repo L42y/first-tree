@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { gitlabEntityChatMappings } from "../db/schema/gitlab-entity-chat-mappings.js";
+import { leaveAsParticipant } from "../services/chat/membership/watcher.js";
 import { createMeChat } from "../services/chat/workspace/me-chat.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";
 import {
@@ -34,6 +35,30 @@ describe("GitLab entity attention agent routes", () => {
     expect(
       await app.db.select().from(gitlabEntityChatMappings).where(eq(gitlabEntityChatMappings.chatId, chatId)),
     ).toHaveLength(0);
+  });
+
+  it("follows from an agents-only chat through the supervising human watcher", async () => {
+    const { app, runtime, chatId } = await createRuntimeChat();
+    await leaveAsParticipant(app.db, chatId, runtime.humanAgentUuid);
+    await createGitlabConnection(app.db, {
+      organizationId: runtime.organizationId,
+      memberId: runtime.memberId,
+      displayName: "Private GitLab",
+      instanceOrigin: "https://gitlab.internal",
+    });
+
+    const response = await runtime.request("POST", `/api/v1/agent/chats/${chatId}/gitlab-entities`, {
+      entityUrl: "https://gitlab.internal/Acme/API/-/issues/43",
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      status: "created",
+      entity: { entityIid: 43, status: "pending", boundVia: "agent_declared" },
+    });
+    expect(
+      await app.db.select().from(gitlabEntityChatMappings).where(eq(gitlabEntityChatMappings.chatId, chatId)),
+    ).toHaveLength(1);
   });
 
   it("accepts both GitLab route shapes and preserves the latest explicitly followed URL", async () => {

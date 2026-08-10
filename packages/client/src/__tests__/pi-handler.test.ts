@@ -1599,7 +1599,10 @@ describe("Pi handler", () => {
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
       providerProcessSupervisor: createSyntheticSupervisor(specs, { hangVersionFromSpawn: 2 }),
-      piVersionGateTimeoutMs: 40,
+      // The first synthetic Node process must pass the version gate before
+      // later spawns intentionally hang. Leave cold-start headroom for busy CI
+      // runners so this tests retry exhaustion rather than process startup.
+      piVersionGateTimeoutMs: 500,
     });
     const events: SessionEvent[] = [];
     const sessionCtx = makeContext(events);

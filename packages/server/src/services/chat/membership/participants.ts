@@ -55,7 +55,7 @@ import { chats } from "../../../db/schema/chats.js";
 import { BadRequestError, NotFoundError } from "../../../errors.js";
 import { backfillSilentContextForNewParticipants } from "../inbox.js";
 import { invalidateChatAudience } from "./audience-cache.js";
-import { lockChatMembershipMutation } from "./lock.js";
+import { lockChatMembershipMutation, lockWatcherProjectionAgentMutation } from "./lock.js";
 
 /**
  * Structural DB type that accepts both the top-level `Database` and a
@@ -133,6 +133,10 @@ export async function addChatParticipants(
 ): Promise<void> {
   if (participants.length === 0) return;
 
+  await lockWatcherProjectionAgentMutation(
+    tx,
+    participants.map((participant) => participant.agentId),
+  );
   await lockChatMembershipMutation(tx, [chatId]);
 
   // Confirm the chat exists AND lock the chats row for the duration of the
@@ -268,6 +272,12 @@ export async function addChatParticipants(
  * delegate back here when their per-agent / per-member triggers fire.
  */
 export async function recomputeChatWatchers(db: DbLike, chatId: string): Promise<void> {
+  // Every watcher INSERT/DELETE participates in the same per-chat fence as
+  // speaker mutations and SCM membership snapshots. Production callers keep
+  // this helper inside the surrounding authority transaction so the lock is
+  // held through both projection writes and commit.
+  await lockChatMembershipMutation(db, [chatId]);
+
   // Insert the desired set of watcher rows; speaker rows are preserved by
   // the ON CONFLICT clause + the NOT EXISTS guard in the SELECT.
   await db.execute(sql`

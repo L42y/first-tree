@@ -355,7 +355,7 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("parses follow conflicts and malformed conflict bodies", async () => {
+  it("parses only structured follow conflicts and preserves other 409 errors", async () => {
     let fetchMock = mockFetch(
       jsonResponse(
         {
@@ -380,7 +380,7 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
     fetchMock = mockFetch(textResponse("<html>conflict</html>", 409));
     await expect(makeSdk().followGithubEntity("chat-1", { entity: "owner/repo#42" })).rejects.toMatchObject({
       statusCode: 409,
-      message: "Entity already followed in another chat (non-JSON conflict body)",
+      message: "<html>conflict</html>",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -388,7 +388,15 @@ describe("FirstTreeHubSDK comprehensive wrappers", () => {
     fetchMock = mockFetch(jsonResponse({ error: "ENTITY_FOLLOWED_ELSEWHERE" }, 409));
     await expect(makeSdk().followGithubEntity("chat-1", { entity: "owner/repo#42" })).rejects.toMatchObject({
       statusCode: 409,
-      message: "Entity already followed in another chat (malformed conflict body)",
+      message: "ENTITY_FOLLOWED_ELSEWHERE",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+    fetchMock = mockFetch(jsonResponse({ error: "GitHub follow authority changed; retry" }, 409));
+    await expect(makeSdk().followGithubEntity("chat-1", { entity: "owner/repo#42" })).rejects.toMatchObject({
+      statusCode: 409,
+      message: "GitHub follow authority changed; retry",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
 

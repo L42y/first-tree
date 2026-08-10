@@ -10,8 +10,10 @@ import { githubAppInstallations } from "../db/schema/github-app-installations.js
 import { githubEntityChatMappings } from "../db/schema/github-entity-chat-mappings.js";
 import { members } from "../db/schema/members.js";
 import { BadRequestError, NotFoundError, ServiceUnavailableError, UnprocessableError } from "../errors.js";
+import { updateAgent } from "../services/agent.js";
 import { createChat, removeParticipant } from "../services/chat/conversation.js";
 import { lockChatMembershipMutation } from "../services/chat/membership/lock.js";
+import { applyMembershipWrite, recomputeChatWatchers } from "../services/chat/membership/participants.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { resolveGithubPersonnelTargetChat } from "../services/scm/github/entity-chat.js";
 import {
@@ -1053,6 +1055,259 @@ describe("github-entity-follow", () => {
       await observer.end();
     }
   });
+
+  it("serializes a watcher-changing manager transfer before agent follow revalidation without deadlock", async () => {
+    const app = getApp();
+    const originalManager = await createTestAdmin(app, {
+      username: `watcher-old-${randomUUID().slice(0, 8)}`,
+    });
+    const replacementManager = await createTestAdmin(app, {
+      username: `watcher-new-${randomUUID().slice(0, 8)}`,
+    });
+    const wakeAgentId = await seedAgent(app, originalManager.organizationId, originalManager.memberId, "agent");
+    await app.db
+      .update(agents)
+      .set({ delegateMention: wakeAgentId })
+      .where(eq(agents.uuid, originalManager.humanAgentUuid));
+    await app.db
+      .update(agents)
+      .set({ delegateMention: wakeAgentId })
+      .where(eq(agents.uuid, replacementManager.humanAgentUuid));
+    const chatId = await seedChat(app, originalManager.organizationId);
+    await app.db.insert(chatMembership).values({
+      chatId,
+      agentId: wakeAgentId,
+      role: "member",
+      accessMode: "speaker",
+    });
+    await app.db.transaction(async (tx) => {
+      await recomputeChatWatchers(tx, chatId);
+    });
+    await seedInstallation(app, originalManager.organizationId);
+
+    let entityRequested!: () => void;
+    let releaseEntity!: () => void;
+    const requested = new Promise<void>((resolve) => {
+      entityRequested = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseEntity = resolve;
+    });
+    const baseFetcher = prFetcher();
+    const delayedFetcher = (async (input: string | URL | Request) => {
+      if (String(input).toLowerCase().includes("/repos/acme/api/issues/42")) {
+        entityRequested();
+        await release;
+      }
+      return baseFetcher(input);
+    }) as typeof fetch;
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const followApplicationName = `watcher_follow_${suffix}`;
+    const updateApplicationName = `watcher_update_${suffix}`;
+    const followDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, followApplicationName));
+    const updateDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, updateApplicationName));
+    const agentHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let holderCommitted = false;
+    try {
+      const following = declareEntityFollow(followDb, deps(delayedFetcher), {
+        chatId,
+        organizationId: originalManager.organizationId,
+        humanAgentId: originalManager.humanAgentUuid,
+        delegateAgentId: wakeAgentId,
+        boundVia: "agent_declared",
+        entity: "acme/api#42",
+        rebind: false,
+      });
+      await requested;
+
+      await agentHolder`BEGIN`;
+      await agentHolder`
+        SELECT uuid FROM agents WHERE uuid = ${wakeAgentId} FOR UPDATE
+      `;
+      const updating = updateAgent(updateDb, wakeAgentId, { managerId: replacementManager.memberId });
+      await waitForPostgresLockWaits(observer, [updateApplicationName]);
+
+      // Let follow finish provider resolution while the manager transfer owns
+      // the membership fence and waits on the wake-agent row. Follow must wait
+      // behind that fence rather than snapshotting the old watcher set.
+      releaseEntity();
+      await waitForPostgresLockWaits(observer, [updateApplicationName, followApplicationName]);
+      await agentHolder`COMMIT`;
+      holderCommitted = true;
+
+      await expect(updating).resolves.toMatchObject({ managerId: replacementManager.memberId });
+      await expect(following).rejects.toThrow("authority changed");
+      expect(
+        await app.db
+          .select({ agentId: chatMembership.agentId, accessMode: chatMembership.accessMode })
+          .from(chatMembership)
+          .where(eq(chatMembership.chatId, chatId))
+          .orderBy(chatMembership.agentId),
+      ).toEqual(
+        [
+          { agentId: replacementManager.humanAgentUuid, accessMode: "watcher" },
+          { agentId: wakeAgentId, accessMode: "speaker" },
+        ].sort((a, b) => a.agentId.localeCompare(b.agentId)),
+      );
+      expect(
+        await app.db
+          .select()
+          .from(githubEntityChatMappings)
+          .where(eq(githubEntityChatMappings.entityKey, "Acme/Api#42")),
+      ).toHaveLength(0);
+    } finally {
+      if (!holderCommitted) await agentHolder`ROLLBACK`;
+      await followDb.end();
+      await updateDb.end();
+      await agentHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
+
+  it("keeps manager transfer and personnel placement on fence-before-member order without deadlock", async () => {
+    const app = getApp();
+    const target = await createTestAdmin(app, { username: `lock-target-${randomUUID().slice(0, 8)}` });
+    const oldOwner = await createTestAdmin(app, { username: `lock-owner-${randomUUID().slice(0, 8)}` });
+    const existingFollower = await seedAgent(app, target.organizationId, oldOwner.memberId, "agent");
+    const currentDelegate = await seedAgent(app, target.organizationId, target.memberId, "agent");
+    await app.db.update(agents).set({ visibility: "organization" }).where(eq(agents.uuid, existingFollower));
+    await app.db.update(agents).set({ delegateMention: currentDelegate }).where(eq(agents.uuid, target.humanAgentUuid));
+    const chat = await createChat(app.db, target.humanAgentUuid, {
+      type: "group",
+      participantIds: [existingFollower],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: target.organizationId,
+      humanAgentId: oldOwner.humanAgentUuid,
+      delegateAgentId: existingFollower,
+      entityType: "issue",
+      entityKey: "Acme/Api#403",
+      chatId: chat.id,
+      boundVia: "agent_declared",
+    });
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const updateApplicationName = `personnel_manager_${suffix}`;
+    const placementApplicationName = `personnel_place_${suffix}`;
+    const updateDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, updateApplicationName));
+    const placementDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, placementApplicationName));
+    const memberHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let holderCommitted = false;
+    try {
+      await memberHolder`BEGIN`;
+      await memberHolder`
+        SELECT id FROM members WHERE id = ${target.memberId} FOR UPDATE
+      `;
+
+      // Manager transfer owns the agent projection and chat fence before it
+      // waits for the gating member. Personnel placement queues behind the
+      // projection lock instead of forming a member↔fence cycle.
+      const updating = updateAgent(updateDb, existingFollower, { managerId: target.memberId });
+      await waitForPostgresLockWaits(observer, [updateApplicationName]);
+      const placing = resolveGithubPersonnelTargetChat(placementDb, {
+        organizationId: target.organizationId,
+        humanAgentId: target.humanAgentUuid,
+        delegateAgentId: currentDelegate,
+        entity: { type: "issue", key: "Acme/Api#403", title: "Fence order" },
+        relatedEntities: [],
+        eventType: "issues",
+        action: "assigned",
+        isMentionMatched: true,
+        requiresPersistentLine: true,
+      });
+      await waitForPostgresLockWaits(observer, [updateApplicationName, placementApplicationName]);
+
+      await memberHolder`COMMIT`;
+      holderCommitted = true;
+      await expect(updating).resolves.toMatchObject({ managerId: target.memberId });
+      await expect(placing).resolves.toMatchObject({ chatId: chat.id, created: false });
+      expect(
+        await app.db
+          .select({ chatId: githubEntityChatMappings.chatId })
+          .from(githubEntityChatMappings)
+          .where(
+            and(
+              eq(githubEntityChatMappings.entityKey, "Acme/Api#403"),
+              eq(githubEntityChatMappings.humanAgentId, target.humanAgentUuid),
+              eq(githubEntityChatMappings.delegateAgentId, currentDelegate),
+            ),
+          ),
+      ).toEqual([{ chatId: chat.id }]);
+    } finally {
+      if (!holderCommitted) await memberHolder`ROLLBACK`;
+      await updateDb.end();
+      await placementDb.end();
+      await memberHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
+
+  it("freezes first speaker admission while manager transfer discovers affected chats", async () => {
+    const app = getApp();
+    const originalManager = await createTestAdmin(app, {
+      username: `expand-old-${randomUUID().slice(0, 8)}`,
+    });
+    const replacementManager = await createTestAdmin(app, {
+      username: `expand-new-${randomUUID().slice(0, 8)}`,
+    });
+    const wakeAgentId = await seedAgent(app, originalManager.organizationId, originalManager.memberId, "agent");
+    const chatId = await seedChat(app, originalManager.organizationId);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suffix = randomUUID().slice(0, 8);
+    const updateApplicationName = `projection_update_${suffix}`;
+    const addApplicationName = `projection_add_${suffix}`;
+    const updateDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, updateApplicationName));
+    const addDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, addApplicationName));
+    const memberHolder = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let holderCommitted = false;
+    try {
+      await memberHolder`BEGIN`;
+      await memberHolder`
+        SELECT id FROM members WHERE id = ${replacementManager.memberId} FOR UPDATE
+      `;
+
+      // Transfer freezes this agent's speaker-chat set, discovers it empty,
+      // then waits on the new manager. First admission into chat C must wait
+      // on the shared projection lock instead of materialising an old watcher.
+      const updating = updateAgent(updateDb, wakeAgentId, { managerId: replacementManager.memberId });
+      await waitForPostgresLockWaits(observer, [updateApplicationName]);
+      const adding = applyMembershipWrite(addDb, chatId, [{ agentId: wakeAgentId }]);
+      await waitForPostgresLockWaits(observer, [updateApplicationName, addApplicationName]);
+
+      await memberHolder`COMMIT`;
+      holderCommitted = true;
+      await expect(updating).resolves.toMatchObject({ managerId: replacementManager.memberId });
+      await expect(adding).resolves.toBeUndefined();
+      expect(
+        await app.db
+          .select({ agentId: chatMembership.agentId, accessMode: chatMembership.accessMode })
+          .from(chatMembership)
+          .where(eq(chatMembership.chatId, chatId))
+          .orderBy(chatMembership.agentId),
+      ).toEqual(
+        [
+          { agentId: replacementManager.humanAgentUuid, accessMode: "watcher" },
+          { agentId: wakeAgentId, accessMode: "speaker" },
+        ].sort((a, b) => a.agentId.localeCompare(b.agentId)),
+      );
+    } finally {
+      if (!holderCommitted) await memberHolder`ROLLBACK`;
+      await updateDb.end();
+      await addDb.end();
+      await memberHolder.end();
+      await observer.end();
+    }
+  }, 20_000);
 
   it("rejects a human-issued fresh follow when the delegate changes during GitHub resolution", async () => {
     const app = getApp();

@@ -20,7 +20,11 @@ import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
 import { createChat } from "../../chat/conversation.js";
 import { inviteParticipantsToChatInTransaction } from "../../chat/membership/invite.js";
-import { lockChatMembershipMutation, lockChatSpeakerAndAgentSnapshot } from "../../chat/membership/lock.js";
+import {
+  lockChatMembershipMutation,
+  lockChatSpeakerAndAgentSnapshot,
+  lockWatcherProjectionAgentMutation,
+} from "../../chat/membership/lock.js";
 import { composeScmAudience, type ScmAudienceTarget, type ScmPersonnelTarget } from "../shared/audience-composition.js";
 import { type DeferredScmCardPostCommitEffects, sendScmSystemCard } from "../shared/card-delivery.js";
 import {
@@ -949,6 +953,11 @@ async function resolveGitlabPersonnelTargetInTransaction(
   const humanAgentId = input.target.entry.humanAgentId;
   const wakeAgentId = input.target.entry.wakeAgentId;
   const involveLogin = input.target.entry.externalUsername;
+  // Match canonical speaker and authority writers: projection locks must
+  // precede every candidate-chat fence and identity/member row lock. The
+  // shared placement helper re-enters these transaction advisory locks after
+  // identity revalidation, which is safe and preserves one atomic boundary.
+  await lockWatcherProjectionAgentMutation(db, [humanAgentId, wakeAgentId]);
   const existingRows = await db
     .select()
     .from(gitlabEntityChatMappings)
