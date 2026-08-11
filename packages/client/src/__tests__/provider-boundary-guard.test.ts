@@ -45,7 +45,7 @@ const COMPOSITION_ALLOWLIST = new Set([
 
 /** Generic modules that must stay provider-neutral after this foundation PR. */
 const GUARDED_CLIENT_FILES = [
-  "runtime/capabilities/index.ts",
+  "providers/capabilities/index.ts",
   "runtime/managed-skills.ts",
   "runtime/runtime.ts",
   "runtime/handler.ts",
@@ -385,20 +385,35 @@ function normalizeClientSrcRelativeTarget(fromFileAbs: string, specifier: string
 
 /**
  * Concrete provider implementation targets that generic Runtime must never load.
- * Deleted Cursor/Kimi owners stay forbidden forever alongside current family paths.
+ * Deleted Cursor/Kimi/OpenCode/Pi owners stay forbidden forever alongside current
+ * family paths and the shared `providers/capabilities/**` foundation.
  */
 function isForbiddenConcreteProviderModuleTarget(relPosix: string): boolean {
   const rel = relPosix.replaceAll("\\", "/").replace(/\.tsx?$/, ".js");
   if (rel === "handlers/kimi-code.js") return true;
   if (/^handlers\/(cursor|kimi-code|opencode|pi)\//.test(rel)) return true;
-  if (/^providers\/(claude|codex|cursor|grok|kimi-code)(\/|$)/.test(rel)) return true;
+  if (/^providers\/(claude|codex|cursor|grok|kimi-code|opencode|pi)(\/|$)/.test(rel)) return true;
+  // Shared capability foundation — Runtime must not reverse-load it.
+  // Do not forbid providers/skill-roots (managed-skills composition seam).
+  if (/^providers\/capabilities(\/|$)/.test(rel)) return true;
   if (/^runtime\/(cursor|grok|pi|kimi|opencode|codex)-binary\.js$/.test(rel)) return true;
-  // Deleted Cursor/Kimi Runtime owners relocated by this S3 slice (path existence not required).
+  if (rel === "runtime/opencode-private-config.js") return true;
+  // Deleted Cursor/Kimi Runtime owners (prior S3 slices).
   if (rel === "runtime/cursor-login.js") return true;
   if (
     rel === "runtime/capabilities/cursor.js" ||
     rel === "runtime/capabilities/kimi-code.js" ||
     rel === "runtime/capabilities/discover-models.js"
+  ) {
+    return true;
+  }
+  // Deleted OpenCode/Pi + shared capability foundation owners (this S3 final slice).
+  if (
+    rel === "runtime/capabilities/opencode.js" ||
+    rel === "runtime/capabilities/pi.js" ||
+    rel === "runtime/capabilities/detect.js" ||
+    rel === "runtime/capabilities/index.js" ||
+    rel === "runtime/capabilities/launch-probe.js"
   ) {
     return true;
   }
@@ -438,8 +453,8 @@ const CATALOG_CONSUMER_FILES = [
   "packages/client/src/providers/cursor/binary.ts",
   "packages/client/src/providers/grok/binary.ts",
   "packages/client/src/providers/kimi-code/binary.ts",
-  "packages/client/src/runtime/opencode-binary.ts",
-  "packages/client/src/runtime/pi-binary.ts",
+  "packages/client/src/providers/opencode/binary.ts",
+  "packages/client/src/providers/pi/binary.ts",
 ] as const;
 
 function listFilesRecursive(root: string, predicate: (path: string) => boolean): string[] {
@@ -484,7 +499,7 @@ describe("runtime provider architecture guard", () => {
         continue;
       }
 
-      if (relPosix === "runtime/capabilities/index.ts") {
+      if (relPosix === "providers/capabilities/index.ts") {
         expect(source).toContain("BUILTIN_PROVIDER_PROBES");
         expect(source).toContain("RUNTIME_PROVIDER_IDS");
         expect(source).not.toContain("peekInstalledBuiltinProviderRegistry");
@@ -573,7 +588,7 @@ describe("runtime provider architecture guard", () => {
       ["providers/codex/binary.ts", "isCodexBinaryMissingError"],
       ["providers/cursor/binary.ts", "isCursorBinaryMissingError"],
       ["providers/grok/binary.ts", "isGrokBinaryMissingError"],
-      ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
+      ["providers/pi/binary.ts", "isPiBinaryMissingError"],
     ] as const) {
       const source = readFileSync(join(clientSrc, file), "utf8");
       expect(source, `${file} must re-export ${symbol} from provider-support index`).toContain(
@@ -604,12 +619,15 @@ describe("runtime provider architecture guard", () => {
     expect(productionRels).toContain("providers/claude/capability.ts");
     expect(productionRels).toContain("providers/codex/capability.ts");
     expect(productionRels).toContain("providers/grok/capability.ts");
+    expect(productionRels).toContain("providers/opencode/capability.ts");
+    expect(productionRels).toContain("providers/pi/capability.ts");
 
     // Local regex / phrase tables that re-recognize provider binary absence.
     const codexBundledLocateMatcher = /unable to locate codex cli binaries/i;
+    const noPiBinaryMatcher = /no pi binary/i;
     const secondOwnerMatchers = [
       /pi cli is missing/i,
-      /no pi binary/i,
+      noPiBinaryMatcher,
       /BINARY_MISSING_PATTERNS/,
       /codex runtime binary is missing/i,
       codexBundledLocateMatcher,
@@ -712,6 +730,49 @@ describe("runtime provider architecture guard", () => {
       return out;
     }
 
+    /**
+     * Exact approved Pi capability occurrence of the pre-format resolution
+     * phrase: the sole string-literal argument `"no pi binary resolved on this
+     * host"` passed to `formatPiBinaryMissingMessage(...)`. Recognition tables
+     * stay owned by provider-support; this is only the historical detail
+     * string that capability feeds into the formatter (relocated from
+     * `runtime/capabilities/pi.ts`).
+     */
+    const approvedPiCapabilityDetail = "no pi binary resolved on this host";
+
+    function approvedPiCapabilityNoBinaryDetailSpans(
+      source: string,
+    ): Array<{ start: number; end: number; text: string }> {
+      const sourceFile = ts.createSourceFile(
+        "providers/pi/capability.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+      const spans: Array<{ start: number; end: number; text: string }> = [];
+      function visit(node: ts.Node): void {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === "formatPiBinaryMissingMessage" &&
+          node.arguments.length === 1
+        ) {
+          const arg = node.arguments[0];
+          if (arg && ts.isStringLiteral(arg) && arg.text === approvedPiCapabilityDetail) {
+            spans.push({
+              start: arg.getStart(sourceFile),
+              end: arg.getEnd(),
+              text: arg.getText(sourceFile),
+            });
+          }
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(sourceFile);
+      return spans;
+    }
+
     function expectRejectedLocateFixture(label: string, snippet: string): void {
       expect(approvedCodexBundledLocateErrorSpans(snippet), label).toHaveLength(0);
       expect(codexBundledLocateMatcher.test(snippet), `${label} still matches generic phrase`).toBe(true);
@@ -735,6 +796,20 @@ describe("runtime provider architecture guard", () => {
           expect(
             neutralized,
             `${rel} must not re-own binary-missing recognition outside the approved resolveBundledCodexBinary catch (${matcher})`,
+          ).not.toMatch(matcher);
+          continue;
+        }
+        if (rel === "providers/pi/capability.ts" && matcher === noPiBinaryMatcher) {
+          const spans = approvedPiCapabilityNoBinaryDetailSpans(source);
+          expect(
+            spans,
+            "Pi capability must expose exactly one approved formatPiBinaryMissingMessage detail literal",
+          ).toHaveLength(1);
+          expect(spans[0]?.text).toBe(JSON.stringify(approvedPiCapabilityDetail));
+          const neutralized = maskSpans(source, spans);
+          expect(
+            neutralized,
+            `${rel} must not re-own binary-missing recognition outside the approved formatPiBinaryMissingMessage detail (${matcher})`,
           ).not.toMatch(matcher);
           continue;
         }
@@ -866,7 +941,7 @@ describe("runtime provider architecture guard", () => {
     ).toBe(true);
 
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
-    const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
+    const piHandler = readFileSync(join(clientSrc, "providers/pi/index.ts"), "utf8");
     expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
     expect(piHandler).toMatch(/runtime\/provider-support\/(?:index|binary-failure)/);
     expect(piHandler).not.toContain("isPiBinaryMissingError");
@@ -1039,8 +1114,8 @@ describe("runtime provider architecture guard", () => {
       "providers/cursor/index.ts",
       "providers/grok/index.ts",
       "providers/kimi-code/index.ts",
-      "handlers/opencode/index.ts",
-      "handlers/pi/index.ts",
+      "providers/opencode/index.ts",
+      "providers/pi/index.ts",
       "handlers/turn-settlement.ts",
       "providers/builtin-registry.ts",
       "providers/auth-driver.ts",
@@ -1250,11 +1325,11 @@ describe("runtime provider architecture guard", () => {
         expect(source).toMatch(/from "@first-tree\/shared"/);
         expect(source).toContain("INSTALL_COMMAND");
       }
-      if (rel.endsWith("opencode-binary.ts")) {
+      if (rel.endsWith("providers/opencode/binary.ts") || rel.endsWith("opencode/binary.ts")) {
         expect(source).toContain("OPENCODE_MINIMUM_VERSION");
         expect(source).toContain("runtimeProviderInstallCommand");
       }
-      if (rel.endsWith("pi-binary.ts")) {
+      if (rel.endsWith("providers/pi/binary.ts") || rel.endsWith("pi/binary.ts")) {
         expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderInteractiveLoginCue");
         expect(source).not.toContain("running `pi` and entering `/login`");
@@ -1591,8 +1666,8 @@ describe("runtime provider architecture guard", () => {
       "providers/cursor/index.ts",
       "providers/grok/index.ts",
       "providers/kimi-code/index.ts",
-      "handlers/opencode/index.ts",
-      "handlers/pi/index.ts",
+      "providers/opencode/index.ts",
+      "providers/pi/index.ts",
     ] as const;
     for (const rel of mustUseProviderSupport) {
       const source = readFileSync(join(clientSrc, rel), "utf8");
@@ -1816,9 +1891,11 @@ describe("runtime provider architecture guard", () => {
       return transitionalRelPaths.has(rel);
     }
 
-    expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/index.ts")).toBe(true);
+    expect(TRANSITIONAL_PROVIDER_FAMILY_FILES).toHaveLength(0);
+    expect(isExplicitTransitionalProviderFamilyPath("providers/capabilities/index.ts")).toBe(false);
     expect(isExplicitTransitionalProviderFamilyPath("runtime/brand-new/index.ts")).toBe(false);
     expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/brand-new.ts")).toBe(false);
+    expect(isExplicitTransitionalProviderFamilyPath("runtime/opencode-binary.ts")).toBe(false);
 
     for (const file of runtimeFiles) {
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
@@ -1898,6 +1975,41 @@ describe("runtime provider architecture guard", () => {
       },
       {
         importer: runtimeRootImporter,
+        source: `import { createOpenCodeHandler } from "../handlers/opencode/index.js";\n`,
+        note: "legacy opencode handler static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import "../handlers/pi/index.js";\n`,
+        note: "legacy pi handler bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `await import("../providers/opencode/index.js");\n`,
+        note: "family opencode dynamic",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import { findPiExecutableOnPath } from "../pi-binary.js";\n`,
+        note: "nested legacy pi-binary",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { acquireOpenCodePrivateConfigLease } from "./opencode-private-config.js";\n`,
+        note: "legacy opencode-private-config export-from",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { runDetect } from "./capabilities/detect.js";\n`,
+        note: "legacy capabilities/detect static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { probeCapabilities } from "../providers/capabilities/index.js";\n`,
+        note: "shared providers/capabilities reverse-load",
+      },
+      {
+        importer: runtimeRootImporter,
         source: `export { createCursorHandler } from "../providers/cursor/index.js";\n`,
         note: "family cursor export-from",
       },
@@ -1936,8 +2048,8 @@ describe("runtime provider architecture guard", () => {
       },
       {
         importer: runtimeRootImporter,
-        source: `import { something } from "./capabilities/index.js";\nvoid something;\n`,
-        note: "runtime-local capabilities",
+        source: `import { something } from "./child-process-registry.js";\nvoid something;\n`,
+        note: "runtime-local child-process-registry",
       },
       {
         importer: runtimeRootImporter,
@@ -1971,8 +2083,23 @@ describe("runtime provider architecture guard", () => {
     expect(isForbiddenConcreteProviderModuleTarget("providers/codex/binary.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("providers/grok/login.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("handlers/opencode/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/opencode/parser.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/pi/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/pi/rpc-client.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/opencode-binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/opencode-private-config.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/pi-binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/opencode.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/pi.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/detect.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/launch-probe.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/opencode/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/pi/binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/capabilities/detect.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/capabilities/index.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/contracts.js")).toBe(false);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/provider-support/index.js")).toBe(false);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/skill-roots.js")).toBe(false);
   });
 });

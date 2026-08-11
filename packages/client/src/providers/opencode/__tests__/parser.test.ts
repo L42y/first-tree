@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OpenCodeStreamParser, parseOpenCodeStreamLine } from "../handlers/opencode/parser.js";
+import { OpenCodeStreamParser, parseOpenCodeStreamLine } from "../parser.js";
 
 describe("OpenCode JSONL parser", () => {
   it("normalizes session, text, tool, usage, and terminal events", () => {

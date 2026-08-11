@@ -7,7 +7,7 @@ import {
   nextCapabilityRefreshDelayMs,
   REPROBE_MAX_AGE_MS,
   shouldFullReprobe,
-} from "../runtime/capabilities/index.js";
+} from "../providers/capabilities/index.js";
 
 /**
  * Reconnect re-probe policy (install-only): detection is cheap (no launch / no
@@ -159,7 +159,7 @@ describe("revalidateCapabilities / reprobeOnReconnect (probe modules mocked)", (
       probeClaudeCodeTuiCapability: mk("claude-code-tui"),
     }));
     vi.doMock("../providers/codex/capability.js", () => ({ probeCodexCapability: mk("codex") }));
-    const mod = await import("../runtime/capabilities/index.js");
+    const mod = await import("../providers/capabilities/index.js");
     return { mod, calls };
   }
 

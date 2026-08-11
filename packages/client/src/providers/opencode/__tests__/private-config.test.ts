@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { acquireOpenCodePrivateConfigLease } from "../runtime/opencode-private-config.js";
+import { acquireOpenCodePrivateConfigLease } from "../private-config.js";
 
 const roots: string[] = [];
 const callerScope = "a".repeat(64);

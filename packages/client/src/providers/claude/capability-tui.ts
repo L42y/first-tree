@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { CapabilityEntry } from "@first-tree/shared";
-import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
 import { type ClaudeExecutableResolution, isExecutableFile, resolveClaudeCodeExecutable } from "./executable.js";
 
 /**

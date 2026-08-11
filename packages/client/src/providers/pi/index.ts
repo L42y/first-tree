@@ -10,6 +10,7 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
+import { formatAuthHint, isPiAuthError } from "../../handlers/auth-error-hint.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -19,12 +20,6 @@ import type {
   SessionMessage,
 } from "../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
-import {
-  isSupportedPiVersion,
-  PI_SUPPORTED_VERSION_RANGE,
-  parsePiVersionOutput,
-  resolvePiRuntimeBinary,
-} from "../../runtime/pi-binary.js";
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
@@ -53,7 +48,12 @@ import {
   withContextTreeRepoHeadCommit,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { formatAuthHint, isPiAuthError } from "../auth-error-hint.js";
+import {
+  isSupportedPiVersion,
+  PI_SUPPORTED_VERSION_RANGE,
+  parsePiVersionOutput,
+  resolvePiRuntimeBinary,
+} from "./binary.js";
 import {
   applyPiChildEnvControls,
   buildPiRpcArgs,

@@ -8,7 +8,7 @@ import {
   isSupportedOpenCodeVersion,
   parseOpenCodeVersionOutput,
   resolveOpenCodeRuntimeBinary,
-} from "../runtime/opencode-binary.js";
+} from "../binary.js";
 
 const roots: string[] = [];
 

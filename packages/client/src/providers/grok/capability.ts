@@ -1,5 +1,5 @@
 import type { CapabilityEntry } from "@first-tree/shared";
-import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
 import { findGrokExecutableOnPath, formatGrokBinaryMissingMessage } from "./binary.js";
 
 /** Injectable seams — production callers pass nothing. */

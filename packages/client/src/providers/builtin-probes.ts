@@ -4,14 +4,14 @@ import {
   RUNTIME_PROVIDER_IDS,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import { probeOpenCodeCapability } from "../runtime/capabilities/opencode.js";
-import { probePiCapability } from "../runtime/capabilities/pi.js";
 import { probeClaudeCodeCapability } from "./claude/capability.js";
 import { probeClaudeCodeTuiCapability } from "./claude/capability-tui.js";
 import { probeCodexCapability } from "./codex/capability.js";
 import { probeCursorCapability } from "./cursor/capability.js";
 import { probeGrokCapability } from "./grok/capability.js";
 import { probeKimiCodeCapability } from "./kimi-code/capability.js";
+import { probeOpenCodeCapability } from "./opencode/capability.js";
+import { probePiCapability } from "./pi/capability.js";
 
 export type CapabilityProbe = () => Promise<CapabilityEntry>;
 

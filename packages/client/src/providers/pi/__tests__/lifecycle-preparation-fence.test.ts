@@ -2,10 +2,10 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createPiHandler } from "../handlers/pi/index.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/contracts.js";
-import { INIT_COMPLETE_SENTINEL_REL } from "../runtime/workspace.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/contracts.js";
+import { INIT_COMPLETE_SENTINEL_REL } from "../../../runtime/workspace.js";
+import { createPiHandler } from "../index.js";
 
 /**
  * Regression: a suspended Pi generation must not cross managed-session
@@ -24,20 +24,22 @@ import { mockCtxPlumbing } from "./test-helpers.js";
  * than rethrowing — assert admission side effects stayed closed.
  */
 
-vi.mock("../runtime/managed-skills.js", async () => {
-  const actual = await vi.importActual<typeof import("../runtime/managed-skills.js")>("../runtime/managed-skills.js");
+vi.mock("../../../runtime/managed-skills.js", async () => {
+  const actual = await vi.importActual<typeof import("../../../runtime/managed-skills.js")>(
+    "../../../runtime/managed-skills.js",
+  );
   return {
     ...actual,
     reconcileManagedSkillsForConfig: vi.fn(),
   };
 });
 
-vi.mock("../runtime/agent-bootstrap.js", () => ({
+vi.mock("../../../runtime/agent-bootstrap.js", () => ({
   ensureAgentBootstrap: vi.fn(),
 }));
 
-import { ensureAgentBootstrap } from "../runtime/agent-bootstrap.js";
-import { reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
+import { ensureAgentBootstrap } from "../../../runtime/agent-bootstrap.js";
+import { reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
 
 describe("Pi lifecycle fence during managed-session preparation", () => {
   let workspaceRoot: string;

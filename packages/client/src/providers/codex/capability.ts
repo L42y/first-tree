@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CapabilityEntry, CapabilityRuntimeSource } from "@first-tree/shared";
-import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
-import { verifyLaunchable } from "../../runtime/capabilities/launch-probe.js";
+import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
+import { verifyLaunchable } from "../capabilities/launch-probe.js";
 import {
   type CodexExecutableVerification,
   findCodexExecutableOnPath,

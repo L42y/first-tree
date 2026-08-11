@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type CapabilityEntry, runtimeProviderInstallCommand, runtimeProviderLoginCommand } from "@first-tree/shared";
-import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
 import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./executable.js";
 
 /**

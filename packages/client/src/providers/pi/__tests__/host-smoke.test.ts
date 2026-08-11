@@ -4,12 +4,12 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyPiChildEnvControls, createPiHandler, freshStartPiSessionId } from "../handlers/pi/index.js";
-import { buildPiRpcArgs, PiRpcClient } from "../handlers/pi/rpc-client.js";
-import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
+import { applyPiChildEnvControls, createPiHandler, freshStartPiSessionId } from "../index.js";
+import { buildPiRpcArgs, PiRpcClient } from "../rpc-client.js";
 
 const runHostSmoke = process.env.FT_PI_HOST_SMOKE === "1";
 
