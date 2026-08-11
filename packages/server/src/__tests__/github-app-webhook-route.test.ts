@@ -1926,6 +1926,63 @@ describe("POST /webhooks/github-app", () => {
     ).toBe(true);
   });
 
+  it("still creates a Context Reviewer provider task on issues.opened in the bound Context Tree repo", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100051;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    await configureTeamAgent(app, admin);
+    const reviewer = await configureContextReviewer(app, admin);
+
+    const response = await postWebhook(app, "issues", {
+      action: "opened",
+      issue: {
+        number: 77,
+        title: "Context Tree Issue stays automatic",
+        html_url: "https://github.com/owner/context-tree/issues/77",
+        body: "Please review",
+        assignees: [],
+        author_association: "NONE",
+      },
+      repository: { full_name: "owner/context-tree" },
+      sender: { login: "external-contributor", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, delivered: 1, newChats: 1, failed: 0 });
+    const [mapping] = await app.db.select().from(githubEntityChatMappings).limit(1);
+    expect(mapping).toMatchObject({
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: reviewer,
+      entityType: "issue",
+      entityKey: "owner/context-tree#77",
+    });
+    const [message] = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""))
+      .limit(1);
+    expect(message?.content).toMatchObject({
+      type: "github_event",
+      reason: "subscribed",
+      kind: "opened",
+      teamAgentTask: { agentUuid: reviewer, runId: expect.any(String) },
+    });
+    expect(message?.metadata).toMatchObject({
+      mentions: [reviewer],
+      teamAgentTask: { agentUuid: reviewer, runId: expect.any(String) },
+      githubTaskRun: true,
+      githubTaskAgentUuid: reviewer,
+    });
+    const [entry] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${reviewer}`)))
+      .limit(1);
+    expect(entry?.notify).toBe(true);
+  });
+
   it("returns a stable permission blocker and creates no task run after an installation permission downgrade", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);

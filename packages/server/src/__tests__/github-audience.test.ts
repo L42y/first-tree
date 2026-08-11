@@ -373,7 +373,16 @@ describe("isGithubProviderTaskEventEligible", () => {
       provenance: "identity_target",
     },
   };
-  const taskAgent = { uuid: "task-agent", managerHumanAgentId: "manager" };
+  const taskAgent = {
+    uuid: "task-agent",
+    managerHumanAgentId: "manager",
+    role: "github_task_agent" as const,
+  };
+  const contextReviewer = {
+    uuid: "reviewer",
+    managerHumanAgentId: "manager",
+    role: "context_reviewer" as const,
+  };
 
   it("keeps every pull_request semantic event eligible", () => {
     expect(
@@ -391,7 +400,7 @@ describe("isGithubProviderTaskEventEligible", () => {
     ).toBe(true);
   });
 
-  it("requires an exact owner line or issue_comment.created for issues", () => {
+  it("requires an exact owner line or issue_comment.created for ordinary Task Agent issues", () => {
     const opened = makeEvent({
       orgId: "org",
       entityType: "issue",
@@ -411,6 +420,17 @@ describe("isGithubProviderTaskEventEligible", () => {
     expect(isGithubProviderTaskEventEligible(opened, [], taskAgent)).toBe(false);
     expect(isGithubProviderTaskEventEligible(opened, [ownerLine], taskAgent)).toBe(true);
     expect(isGithubProviderTaskEventEligible(commented, [], taskAgent)).toBe(true);
+  });
+
+  it("keeps every supported Issue semantic event eligible for Context Reviewer", () => {
+    const opened = makeEvent({
+      orgId: "org",
+      entityType: "issue",
+      entityKey: "owner/context-tree#1",
+      actorLogin: "alice",
+      kind: "opened",
+    });
+    expect(isGithubProviderTaskEventEligible(opened, [], contextReviewer)).toBe(true);
   });
 });
 
@@ -1024,6 +1044,50 @@ describe("resolveAudience", () => {
         }),
       ],
     });
+  });
+
+  it("still routes bound Context Tree issues.opened to Context Reviewer while ordinary issues.opened waits for first comment", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+    const reviewerUuid = await configureContextReviewer(app, admin);
+    await putOrgSetting(
+      app.db,
+      admin.organizationId,
+      "context_tree",
+      {
+        provider: "github",
+        repo: "git@github.com:Owner/Context-Tree.git",
+        branch: "main",
+      },
+      { updatedBy: admin.userId },
+    );
+
+    const resolveOpened = async (projectKey: string) => {
+      const resolution = await resolveAudienceResolution(
+        app.db,
+        makeEvent({
+          orgId: admin.organizationId,
+          entityType: "issue",
+          entityKey: `${projectKey}#77`,
+          projectKey,
+          actorLogin: "external",
+          targets: [],
+          kind: "opened",
+        }),
+        { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+      );
+      return projectAudienceTargets(resolution.targets);
+    };
+
+    await expect(resolveOpened("OWNER/CONTEXT-TREE")).resolves.toEqual([
+      expect.objectContaining({
+        delegateAgentId: reviewerUuid,
+        teamAgentTask: { agentUuid: reviewerUuid },
+      }),
+    ]);
+    await expect(resolveOpened("owner/code")).resolves.toEqual([]);
+    expect(teamAgentUuid).not.toBe(reviewerUuid);
   });
 
   it("does not treat a GitLab Context Tree binding as a GitHub context repo", async () => {
