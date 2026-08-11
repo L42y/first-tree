@@ -6,9 +6,8 @@ import {
   type ContextIntegrationProvider,
   parseStrictTeamSkillMarkdown,
 } from "@first-tree/shared";
-import { quotePosixShellArg } from "../posix-shell.js";
+import { renderCliInvocation } from "../posix-shell.js";
 import { resolveCliInvocation } from "../supervisor/shared.js";
-import type { ResolvedBinary } from "../supervisor/types.js";
 import { buildByoContextAdditionalContext } from "./activation.js";
 
 const PERSISTENT_SKILL_NAMES = ["first-tree", "first-tree-read", "first-tree-write"] as const;
@@ -105,12 +104,6 @@ export function buildCurrentSessionHandoff(
     activationContext: buildByoContextAdditionalContext(),
     skills,
   };
-}
-
-function renderCliInvocation(invocation: ResolvedBinary): string {
-  return invocation.kind === "bin"
-    ? quotePosixShellArg(invocation.program)
-    : [invocation.program, ...(invocation.args ?? [])].map(quotePosixShellArg).join(" ");
 }
 
 function requireSessionCandidateReceipt(value: string | undefined): string {

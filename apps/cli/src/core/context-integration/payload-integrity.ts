@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { ContextIntegrationProvider } from "@first-tree/shared";
-import { quotePosixShellArg } from "../posix-shell.js";
+import { renderCliInvocation } from "../posix-shell.js";
 import { resolveCliInvocation } from "../supervisor/shared.js";
 import type { ResolvedBinary } from "../supervisor/types.js";
 import type { ProviderPluginProbe } from "./provider-driver.js";
@@ -189,12 +189,6 @@ function materializedFile(name: string, content: Buffer, adapterDigest: string, 
     return Buffer.from(rendered);
   }
   return content;
-}
-
-function renderCliInvocation(invocation: ResolvedBinary): string {
-  return invocation.kind === "bin"
-    ? quotePosixShellArg(invocation.program)
-    : [invocation.program, ...(invocation.args ?? [])].map(quotePosixShellArg).join(" ");
 }
 
 function normalizedFiles(root: string): string[] {

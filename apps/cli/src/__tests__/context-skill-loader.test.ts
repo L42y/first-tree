@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -42,10 +42,11 @@ describe("Context Skill loader", () => {
         provider: "claude-code",
         name: "first-tree-read",
       },
-      { releaseRoot, coreRoot },
+      loaderOptions(),
     );
 
     expect(loaded.consumerKind).toBe("byo");
+    expect(loaded.firstTreeInvocation).toBe("'/opt/first-tree-staging'");
     expect(loaded.skillPath).toBe(join(coreRoot, "skills", "first-tree-read", "SKILL.md"));
     expect(loaded.policyPath).toBe(join(coreRoot, "dist", "runtime-assets", "context-tree-policy.md"));
     expect(existsSync(join(home, "data", "context-bundles"))).toBe(false);
@@ -61,7 +62,7 @@ describe("Context Skill loader", () => {
         provider: "claude-code",
         name: "first-tree-write",
       },
-      { releaseRoot, coreRoot },
+      loaderOptions(),
     );
     writeFileSync(join(home, "config", "client.yaml"), "client:\n  id: client_11223344\n");
     expect(existsSync(join(home, "state", "context"))).toBe(false);
@@ -78,7 +79,7 @@ describe("Context Skill loader", () => {
           provider: "codex",
           name: "first-tree-read",
         },
-        { releaseRoot, coreRoot },
+        loaderOptions(),
       ),
     ).toThrow("digest mismatch");
 
@@ -106,11 +107,41 @@ describe("Context Skill loader", () => {
           provider: "codex",
           name: "first-tree-read",
         },
-        { releaseRoot: mutableRelease, coreRoot: mutableCore },
+        {
+          releaseRoot: mutableRelease,
+          coreRoot: mutableCore,
+          resolveInvocation: () => ({ kind: "bin", program: "/opt/first-tree-staging" }),
+        },
       ),
     ).toThrow("mutable CLI installation");
   });
+
+  it("carries the exact channel invocation into the canonical BYO workflow", () => {
+    const loaded = loadContextSkill(
+      {
+        schemaVersion: 1,
+        loaderProtocolVersion: 1,
+        consumerKind: "byo",
+        provider: "codex",
+        name: "first-tree-read",
+      },
+      loaderOptions(),
+    );
+    const skill = readFileSync(loaded.skillPath, "utf8");
+
+    expect(loaded.firstTreeInvocation).toBe("'/opt/first-tree-staging'");
+    expect(skill).toContain("<firstTreeInvocation> --json context route");
+    expect(skill).not.toMatch(/\nfirst-tree --json context route\b/u);
+  });
 });
+
+function loaderOptions() {
+  return {
+    releaseRoot,
+    coreRoot,
+    resolveInvocation: () => ({ kind: "bin" as const, program: "/opt/first-tree-staging" }),
+  };
+}
 
 function prepareCoreRoot(target: string): void {
   const repoRoot = resolve(import.meta.dirname, "../../../..");

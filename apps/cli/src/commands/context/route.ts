@@ -3,7 +3,11 @@ import {
   assertContextMutationCanStart,
   withAccountStateMutationLockAsync,
 } from "../../core/context-integration/account-state-guard.js";
-import { ContextPluginReloadRequiredError } from "../../core/context-integration/adapter-observation.js";
+import {
+  ContextPluginChannelMismatchError,
+  ContextPluginNotInstalledForChannelError,
+  ContextPluginReloadRequiredError,
+} from "../../core/context-integration/adapter-observation.js";
 import { inspectContextClientPreflight } from "../../core/context-integration/client-preflight.js";
 import { resolveContextRoute } from "../../core/context-integration/context-route.js";
 import { print } from "../../core/output.js";
@@ -61,6 +65,16 @@ export async function runContextRoute(context: CommandContext): Promise<void> {
     });
     print.result(result);
   } catch (error) {
+    if (
+      error instanceof ContextPluginNotInstalledForChannelError ||
+      error instanceof ContextPluginChannelMismatchError
+    ) {
+      print.fail(error.code, error.message, 2, {
+        nextActions: [
+          "Retry with the exact First Tree CLI invocation from the current verified Context loader or session handoff.",
+        ],
+      });
+    }
     if (error instanceof ContextPluginReloadRequiredError) {
       print.fail(error.code, error.message, 2, {
         nextActions:

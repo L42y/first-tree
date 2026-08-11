@@ -28,11 +28,18 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps BYO Write bound to the SCOPE route and a new user confirmation", () => {
     expect(skill).toContain("exact snapshot and opaque route selection created by\n  `first-tree-read`");
-    expect(skill).toContain("first-tree --json context write-preflight");
+    expect(skill).toContain("<firstTreeInvocation> --json context write-preflight");
+    expect(skill).toContain("`firstTreeInvocation` from this Skill's\n  latest verified Core loader response");
+    expect(skill).toContain("<firstTreeInvocation> tree verify --tree-path <tree>");
+    expect(skill).toContain("<firstTreeInvocation> gitlab follow <mr-url>");
+    for (const command of ["write-preflight", "write-worktree", "write-status", "write-finish"]) {
+      expect(skill).toContain(`<firstTreeInvocation> context ${command}`);
+    }
+    expect(skill).not.toMatch(/(?:^|[` ])first-tree\s+(?:tree|context|gitlab)\b/mu);
     expect(skill).toContain('--snapshot "<exact-snapshot>" --github-login "<gh-login>"');
     expect(skill).toContain("For GitLab, do not pass a GitHub login");
     expect(skill).toContain("exact-host\nGitLab `glab` authentication");
-    expect(skill).toContain("Never accept or re-select a Team during\n  Write");
+    expect(skill).toContain("Never accept or re-select a Team during Write");
     expect(skill).toContain("Plan and ask in every BYO write");
     expect(skill).toContain("Before creating an authoring worktree");
     expect(skill).toContain("wait for a **new user reply** confirming that exact\n   plan");
@@ -50,7 +57,7 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toMatch(/detect the Context Tree forge from its own `origin`/u);
     expect(skill).toContain("never infer it\nfrom the source");
     expect(skill).toMatch(/Audit-originated artifacts stay draft/u);
-    expect(skill).toContain("first-tree gitlab follow <mr-url>");
+    expect(skill).toContain("<firstTreeInvocation> gitlab follow <mr-url>");
     expect(skill).toContain("creating, resolving or\n   reusing any GitLab MR");
     expect(skill).toContain("returned pending or active state is success");
     expect(skill).toContain("failure does not invalidate the\n   MR");
@@ -58,7 +65,7 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.1");
+    expect(version).toBe("0.16.2");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

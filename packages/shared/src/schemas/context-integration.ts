@@ -302,6 +302,7 @@ export const contextSkillLoadResponseSchema = z
     provider: contextIntegrationProviderSchema,
     releaseVersion: z.string().min(1),
     adapterVersion: z.string().min(1),
+    firstTreeInvocation: z.string().min(1).max(4096),
     name: contextSkillLoaderNameSchema,
     skillPath: z.string().min(1),
     skillDigest: sha256DigestSchema,

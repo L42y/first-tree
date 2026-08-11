@@ -1285,8 +1285,11 @@ the full usable JSON handoff.
 
 Each new task invokes loader protocol v1. The loader verifies the current CLI
 release manifest and exact-version Skill/Policy digests, then returns contained
-`skillPath` and `policyPath` values. It does not return a mutable `current`
-symlink or materialize a second Core workflow under `$FIRST_TREE_HOME`.
+`skillPath` and `policyPath` values plus `firstTreeInvocation`, the opaque exact
+shell prefix for every BYO CLI command in that task. The agent must not replace
+or reconstruct it from PATH, release, channel, or memory. The loader does not
+return a mutable `current` symlink or materialize a second Core workflow under
+`$FIRST_TREE_HOME`.
 
 The loader runs again for every new task, but content already read in full may
 be reused in the current provider context when its exact content identity still
@@ -1320,7 +1323,7 @@ single-Team resolver remains.
 At each new BYO task, the projected Skill calls the hidden route:
 
 ```text
-first-tree --json context route --provider PROVIDER \
+<firstTreeInvocation> --json context route --provider PROVIDER \
   (--project-root DIR|--pathless) [--session-candidate RECEIPT]
 ```
 
@@ -1339,12 +1342,12 @@ unavailable candidate requires a user choice from the validated set.
 After selection, the projected Skill uses:
 
 ```text
-first-tree --json context snapshot --candidate CANDIDATE
-first-tree --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
-first-tree --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed \
+<firstTreeInvocation> --json context snapshot --candidate CANDIDATE
+<firstTreeInvocation> --json context write-preflight --snapshot EXACT_SNAPSHOT [--github-login LOGIN]
+<firstTreeInvocation> --json context write-worktree --snapshot EXACT_SNAPSHOT --plan-anchor DIGEST --confirmed \
   [--github-login LOGIN]
-first-tree --json context write-status --team TEAM --plan-anchor DIGEST
-first-tree --json context write-finish --team TEAM --operation OPERATION
+<firstTreeInvocation> --json context write-status --team TEAM --plan-anchor DIGEST
+<firstTreeInvocation> --json context write-finish --team TEAM --operation OPERATION
 ```
 
 These hidden commands do not accept Team ids. Read revalidates the exact
