@@ -11,7 +11,11 @@ import type { Database } from "../../db/connection.js";
 import { authIdentities } from "../../db/schema/auth-identities.js";
 import { ConflictError, NotFoundError } from "../../errors.js";
 import { requireOrgAdmin, requireOrgMembership } from "../../scope/require-org.js";
-import { STATE_NONCE_COOKIE_NAME, STATE_NONCE_COOKIE_TTL_SECONDS, signOAuthState } from "../../services/oauth-state.js";
+import {
+  STATE_NONCE_COOKIE_NAME,
+  STATE_NONCE_COOKIE_TTL_SECONDS,
+  signOAuthState,
+} from "../../services/auth/oauth/state.js";
 import { buildAppAuthorizeUrl, listInstallationRepos } from "../../services/scm/github/app.js";
 import {
   connectInstallationToOrg,

@@ -6,7 +6,6 @@ import {
   safeRedirectPath,
 } from "@first-tree/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { signTokensForUser } from "../../services/auth.js";
 import {
   findOrCreateUserFromExternalAccount,
   IdentityConflictError,
@@ -14,15 +13,16 @@ import {
   LastIdentityError,
   linkExternalIdentity,
   unlinkExternalIdentity,
-} from "../../services/auth-identity.js";
-import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from "../../services/google-oauth.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/oauth-bootstrap.js";
+} from "../../services/auth/identity.js";
+import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from "../../services/auth/oauth/google.js";
 import {
   STATE_NONCE_COOKIE_NAME,
   STATE_NONCE_COOKIE_TTL_SECONDS,
   signOAuthState,
   verifyOAuthState,
-} from "../../services/oauth-state.js";
+} from "../../services/auth/oauth/state.js";
+import { signTokensForUser } from "../../services/auth/tokens.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 

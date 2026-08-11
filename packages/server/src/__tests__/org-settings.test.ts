@@ -12,7 +12,7 @@ import { organizationSettings } from "../db/schema/organization-settings.js";
 import { organizations } from "../db/schema/organizations.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
-import { signTokensForUser } from "../services/auth.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import * as contextTreeSettingsService from "../services/context-tree/settings.js";
 import { upsertInstallationFromMetadata } from "../services/scm/github/app-installations.js";
 import { createGitlabConnection } from "../services/scm/gitlab/connections.js";

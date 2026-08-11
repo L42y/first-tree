@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { users } from "../db/schema/users.js";
-import { signTokensForUser } from "../services/auth.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 

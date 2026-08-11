@@ -3,8 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { protectOAuthStateNonce } from "../api/auth/oauth-cookie.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
-import { linkExternalIdentity } from "../services/auth-identity.js";
-import { signOAuthState } from "../services/oauth-state.js";
+import { linkExternalIdentity } from "../services/auth/identity.js";
+import { signOAuthState } from "../services/auth/oauth/state.js";
 
 // Hoist mock for `exchangeCodeForAppUserProfile` so the GitHub route
 // resolves to this instead of the real network call. This is the sanctioned

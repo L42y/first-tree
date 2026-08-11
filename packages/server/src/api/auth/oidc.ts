@@ -2,16 +2,22 @@ import { randomBytes } from "node:crypto";
 import type { OidcCallbackQuery } from "@first-tree/shared";
 import { oauthStartQuerySchema, oidcCallbackQuerySchema, safeRedirectPath } from "@first-tree/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { signTokensForUser } from "../../services/auth.js";
-import { findOrCreateUserFromExternalAccount } from "../../services/auth-identity.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/oauth-bootstrap.js";
+import { findOrCreateUserFromExternalAccount } from "../../services/auth/identity.js";
+import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import {
+  exchangeOidcCode,
+  fetchDiscovery,
+  fetchUserInfo,
+  generatePkce,
+  verifyIdToken,
+} from "../../services/auth/oauth/oidc.js";
 import {
   STATE_NONCE_COOKIE_NAME,
   STATE_NONCE_COOKIE_TTL_SECONDS,
   signOAuthState,
   verifyOAuthState,
-} from "../../services/oauth-state.js";
-import { exchangeOidcCode, fetchDiscovery, fetchUserInfo, generatePkce, verifyIdToken } from "../../services/oidc.js";
+} from "../../services/auth/oauth/state.js";
+import { signTokensForUser } from "../../services/auth/tokens.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 

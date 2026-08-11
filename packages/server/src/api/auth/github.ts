@@ -8,7 +8,6 @@ import {
 import { and, eq } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authIdentities } from "../../db/schema/auth-identities.js";
-import { signTokensForUser } from "../../services/auth.js";
 import {
   findOrCreateGithubAccount,
   type GithubProfile,
@@ -19,15 +18,16 @@ import {
   linkExternalIdentity,
   refreshGithubInstallIdentity,
   unlinkExternalIdentity,
-} from "../../services/auth-identity.js";
-import { encryptValue } from "../../services/crypto.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/oauth-bootstrap.js";
+} from "../../services/auth/identity.js";
+import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
 import {
   STATE_NONCE_COOKIE_NAME,
   STATE_NONCE_COOKIE_TTL_SECONDS,
   signOAuthState,
   verifyOAuthState,
-} from "../../services/oauth-state.js";
+} from "../../services/auth/oauth/state.js";
+import { signTokensForUser } from "../../services/auth/tokens.js";
+import { encryptValue } from "../../services/crypto.js";
 import {
   buildAppAuthorizeUrl,
   buildAppInstallUrl,

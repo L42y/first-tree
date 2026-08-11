@@ -1,6 +1,6 @@
 import { connectTokenExchangeSchema, loginSchema, refreshTokenSchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
-import * as authService from "../services/auth.js";
+import * as authService from "../services/auth/tokens.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {

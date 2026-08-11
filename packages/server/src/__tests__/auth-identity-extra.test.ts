@@ -18,7 +18,7 @@ import {
   LastIdentityError,
   linkExternalIdentity,
   unlinkExternalIdentity,
-} from "../services/auth-identity.js";
+} from "../services/auth/identity.js";
 import { encryptValue } from "../services/crypto.js";
 import { uuidv7 } from "../uuid.js";
 import { useTestApp } from "./helpers.js";

@@ -1,5 +1,5 @@
 import { importPKCS8, SignJWT } from "jose";
-import type { GithubProfile } from "../../auth-identity.js";
+import type { GithubProfile } from "../../auth/identity.js";
 import { GITHUB_API_BASE } from "./api-base.js";
 import type { GithubCreatedRepo, GithubRepo } from "./oauth.js";
 
@@ -848,7 +848,7 @@ export async function refreshAppUserToken(
  * with both `code` (OAuth) and `installation_id` (the new install).
  * Returning users skip the install dialog and just receive `code`.
  *
- * `state` is the signed JWT minted by `oauth-state.ts` — same CSRF defense
+ * `state` is the signed JWT minted by `auth/oauth/state.ts` — same CSRF defense
  * as the legacy OAuth flow.
  *
  * Permissions are NOT in the URL — the App declares them once in its
@@ -883,7 +883,7 @@ const APP_INSTALL_URL = (slug: string) => `https://github.com/apps/${encodeURICo
  *     user authorization (OAuth) during installation" enabled, D1) also
  *     `code` + the `state` we threaded through here.
  *
- * `state` is the same signed JWT minted by `oauth-state.ts` — GitHub
+ * `state` is the same signed JWT minted by `auth/oauth/state.ts` — GitHub
  * round-trips it on the post-install redirect, so the callback can verify
  * CSRF + recover `next` + (codex P1-3) the target org to bind to.
  */

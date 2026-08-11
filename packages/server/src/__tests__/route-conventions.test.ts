@@ -20,7 +20,7 @@ const SERVER_SRC = join(__dirname, "..");
 const API_DIR = join(SERVER_SRC, "api");
 const APP_TS = join(SERVER_SRC, "app.ts");
 const TYPES_TS = join(SERVER_SRC, "types.ts");
-const AUTH_SERVICE = join(SERVER_SRC, "services", "auth.ts");
+const AUTH_SERVICE = join(SERVER_SRC, "services", "auth", "tokens.ts");
 
 function walkTs(dir: string): string[] {
   const out: string[] = [];
@@ -109,17 +109,17 @@ describe("route conventions: middleware matches Class", () => {
 });
 
 describe("route conventions: JWT carries only userId", () => {
-  it("services/auth.ts AccessTokenPayload has no scope fields", () => {
+  it("services/auth/tokens.ts AccessTokenPayload has no scope fields", () => {
     const src = readFileSync(AUTH_SERVICE, "utf-8");
     // The JWT signing functions must not stamp organizationId / memberId / role into the payload.
     const banned = ["organizationId:", "memberId:", "role:"];
     for (const field of banned) {
       const occurrences = src.split(field).length - 1;
       // Allow zero matches in the signing module — the only legitimate occurrences are
-      // db column references in select clauses, but auth.ts intentionally only signs sub.
+      // db column references in select clauses, but tokens.ts intentionally only signs sub.
       expect(
         occurrences,
-        `services/auth.ts still references "${field}" — JWT payload must carry only sub/type/iat/exp/jti`,
+        `services/auth/tokens.ts still references "${field}" — JWT payload must carry only sub/type/iat/exp/jti`,
       ).toBe(0);
     }
   });

@@ -2,7 +2,7 @@ import { SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
 import type { Database } from "../db/connection.js";
 import type { AppError } from "../errors.js";
-import { exchangeConnectToken, refreshAccessToken } from "../services/auth.js";
+import { exchangeConnectToken, refreshAccessToken } from "../services/auth/tokens.js";
 
 /**
  * Regression for issue #246. Asserts that `/auth/refresh` and

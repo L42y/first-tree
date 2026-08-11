@@ -51,7 +51,7 @@ const mockedModules = [
   "../scope/require-resource.js",
   "../services/chat/sessions/activity.js",
   "../services/agents/identity.js",
-  "../services/auth.js",
+  "../services/auth/tokens.js",
   "../services/agents/runtime/switch.js",
   "../services/chat/conversation.js",
   "../services/runtime/connection-manager.js",
@@ -84,7 +84,7 @@ function mockRouteDependencies(): void {
   vi.doMock("../services/chat/sessions/activity.js", () => ({
     resetActivity: routeMocks.resetActivity,
   }));
-  vi.doMock("../services/auth.js", () => ({
+  vi.doMock("../services/auth/tokens.js", () => ({
     generateConnectToken: routeMocks.generateConnectToken,
   }));
   vi.doMock("../services/team/default-membership.js", () => ({

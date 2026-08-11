@@ -8,7 +8,7 @@
  * normalizations break a naive `===` comparison against `user.username`:
  *
  *   - `users.username` is forced lowercase
- *     (`packages/server/src/services/auth-identity.ts` —
+ *     (`packages/server/src/services/auth/identity.ts` —
  *     `profile.login.toLowerCase()`). A user with GitHub login
  *     `Gandy2025` ends up with `username = "gandy2025"` but a team
  *     `displayName = "Gandy2025's team"`. Mixed-case GitHub logins are

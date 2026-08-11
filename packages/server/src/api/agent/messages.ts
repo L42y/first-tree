@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireAgent } from "../../middleware/require-identity.js";
 import { requireUser } from "../../scope/require-user.js";
-import { expiryToSeconds, signAgentOutboxToken } from "../../services/auth.js";
+import { expiryToSeconds, signAgentOutboxToken } from "../../services/auth/tokens.js";
 import * as chatService from "../../services/chat/conversation.js";
 import * as messageService from "../../services/chat/message.js";
 import { notifyRecipients } from "../../services/notifier.js";

@@ -171,7 +171,7 @@ describe("GitHub OAuth onboarding flow", () => {
         .from(authIdentities)
         .where(eq(authIdentities.identifier, "45"));
       expect(identity?.metadata).toMatchObject({ login: "patuser" });
-      const { getStoredGithubAccessToken } = await import("../services/auth-identity.js");
+      const { getStoredGithubAccessToken } = await import("../services/auth/identity.js");
       await expect(
         getStoredGithubAccessToken(app.db, identity?.userId ?? "", app.config.secrets.encryptionKey),
       ).resolves.toBe("ghp_devpat123");
@@ -515,7 +515,7 @@ describe("GitHub account-link return path", () => {
   it("returns a completed capability link to its signed internal destination", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `link-return-${randomUUID().slice(0, 8)}` });
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
@@ -548,7 +548,7 @@ describe("GitHub account-link return path", () => {
       identifier: String(githubId),
       metadata: { accountName: "already-linked" },
     });
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
@@ -578,7 +578,7 @@ describe("GitHub account-link return path", () => {
   it("keeps a canceled account link side-effect free and preserves a retry route", async () => {
     const app = getApp();
     const target = await createTestAdmin(app, { username: `link-cancel-${randomUUID().slice(0, 8)}` });
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
       intent: "link",
       provider: "github",
@@ -633,7 +633,7 @@ describe("OAuth callback rejects malformed state", () => {
   it("redirects to the SPA error surface when state cookie is absent", async () => {
     const app = getApp();
     // Sign a real state token but omit the cookie — should fail nonce check.
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token } = await signOAuthState(app.config.secrets.jwtSecret, "/welcome");
     const res = await app.inject({
       method: "GET",
@@ -644,7 +644,7 @@ describe("OAuth callback rejects malformed state", () => {
 
   it("redirects to the SPA error surface when cookie nonce mismatches", async () => {
     const app = getApp();
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token } = await signOAuthState(app.config.secrets.jwtSecret, "/welcome");
     const res = await app.inject({
       method: "GET",
@@ -656,7 +656,7 @@ describe("OAuth callback rejects malformed state", () => {
 
   it("redirects to the SPA error surface when GitHub code exchange fails", async () => {
     const app = getApp();
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/onboarding/connected");
     const restore = stubGithubAppOauth({ tokenStatus: 500 });
     try {
@@ -679,7 +679,7 @@ describe("OAuth callback rejects malformed state", () => {
 
   it("closes a denied GitHub sign-in with a fixed failure reason", async () => {
     const app = getApp();
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/welcome", {
       intent: "sign-in",
       provider: "github",
@@ -700,7 +700,7 @@ describe("OAuth callback rejects malformed state", () => {
 
   it("carries committed account creation through bootstrap failure and reuses it on retry", async () => {
     const app = getApp();
-    const { signOAuthState } = await import("../services/oauth-state.js");
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
     const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/invite/missing-token", {
       intent: "sign-in",
       provider: "github",
