@@ -1,5 +1,5 @@
 import {
-  GITHUB_APP_REQUIRED_PERMISSIONS,
+  GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS,
   githubPermissionSatisfies,
   ORG_SETTINGS_NAMESPACES,
   type OrgGithubFeaturesOutput,
@@ -78,7 +78,7 @@ function taskReplyInstallationBlocker(installation: InstallationRow | null): Set
   if (installation.suspendedAt) return blocker("github_app_suspended", "manage_github_installation");
   // Same requirement set the Settings → GitHub readout renders, so an admin is
   // never shown a healthy connection while this gate refuses the assignment.
-  const unsatisfied = Object.entries(GITHUB_APP_REQUIRED_PERMISSIONS).some(
+  const unsatisfied = Object.entries(GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS).some(
     ([permission, level]) => !githubPermissionSatisfies(installation.permissions[permission], level),
   );
   if (unsatisfied) {

@@ -51,17 +51,21 @@ describe("GithubConnectionDetails", () => {
     const { container, root } = await renderDom(<GithubConnectionDetails data={installation()} />);
 
     expect(buttonByText(container, "Connection details")?.getAttribute("aria-expanded")).toBe("false");
-    expect(container.textContent).not.toContain("Required by First Tree");
+    expect(container.textContent).not.toContain("Required for automatic replies");
     expect(container.textContent).not.toContain("131952074");
 
     await act(async () => root.unmount());
   });
 
-  it("answers 'is this installation good enough' before listing raw grants", async () => {
+  it("scopes the requirement list to the capability it actually gates", async () => {
     const { container, root } = await renderDom(<GithubConnectionDetails data={installation()} defaultOpen />);
 
-    // Required set is named in prose and marked satisfied.
-    expect(container.textContent).toContain("Required by First Tree");
+    // `issues: write` / `pull_requests: write` only cover the GitHub Task
+    // Agent's automatic replies. Presenting them as First Tree's blanket
+    // install contract would tell an admin the installation is generally fine
+    // when only this one capability has been checked.
+    expect(container.textContent).toContain("Required for automatic replies");
+    expect(container.textContent).not.toContain("Required by First Tree");
     expect(container.textContent).toContain("Issues");
     expect(container.textContent).toContain("Pull requests");
     // Everything else is secondary, not mixed into the requirement list.
@@ -136,11 +140,31 @@ describe("GithubConnectionDetails", () => {
     await act(async () => root.unmount());
   });
 
+  it("does not call handled lifecycle traffic unused", async () => {
+    // `installation` / `installation_repositories` never reach `buildRule`:
+    // the webhook route hands them to `handleInstallationLifecycle` first, and
+    // they are what keeps this very row and its repository coverage current.
+    // A normally configured installation subscribes to both, so filing them
+    // under "unused" reports a healthy install as misconfigured.
+    const data = installation({ events: ["issues", "installation", "installation_repositories", "push"] });
+    const { container, root } = await renderDom(<GithubConnectionDetails data={data} defaultOpen />);
+
+    expect(container.textContent).toContain("Kept in sync from: Installation lifecycle · Repository access changes");
+    expect(container.textContent).toContain("Subscribed but unused: push");
+    expect(container.textContent).not.toContain("Subscribed but unused: installation");
+
+    await act(async () => root.unmount());
+  });
+
   it("renders the installation id and both timestamps the API already returns", async () => {
     const { container, root } = await renderDom(<GithubConnectionDetails data={installation()} defaultOpen />);
 
     expect(container.textContent).toContain("123");
-    expect(container.textContent).toContain("Connected");
+    // "First seen", not "Connected": the row is written by the
+    // `installation.created` webhook while still unbound and survives a
+    // disconnect/rebind, so it never records when this team connected.
+    expect(container.textContent).toContain("First seen");
+    expect(container.textContent).not.toContain("Connected");
     expect(container.textContent).toContain("Last updated");
     expect(container.textContent).toContain(
       new Date("2026-08-03T09:12:00.000Z").toLocaleDateString(undefined, {

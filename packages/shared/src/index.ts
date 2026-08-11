@@ -780,8 +780,8 @@ export {
 export {
   GITHUB_ACCOUNT_TYPES,
   GITHUB_APP_CONNECT_STATUSES,
-  GITHUB_APP_REQUIRED_PERMISSIONS,
   GITHUB_PERMISSION_LEVELS,
+  GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS,
   type GithubAccountType,
   type GithubAppConnectBody,
   type GithubAppConnectPanelInstallation,

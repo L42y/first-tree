@@ -52,20 +52,27 @@ export const githubAppInstallationPermissionsSchema = z.record(z.string(), githu
 export type GithubAppInstallationPermissions = z.infer<typeof githubAppInstallationPermissionsSchema>;
 
 /**
- * The permission levels an installation must grant before First Tree can act
- * as the App on it — `permission name -> minimum level`.
+ * The permission levels an installation must grant before the GitHub Task
+ * Agent can reply automatically on Issues and pull requests —
+ * `permission name -> required level`.
  *
- * This is the one definition of "is this installation good enough". The server
- * gates the GitHub Task Agent on it (`taskReplyInstallationBlocker`) and the
- * Settings → GitHub readout renders it, so an admin is never told the
- * installation is fine while the server refuses to publish (or the reverse).
+ * Scoped to that one capability, not to the installation as a whole. Other
+ * First Tree capabilities gate on their own permissions, events, and
+ * repository coverage (Context Reviewer, the setup-capability probe, …), so
+ * this set answers "can automatic replies work here", never "is this
+ * installation generally usable".
+ *
+ * Within that scope it is the one definition: the server gates the GitHub Task
+ * Agent on it (`taskReplyInstallationBlocker`) and the Settings → GitHub
+ * readout renders it, so an admin is never told replies are fine while the
+ * server refuses to publish (or the reverse).
  *
  * `metadata: read` is deliberately absent: GitHub grants it to every App
  * install and it cannot be withheld, so listing it would only ever render a
  * tautological ✓. The reply publisher still requests it when minting a scoped
  * token — that is a token scope, not a gate.
  */
-export const GITHUB_APP_REQUIRED_PERMISSIONS = {
+export const GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS = {
   issues: "write",
   pull_requests: "write",
 } as const satisfies Record<string, GithubPermissionLevel>;

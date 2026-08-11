@@ -363,7 +363,7 @@ describe("extra preview pages", () => {
     await click(detailsButtons[0] ?? detailsButtons[1] ?? buttonByText(rendered.container, "Connection details"));
     expect(detailsButtons[0]?.getAttribute("aria-expanded")).toBe("true");
     expect(text(rendered.container)).toContain("131952074");
-    expect(text(rendered.container)).toContain("Required by First Tree");
+    expect(text(rendered.container)).toContain("Required for automatic replies");
 
     await cleanupRendered(rendered);
   });

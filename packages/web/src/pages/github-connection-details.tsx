@@ -1,5 +1,5 @@
 import {
-  GITHUB_APP_REQUIRED_PERMISSIONS,
+  GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS,
   type GithubAppInstallationOutput,
   type GithubPermissionLevel,
   githubPermissionSatisfies,
@@ -30,12 +30,12 @@ const PERMISSION_LABELS: Record<string, string> = {
 };
 
 /**
- * Webhook events First Tree actually turns into something — mirrors the
- * `buildRule` switch in the server's `github-normalize.ts`. Everything else an
- * installation subscribes to is delivered and dropped, which is exactly what
- * you want said out loud while working out why an event produced no message.
+ * Webhook events First Tree turns into agent activity — mirrors the `buildRule`
+ * switch in the server's `github-normalize.ts`. These are the ones that can
+ * produce a message, which is what you're checking when an event seems to have
+ * gone nowhere.
  */
-const CONSUMED_EVENT_LABELS: Record<string, string> = {
+const ACTIVITY_EVENT_LABELS: Record<string, string> = {
   commit_comment: "Commit comments",
   discussion: "Discussions",
   discussion_comment: "Discussion comments",
@@ -44,6 +44,21 @@ const CONSUMED_EVENT_LABELS: Record<string, string> = {
   pull_request: "Pull requests",
   pull_request_review: "PR reviews",
   pull_request_review_comment: "PR review comments",
+};
+
+/**
+ * Events the webhook route consumes before it ever reaches `buildRule` — they
+ * create, refresh, suspend/resume and delete the installation record and its
+ * repository coverage (`api/webhooks/github-app.ts`, `handleInstallationLifecycle`).
+ *
+ * Classified apart from both lists on purpose: they produce no agent activity,
+ * so they can't sit under the activity heading, but they are very much handled,
+ * so grouping them with the dropped subscriptions would tell an admin their
+ * normally configured installation is misconfigured.
+ */
+const LIFECYCLE_EVENT_LABELS: Record<string, string> = {
+  installation: "Installation lifecycle",
+  installation_repositories: "Repository access changes",
 };
 
 /** What the team loses while a required permission is missing. */
@@ -81,7 +96,7 @@ function blockedSummary(blocked: RequiredPermission[]): string {
 }
 
 function readRequiredPermissions(permissions: GithubAppInstallationOutput["permissions"]): RequiredPermission[] {
-  return Object.entries(GITHUB_APP_REQUIRED_PERMISSIONS).map(([name, required]) => ({
+  return Object.entries(GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS).map(([name, required]) => ({
     name,
     required,
     granted: permissions[name],
@@ -94,15 +109,18 @@ function readRequiredPermissions(permissions: GithubAppInstallationOutput["permi
  * detail. It used to transcribe GitHub's `permissions` / `events` blobs
  * verbatim, which left the reader to diff them against a requirement they'd
  * have to already know. It now answers the question they opened it with —
- * "is this installation good enough for First Tree?" — before falling back to
- * the raw grants:
+ * "can this installation do the thing I'm waiting on?" — before falling back
+ * to the raw grants:
  *
- *   - **Required by First Tree** — one row per `GITHUB_APP_REQUIRED_PERMISSIONS`
- *     entry (the same set the server's task-reply gate gives out), each marked
- *     ready or blocked.
+ *   - **Required for automatic replies** — one row per
+ *     `GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS` entry (the same set the server's
+ *     task-reply gate reads), each marked ready or blocked. Scoped to that
+ *     capability, not a verdict on the installation: other capabilities gate on
+ *     their own permissions, events, and repository coverage.
  *   - **Also granted** — everything else, secondary.
- *   - **Events** — the subscriptions First Tree consumes, named in prose, with
- *     ignored subscriptions called out instead of silently blended in.
+ *   - **Events** — the subscriptions that produce agent activity, named in
+ *     prose, with lifecycle traffic and genuinely dropped subscriptions each
+ *     called out separately instead of blended together.
  *   - **Installation** — id (copyable), and the two timestamps the API already
  *     returns, which are the first thing you want when reconstructing "when
  *     did this change".
@@ -136,8 +154,11 @@ export function GithubConnectionDetails({
   const alsoGranted = Object.entries(data.permissions)
     .filter(([name]) => !requiredNames.has(name))
     .sort(([a], [b]) => permissionLabel(a).localeCompare(permissionLabel(b)));
-  const consumed = data.events.filter((event) => event in CONSUMED_EVENT_LABELS);
-  const ignored = data.events.filter((event) => !(event in CONSUMED_EVENT_LABELS));
+  const activity = data.events.filter((event) => event in ACTIVITY_EVENT_LABELS);
+  const lifecycle = data.events.filter((event) => event in LIFECYCLE_EVENT_LABELS);
+  const ignored = data.events.filter(
+    (event) => !(event in ACTIVITY_EVENT_LABELS) && !(event in LIFECYCLE_EVENT_LABELS),
+  );
 
   return (
     <div style={{ borderTop: "var(--hairline) solid var(--border)", paddingTop: "var(--sp-3)" }}>
@@ -183,7 +204,7 @@ export function GithubConnectionDetails({
             paddingLeft: "var(--sp-5)",
           }}
         >
-          <DetailBlock label="Required by First Tree">
+          <DetailBlock label="Required for automatic replies">
             <div className="flex flex-col" style={{ gap: "var(--sp-1_5)" }}>
               {required.map((permission) => (
                 <RequiredPermissionRow
@@ -211,10 +232,17 @@ export function GithubConnectionDetails({
 
           <DetailBlock label="Events First Tree listens for">
             <p className="text-label m-0" style={{ color: "var(--fg-2)" }}>
-              {consumed.length > 0
-                ? consumed.map((event) => CONSUMED_EVENT_LABELS[event]).join(" · ")
+              {activity.length > 0
+                ? activity.map((event) => ACTIVITY_EVENT_LABELS[event]).join(" · ")
                 : "None of this installation's subscriptions produce First Tree activity."}
             </p>
+            {lifecycle.length > 0 && (
+              // Handled, just not by the activity path — say so, or a normally
+              // configured installation reads as carrying dead subscriptions.
+              <p className="text-caption m-0" style={{ marginTop: "var(--sp-1)", color: "var(--fg-3)" }}>
+                Kept in sync from: {lifecycle.map((event) => LIFECYCLE_EVENT_LABELS[event]).join(" · ")}
+              </p>
+            )}
             {ignored.length > 0 && (
               // Named rather than hidden: "you subscribed to it, we drop it" is
               // the answer when someone is hunting a webhook that changed nothing.
@@ -232,7 +260,13 @@ export function GithubConnectionDetails({
                   <CopyInstallationId installationId={data.installationId} />
                 </span>
               </DetailField>
-              <DetailField term="Connected">{formatDate(data.createdAt)}</DetailField>
+              {/* "First seen", not "Connected": this is when First Tree first
+                  stored the installation. The row is created by the
+                  `installation.created` webhook while still unbound, and it
+                  survives a disconnect/rebind — so it is not the moment this
+                  team connected. Labelling it that way would put a wrong date
+                  into exactly the timeline this block exists to reconstruct. */}
+              <DetailField term="First seen">{formatDate(data.createdAt)}</DetailField>
               <DetailField term="Last updated">{formatDate(data.updatedAt)}</DetailField>
             </dl>
           </DetailBlock>

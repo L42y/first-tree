@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { GITHUB_APP_REQUIRED_PERMISSIONS, githubPermissionSatisfies } from "../schemas/github-app.js";
+import { GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS, githubPermissionSatisfies } from "../schemas/github-app.js";
 
-describe("GITHUB_APP_REQUIRED_PERMISSIONS", () => {
+describe("GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS", () => {
   it("is the set the task-reply gate enforces", () => {
     // Both the server's `taskReplyInstallationBlocker` and the Settings →
     // GitHub readout derive from this. Changing it changes what an admin is
     // told AND what the server will publish, so it is pinned here.
-    expect(GITHUB_APP_REQUIRED_PERMISSIONS).toEqual({ issues: "write", pull_requests: "write" });
+    expect(GITHUB_TASK_REPLY_REQUIRED_PERMISSIONS).toEqual({ issues: "write", pull_requests: "write" });
   });
 });
 

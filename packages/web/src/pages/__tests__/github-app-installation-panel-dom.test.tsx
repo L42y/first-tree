@@ -197,7 +197,7 @@ describe("GithubAppInstallationPanel", () => {
     await click(detailsToggle);
 
     expect(detailsToggle?.getAttribute("aria-expanded")).toBe("true");
-    expect(container.textContent).toContain("Required by First Tree");
+    expect(container.textContent).toContain("Required for automatic replies");
     expect(container.textContent).toContain("Also granted");
     expect(container.textContent).toContain("Contents");
     expect(container.textContent).toContain("Issues");

@@ -44,7 +44,20 @@ const MOCK: GithubAppInstallationOutput = {
     pull_requests: "write",
     administration: "write",
   },
-  events: ["issues", "issue_comment", "member", "pull_request", "pull_request_review", "push"],
+  // `installation` / `installation_repositories` are in here because a real
+  // App subscribes to them — they are the traffic that keeps this installation
+  // row and its repository coverage current. The gallery has to show them so
+  // the three event classes (activity / lifecycle / dropped) can be reviewed.
+  events: [
+    "installation",
+    "installation_repositories",
+    "issues",
+    "issue_comment",
+    "member",
+    "pull_request",
+    "pull_request_review",
+    "push",
+  ],
   suspended: false,
   manageUrl: "https://github.com/organizations/agent-team-foundation/settings/installations/131952074",
   createdAt: "2026-08-03T09:12:00.000Z",
