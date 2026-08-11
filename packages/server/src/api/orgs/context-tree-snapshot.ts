@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createTimingCollector } from "../../observability/timing.js";
 import { requireOrgMembership } from "../../scope/require-org.js";
 import { summarizeContextTreeUsage } from "../../services/chat/sessions/events.js";
+import { snapshotNodePaths, summarizeContextTreeInfluence } from "../../services/context-tree/influence.js";
 import { buildContextTreeIoSummary } from "../../services/context-tree/io.js";
 import {
   getOrgContextReviewRuntime,
@@ -90,8 +91,20 @@ export async function orgContextTreeSnapshotRoutes(app: FastifyInstance): Promis
         { contextTreeBinding: binding, timing: timing.add },
       ),
     );
+    // Influence reads `messages.metadata.contextDecision` in place — see
+    // summarizeContextTreeInfluence for why it has no table of its own.
+    const influence = await timing.time("influence_summary", () =>
+      summarizeContextTreeInfluence(app.db, scope.organizationId, windowDays, {
+        boundRepoUrl: binding?.repo ?? null,
+        boundProvider: binding?.provider ?? null,
+        gitlabInstanceOrigin: reviewRuntime.gitlabConnection?.instanceOrigin ?? null,
+        knownNodePaths: snapshotNodePaths(snapshot.nodes),
+        viewer: { humanAgentId: scope.humanAgentId, memberId: scope.memberId },
+        timing: timing.add,
+      }),
+    );
     const response = timing.timeSync("schema_parse", () =>
-      contextTreeSnapshotSchema.parse({ ...snapshot, recoveryAction, usage, io }),
+      contextTreeSnapshotSchema.parse({ ...snapshot, recoveryAction, usage, io, influence }),
     );
     const totalMs = timing.elapsedMs();
     reply.header("Server-Timing", timing.serverTimingHeader());

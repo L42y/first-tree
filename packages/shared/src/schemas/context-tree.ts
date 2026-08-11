@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { contextDecisionEffectSchema, contextDecisionEvidenceSchema } from "./context-decision.js";
 import { contextTreeProviderSchema, contextTreeRepoSchema } from "./org-settings.js";
 
 export const CONTEXT_TREE_SNAPSHOT_STATUSES = {
@@ -337,6 +338,75 @@ export const contextTreeIoSummarySchema = z.object({
 });
 export type ContextTreeIoSummary = z.infer<typeof contextTreeIoSummarySchema>;
 
+// Context Tree INFLUENCE — how often Tree content changed a decision, as
+// opposed to how often it was opened. Derived by the Server from the visible
+// impact note on an agent's final response, so every number here traces to a
+// sentence a reader can check, at an exact commit.
+//
+// Coverage is deliberately narrower than `io`: the note only reaches the Server
+// when it rides a managed Chat message. A BYO session prints its note in the
+// user's own terminal, so those decisions are not counted — the Context tab
+// must say so rather than let this read as the Tree's total value.
+export const contextTreeInfluenceNodeSchema = z.object({
+  // Tree-root-relative path of a node that EXISTS in this snapshot. The Server
+  // drops any citation whose path it cannot find there, because everything else
+  // in a receipt is asserted by a private message body and never verified: an
+  // agent in a chat the viewer cannot open could otherwise name an arbitrary
+  // path, and this ranking is org-wide.
+  //
+  // For the same reason there is no title, repository, or commit here. The
+  // client already holds all three from the snapshot itself, which every member
+  // may read — so the display name and the source link are built from that
+  // org-visible source rather than from the note.
+  nodePath: z.string(),
+  decisionCount: z.number().int().nonnegative(),
+});
+export type ContextTreeInfluenceNode = z.infer<typeof contextTreeInfluenceNodeSchema>;
+
+export const contextTreeInfluenceEventSchema = z.object({
+  // The message that carried the note.
+  id: z.string(),
+  agentId: z.string(),
+  agentName: z.string(),
+  agentAvatarColorToken: z.string().nullable(),
+  effect: contextDecisionEffectSchema,
+  summary: z.string(),
+  evidence: z.array(contextDecisionEvidenceSchema),
+  // Unlike the io feed, an event the viewer cannot open is OMITTED rather than
+  // shown with the link disabled. `summary` and `evidence` are copied out of a
+  // private message body, and the Context Tree contract keeps chat content
+  // behind the chat-access rule while only the topic label is org-wide — so
+  // there is no partially-redacted row worth rendering. Every event returned
+  // here is one the viewer may open; the aggregate counts above stay org-wide.
+  chatId: z.string(),
+  chatTitle: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type ContextTreeInfluenceEvent = z.infer<typeof contextTreeInfluenceEventSchema>;
+
+export const contextTreeInfluenceSummarySchema = z.object({
+  windowDays: z.number().int().positive(),
+  // Decisions, not citations: one message with three cited nodes counts once.
+  decisionCount: z.number().int().nonnegative(),
+  effects: z.object({
+    conflicted: z.number().int().nonnegative(),
+    redirected: z.number().int().nonnegative(),
+    constrained: z.number().int().nonnegative(),
+    confirmed: z.number().int().nonnegative(),
+  }),
+  // Ranked by how many decisions each node changed — the signal a gardener
+  // needs, and the one a read count cannot give (a node can be opened on every
+  // navigation without ever changing an outcome).
+  nodes: z.array(contextTreeInfluenceNodeSchema),
+  recentEvents: z.array(contextTreeInfluenceEventSchema),
+  // True when the window held more candidate receipts than one pass reads, so
+  // every count above is a floor rather than the answer. Surfaced instead of
+  // silently truncating: a headline people act on must not look complete when
+  // it is not. Optional for rolling Client/Server compatibility.
+  truncated: z.boolean().optional(),
+});
+export type ContextTreeInfluenceSummary = z.infer<typeof contextTreeInfluenceSummarySchema>;
+
 // The one structured recovery cause the Context tab can act on: the snapshot
 // is unavailable specifically because the GitHub App installation can't read
 // the bound repo, and adding the repo to the installation fixes it. The server
@@ -388,6 +458,10 @@ export const contextTreeSnapshotSchema = z.object({
   summary: contextTreeSummarySchema,
   usage: contextTreeUsageSummarySchema,
   io: contextTreeIoSummarySchema,
+  // Optional for rolling Client/Server compatibility — a Web build newer than
+  // its Server must render the tab without the influence block rather than
+  // fail the whole snapshot parse.
+  influence: contextTreeInfluenceSummarySchema.optional(),
   updates: z.array(contextTreeUpdateSchema),
   nodes: z.array(contextTreeNodeSchema),
   edges: z.array(contextTreeEdgeSchema),

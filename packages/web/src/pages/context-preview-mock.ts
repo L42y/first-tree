@@ -49,7 +49,9 @@ const update = (
 });
 
 export const MOCK_CONTEXT_SNAPSHOT: ContextTreeSnapshot = {
-  repo: "agent-team-foundation/first-tree-context",
+  // A real binding is always a full URL (validated by contextTreeRepoSchema);
+  // the preview uses one so source links resolve the way they do in production.
+  repo: "https://github.com/agent-team-foundation/first-tree-context",
   branch: "main",
   headCommit: "83c3939e90b",
   syncedAt: new Date().toISOString(),
@@ -324,6 +326,63 @@ export const MOCK_CONTEXT_SNAPSHOT: ContextTreeSnapshot = {
     node("practices/tm", "practices", "/practices/tm", "Tree Maintenance", "subdomain", "removed"),
     node("practices/cr", "practices", "/practices/cr", "Code Review", "subdomain", null),
   ],
+  influence: {
+    windowDays: 7,
+    // Fewer decisions than reads on purpose: most reads are navigation, and the
+    // preview should not suggest the two numbers track each other.
+    decisionCount: 5,
+    effects: { conflicted: 1, redirected: 1, constrained: 2, confirmed: 1 },
+    nodes: [
+      {
+        nodePath: "members/yzw/notebook.md",
+        decisionCount: 3,
+      },
+      {
+        nodePath: "members/yzw/journal.md",
+        decisionCount: 2,
+      },
+    ],
+    recentEvents: [
+      {
+        id: "influence-1",
+        agentId: "agent-coder",
+        agentName: "gandy-coder",
+        agentAvatarColorToken: "hue-1",
+        effect: "conflicted",
+        summary: "The fixed release date and the pre-release security audit rule cannot both hold.",
+        evidence: [
+          {
+            repoUrl: "https://github.com/acme/first-tree-context",
+            commit: "0123456789abcdef0123456789abcdef01234567",
+            nodePath: "members/yzw/journal.md",
+            heading: "Release safety gates",
+          },
+        ],
+        chatId: "chat-design-spike",
+        chatTitle: "design-spike",
+        createdAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+      },
+      {
+        id: "influence-2",
+        agentId: "agent-reviewer",
+        agentName: "reviewer",
+        agentAvatarColorToken: "hue-4",
+        effect: "constrained",
+        summary: "The organization-isolation rule ruled out a global shared index.",
+        evidence: [
+          {
+            repoUrl: "https://github.com/acme/first-tree-context",
+            commit: "0123456789abcdef0123456789abcdef01234567",
+            nodePath: "members/yzw/notebook.md",
+            heading: "Organization isolation",
+          },
+        ],
+        chatId: "chat-resource-layer",
+        chatTitle: "resource-layer",
+        createdAt: new Date(Date.now() - 26 * 60_000).toISOString(),
+      },
+    ],
+  },
   edges: [],
   changes: [],
   updates: [
