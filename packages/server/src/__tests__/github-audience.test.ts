@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { NormalizedScmEvent } from "@first-tree/shared";
+import type { NormalizedScmEvent, ScmAudienceEntry } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
@@ -10,6 +10,9 @@ import { putContextReviewerAssignment } from "../services/context-tree/reviewer/
 import { isGithubAppTargetLogin } from "../services/scm/github/app-self-output.js";
 import {
   type GithubProviderTaskContext,
+  hasExactGithubProviderTaskOwnerLine,
+  isGithubIssueProviderTaskActivationEvent,
+  isGithubProviderTaskEventEligible,
   resolveGithubAudience as resolveAudienceResolution,
   resolveGithubActorHumanId,
 } from "../services/scm/github/audience.js";
@@ -295,13 +298,129 @@ describe("isGithubAppTargetLogin", () => {
   });
 });
 
+describe("isGithubIssueProviderTaskActivationEvent", () => {
+  it("accepts only a real Issue issue_comment.created", () => {
+    expect(
+      isGithubIssueProviderTaskActivationEvent(
+        makeEvent({
+          orgId: "org",
+          entityType: "issue",
+          entityKey: "owner/repo#1",
+          actorLogin: "alice",
+          eventType: "issue_comment",
+          action: "created",
+          kind: "commented",
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["issues.opened", { eventType: "issues", action: "opened", kind: "opened" as const }],
+    ["issue_comment.edited", { eventType: "issue_comment", action: "edited", kind: "commented" as const }],
+    [
+      "PR-shaped issue_comment.created",
+      {
+        entityType: "pull_request" as const,
+        eventType: "issue_comment",
+        action: "created",
+        kind: "commented" as const,
+      },
+    ],
+  ])("rejects %s", (_label, override) => {
+    expect(
+      isGithubIssueProviderTaskActivationEvent(
+        makeEvent({
+          orgId: "org",
+          entityType: "issue",
+          entityKey: "owner/repo#1",
+          actorLogin: "alice",
+          ...override,
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("hasExactGithubProviderTaskOwnerLine", () => {
+  it("requires the exact manager-human + task-agent pair", () => {
+    const entries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>> = [
+      {
+        kind: "existing_line",
+        line: {
+          kind: "attention_line",
+          humanAgentId: "manager",
+          wakeAgentId: "task-agent",
+          chatId: "chat-1",
+          provenance: "identity_target",
+        },
+      },
+    ];
+    expect(hasExactGithubProviderTaskOwnerLine(entries, "manager", "task-agent")).toBe(true);
+    expect(hasExactGithubProviderTaskOwnerLine(entries, "manager", "other-agent")).toBe(false);
+    expect(hasExactGithubProviderTaskOwnerLine(entries, "other-human", "task-agent")).toBe(false);
+  });
+});
+
+describe("isGithubProviderTaskEventEligible", () => {
+  const ownerLine: Extract<ScmAudienceEntry, { kind: "existing_line" }> = {
+    kind: "existing_line",
+    line: {
+      kind: "attention_line",
+      humanAgentId: "manager",
+      wakeAgentId: "task-agent",
+      chatId: "chat-1",
+      provenance: "identity_target",
+    },
+  };
+  const taskAgent = { uuid: "task-agent", managerHumanAgentId: "manager" };
+
+  it("keeps every pull_request semantic event eligible", () => {
+    expect(
+      isGithubProviderTaskEventEligible(
+        makeEvent({
+          orgId: "org",
+          entityType: "pull_request",
+          entityKey: "owner/repo#2",
+          actorLogin: "alice",
+          kind: "opened",
+        }),
+        [],
+        taskAgent,
+      ),
+    ).toBe(true);
+  });
+
+  it("requires an exact owner line or issue_comment.created for issues", () => {
+    const opened = makeEvent({
+      orgId: "org",
+      entityType: "issue",
+      entityKey: "owner/repo#1",
+      actorLogin: "alice",
+      kind: "opened",
+    });
+    const commented = makeEvent({
+      orgId: "org",
+      entityType: "issue",
+      entityKey: "owner/repo#1",
+      actorLogin: "alice",
+      eventType: "issue_comment",
+      action: "created",
+      kind: "commented",
+    });
+    expect(isGithubProviderTaskEventEligible(opened, [], taskAgent)).toBe(false);
+    expect(isGithubProviderTaskEventEligible(opened, [ownerLine], taskAgent)).toBe(true);
+    expect(isGithubProviderTaskEventEligible(commented, [], taskAgent)).toBe(true);
+  });
+});
+
 describe("resolveAudience", () => {
   const getApp = useTestApp();
 
   it.each([
-    ["issue", "owner/repo#41", { issues: "write" }, "commented"],
-    ["pull_request", "owner/repo#42", { pull_requests: "write" }, "reviewed"],
-  ] as const)("automatically routes a normalized %s event without App mention or assignment evidence", async (entityType, entityKey, appPermissions, kind) => {
+    ["issue", "owner/repo#41", { issues: "write" }, "commented", "issue_comment"],
+    ["pull_request", "owner/repo#42", { pull_requests: "write" }, "reviewed", "pull_request_review"],
+  ] as const)("automatically routes a normalized %s event without App mention or assignment evidence", async (entityType, entityKey, appPermissions, kind, eventType) => {
     const app = getApp();
     const admin = await createTestAdmin(app);
     const teamAgentUuid = await configureTeamAgent(app, admin);
@@ -316,6 +435,8 @@ describe("resolveAudience", () => {
         actorAuthorAssociation: "CONTRIBUTOR",
         targets: [],
         kind,
+        eventType,
+        action: kind === "commented" ? "created" : "submitted",
       }),
       { appSlug: "test-app-slug", appPermissions },
     );
@@ -334,6 +455,211 @@ describe("resolveAudience", () => {
     expect(resolution.appTaskBlocker).toBeNull();
   });
 
+  it.each([
+    ["opened", "issues", "opened"],
+    ["assigned", "issues", "assigned"],
+    ["edited", "issues", "edited"],
+    ["closed", "issues", "closed"],
+  ] as const)("does not mint a provider task for a fresh issue %s event", async (kind, eventType, action) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#delay-1",
+        actorLogin: "external-contributor",
+        targets: [],
+        kind,
+        eventType,
+        action,
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
+    expect(resolution.appTaskBlocker).toBeNull();
+  });
+
+  it("still creates an assignee personnel target on issue opened without a provider task", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+    const delegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `assignee-dlg-${randomUUID().slice(0, 6)}`,
+    });
+    const humanName = `assignee-${randomUUID().slice(0, 6)}`;
+    const human = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: humanName,
+      delegateMention: delegate,
+      type: "human",
+    });
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#delay-assignee",
+        actorLogin: "external",
+        targets: [{ externalUsername: humanName, reason: "assigned" }],
+        kind: "opened",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual([
+      {
+        humanAgentId: human,
+        delegateAgentId: delegate,
+        kind: "new",
+        chatId: null,
+        involveReason: "assigned",
+        involveLogin: humanName.toLowerCase(),
+      },
+    ]);
+    expect(resolution.appTaskBlocker).toBeNull();
+  });
+
+  it("does not treat an assignee-only or same-human different-agent mapping as the owner line", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+    const otherDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `other-dlg-${randomUUID().slice(0, 6)}`,
+    });
+    const chatId = await seedChat(app, admin.organizationId, admin.humanAgentUuid);
+    await seedMapping(app, {
+      orgId: admin.organizationId,
+      humanId: admin.humanAgentUuid,
+      delegateId: otherDelegate,
+      entityType: "issue",
+      entityKey: "owner/repo#not-owner",
+      chatId,
+    });
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#not-owner",
+        actorLogin: "external",
+        kind: "assigned",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual([
+      expect.objectContaining({ kind: "existing", chatId, delegateAgentId: otherDelegate }),
+    ]);
+    expect(projectAudienceTargets(resolution.targets)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ teamAgentTask: { agentUuid: teamAgentUuid } })]),
+    );
+    expect(resolution.appTaskBlocker).toBeNull();
+  });
+
+  it("continues provider-task routing for non-comment issue events once the exact owner line exists", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+    const chatId = await seedChat(app, admin.organizationId, admin.humanAgentUuid);
+    await seedMapping(app, {
+      orgId: admin.organizationId,
+      humanId: admin.humanAgentUuid,
+      delegateId: teamAgentUuid,
+      entityType: "issue",
+      entityKey: "owner/repo#901",
+      chatId,
+    });
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#901",
+        actorLogin: "external",
+        kind: "closed",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "existing",
+          chatId,
+          delegateAgentId: teamAgentUuid,
+        }),
+        expect.objectContaining({
+          kind: "new",
+          delegateAgentId: teamAgentUuid,
+          teamAgentTask: { agentUuid: teamAgentUuid },
+        }),
+      ]),
+    );
+    expect(resolution.appTaskBlocker).toBeNull();
+  });
+
+  it("does not activate an issue owner line from issue_comment.edited", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#edit-comment",
+        actorLogin: "external",
+        eventType: "issue_comment",
+        action: "edited",
+        kind: "commented",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
+    expect(resolution.appTaskBlocker).toBeNull();
+  });
+
+  it("does not treat a PR-shaped issue_comment as Issue first-comment activation", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const teamAgentUuid = await configureTeamAgent(app, admin);
+
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "pull_request",
+        entityKey: "owner/repo#902",
+        actorLogin: "external",
+        eventType: "issue_comment",
+        action: "created",
+        kind: "commented",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { pull_requests: "write" } },
+    );
+
+    expect(projectAudienceTargets(resolution.targets)).toEqual([
+      expect.objectContaining({
+        teamAgentTask: { agentUuid: teamAgentUuid },
+      }),
+    ]);
+  });
+
   it("does not treat the App login as a human target when no GitHub Task Agent is selected", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
@@ -347,6 +673,8 @@ describe("resolveAudience", () => {
         actorLogin: "outsider",
         targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
@@ -369,6 +697,8 @@ describe("resolveAudience", () => {
         actorAuthorAssociation: "CONTRIBUTOR",
         targets: [{ externalUsername: "test-app-slug", reason: "mentioned" }],
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
@@ -400,11 +730,32 @@ describe("resolveAudience", () => {
         actorAuthorAssociation: "NONE",
         targets: [],
         kind: "commented",
+        eventType: entityType === "issue" ? "issue_comment" : "pull_request_review_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: permissions },
     );
     expect(projectAudienceTargets(resolution.targets)).toEqual([]);
     expect(resolution.appTaskBlocker).toBe(blocker);
+  });
+
+  it("does not raise an App task blocker for a non-activating fresh issue event", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await configureTeamAgent(app, admin);
+    const resolution = await resolveAudienceResolution(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "issue",
+        entityKey: "owner/repo#19-opened",
+        actorLogin: "external",
+        kind: "opened",
+      }),
+      { appSlug: "test-app-slug", appPermissions: { issues: "read" } },
+    );
+    expect(projectAudienceTargets(resolution.targets)).toEqual([]);
+    expect(resolution.appTaskBlocker).toBeNull();
   });
 
   it.each([
@@ -424,6 +775,8 @@ describe("resolveAudience", () => {
         entityUrl,
         actorLogin: "external",
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
@@ -486,6 +839,8 @@ describe("resolveAudience", () => {
         entityKey: "owner/repo#20",
         actorLogin: "external",
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: null, appPermissions: { issues: "write" } },
     );
@@ -523,6 +878,8 @@ describe("resolveAudience", () => {
         entityKey: "owner/repo#22",
         actorLogin: "external",
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );
@@ -561,6 +918,8 @@ describe("resolveAudience", () => {
         entityKey: "owner/repo#21",
         actorLogin: "external",
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "read" } },
     );
@@ -600,6 +959,8 @@ describe("resolveAudience", () => {
         actorLogin: "test-app-slug[bot]",
         actorIsBot: true,
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" }, appSelfOutput: true },
     );
@@ -639,6 +1000,8 @@ describe("resolveAudience", () => {
           actorAuthorAssociation: "NONE",
           targets: [],
           kind: "commented",
+          eventType: "issue_comment",
+          action: "created",
         }),
         { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
       );
@@ -690,6 +1053,8 @@ describe("resolveAudience", () => {
         actorLogin: "external",
         targets: [],
         kind: "commented",
+        eventType: "issue_comment",
+        action: "created",
       }),
       { appSlug: "test-app-slug", appPermissions: { issues: "write" } },
     );

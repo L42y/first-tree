@@ -121,6 +121,54 @@ function isGithubTaskEntityType(event: NormalizedScmEvent): boolean {
   return event.entity.type === "issue" || event.entity.type === "pull_request";
 }
 
+/**
+ * First-activation event for an Issue owner (GitHub Task Agent) line.
+ *
+ * Real Issues stay dormant for automatic provider-task routing until a
+ * non-self-output `issue_comment.created` arrives. Pull-request-shaped
+ * `issue_comment` payloads normalize to `entity.type === "pull_request"` and
+ * never match. Comment edits/deletes are not activation events.
+ */
+export function isGithubIssueProviderTaskActivationEvent(event: NormalizedScmEvent): boolean {
+  return event.entity.type === "issue" && event.eventType === "issue_comment" && event.action === "created";
+}
+
+/**
+ * Exact owner-line evidence for the repository task role: the manager-human /
+ * wake-agent pair already follows this entity. Assignee, mention, or
+ * same-human/different-agent rows are not owner evidence.
+ */
+export function hasExactGithubProviderTaskOwnerLine(
+  existingEntries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>>,
+  humanAgentId: string,
+  wakeAgentId: string,
+): boolean {
+  return existingEntries.some(
+    (entry) => entry.line.humanAgentId === humanAgentId && entry.line.wakeAgentId === wakeAgentId,
+  );
+}
+
+/**
+ * Whether this event may mint or continue an automatic provider-task target.
+ *
+ * Pull requests keep the historical "every supported semantic event" rule.
+ * Issues require either an exact Task Agent owner mapping or a qualifying
+ * first comment; non-activating Issue events skip quietly (no App task
+ * blocker) so assignee / mention / follow routes stay independent.
+ */
+export function isGithubProviderTaskEventEligible(
+  event: NormalizedScmEvent,
+  existingEntries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>>,
+  taskAgent: { uuid: string; managerHumanAgentId: string },
+): boolean {
+  if (event.entity.type === "pull_request") return true;
+  if (event.entity.type !== "issue") return false;
+  return (
+    hasExactGithubProviderTaskOwnerLine(existingEntries, taskAgent.managerHumanAgentId, taskAgent.uuid) ||
+    isGithubIssueProviderTaskActivationEvent(event)
+  );
+}
+
 /** The immutable Issue / PR identity the App reply publisher is bound to. */
 function hasGithubTaskEntityIdentity(event: NormalizedScmEvent): boolean {
   const match = /#([1-9]\d*)$/u.exec(event.entity.key);
@@ -343,16 +391,19 @@ export async function resolveGithubAudience(
     }
   }
 
-  // Automatic event routing. Every normalizer-accepted Issue / pull request
-  // event is repository-scoped work for that repository's task role — no
-  // `@app-slug` text, assignee, or `author_association` is consulted, because
-  // an ordinary App bot isn't even selectable in GitHub's mention/assignee
-  // pickers. The three skip conditions below drop only the automatic task and
-  // never touch independent personnel targets or subscriptions.
+  // Automatic event routing. Pull-request semantic events and already-active
+  // Issue owner lines remain repository-scoped work for that repository's
+  // task role. Fresh Issues wait for a qualifying `issue_comment.created`
+  // before minting the GitHub Task Agent / Context Reviewer owner line — no
+  // `@app-slug` text, assignee, or `author_association` is consulted. The
+  // skip conditions below drop only the automatic task and never touch
+  // independent personnel targets or subscriptions. Non-activating Issue
+  // events exit before permission / identity blockers so they do not surface
+  // an App task failure for work that was never eligible.
   const providerTaskTargets: ScmProviderTaskTarget<GithubProviderTaskContext>[] = [];
   if (options.appSlug?.trim() && !options.appSelfOutput && isGithubTaskEntityType(event)) {
     const taskAgent = await resolveGithubAppTaskAgent(db, event);
-    if (taskAgent) {
+    if (taskAgent && isGithubProviderTaskEventEligible(event, existingEntries, taskAgent)) {
       if (!hasGithubTaskEntityIdentity(event)) {
         appTaskBlocker = "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED";
       } else if (!isGithubTaskReplySupported(event.entity.type, options.appPermissions)) {
