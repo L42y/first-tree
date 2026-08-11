@@ -732,13 +732,15 @@ describe("runtime provider architecture guard", () => {
 
     /**
      * Exact approved Pi capability occurrence of the pre-format resolution
-     * phrase. Fail-closed: unique exported async `probePiCapability` must own
-     * exactly one top-level `const detected = await runDetect(<async arrow>)`
-     * whose callback body is the production terminal missing-path sequence —
-     * win32 throw / runtimePath / installed-success / final missing return —
-     * and only that final return's string literal is masked. Any inserted
-     * unconditional completion, reshaped predecessor, extra `detected` /
-     * `runDetect`, or non-terminal exact return yields zero spans.
+     * phrase. Fail-closed: unique exported async `probePiCapability` must open
+     * with the production reachable prefix
+     * (`const env` / `const platform` / `const findOnPath` / `const detected`),
+     * own exactly one `runDetect` via that fourth statement, and have a callback
+     * body that is the production terminal missing-path sequence. Only the
+     * terminal missing-return string literal is masked. Outer or callback
+     * unconditional completion, reshaped/reordered predecessors, non-`const`
+     * declarations, extra `detected` / `runDetect`, or non-terminal exact
+     * returns yield zero spans.
      */
     const approvedPiCapabilityDetail = "no pi binary resolved on this host";
 
@@ -749,6 +751,72 @@ describe("runtime provider architecture guard", () => {
         !!stmt.body &&
         !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) &&
         !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      );
+    }
+
+    function isConstSingleDeclaration(
+      stmt: ts.Statement,
+      name: string,
+    ): stmt is ts.VariableStatement & {
+      declarationList: ts.VariableDeclarationList & { declarations: [ts.VariableDeclaration] };
+    } {
+      if (!ts.isVariableStatement(stmt)) return false;
+      if ((stmt.declarationList.flags & ts.NodeFlags.Const) === 0) return false;
+      if (stmt.declarationList.declarations.length !== 1) return false;
+      const decl = stmt.declarationList.declarations[0];
+      return !!decl && ts.isIdentifier(decl.name) && decl.name.text === name;
+    }
+
+    function isPropertyAccess(expr: ts.Expression, object: string, name: string): boolean {
+      return (
+        ts.isPropertyAccessExpression(expr) &&
+        ts.isIdentifier(expr.expression) &&
+        expr.expression.text === object &&
+        expr.name.text === name
+      );
+    }
+
+    function isNullishCoalesce(
+      expr: ts.Expression | undefined,
+      left: (e: ts.Expression) => boolean,
+      right: (e: ts.Expression) => boolean,
+    ): boolean {
+      return (
+        !!expr &&
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+        left(expr.left) &&
+        right(expr.right)
+      );
+    }
+
+    function isEnvDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "env")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "env"),
+        (e) => isPropertyAccess(e, "process", "env"),
+      );
+    }
+
+    function isPlatformDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "platform")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "platform"),
+        (e) => isPropertyAccess(e, "process", "platform"),
+      );
+    }
+
+    function isFindOnPathDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "findOnPath")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "findOnPath"),
+        (e) => ts.isIdentifier(e) && e.text === "findPiExecutableOnPath",
       );
     }
 
@@ -774,11 +842,9 @@ describe("runtime provider architecture guard", () => {
     }
 
     function isRuntimePathDeclaration(stmt: ts.Statement): boolean {
-      if (!ts.isVariableStatement(stmt)) return false;
-      if (stmt.declarationList.declarations.length !== 1) return false;
+      if (!isConstSingleDeclaration(stmt, "runtimePath")) return false;
       const decl = stmt.declarationList.declarations[0];
-      if (!decl || !ts.isIdentifier(decl.name) || decl.name.text !== "runtimePath") return false;
-      if (!decl.initializer || !ts.isCallExpression(decl.initializer)) return false;
+      if (!decl?.initializer || !ts.isCallExpression(decl.initializer)) return false;
       if (!ts.isIdentifier(decl.initializer.expression) || decl.initializer.expression.text !== "findOnPath") {
         return false;
       }
@@ -870,29 +936,30 @@ describe("runtime provider architecture guard", () => {
       return count;
     }
 
-    function extractUniqueDetectedRunDetectCallback(fn: ts.FunctionDeclaration): ts.ArrowFunction | null {
+    function extractDetectedRunDetectCallbackFromFourthStatement(fn: ts.FunctionDeclaration): ts.ArrowFunction | null {
       if (!fn.body) return null;
       if (countRunDetectCalls(fn.body) !== 1) return null;
 
-      let found: ts.ArrowFunction | null = null;
-      for (const stmt of fn.body.statements) {
-        if (!ts.isVariableStatement(stmt)) continue;
-        for (const decl of stmt.declarationList.declarations) {
-          if (!ts.isIdentifier(decl.name) || decl.name.text !== "detected") continue;
-          if (!decl.initializer || !ts.isAwaitExpression(decl.initializer)) return null;
-          const awaited = decl.initializer.expression;
-          if (!ts.isCallExpression(awaited)) return null;
-          if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") return null;
-          if (awaited.arguments.length !== 1) return null;
-          const callback = awaited.arguments[0];
-          if (!callback || !ts.isArrowFunction(callback) || !callback.body) return null;
-          if ((ts.getCombinedModifierFlags(callback) & ts.ModifierFlags.Async) === 0) return null;
-          if (!ts.isBlock(callback.body)) return null;
-          if (found) return null;
-          found = callback;
-        }
-      }
-      return found;
+      const stmts = fn.body.statements;
+      // Reachable production prefix: detected is exactly the fourth top-level statement.
+      if (stmts.length < 4) return null;
+      if (!isEnvDeclaration(stmts[0]!)) return null;
+      if (!isPlatformDeclaration(stmts[1]!)) return null;
+      if (!isFindOnPathDeclaration(stmts[2]!)) return null;
+      const detectedStmt = stmts[3];
+      if (!detectedStmt || !isConstSingleDeclaration(detectedStmt, "detected")) return null;
+
+      const decl = detectedStmt.declarationList.declarations[0];
+      if (!decl?.initializer || !ts.isAwaitExpression(decl.initializer)) return null;
+      const awaited = decl.initializer.expression;
+      if (!ts.isCallExpression(awaited)) return null;
+      if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") return null;
+      if (awaited.arguments.length !== 1) return null;
+      const callback = awaited.arguments[0];
+      if (!callback || !ts.isArrowFunction(callback) || !callback.body) return null;
+      if ((ts.getCombinedModifierFlags(callback) & ts.ModifierFlags.Async) === 0) return null;
+      if (!ts.isBlock(callback.body)) return null;
+      return callback;
     }
 
     function approvedPiCapabilityNoBinaryDetailSpans(
@@ -911,7 +978,7 @@ describe("runtime provider architecture guard", () => {
       const fn = candidates[0];
       if (!fn?.body) return [];
 
-      const callback = extractUniqueDetectedRunDetectCallback(fn);
+      const callback = extractDetectedRunDetectCallbackFromFourthStatement(fn);
       if (!callback || !ts.isBlock(callback.body)) return [];
 
       const stmts = callback.body.statements;
@@ -1101,6 +1168,11 @@ describe("runtime provider architecture guard", () => {
     ).toBe(true);
 
     // Approved Pi shape — exact production AST skeleton (drives the same approver).
+    const approvedPiOuterPrefix = [
+      "  const env = deps.env ?? process.env;",
+      "  const platform = deps.platform ?? process.platform;",
+      "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+    ].join("\n");
     const approvedPiCallbackBody = [
       '    if (platform === "win32") {',
       '      throw new Error("Pi provider is not supported on Windows in V1");',
@@ -1113,7 +1185,8 @@ describe("runtime provider architecture guard", () => {
       "    };",
     ].join("\n");
     const approvedPiShape = [
-      "export async function probePiCapability() {",
+      "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+      approvedPiOuterPrefix,
       "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
       approvedPiCallbackBody,
       "  });",
@@ -1417,6 +1490,157 @@ describe("runtime provider architecture guard", () => {
         "    };",
         "  });",
         "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // Outer reachability — detected must be the fourth top-level const statement.
+    expectRejectedPiDetailFixture(
+      "QA outer unconditional throw before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        '  throw new Error("QA mutation: make the runDetect owner unreachable");',
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "outer unconditional return before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  return { state: 'error', available: false, detectedAt: '', error: 'x' };",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "harmless extra statement before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  void deps;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "env declaration renamed",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const environment = deps.env ?? process.env;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "platform initializer reshaped",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const env = deps.env ?? process.env;",
+        "  const platform = process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "findOnPath / platform declaration order swapped",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const env = deps.env ?? process.env;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "outer env uses let instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  let env = deps.env ?? process.env;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "detected uses let instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  let detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "callback runtimePath uses var instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    var runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "detected nested inside block instead of fourth top-level statement",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  {",
+        "    const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "    });",
+        "    return detected;",
+        "  }",
         "}",
         "",
       ].join("\n"),
