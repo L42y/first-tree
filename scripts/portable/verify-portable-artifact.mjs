@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -34,6 +34,26 @@ function tarExtractArgs(tarball, dest) {
     return ["--warning=no-unknown-keyword", "-xzf", tarball, "-C", dest];
   }
   return ["-xzf", tarball, "-C", dest];
+}
+
+function shellSingleQuote(value) {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function writeStablePortableShim(path, currentRoot, binDir) {
+  writeFileSync(
+    path,
+    `#!/bin/sh
+set -eu
+root=${shellSingleQuote(currentRoot)}
+bin_dir=${shellSingleQuote(binDir)}
+export FIRST_TREE_INSTALL_MODE=portable
+export FIRST_TREE_PORTABLE_ROOT="$root"
+export FIRST_TREE_PORTABLE_BIN_DIR="$bin_dir"
+exec "$root/node/bin/node" "$root/app/cli/index.mjs" "$@"
+`,
+    { mode: 0o755 },
+  );
 }
 
 function parseArgs(argv) {
@@ -117,8 +137,21 @@ function verify(options) {
     if (!versionRes.stdout.includes(manifest.version)) {
       fail(`expected --version output to include ${manifest.version}, got ${versionRes.stdout}`);
     }
+
+    // The version-local shims above prove the extracted artifact is runnable.
+    // Context loader output must instead preserve the stable invocation that an
+    // installed portable release uses across updates, so emulate the installer's
+    // current symlink and outer channel shims before exercising the loader.
+    const currentRoot = join(root, "current");
+    const binDir = join(root, "bin");
+    symlinkSync(versionRoot, currentRoot, "dir");
+    mkdirSync(binDir, { recursive: true });
+    for (const name of [manifest.binName, manifest.aliasName]) {
+      writeStablePortableShim(join(binDir, name), currentRoot, binDir);
+    }
+    const stableCliPath = join(binDir, manifest.binName);
     const loaderRes = run(
-      join(versionRoot, "bin", manifest.binName),
+      stableCliPath,
       ["--json", "context", "skill", "load", "--protocol", "1", "--provider", "codex", "--name", "first-tree-read"],
       { env: { ...process.env, FIRST_TREE_HOME: join(root, "home") } },
     );
@@ -127,9 +160,10 @@ function verify(options) {
     if (
       loader?.ok !== true ||
       loader.data?.skillPath !== join(appRoot, "skills", "first-tree-read", "SKILL.md") ||
-      loader.data?.policyPath !== join(appRoot, "runtime-assets", "context-tree-policy.md")
+      loader.data?.policyPath !== join(appRoot, "runtime-assets", "context-tree-policy.md") ||
+      loader.data?.firstTreeInvocation !== shellSingleQuote(stableCliPath)
     ) {
-      fail("portable Context loader did not resolve Core files from the immutable installed app root");
+      fail("portable Context loader did not preserve the stable invocation and immutable installed Core paths");
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
