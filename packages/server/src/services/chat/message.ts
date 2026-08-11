@@ -41,9 +41,9 @@ import {
   loadAttachmentMetaForReference,
 } from "../attachment.js";
 import type { AttachmentBlobStore } from "../attachment-blob-store.js";
-import { validateDocumentContext, validateMessageAttachmentRefs } from "../doc-snapshots.js";
 import { hasRemainingLandingCampaignTrialBudget } from "../landing-campaigns/chat-state.js";
 import { getLandingCampaignTrialChat, withLandingCampaignChatState } from "../landing-campaigns/metadata.js";
+import { validateDocumentContext, validateMessageAttachmentRefs } from "./message-attachment-validation.js";
 import { upsertSessionState } from "./sessions/activity.js";
 import { applyAfterFanOut, fireChatMessageKick } from "./workspace/projection.js";
 

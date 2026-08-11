@@ -59,7 +59,7 @@ const mockedModules = [
   "../services/scm/github/entity-follow.js",
   "../services/team/invitation.js",
   "../services/landing-campaigns/guards.js",
-  "../services/me-doc.js",
+  "../services/chat/workspace/document-preview.js",
   "../services/team/membership.js",
   "../services/onboarding-kickoff.js",
   "../services/context-tree/settings.js",
@@ -105,7 +105,7 @@ function mockRouteDependencies(): void {
     assertMetadataDoesNotClaimLandingCampaignTrial: vi.fn(),
     assertMutableAgentIsNotLandingCampaignTrial: routeMocks.assertMutableAgentIsNotLandingCampaignTrial,
   }));
-  vi.doMock("../services/me-doc.js", () => ({
+  vi.doMock("../services/chat/workspace/document-preview.js", () => ({
     getMeDocPreview: routeMocks.getMeDocPreview,
   }));
   vi.doMock("../services/team/membership.js", () => ({

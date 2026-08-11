@@ -942,7 +942,7 @@ describe("service branch defaults", () => {
     ] = await Promise.all([
       import("../services/agents/identity.js"),
       import("../services/chat/conversation.js"),
-      import("../services/document.js"),
+      import("../services/document-review/document.js"),
       import("../services/chat/inbox.js"),
       import("../services/team/member.js"),
       import("../services/team/membership.js"),

@@ -4,8 +4,8 @@ import {
   documentContextSchema,
   MAX_MESSAGE_ATTACHMENT_REFS,
 } from "@first-tree/shared";
-import { BadRequestError } from "../errors.js";
-import { type AttachmentReader, loadAttachmentMetaForReference } from "./attachment.js";
+import { BadRequestError } from "../../errors.js";
+import { type AttachmentReader, loadAttachmentMetaForReference } from "../attachment.js";
 
 /**
  * Server-side shape validation for `metadata.documentContext`.

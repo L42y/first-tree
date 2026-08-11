@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ForbiddenError, NotFoundError } from "../errors.js";
-import { getMeDocPreview } from "../services/me-doc.js";
+import { getMeDocPreview } from "../services/chat/workspace/document-preview.js";
 
 const baseInput = {
   chatId: "chat-1",

@@ -3,7 +3,10 @@ import { MAX_MESSAGE_ATTACHMENT_REFS } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { BadRequestError } from "../errors.js";
 import type { AttachmentReader } from "../services/attachment.js";
-import { validateDocumentContext, validateMessageAttachmentRefs } from "../services/doc-snapshots.js";
+import {
+  validateDocumentContext,
+  validateMessageAttachmentRefs,
+} from "../services/chat/message-attachment-validation.js";
 
 describe("validateDocumentContext", () => {
   it("accepts metadata without documentContext", () => {

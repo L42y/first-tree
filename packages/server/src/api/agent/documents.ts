@@ -13,8 +13,8 @@ import { z } from "zod";
 import type { Database } from "../../db/connection.js";
 import { NotFoundError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
-import { docAuthorForAgentUuid } from "../../services/doc-author.js";
-import type { DocCommentRow, DocDocumentRow } from "../../services/document.js";
+import { docAuthorForAgentUuid } from "../../services/document-review/author.js";
+import type { DocCommentRow, DocDocumentRow } from "../../services/document-review/document.js";
 import {
   createComment,
   getCommentRow,
@@ -25,7 +25,7 @@ import {
   publishDocument,
   setCommentStatus,
   setDocumentStatus,
-} from "../../services/document.js";
+} from "../../services/document-review/document.js";
 
 const getDocQuerySchema = z.object({
   version: z.coerce.number().int().positive().optional(),
@@ -48,7 +48,7 @@ const getDocQuerySchema = z.object({
  * Scope: the agent's own org (from the agent selector). Cross-org ids 404 so
  * existence never leaks. Authorship is the agent itself — a human member
  * driving the CLI comes through here as their identity-mirror agent and is
- * recorded with kind "human" (see services/doc-author.ts).
+ * recorded with kind "human" (see services/document-review/author.ts).
  */
 export async function agentDocumentRoutes(app: FastifyInstance): Promise<void> {
   async function requireOrgDocument(db: Database, organizationId: string, docId: string): Promise<DocDocumentRow> {

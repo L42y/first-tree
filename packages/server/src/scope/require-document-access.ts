@@ -3,8 +3,8 @@ import type { FastifyRequest } from "fastify";
 import type { Database } from "../db/connection.js";
 import { members } from "../db/schema/members.js";
 import { NotFoundError } from "../errors.js";
-import type { DocCommentRow, DocDocumentRow } from "../services/document.js";
-import { getCommentRow, getDocumentRow } from "../services/document.js";
+import type { DocCommentRow, DocDocumentRow } from "../services/document-review/document.js";
+import { getCommentRow, getDocumentRow } from "../services/document-review/document.js";
 import { requireUser } from "./require-user.js";
 import type { OrgScope } from "./types.js";
 

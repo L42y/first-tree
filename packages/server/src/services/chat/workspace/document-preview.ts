@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { defaultDataDir } from "@first-tree/shared/config";
-import { AppError, ForbiddenError, NotFoundError } from "../errors.js";
+import { AppError, ForbiddenError, NotFoundError } from "../../../errors.js";
 
 const MAX_DOC_BYTES = 5 * 1024 * 1024;
 
