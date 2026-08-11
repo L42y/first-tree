@@ -8,14 +8,14 @@ import {
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireDocumentAccess, requireDocumentCommentAccess } from "../scope/require-document-access.js";
-import { docAuthorForAgentUuid } from "../services/doc-author.js";
+import { docAuthorForAgentUuid } from "../services/document-review/author.js";
 import {
   createComment,
   getDocumentWithVersion,
   listComments,
   setCommentStatus,
   setDocumentStatus,
-} from "../services/document.js";
+} from "../services/document-review/document.js";
 
 const getDocQuerySchema = z.object({
   version: z.coerce.number().int().positive().optional(),

@@ -1,8 +1,8 @@
 import type { DocAuthor } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
-import { UnauthorizedError } from "../errors.js";
+import type { Database } from "../../db/connection.js";
+import { agents } from "../../db/schema/agents.js";
+import { UnauthorizedError } from "../../errors.js";
 
 /**
  * Host-identity adapter for the document review (docloop) domain.
@@ -13,7 +13,8 @@ import { UnauthorizedError } from "../errors.js";
  * `DocAuthor` principal the domain service consumes. `kind` comes from
  * `agents.type`, so a human driving the CLI through their mirror agent is
  * still recorded as a human author. Extracting docloop into a standalone
- * product means replacing this file, nothing in `services/document.ts`.
+ * product means replacing this file, nothing in
+ * `services/document-review/document.ts`.
  */
 export async function docAuthorForAgentUuid(db: Database, agentUuid: string): Promise<DocAuthor> {
   const [row] = await db

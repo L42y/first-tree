@@ -5,7 +5,7 @@ import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { NotFoundError } from "../errors.js";
 import { requireChatAccess } from "../scope/require-resource.js";
-import { getMeDocPreview } from "../services/me-doc.js";
+import { getMeDocPreview } from "../services/chat/workspace/document-preview.js";
 
 export type MeDocsRouteOptions = {
   /**

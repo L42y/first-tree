@@ -1,8 +1,8 @@
 import { DOC_PUBLISH_BODY_LIMIT, listDocsQuerySchema, publishDocRequestSchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { requireOrgMembership } from "../../scope/require-org.js";
-import { docAuthorForAgentUuid } from "../../services/doc-author.js";
-import { listDocuments, publishDocument } from "../../services/document.js";
+import { docAuthorForAgentUuid } from "../../services/document-review/author.js";
+import { listDocuments, publishDocument } from "../../services/document-review/document.js";
 
 /**
  * Document review (docloop) — org surface (Class B).

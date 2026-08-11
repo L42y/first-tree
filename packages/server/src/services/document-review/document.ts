@@ -12,10 +12,10 @@ import type {
 } from "@first-tree/shared";
 import { docCommentStatusSchema, docStatusSchema, locateDocAnchors } from "@first-tree/shared";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
-import type { Database } from "../db/connection.js";
-import { docComments, docDocuments, docVersions } from "../db/schema/index.js";
-import { BadRequestError, NotFoundError } from "../errors.js";
-import { uuidv7 } from "../uuid.js";
+import type { Database } from "../../db/connection.js";
+import { docComments, docDocuments, docVersions } from "../../db/schema/index.js";
+import { BadRequestError, NotFoundError } from "../../errors.js";
+import { uuidv7 } from "../../uuid.js";
 
 /**
  * Document review (docloop) domain service.
