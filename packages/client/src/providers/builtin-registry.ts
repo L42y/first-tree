@@ -1,6 +1,4 @@
 import type { RuntimeProvider } from "@first-tree/shared";
-import { createCursorHandler } from "../handlers/cursor/index.js";
-import { createKimiCodeHandler } from "../handlers/kimi-code.js";
 import { createOpenCodeHandler } from "../handlers/opencode/index.js";
 import { createPiHandler } from "../handlers/pi/index.js";
 import { createLogger } from "../observability/logger.js";
@@ -9,7 +7,9 @@ import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./
 import { createClaudeCodeHandler } from "./claude/index.js";
 import { createClaudeCodeTuiHandler } from "./claude/tui/index.js";
 import { createCodexHandler } from "./codex/index.js";
+import { createCursorHandler } from "./cursor/index.js";
 import { createGrokHandler } from "./grok/index.js";
+import { createKimiCodeHandler } from "./kimi-code/index.js";
 
 /** Injectable seam for Claude executable resolution in tests. */
 export type BuiltinHandlerRegistryDeps = {

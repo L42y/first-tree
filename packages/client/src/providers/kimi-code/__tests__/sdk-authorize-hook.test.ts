@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createKimiCodeHandler } from "../handlers/kimi-code.js";
-import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../runtime/handler.js";
-import { ReplayFenceStore } from "../runtime/replay-fence.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../../../runtime/handler.js";
+import { ReplayFenceStore } from "../../../runtime/replay-fence.js";
+import { createKimiCodeHandler } from "../index.js";
 
 /**
  * End-to-end regression through the REAL patched `@botiverse/kimi-code-sdk`

@@ -1,6 +1,6 @@
 import type { CapabilityEntry } from "@first-tree/shared";
-import { findCursorExecutableOnPath, formatCursorBinaryMissingMessage } from "../cursor-binary.js";
-import { type DetectOutcome, runDetect } from "./detect.js";
+import { type DetectOutcome, runDetect } from "../../runtime/capabilities/detect.js";
+import { findCursorExecutableOnPath, formatCursorBinaryMissingMessage } from "./binary.js";
 
 /** Injectable seams — production callers pass nothing. */
 export type CursorProbeDeps = {

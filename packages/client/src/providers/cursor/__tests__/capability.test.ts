@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { probeCursorCapability } from "../runtime/capabilities/cursor.js";
-import { CURSOR_INSTALL_COMMAND } from "../runtime/cursor-binary.js";
+import { CURSOR_INSTALL_COMMAND } from "../binary.js";
+import { probeCursorCapability } from "../capability.js";
 
 describe("probeCursorCapability — install-only detection", () => {
   it("resolved binary → ok with runtimeSource=path (existence only, never launched)", async () => {

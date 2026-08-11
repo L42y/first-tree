@@ -6,7 +6,11 @@ import {
   runtimeProviderInstallCommand,
   runtimeProviderInteractiveLoginCue,
 } from "@first-tree/shared";
-import { automaticCandidateAllowed, getLoginShellPathDirs, wellKnownBinDirs } from "./provider-support/index.js";
+import {
+  automaticCandidateAllowed,
+  getLoginShellPathDirs,
+  wellKnownBinDirs,
+} from "../../runtime/provider-support/index.js";
 
 /**
  * Official Kimi Code CLI binary resolution for Computer capability detection.

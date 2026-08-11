@@ -201,8 +201,8 @@ describe("managed Skill reconciler", () => {
       "src/providers/claude/tui/index.ts",
       "src/providers/codex/sdk.ts",
       "src/providers/codex/app-server/index.ts",
-      "src/handlers/cursor/index.ts",
-      "src/handlers/kimi-code.ts",
+      "src/providers/cursor/index.ts",
+      "src/providers/kimi-code/index.ts",
       "src/handlers/opencode/index.ts",
       "src/handlers/pi/index.ts",
     ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));

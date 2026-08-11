@@ -12,6 +12,9 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
+import { chunkAssistantText } from "../../handlers/assistant-text.js";
+import { formatAuthHint, isCursorAuthError } from "../../handlers/auth-error-hint.js";
+import { consumedErrorOutcome, resolveTurnSettlement } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -21,11 +24,6 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
-import {
-  CursorBinaryVerifyTransientError,
-  formatCursorBinaryMissingMessage,
-  resolveCursorRuntimeBinary,
-} from "../../runtime/cursor-binary.js";
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
@@ -54,10 +52,11 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-
-import { chunkAssistantText } from "../assistant-text.js";
-import { formatAuthHint, isCursorAuthError } from "../auth-error-hint.js";
-import { consumedErrorOutcome, resolveTurnSettlement } from "../turn-settlement.js";
+import {
+  CursorBinaryVerifyTransientError,
+  formatCursorBinaryMissingMessage,
+  resolveCursorRuntimeBinary,
+} from "./binary.js";
 import { type CursorStreamEvent, CursorStreamParser, type CursorToolCall, type CursorUsage } from "./parser.js";
 
 /**

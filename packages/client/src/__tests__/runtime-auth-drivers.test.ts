@@ -5,9 +5,9 @@ import type { RuntimeAuthDriver } from "../providers/auth-driver.js";
 import { RUNTIME_AUTH_DRIVERS } from "../providers/auth-drivers.js";
 import { createClaudeAuthDriver } from "../providers/claude/login.js";
 import { createCodexAuthDriver } from "../providers/codex/login.js";
+import { createCursorAuthDriver } from "../providers/cursor/login.js";
 import { createGrokAuthDriver } from "../providers/grok/login.js";
 import type { LoginOutcome } from "../providers/runtime-login.js";
-import { createCursorAuthDriver } from "../runtime/cursor-login.js";
 
 const entry = (over: Partial<CapabilityEntry> = {}): CapabilityEntry => ({
   state: "ok",

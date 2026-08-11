@@ -67,7 +67,7 @@ keychain credential.
 | --- | --- | --- |
 | Daemon dispatcher | Announce, `pendingAuth`, `authUrl`, re-probe order, `lastAuthError`, redaction + truncation | `apps/cli/src/core/runtime-auth-login.ts` |
 | `RUNTIME_AUTH_DRIVERS` | Frozen projection of `RuntimeAuthProvider` → driver | `providers/auth-drivers.ts` |
-| `create<Provider>AuthDriver` | Resolve the artifact, spawn the official login, re-probe affected rows | provider family `login.ts` (Claude: `providers/claude/login.ts`, Codex: `providers/codex/login.ts`, Grok: `providers/grok/login.ts`); remaining in-product targets still transitional under `runtime/<provider>-login.ts` (Cursor today) |
+| `create<Provider>AuthDriver` | Resolve the artifact, spawn the official login, re-probe affected rows | provider family `login.ts` (Claude: `providers/claude/login.ts`, Codex: `providers/codex/login.ts`, Cursor: `providers/cursor/login.ts`, Grok: `providers/grok/login.ts`); all four in-product OAuth owners live in their families |
 
 The dispatcher must stay provider-neutral: no provider literal, no
 provider-specific resolver / probe / login import, no `if` / `switch` on a

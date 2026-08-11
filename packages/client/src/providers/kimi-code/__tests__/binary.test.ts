@@ -8,7 +8,7 @@ import {
   isKimiBinaryMissingError,
   KIMI_CLI_PACKAGE,
   kimiOfficialBinDirs,
-} from "../runtime/kimi-binary.js";
+} from "../binary.js";
 
 const tempDirs: string[] = [];
 

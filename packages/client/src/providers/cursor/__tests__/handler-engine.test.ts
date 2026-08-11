@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AgentRuntimeConfigPayload, parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../../../runtime/handler.js";
 import {
   buildCursorMcpEnableArgs,
   buildCursorTurnArgs,
   CURSOR_PENDING_SESSION_PREFIX,
   createCursorHandler,
-} from "../handlers/cursor/index.js";
-import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../runtime/handler.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+} from "../index.js";
 
 /**
  * Handler-integration coverage for the per-turn Cursor CLI transport, on a

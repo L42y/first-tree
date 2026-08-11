@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type CursorStreamEvent, CursorStreamParser, parseCursorStreamLine } from "../handlers/cursor/parser.js";
+import { type CursorStreamEvent, CursorStreamParser, parseCursorStreamLine } from "../parser.js";
 
 /**
  * Parser fixtures are REAL Phase 0 captures from the Cursor CLI

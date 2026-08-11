@@ -2,8 +2,8 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { KIMI_CODE_SDK_VERSION, probeKimiCodeCapability } from "../runtime/capabilities/kimi-code.js";
-import { findKimiExecutableOnPath } from "../runtime/kimi-binary.js";
+import { findKimiExecutableOnPath } from "../binary.js";
+import { KIMI_CODE_SDK_VERSION, probeKimiCodeCapability } from "../capability.js";
 
 const tempDirs: string[] = [];
 

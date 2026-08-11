@@ -1,13 +1,9 @@
 import type { spawn } from "node:child_process";
 import { RUNTIME_PROVIDERS } from "@first-tree/shared";
-import type {
-  RuntimeAuthDriver,
-  RuntimeAuthLoginResolution,
-  RuntimeAuthProbeResult,
-} from "../providers/auth-driver.js";
-import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "../providers/runtime-login.js";
-import { probeCursorCapability } from "./capabilities/cursor.js";
-import { type CursorRuntimeBinaryResolution, resolveCursorRuntimeBinary } from "./cursor-binary.js";
+import type { RuntimeAuthDriver, RuntimeAuthLoginResolution, RuntimeAuthProbeResult } from "../auth-driver.js";
+import { BROWSER_LOGIN_TIMEOUT_MS, type LoginOutcome, runBrowserLogin } from "../runtime-login.js";
+import { type CursorRuntimeBinaryResolution, resolveCursorRuntimeBinary } from "./binary.js";
+import { probeCursorCapability } from "./capability.js";
 
 /**
  * Cursor browser-OAuth login on top of the shared {@link runBrowserLogin}
