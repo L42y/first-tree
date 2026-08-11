@@ -4,6 +4,7 @@ import {
   contextIntegrationInstallJournalSchema,
   contextIntegrationInstallManifestSchema,
   contextIntegrationReleaseManifestSchema,
+  contextSkillLoadResponseSchema,
   legacyContextIntegrationConfigSchema,
 } from "../index.js";
 
@@ -156,5 +157,26 @@ describe("context integration contracts", () => {
         phase: "provider_installing",
       }).phase,
     ).toBe("provider_installing");
+  });
+
+  it("requires an exact First Tree invocation in BYO loader responses", () => {
+    const response = {
+      schemaVersion: 1,
+      loaderProtocolVersion: 1,
+      consumerKind: "byo",
+      provider: "codex",
+      releaseVersion: "1.0.0",
+      adapterVersion: "1.0.0",
+      firstTreeInvocation: "'/opt/first-tree-staging'",
+      name: "first-tree-read",
+      skillPath: "/opt/first-tree/skills/first-tree-read/SKILL.md",
+      skillDigest: DIGEST,
+      policyPath: "/opt/first-tree/policy/context-tree-policy.md",
+      policyDigest: DIGEST,
+    };
+
+    expect(contextSkillLoadResponseSchema.parse(response).firstTreeInvocation).toBe("'/opt/first-tree-staging'");
+    const { firstTreeInvocation: _firstTreeInvocation, ...missingInvocation } = response;
+    expect(contextSkillLoadResponseSchema.safeParse(missingInvocation).success).toBe(false);
   });
 });

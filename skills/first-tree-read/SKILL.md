@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.8.0
+version: 0.8.1
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -9,7 +9,7 @@ description: Read the applicable Context Tree before acting. In BYO sessions, ro
 ## Purpose
 
 Read the Context Tree applicable to the current task before acting. This skill is
-read-only: it uses `first-tree tree tree` to find relevant tree files, then
+read-only: it uses `<firstTreeInvocation> tree tree` to find relevant tree files, then
 uses the agent's native file-reading capability to read their content and
 summarize the constraints that matter for the user's task. A BYO task first
 activates one exact-commit snapshot; all selectors, soft-link traversal, and
@@ -56,13 +56,19 @@ from cwd, a Workspace manifest, Skill location, or user/model text.
 
 ### 2A. Route and activate one BYO task snapshot
 
+Require `firstTreeInvocation` from the latest verified Core loader response and
+treat it as the opaque exact shell prefix for every First Tree CLI command in
+this BYO task. Missing or conflicting invocation evidence fails closed. Never
+replace it with `first-tree`, `first-tree-staging`, or `first-tree-dev`, and
+never reconstruct it from a release version, channel name, path, or prior task.
+
 Use the immutable provider/project activation receipt from the current-session
 handoff or SessionStart. Never replace it with a later cwd. Run the hidden
 router, adding `--session-candidate` only when the verified session-only
 handoff contains that opaque receipt:
 
 ```bash
-first-tree --json context route --provider <provider> <immutable-project-selector> [--session-candidate <receipt>]
+<firstTreeInvocation> --json context route --provider <provider> <immutable-project-selector> [--session-candidate <receipt>]
 ```
 
 The router considers only locally authorized candidates at the highest
@@ -101,7 +107,7 @@ forbidden and an unavailable candidate itself cannot be selected. Never guess.
 After selecting a candidate, ask the CLI to activate only its opaque id:
 
 ```bash
-first-tree --json context snapshot --candidate "<candidate-id>"
+<firstTreeInvocation> --json context snapshot --candidate "<candidate-id>"
 ```
 
 The CLI owns the private temporary snapshot location. The command revalidates
@@ -111,8 +117,8 @@ Any drift requires routing again. Preserve the returned Team, candidate,
 binding, exact commit, snapshot, and activation-project receipt for the entire
 task. Do not reuse them for another task or Team.
 
-Run `first-tree tree tree --help` inside the snapshot, then use
-`first-tree tree tree --no-pull` for every selector. Read only from this exact
+Run `<firstTreeInvocation> tree tree --help` inside the snapshot, then use
+`<firstTreeInvocation> tree tree --no-pull` for every selector. Read only from this exact
 snapshot and resolve soft-links within it.
 
 ### 2B. Resolve the managed workspace context repo
@@ -147,7 +153,7 @@ path exists as a **symlink**, treat it as the legacy shared-pool layout —
 remove only the symlink, then clone per the briefing.)
 
 You do **not** need a separate `git pull` step before reading: the
-`first-tree tree tree` command in step 2 runs `git pull --ff-only` on the
+`<firstTreeInvocation> tree tree` command in step 2 runs `git pull --ff-only` on the
 context repo for you (a built-in freshness guarantee), degrading to the
 local copy with a warning if the remote is unreachable. Pass `--no-pull`
 only when you deliberately want a stable snapshot or are working offline.
@@ -157,13 +163,17 @@ only when you deliberately want a stable snapshot or are working offline.
 Run the help command from inside the context repo before using any
 `tree tree` selector:
 
+In BYO mode, keep using the opaque `firstTreeInvocation` from step 2A. In
+managed mode, use the exact CLI invocation supplied by the generated workspace
+briefing in place of this placeholder. Never infer the binary from PATH.
+
 ```bash
 cd "$CONTEXT_REPO"
-first-tree tree tree --help
+<firstTreeInvocation> tree tree --help
 ```
 
 Treat this help output as the source of truth for flags and filtering modes.
-Do not invent flags from memory. Note `first-tree tree tree` refreshes the
+Do not invent flags from memory. Note `<firstTreeInvocation> tree tree` refreshes the
 repo with `git pull --ff-only` before listing (use `--no-pull` to skip).
 
 ### 4. Build the read query from the user's signal
@@ -185,15 +195,15 @@ matter. Prefer reading:
 - `soft_links` targets from matched files when they affect the task
 - member content only when ownership or review scope matters
 
-### 5. Use `first-tree tree tree` to select files
+### 5. Use `<firstTreeInvocation> tree tree` to select files
 
-Use the filtering options shown by `first-tree tree tree --help` to list
+Use the filtering options shown by `<firstTreeInvocation> tree tree --help` to list
 candidate files. The exact flags may change; choose them from the fresh help
 output.
 
 Operational rules:
 
-- Use `first-tree tree tree` for tree discovery and filtering instead of
+- Use `<firstTreeInvocation> tree tree` for tree discovery and filtering instead of
   raw `find` / ad hoc grep when the command can identify the needed files.
 - For a BYO task, include `--no-pull` on every selector and keep every selected
   path inside the activated snapshot. For a managed workspace, retain the

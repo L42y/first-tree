@@ -50,7 +50,10 @@ Codex trust.
 5. Install Codex, complete `/hooks` trust in the same conversation, then rerun
    the same apply command. Repeat with an already trusted Hook.
 6. Inspect the complete schema-v3 handoff. Trigger two Read tasks and then a
-   Write task. Every task must run its loader anew. With unchanged digests,
+   Write task. Every task must run its loader anew and preserve the returned
+   `firstTreeInvocation` for route, snapshot, and write commands. Exercise the
+   staging Plugin while production is also installed and confirm no canonical
+   workflow command falls back to bare `first-tree`. With unchanged digests,
    confirm the second Read does not reread either full Core file, and the first
    Write reads its distinct Skill once while reusing the already-read Policy.
    Confirm there is no independent hash command or persistent Core cache.
@@ -68,13 +71,13 @@ Codex trust.
    Confirm typed `CONTEXT_PLUGIN_RELOAD_REQUIRED` and no Tree read. Tamper a
    Core file, symlink a Core path outside the exact release, and remove an old
    exact release; each must fail closed without a HOME Core cache fallback.
-9. Upgrade only the Claude thin adapter to `adapterVersion` 1.0.2 while keeping
-   Codex at 1.0.1 and loader protocol v1 compatible.
-   Confirm SessionStart returns one exact sync action within five seconds and
+9. Upgrade the changed thin adapters to Claude `adapterVersion` 1.0.3 and Codex
+   1.0.2 while keeping loader protocol v1 compatible. For each provider,
+   confirm SessionStart returns one exact sync action within five seconds and
    does not install. The agent syncs in the normal turn while the old adapter
-   continues the current task. The new Claude adapter is guaranteed next
-   session. Repair Claude twice and confirm the cache version and payload digest
-   remain identical for 1.0.2. Inject one provider-install failure, verify
+   continues the current task. The new adapters are guaranteed next session.
+   Repair Claude twice and confirm the cache version and payload digest remain
+   identical for 1.0.3. Inject one provider-install failure, verify
    rollback and quiet `update_deferred`, and confirm current First Tree work
    continues.
 10. If bounded safe recovery still fails, confirm the agent reports only the
@@ -85,7 +88,8 @@ Codex trust.
 
 - Persistent handoff schema is 3 and contains stable descriptions plus loader
   commands, not reusable Plugin-cache Core paths. Loader response schema is 1,
-  `consumerKind` is `byo`, and paths remain inside one verified exact CLI
+  `consumerKind` is `byo`, `firstTreeInvocation` stays channel-exact through
+  the canonical workflow, and paths remain inside one verified exact CLI
   release root with matching Skill and Policy digests.
 - Provider Plugins contain only discovery stubs, SessionStart adapter, and
   loader calls. They contain no full Read/Write workflow or Policy copy.
@@ -113,8 +117,9 @@ Codex trust.
 conversation; first Claude migration returns no current-session handoff and
 uses next-session adoption for automatic routing; later Core-only releases load on the next task with stable adapter
 identity; unchanged Core content is reused only by
-digest while changed or unavailable content is reread; adapter 1.0.2 is adopted
-through the compatible update path; recovery is bounded, concise, and preserves
+digest while changed or unavailable content is reread; Claude adapter 1.0.3 and
+Codex adapter 1.0.2 are adopted through the compatible update path; recovery is
+bounded, concise, and preserves
 every human boundary; all tamper and legacy paths fail closed.
 
 `FAIL`: a legacy workflow reads Tree data, Claude automatic routing resumes

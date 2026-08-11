@@ -161,7 +161,7 @@ describe("context integration bundle", () => {
       const writeSkill = readFileSync(join(pluginRoot, "skills", "first-tree-write", "SKILL.md"), "utf8");
       const manualSkill = readFileSync(join(pluginRoot, "skills", "first-tree", "SKILL.md"), "utf8");
       expect(manifest.providers[provider as "claude-code" | "codex"].adapterVersion).toBe(
-        provider === "claude-code" ? "1.0.2" : "1.0.1",
+        provider === "claude-code" ? "1.0.3" : "1.0.2",
       );
       expect(hook).toContain('"timeout": 5');
       expect(hook).toContain('"matcher": "startup|resume|clear|compact"');
@@ -425,6 +425,7 @@ describe("context integration bundle", () => {
     for (const skill of ["first-tree", "first-tree-read", "first-tree-write"]) {
       const content = readFileSync(join(pluginRoot, "skills", skill, "SKILL.md"), "utf8");
       expect(content).toContain(invocation);
+      expect(content).toContain("firstTreeInvocation");
       expect(content).not.toContain("__FIRST_TREE_SKILL_INVOCATION__");
       expect(content).not.toMatch(/(^|[` ])first-tree\s+(?:chat|context|github|gitlab|tree)\b/mu);
     }

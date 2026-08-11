@@ -6,10 +6,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   assertContextAdapterReadyForRouting,
   beginContextAdapterNextSessionObligation,
+  ContextPluginChannelMismatchError,
+  ContextPluginNotInstalledForChannelError,
   consumeContextAdapterNextSessionObligation,
   inspectContextAdapterNextSessionObligation,
 } from "../core/context-integration/adapter-observation.js";
-import { writeContextIntegrationInstallManifest } from "../core/context-integration/manifest.js";
+import {
+  readContextIntegrationInstallManifest,
+  writeContextIntegrationInstallManifest,
+} from "../core/context-integration/manifest.js";
 import { contextPluginTreeDigest } from "../core/context-integration/payload-integrity.js";
 import type { ContextIntegrationProviderDriver } from "../core/context-integration/provider-driver.js";
 import { resolveContextIntegrationRelease } from "../core/context-integration/release.js";
@@ -134,6 +139,32 @@ describe("Claude next-session adapter adoption", () => {
     writeFileSync(providerSkill, "tampered provider stub\n");
     expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
       "payload has drifted",
+    );
+  });
+});
+
+describe("Context adapter channel diagnostics", () => {
+  it("distinguishes a missing current-channel install from adapter incompatibility", () => {
+    expect(() => assertContextAdapterReadyForRouting("codex", observationOptions())).toThrow(
+      ContextPluginNotInstalledForChannelError,
+    );
+    try {
+      assertContextAdapterReadyForRouting("codex", observationOptions());
+    } catch (error) {
+      expect(error).toMatchObject({ code: "CONTEXT_PLUGIN_NOT_INSTALLED_FOR_CHANNEL" });
+      if (!(error instanceof Error)) throw error;
+      expect(error.message).toContain("first-tree-dev");
+    }
+  });
+
+  it("rejects an install manifest that belongs to another CLI channel", () => {
+    installCurrentAdapter();
+    const manifest = readContextIntegrationInstallManifest("claude-code");
+    if (!manifest) throw new Error("expected installed Claude Context manifest");
+    writeContextIntegrationInstallManifest({ ...manifest, channel: "staging" });
+
+    expect(() => assertContextAdapterReadyForRouting("claude-code", observationOptions())).toThrow(
+      ContextPluginChannelMismatchError,
     );
   });
 });

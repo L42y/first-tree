@@ -111,6 +111,12 @@ export function assertContextAdapterReadyForRouting(
       "This Claude session has not adopted the repaired First Tree Context Plugin. Start a new session, then retry.",
     );
   }
+  if (!install) {
+    throw new ContextPluginNotInstalledForChannelError(provider);
+  }
+  if (install.channel !== channelConfig.channel) {
+    throw new ContextPluginChannelMismatchError(provider, install.channel);
+  }
   const exact = install?.adapterVersion === expected.adapterVersion && install.adapterDigest === expected.adapterDigest;
   const compatibleLoadedAdapter =
     install?.channel === channelConfig.channel &&
@@ -146,6 +152,28 @@ export class ContextPluginReloadRequiredError extends Error {
   ) {
     super(message, options);
     this.name = "ContextPluginReloadRequiredError";
+  }
+}
+
+export class ContextPluginNotInstalledForChannelError extends Error {
+  readonly code = "CONTEXT_PLUGIN_NOT_INSTALLED_FOR_CHANNEL";
+
+  constructor(provider: ContextIntegrationProvider) {
+    super(
+      `The ${providerName(provider)} First Tree Context Plugin is not installed for the ${channelConfig.channel} channel used by ${channelConfig.binName}. Use the exact First Tree CLI invocation from the current verified Context loader or session handoff, or run Context setup for this channel.`,
+    );
+    this.name = "ContextPluginNotInstalledForChannelError";
+  }
+}
+
+export class ContextPluginChannelMismatchError extends Error {
+  readonly code = "CONTEXT_PLUGIN_CHANNEL_MISMATCH";
+
+  constructor(provider: ContextIntegrationProvider, installedChannel: string) {
+    super(
+      `The installed ${providerName(provider)} First Tree Context Plugin belongs to the ${installedChannel} channel, but ${channelConfig.binName} uses ${channelConfig.channel}. Retry with the exact First Tree CLI invocation from the current verified Context loader or session handoff.`,
+    );
+    this.name = "ContextPluginChannelMismatchError";
   }
 }
 
@@ -232,4 +260,8 @@ function writeRaw(path: string, content: string): void {
 
 function isMissing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT";
+}
+
+function providerName(provider: ContextIntegrationProvider): string {
+  return provider === "codex" ? "Codex" : "Claude Code";
 }

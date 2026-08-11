@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.1
+version: 0.16.2
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -80,21 +80,25 @@ text:
   the source gate and write policy below remain unchanged.
 - **BYO:** require the exact snapshot and opaque route selection created by
   `first-tree-read` for this task, a concrete source artifact and revision,
-  and current source/target context. Never accept or re-select a Team during
-  Write. Missing, conflicting, or expired route identity fails closed.
+  current source/target context, and `firstTreeInvocation` from this Skill's
+  latest verified Core loader response. Treat that invocation as the opaque
+  exact shell prefix for every First Tree CLI command in this BYO task. Never
+  replace or reconstruct it from a binary name, release, channel, path, or
+  prior task. Never accept or re-select a Team during Write. Missing,
+  conflicting, or expired route or invocation identity fails closed.
 
 BYO Write preflight returns the live provider and binding. For GitHub,
 obtain the current local `gh` login and run:
 
 ```text
-first-tree --json context write-preflight \
+<firstTreeInvocation> --json context write-preflight \
   --snapshot "<exact-snapshot>" --github-login "<gh-login>"
 ```
 
 For GitLab, do not pass a GitHub login:
 
 ```text
-first-tree --json context write-preflight --snapshot "<exact-snapshot>"
+<firstTreeInvocation> --json context write-preflight --snapshot "<exact-snapshot>"
 ```
 
 This command verifies the snapshot's opaque SCOPE route identity, selected
@@ -144,7 +148,7 @@ current Reviewer when the forge event arrives.
    `gh` login again and run:
 
    ```text
-   first-tree --json context write-worktree \
+   <firstTreeInvocation> --json context write-worktree \
      --snapshot "<exact-snapshot>" --plan-anchor "<write-plan-anchor>" \
      --confirmed --github-login "<gh-login>"
    ```
@@ -152,22 +156,31 @@ current Reviewer when the forge event arrives.
    If the provider is GitLab, do not pass a GitHub login:
 
    ```text
-   first-tree --json context write-worktree \
+   <firstTreeInvocation> --json context write-worktree \
      --snapshot "<exact-snapshot>" --plan-anchor "<write-plan-anchor>" \
      --confirmed
    ```
 
    Consume only the command's returned worktree path; do not construct a HOME
    path or create a linked worktree yourself. If the command result is lost,
-   rerun that exact provider-specific command or query `context write-status
-   --team <team-id> --plan-anchor <write-plan-anchor>`; both recover and return
-   the same durable operation rather than creating another worktree. Capture
+   rerun that exact provider-specific command or query:
+
+   ```text
+   <firstTreeInvocation> --json context write-status \
+     --team <team-id> --plan-anchor <write-plan-anchor>
+   ```
+
+   Both recover and return the same durable operation rather than creating
+   another worktree. Capture
    current truth and present-tense rationale there.
    Rewrite superseded claims in place; do not append timeline updates. Keep
    canonical content in one place and use normal-to-normal `soft_links` when a
    cross-domain reader needs navigation.
-7. **Verify and publish.** Run `first-tree tree verify --tree-path <tree>`
-   before commit. Non-zero exit blocks the PR/MR. For an Audit finding, commit
+7. **Verify and publish.** Run
+   `<firstTreeInvocation> tree verify --tree-path <tree>` before commit. In
+   managed mode, replace `<firstTreeInvocation>` with the exact CLI invocation
+   supplied by the generated workspace briefing. Non-zero exit blocks the
+   PR/MR. For an Audit finding, commit
    only that verified tree state, create a temporary clean detached worktree at
    that exact commit, and verify the committed tree there. Remove the verification
    worktree, then perform the second exact-head check above before pushing that
@@ -179,7 +192,9 @@ current Reviewer when the forge event arrives.
    A ready GitHub PR or GitLab MR uses independent `context-tree-review`;
    Audit-originated artifacts stay draft and therefore receive read-only
    review. After creating, resolving or
-   reusing any GitLab MR, run `first-tree gitlab follow <mr-url>` in the task Chat. A
+   reusing any GitLab MR, run
+   `<firstTreeInvocation> gitlab follow <mr-url>` in the task Chat, using the
+   generated workspace briefing's exact CLI invocation in managed mode. A
    returned pending or active state is success; failure does not invalidate the
    MR, so report only the Chat attention gap.
 9. **Let provider automation own review dispatch.** For a ready GitHub PR, the
@@ -379,24 +394,24 @@ stay in the node body.
 
 ## CLI Surface
 
-CLI examples in this skill use the canonical prod binary `first-tree` for
-readability. Substitute the channel-correct binary from AGENTS / current
-channel (`first-tree` on prod, `first-tree-staging` on staging,
-`first-tree-dev` on dev) before running them.
+Every CLI example below uses `<firstTreeInvocation>`. In BYO mode, this is the
+opaque exact shell prefix from the latest verified Core loader response. In
+managed mode, use the exact CLI invocation supplied by the generated workspace
+briefing. Never infer or substitute a channel binary from cwd, PATH, or memory.
 
 The Context-management CLI you actually depend on while writing is small:
 
-- `first-tree tree verify` — validate frontmatter and node structure;
+- `<firstTreeInvocation> tree verify` — validate frontmatter and node structure;
   the write gate that must pass before any commit.
-- `first-tree context write-preflight` — in BYO mode, revalidate the opaque SCOPE route,
-  exact snapshot and provider authentication before mutation.
-- `first-tree context write-worktree` — after the required new user confirmation,
-  create one exclusive authoring worktree from the exact preflight base.
-- `first-tree context write-status` — recover or inspect the one durable BYO
+- `<firstTreeInvocation> context write-preflight` — in BYO mode, revalidate the
+  opaque SCOPE route, exact snapshot and provider authentication before mutation.
+- `<firstTreeInvocation> context write-worktree` — after the required new user
+  confirmation, create one exclusive authoring worktree from the exact preflight base.
+- `<firstTreeInvocation> context write-status` — recover or inspect the one durable BYO
   authoring operation identified by the confirmed plan anchor.
-- `first-tree context write-finish` — release the BYO authoring worktree after
+- `<firstTreeInvocation> context write-finish` — release the BYO authoring worktree after
   its PR/MR lifecycle is complete; an unfinished write intentionally blocks account switching.
-- `first-tree gitlab follow` — after a GitLab MR exists, wire inbound activity
+- `<firstTreeInvocation> gitlab follow` — after a GitLab MR exists, wire inbound activity
   into the task Chat; a returned pending or active state is success.
 
 Commits, PRs/MRs, and source reads use standard tools (`git`, `gh`, `glab`,

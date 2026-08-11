@@ -153,6 +153,7 @@ describe("personal Context access", () => {
     expect(copiedPrompt).toContain("immutable activation receipt");
     expect(copiedPrompt).toContain("even if cwd changes later");
     expect(copiedPrompt).toContain("For every new Context task, run the loader again");
+    expect(copiedPrompt).toContain("preserve its `firstTreeInvocation`");
     expect(copiedPrompt).toContain("`name` plus `skillDigest`");
     expect(copiedPrompt).toContain("full text is still directly available");
     expect(copiedPrompt).toContain("Do not run an independent hash check or persist a Core cache");

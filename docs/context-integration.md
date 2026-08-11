@@ -107,9 +107,12 @@ a Team from cwd, Git remotes, Web state or remembered context.
 
 Each new task calls loader protocol v1. The loader verifies the current CLI's
 exact-version release manifest and digests, then returns the canonical
-`skillPath` and `policyPath` from that immutable release root. It never returns
-a mutable `current` symlink and does not materialize a second Core bundle under
-`$FIRST_TREE_HOME`.
+`skillPath` and `policyPath` from that immutable release root together with
+`firstTreeInvocation`, the exact shell prefix for the current CLI channel. The
+canonical workflow uses that opaque invocation for every BYO CLI command; it
+does not infer a binary from PATH, release, channel, or memory. The loader never
+returns a mutable `current` symlink and does not materialize a second Core
+bundle under `$FIRST_TREE_HOME`.
 
 The loader still runs for every new task. After a valid response, canonical
 content already read in full may be reused within the current provider context

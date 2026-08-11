@@ -6,11 +6,17 @@ import {
   contextSkillLoadRequestSchema,
   contextSkillLoadResponseSchema,
 } from "@first-tree/shared";
+import { renderCliInvocation } from "../posix-shell.js";
+import { resolveCliInvocation } from "../supervisor/shared.js";
 import { resolveContextCorePath, resolveContextIntegrationRelease } from "./release.js";
 
 export function loadContextSkill(
   input: ContextSkillLoadRequest,
-  options: { releaseRoot?: string; coreRoot?: string } = {},
+  options: {
+    releaseRoot?: string;
+    coreRoot?: string;
+    resolveInvocation?: typeof resolveCliInvocation;
+  } = {},
 ): ContextSkillLoadResponse {
   const request = contextSkillLoadRequestSchema.parse(input);
   const release = resolveContextIntegrationRelease(options.releaseRoot, {
@@ -29,6 +35,7 @@ export function loadContextSkill(
     provider: request.provider,
     releaseVersion: release.manifest.version,
     adapterVersion: release.manifest.providers[request.provider].adapterVersion,
+    firstTreeInvocation: renderCliInvocation((options.resolveInvocation ?? resolveCliInvocation)()),
     name: request.name,
     skillPath,
     skillDigest: skill.digest,
