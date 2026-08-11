@@ -8,6 +8,9 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
+import { chunkAssistantText } from "../../handlers/assistant-text.js";
+import { formatAuthHint, isOpenCodeAuthError } from "../../handlers/auth-error-hint.js";
+import { consumedErrorOutcome } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -17,16 +20,6 @@ import type {
   TurnConsumedErrorReason,
 } from "../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
-import {
-  isSupportedOpenCodeVersion,
-  OPENCODE_SUPPORTED_VERSION_RANGE,
-  parseOpenCodeVersionOutput,
-  resolveOpenCodeRuntimeBinary,
-} from "../../runtime/opencode-binary.js";
-import {
-  acquireOpenCodePrivateConfigLease,
-  type OpenCodePrivateConfigLease,
-} from "../../runtime/opencode-private-config.js";
 import type {
   AgentConfigCache,
   ProviderAttemptSettlement,
@@ -50,10 +43,14 @@ import {
   toolFileRefsFromShellCommand,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { chunkAssistantText } from "../assistant-text.js";
-import { formatAuthHint, isOpenCodeAuthError } from "../auth-error-hint.js";
-import { consumedErrorOutcome } from "../turn-settlement.js";
+import {
+  isSupportedOpenCodeVersion,
+  OPENCODE_SUPPORTED_VERSION_RANGE,
+  parseOpenCodeVersionOutput,
+  resolveOpenCodeRuntimeBinary,
+} from "./binary.js";
 import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
+import { acquireOpenCodePrivateConfigLease, type OpenCodePrivateConfigLease } from "./private-config.js";
 
 export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
 

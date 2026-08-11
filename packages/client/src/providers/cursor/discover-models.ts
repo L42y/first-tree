@@ -1,5 +1,5 @@
 import type { ProviderModelCatalog, ProviderModelOption } from "@first-tree/shared";
-import { runCommand } from "../../runtime/capabilities/launch-probe.js";
+import { runCommand } from "../capabilities/launch-probe.js";
 import { findCursorExecutableOnPath } from "./binary.js";
 
 /** Ceiling for `agent models` — account catalog fetch can be network-bound. */

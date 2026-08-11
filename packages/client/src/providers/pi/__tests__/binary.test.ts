@@ -9,7 +9,7 @@ import {
   isSupportedPiVersion,
   parsePiVersionOutput,
   resolvePiRuntimeBinary,
-} from "../runtime/pi-binary.js";
+} from "../binary.js";
 
 const roots: string[] = [];
 

@@ -5,11 +5,7 @@ import {
   RUNTIME_PROVIDER_IDS,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import {
-  BUILTIN_PROVIDER_PROBES,
-  type BuiltinProviderProbeTable,
-  probedRuntimeProviders,
-} from "../../providers/builtin-probes.js";
+import { BUILTIN_PROVIDER_PROBES, type BuiltinProviderProbeTable, probedRuntimeProviders } from "../builtin-probes.js";
 
 /** Periodic full re-probe ceiling: re-detect at most this often on reconnect to
  * catch silent drift (a provider uninstalled while connected). Detection is

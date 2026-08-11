@@ -1,7 +1,7 @@
 import type { CapabilityEntry } from "@first-tree/shared";
-import { findPiExecutableOnPath, formatPiBinaryMissingMessage } from "../pi-binary.js";
-import { supportsDefaultProviderProcessSupervision } from "../provider-support/index.js";
-import { type DetectOutcome, runDetect } from "./detect.js";
+import { supportsDefaultProviderProcessSupervision } from "../../runtime/provider-support/index.js";
+import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
+import { findPiExecutableOnPath, formatPiBinaryMissingMessage } from "./binary.js";
 
 export type PiProbeDeps = {
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;

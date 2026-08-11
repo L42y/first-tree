@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { probePiCapability } from "../runtime/capabilities/pi.js";
-import { PI_INSTALL_COMMAND } from "../runtime/pi-binary.js";
+import { PI_INSTALL_COMMAND } from "../binary.js";
+import { probePiCapability } from "../capability.js";
 
 describe("probePiCapability — install-only detection", () => {
   it("resolved binary → ok with runtimeSource=path (existence only, never launched)", async () => {

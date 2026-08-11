@@ -5,6 +5,15 @@ import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
 import { parseProviderRetryEventMessage } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { silentLogger } from "../../../__tests__/_logger-helpers.js";
+import { mockEntry } from "../../../__tests__/test-helpers.js";
+import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import { ManagedSkillsUnsafeDiscoveryError, reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
+import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
+import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
+import { SessionManager } from "../../../runtime/session-manager.js";
+import type { FirstTreeHubSDK } from "../../../sdk.js";
 import {
   buildOpenCodeConfigContent,
   buildOpenCodeTurnArgs,
@@ -14,17 +23,8 @@ import {
   openCodeProviderAttemptWindowSizeForTests,
   projectOpenCodeConfig,
   stableOpenCodeScope,
-} from "../handlers/opencode/index.js";
-import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { ManagedSkillsUnsafeDiscoveryError, reconcileManagedSkillsForConfig } from "../runtime/managed-skills.js";
-import { acquireOpenCodePrivateConfigLease } from "../runtime/opencode-private-config.js";
-import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
-import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
-import { SessionManager } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
-import { silentLogger } from "./_logger-helpers.js";
-import { mockEntry } from "./test-helpers.js";
+} from "../index.js";
+import { acquireOpenCodePrivateConfigLease } from "../private-config.js";
 
 const roots: string[] = [];
 

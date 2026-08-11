@@ -13,12 +13,6 @@ export {
   ClientUserMismatchError,
 } from "./client-connection.js";
 export {
-  buildOpenCodeConfigContent,
-  buildOpenCodeTurnArgs,
-  createOpenCodeHandler,
-  mapOpenCodeMcpServers,
-} from "./handlers/opencode/index.js";
-export {
   applyClientLoggerConfig,
   captureClientException,
   configureClientLoggerForService,
@@ -42,6 +36,18 @@ export {
   createBuiltinHandlerRegistry,
   resolveAndLogClaudeExecutable,
 } from "./providers/builtin-registry.js";
+export {
+  CAPABILITY_REFRESH_BASE_MS,
+  CAPABILITY_REFRESH_MAX_MS,
+  hasNonOkProvider,
+  nextCapabilityRefreshDelayMs,
+  PROBED_RUNTIME_PROVIDERS,
+  probeCapabilities,
+  REPROBE_MAX_AGE_MS,
+  reprobeOnReconnect,
+  revalidateCapabilities,
+  shouldFullReprobe,
+} from "./providers/capabilities/index.js";
 // Capabilities
 export { probeClaudeCodeCapability } from "./providers/claude/capability.js";
 export { probeClaudeCodeTuiCapability } from "./providers/claude/capability-tui.js";
@@ -101,6 +107,36 @@ export {
   runGrokBrowserLogin,
 } from "./providers/grok/login.js";
 export { createKimiCodeHandler, formatKimiCodeError, kimiToolIsReadOnly } from "./providers/kimi-code/index.js";
+export {
+  findOpenCodeExecutableOnPath,
+  formatOpenCodeBinaryMissingMessage,
+  isSupportedOpenCodeVersion,
+  OPENCODE_INSTALL_COMMAND,
+  OPENCODE_LOGIN_COMMAND,
+  OPENCODE_MINIMUM_VERSION,
+  OPENCODE_SUPPORTED_VERSION_RANGE,
+  parseOpenCodeVersionOutput,
+  resolveOpenCodeRuntimeBinary,
+} from "./providers/opencode/binary.js";
+export { probeOpenCodeCapability } from "./providers/opencode/capability.js";
+export {
+  buildOpenCodeConfigContent,
+  buildOpenCodeTurnArgs,
+  createOpenCodeHandler,
+  mapOpenCodeMcpServers,
+} from "./providers/opencode/index.js";
+export {
+  findPiExecutableOnPath,
+  formatPiBinaryMissingMessage,
+  isSupportedPiVersion,
+  PI_INSTALL_COMMAND,
+  PI_LOGIN_COMMAND,
+  PI_MINIMUM_VERSION,
+  PI_SUPPORTED_VERSION_RANGE,
+  parsePiVersionOutput,
+  resolvePiRuntimeBinary,
+} from "./providers/pi/binary.js";
+export { probePiCapability } from "./providers/pi/capability.js";
 // Runtime-auth (browser OAuth)
 export {
   AUTH_URL_TOKEN_MAX,
@@ -123,20 +159,6 @@ export {
   migrateLegacyRuntimeLayout,
   resolveAgentContextTreeBinding,
 } from "./runtime/bootstrap.js";
-export {
-  CAPABILITY_REFRESH_BASE_MS,
-  CAPABILITY_REFRESH_MAX_MS,
-  hasNonOkProvider,
-  nextCapabilityRefreshDelayMs,
-  PROBED_RUNTIME_PROVIDERS,
-  probeCapabilities,
-  REPROBE_MAX_AGE_MS,
-  reprobeOnReconnect,
-  revalidateCapabilities,
-  shouldFullReprobe,
-} from "./runtime/capabilities/index.js";
-export { probeOpenCodeCapability } from "./runtime/capabilities/opencode.js";
-export { probePiCapability } from "./runtime/capabilities/pi.js";
 export type {
   AdoptOptions,
   ChildCategory,
@@ -167,28 +189,6 @@ export type {
 export type { BuildImageAttachmentsOptions, BuildMessageImageSnapshotsResult } from "./runtime/image-snapshots.js";
 export { buildMessageImageSnapshots } from "./runtime/image-snapshots.js";
 export { InputController } from "./runtime/input-controller.js";
-export {
-  findOpenCodeExecutableOnPath,
-  formatOpenCodeBinaryMissingMessage,
-  isSupportedOpenCodeVersion,
-  OPENCODE_INSTALL_COMMAND,
-  OPENCODE_LOGIN_COMMAND,
-  OPENCODE_MINIMUM_VERSION,
-  OPENCODE_SUPPORTED_VERSION_RANGE,
-  parseOpenCodeVersionOutput,
-  resolveOpenCodeRuntimeBinary,
-} from "./runtime/opencode-binary.js";
-export {
-  findPiExecutableOnPath,
-  formatPiBinaryMissingMessage,
-  isSupportedPiVersion,
-  PI_INSTALL_COMMAND,
-  PI_LOGIN_COMMAND,
-  PI_MINIMUM_VERSION,
-  PI_SUPPORTED_VERSION_RANGE,
-  parsePiVersionOutput,
-  resolvePiRuntimeBinary,
-} from "./runtime/pi-binary.js";
 export {
   createDefaultProviderProcessSupervisor,
   type ProviderProcessSpec,

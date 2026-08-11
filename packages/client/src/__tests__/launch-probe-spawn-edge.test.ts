@@ -13,7 +13,7 @@ describe("runCommand — spawn edge failures", () => {
         throw new Error("spawn sync failed");
       },
     }));
-    const { runCommand } = await import("../runtime/capabilities/launch-probe.js");
+    const { runCommand } = await import("../providers/capabilities/launch-probe.js");
 
     const result = await runCommand("/bin/tool", ["--version"], { timeoutMs: 1000 });
 
@@ -43,7 +43,7 @@ describe("runCommand — spawn edge failures", () => {
         return child;
       },
     }));
-    const { runCommand } = await import("../runtime/capabilities/launch-probe.js");
+    const { runCommand } = await import("../providers/capabilities/launch-probe.js");
 
     const result = await runCommand("/bin/tool", ["--version"], { timeoutMs: 1000 });
 

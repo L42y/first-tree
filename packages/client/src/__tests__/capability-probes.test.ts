@@ -10,6 +10,8 @@ import {
   recordByRuntimeProvider,
 } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_ERROR_LENGTH, truncateError } from "../providers/capabilities/detect.js";
+import { commandFailureDigest, runCommand, verifyLaunchable } from "../providers/capabilities/launch-probe.js";
 import {
   type BundledClaudeBinary,
   formatClaudeBinaryMissingMessage,
@@ -25,8 +27,6 @@ import {
   resolveBundledCodexBinary,
   resolveCodexRuntimeBinary,
 } from "../providers/codex/capability.js";
-import { MAX_ERROR_LENGTH, truncateError } from "../runtime/capabilities/detect.js";
-import { commandFailureDigest, runCommand, verifyLaunchable } from "../runtime/capabilities/launch-probe.js";
 
 const originalPlatform = process.platform;
 const originalArch = process.arch;
@@ -742,7 +742,7 @@ describe("probeCapabilities (aggregator)", () => {
       pi: okProbe,
     } as const;
 
-    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const { probeCapabilities } = await import("../providers/capabilities/index.js");
     const caps = await probeCapabilities({ probes });
 
     // claude-code-tui is in DISABLED_RUNTIME_PROVIDERS — it is skipped, so it
@@ -767,7 +767,7 @@ describe("probeCapabilities (aggregator)", () => {
       pi: vi.fn().mockRejectedValue("pi probe failed"),
     } as const;
 
-    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const { probeCapabilities } = await import("../providers/capabilities/index.js");
     const caps = await probeCapabilities({ probes });
 
     expect(caps["claude-code"]).toMatchObject({
@@ -803,7 +803,7 @@ describe("probeCapabilities (aggregator)", () => {
       ),
     );
 
-    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const { probeCapabilities } = await import("../providers/capabilities/index.js");
     const pending = probeCapabilities({ probes });
     const enabledProviders = RUNTIME_PROVIDER_IDS.filter((provider) => isRuntimeProviderEnabled(provider));
 
@@ -840,7 +840,7 @@ describe("probeCapabilities (aggregator)", () => {
       pi: ok,
     } as const;
 
-    const { probeCapabilities } = await import("../runtime/capabilities/index.js");
+    const { probeCapabilities } = await import("../providers/capabilities/index.js");
     const caps = await probeCapabilities({ probes });
 
     expect(caps.codex).toMatchObject({ state: "error", error: "only codex" });

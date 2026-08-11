@@ -7,7 +7,11 @@ import {
   runtimeProviderLoginCommand,
 } from "@first-tree/shared";
 import { prerelease, satisfies, valid } from "semver";
-import { automaticCandidateAllowed, getLoginShellPathDirs, wellKnownBinDirs } from "./provider-support/index.js";
+import {
+  automaticCandidateAllowed,
+  getLoginShellPathDirs,
+  wellKnownBinDirs,
+} from "../../runtime/provider-support/index.js";
 
 /** Lowest compatible CLI — shared with catalog npm package metadata. */
 export { OPENCODE_MINIMUM_VERSION };

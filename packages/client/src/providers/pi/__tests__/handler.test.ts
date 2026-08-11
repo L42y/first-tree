@@ -5,6 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
+import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
+import { clearGitRepoIdentityCacheForTests } from "../../../runtime/git-repo-identity.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import { noopDeliveryToken } from "../../../runtime/handler.js";
+import * as managedSkills from "../../../runtime/managed-skills.js";
+import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
+import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
 import {
   createPiHandler,
   freshStartPiSessionId,
@@ -13,15 +21,7 @@ import {
   piLifecycleAbortWaiterCountForTests,
   resolvePiNativeToolRefs,
   sanitizePiProviderDetail,
-} from "../handlers/pi/index.js";
-import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
-import { clearGitRepoIdentityCacheForTests } from "../runtime/git-repo-identity.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { noopDeliveryToken } from "../runtime/handler.js";
-import * as managedSkills from "../runtime/managed-skills.js";
-import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
-import { readSessionBriefingFingerprint } from "../runtime/session-briefing-fingerprint.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
+} from "../index.js";
 
 const RPC_CHILD_SCRIPT = `
 const fs = require("node:fs");

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { probeOpenCodeCapability } from "../runtime/capabilities/opencode.js";
+import { probeOpenCodeCapability } from "../capability.js";
 
 describe("OpenCode install-only capability", () => {
   it("reports the exact path without launching or inspecting auth", async () => {

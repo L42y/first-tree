@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 import { BUILTIN_PROVIDER_PROBES } from "../providers/builtin-probes.js";
 import { createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";
+import { probeCapabilities } from "../providers/capabilities/index.js";
 import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
-import { probeCapabilities } from "../runtime/capabilities/index.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { providerSkillRoot } from "../runtime/managed-skills.js";
 

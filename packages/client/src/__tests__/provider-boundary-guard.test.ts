@@ -45,7 +45,7 @@ const COMPOSITION_ALLOWLIST = new Set([
 
 /** Generic modules that must stay provider-neutral after this foundation PR. */
 const GUARDED_CLIENT_FILES = [
-  "runtime/capabilities/index.ts",
+  "providers/capabilities/index.ts",
   "runtime/managed-skills.ts",
   "runtime/runtime.ts",
   "runtime/handler.ts",
@@ -385,20 +385,35 @@ function normalizeClientSrcRelativeTarget(fromFileAbs: string, specifier: string
 
 /**
  * Concrete provider implementation targets that generic Runtime must never load.
- * Deleted Cursor/Kimi owners stay forbidden forever alongside current family paths.
+ * Deleted Cursor/Kimi/OpenCode/Pi owners stay forbidden forever alongside current
+ * family paths and the shared `providers/capabilities/**` foundation.
  */
 function isForbiddenConcreteProviderModuleTarget(relPosix: string): boolean {
   const rel = relPosix.replaceAll("\\", "/").replace(/\.tsx?$/, ".js");
   if (rel === "handlers/kimi-code.js") return true;
   if (/^handlers\/(cursor|kimi-code|opencode|pi)\//.test(rel)) return true;
-  if (/^providers\/(claude|codex|cursor|grok|kimi-code)(\/|$)/.test(rel)) return true;
+  if (/^providers\/(claude|codex|cursor|grok|kimi-code|opencode|pi)(\/|$)/.test(rel)) return true;
+  // Shared capability foundation — Runtime must not reverse-load it.
+  // Do not forbid providers/skill-roots (managed-skills composition seam).
+  if (/^providers\/capabilities(\/|$)/.test(rel)) return true;
   if (/^runtime\/(cursor|grok|pi|kimi|opencode|codex)-binary\.js$/.test(rel)) return true;
-  // Deleted Cursor/Kimi Runtime owners relocated by this S3 slice (path existence not required).
+  if (rel === "runtime/opencode-private-config.js") return true;
+  // Deleted Cursor/Kimi Runtime owners (prior S3 slices).
   if (rel === "runtime/cursor-login.js") return true;
   if (
     rel === "runtime/capabilities/cursor.js" ||
     rel === "runtime/capabilities/kimi-code.js" ||
     rel === "runtime/capabilities/discover-models.js"
+  ) {
+    return true;
+  }
+  // Deleted OpenCode/Pi + shared capability foundation owners (this S3 final slice).
+  if (
+    rel === "runtime/capabilities/opencode.js" ||
+    rel === "runtime/capabilities/pi.js" ||
+    rel === "runtime/capabilities/detect.js" ||
+    rel === "runtime/capabilities/index.js" ||
+    rel === "runtime/capabilities/launch-probe.js"
   ) {
     return true;
   }
@@ -438,8 +453,8 @@ const CATALOG_CONSUMER_FILES = [
   "packages/client/src/providers/cursor/binary.ts",
   "packages/client/src/providers/grok/binary.ts",
   "packages/client/src/providers/kimi-code/binary.ts",
-  "packages/client/src/runtime/opencode-binary.ts",
-  "packages/client/src/runtime/pi-binary.ts",
+  "packages/client/src/providers/opencode/binary.ts",
+  "packages/client/src/providers/pi/binary.ts",
 ] as const;
 
 function listFilesRecursive(root: string, predicate: (path: string) => boolean): string[] {
@@ -484,7 +499,7 @@ describe("runtime provider architecture guard", () => {
         continue;
       }
 
-      if (relPosix === "runtime/capabilities/index.ts") {
+      if (relPosix === "providers/capabilities/index.ts") {
         expect(source).toContain("BUILTIN_PROVIDER_PROBES");
         expect(source).toContain("RUNTIME_PROVIDER_IDS");
         expect(source).not.toContain("peekInstalledBuiltinProviderRegistry");
@@ -573,7 +588,7 @@ describe("runtime provider architecture guard", () => {
       ["providers/codex/binary.ts", "isCodexBinaryMissingError"],
       ["providers/cursor/binary.ts", "isCursorBinaryMissingError"],
       ["providers/grok/binary.ts", "isGrokBinaryMissingError"],
-      ["runtime/pi-binary.ts", "isPiBinaryMissingError"],
+      ["providers/pi/binary.ts", "isPiBinaryMissingError"],
     ] as const) {
       const source = readFileSync(join(clientSrc, file), "utf8");
       expect(source, `${file} must re-export ${symbol} from provider-support index`).toContain(
@@ -604,12 +619,15 @@ describe("runtime provider architecture guard", () => {
     expect(productionRels).toContain("providers/claude/capability.ts");
     expect(productionRels).toContain("providers/codex/capability.ts");
     expect(productionRels).toContain("providers/grok/capability.ts");
+    expect(productionRels).toContain("providers/opencode/capability.ts");
+    expect(productionRels).toContain("providers/pi/capability.ts");
 
     // Local regex / phrase tables that re-recognize provider binary absence.
     const codexBundledLocateMatcher = /unable to locate codex cli binaries/i;
+    const noPiBinaryMatcher = /no pi binary/i;
     const secondOwnerMatchers = [
       /pi cli is missing/i,
-      /no pi binary/i,
+      noPiBinaryMatcher,
       /BINARY_MISSING_PATTERNS/,
       /codex runtime binary is missing/i,
       codexBundledLocateMatcher,
@@ -712,6 +730,276 @@ describe("runtime provider architecture guard", () => {
       return out;
     }
 
+    /**
+     * Exact approved Pi capability occurrence of the pre-format resolution
+     * phrase. Fail-closed: unique exported async `probePiCapability` must open
+     * with the production reachable prefix
+     * (`const env` / `const platform` / `const findOnPath` / `const detected`),
+     * own exactly one `runDetect` via that fourth statement, and have a callback
+     * body that is the production terminal missing-path sequence. Only the
+     * terminal missing-return string literal is masked. Outer or callback
+     * unconditional completion, reshaped/reordered predecessors, non-`const`
+     * declarations, extra `detected` / `runDetect`, or non-terminal exact
+     * returns yield zero spans.
+     */
+    const approvedPiCapabilityDetail = "no pi binary resolved on this host";
+
+    function isExportedAsyncProbePiCapability(stmt: ts.Statement): stmt is ts.FunctionDeclaration {
+      return (
+        ts.isFunctionDeclaration(stmt) &&
+        stmt.name?.text === "probePiCapability" &&
+        !!stmt.body &&
+        !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) &&
+        !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      );
+    }
+
+    function isConstSingleDeclaration(
+      stmt: ts.Statement,
+      name: string,
+    ): stmt is ts.VariableStatement & {
+      declarationList: ts.VariableDeclarationList & { declarations: [ts.VariableDeclaration] };
+    } {
+      if (!ts.isVariableStatement(stmt)) return false;
+      if ((stmt.declarationList.flags & ts.NodeFlags.Const) === 0) return false;
+      if (stmt.declarationList.declarations.length !== 1) return false;
+      const decl = stmt.declarationList.declarations[0];
+      return !!decl && ts.isIdentifier(decl.name) && decl.name.text === name;
+    }
+
+    function isPropertyAccess(expr: ts.Expression, object: string, name: string): boolean {
+      return (
+        ts.isPropertyAccessExpression(expr) &&
+        ts.isIdentifier(expr.expression) &&
+        expr.expression.text === object &&
+        expr.name.text === name
+      );
+    }
+
+    function isNullishCoalesce(
+      expr: ts.Expression | undefined,
+      left: (e: ts.Expression) => boolean,
+      right: (e: ts.Expression) => boolean,
+    ): boolean {
+      return (
+        !!expr &&
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken &&
+        left(expr.left) &&
+        right(expr.right)
+      );
+    }
+
+    function isEnvDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "env")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "env"),
+        (e) => isPropertyAccess(e, "process", "env"),
+      );
+    }
+
+    function isPlatformDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "platform")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "platform"),
+        (e) => isPropertyAccess(e, "process", "platform"),
+      );
+    }
+
+    function isFindOnPathDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "findOnPath")) return false;
+      const init = stmt.declarationList.declarations[0]?.initializer;
+      return isNullishCoalesce(
+        init,
+        (e) => isPropertyAccess(e, "deps", "findOnPath"),
+        (e) => ts.isIdentifier(e) && e.text === "findPiExecutableOnPath",
+      );
+    }
+
+    function isPlatformWin32Binary(expr: ts.Expression): boolean {
+      return (
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        ts.isIdentifier(expr.left) &&
+        expr.left.text === "platform" &&
+        ts.isStringLiteral(expr.right) &&
+        expr.right.text === "win32"
+      );
+    }
+
+    function isWin32PlatformGate(stmt: ts.Statement): boolean {
+      if (!ts.isIfStatement(stmt) || stmt.elseStatement) return false;
+      if (!isPlatformWin32Binary(stmt.expression)) return false;
+      if (!ts.isBlock(stmt.thenStatement) || stmt.thenStatement.statements.length !== 1) return false;
+      const only = stmt.thenStatement.statements[0];
+      if (!only || !ts.isThrowStatement(only) || !only.expression) return false;
+      if (!ts.isNewExpression(only.expression)) return false;
+      return ts.isIdentifier(only.expression.expression) && only.expression.expression.text === "Error";
+    }
+
+    function isRuntimePathDeclaration(stmt: ts.Statement): boolean {
+      if (!isConstSingleDeclaration(stmt, "runtimePath")) return false;
+      const decl = stmt.declarationList.declarations[0];
+      if (!decl?.initializer || !ts.isCallExpression(decl.initializer)) return false;
+      if (!ts.isIdentifier(decl.initializer.expression) || decl.initializer.expression.text !== "findOnPath") {
+        return false;
+      }
+      if (decl.initializer.arguments.length !== 1) return false;
+      const arg = decl.initializer.arguments[0];
+      return !!arg && ts.isIdentifier(arg) && arg.text === "env";
+    }
+
+    function isInstalledSuccessObject(expr: ts.Expression): boolean {
+      if (!ts.isObjectLiteralExpression(expr) || expr.properties.length !== 3) return false;
+      const installed = expr.properties[0];
+      const runtimeSource = expr.properties[1];
+      const runtimePath = expr.properties[2];
+      if (!installed || !runtimeSource || !runtimePath) return false;
+      if (!ts.isPropertyAssignment(installed) || !ts.isPropertyAssignment(runtimeSource)) return false;
+      if (!ts.isIdentifier(installed.name) || installed.name.text !== "installed") return false;
+      if (installed.initializer.kind !== ts.SyntaxKind.TrueKeyword) return false;
+      if (!ts.isIdentifier(runtimeSource.name) || runtimeSource.name.text !== "runtimeSource") return false;
+      if (!ts.isStringLiteral(runtimeSource.initializer) || runtimeSource.initializer.text !== "path") return false;
+      // Production uses object shorthand `{ …, runtimePath }`.
+      if (ts.isShorthandPropertyAssignment(runtimePath)) {
+        return runtimePath.name.text === "runtimePath";
+      }
+      if (!ts.isPropertyAssignment(runtimePath)) return false;
+      if (!ts.isIdentifier(runtimePath.name) || runtimePath.name.text !== "runtimePath") return false;
+      return ts.isIdentifier(runtimePath.initializer) && runtimePath.initializer.text === "runtimePath";
+    }
+
+    function isInstalledSuccessGate(stmt: ts.Statement): boolean {
+      if (!ts.isIfStatement(stmt) || stmt.elseStatement) return false;
+      if (!ts.isIdentifier(stmt.expression) || stmt.expression.text !== "runtimePath") return false;
+      let ret: ts.ReturnStatement | undefined;
+      if (ts.isReturnStatement(stmt.thenStatement)) {
+        ret = stmt.thenStatement;
+      } else if (ts.isBlock(stmt.thenStatement) && stmt.thenStatement.statements.length === 1) {
+        const only = stmt.thenStatement.statements[0];
+        if (only && ts.isReturnStatement(only)) ret = only;
+      }
+      if (!ret?.expression) return false;
+      return isInstalledSuccessObject(ret.expression);
+    }
+
+    function isApprovedPiMissingDetectReturn(
+      stmt: ts.Statement,
+      sourceFile: ts.SourceFile,
+    ): { start: number; end: number; text: string } | null {
+      if (!ts.isReturnStatement(stmt) || !stmt.expression || !ts.isObjectLiteralExpression(stmt.expression)) {
+        return null;
+      }
+      if (stmt.expression.properties.length !== 2) return null;
+      if (!stmt.expression.properties.every((prop) => ts.isPropertyAssignment(prop))) return null;
+      const installedProp = stmt.expression.properties[0];
+      const errorProp = stmt.expression.properties[1];
+      if (
+        !installedProp ||
+        !errorProp ||
+        !ts.isPropertyAssignment(installedProp) ||
+        !ts.isPropertyAssignment(errorProp)
+      ) {
+        return null;
+      }
+      if (!ts.isIdentifier(installedProp.name) || installedProp.name.text !== "installed") return null;
+      if (installedProp.initializer.kind !== ts.SyntaxKind.FalseKeyword) return null;
+      if (!ts.isIdentifier(errorProp.name) || errorProp.name.text !== "error") return null;
+      if (!ts.isCallExpression(errorProp.initializer)) return null;
+      const call = errorProp.initializer;
+      if (!ts.isIdentifier(call.expression) || call.expression.text !== "formatPiBinaryMissingMessage") {
+        return null;
+      }
+      if (call.arguments.length !== 1) return null;
+      const arg = call.arguments[0];
+      if (!arg || !ts.isStringLiteral(arg) || arg.text !== approvedPiCapabilityDetail) return null;
+      return {
+        start: arg.getStart(sourceFile),
+        end: arg.getEnd(),
+        text: arg.getText(sourceFile),
+      };
+    }
+
+    function countRunDetectCalls(node: ts.Node): number {
+      let count = 0;
+      function visit(n: ts.Node): void {
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "runDetect") {
+          count += 1;
+        }
+        ts.forEachChild(n, visit);
+      }
+      visit(node);
+      return count;
+    }
+
+    function extractDetectedRunDetectCallbackFromFourthStatement(fn: ts.FunctionDeclaration): ts.ArrowFunction | null {
+      if (!fn.body) return null;
+      if (countRunDetectCalls(fn.body) !== 1) return null;
+
+      const stmts = fn.body.statements;
+      // Reachable production prefix: detected is exactly the fourth top-level statement.
+      if (stmts.length < 4) return null;
+      if (!isEnvDeclaration(stmts[0]!)) return null;
+      if (!isPlatformDeclaration(stmts[1]!)) return null;
+      if (!isFindOnPathDeclaration(stmts[2]!)) return null;
+      const detectedStmt = stmts[3];
+      if (!detectedStmt || !isConstSingleDeclaration(detectedStmt, "detected")) return null;
+
+      const decl = detectedStmt.declarationList.declarations[0];
+      if (!decl?.initializer || !ts.isAwaitExpression(decl.initializer)) return null;
+      const awaited = decl.initializer.expression;
+      if (!ts.isCallExpression(awaited)) return null;
+      if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") return null;
+      if (awaited.arguments.length !== 1) return null;
+      const callback = awaited.arguments[0];
+      if (!callback || !ts.isArrowFunction(callback) || !callback.body) return null;
+      if ((ts.getCombinedModifierFlags(callback) & ts.ModifierFlags.Async) === 0) return null;
+      if (!ts.isBlock(callback.body)) return null;
+      return callback;
+    }
+
+    function approvedPiCapabilityNoBinaryDetailSpans(
+      source: string,
+    ): Array<{ start: number; end: number; text: string }> {
+      const sourceFile = ts.createSourceFile(
+        "providers/pi/capability.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+      );
+
+      const candidates = sourceFile.statements.filter(isExportedAsyncProbePiCapability);
+      if (candidates.length !== 1) return [];
+      const fn = candidates[0];
+      if (!fn?.body) return [];
+
+      const callback = extractDetectedRunDetectCallbackFromFourthStatement(fn);
+      if (!callback || !ts.isBlock(callback.body)) return [];
+
+      const stmts = callback.body.statements;
+      // Exact production sequence: 4 direct statements; terminal is missing return.
+      if (stmts.length !== 4) return [];
+      if (!isWin32PlatformGate(stmts[0]!)) return [];
+      if (!isRuntimePathDeclaration(stmts[1]!)) return [];
+      if (!isInstalledSuccessGate(stmts[2]!)) return [];
+      const span = isApprovedPiMissingDetectReturn(stmts[3]!, sourceFile);
+      return span ? [span] : [];
+    }
+
+    function expectRejectedPiDetailFixture(label: string, snippet: string): void {
+      expect(approvedPiCapabilityNoBinaryDetailSpans(snippet), label).toHaveLength(0);
+      expect(noPiBinaryMatcher.test(snippet), `${label} still matches generic phrase`).toBe(true);
+      expect(
+        noPiBinaryMatcher.test(maskSpans(snippet, approvedPiCapabilityNoBinaryDetailSpans(snippet))),
+        `${label} must not be neutralized by masking`,
+      ).toBe(true);
+    }
+
     function expectRejectedLocateFixture(label: string, snippet: string): void {
       expect(approvedCodexBundledLocateErrorSpans(snippet), label).toHaveLength(0);
       expect(codexBundledLocateMatcher.test(snippet), `${label} still matches generic phrase`).toBe(true);
@@ -735,6 +1023,20 @@ describe("runtime provider architecture guard", () => {
           expect(
             neutralized,
             `${rel} must not re-own binary-missing recognition outside the approved resolveBundledCodexBinary catch (${matcher})`,
+          ).not.toMatch(matcher);
+          continue;
+        }
+        if (rel === "providers/pi/capability.ts" && matcher === noPiBinaryMatcher) {
+          const spans = approvedPiCapabilityNoBinaryDetailSpans(source);
+          expect(
+            spans,
+            "Pi capability must expose exactly one approved formatPiBinaryMissingMessage detail literal",
+          ).toHaveLength(1);
+          expect(spans[0]?.text).toBe(JSON.stringify(approvedPiCapabilityDetail));
+          const neutralized = maskSpans(source, spans);
+          expect(
+            neutralized,
+            `${rel} must not re-own binary-missing recognition outside the approved formatPiBinaryMissingMessage detail (${matcher})`,
           ).not.toMatch(matcher);
           continue;
         }
@@ -865,8 +1167,487 @@ describe("runtime provider architecture guard", () => {
       ),
     ).toBe(true);
 
+    // Approved Pi shape — exact production AST skeleton (drives the same approver).
+    const approvedPiOuterPrefix = [
+      "  const env = deps.env ?? process.env;",
+      "  const platform = deps.platform ?? process.platform;",
+      "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+    ].join("\n");
+    const approvedPiCallbackBody = [
+      '    if (platform === "win32") {',
+      '      throw new Error("Pi provider is not supported on Windows in V1");',
+      "    }",
+      "    const runtimePath = findOnPath(env);",
+      '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+      "    return {",
+      "      installed: false,",
+      '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+      "    };",
+    ].join("\n");
+    const approvedPiShape = [
+      "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+      approvedPiOuterPrefix,
+      "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+      approvedPiCallbackBody,
+      "  });",
+      "  return detected;",
+      "}",
+      "",
+    ].join("\n");
+    expect(approvedPiCapabilityNoBinaryDetailSpans(approvedPiShape)).toHaveLength(1);
+    expect(
+      noPiBinaryMatcher.test(maskSpans(approvedPiShape, approvedPiCapabilityNoBinaryDetailSpans(approvedPiShape))),
+    ).toBe(false);
+
+    // QA-reproduced bypass: call moved to unrelated helper; probe detail changed.
+    expectRejectedPiDetailFixture(
+      "QA relocation to unrelatedPiDetailForMutation",
+      [
+        "export function unrelatedPiDetailForMutation(): string {",
+        '  return formatPiBinaryMissingMessage("no pi binary resolved on this host");',
+        "}",
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("artifact unavailable"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "dead helper outside probePiCapability",
+      [
+        "export function deadHelper() {",
+        '  return formatPiBinaryMissingMessage("no pi binary resolved on this host");',
+        "}",
+        "export async function probePiCapability() {",
+        "  return { state: 'ok', available: true, detectedAt: '' };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "other provider file shape",
+      [
+        "export async function probeOpenCodeCapability() {",
+        "  const detected = await runDetect(async () => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const withExtraPiOutside = `${approvedPiShape}export function leaked() { return formatPiBinaryMissingMessage("no pi binary resolved on this host"); }\n`;
+    expect(approvedPiCapabilityNoBinaryDetailSpans(withExtraPiOutside)).toHaveLength(1);
+    expect(
+      noPiBinaryMatcher.test(
+        maskSpans(withExtraPiOutside, approvedPiCapabilityNoBinaryDetailSpans(withExtraPiOutside)),
+      ),
+      "extra identical call outside approved return must not be neutralized",
+    ).toBe(true);
+    expectRejectedPiDetailFixture(
+      "wrong callee",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatOpenCodeBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "wrong string argument",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "wrong object property name",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      detail: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "nested function smuggling inside runDetect callback",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    function nested() {",
+        "      return {",
+        "        installed: false,",
+        '        error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "      };",
+        "    }",
+        "    return nested();",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "missing runDetect await shape",
+      [
+        "export async function probePiCapability() {",
+        "  return {",
+        "    installed: false,",
+        '    error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // QA control-flow bypass: unconditional throw before still-present exact return.
+    expectRejectedPiDetailFixture(
+      "QA unreachable throw before terminal exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") {',
+        '      throw new Error("Pi provider is not supported on Windows in V1");',
+        "    }",
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        '    throw new Error("QA mutation: make the approved missing return unreachable");',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "unconditional return before terminal exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        '    return { installed: false, error: "artifact unavailable" };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "exact return moved earlier; final missing return rewritten",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("artifact unavailable"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "extra detected/runDetect while keeping final exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const ignored = await runDetect(async () => ({ installed: true, runtimeSource: 'path', runtimePath: '/x' }));",
+        "  const detected = await runDetect(async () => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  void ignored;",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "duplicate direct exact return in same callback",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped platform predecessor gate",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "darwin") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped runtimePath declaration",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath();",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped installed-success branch",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "bundle", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // Outer reachability — detected must be the fourth top-level const statement.
+    expectRejectedPiDetailFixture(
+      "QA outer unconditional throw before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        '  throw new Error("QA mutation: make the runDetect owner unreachable");',
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "outer unconditional return before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  return { state: 'error', available: false, detectedAt: '', error: 'x' };",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "harmless extra statement before detected",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  void deps;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "env declaration renamed",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const environment = deps.env ?? process.env;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "platform initializer reshaped",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const env = deps.env ?? process.env;",
+        "  const platform = process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "findOnPath / platform declaration order swapped",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  const env = deps.env ?? process.env;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "outer env uses let instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        "  let env = deps.env ?? process.env;",
+        "  const platform = deps.platform ?? process.platform;",
+        "  const findOnPath = deps.findOnPath ?? findPiExecutableOnPath;",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "detected uses let instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  let detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "callback runtimePath uses var instead of const",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    var runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "detected nested inside block instead of fourth top-level statement",
+      [
+        "export async function probePiCapability(deps: PiProbeDeps = {}) {",
+        approvedPiOuterPrefix,
+        "  {",
+        "    const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        approvedPiCallbackBody,
+        "    });",
+        "    return detected;",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
-    const piHandler = readFileSync(join(clientSrc, "handlers/pi/index.ts"), "utf8");
+    const piHandler = readFileSync(join(clientSrc, "providers/pi/index.ts"), "utf8");
     expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
     expect(piHandler).toMatch(/runtime\/provider-support\/(?:index|binary-failure)/);
     expect(piHandler).not.toContain("isPiBinaryMissingError");
@@ -1039,8 +1820,8 @@ describe("runtime provider architecture guard", () => {
       "providers/cursor/index.ts",
       "providers/grok/index.ts",
       "providers/kimi-code/index.ts",
-      "handlers/opencode/index.ts",
-      "handlers/pi/index.ts",
+      "providers/opencode/index.ts",
+      "providers/pi/index.ts",
       "handlers/turn-settlement.ts",
       "providers/builtin-registry.ts",
       "providers/auth-driver.ts",
@@ -1250,11 +2031,11 @@ describe("runtime provider architecture guard", () => {
         expect(source).toMatch(/from "@first-tree\/shared"/);
         expect(source).toContain("INSTALL_COMMAND");
       }
-      if (rel.endsWith("opencode-binary.ts")) {
+      if (rel.endsWith("providers/opencode/binary.ts") || rel.endsWith("opencode/binary.ts")) {
         expect(source).toContain("OPENCODE_MINIMUM_VERSION");
         expect(source).toContain("runtimeProviderInstallCommand");
       }
-      if (rel.endsWith("pi-binary.ts")) {
+      if (rel.endsWith("providers/pi/binary.ts") || rel.endsWith("pi/binary.ts")) {
         expect(source).toContain("runtimeProviderInstallCommand");
         expect(source).toContain("runtimeProviderInteractiveLoginCue");
         expect(source).not.toContain("running `pi` and entering `/login`");
@@ -1591,8 +2372,8 @@ describe("runtime provider architecture guard", () => {
       "providers/cursor/index.ts",
       "providers/grok/index.ts",
       "providers/kimi-code/index.ts",
-      "handlers/opencode/index.ts",
-      "handlers/pi/index.ts",
+      "providers/opencode/index.ts",
+      "providers/pi/index.ts",
     ] as const;
     for (const rel of mustUseProviderSupport) {
       const source = readFileSync(join(clientSrc, rel), "utf8");
@@ -1816,9 +2597,11 @@ describe("runtime provider architecture guard", () => {
       return transitionalRelPaths.has(rel);
     }
 
-    expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/index.ts")).toBe(true);
+    expect(TRANSITIONAL_PROVIDER_FAMILY_FILES).toHaveLength(0);
+    expect(isExplicitTransitionalProviderFamilyPath("providers/capabilities/index.ts")).toBe(false);
     expect(isExplicitTransitionalProviderFamilyPath("runtime/brand-new/index.ts")).toBe(false);
     expect(isExplicitTransitionalProviderFamilyPath("runtime/capabilities/brand-new.ts")).toBe(false);
+    expect(isExplicitTransitionalProviderFamilyPath("runtime/opencode-binary.ts")).toBe(false);
 
     for (const file of runtimeFiles) {
       const rel = relative(clientSrc, file).replaceAll("\\", "/");
@@ -1829,13 +2612,120 @@ describe("runtime provider architecture guard", () => {
     }
   });
 
-  it("fail-closes concrete Cursor/Kimi module edges via AST + normalized targets", () => {
+  it("fail-closes concrete provider-family module edges via AST + normalized targets", () => {
     // Mutation matrix: same predicate the recursive Runtime scan uses. Synthetic
     // importer paths cover Runtime root and nested capabilities/.
     const runtimeRootImporter = join(clientSrc, "runtime", "synthetic-guard-importer.ts");
     const capabilitiesImporter = join(clientSrc, "runtime", "capabilities", "synthetic-guard-importer.ts");
+    const managedSkillsImporter = join(clientSrc, "runtime", "managed-skills.ts");
 
+    // Every deleted OpenCode/Pi/shared-capability owner + current family /
+    // shared-foundation targets must fail via real module-edge extraction
+    // (not classifier-only booleans). Mix edge forms across the set.
     const mustFail: Array<{ importer: string; source: string; note: string }> = [
+      // --- 12 deleted owners from this S3 final slice ---
+      {
+        importer: runtimeRootImporter,
+        source: `import { createOpenCodeHandler } from "../handlers/opencode/index.js";\n`,
+        note: "deleted opencode handler index static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import "../../handlers/opencode/parser.js";\n`,
+        note: "deleted opencode parser nested bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `await import("./opencode-binary.js");\n`,
+        note: "deleted opencode-binary dynamic",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { acquireOpenCodePrivateConfigLease } from "./opencode-private-config.js";\n`,
+        note: "deleted opencode-private-config export-from",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import type { OpenCodeProbeDeps } from "./opencode.js";\nvoid null as unknown as OpenCodeProbeDeps;\n`,
+        note: "deleted capabilities/opencode import-type",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import "../handlers/pi/index.js";\n`,
+        note: "deleted pi handler index bare",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import PiRpc = require("../../handlers/pi/rpc-client.js");\nvoid PiRpc;\n`,
+        note: "deleted pi rpc-client import-equals",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import { findPiExecutableOnPath } from "../pi-binary.js";\n`,
+        note: "deleted pi-binary nested static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { probePiCapability } from "./capabilities/pi.js";\n`,
+        note: "deleted capabilities/pi export-from",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { runDetect } from "./capabilities/detect.js";\n`,
+        note: "deleted capabilities/detect static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `await import("./index.js");\n`,
+        note: "deleted capabilities/index nested dynamic",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import type { LaunchProbeResult } from "./capabilities/launch-probe.js";\nvoid null as unknown as LaunchProbeResult;\n`,
+        note: "deleted capabilities/launch-probe import-type",
+      },
+      // --- new family + shared foundation reverse-load ---
+      {
+        importer: runtimeRootImporter,
+        source: `await import("../providers/opencode/index.js");\n`,
+        note: "family opencode dynamic",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import { createPiHandler } from "../../providers/pi/index.js";\n`,
+        note: "family pi nested static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { createOpenCodeHandler } from "../providers/opencode/index.js";\n`,
+        note: "family opencode export-from",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import type { PiProbeDeps } from "../providers/pi/capability.js";\nvoid null as unknown as PiProbeDeps;\n`,
+        note: "family pi capability import-type",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import OpenCode = require("../providers/opencode/binary.js");\nvoid OpenCode;\n`,
+        note: "family opencode binary import-equals",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { probeCapabilities } from "../providers/capabilities/index.js";\n`,
+        note: "shared providers/capabilities/index reverse-load",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import "../../providers/capabilities/detect.js";\n`,
+        note: "shared providers/capabilities/detect nested bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `await import("../providers/capabilities/launch-probe.js");\n`,
+        note: "shared providers/capabilities/launch-probe dynamic",
+      },
+      // --- prior S3 Cursor/Kimi durability (must not regress) ---
       {
         importer: runtimeRootImporter,
         source: `import { createCursorHandler } from "../handlers/cursor/index.js";\n`,
@@ -1857,19 +2747,9 @@ describe("runtime provider architecture guard", () => {
         note: "family kimi bare side-effect",
       },
       {
-        importer: runtimeRootImporter,
-        source: `const cursorFamily = await import("../providers/cursor/index.js");\nvoid cursorFamily;\n`,
-        note: "family cursor dynamic import",
-      },
-      {
         importer: capabilitiesImporter,
         source: `import { resolveCursorRuntimeBinary } from "../cursor-binary.js";\n`,
         note: "nested legacy cursor-binary",
-      },
-      {
-        importer: capabilitiesImporter,
-        source: `import { findKimiExecutableOnPath } from "../kimi-binary.js";\n`,
-        note: "nested legacy kimi-binary",
       },
       {
         importer: runtimeRootImporter,
@@ -1877,39 +2757,14 @@ describe("runtime provider architecture guard", () => {
         note: "legacy cursor-login static",
       },
       {
-        importer: capabilitiesImporter,
-        source: `await import("../cursor-login.js");\n`,
-        note: "nested legacy cursor-login dynamic",
-      },
-      {
         importer: runtimeRootImporter,
         source: `import { probeCursorCapability } from "./capabilities/cursor.js";\n`,
         note: "legacy capabilities/cursor static",
       },
       {
-        importer: capabilitiesImporter,
-        source: `import "./kimi-code.js";\n`,
-        note: "legacy capabilities/kimi-code bare",
-      },
-      {
         importer: runtimeRootImporter,
         source: `export { discoverProviderModels } from "./capabilities/discover-models.js";\n`,
         note: "legacy capabilities/discover-models export-from",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `export { createCursorHandler } from "../providers/cursor/index.js";\n`,
-        note: "family cursor export-from",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `type H = import("../providers/cursor/index.js").HandlerFactory;\nvoid null as unknown as H;\n`,
-        note: "family cursor import-type",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import Cursor = require("../providers/cursor/index.js");\nvoid Cursor;\n`,
-        note: "family cursor import-equals",
       },
       {
         importer: runtimeRootImporter,
@@ -1936,8 +2791,8 @@ describe("runtime provider architecture guard", () => {
       },
       {
         importer: runtimeRootImporter,
-        source: `import { something } from "./capabilities/index.js";\nvoid something;\n`,
-        note: "runtime-local capabilities",
+        source: `import { something } from "./child-process-registry.js";\nvoid something;\n`,
+        note: "runtime-local child-process-registry",
       },
       {
         importer: runtimeRootImporter,
@@ -1948,6 +2803,11 @@ describe("runtime provider architecture guard", () => {
         importer: runtimeRootImporter,
         source: `import { createRequire } from "node:module";\nconst native = createRequire(import.meta.url)("fs-native-extensions");\nvoid native;\n`,
         note: "literal package createRequire (workspace-file-lock shape)",
+      },
+      {
+        importer: managedSkillsImporter,
+        source: `import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";\nvoid PROVIDER_SKILL_ROOTS;\n`,
+        note: "controlled managed-skills -> providers/skill-roots seam",
       },
     ];
 
@@ -1971,8 +2831,23 @@ describe("runtime provider architecture guard", () => {
     expect(isForbiddenConcreteProviderModuleTarget("providers/codex/binary.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("providers/grok/login.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("handlers/opencode/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/opencode/parser.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/pi/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("handlers/pi/rpc-client.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/opencode-binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/opencode-private-config.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/pi-binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/opencode.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/pi.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/detect.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("runtime/capabilities/launch-probe.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/opencode/index.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/pi/binary.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/capabilities/detect.js")).toBe(true);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/capabilities/index.js")).toBe(true);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/contracts.js")).toBe(false);
     expect(isForbiddenConcreteProviderModuleTarget("runtime/provider-support/index.js")).toBe(false);
+    expect(isForbiddenConcreteProviderModuleTarget("providers/skill-roots.js")).toBe(false);
   });
 });

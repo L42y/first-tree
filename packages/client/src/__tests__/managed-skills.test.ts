@@ -203,8 +203,8 @@ describe("managed Skill reconciler", () => {
       "src/providers/codex/app-server/index.ts",
       "src/providers/cursor/index.ts",
       "src/providers/kimi-code/index.ts",
-      "src/handlers/opencode/index.ts",
-      "src/handlers/pi/index.ts",
+      "src/providers/opencode/index.ts",
+      "src/providers/pi/index.ts",
     ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));
     // Normal start/resume admission owns reconcile inside prepareManagedSession;
     // remaining direct handler calls are hot-switch / legacy compatibility only.

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
+import type { ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import {
   applyPiChildEnvControls,
   buildPiRpcArgs,
@@ -9,8 +10,7 @@ import {
   PiRpcTransportError,
   piV1NativeToolsArg,
   splitPiJsonlBuffer,
-} from "../handlers/pi/rpc-client.js";
-import type { ProviderProcessSupervisor } from "../runtime/provider-process-supervisor.js";
+} from "../rpc-client.js";
 
 const LINE_SEP = "\u2028";
 const PARA_SEP = "\u2029";

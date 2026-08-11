@@ -227,13 +227,5 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
   ],
 } as const satisfies Record<string, readonly string[]>;
 
-export const TRANSITIONAL_PROVIDER_FAMILY_FILES = [
-  "runtime/capabilities/detect.ts",
-  "runtime/capabilities/index.ts",
-  "runtime/capabilities/launch-probe.ts",
-  "runtime/capabilities/opencode.ts",
-  "runtime/capabilities/pi.ts",
-  "runtime/opencode-binary.ts",
-  "runtime/opencode-private-config.ts",
-  "runtime/pi-binary.ts",
-] as const;
+/** S3 transitional drain complete — exact empty list; guard asserts length 0. */
+export const TRANSITIONAL_PROVIDER_FAMILY_FILES: readonly string[] = [];
