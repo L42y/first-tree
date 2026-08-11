@@ -1014,7 +1014,7 @@ describe("runtime provider architecture guard", () => {
       "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
       "    return {",
       "      installed: false,",
-      `      error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+      '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
       "    };",
       "  });",
       "  return detected;",
@@ -1031,7 +1031,7 @@ describe("runtime provider architecture guard", () => {
       "QA relocation to unrelatedPiDetailForMutation",
       [
         "export function unrelatedPiDetailForMutation(): string {",
-        `  return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)});`,
+        '  return formatPiBinaryMissingMessage("no pi binary resolved on this host");',
         "}",
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
@@ -1049,7 +1049,7 @@ describe("runtime provider architecture guard", () => {
       "dead helper outside probePiCapability",
       [
         "export function deadHelper() {",
-        `  return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)});`,
+        '  return formatPiBinaryMissingMessage("no pi binary resolved on this host");',
         "}",
         "export async function probePiCapability() {",
         "  return { state: 'ok', available: true, detectedAt: '' };",
@@ -1064,7 +1064,7 @@ describe("runtime provider architecture guard", () => {
         "  const detected = await runDetect(async () => {",
         "    return {",
         "      installed: false,",
-        `      error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
         "    };",
         "  });",
         "  return detected;",
@@ -1072,7 +1072,7 @@ describe("runtime provider architecture guard", () => {
         "",
       ].join("\n"),
     );
-    const withExtraPiOutside = `${approvedPiShape}export function leaked() { return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}); }\n`;
+    const withExtraPiOutside = `${approvedPiShape}export function leaked() { return formatPiBinaryMissingMessage("no pi binary resolved on this host"); }\n`;
     expect(approvedPiCapabilityNoBinaryDetailSpans(withExtraPiOutside)).toHaveLength(1);
     expect(
       noPiBinaryMatcher.test(
@@ -1087,7 +1087,7 @@ describe("runtime provider architecture guard", () => {
         "  const detected = await runDetect(async () => {",
         "    return {",
         "      installed: false,",
-        `      error: formatOpenCodeBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        '      error: formatOpenCodeBinaryMissingMessage("no pi binary resolved on this host"),',
         "    };",
         "  });",
         "  return detected;",
@@ -1117,7 +1117,7 @@ describe("runtime provider architecture guard", () => {
         "  const detected = await runDetect(async () => {",
         "    return {",
         "      installed: false,",
-        `      detail: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        '      detail: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
         "    };",
         "  });",
         "  return detected;",
@@ -1133,7 +1133,7 @@ describe("runtime provider architecture guard", () => {
         "    function nested() {",
         "      return {",
         "        installed: false,",
-        `        error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        '        error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
         "      };",
         "    }",
         "    return nested();",
@@ -1149,7 +1149,7 @@ describe("runtime provider architecture guard", () => {
         "export async function probePiCapability() {",
         "  return {",
         "    installed: false,",
-        `    error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        '    error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
         "  };",
         "}",
         "",
