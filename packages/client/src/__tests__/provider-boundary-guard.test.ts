@@ -732,11 +732,13 @@ describe("runtime provider architecture guard", () => {
 
     /**
      * Exact approved Pi capability occurrence of the pre-format resolution
-     * phrase. Non-recursive: only the unique exported async `probePiCapability`
-     * → top-level `await runDetect(<async arrow>)` → direct callback return
-     * `{ installed: false, error: formatPiBinaryMissingMessage(<exact literal>) }`
-     * is approved. Identical calls in other functions, nested helpers, or
-     * reshaped AST are never masked. Recognition tables stay in provider-support.
+     * phrase. Fail-closed: unique exported async `probePiCapability` must own
+     * exactly one top-level `const detected = await runDetect(<async arrow>)`
+     * whose callback body is the production terminal missing-path sequence —
+     * win32 throw / runtimePath / installed-success / final missing return —
+     * and only that final return's string literal is masked. Any inserted
+     * unconditional completion, reshaped predecessor, extra `detected` /
+     * `runDetect`, or non-terminal exact return yields zero spans.
      */
     const approvedPiCapabilityDetail = "no pi binary resolved on this host";
 
@@ -748,6 +750,75 @@ describe("runtime provider architecture guard", () => {
         !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) &&
         !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
       );
+    }
+
+    function isPlatformWin32Binary(expr: ts.Expression): boolean {
+      return (
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        ts.isIdentifier(expr.left) &&
+        expr.left.text === "platform" &&
+        ts.isStringLiteral(expr.right) &&
+        expr.right.text === "win32"
+      );
+    }
+
+    function isWin32PlatformGate(stmt: ts.Statement): boolean {
+      if (!ts.isIfStatement(stmt) || stmt.elseStatement) return false;
+      if (!isPlatformWin32Binary(stmt.expression)) return false;
+      if (!ts.isBlock(stmt.thenStatement) || stmt.thenStatement.statements.length !== 1) return false;
+      const only = stmt.thenStatement.statements[0];
+      if (!only || !ts.isThrowStatement(only) || !only.expression) return false;
+      if (!ts.isNewExpression(only.expression)) return false;
+      return ts.isIdentifier(only.expression.expression) && only.expression.expression.text === "Error";
+    }
+
+    function isRuntimePathDeclaration(stmt: ts.Statement): boolean {
+      if (!ts.isVariableStatement(stmt)) return false;
+      if (stmt.declarationList.declarations.length !== 1) return false;
+      const decl = stmt.declarationList.declarations[0];
+      if (!decl || !ts.isIdentifier(decl.name) || decl.name.text !== "runtimePath") return false;
+      if (!decl.initializer || !ts.isCallExpression(decl.initializer)) return false;
+      if (!ts.isIdentifier(decl.initializer.expression) || decl.initializer.expression.text !== "findOnPath") {
+        return false;
+      }
+      if (decl.initializer.arguments.length !== 1) return false;
+      const arg = decl.initializer.arguments[0];
+      return !!arg && ts.isIdentifier(arg) && arg.text === "env";
+    }
+
+    function isInstalledSuccessObject(expr: ts.Expression): boolean {
+      if (!ts.isObjectLiteralExpression(expr) || expr.properties.length !== 3) return false;
+      const installed = expr.properties[0];
+      const runtimeSource = expr.properties[1];
+      const runtimePath = expr.properties[2];
+      if (!installed || !runtimeSource || !runtimePath) return false;
+      if (!ts.isPropertyAssignment(installed) || !ts.isPropertyAssignment(runtimeSource)) return false;
+      if (!ts.isIdentifier(installed.name) || installed.name.text !== "installed") return false;
+      if (installed.initializer.kind !== ts.SyntaxKind.TrueKeyword) return false;
+      if (!ts.isIdentifier(runtimeSource.name) || runtimeSource.name.text !== "runtimeSource") return false;
+      if (!ts.isStringLiteral(runtimeSource.initializer) || runtimeSource.initializer.text !== "path") return false;
+      // Production uses object shorthand `{ …, runtimePath }`.
+      if (ts.isShorthandPropertyAssignment(runtimePath)) {
+        return runtimePath.name.text === "runtimePath";
+      }
+      if (!ts.isPropertyAssignment(runtimePath)) return false;
+      if (!ts.isIdentifier(runtimePath.name) || runtimePath.name.text !== "runtimePath") return false;
+      return ts.isIdentifier(runtimePath.initializer) && runtimePath.initializer.text === "runtimePath";
+    }
+
+    function isInstalledSuccessGate(stmt: ts.Statement): boolean {
+      if (!ts.isIfStatement(stmt) || stmt.elseStatement) return false;
+      if (!ts.isIdentifier(stmt.expression) || stmt.expression.text !== "runtimePath") return false;
+      let ret: ts.ReturnStatement | undefined;
+      if (ts.isReturnStatement(stmt.thenStatement)) {
+        ret = stmt.thenStatement;
+      } else if (ts.isBlock(stmt.thenStatement) && stmt.thenStatement.statements.length === 1) {
+        const only = stmt.thenStatement.statements[0];
+        if (only && ts.isReturnStatement(only)) ret = only;
+      }
+      if (!ret?.expression) return false;
+      return isInstalledSuccessObject(ret.expression);
     }
 
     function isApprovedPiMissingDetectReturn(
@@ -787,6 +858,43 @@ describe("runtime provider architecture guard", () => {
       };
     }
 
+    function countRunDetectCalls(node: ts.Node): number {
+      let count = 0;
+      function visit(n: ts.Node): void {
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "runDetect") {
+          count += 1;
+        }
+        ts.forEachChild(n, visit);
+      }
+      visit(node);
+      return count;
+    }
+
+    function extractUniqueDetectedRunDetectCallback(fn: ts.FunctionDeclaration): ts.ArrowFunction | null {
+      if (!fn.body) return null;
+      if (countRunDetectCalls(fn.body) !== 1) return null;
+
+      let found: ts.ArrowFunction | null = null;
+      for (const stmt of fn.body.statements) {
+        if (!ts.isVariableStatement(stmt)) continue;
+        for (const decl of stmt.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name) || decl.name.text !== "detected") continue;
+          if (!decl.initializer || !ts.isAwaitExpression(decl.initializer)) return null;
+          const awaited = decl.initializer.expression;
+          if (!ts.isCallExpression(awaited)) return null;
+          if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") return null;
+          if (awaited.arguments.length !== 1) return null;
+          const callback = awaited.arguments[0];
+          if (!callback || !ts.isArrowFunction(callback) || !callback.body) return null;
+          if ((ts.getCombinedModifierFlags(callback) & ts.ModifierFlags.Async) === 0) return null;
+          if (!ts.isBlock(callback.body)) return null;
+          if (found) return null;
+          found = callback;
+        }
+      }
+      return found;
+    }
+
     function approvedPiCapabilityNoBinaryDetailSpans(
       source: string,
     ): Array<{ start: number; end: number; text: string }> {
@@ -803,33 +911,17 @@ describe("runtime provider architecture guard", () => {
       const fn = candidates[0];
       if (!fn?.body) return [];
 
-      const spans: Array<{ start: number; end: number; text: string }> = [];
+      const callback = extractUniqueDetectedRunDetectCallback(fn);
+      if (!callback || !ts.isBlock(callback.body)) return [];
 
-      // Non-recursive: only direct body statements of probePiCapability.
-      for (const stmt of fn.body.statements) {
-        if (!ts.isVariableStatement(stmt)) continue;
-        for (const decl of stmt.declarationList.declarations) {
-          if (!ts.isIdentifier(decl.name) || decl.name.text !== "detected") continue;
-          if (!decl.initializer || !ts.isAwaitExpression(decl.initializer)) continue;
-          const awaited = decl.initializer.expression;
-          if (!ts.isCallExpression(awaited)) continue;
-          if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") continue;
-          if (awaited.arguments.length !== 1) continue;
-          const callback = awaited.arguments[0];
-          if (!callback || !ts.isArrowFunction(callback) || !callback.body) continue;
-          const asyncFlags = ts.getCombinedModifierFlags(callback);
-          if ((asyncFlags & ts.ModifierFlags.Async) === 0) continue;
-          if (!ts.isBlock(callback.body)) continue;
-
-          // Direct callback statements only — nested functions never approve.
-          for (const cbStmt of callback.body.statements) {
-            const span = isApprovedPiMissingDetectReturn(cbStmt, sourceFile);
-            if (span) spans.push(span);
-          }
-        }
-      }
-
-      return spans;
+      const stmts = callback.body.statements;
+      // Exact production sequence: 4 direct statements; terminal is missing return.
+      if (stmts.length !== 4) return [];
+      if (!isWin32PlatformGate(stmts[0]!)) return [];
+      if (!isRuntimePathDeclaration(stmts[1]!)) return [];
+      if (!isInstalledSuccessGate(stmts[2]!)) return [];
+      const span = isApprovedPiMissingDetectReturn(stmts[3]!, sourceFile);
+      return span ? [span] : [];
     }
 
     function expectRejectedPiDetailFixture(label: string, snippet: string): void {
@@ -1009,13 +1101,21 @@ describe("runtime provider architecture guard", () => {
     ).toBe(true);
 
     // Approved Pi shape — exact production AST skeleton (drives the same approver).
-    const approvedPiShape = [
-      "export async function probePiCapability() {",
-      "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+    const approvedPiCallbackBody = [
+      '    if (platform === "win32") {',
+      '      throw new Error("Pi provider is not supported on Windows in V1");',
+      "    }",
+      "    const runtimePath = findOnPath(env);",
+      '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
       "    return {",
       "      installed: false,",
       '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
       "    };",
+    ].join("\n");
+    const approvedPiShape = [
+      "export async function probePiCapability() {",
+      "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+      approvedPiCallbackBody,
       "  });",
       "  return detected;",
       "}",
@@ -1035,6 +1135,9 @@ describe("runtime provider architecture guard", () => {
         "}",
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
         "    return {",
         "      installed: false,",
         '      error: formatPiBinaryMissingMessage("artifact unavailable"),',
@@ -1062,10 +1165,7 @@ describe("runtime provider architecture guard", () => {
       [
         "export async function probeOpenCodeCapability() {",
         "  const detected = await runDetect(async () => {",
-        "    return {",
-        "      installed: false,",
-        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
-        "    };",
+        approvedPiCallbackBody,
         "  });",
         "  return detected;",
         "}",
@@ -1085,6 +1185,9 @@ describe("runtime provider architecture guard", () => {
       [
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
         "    return {",
         "      installed: false,",
         '      error: formatOpenCodeBinaryMissingMessage("no pi binary resolved on this host"),',
@@ -1100,6 +1203,9 @@ describe("runtime provider architecture guard", () => {
       [
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
         "    return {",
         "      installed: false,",
         '      error: formatPiBinaryMissingMessage("no pi binary resolved"),',
@@ -1115,6 +1221,9 @@ describe("runtime provider architecture guard", () => {
       [
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
         "    return {",
         "      installed: false,",
         '      detail: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
@@ -1130,6 +1239,9 @@ describe("runtime provider architecture guard", () => {
       [
         "export async function probePiCapability() {",
         "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
         "    function nested() {",
         "      return {",
         "        installed: false,",
@@ -1151,6 +1263,160 @@ describe("runtime provider architecture guard", () => {
         "    installed: false,",
         '    error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
         "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+
+    // QA control-flow bypass: unconditional throw before still-present exact return.
+    expectRejectedPiDetailFixture(
+      "QA unreachable throw before terminal exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        '    if (platform === "win32") {',
+        '      throw new Error("Pi provider is not supported on Windows in V1");',
+        "    }",
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        '    throw new Error("QA mutation: make the approved missing return unreachable");',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "unconditional return before terminal exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        '    return { installed: false, error: "artifact unavailable" };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "exact return moved earlier; final missing return rewritten",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("artifact unavailable"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "extra detected/runDetect while keeping final exact return",
+      [
+        "export async function probePiCapability() {",
+        "  const ignored = await runDetect(async () => ({ installed: true, runtimeSource: 'path', runtimePath: '/x' }));",
+        "  const detected = await runDetect(async () => {",
+        approvedPiCallbackBody,
+        "  });",
+        "  void ignored;",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "duplicate direct exact return in same callback",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped platform predecessor gate",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "darwin") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped runtimePath declaration",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath();",
+        '    if (runtimePath) return { installed: true, runtimeSource: "path", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "reshaped installed-success branch",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        '    if (platform === "win32") { throw new Error("x"); }',
+        "    const runtimePath = findOnPath(env);",
+        '    if (runtimePath) return { installed: true, runtimeSource: "bundle", runtimePath };',
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved on this host"),',
+        "    };",
+        "  });",
+        "  return detected;",
         "}",
         "",
       ].join("\n"),
