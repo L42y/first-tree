@@ -732,13 +732,60 @@ describe("runtime provider architecture guard", () => {
 
     /**
      * Exact approved Pi capability occurrence of the pre-format resolution
-     * phrase: the sole string-literal argument `"no pi binary resolved on this
-     * host"` passed to `formatPiBinaryMissingMessage(...)`. Recognition tables
-     * stay owned by provider-support; this is only the historical detail
-     * string that capability feeds into the formatter (relocated from
-     * `runtime/capabilities/pi.ts`).
+     * phrase. Non-recursive: only the unique exported async `probePiCapability`
+     * → top-level `await runDetect(<async arrow>)` → direct callback return
+     * `{ installed: false, error: formatPiBinaryMissingMessage(<exact literal>) }`
+     * is approved. Identical calls in other functions, nested helpers, or
+     * reshaped AST are never masked. Recognition tables stay in provider-support.
      */
     const approvedPiCapabilityDetail = "no pi binary resolved on this host";
+
+    function isExportedAsyncProbePiCapability(stmt: ts.Statement): stmt is ts.FunctionDeclaration {
+      return (
+        ts.isFunctionDeclaration(stmt) &&
+        stmt.name?.text === "probePiCapability" &&
+        !!stmt.body &&
+        !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) &&
+        !!ts.getModifiers(stmt)?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      );
+    }
+
+    function isApprovedPiMissingDetectReturn(
+      stmt: ts.Statement,
+      sourceFile: ts.SourceFile,
+    ): { start: number; end: number; text: string } | null {
+      if (!ts.isReturnStatement(stmt) || !stmt.expression || !ts.isObjectLiteralExpression(stmt.expression)) {
+        return null;
+      }
+      if (stmt.expression.properties.length !== 2) return null;
+      if (!stmt.expression.properties.every((prop) => ts.isPropertyAssignment(prop))) return null;
+      const installedProp = stmt.expression.properties[0];
+      const errorProp = stmt.expression.properties[1];
+      if (
+        !installedProp ||
+        !errorProp ||
+        !ts.isPropertyAssignment(installedProp) ||
+        !ts.isPropertyAssignment(errorProp)
+      ) {
+        return null;
+      }
+      if (!ts.isIdentifier(installedProp.name) || installedProp.name.text !== "installed") return null;
+      if (installedProp.initializer.kind !== ts.SyntaxKind.FalseKeyword) return null;
+      if (!ts.isIdentifier(errorProp.name) || errorProp.name.text !== "error") return null;
+      if (!ts.isCallExpression(errorProp.initializer)) return null;
+      const call = errorProp.initializer;
+      if (!ts.isIdentifier(call.expression) || call.expression.text !== "formatPiBinaryMissingMessage") {
+        return null;
+      }
+      if (call.arguments.length !== 1) return null;
+      const arg = call.arguments[0];
+      if (!arg || !ts.isStringLiteral(arg) || arg.text !== approvedPiCapabilityDetail) return null;
+      return {
+        start: arg.getStart(sourceFile),
+        end: arg.getEnd(),
+        text: arg.getText(sourceFile),
+      };
+    }
 
     function approvedPiCapabilityNoBinaryDetailSpans(
       source: string,
@@ -750,27 +797,48 @@ describe("runtime provider architecture guard", () => {
         true,
         ts.ScriptKind.TS,
       );
+
+      const candidates = sourceFile.statements.filter(isExportedAsyncProbePiCapability);
+      if (candidates.length !== 1) return [];
+      const fn = candidates[0];
+      if (!fn?.body) return [];
+
       const spans: Array<{ start: number; end: number; text: string }> = [];
-      function visit(node: ts.Node): void {
-        if (
-          ts.isCallExpression(node) &&
-          ts.isIdentifier(node.expression) &&
-          node.expression.text === "formatPiBinaryMissingMessage" &&
-          node.arguments.length === 1
-        ) {
-          const arg = node.arguments[0];
-          if (arg && ts.isStringLiteral(arg) && arg.text === approvedPiCapabilityDetail) {
-            spans.push({
-              start: arg.getStart(sourceFile),
-              end: arg.getEnd(),
-              text: arg.getText(sourceFile),
-            });
+
+      // Non-recursive: only direct body statements of probePiCapability.
+      for (const stmt of fn.body.statements) {
+        if (!ts.isVariableStatement(stmt)) continue;
+        for (const decl of stmt.declarationList.declarations) {
+          if (!ts.isIdentifier(decl.name) || decl.name.text !== "detected") continue;
+          if (!decl.initializer || !ts.isAwaitExpression(decl.initializer)) continue;
+          const awaited = decl.initializer.expression;
+          if (!ts.isCallExpression(awaited)) continue;
+          if (!ts.isIdentifier(awaited.expression) || awaited.expression.text !== "runDetect") continue;
+          if (awaited.arguments.length !== 1) continue;
+          const callback = awaited.arguments[0];
+          if (!callback || !ts.isArrowFunction(callback) || !callback.body) continue;
+          const asyncFlags = ts.getCombinedModifierFlags(callback);
+          if ((asyncFlags & ts.ModifierFlags.Async) === 0) continue;
+          if (!ts.isBlock(callback.body)) continue;
+
+          // Direct callback statements only — nested functions never approve.
+          for (const cbStmt of callback.body.statements) {
+            const span = isApprovedPiMissingDetectReturn(cbStmt, sourceFile);
+            if (span) spans.push(span);
           }
         }
-        ts.forEachChild(node, visit);
       }
-      visit(sourceFile);
+
       return spans;
+    }
+
+    function expectRejectedPiDetailFixture(label: string, snippet: string): void {
+      expect(approvedPiCapabilityNoBinaryDetailSpans(snippet), label).toHaveLength(0);
+      expect(noPiBinaryMatcher.test(snippet), `${label} still matches generic phrase`).toBe(true);
+      expect(
+        noPiBinaryMatcher.test(maskSpans(snippet, approvedPiCapabilityNoBinaryDetailSpans(snippet))),
+        `${label} must not be neutralized by masking`,
+      ).toBe(true);
     }
 
     function expectRejectedLocateFixture(label: string, snippet: string): void {
@@ -939,6 +1007,154 @@ describe("runtime provider architecture guard", () => {
         maskSpans(withExtraOutside, approvedCodexBundledLocateErrorSpans(withExtraOutside)),
       ),
     ).toBe(true);
+
+    // Approved Pi shape — exact production AST skeleton (drives the same approver).
+    const approvedPiShape = [
+      "export async function probePiCapability() {",
+      "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+      "    return {",
+      "      installed: false,",
+      `      error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+      "    };",
+      "  });",
+      "  return detected;",
+      "}",
+      "",
+    ].join("\n");
+    expect(approvedPiCapabilityNoBinaryDetailSpans(approvedPiShape)).toHaveLength(1);
+    expect(
+      noPiBinaryMatcher.test(maskSpans(approvedPiShape, approvedPiCapabilityNoBinaryDetailSpans(approvedPiShape))),
+    ).toBe(false);
+
+    // QA-reproduced bypass: call moved to unrelated helper; probe detail changed.
+    expectRejectedPiDetailFixture(
+      "QA relocation to unrelatedPiDetailForMutation",
+      [
+        "export function unrelatedPiDetailForMutation(): string {",
+        `  return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)});`,
+        "}",
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async (): Promise<DetectOutcome> => {",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("artifact unavailable"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "dead helper outside probePiCapability",
+      [
+        "export function deadHelper() {",
+        `  return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)});`,
+        "}",
+        "export async function probePiCapability() {",
+        "  return { state: 'ok', available: true, detectedAt: '' };",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "other provider file shape",
+      [
+        "export async function probeOpenCodeCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        `      error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    const withExtraPiOutside = `${approvedPiShape}export function leaked() { return formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}); }\n`;
+    expect(approvedPiCapabilityNoBinaryDetailSpans(withExtraPiOutside)).toHaveLength(1);
+    expect(
+      noPiBinaryMatcher.test(
+        maskSpans(withExtraPiOutside, approvedPiCapabilityNoBinaryDetailSpans(withExtraPiOutside)),
+      ),
+      "extra identical call outside approved return must not be neutralized",
+    ).toBe(true);
+    expectRejectedPiDetailFixture(
+      "wrong callee",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        `      error: formatOpenCodeBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "wrong string argument",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        '      error: formatPiBinaryMissingMessage("no pi binary resolved"),',
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "wrong object property name",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    return {",
+        "      installed: false,",
+        `      detail: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        "    };",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "nested function smuggling inside runDetect callback",
+      [
+        "export async function probePiCapability() {",
+        "  const detected = await runDetect(async () => {",
+        "    function nested() {",
+        "      return {",
+        "        installed: false,",
+        `        error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        "      };",
+        "    }",
+        "    return nested();",
+        "  });",
+        "  return detected;",
+        "}",
+        "",
+      ].join("\n"),
+    );
+    expectRejectedPiDetailFixture(
+      "missing runDetect await shape",
+      [
+        "export async function probePiCapability() {",
+        "  return {",
+        "    installed: false,",
+        `    error: formatPiBinaryMissingMessage(${JSON.stringify(approvedPiCapabilityDetail)}),`,
+        "  };",
+        "}",
+        "",
+      ].join("\n"),
+    );
 
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
     const piHandler = readFileSync(join(clientSrc, "providers/pi/index.ts"), "utf8");
@@ -1906,13 +2122,120 @@ describe("runtime provider architecture guard", () => {
     }
   });
 
-  it("fail-closes concrete Cursor/Kimi module edges via AST + normalized targets", () => {
+  it("fail-closes concrete provider-family module edges via AST + normalized targets", () => {
     // Mutation matrix: same predicate the recursive Runtime scan uses. Synthetic
     // importer paths cover Runtime root and nested capabilities/.
     const runtimeRootImporter = join(clientSrc, "runtime", "synthetic-guard-importer.ts");
     const capabilitiesImporter = join(clientSrc, "runtime", "capabilities", "synthetic-guard-importer.ts");
+    const managedSkillsImporter = join(clientSrc, "runtime", "managed-skills.ts");
 
+    // Every deleted OpenCode/Pi/shared-capability owner + current family /
+    // shared-foundation targets must fail via real module-edge extraction
+    // (not classifier-only booleans). Mix edge forms across the set.
     const mustFail: Array<{ importer: string; source: string; note: string }> = [
+      // --- 12 deleted owners from this S3 final slice ---
+      {
+        importer: runtimeRootImporter,
+        source: `import { createOpenCodeHandler } from "../handlers/opencode/index.js";\n`,
+        note: "deleted opencode handler index static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import "../../handlers/opencode/parser.js";\n`,
+        note: "deleted opencode parser nested bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `await import("./opencode-binary.js");\n`,
+        note: "deleted opencode-binary dynamic",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { acquireOpenCodePrivateConfigLease } from "./opencode-private-config.js";\n`,
+        note: "deleted opencode-private-config export-from",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import type { OpenCodeProbeDeps } from "./opencode.js";\nvoid null as unknown as OpenCodeProbeDeps;\n`,
+        note: "deleted capabilities/opencode import-type",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import "../handlers/pi/index.js";\n`,
+        note: "deleted pi handler index bare",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import PiRpc = require("../../handlers/pi/rpc-client.js");\nvoid PiRpc;\n`,
+        note: "deleted pi rpc-client import-equals",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import { findPiExecutableOnPath } from "../pi-binary.js";\n`,
+        note: "deleted pi-binary nested static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { probePiCapability } from "./capabilities/pi.js";\n`,
+        note: "deleted capabilities/pi export-from",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { runDetect } from "./capabilities/detect.js";\n`,
+        note: "deleted capabilities/detect static",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `await import("./index.js");\n`,
+        note: "deleted capabilities/index nested dynamic",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import type { LaunchProbeResult } from "./capabilities/launch-probe.js";\nvoid null as unknown as LaunchProbeResult;\n`,
+        note: "deleted capabilities/launch-probe import-type",
+      },
+      // --- new family + shared foundation reverse-load ---
+      {
+        importer: runtimeRootImporter,
+        source: `await import("../providers/opencode/index.js");\n`,
+        note: "family opencode dynamic",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import { createPiHandler } from "../../providers/pi/index.js";\n`,
+        note: "family pi nested static",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `export { createOpenCodeHandler } from "../providers/opencode/index.js";\n`,
+        note: "family opencode export-from",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import type { PiProbeDeps } from "../providers/pi/capability.js";\nvoid null as unknown as PiProbeDeps;\n`,
+        note: "family pi capability import-type",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import OpenCode = require("../providers/opencode/binary.js");\nvoid OpenCode;\n`,
+        note: "family opencode binary import-equals",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `import { probeCapabilities } from "../providers/capabilities/index.js";\n`,
+        note: "shared providers/capabilities/index reverse-load",
+      },
+      {
+        importer: capabilitiesImporter,
+        source: `import "../../providers/capabilities/detect.js";\n`,
+        note: "shared providers/capabilities/detect nested bare",
+      },
+      {
+        importer: runtimeRootImporter,
+        source: `await import("../providers/capabilities/launch-probe.js");\n`,
+        note: "shared providers/capabilities/launch-probe dynamic",
+      },
+      // --- prior S3 Cursor/Kimi durability (must not regress) ---
       {
         importer: runtimeRootImporter,
         source: `import { createCursorHandler } from "../handlers/cursor/index.js";\n`,
@@ -1934,19 +2257,9 @@ describe("runtime provider architecture guard", () => {
         note: "family kimi bare side-effect",
       },
       {
-        importer: runtimeRootImporter,
-        source: `const cursorFamily = await import("../providers/cursor/index.js");\nvoid cursorFamily;\n`,
-        note: "family cursor dynamic import",
-      },
-      {
         importer: capabilitiesImporter,
         source: `import { resolveCursorRuntimeBinary } from "../cursor-binary.js";\n`,
         note: "nested legacy cursor-binary",
-      },
-      {
-        importer: capabilitiesImporter,
-        source: `import { findKimiExecutableOnPath } from "../kimi-binary.js";\n`,
-        note: "nested legacy kimi-binary",
       },
       {
         importer: runtimeRootImporter,
@@ -1954,74 +2267,14 @@ describe("runtime provider architecture guard", () => {
         note: "legacy cursor-login static",
       },
       {
-        importer: capabilitiesImporter,
-        source: `await import("../cursor-login.js");\n`,
-        note: "nested legacy cursor-login dynamic",
-      },
-      {
         importer: runtimeRootImporter,
         source: `import { probeCursorCapability } from "./capabilities/cursor.js";\n`,
         note: "legacy capabilities/cursor static",
       },
       {
-        importer: capabilitiesImporter,
-        source: `import "./kimi-code.js";\n`,
-        note: "legacy capabilities/kimi-code bare",
-      },
-      {
         importer: runtimeRootImporter,
         source: `export { discoverProviderModels } from "./capabilities/discover-models.js";\n`,
         note: "legacy capabilities/discover-models export-from",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import { createOpenCodeHandler } from "../handlers/opencode/index.js";\n`,
-        note: "legacy opencode handler static",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import "../handlers/pi/index.js";\n`,
-        note: "legacy pi handler bare",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `await import("../providers/opencode/index.js");\n`,
-        note: "family opencode dynamic",
-      },
-      {
-        importer: capabilitiesImporter,
-        source: `import { findPiExecutableOnPath } from "../pi-binary.js";\n`,
-        note: "nested legacy pi-binary",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `export { acquireOpenCodePrivateConfigLease } from "./opencode-private-config.js";\n`,
-        note: "legacy opencode-private-config export-from",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import { runDetect } from "./capabilities/detect.js";\n`,
-        note: "legacy capabilities/detect static",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import { probeCapabilities } from "../providers/capabilities/index.js";\n`,
-        note: "shared providers/capabilities reverse-load",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `export { createCursorHandler } from "../providers/cursor/index.js";\n`,
-        note: "family cursor export-from",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `type H = import("../providers/cursor/index.js").HandlerFactory;\nvoid null as unknown as H;\n`,
-        note: "family cursor import-type",
-      },
-      {
-        importer: runtimeRootImporter,
-        source: `import Cursor = require("../providers/cursor/index.js");\nvoid Cursor;\n`,
-        note: "family cursor import-equals",
       },
       {
         importer: runtimeRootImporter,
@@ -2060,6 +2313,11 @@ describe("runtime provider architecture guard", () => {
         importer: runtimeRootImporter,
         source: `import { createRequire } from "node:module";\nconst native = createRequire(import.meta.url)("fs-native-extensions");\nvoid native;\n`,
         note: "literal package createRequire (workspace-file-lock shape)",
+      },
+      {
+        importer: managedSkillsImporter,
+        source: `import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";\nvoid PROVIDER_SKILL_ROOTS;\n`,
+        note: "controlled managed-skills -> providers/skill-roots seam",
       },
     ];
 
