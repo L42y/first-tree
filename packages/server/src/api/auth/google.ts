@@ -171,19 +171,10 @@ async function completeGoogleSignIn(
       });
     throw error;
   }
-  if (bootstrap.teamCreated) {
-    app.log.info(
-      {
-        event: "onboarding.team_created",
-        provider: "google",
-        userId: account.userId,
-        organizationId: bootstrap.organizationId,
-        source: "oauth-bootstrap",
-      },
-      "onboarding funnel: team auto-created at OAuth bootstrap",
-    );
-  }
   const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
+  // A solo sign-in resolves to no Team at all until the user confirms their
+  // first Agent, so `org` is omitted rather than sent empty — the SPA reads a
+  // present-but-blank value as a real destination and would try to activate it.
   const fragment = new URLSearchParams({
     access: tokens.accessToken,
     refresh: tokens.refreshToken,
@@ -191,7 +182,7 @@ async function completeGoogleSignIn(
     joinPath: bootstrap.joinPath,
     accountCreated: account.created ? "1" : "0",
     callbackIntent: "sign-in",
-    org: bootstrap.organizationId,
+    ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
     ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
   }).toString();
   app.log.info(

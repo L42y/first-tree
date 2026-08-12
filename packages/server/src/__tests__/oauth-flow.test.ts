@@ -92,7 +92,7 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(authorizeUrl.searchParams.get("state")).toBeTruthy();
   });
 
-  it("dev-callback creates user + auth_identity + personal team for first sign-in", async () => {
+  it("dev-callback creates user + auth_identity but no Team for first sign-in", async () => {
     const app = getApp();
     const res = await app.inject({
       method: "GET",
@@ -116,28 +116,17 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(ids).toHaveLength(1);
     expect(ids[0]?.provider).toBe("github");
 
-    // Default team was minted — slug is the GitHub login (no `-personal` suffix).
+    // No Team is minted at sign-in. It is created together with the first Team
+    // Agent, when the user confirms that Agent.
     const orgs = await app.db.select().from(organizations).where(eq(organizations.name, "octocat"));
-    expect(orgs).toHaveLength(1);
-    const orgRow = orgs[0];
-    if (!orgRow) throw new Error("expected default org row");
-    // Default team display name is `${displayName}'s team` — collective-space
-    // reading per first-tree-context:agent-hub/onboarding.md (was §5.5 in source design); user can rename
-    // in onboarding Step 1.
-    expect(orgRow.displayName).toBe("Octo Cat's team");
+    expect(orgs).toEqual([]);
+    const userId = ids[0]?.userId ?? "";
+    expect(await app.db.select().from(members).where(eq(members.userId, userId))).toEqual([]);
 
-    // The callback carries the resolved org back so the web selects it
-    // (overriding any stale localStorage org) — here the freshly-minted team.
-    expect(params.get("org")).toBe(orgRow.id);
-    // A fresh solo signup is a deliberate destination — pinned so the SPA
-    // activates the just-minted org rather than a stale last-used selection.
-    expect(params.get("orgPinned")).toBe("1");
-
-    // The new user is its admin.
-    const memberRows = await app.db.select().from(members).where(eq(members.organizationId, orgRow.id));
-    expect(memberRows).toHaveLength(1);
-    expect(memberRows[0]?.role).toBe("admin");
-    expect(memberRows[0]?.status).toBe("active");
+    // Nothing to select or pin: both params are omitted rather than sent
+    // empty, so the SPA never treats a blank value as a real destination.
+    expect(params.get("org")).toBeNull();
+    expect(params.get("orgPinned")).toBeNull();
   });
 
   it("preserves quickstart campaign next for first-time solo signup", async () => {
@@ -184,7 +173,7 @@ describe("GitHub OAuth onboarding flow", () => {
     }
   });
 
-  it("continues dev sign-in when installation stub upsert and direct bind fail", async () => {
+  it("continues dev sign-in when the installation stub upsert fails", async () => {
     const app = getApp();
     const upsert = vi
       .spyOn(githubAppInstallations, "upsertInstallationFromMetadata")
@@ -200,7 +189,9 @@ describe("GitHub OAuth onboarding flow", () => {
       expect(res.headers.location).toContain("/auth/github/complete#");
       expect(res.headers.location).toContain("access=");
       expect(upsert).toHaveBeenCalledTimes(1);
-      expect(bind).toHaveBeenCalledTimes(1);
+      // A first-time signer-in has no Team, so the DEV-only direct bind has
+      // nothing to bind to and is skipped. Sign-in still completes.
+      expect(bind).not.toHaveBeenCalled();
     } finally {
       upsert.mockRestore();
       bind.mockRestore();
@@ -251,21 +242,9 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(ids).toHaveLength(1);
   });
 
-  it("disambiguates default team slug on collision", async () => {
-    const app = getApp();
-    await app.inject({
-      method: "GET",
-      url: "/api/v1/auth/github/dev-callback?githubId=1&login=duplicate",
-    });
-    await app.inject({
-      method: "GET",
-      url: "/api/v1/auth/github/dev-callback?githubId=2&login=duplicate",
-    });
-    const orgs = await app.db.select().from(organizations);
-    // First sign-in claims `duplicate`; second gets `duplicate-XXXX` (4-char hex).
-    const claims = orgs.filter((o) => o.name === "duplicate" || /^duplicate-[a-f0-9]{4}$/.test(o.name));
-    expect(claims.length).toBeGreaterThanOrEqual(2);
-  });
+  // Team slug disambiguation moved with Team creation itself: sign-in no
+  // longer mints a Team, so that behavior is covered against the provisioning
+  // path in `first-team-agent.test.ts`.
 
   it("rejects /dev-callback in production", async () => {
     const app = getApp();
@@ -377,10 +356,10 @@ describe("GitHub OAuth onboarding flow", () => {
       defaultOrganizationId: string | null;
       onboarding: { step: string };
     }>();
-    // Solo signup auto-provisions one org with admin role.
-    expect(body.memberships).toHaveLength(1);
-    expect(body.memberships[0]?.role).toBe("admin");
-    expect(body.defaultOrganizationId).toBe(body.memberships[0]?.organizationId);
+    // The token authorizes a real signed-in session that simply has no Team
+    // yet — the state solo signup now leaves behind.
+    expect(body.memberships).toEqual([]);
+    expect(body.defaultOrganizationId).toBeNull();
     expect(body.onboarding.step).toBe("connect");
   });
 });
@@ -755,7 +734,7 @@ describe("OAuth callback rejects malformed state", () => {
     expect(params.get("next")).toBe("/");
   });
 
-  it("dev-callback stubs github_app_installations + binds to the new personal team when installationId is supplied", async () => {
+  it("dev-callback stubs github_app_installations, unbound, when installationId is supplied by a Team-less user", async () => {
     const app = getApp();
     const installationId = 8_810_001;
     const res = await app.inject({
@@ -771,11 +750,10 @@ describe("OAuth callback rejects malformed state", () => {
     expect(row).not.toBeNull();
     expect(row?.accountLogin).toBe("devappuser");
     expect(row?.accountType).toBe("User");
-    // hub_organization_id is the freshly-minted personal team for the new
-    // GitHub user — assert the binding by checking it's non-null. Verifying
-    // the exact id would duplicate createPersonalTeam's slug derivation that
-    // the earlier dev-callback test already pins down.
-    expect(row?.hubOrganizationId).not.toBeNull();
+    // The stub row is recorded but stays unbound: a first-time signer-in has
+    // no Team for the DEV-only direct bind to attach it to. It binds from the
+    // Settings connect panel once the user has a Team.
+    expect(row?.hubOrganizationId).toBeNull();
     // App-declared permissions mirror D0b — the dev stub looks like a real
     // install for downstream QA.
     expect(row?.permissions).toMatchObject({

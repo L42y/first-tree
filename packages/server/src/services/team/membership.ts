@@ -575,6 +575,16 @@ export async function repairMembershipHumanMirrors(db: Database): Promise<Member
   return { activeMirrorsRepaired, inactiveMirrorsRepaired };
 }
 
+/**
+ * Auto-generated display label for a user's first Team. Onboarding never asks
+ * for a Team name — the label reads as a collective space from day one so a
+ * later teammate invite doesn't surface something that looks like a private
+ * sandbox, and it stays editable in Settings.
+ */
+export function personalTeamDisplayName(displayName: string): string {
+  return `${displayName.slice(0, 193)}'s team`;
+}
+
 type CreatePersonalTeamInput = {
   userId: string;
   /** Final unique username, used as the seed for the team slug and human agent name. */

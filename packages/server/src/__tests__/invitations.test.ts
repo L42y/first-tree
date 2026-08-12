@@ -135,16 +135,17 @@ describe("Invitation lifecycle", () => {
   it("admin from org A cannot rotate invitations of org B", async () => {
     const app = getApp();
     const adminA = await createTestAdmin(app, { username: `a-${crypto.randomUUID().slice(0, 6)}` });
-    // Spin up a second org via OAuth dev-callback to keep its membership clean.
-    await app.inject({
-      method: "GET",
-      url: "/api/v1/auth/github/dev-callback?githubId=999&login=other-org-admin",
+    // Spin up a second org owned by a different user, so its membership stays
+    // clean of adminA. Sign-in no longer mints a Team, so create it directly.
+    const adminB = await createTestAdmin(app, { username: `b-${crypto.randomUUID().slice(0, 6)}` });
+    const { createPersonalTeam } = await import("../services/team/membership.js");
+    const otherOrg = await createPersonalTeam(app.db, {
+      userId: adminB.userId,
+      username: `other-org-admin-${crypto.randomUUID().slice(0, 6)}`,
+      teamDisplayName: "Other Org Admin's team",
+      userDisplayName: "Other Org Admin",
     });
-    const { organizations } = await import("../db/schema/organizations.js");
-    const orgs = await app.db.select().from(organizations).where(eq(organizations.name, "other-org-admin"));
-    const otherOrgRow = orgs[0];
-    if (!otherOrgRow) throw new Error("expected other org row");
-    const otherOrgId = otherOrgRow.id;
+    const otherOrgId = otherOrg.organizationId;
 
     const res = await app.inject({
       method: "POST",

@@ -11,6 +11,8 @@ import {
   type OnboardingStep,
   onboardingEventSchema,
   patchOnboardingSchema,
+  type ProvisionFirstTeamAgentResult,
+  provisionFirstTeamAgentSchema,
   updateMyProfileSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
@@ -53,6 +55,7 @@ import { buildServerConnectBootstrapCommand } from "../services/runtime/daemon/b
 import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
 import { pickDefaultMembership } from "../services/team/default-membership.js";
+import { provisionFirstTeamAgent } from "../services/team/first-team-agent.js";
 import {
   buildInviteUrl,
   findActiveByToken,
@@ -762,6 +765,47 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       memberId: member.id,
       role: member.role,
     });
+  });
+
+  /**
+   * POST /me/team-agents — provision the caller's first Team Agent.
+   *
+   * Class A by construction, not by preference: the starting state this serves
+   * has no organization at all, so there is no `:orgId` to put in the path and
+   * no org claim to read. The Team is an OUTPUT of this call. Creating further
+   * Agents inside a Team the caller already works in stays org-scoped
+   * (`POST /orgs/:orgId/agents`).
+   *
+   * The service runs Team, Admin membership, human mirror, Agent, and Template
+   * adoption in one transaction, and converges concurrent/retried calls on a
+   * single first Team and first Agent.
+   */
+  app.post("/me/team-agents", { config: { otelRecordBody: true } }, async (request, reply) => {
+    const { userId } = requireUser(request);
+    const body = provisionFirstTeamAgentSchema.parse(request.body ?? {});
+
+    const result: ProvisionFirstTeamAgentResult = await provisionFirstTeamAgent(
+      app.db,
+      { ...body, userId },
+      {
+        attachmentBlobStore: app.attachmentBlobStore,
+        templatePublisherOrgId: app.config.agentTemplates?.publisherOrgId,
+        allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
+      },
+    );
+
+    if (result.teamCreated) {
+      app.log.info(
+        {
+          event: "onboarding.team_created",
+          userId,
+          organizationId: result.organizationId,
+          source: "first-team-agent",
+        },
+        "onboarding funnel: team created with the first Team Agent",
+      );
+    }
+    return reply.status(result.agentCreated ? 201 : 200).send(result);
   });
 
   app.post<{ Params: { memberId: string } }>("/me/memberships/:memberId/leave", async (request, reply) => {

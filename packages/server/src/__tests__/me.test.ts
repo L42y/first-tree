@@ -32,6 +32,8 @@ describe("GET /api/v1/me", () => {
     expect(body.defaultOrganizationId).toBe(body.memberships[0]?.organizationId);
   });
 
+  // Zero memberships is now an ordinary signed-in state, not an edge case:
+  // solo sign-in provisions no Team until the user confirms their first Agent.
   it("returns an empty membership list and null default org for users without memberships", async () => {
     const app = getApp();
     const userId = uuidv7();
@@ -57,6 +59,10 @@ describe("GET /api/v1/me", () => {
       user: { id: userId },
       defaultOrganizationId: null,
       memberships: [],
+      // Onboarding inference is user-level, so it still answers without a Team
+      // instead of failing the whole payload.
+      onboarding: { step: "connect", dismissedAt: null, completedAt: null },
+      inviteUrl: null,
     });
   });
 

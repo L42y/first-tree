@@ -329,7 +329,9 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       accountCreated: account.created ? "1" : "0",
       callbackIntent: "sign-in",
       provider: "oidc",
-      org: bootstrap.organizationId,
+      // Omitted entirely on the solo path — the account has no Team until the
+      // user confirms their first Agent.
+      ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
       ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
     }).toString();
 
