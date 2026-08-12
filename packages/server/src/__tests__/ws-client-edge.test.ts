@@ -1527,6 +1527,87 @@ describe("Agent client WS edge protocol coverage", () => {
     }
   });
 
+  it("revalidates readiness capability on the target replica after a delayed fan-out", async () => {
+    const seed = await createAdminContext(app, { username: `ws-ready-fan-${crypto.randomUUID().slice(0, 8)}` });
+    const capableWs = await openRegisteredSocket(seed, { runtimeReadinessV1: true });
+
+    try {
+      await app.notifier.notifyDaemonClientCommand({
+        type: "runtime-readiness:check",
+        clientId: seed.clientId,
+        provider: "codex",
+        ref: "ready-before-downgrade",
+        targetInstanceId: "test-instance",
+      });
+      await expect(
+        waitForFrame(
+          capableWs,
+          (message) =>
+            (message as { type?: string; ref?: string }).type === "runtime-readiness:check" &&
+            (message as { ref?: string }).ref === "ready-before-downgrade",
+        ),
+      ).resolves.toMatchObject({ type: "runtime-readiness:check", provider: "codex" });
+    } finally {
+      await closeSocket(capableWs);
+    }
+
+    // The source replica already authorized this payload, then the same
+    // clientId reconnected with an older build before the owning replica
+    // received it. Registration replaces the DB flag and the live socket.
+    const downgradedWs = await openRegisteredSocket(seed, {});
+    try {
+      const frames: unknown[] = [];
+      const collector = (raw: WebSocket.RawData) => frames.push(JSON.parse(String(raw)));
+      downgradedWs.on("message", collector);
+
+      await app.notifier.notifyDaemonClientCommand({
+        type: "runtime-readiness:check",
+        clientId: seed.clientId,
+        provider: "claude-code",
+        ref: "ready-after-downgrade",
+        targetInstanceId: "test-instance",
+      });
+      downgradedWs.send(JSON.stringify({ type: "heartbeat" }));
+      await expect(
+        waitForFrame(downgradedWs, (message) => (message as { type?: string }).type === "heartbeat:ack"),
+      ).resolves.toMatchObject({ type: "heartbeat:ack" });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      expect(
+        frames.filter(
+          (frame) =>
+            (frame as { type?: string; ref?: string }).type === "runtime-readiness:check" &&
+            (frame as { ref?: string }).ref === "ready-after-downgrade",
+        ),
+      ).toEqual([]);
+
+      // The inverse registration/send ordering also fails closed: durable
+      // metadata may already say capable while the old socket is still live.
+      await app.db
+        .update(clients)
+        .set({ metadata: { wireCapabilities: { runtimeReadinessV1: true } } })
+        .where(eq(clients.id, seed.clientId));
+      await app.notifier.notifyDaemonClientCommand({
+        type: "runtime-readiness:check",
+        clientId: seed.clientId,
+        provider: "codex",
+        ref: "ready-before-socket-swap",
+        targetInstanceId: "test-instance",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(
+        frames.filter(
+          (frame) =>
+            (frame as { type?: string; ref?: string }).type === "runtime-readiness:check" &&
+            (frame as { ref?: string }).ref === "ready-before-socket-swap",
+        ),
+      ).toEqual([]);
+      downgradedWs.off("message", collector);
+    } finally {
+      await closeSocket(downgradedWs);
+    }
+  });
+
   it("forwards a fanned-out session:terminate to the owning socket only when the binding is current", async () => {
     // Cross-replica command delivery: the daemon_client_commands handler on
     // the socket-owning replica re-checks the live agent→client binding

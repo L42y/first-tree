@@ -6,6 +6,7 @@ import {
 } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import type { Notifier } from "../../../services/notifier.js";
+import * as clientService from "../../../services/runtime/client.js";
 import * as connectionManager from "../../../services/runtime/connection-manager.js";
 import { readModelCatalogRpcResult } from "../../../services/runtime/rpc/provider-models.js";
 import { agentRoutedTo, readSessionCommandRpcResult } from "../../../services/runtime/rpc/session-command.js";
@@ -58,7 +59,26 @@ export function registerClientWsServerEvents(app: FastifyInstance, notifier: Not
         );
         return;
       }
-      connectionManager.sendToClient(payload.clientId, frame.data);
+      // The source replica checked capability before publishing, but a daemon
+      // can reconnect or downgrade before this owning replica receives the
+      // notification. Revalidate both shared durable registration state and
+      // the exact live socket immediately before delivery.
+      void (async () => {
+        const client = await clientService.getClient(app.db, payload.clientId);
+        if (
+          !client ||
+          client.retiredAt ||
+          client.status !== "connected" ||
+          client.instanceId !== payload.targetInstanceId ||
+          !clientService.metadataSupportsRuntimeReadiness(client.metadata)
+        ) {
+          return;
+        }
+        if (!connectionManager.clientSupportsRuntimeReadinessV1(payload.clientId)) return;
+        connectionManager.sendToClient(payload.clientId, frame.data);
+      })().catch((err) => {
+        app.log.warn({ err, clientId: payload.clientId, ref: payload.ref }, "runtime readiness fan-out failed");
+      });
       return;
     }
     if (payload.type === "session:command:finalized" || payload.type === "session:command:aborted") {

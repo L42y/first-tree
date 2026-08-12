@@ -17,6 +17,7 @@ import { requireUser } from "../scope/require-user.js";
 import { expiryToSeconds } from "../services/auth/tokens.js";
 import * as clientService from "../services/runtime/client.js";
 import {
+  clientSupportsRuntimeReadinessV1,
   forceDisconnectClient,
   rejectPendingRepliesForClient,
   sendToClient,
@@ -133,6 +134,11 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       ref,
     };
     if (client.instanceId === app.config.instanceId) {
+      if (!clientSupportsRuntimeReadinessV1(clientId)) {
+        throw new BadRequestError(
+          "Runtime readiness is unavailable because this computer's active First Tree CLI connection does not support the readiness protocol. Upgrade this computer, then retry.",
+        );
+      }
       if (!sendToClient(clientId, frame)) {
         throw new ServiceUnavailableError(
           "Runtime readiness could not start because this computer is not connected. Make sure the daemon is running, then retry.",

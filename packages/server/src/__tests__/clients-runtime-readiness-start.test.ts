@@ -23,7 +23,7 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
       })
       .where(eq(clients.id, admin.clientId));
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
-    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    setClientConnection(admin.clientId, ws as unknown as WebSocket, { runtimeReadinessV1: true });
     try {
       const res = await app.inject({
         method: "POST",
@@ -105,6 +105,38 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({
         error: expect.stringContaining("does not support the readiness protocol"),
+      });
+      expect(ws.send).not.toHaveBeenCalled();
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("fails closed when DB registration is capable but the current local socket is not", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `rr-skew-${crypto.randomUUID().slice(0, 6)}` });
+    await app.db
+      .update(clients)
+      .set({
+        status: "connected",
+        instanceId: app.config.instanceId,
+        sdkVersion: "0.5.20",
+        metadata: { wireCapabilities: { runtimeReadinessV1: true } },
+      })
+      .where(eq(clients.id, admin.clientId));
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket, {});
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/clients/${admin.clientId}/runtime-readiness/start`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { provider: "codex" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({
+        error: expect.stringContaining("active First Tree CLI connection does not support"),
       });
       expect(ws.send).not.toHaveBeenCalled();
     } finally {

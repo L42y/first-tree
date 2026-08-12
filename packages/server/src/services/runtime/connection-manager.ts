@@ -201,6 +201,12 @@ export function sendToClient(clientId: string, message: Record<string, unknown>)
   return true;
 }
 
+/** Does the client's CURRENT live connection implement readiness command v1? */
+export function clientSupportsRuntimeReadinessV1(clientId: string): boolean {
+  const entry = clientConnections.get(clientId);
+  return entry !== undefined && entry.ws.readyState === 1 && entry.capabilities?.runtimeReadinessV1 === true;
+}
+
 /** Send a message to a specific agent via its client's WebSocket. Returns true if delivered. */
 export function sendToAgent(agentId: string, message: Record<string, unknown>): boolean {
   const clientId = agentToClient.get(agentId);
