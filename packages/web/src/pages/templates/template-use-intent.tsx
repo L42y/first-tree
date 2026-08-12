@@ -8,6 +8,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
 import { trackEvent } from "../../analytics.js";
+import { ApiError } from "../../api/client.js";
 import { provisionFirstTeamAgent } from "../../api/team-agents.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { NewAgentDialog } from "../../components/new-agent-dialog.js";
@@ -123,6 +124,16 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   });
 
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(organizationId);
+  useEffect(() => {
+    // A Team-less page can become an ordinary Team chooser after another
+    // first-Team request wins and `/me` reconciles. The state initializer ran
+    // while `organizationId` was null, so adopt the newly authoritative Team
+    // once instead of leaving the only visible choice unchecked and Continue
+    // permanently disabled.
+    if (selectedOrgId || !organizationId) return;
+    if (!memberships.some((membership) => membership.organizationId === organizationId)) return;
+    setSelectedOrgId(organizationId);
+  }, [memberships, organizationId, selectedOrgId]);
   const firstProvisionRequestIdRef = useRef<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -131,6 +142,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   // them anyway, but the second would still churn a request and a cache clear.
   const [provisioning, setProvisioning] = useState(false);
   const [provisionError, setProvisionError] = useState<string | null>(null);
+  const [provisionConflict, setProvisionConflict] = useState(false);
 
   // Confirmation judgement — only after the switch promise resolved AND a
   // FRESH /me membership snapshot landed. `selectOrganization` resolves only
@@ -183,12 +195,16 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
    * The Team-less path: one confirm creates the Team and the Agent together.
    * There is no Team to choose between and none to name — the server derives
    * the Team, makes the caller its Admin, and adopts this Template, all or
-   * nothing. A failure leaves the account exactly as it was, so retrying is
-   * safe; a retry that races a success converges on the same Agent.
+   * nothing. An ordinary failure leaves the account exactly as it was, so
+   * retrying the same request is safe. A 409 means another explicit request
+   * created the Team first; after an authoritative /me refresh, that case
+   * rejoins the ordinary existing-Team Template path instead of retrying a
+   * request that can never win.
    */
   async function handleProvisionFirst(): Promise<void> {
     if (provisioning) return;
     setProvisionError(null);
+    setProvisionConflict(false);
     setProvisioning(true);
 
     let result: Awaited<ReturnType<typeof provisionFirstTeamAgent>>;
@@ -200,12 +216,15 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
         displayName: template.name,
         templateIds: [template.id],
       });
-    } catch {
+    } catch (error) {
+      const conflict = error instanceof ApiError && error.status === 409;
+      if (conflict) setProvisionConflict(true);
       setProvisioning(false);
       // `/me` is the authority on what actually landed. Re-read it so a
       // partially-observed failure cannot leave this page insisting the user
       // has no Team while the server already gave them one.
       await refreshMe();
+      if (conflict) return;
       setProvisionError("We couldn't create your team agent. Nothing was created — try again.");
       return;
     }
@@ -256,16 +275,33 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
             Creating this agent also creates your team, with you as its admin. You can pick where it runs afterwards.
           </p>
 
-          {provisionError && (
+          {provisionConflict ? (
+            <p className="text-caption text-fg-2" role="status" style={{ marginTop: "var(--sp-2)" }}>
+              Another request created your team first. Check for that team to continue with this Template.
+            </p>
+          ) : provisionError ? (
             <p className="text-caption text-destructive" role="alert" style={{ marginTop: "var(--sp-2)" }}>
               {provisionError}
             </p>
-          )}
+          ) : null}
 
           <div className="mt-6">
-            <Button variant="cta" onClick={() => void handleProvisionFirst()} disabled={provisioning}>
-              {provisioning ? "Creating…" : "Create Team Agent"}
-            </Button>
+            {provisionConflict ? (
+              <Button
+                variant="cta"
+                onClick={() => {
+                  setProvisioning(true);
+                  void refreshMe().finally(() => setProvisioning(false));
+                }}
+                disabled={provisioning}
+              >
+                {provisioning ? "Checking…" : "Check Team"}
+              </Button>
+            ) : (
+              <Button variant="cta" onClick={() => void handleProvisionFirst()} disabled={provisioning}>
+                {provisioning ? "Creating…" : "Create Team Agent"}
+              </Button>
+            )}
           </div>
         </main>
       </div>

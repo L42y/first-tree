@@ -528,6 +528,9 @@ describe("small API route handlers", () => {
       db: makeQueuedSelectDb([[{ username: "alice", displayName: "Alice" }]]),
     });
     await meRoutes(created.app as never);
+    routeMocks.listActiveMemberships.mockResolvedValueOnce([
+      { memberId: "member_existing", organizationId: "org_existing", role: "admin" },
+    ]);
     const createReply = makeReply();
     await route(created.routes, "POST", "/me/organizations").handler(
       { body: { displayName: "New Org" }, user: { userId: "user_1" } },
@@ -544,6 +547,9 @@ describe("small API route handlers", () => {
 
     const missingUser = makeApp({ ...appBase, db: makeQueuedSelectDb([[]]) });
     await meRoutes(missingUser.app as never);
+    routeMocks.listActiveMemberships.mockResolvedValueOnce([
+      { memberId: "member_existing", organizationId: "org_existing", role: "admin" },
+    ]);
     await expect(
       route(missingUser.routes, "POST", "/me/organizations").handler(
         { body: { displayName: "New Org" }, user: { userId: "user_missing" } },

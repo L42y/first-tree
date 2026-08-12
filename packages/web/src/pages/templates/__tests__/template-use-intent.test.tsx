@@ -6,6 +6,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../../api/client.js";
 import type { StoredCampaignActionHandoff } from "../../../utils/onboarding-flags.js";
 import { firstTeamAgentName, TemplateUseIntent } from "../template-use-intent.js";
 
@@ -657,6 +658,31 @@ describe("TemplateUseIntent — Team-less caller", () => {
       teamAgentsMocks.provisionFirstTeamAgent.mock.calls[1]?.[0].requestId,
     );
     expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+  });
+
+  it("reconciles a different-request conflict into the existing-Team Template path", async () => {
+    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(new ApiError(409, "A different request won"));
+    authMock.value.refreshMe = vi.fn(async () => {
+      authMock.value.hasNoTeam = false;
+      authMock.value.memberships = [membership("m-winner", "org-winner", "Winner Team")];
+      authMock.value.organizationId = "org-winner";
+      authMock.value.onboardingStep = "completed";
+      authMock.value.currentOrgHasPersonalAgent = true;
+      authMock.value.onboardingCompletedAt = NOW;
+    });
+
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+    await rerender();
+
+    expect(authMock.value.refreshMe).toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Nothing was created");
+    expect(document.body.textContent).not.toContain("Create Team Agent");
+    expect(document.body.textContent).toContain("Winner Team");
+    const winner = document.body.querySelector<HTMLInputElement>('input[type="radio"]');
+    expect(winner).not.toBeNull();
+    expect(winner?.checked).toBe(true);
+    expect(buttonByText("Continue").disabled).toBe(false);
   });
 
   it("does not claim nothing was created when only activating the new Team failed", async () => {

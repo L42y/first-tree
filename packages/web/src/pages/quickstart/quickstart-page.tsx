@@ -85,50 +85,67 @@ export function QuickstartPage() {
   const actionCampaign = actionHandoff ? getCampaign(actionHandoff.campaign) : null;
 
   const startStartedRef = useRef(false);
+  const startNeedsManualRetryRef = useRef(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  const startTrial = useCallback(async () => {
-    // `legacyChatId` guards alongside `chatId`: a legacy `?chat=` link is a
-    // selected chat being canonicalized, never a launch trigger — even if a
-    // stale campaign intent lingers in sessionStorage. `actionHandoff` guards too
-    // so a fix link can never start a trial even transiently.
-    if (
-      chatId ||
-      legacyChatId ||
-      actionHandoff ||
-      !intent ||
-      !campaign ||
-      startStartedRef.current ||
-      !growthLandingPagesEnabled
-    )
-      return;
-    startStartedRef.current = true;
-    setStartError(null);
-    try {
-      const { chatId: trialChatId } = await startLandingCampaign({
-        ...(organizationId ? { organizationId } : {}),
-        campaign: intent.campaign,
-        repoUrl: intent.url,
-        ...(intent.attribution ? { attribution: intent.attribution } : {}),
-      });
-      clearCampaignIntent();
-      await refreshMe();
-      navigate(`/quickstart?c=${encodeURIComponent(trialChatId)}`, { replace: true });
-    } catch (err) {
-      startStartedRef.current = false;
-      setStartError(err instanceof Error ? err.message : "Couldn't open your trial chat. Please try again.");
-    }
-  }, [
-    chatId,
-    legacyChatId,
-    actionHandoff,
-    intent,
-    campaign,
-    organizationId,
-    growthLandingPagesEnabled,
-    refreshMe,
-    navigate,
-  ]);
+  const startTrial = useCallback(
+    async (manualRetry = false) => {
+      // `legacyChatId` guards alongside `chatId`: a legacy `?chat=` link is a
+      // selected chat being canonicalized, never a launch trigger — even if a
+      // stale campaign intent lingers in sessionStorage. `actionHandoff` guards too
+      // so a fix link can never start a trial even transiently.
+      if (
+        chatId ||
+        legacyChatId ||
+        actionHandoff ||
+        !intent ||
+        !campaign ||
+        startStartedRef.current ||
+        (!manualRetry && startNeedsManualRetryRef.current) ||
+        !growthLandingPagesEnabled
+      )
+        return;
+      startStartedRef.current = true;
+      startNeedsManualRetryRef.current = false;
+      setStartError(null);
+      try {
+        const { chatId: trialChatId } = await startLandingCampaign({
+          ...(organizationId ? { organizationId } : {}),
+          campaign: intent.campaign,
+          repoUrl: intent.url,
+          ...(intent.attribution ? { attribution: intent.attribution } : {}),
+        });
+        clearCampaignIntent();
+        await refreshMe();
+        navigate(`/quickstart?c=${encodeURIComponent(trialChatId)}`, { replace: true });
+      } catch (err) {
+        // A Team-less start crosses its provisioning transaction before quota,
+        // resource binding, and chat bootstrap finish. A later failure is
+        // therefore ambiguous: the Team may already exist even though no chat
+        // opened. Re-read the account authority before exposing retry or other
+        // first-Team entry points.
+        if (hasNoTeam) await refreshMe();
+        // `/me` reconciliation can change callback dependencies and rerun the
+        // auto-start effect. Keep this failed attempt manual-only so it cannot
+        // immediately launch a second request before the user presses Retry.
+        startNeedsManualRetryRef.current = true;
+        startStartedRef.current = false;
+        setStartError(err instanceof Error ? err.message : "Couldn't open your trial chat. Please try again.");
+      }
+    },
+    [
+      chatId,
+      legacyChatId,
+      actionHandoff,
+      intent,
+      campaign,
+      organizationId,
+      hasNoTeam,
+      growthLandingPagesEnabled,
+      refreshMe,
+      navigate,
+    ],
+  );
 
   useEffect(() => {
     if (!settled || !growthLandingPagesEnabled) return;
@@ -241,7 +258,7 @@ export function QuickstartPage() {
   }, [chatId, legacyChatId, navigate]);
 
   const retryStart = useCallback(() => {
-    void startTrial();
+    void startTrial(true);
   }, [startTrial]);
 
   const retryActionChat = useCallback(() => {

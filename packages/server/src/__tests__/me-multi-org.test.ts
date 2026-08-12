@@ -4,7 +4,9 @@ import { describe, expect, it } from "vitest";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
+import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
@@ -80,6 +82,33 @@ describe("Multi-org self-service", () => {
     expect(me.statusCode).toBe(200);
     const meBody = me.json<{ memberships: Array<{ organizationId: string }> }>();
     expect(meBody.memberships.some((m) => m.organizationId === body.organization.id)).toBe(true);
+  });
+
+  it("POST /me/organizations cannot create an empty first Team", async () => {
+    const app = getApp();
+    const userId = uuidv7();
+    await app.db.insert(users).values({
+      id: userId,
+      username: `teamless-org-create-${crypto.randomUUID().slice(0, 8)}`,
+      passwordHash: "test",
+      displayName: "Team-less Creator",
+    });
+    const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/organizations",
+      headers: { authorization: `Bearer ${tokens.accessToken}` },
+      payload: { displayName: "Empty First Team" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>().error).toContain("starting an Agent");
+    const created = await app.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.displayName, "Empty First Team"));
+    expect(created).toHaveLength(0);
   });
 
   it("POST /me/organizations disambiguates display names that derive the same slug", async () => {

@@ -199,6 +199,30 @@ describe("QuickstartPage — landing campaign trial flow", () => {
     expect(navigateMock).toHaveBeenCalledWith("/quickstart?c=chat-1", { replace: true });
   });
 
+  it("re-reads /me when a Team-less start fails after the provisioning boundary", async () => {
+    authMock.value = {
+      ...authMock.value,
+      organizationId: null,
+      hasNoTeam: true,
+      refreshMe: vi.fn(async () => {
+        // The server transaction committed before a later quota/bootstrap
+        // failure, so the authoritative account is no longer Team-less.
+        authMock.value.organizationId = "org-created";
+        authMock.value.hasNoTeam = false;
+      }),
+    };
+    landingCampaignMock.startLandingCampaign.mockRejectedValueOnce(new Error("trial quota exceeded"));
+    seedIntent("production-scan");
+
+    const container = await renderPage();
+
+    expect(container.textContent).toContain("trial quota exceeded");
+    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
+    expect(authMock.value.hasNoTeam).toBe(false);
+    expect(readCampaignIntent()).not.toBeNull();
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
   it("renders the workspace shell for an existing trial chat and does not restart the trial", async () => {
     seedIntent("production-scan");
     const container = await renderPage(["/quickstart?c=chat-1"]);
