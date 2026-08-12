@@ -7,7 +7,9 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const packages = [
   { name: "apps/cli", dir: "apps/cli" },
   { name: "packages/server", dir: "packages/server" },
-  { name: "packages/client", dir: "packages/client" },
+  { name: "packages/cloud-client", dir: "packages/cloud-client" },
+  { name: "packages/client-runtime", dir: "packages/client-runtime" },
+  { name: "packages/client-providers", dir: "packages/client-providers" },
   { name: "packages/shared", dir: "packages/shared" },
   { name: "packages/web", dir: "packages/web" },
 ];

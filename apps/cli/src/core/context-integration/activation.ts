@@ -1,4 +1,4 @@
-import { readCanonicalContextTreeWriteRouting } from "@first-tree/client";
+import { readCanonicalContextTreeWriteRouting } from "@first-tree/client-runtime";
 import {
   BYO_CONTEXT_ADDITIONAL_CONTEXT_LIMIT,
   type ContextActivationV2Response,

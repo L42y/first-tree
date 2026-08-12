@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { ExecuteUpdateFn, RefreshUpdateTargetFn, UpdateLogger, UpdatePromptFn } from "@first-tree/client";
+import type { ExecuteUpdateFn, RefreshUpdateTargetFn, UpdateLogger, UpdatePromptFn } from "@first-tree/client-runtime";
 import { confirm } from "@inquirer/prompts";
 import * as semver from "semver";
 import { channelConfig } from "./channel.js";

@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { FirstTreeHubSDK } from "@first-tree/client";
+import { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import type { ClientCapabilities, RuntimeProvider, SkillDescriptor } from "@first-tree/shared";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { cliFetch } from "./cli-fetch.js";

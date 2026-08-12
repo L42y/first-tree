@@ -4,7 +4,7 @@ import {
   type RuntimeAuthDriver,
   type RuntimeAuthDriverTable,
   type RuntimeAuthProbeResult,
-} from "@first-tree/client";
+} from "@first-tree/client-providers";
 import type { CapabilityEntry, RuntimeAuthProvider } from "@first-tree/shared";
 import { runtimeAuthProviderSchema } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";

@@ -1,4 +1,4 @@
-import type { ClientOrgMismatchError } from "@first-tree/client";
+import type { ClientOrgMismatchError } from "@first-tree/client-runtime";
 import { channelConfig } from "./channel.js";
 import type { ClientRuntimeOutput } from "./client-runtime.js";
 import { print } from "./output.js";

@@ -106,7 +106,7 @@ split_platforms() {
 run_workspace_build() {
   log "building workspace packages"
   (cd "$REPO_ROOT" && pnpm --filter @first-tree/shared build)
-  (cd "$REPO_ROOT" && pnpm --filter @first-tree/client build)
+  (cd "$REPO_ROOT" && pnpm --filter @first-tree/cloud-client build && pnpm --filter @first-tree/client-runtime build && pnpm --filter @first-tree/client-providers build)
   (cd "$REPO_ROOT" && pnpm --filter first-tree-dev build)
 }
 

@@ -125,7 +125,7 @@ export function resolveContextCorePath(release: ContextIntegrationRelease, decla
     release.manifest.channel === "dev" &&
     declaredPath === "dist/runtime-assets/context-tree-policy.md"
   ) {
-    candidate = resolve(release.coreRoot, "packages/client/src/runtime/assets/context-tree-policy.md");
+    candidate = resolve(release.coreRoot, "packages/client-runtime/src/runtime/assets/context-tree-policy.md");
   }
   const stat = lstatSync(candidate);
   if (stat.isSymbolicLink() || !stat.isFile()) {

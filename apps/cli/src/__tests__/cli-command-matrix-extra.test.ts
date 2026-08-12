@@ -71,7 +71,8 @@ vi.mock("../core/output.js", () => ({
   print: { line: printLineMock, result: outputMocks.success, fail: outputMocks.fail },
 }));
 vi.mock("../core/index.js", () => coreMocks);
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+vi.mock("@first-tree/client-runtime", () => clientMocks);
 vi.mock("../commands/_shared/local-agent.js", () => localAgentMocks);
 
 let tempDir = "";

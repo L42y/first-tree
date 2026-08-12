@@ -55,7 +55,11 @@ const prodChannelConfig = {
 vi.mock("../core/bootstrap.js", () => bootstrapMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
 vi.mock("../core/output.js", () => ({ print: { line: printLineMock } }));
-vi.mock("@first-tree/client", () => childRegistryMocks);
+vi.mock("@first-tree/cloud-client", () => childRegistryMocks);
+vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
+vi.mock("@first-tree/client-runtime", () => childRegistryMocks);
+vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
+vi.mock("@first-tree/client-providers", () => childRegistryMocks);
 vi.mock("node:child_process", () => ({ spawnSync: spawnSyncMock }));
 
 class MockChild extends EventEmitter {

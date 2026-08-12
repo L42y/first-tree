@@ -987,7 +987,7 @@ describe("login command", { timeout: 60_000 }, () => {
 
     stderrMock.mockClear();
     exitMock.mockClear();
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     runtimeInstance.start.mockRejectedValueOnce(new client.ClientOrgMismatchError("wrong org"));
     await expect(runLogin(["login", jwt({ iss: "http://hub.test" })])).rejects.toThrow("process.exit");
     expect(handleClientOrgMismatchMock).toHaveBeenCalledWith(

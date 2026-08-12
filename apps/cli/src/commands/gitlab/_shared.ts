@@ -1,4 +1,4 @@
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import { fail } from "../../cli/output.js";
 import { handleSdkError } from "../_shared/local-agent.js";
 

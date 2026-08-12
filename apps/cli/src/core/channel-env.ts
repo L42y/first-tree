@@ -38,7 +38,7 @@
 // Imported by every entrypoint that boots `ClientRuntime`:
 //   - `apps/cli/src/cli/index.ts` (production CLI entry — daemon,
 //     login, …)
-import { setCliBinding } from "@first-tree/client";
+import { setCliBinding } from "@first-tree/client-runtime";
 import { channelConfig } from "./channel.js";
 
 if (!process.env.FIRST_TREE_HOME) {

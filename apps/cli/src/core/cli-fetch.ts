@@ -12,7 +12,7 @@ import { CLI_USER_AGENT } from "./version.js";
  * no need to remember at each call site.
  *
  * SDK-routed requests stamp UA via {@link FirstTreeHubSDK} (see
- * `packages/client/src/sdk.ts`). This helper is for the
+ * `packages/cloud-client/src/sdk.ts`). This helper is for the
  * direct-`fetch` paths the SDK doesn't cover (auth bootstrap,
  * doctor probes, raw admin calls).
  *

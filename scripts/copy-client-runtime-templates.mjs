@@ -10,10 +10,13 @@ if (!packageDirArg) {
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const sourceDir = resolve(repoRoot, "packages/client/src/runtime/templates");
+const sourceDir = resolve(repoRoot, "packages/client-runtime/src/runtime/templates");
 const requiredTemplate = resolve(sourceDir, "agent-briefing.ejs");
-const canonicalPolicy = resolve(repoRoot, "packages/client/src/runtime/assets/context-tree-policy.md");
-const canonicalWriteRouting = resolve(repoRoot, "packages/client/src/runtime/assets/context-tree-write-routing.md");
+const canonicalPolicy = resolve(repoRoot, "packages/client-runtime/src/runtime/assets/context-tree-policy.md");
+const canonicalWriteRouting = resolve(
+  repoRoot,
+  "packages/client-runtime/src/runtime/assets/context-tree-write-routing.md",
+);
 const targetDir = resolve(repoRoot, packageDirArg, "dist/templates");
 const runtimeAssetsDir = resolve(repoRoot, packageDirArg, "dist/runtime-assets");
 

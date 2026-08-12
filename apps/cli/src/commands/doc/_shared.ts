@@ -1,4 +1,4 @@
-import type { FirstTreeHubSDK } from "@first-tree/client";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import type { DocCommentStatus, DocStatus, DocSummary } from "@first-tree/shared";
 import { docCommentStatusSchema, docStatusSchema } from "@first-tree/shared";
 import { fail } from "../../cli/output.js";

@@ -21,7 +21,12 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, existsSync: existsSyncMock };
 });
 
-vi.mock("@first-tree/client", () => ({
+vi.mock("@first-tree/cloud-client", () => ({
+  ERROR_KINDS: { TRANSIENT: "transient", PERMANENT: "permanent" },
+  classify: classifyMock,
+  getChildProcessRegistry: () => ({ spawn: registrySpawnMock }),
+}));
+vi.mock("@first-tree/client-runtime", () => ({
   ERROR_KINDS: { TRANSIENT: "transient", PERMANENT: "permanent" },
   classify: classifyMock,
   getChildProcessRegistry: () => ({ spawn: registrySpawnMock }),

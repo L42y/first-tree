@@ -1,5 +1,5 @@
-import type { FirstTreeHubSDK, SelfFence } from "@first-tree/client";
-
+import type { SelfFence } from "@first-tree/client-runtime";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 /**
  * Send-time capture context shared by document capture (`doc-capture.ts`) and
  * image capture (`image-capture.ts`): resolving the sender's workspace fence

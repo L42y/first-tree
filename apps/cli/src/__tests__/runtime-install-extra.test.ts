@@ -29,7 +29,17 @@ const coreIndexMocks = vi.hoisted(() => ({
   runtimeProviderChecks: vi.fn(() => [{ detail: "installed", label: "Runtime", ok: true }]),
 }));
 
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+
+vi.mock("../cli/output.js", () => ({
+  fail: outputMocks.fail,
+}));
+vi.mock("@first-tree/client-runtime", () => clientMocks);
+
+vi.mock("../cli/output.js", () => ({
+  fail: outputMocks.fail,
+}));
+vi.mock("@first-tree/client-providers", () => clientMocks);
 
 vi.mock("../cli/output.js", () => ({
   fail: outputMocks.fail,

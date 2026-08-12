@@ -26,7 +26,7 @@ import { print } from "../core/output.js";
  * the whole CLI, not the daemon subsystem alone.
  *
  * Pairs with — but does not replace — the server-driven UpdateManager
- * (packages/client/src/runtime/update-manager.ts), which fires automatically
+ * (packages/client-runtime/src/runtime/update-manager.ts), which fires automatically
  * when a connected client falls behind the server-bundled version. This
  * command is the manual equivalent by default: same server-selected target
  * version plus the same install + restart sequence, but triggered on the

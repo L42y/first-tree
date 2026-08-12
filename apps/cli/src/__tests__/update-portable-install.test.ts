@@ -13,7 +13,11 @@ const childRegistryMocks = vi.hoisted(() => ({
 }));
 const cliFetchMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@first-tree/client", () => childRegistryMocks);
+vi.mock("@first-tree/cloud-client", () => childRegistryMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-runtime", () => childRegistryMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-providers", () => childRegistryMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
 
 let tmpDirs: string[] = [];

@@ -4,7 +4,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { classify, ERROR_KINDS, getChildProcessRegistry } from "@first-tree/client";
+import { classify, ERROR_KINDS, getChildProcessRegistry } from "@first-tree/client-runtime";
 import {
   type PortableAsset,
   type PortableInstallMetadata,

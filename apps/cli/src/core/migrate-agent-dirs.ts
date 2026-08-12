@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { migrateLegacyRuntimeLayout } from "@first-tree/client";
+import { migrateLegacyRuntimeLayout } from "@first-tree/client-runtime";
 import { parse as parseYaml } from "yaml";
 import { channelConfig } from "./channel.js";
 import { cliFetch } from "./cli-fetch.js";

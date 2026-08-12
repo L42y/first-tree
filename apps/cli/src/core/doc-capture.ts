@@ -1,4 +1,5 @@
-import { buildMessageDocumentSnapshots, type FirstTreeHubSDK, type WorkspaceFence } from "@first-tree/client";
+import { buildMessageDocumentSnapshots, type WorkspaceFence } from "@first-tree/client-runtime";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { type AttachmentRef, documentContextSchema } from "@first-tree/shared";
 import { resolveChatOrgId, resolveSelfFenceFromEnv } from "./capture-context.js";
 

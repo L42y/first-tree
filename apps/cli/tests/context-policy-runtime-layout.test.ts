@@ -156,7 +156,7 @@ describe("canonical Policy runtime layouts", () => {
     expect(cliEntry).not.toHaveProperty("setCliBinding");
   });
 
-  it("builds a Managed briefing from the actual @first-tree/client dist layout", () => {
+  it("builds a Managed briefing from the actual @first-tree/client-runtime dist layout", () => {
     assertRuntimeEmbedsCanonicalPolicy(builtClient);
   });
 

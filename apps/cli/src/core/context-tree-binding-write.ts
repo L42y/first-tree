@@ -1,4 +1,4 @@
-import { createLogger } from "@first-tree/client";
+import { createLogger } from "@first-tree/cloud-client";
 import { contextTreeActiveBindingSchema, contextTreeBranchSchema, contextTreeRepoSchema } from "@first-tree/shared";
 import {
   type ContextTreeBindingResult,

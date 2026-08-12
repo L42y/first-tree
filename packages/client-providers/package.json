@@ -1,0 +1,45 @@
+{
+  "name": "@first-tree/client-providers",
+  "version": "0.1.2",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "First Tree built-in providers and shared handler helpers (internal)",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --no-dts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "coverage": "vitest run --coverage --testTimeout=10000 --passWithNoTests",
+    "smoke:codex-sandbox": "node scripts/codex-sandbox-smoke.mjs",
+    "smoke:landing-codex-auth-sandbox": "RUN_CODEX_LANDING_APP_SERVER_SMOKE=1 vitest run --passWithNoTests --maxWorkers=1 --minWorkers=1 src/providers/codex/__tests__/app-server/landing-smoke.test.ts"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.187",
+    "@botiverse/kimi-code-sdk": "0.26.0-botiverse.2",
+    "@first-tree/client-runtime": "workspace:*",
+    "@openai/codex-sdk": "^0.144.1",
+    "semver": "^7.6.3",
+    "smol-toml": "^1.7.0",
+    "yaml": "^2.8.3",
+    "zod": "^4.0.0",
+    "@first-tree/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@first-tree/cloud-client": "workspace:*",
+    "@types/node": "^22.16.0",
+    "@types/semver": "^7.5.8",
+    "@vitest/coverage-v8": "3.2.4",
+    "tsdown": "^0.21.4",
+    "vitest": "^3.2.0"
+  }
+}

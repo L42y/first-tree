@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { FirstTreeHubSDK } from "@first-tree/client";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { captureOutboundDocs } from "../core/doc-capture.js";
 

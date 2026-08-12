@@ -8,7 +8,7 @@
 // import re-introduces the multi-env footgun where staging/dev binaries
 // silently fall back to the prod home and prod CLI name.
 import "../core/channel-env.js";
-import { applyClientLoggerConfig } from "@first-tree/client";
+import { applyClientLoggerConfig } from "@first-tree/cloud-client";
 import { Command } from "commander";
 import { registerAgentCommands } from "../commands/agent/index.js";
 import { registerChatCommands } from "../commands/chat/index.js";

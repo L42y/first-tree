@@ -1,8 +1,8 @@
 // Core functions — programmatic API for external CLI consumers
 
 // SDK — re-export for convenience
-export type { AccessTokenProvider, RegisterResult, SdkConfig } from "@first-tree/client";
-export { FirstTreeHubSDK, FirstTreeHubSDK as FirstTreeSDK, SdkError } from "@first-tree/client";
+export type { AccessTokenProvider, RegisterResult, SdkConfig } from "@first-tree/cloud-client";
+export { FirstTreeHubSDK, FirstTreeHubSDK as FirstTreeSDK, SdkError } from "@first-tree/cloud-client";
 // Connect-token helpers — derive the server URL from a short code fallback or
 // legacy JWT.
 // `decodeJwtPayload` is intentionally NOT re-exported: it's an internal

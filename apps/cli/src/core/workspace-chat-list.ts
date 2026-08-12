@@ -1,4 +1,4 @@
-import type { FirstTreeHubSDK } from "@first-tree/client";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import type {
   ChatEngagementStatus,
   ChatEngagementView,

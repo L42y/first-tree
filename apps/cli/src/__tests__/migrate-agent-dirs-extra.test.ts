@@ -11,7 +11,11 @@ const clientMocks = vi.hoisted(() => ({
 }));
 const printMock = vi.hoisted(() => ({ status: vi.fn() }));
 
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-runtime", () => clientMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-providers", () => clientMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
 vi.mock("../core/output.js", () => ({ print: printMock }));
 

@@ -1,4 +1,4 @@
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import { describe, expect, it, vi } from "vitest";
 import { AuthRefreshFailedError } from "../core/bootstrap.js";
 import {

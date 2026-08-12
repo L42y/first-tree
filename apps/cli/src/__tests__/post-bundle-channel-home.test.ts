@@ -32,27 +32,27 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
  */
 const DIST = resolve(__dirname, "../../dist/cli/index.mjs");
 const REPO_ROOT = resolve(__dirname, "../../../..");
-// Also bear-witness that `@first-tree/client`'s dist is present — the
-// bundle imports it at runtime (workspace symlink → packages/client),
-// and a missing `packages/client/dist/index.mjs` triggers
+// Also bear-witness that the private client-runtime dist is present — the
+// bundle imports it at runtime (workspace symlink → packages/client-runtime),
+// and a missing `packages/client-runtime/dist/index.mjs` triggers
 // `ERR_MODULE_NOT_FOUND` from inside the spawned dist. CI's test job
 // historically didn't run `pnpm build` before tests, so on a cold
 // runner this file may be missing even though apps/cli/dist exists
 // (e.g. from a previous local build cached in the worktree).
-const CLIENT_DIST = resolve(REPO_ROOT, "packages/client/dist/index.mjs");
+const CLIENT_DIST = resolve(REPO_ROOT, "packages/client-runtime/dist/index.mjs");
 
 function ensureDistBuilt(): void {
   if (existsSync(DIST) && existsSync(CLIENT_DIST)) return;
   // Full monorepo build via the root `pnpm build` script (= `turbo run
   // build`). Turbo respects per-task `dependsOn` so packages build in
-  // topological order — `@first-tree/shared` → `@first-tree/client` →
+  // topological order — `@first-tree/shared` → client packages →
   // `first-tree-dev` — and caches keep warm runs sub-second.
   //
   // **cwd: REPO_ROOT is load-bearing**. Without it, `pnpm build` runs
   // apps/cli/package.json's `build` script (which only invokes tsdown
   // for apps/cli) instead of the root's `turbo run build`, leaving
-  // workspace deps like `packages/client/dist/` unbuilt. The bundle
-  // then ERR_MODULE_NOT_FOUNDs on `@first-tree/client` at spawn time.
+  // workspace deps like `packages/client-runtime/dist/` unbuilt. The bundle
+  // then ERR_MODULE_NOT_FOUNDs on internal client packages at spawn time.
   const build = spawnSync("pnpm", ["build"], {
     cwd: REPO_ROOT,
     encoding: "utf-8",

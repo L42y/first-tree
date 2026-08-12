@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { activateContextTreeRead, type ContextTreeReadGitRunner } from "../core/context-tree-read.js";
 import { type ContextTreeWriteAuthorityReader, preflightContextTreeWrite } from "../core/context-tree-write.js";

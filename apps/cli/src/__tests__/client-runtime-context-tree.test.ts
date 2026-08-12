@@ -83,7 +83,18 @@ vi.mock("node:fs", async () => {
     watch: fsWatchMocks.watch,
   };
 });
-vi.mock("@first-tree/client", () => {
+vi.mock("@first-tree/cloud-client", () => ({
+  createLogger: vi.fn(() => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn().mockReturnThis(),
+  })),
+}));
+vi.mock("@first-tree/client-runtime", () => {
   class FakeAgentSlot {
     public readonly agentId: string;
     public readonly name: string;
@@ -96,19 +107,6 @@ vi.mock("@first-tree/client", () => {
       slotInstances.push(this);
     }
   }
-  const stubFactory = vi.fn(() => ({
-    start: vi.fn(),
-    resume: vi.fn(),
-    inject: vi.fn(),
-    suspend: vi.fn(),
-    shutdown: vi.fn(),
-  }));
-  // Narrow table so unsupported-runtime characterization still exercises the
-  // fail-closed path for providers this "build" does not ship (e.g. TUI).
-  const builtinTable = Object.freeze({
-    "claude-code": stubFactory,
-    codex: stubFactory,
-  });
   return {
     AgentSlot: FakeAgentSlot,
     ClientConnection: class {
@@ -127,16 +125,24 @@ vi.mock("@first-tree/client", () => {
       }
     },
     UpdateManager: { attach: vi.fn(() => ({ dispose: disposeMock })) },
-    createLogger: vi.fn(() => ({
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-      trace: vi.fn(),
-      fatal: vi.fn(),
-      child: vi.fn().mockReturnThis(),
-    })),
     getChildProcessRegistry: vi.fn(() => ({ killAll: killAllMock })),
+  };
+});
+vi.mock("@first-tree/client-providers", () => {
+  const stubFactory = vi.fn(() => ({
+    start: vi.fn(),
+    resume: vi.fn(),
+    inject: vi.fn(),
+    suspend: vi.fn(),
+    shutdown: vi.fn(),
+  }));
+  // Narrow table so unsupported-runtime characterization still exercises the
+  // fail-closed path for providers this "build" does not ship (e.g. TUI).
+  const builtinTable = Object.freeze({
+    "claude-code": stubFactory,
+    codex: stubFactory,
+  });
+  return {
     createBuiltinHandlerRegistry: vi.fn(() => builtinTable),
     resolveAndLogClaudeExecutable: vi.fn(() => ({ path: undefined, source: "default" })),
   };
@@ -354,7 +360,7 @@ describe("ClientRuntime context-tree wiring", () => {
   );
 
   it("handles connection events, update hooks, and graceful stop", async () => {
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     const { print } = await import("../core/output.js");
     slotInstances.length = 0;
 

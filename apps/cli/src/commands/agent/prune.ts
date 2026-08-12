@@ -1,4 +1,4 @@
-import { FirstTreeHubSDK } from "@first-tree/client";
+import { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
 import { fail } from "../../cli/output.js";

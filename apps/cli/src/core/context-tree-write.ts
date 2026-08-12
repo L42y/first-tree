@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import {
   type ContextTreeProvider,
   type ContextTreeWritePreflightErrorCode,

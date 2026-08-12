@@ -1,4 +1,4 @@
-import { FirstTreeHubSDK } from "@first-tree/client";
+import { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { fail } from "../../cli/output.js";
 import { ensureFreshAccessToken, resolveServerUrl } from "../../core/bootstrap.js";
 import { CLI_USER_AGENT } from "../../core/version.js";

@@ -1,4 +1,4 @@
-import { cleanAgentWorkspaces } from "@first-tree/client";
+import { cleanAgentWorkspaces } from "@first-tree/client-runtime";
 import type { Command } from "commander";
 import { print } from "../../../core/output.js";
 

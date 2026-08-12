@@ -29,7 +29,7 @@ describe("CLI CI trigger contract", () => {
     const patterns = cliPatterns();
     const matrix = [
       ["apps/cli/src/index.ts", true],
-      ["packages/client/src/index.ts", true],
+      ["packages/client-runtime/src/index.ts", true],
       ["packages/shared/src/index.ts", true],
       ["skills/first-tree-read/SKILL.md", true],
       ["scripts/vitest-max-forks.ts", true],

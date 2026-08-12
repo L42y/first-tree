@@ -5,7 +5,7 @@
 // native `claude` binary as a transitive optionalDependency of
 // `@anthropic-ai/claude-agent-sdk`. First Tree does not need it bundled — the
 // runtime resolves a system `claude` first (env override / PATH / well-known
-// install dirs; see packages/client/src/providers/claude/executable.ts) and the
+// install dirs; see packages/client-providers/src/providers/claude/executable.ts) and the
 // daemon can install the native engine on demand (`daemon install-claude`).
 // Removing the vendored binary at install time trims the install footprint
 // without touching the `@anthropic-ai/claude-agent-sdk` TypeScript SDK we
@@ -23,7 +23,7 @@ import { dirname, join } from "node:path";
 
 // Per-platform packages the SDK ships the bundled `claude` binary in. Mirrors
 // `@anthropic-ai/claude-agent-sdk`'s own optionalDependencies (and the list in
-// packages/client/src/providers/claude/capability.ts). Linux carries both
+// packages/client-providers/src/providers/claude/capability.ts). Linux carries both
 // the glibc and the musl variant — only the one matching the host's libc is
 // installed; removing whichever resolved is enough, and the absent one is a
 // no-op here.

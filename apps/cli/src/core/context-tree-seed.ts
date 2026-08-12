@@ -1,4 +1,4 @@
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import {
   type ContextTreeSeedPreflightErrorCode,
   type ContextTreeSeedPreflightRequest,

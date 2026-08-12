@@ -31,7 +31,11 @@ const outputMocks = vi.hoisted(() => ({
   setJsonMode: vi.fn(),
 }));
 
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+vi.mock("../commands/agent/index.js", () => ({ registerAgentCommands: registrationMocks.registerAgentCommands }));
+vi.mock("@first-tree/client-runtime", () => clientMocks);
+vi.mock("../commands/agent/index.js", () => ({ registerAgentCommands: registrationMocks.registerAgentCommands }));
+vi.mock("@first-tree/client-providers", () => clientMocks);
 vi.mock("../commands/agent/index.js", () => ({ registerAgentCommands: registrationMocks.registerAgentCommands }));
 vi.mock("../commands/chat/index.js", () => ({ registerChatCommands: registrationMocks.registerChatCommands }));
 vi.mock("../commands/computer/index.js", () => ({

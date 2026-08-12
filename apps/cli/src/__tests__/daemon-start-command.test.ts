@@ -54,7 +54,19 @@ const failMock = vi.hoisted(() =>
   }),
 );
 
-vi.mock("@first-tree/client", () => ({
+vi.mock("@first-tree/cloud-client", () => ({
+  ...clientMocks,
+  ClientOrgMismatchError: class ClientOrgMismatchError extends Error {},
+  ClientRetiredError: class ClientRetiredError extends Error {},
+  ClientUserMismatchError: class ClientUserMismatchError extends Error {},
+}));
+vi.mock("@first-tree/client-runtime", () => ({
+  ...clientMocks,
+  ClientOrgMismatchError: class ClientOrgMismatchError extends Error {},
+  ClientRetiredError: class ClientRetiredError extends Error {},
+  ClientUserMismatchError: class ClientUserMismatchError extends Error {},
+}));
+vi.mock("@first-tree/client-providers", () => ({
   ...clientMocks,
   ClientOrgMismatchError: class ClientOrgMismatchError extends Error {},
   ClientRetiredError: class ClientRetiredError extends Error {},
@@ -905,7 +917,7 @@ describe("daemon start command", () => {
       "logLevel: error\nserver:\n  url: https://first-tree.example\nclient:\n  id: client_1234abcd\n",
     );
     process.env.FIRST_TREE_SERVICE_MODE = "1";
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     runtimeInstance.start.mockRejectedValueOnce(new client.ClientUserMismatchError("wrong user"));
 
     await expect(runStart(["--no-interactive"])).rejects.toMatchObject({ exitCode: 1 });
@@ -925,7 +937,7 @@ describe("daemon start command", () => {
       "logLevel: error\nserver:\n  url: https://first-tree.example\nclient:\n  id: client_1234abcd\n",
     );
     process.env.FIRST_TREE_SERVICE_MODE = "1";
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     runtimeInstance.start.mockRejectedValueOnce(new client.ClientRetiredError("client retired"));
 
     await expect(runStart(["--no-interactive"])).rejects.toMatchObject({ exitCode: 1 });
@@ -945,7 +957,7 @@ describe("daemon start command", () => {
       "logLevel: warn\nserver:\n  url: https://first-tree.example\nclient:\n  id: client_1234abcd\n",
     );
     process.env.FIRST_TREE_SERVICE_MODE = "1";
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     const actual = await vi.importActual<typeof import("../core/client-reidentify.js")>("../core/client-reidentify.js");
     coreMocks.handleClientOrgMismatch.mockImplementation(actual.handleClientOrgMismatch);
     runtimeInstance.start.mockRejectedValueOnce(new client.ClientOrgMismatchError("wrong org"));
@@ -989,7 +1001,7 @@ describe("daemon start command", () => {
   });
 
   it("handles user and org mismatch errors from inline runtime startup", async () => {
-    const client = await import("@first-tree/client");
+    const client = await import("@first-tree/client-runtime");
     runtimeInstance.start.mockRejectedValueOnce(new client.ClientUserMismatchError("wrong user"));
     await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
     const mismatchText = output();

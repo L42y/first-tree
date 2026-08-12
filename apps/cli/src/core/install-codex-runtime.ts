@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { classify, ERROR_KINDS, getChildProcessRegistry } from "@first-tree/client";
+import { classify, ERROR_KINDS, getChildProcessRegistry } from "@first-tree/client-runtime";
 import { resolveNpmInvocation } from "./npm-invocation.js";
 import { print } from "./output.js";
 

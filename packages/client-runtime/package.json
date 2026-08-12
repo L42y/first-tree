@@ -1,0 +1,57 @@
+{
+  "name": "@first-tree/client-runtime",
+  "version": "0.1.2",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "description": "First Tree client connection, AgentSlot, session lifecycle, ACK/delivery/reset, scheduler, persistence (internal)",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./dist/index.mjs"
+    },
+    "./contracts": {
+      "types": "./src/runtime/contracts.ts",
+      "import": "./dist/runtime/contracts.mjs"
+    },
+    "./provider-support": {
+      "types": "./src/runtime/provider-support/index.ts",
+      "import": "./dist/runtime/provider-support/index.mjs"
+    }
+  },
+  "scripts": {
+    "prebuild": "node scripts/copy-bundled-skills.mjs",
+    "build": "tsdown src/index.ts src/runtime/contracts.ts src/runtime/provider-support/index.ts --format esm --no-dts && node ../../scripts/copy-client-runtime-templates.mjs packages/client-runtime",
+    "pretest": "node scripts/copy-bundled-skills.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "coverage": "vitest run --coverage --testTimeout=10000 --passWithNoTests"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@first-tree/cloud-client": "workspace:*",
+    "ejs": "^6.0.1",
+    "fs-native-extensions": "^1.5.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "ws": "^8.20.0",
+    "yaml": "^2.8.3",
+    "yauzl": "^3.4.0",
+    "zod": "^4.0.0",
+    "@first-tree/shared": "workspace:*",
+    "semver": "^7.6.3",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/ejs": "^3.1.5",
+    "@types/node": "^22.16.0",
+    "@types/ws": "^8.18.1",
+    "@types/yauzl": "^3.4.0",
+    "@vitest/coverage-v8": "3.2.4",
+    "fflate": "^0.8.3",
+    "tsdown": "^0.21.4",
+    "vitest": "^3.2.0",
+    "@types/semver": "^7.5.8"
+  }
+}

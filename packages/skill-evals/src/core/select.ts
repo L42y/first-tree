@@ -137,8 +137,8 @@ function isSkillEvalDocsOnly(path: string): boolean {
 
 function isAgentBriefingRuntimePath(path: string): boolean {
   return (
-    path === "packages/client/src/runtime/agent-briefing.ts" ||
-    path === "packages/client/src/runtime/templates/agent-briefing.ejs"
+    path === "packages/client-runtime/src/runtime/agent-briefing.ts" ||
+    path === "packages/client-runtime/src/runtime/templates/agent-briefing.ejs"
   );
 }
 

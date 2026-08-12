@@ -2,19 +2,21 @@ import type { FSWatcher } from "node:fs";
 import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
-  AgentSlot,
   type BuiltinHandlerRegistry,
-  ClientConnection,
   createBuiltinHandlerRegistry,
-  createLogger,
+  resolveAndLogClaudeExecutable,
+} from "@first-tree/client-providers";
+import {
+  AgentSlot,
+  ClientConnection,
   getChildProcessRegistry,
   type HandlerFactory,
   type ProviderModelsListCommand,
   type RuntimeAuthCommand,
-  resolveAndLogClaudeExecutable,
   type UpdateHooks,
   UpdateManager,
-} from "@first-tree/client";
+} from "@first-tree/client-runtime";
+import { createLogger } from "@first-tree/cloud-client";
 import {
   AGENT_BIND_REJECT_REASONS,
   type AgentPinnedMessage,
@@ -203,7 +205,7 @@ export class ClientRuntime {
     // re-resolves with the login-shell probe) and by the capability probe
     // (post-construction) — neither of which is on the pre-connect path.
     // Log once per ClientRuntime construction.
-    const resolution = resolveAndLogClaudeExecutable();
+    const resolution = resolveAndLogClaudeExecutable({ log: createLogger("handlers") });
     this.handlerFactories = createBuiltinHandlerRegistry({
       resolveExecutable: () => resolution,
     });

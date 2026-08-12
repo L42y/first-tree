@@ -5,7 +5,7 @@
 // binary as a transitive optionalDependency of `@openai/codex-sdk`. First Tree
 // does not need it bundled — the runtime resolves an external `codex` from
 // PATH, known install locations, or the macOS ChatGPT/Codex desktop app (see
-// packages/client/src/providers/codex/binary.ts), and the daemon can install the
+// packages/client-providers/src/providers/codex/binary.ts), and the daemon can install the
 // native engine on demand (`daemon install-codex`). Removing the vendored binary
 // at install time trims the install footprint without touching the small
 // `@openai/codex-sdk` TypeScript client we actually import.

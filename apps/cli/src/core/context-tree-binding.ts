@@ -1,4 +1,4 @@
-import { createLogger, SdkError } from "@first-tree/client";
+import { createLogger, SdkError } from "@first-tree/cloud-client";
 import { contextTreeActiveBindingSchema, contextTreeInfoSchema } from "@first-tree/shared";
 import { AuthRefreshFailedError } from "./bootstrap.js";
 import { classifyCliTransportError } from "./transport-error.js";

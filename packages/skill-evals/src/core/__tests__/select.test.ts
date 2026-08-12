@@ -40,7 +40,7 @@ describe("skill eval selection", () => {
   it.each([
     "packages/skill-evals/src/core/judge/schema.ts",
     "packages/skill-evals/src/core/provider/claude.ts",
-    "packages/client/src/runtime/agent-briefing.ts",
+    "packages/client-runtime/src/runtime/agent-briefing.ts",
     "packages/skill-evals/src/core/periodic.ts",
     "packages/skill-evals/src/suites/quality/runner.ts",
   ])("selects only the no-model floor for shared or model-backed infrastructure changes: %s", (path) => {
@@ -87,7 +87,7 @@ describe("skill eval selection", () => {
   });
 
   it("does not recommend skill evals for unrelated files", () => {
-    const summary = selectSkillEvalRecommendations(["packages/client/src/runtime/agent-slot.ts"]);
+    const summary = selectSkillEvalRecommendations(["packages/client-runtime/src/runtime/agent-slot.ts"]);
 
     expect(summary.recommendations).toEqual([]);
     expect(summary.notes).toEqual(["No skill-eval-related changes were detected."]);

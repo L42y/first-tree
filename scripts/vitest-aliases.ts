@@ -14,8 +14,8 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 
 // Array form (not object) so each alias matches exactly with an anchored
-// RegExp. An unanchored prefix like `@first-tree/client` would
-// otherwise swallow `@first-tree/client/observability` and rewrite it
+// RegExp. An unanchored prefix like `@first-tree/client-runtime` would
+// otherwise swallow `@first-tree/client-runtime/contracts` and rewrite it
 // to a bogus path with `/observability` appended to the file.
 export const monorepoSourceAliases: { find: RegExp; replacement: string }[] = [
   {
@@ -35,12 +35,36 @@ export const monorepoSourceAliases: { find: RegExp; replacement: string }[] = [
     replacement: resolve(root, "packages/shared/src/index.ts"),
   },
   {
-    find: /^@first-tree\/client\/observability$/,
-    replacement: resolve(root, "packages/client/src/observability/index.ts"),
+    find: /^@first-tree\/cloud-client\/observability$/,
+    replacement: resolve(root, "packages/cloud-client/src/observability/index.ts"),
   },
   {
-    find: /^@first-tree\/client$/,
-    replacement: resolve(root, "packages/client/src/index.ts"),
+    find: /^@first-tree\/cloud-client$/,
+    replacement: resolve(root, "packages/cloud-client/src/index.ts"),
+  },
+  {
+    find: /^@first-tree\/client-runtime\/contracts$/,
+    replacement: resolve(root, "packages/client-runtime/src/runtime/contracts.ts"),
+  },
+  {
+    find: /^@first-tree\/client-runtime\/provider-support$/,
+    replacement: resolve(root, "packages/client-runtime/src/runtime/provider-support/index.ts"),
+  },
+  {
+    find: /^@first-tree\/client-runtime$/,
+    replacement: resolve(root, "packages/client-runtime/src/index.ts"),
+  },
+  {
+    find: /^@first-tree\/client-runtime\/(.*)$/,
+    replacement: resolve(root, "packages/client-runtime/src/$1"),
+  },
+  {
+    find: /^@first-tree\/client-providers$/,
+    replacement: resolve(root, "packages/client-providers/src/index.ts"),
+  },
+  {
+    find: /^@first-tree\/client-providers\/(.*)$/,
+    replacement: resolve(root, "packages/client-providers/src/$1"),
   },
   {
     find: /^@first-tree\/server\/observability$/,

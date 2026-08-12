@@ -9,12 +9,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  */
 describe("runRuntimeAuthLogin default driver registry", () => {
   afterEach(() => {
-    vi.doUnmock("@first-tree/client");
+    vi.doUnmock("@first-tree/cloud-client");
+    vi.doUnmock("@first-tree/client-runtime");
+    vi.doUnmock("@first-tree/client-providers");
     vi.resetModules();
   });
 
   async function loadWithDefaultDrivers(drivers: Record<string, unknown>) {
-    vi.doMock("@first-tree/client", () => ({
+    vi.doMock("@first-tree/cloud-client", () => ({
+      BROWSER_LOGIN_TIMEOUT_MS: 120_000,
+      redactErrorPreview: (input: string, maxLen: number) => input.slice(0, maxLen),
+      RUNTIME_AUTH_DRIVERS: drivers,
+    }));
+    vi.doMock("@first-tree/client-runtime", () => ({
+      BROWSER_LOGIN_TIMEOUT_MS: 120_000,
+      redactErrorPreview: (input: string, maxLen: number) => input.slice(0, maxLen),
+      RUNTIME_AUTH_DRIVERS: drivers,
+    }));
+    vi.doMock("@first-tree/client-providers", () => ({
       BROWSER_LOGIN_TIMEOUT_MS: 120_000,
       redactErrorPreview: (input: string, maxLen: number) => input.slice(0, maxLen),
       RUNTIME_AUTH_DRIVERS: drivers,

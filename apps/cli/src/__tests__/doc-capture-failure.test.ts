@@ -1,4 +1,4 @@
-import type { FirstTreeHubSDK } from "@first-tree/client";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { describe, expect, it, vi } from "vitest";
 
 /**
@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
  *
  * Force the failure by mocking the capture builder to throw.
  */
-vi.mock("@first-tree/client", () => ({
+vi.mock("@first-tree/cloud-client", () => ({
   buildMessageDocumentSnapshots: vi.fn(async () => {
     throw new Error("capture exploded");
   }),

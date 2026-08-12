@@ -1,4 +1,4 @@
-import { probeCapabilities } from "@first-tree/client";
+import { probeCapabilities } from "@first-tree/client-providers";
 import { clientConfigSchema, initConfig, resetConfig, resetConfigMeta } from "@first-tree/shared/config";
 import type { Command } from "commander";
 import { fail } from "../../cli/output.js";

@@ -40,7 +40,7 @@ const outputMocks = vi.hoisted(() => ({
   success: vi.fn(),
 }));
 
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
 vi.mock("@first-tree/shared/config", () => configMocks);
 vi.mock("../core/bootstrap.js", () => bootstrapMocks);
 vi.mock("../cli/output.js", () => outputMocks);

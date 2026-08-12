@@ -99,7 +99,7 @@ describe("cron commands", () => {
 
   it("maps revision mismatch to a stable CLI code", async () => {
     process.env.FIRST_TREE_CHAT_ID = "chat-env";
-    const { SdkError: RealSdkError } = await import("@first-tree/client");
+    const { SdkError: RealSdkError } = await import("@first-tree/cloud-client");
     const sdk = {
       getCronJob: vi.fn().mockResolvedValue({ id: "job-1", revision: 3 }),
       updateCronJob: vi

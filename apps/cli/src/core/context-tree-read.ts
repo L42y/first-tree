@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import { type ContextTreeProvider, contextTreeActiveBindingSchema } from "@first-tree/shared";
 import { AuthRefreshFailedError } from "./bootstrap.js";
 import { classifyContextTreeReadError } from "./context-tree-binding.js";

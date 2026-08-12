@@ -1,4 +1,5 @@
-import { buildMessageImageSnapshots, type FirstTreeHubSDK } from "@first-tree/client";
+import { buildMessageImageSnapshots } from "@first-tree/client-runtime";
+import type { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import type { AttachmentRef, ImageRefContent, MessageFormat } from "@first-tree/shared";
 import { resolveChatOrgId, resolveImageFenceFromEnv } from "./capture-context.js";
 

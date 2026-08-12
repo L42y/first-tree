@@ -50,7 +50,13 @@ vi.mock("../core/index.js", () => ({
   CLI_USER_AGENT: "first-tree-test",
   ...doctorCoreMocks,
 }));
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+vi.mock("@first-tree/shared/config", () => configMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-runtime", () => clientMocks);
+vi.mock("@first-tree/shared/config", () => configMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-providers", () => clientMocks);
 vi.mock("@first-tree/shared/config", () => configMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
 vi.mock("../cli/output.js", () => outputMocks);

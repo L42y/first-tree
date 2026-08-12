@@ -2,7 +2,7 @@
   "name": "first-tree-dev",
   "version": "0.5.20",
   "type": "module",
-  "description": "First Tree — unified CLI for Context Tree onboarding, agent management, and team messaging. (Source-tree dev build; CI rewrites `name` and `bin` for prod / staging publishes — see docs/local-dev-isolation.md.)",
+  "description": "First Tree \u2014 unified CLI for Context Tree onboarding, agent management, and team messaging. (Source-tree dev build; CI rewrites `name` and `bin` for prod / staging publishes \u2014 see docs/local-dev-isolation.md.)",
   "keywords": [
     "agents",
     "cli",
@@ -77,10 +77,12 @@
     "ws": "^8.20.0",
     "yaml": "^2.8.3",
     "yazl": "^3.3.1",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "@first-tree/cloud-client": "workspace:*",
+    "@first-tree/client-runtime": "workspace:*",
+    "@first-tree/client-providers": "workspace:*"
   },
   "devDependencies": {
-    "@first-tree/client": "workspace:*",
     "@first-tree/shared": "workspace:*",
     "@types/ejs": "^3.1.5",
     "@types/node": "^22.16.0",

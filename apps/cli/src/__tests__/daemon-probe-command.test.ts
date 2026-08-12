@@ -27,7 +27,15 @@ const configMocks = vi.hoisted(() => ({
   resetConfigMeta: vi.fn(),
 }));
 
-vi.mock("@first-tree/client", () => clientMocks);
+vi.mock("@first-tree/cloud-client", () => clientMocks);
+vi.mock("../core/index.js", () => coreMocks);
+vi.mock("../core/output.js", () => outputMocks);
+vi.mock("../cli/output.js", () => ({ fail: failMock }));
+vi.mock("@first-tree/client-runtime", () => clientMocks);
+vi.mock("../core/index.js", () => coreMocks);
+vi.mock("../core/output.js", () => outputMocks);
+vi.mock("../cli/output.js", () => ({ fail: failMock }));
+vi.mock("@first-tree/client-providers", () => clientMocks);
 vi.mock("../core/index.js", () => coreMocks);
 vi.mock("../core/output.js", () => outputMocks);
 vi.mock("../cli/output.js", () => ({ fail: failMock }));

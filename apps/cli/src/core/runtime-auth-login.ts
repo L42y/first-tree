@@ -2,12 +2,11 @@ import {
   BROWSER_LOGIN_TIMEOUT_MS,
   type LoginOutcome,
   RUNTIME_AUTH_DRIVERS,
-  type RuntimeAuthCommand,
   type RuntimeAuthDriver,
   type RuntimeAuthDriverTable,
   type RuntimeAuthLoginResolution,
-  redactErrorPreview,
-} from "@first-tree/client";
+} from "@first-tree/client-providers";
+import { type RuntimeAuthCommand, redactErrorPreview } from "@first-tree/client-runtime";
 import type { CapabilityEntry, PendingAuth, RuntimeAuthFailureReason } from "@first-tree/shared";
 
 /**

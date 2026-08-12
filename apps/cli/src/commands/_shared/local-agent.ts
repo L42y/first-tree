@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { FirstTreeHubSDK, SdkError } from "@first-tree/client";
+import { FirstTreeHubSDK, SdkError } from "@first-tree/cloud-client";
 import {
   agentConfigSchema,
   clientConfigSchema,

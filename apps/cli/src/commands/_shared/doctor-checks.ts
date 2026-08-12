@@ -1,4 +1,5 @@
-import { FirstTreeHubSDK, probeCapabilities } from "@first-tree/client";
+import { probeCapabilities } from "@first-tree/client-providers";
+import { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import { clientConfigSchema, initConfig, resetConfig, resetConfigMeta } from "@first-tree/shared/config";
 import type { CheckResult } from "../../core/doctor.js";
 import {

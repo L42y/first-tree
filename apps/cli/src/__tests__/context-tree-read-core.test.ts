@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { SdkError } from "@first-tree/client";
+import { SdkError } from "@first-tree/cloud-client";
 import type { ContextTreeProvider } from "@first-tree/shared";
 import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { FirstTreeHubSDK } from "@first-tree/client";
+import { FirstTreeHubSDK } from "@first-tree/cloud-client";
 import type { Command } from "commander";
 import semver from "semver";
 import { ensureFreshAccessToken, resolveServerUrl } from "../../core/bootstrap.js";

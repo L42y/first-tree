@@ -1,17 +1,19 @@
 import { join } from "node:path";
+import { discoverProviderModels } from "@first-tree/client-providers";
 import {
-  applyClientLoggerConfig,
   ClientOrgMismatchError,
   ClientRetiredError,
   ClientUserMismatchError,
+  discoverClaudeCodeSkills,
+} from "@first-tree/client-runtime";
+import {
+  applyClientLoggerConfig,
   captureClientException,
   configureClientLoggerForService,
   createLogger,
-  discoverClaudeCodeSkills,
-  discoverProviderModels,
   flushClientSentry,
   initClientSentry,
-} from "@first-tree/client";
+} from "@first-tree/cloud-client";
 import {
   agentConfigSchema,
   clientConfigSchema,

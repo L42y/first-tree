@@ -73,7 +73,15 @@ const outputMocks = vi.hoisted(() => ({
 const printLineMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@inquirer/prompts", () => promptMocks);
-vi.mock("@first-tree/client", () => clientSdkMocks);
+vi.mock("@first-tree/cloud-client", () => clientSdkMocks);
+vi.mock("@first-tree/shared/config", () => configMocks);
+vi.mock("../core/bootstrap.js", () => bootstrapMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-runtime", () => clientSdkMocks);
+vi.mock("@first-tree/shared/config", () => configMocks);
+vi.mock("../core/bootstrap.js", () => bootstrapMocks);
+vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
+vi.mock("@first-tree/client-providers", () => clientSdkMocks);
 vi.mock("@first-tree/shared/config", () => configMocks);
 vi.mock("../core/bootstrap.js", () => bootstrapMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));

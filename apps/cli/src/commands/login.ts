@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { ClientOrgMismatchError } from "@first-tree/client";
+import { ClientOrgMismatchError } from "@first-tree/client-runtime";
 import {
   agentConfigSchema,
   type ClientConfig,

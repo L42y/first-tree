@@ -1,4 +1,4 @@
-import { probeCapabilities } from "@first-tree/client";
+import { probeCapabilities } from "@first-tree/client-providers";
 import type { Command } from "commander";
 import { fail } from "../../cli/output.js";
 import { installClaudeRuntime, printResults, runtimeProviderChecks } from "../../core/index.js";

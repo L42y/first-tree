@@ -3,7 +3,7 @@ import {
   nextCapabilityRefreshDelayMs,
   reprobeOnReconnect,
   revalidateCapabilities,
-} from "@first-tree/client";
+} from "@first-tree/client-providers";
 import type { CapabilityEntry, ClientCapabilities } from "@first-tree/shared";
 
 const EMPTY_OMITTED_KEYS = new Set<string>();
