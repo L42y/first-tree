@@ -33,6 +33,13 @@ vi.mock("../../../auth/auth-context.js", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: () => authMock.value,
 }));
+vi.mock("../../../components/user-menu.js", () => ({
+  UserMenu: () => (
+    <button type="button" data-testid="user-menu">
+      User menu
+    </button>
+  ),
+}));
 
 const NOW = "2026-07-30T12:00:00.000Z";
 
@@ -156,5 +163,12 @@ describe("TemplateLibraryPage", () => {
       template_count: 1,
       authenticated: true,
     });
+    expect(document.body.querySelector('[data-testid="user-menu"]')).not.toBeNull();
+  });
+
+  it("does not render account controls for anonymous visitors", async () => {
+    templateMocks.listAgentTemplates.mockResolvedValue({ templates: [TEMPLATE_A] });
+    await renderPage();
+    expect(document.body.querySelector('[data-testid="user-menu"]')).toBeNull();
   });
 });

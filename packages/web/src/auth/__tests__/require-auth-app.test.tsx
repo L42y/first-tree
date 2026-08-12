@@ -58,6 +58,8 @@ function renderRoute(path: string): string {
           <Route element={<RequireAuth />}>
             <Route index element={<div>Dashboard</div>} />
             <Route path="/settings" element={<div>Settings</div>} />
+            <Route path="/settings/account" element={<div>Account settings</div>} />
+            <Route path="/quickstart" element={<div>Quickstart</div>} />
           </Route>
           <Route path="/login" element={<div>Login</div>} />
           <Route path="/templates" element={<div>Template library</div>} />
@@ -84,6 +86,8 @@ function renderRouteInDom(path: string): string {
             <Route element={<RequireAuth />}>
               <Route index element={<div>Dashboard</div>} />
               <Route path="/settings" element={<div>Settings</div>} />
+              <Route path="/settings/account" element={<div>Account settings</div>} />
+              <Route path="/quickstart" element={<div>Quickstart</div>} />
             </Route>
             <Route path="/login" element={<div>Login</div>} />
             <Route path={NO_TEAM_ENTRY_PATH} element={<div>Template library</div>} />
@@ -127,6 +131,13 @@ describe("RequireAuth", () => {
     // Including the workspace root, which would otherwise mount the dashboard.
     expect(renderRouteInDom("/")).toContain("Template library");
     expect(renderRouteInDom("/")).not.toContain("Dashboard");
+  });
+
+  it("keeps user-scoped Quickstart and account routes reachable without a Team", () => {
+    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true, hasNoTeam: true };
+
+    expect(renderRouteInDom("/quickstart?campaign=production-scan")).toContain("Quickstart");
+    expect(renderRouteInDom("/settings/account")).toContain("Account settings");
   });
 
   it("keeps a member with Teams in the workspace even while /me has not proven authority", () => {

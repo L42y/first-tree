@@ -10,12 +10,18 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const wsMock = vi.hoisted(() => ({
   onMessage: null as ((msg: unknown) => void) | null,
+  enabled: true,
 }));
+const authMock = vi.hoisted(() => ({ organizationId: "org-1" as string | null }));
 
 vi.mock("../use-admin-ws.js", () => ({
-  useAdminWs: ({ onMessage }: { onMessage: (msg: unknown) => void }) => {
+  useAdminWs: ({ onMessage, enabled = true }: { onMessage: (msg: unknown) => void; enabled?: boolean }) => {
     wsMock.onMessage = onMessage;
+    wsMock.enabled = enabled;
   },
+}));
+vi.mock("../../auth/auth-context.js", () => ({
+  useAuth: () => authMock,
 }));
 
 let root: Root | null = null;
@@ -53,6 +59,8 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-05-31T00:00:00.000Z"));
   latest = null;
   wsMock.onMessage = null;
+  wsMock.enabled = true;
+  authMock.organizationId = "org-1";
   document.body.innerHTML = "";
 });
 
@@ -110,5 +118,17 @@ describe("PulseProvider", () => {
       vi.advanceTimersByTime(40_000);
     });
     expect(container.textContent).toBe("5:stale");
+  });
+
+  it("does not open the org-scoped admin socket before the first Team exists", async () => {
+    authMock.organizationId = null;
+
+    await renderProbe(
+      <PulseProvider>
+        <Probe />
+      </PulseProvider>,
+    );
+
+    expect(wsMock.enabled).toBe(false);
   });
 });

@@ -1,5 +1,6 @@
 import { type PulseBucket, pulseTickSchema } from "@first-tree/shared";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
+import { useAuth } from "../auth/auth-context.js";
 import { aggregate, EMPTY_BUCKETS } from "./pulse-aggregate.js";
 import { useAdminWs } from "./use-admin-ws.js";
 
@@ -20,6 +21,7 @@ const PulseContext = createContext<PulseState>({
 });
 
 export function PulseProvider({ children }: { children: ReactNode }) {
+  const { organizationId } = useAuth();
   const [latest, setLatest] = useState<Omit<PulseState, "stale">>({
     aggregated: EMPTY_BUCKETS,
     agents: {},
@@ -28,6 +30,7 @@ export function PulseProvider({ children }: { children: ReactNode }) {
   const [now, setNow] = useState(() => Date.now());
 
   useAdminWs({
+    enabled: organizationId !== null,
     onMessage: (msg) => {
       const parsed = pulseTickSchema.safeParse(msg);
       if (!parsed.success) return;

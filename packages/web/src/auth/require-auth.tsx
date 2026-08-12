@@ -68,6 +68,11 @@ function OAuthStartRedirect({ next }: { next: string }) {
  */
 export const NO_TEAM_ENTRY_PATH = "/templates";
 
+/** User-scoped routes that remain valid before the first Team exists. */
+export function isTeamlessAuthenticatedPath(pathname: string): boolean {
+  return pathname === "/quickstart" || pathname === "/settings/account";
+}
+
 /**
  * Route guard for everything behind the dashboard chrome.
  *
@@ -111,9 +116,11 @@ export function RequireAuth() {
   // populate the org id before the dashboard mounts and fires its first wave
   // of requests.
   if (!meLoaded) return <LandingFallback />;
-  // No Team: every route here is org-scoped, and the first org-scoped query to
-  // mount would throw before the user saw anything. Send them to the Team-less
-  // entry instead.
-  if (hasNoTeam) return <Navigate to={NO_TEAM_ENTRY_PATH} replace />;
+  // Most dashboard routes are Team-scoped, but Quickstart is an explicit
+  // first-Agent entry and Account remains user-scoped. Keep those two escape
+  // hatches mounted; redirect every other Team-less destination.
+  if (hasNoTeam && !isTeamlessAuthenticatedPath(location.pathname)) {
+    return <Navigate to={NO_TEAM_ENTRY_PATH} replace />;
+  }
   return <Outlet />;
 }
