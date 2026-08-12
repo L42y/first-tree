@@ -53,17 +53,10 @@ describe("official launch Agent Template catalog", () => {
 
   it("defines the three bounded, importable launch Templates", () => {
     const catalog = loadCatalog();
-    expect(catalog.map((template) => template.slug)).toEqual([
-      "team-teammate",
-      "engineering-teammate",
-      "research-teammate",
-    ]);
-    expect(catalog.map((template) => template.name)).toEqual([
-      "Team Teammate",
-      "Engineering Teammate",
-      "Research Teammate",
-    ]);
-    expect(catalog[0]?.public.tagline).toContain("Recommended");
+    expect(catalog.map((template) => template.slug)).toEqual(["team-assistant", "software-engineer", "researcher"]);
+    expect(catalog.map((template) => template.name)).toEqual(["Team Assistant", "Software Engineer", "Researcher"]);
+    expect(catalog[0]?.public.tagline).toBe("For team questions, decisions, and follow-through.");
+    expect(catalog[0]?.public.purpose).toContain("recommended starting point");
 
     for (const template of catalog) {
       expect(template.public.exampleTasks).toHaveLength(3);
@@ -91,13 +84,14 @@ describe("official launch Agent Template catalog", () => {
 
     const publicList = await app.inject({ method: "GET", url: PUBLIC_URL });
     expect(publicList.statusCode).toBe(200);
+    const officialSlugs = new Set(loadCatalog().map((template) => template.slug));
     const templates = publicList
       .json<{ templates: Array<{ slug: string; public: { exampleTasks?: string[] } }> }>()
-      .templates.filter((template) => template.slug.endsWith("-teammate"));
+      .templates.filter((template) => officialSlugs.has(template.slug));
     expect(templates.map((template) => template.slug).sort()).toEqual([
-      "engineering-teammate",
-      "research-teammate",
-      "team-teammate",
+      "researcher",
+      "software-engineer",
+      "team-assistant",
     ]);
     expect(templates.every((template) => template.public.exampleTasks?.length === 3)).toBe(true);
 
