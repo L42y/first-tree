@@ -1,4 +1,4 @@
 interface:
   display_name: "First Tree QA"
-  short_description: "Build complete QA harnesses and validate real products"
-  default_prompt: "Use $first-tree-qa to establish complete QA readiness, then answer the requested quality question with real product evidence."
+  short_description: "Run risk-scoped QA with reusable environments"
+  default_prompt: "Use $first-tree-qa to choose the smallest credible validation scope, reuse the QA environment safely, and report bounded evidence."

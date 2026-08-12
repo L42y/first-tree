@@ -12,10 +12,14 @@ that can support the requested conclusion.
 
 ## Tiers At A Glance
 
-- `test-only`: run `pnpm test` by default and report only automated-check evidence.
-- `focused-local`: start relevant surfaces locally for ordinary live validation; Docker and full isolation are optional.
-- `full-isolated`: use the complete disposable Docker/worktree harness only for release qualification, clearly major or
-  high-risk features, or an explicit complete-QA request.
+- `test-only`: run matching package/named tests for localized changes and use `pnpm test` for repository-wide scope.
+- `focused-local`: reuse the QA warm environment and start affected surfaces plus necessary adjacent boundaries.
+- `full-isolated`: use an exclusive clean slot in the same warm environment for the selected release-sensitive,
+  clearly major/high-risk, cross-surface, or explicitly isolated scope.
+
+The QA agent keeps one compatible warm environment outside the source repository. A task reuses its slot across retries
+and target revisions; task-owned mutable state is reset between tasks, while healthy infrastructure is retained and
+reported rather than torn down after every run.
 
 ## Run Artifacts
 
@@ -23,10 +27,10 @@ Keep retained output outside the repository and make it proportional to the tier
 
 - `test-only`: exact target, command, exit result, duration when available, and material failure output; no QA plan or
   capability matrix is required.
-- `focused-local`: a concise `run-context.md`, `plan.md`, relevant evidence, and `report.md` recording non-isolation and
-  cleanup limits.
-- `full-isolated`: the complete product-surface matrix and `QA READY` outcome in `run-context.md`, a post-readiness
-  `plan.md`, evidence, and the final `report.md`.
+- `focused-local`: a concise `run-context.md`, `plan.md`, relevant evidence, and `report.md` recording reuse,
+  non-isolation, task reset, and retained infrastructure.
+- `full-isolated`: the selected isolated-scope matrix and scoped `QA READY` outcome in `run-context.md`, a
+  post-readiness `plan.md`, evidence, and the final `report.md`.
 
 Start from `templates/` when useful.
 

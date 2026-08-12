@@ -11,8 +11,9 @@ One-sentence scoped conclusion.
 - Target/artifact identities:
 - Tier: `test-only` | `focused-local` | `full-isolated`
 - Tier rationale and maximum supported conclusion:
+- Change/requirement scope and selected validation boundary:
 - Readiness or command outcome:
-- Environment, capability, and non-isolation limits:
+- Warm-environment/task-slot reuse, capability, and non-isolation limits:
 
 ## Scope Covered
 
@@ -32,8 +33,8 @@ Summarize command duration or live performance evidence proportional to the tier
 
 ## Limitations And Cleanup
 
-Record skipped, blocked, partial, unstable, escalated, or out-of-scope areas plus remaining resources and cleanup
-ownership.
+Record skipped, blocked, partial, unstable, escalated, or out-of-scope areas plus task-owned reset, released lease,
+remaining resources, and intentionally retained warm infrastructure.
 
 ## Case Disposition
 

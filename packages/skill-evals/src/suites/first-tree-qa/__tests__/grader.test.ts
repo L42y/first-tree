@@ -35,7 +35,7 @@ function setup(id: string) {
     [
       "---",
       "name: first-tree-qa",
-      "description: Select a QA tier and use a complete harness for release qualification.",
+      "description: Select a QA tier, reuse the environment, and scope validation to risk.",
       "---",
       "",
       "# First Tree QA",
@@ -52,7 +52,7 @@ function runCapabilities(
   sourceRepoPath: string,
   surfaces: readonly string[],
   eventPath?: string,
-  expectWebObserveFailure = false,
+  expectCliObserveFailure = false,
 ): void {
   if (eventPath !== undefined) mkdirSync(dirname(eventPath), { recursive: true });
   for (const surface of surfaces) {
@@ -62,14 +62,14 @@ function runCapabilities(
         encoding: "utf8",
         env: eventPath === undefined ? process.env : { ...process.env, NORTHSTAR_EVENT_PATH: eventPath },
       });
-      const expectedExitCode = expectWebObserveFailure && surface === "web" && capability === "observe" ? 42 : 0;
+      const expectedExitCode = expectCliObserveFailure && surface === "cli" && capability === "observe" ? 42 : 0;
       expect(result.status, result.stderr).toBe(expectedExitCode);
     }
   }
 }
 
-function runAllCapabilities(sourceRepoPath: string, eventPath?: string, expectWebObserveFailure = false): void {
-  runCapabilities(sourceRepoPath, ["cli", "web"], eventPath, expectWebObserveFailure);
+function runAllCapabilities(sourceRepoPath: string, eventPath?: string): void {
+  runCapabilities(sourceRepoPath, ["cli", "web"], eventPath);
 }
 
 function runProductCommand(sourceRepoPath: string, args: readonly string[]): ReturnType<typeof spawnSync> {
@@ -101,12 +101,12 @@ function appendModelEvidence(paths: ReturnType<typeof createRunPaths>, finalText
 
 function gradeBlockedReport(reportLines: readonly string[]) {
   const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-readiness-blocked");
-  runAllCapabilities(sourceRepoPath, undefined, true);
+  runCapabilities(sourceRepoPath, ["cli"], undefined, true);
   writeText(join(paths.workspacePath, "qa-artifacts", "run-context.md"), "# Run Context\n");
   writeText(join(paths.workspacePath, "qa-artifacts", "report.md"), reportLines.join("\n"));
   appendModelEvidence(
     paths,
-    "Web observer unavailable. Evidence is in product-events.jsonl; measured latency was 17 ms.",
+    "CLI observer unavailable. Evidence is in product-events.jsonl; measured latency was 17 ms.",
   );
   const validation = validateFixture(paths, sourceRepoPath);
   return {
@@ -253,12 +253,12 @@ describe("first-tree-qa deterministic grader", () => {
     expect(casePassed(currentCase, metrics)).toBe(false);
   });
 
-  it("passes a complete readiness matrix followed by plan and real CLI behavior", () => {
+  it("passes a scoped isolated readiness matrix followed by plan and real CLI behavior", () => {
     const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-ready-then-scope");
     assertCommandOk(runCommand(process.execPath, ["--test"], sourceRepoPath));
     expect(existsSync(join(paths.workspacePath, "qa-artifacts", "product-events.jsonl"))).toBe(false);
     const nestedArtifacts = join(paths.workspacePath, "qa-artifacts", "northstar-cli-status");
-    runAllCapabilities(sourceRepoPath, join(nestedArtifacts, "evidence", "readiness-events.jsonl"));
+    runCapabilities(sourceRepoPath, ["cli"], join(nestedArtifacts, "evidence", "readiness-events.jsonl"));
     writeText(
       join(nestedArtifacts, "run-context.md"),
       "# Run Context\n\n## Scoped execution\n\nValidate the CLI status boundary.\n",
@@ -277,8 +277,9 @@ describe("first-tree-qa deterministic grader", () => {
       [
         "# PASS — Northstar CLI status",
         "Tier: full-isolated",
-        "Tier rationale: pre-release qualification requires complete QA readiness.",
-        "Maximum supported conclusion: only the completed release qualification scope passed.",
+        "Tier rationale: high-risk CLI release validation requires isolated QA.",
+        "Maximum supported conclusion: only the completed isolated CLI scope passed; this does not prove Web or release-wide readiness.",
+        "Environment: reused the QA-owned warm task slot, reset task state, and retained healthy infrastructure.",
         "Evidence: product-events.jsonl and Northstar CLI status healthy (jobs=3).",
         "Performance: latency 17 ms.",
         "Case disposition: no-change.",
@@ -296,33 +297,34 @@ describe("first-tree-qa deterministic grader", () => {
     expect(casePassed(currentCase, metrics)).toBe(true);
   });
 
-  it("passes a blocked readiness matrix without planning or task execution", () => {
+  it("passes a blocked scoped readiness matrix without planning or task execution", () => {
     const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-readiness-blocked");
-    runAllCapabilities(sourceRepoPath, undefined, true);
+    runCapabilities(sourceRepoPath, ["cli"], undefined, true);
     writeText(
       join(paths.workspacePath, "qa-artifacts", "report.md"),
       [
         "# QA Report",
         "- Status: `BLOCKED`",
         "- Tier: `full-isolated`",
-        "Tier rationale: release qualification requires complete QA readiness.",
-        "Maximum supported conclusion: only the reported release qualification setup was attempted.",
+        "Tier rationale: high-risk CLI release validation requires isolated QA.",
+        "Maximum supported conclusion: only the reported isolated CLI setup was attempted.",
         "## Target facts",
         "Northstar ships CLI and Web surfaces.",
         "## Provisional readiness checklist",
-        "All twelve capability cells were attempted.",
-        "Evidence: product-events.jsonl records web:observe as unavailable.",
-        "Performance: CLI latency 17 ms; Web latency 29 ms.",
+        "All six scoped CLI capability cells were attempted; Web remained out of scope.",
+        "Evidence: product-events.jsonl records cli:observe as unavailable.",
+        "Performance: CLI latency 17 ms.",
+        "Environment: reused the QA-owned warm task slot and retained healthy infrastructure after task reset.",
         "Case disposition: no-change.",
       ].join("\n"),
     );
-    appendModelEvidence(paths, "BLOCKED. Web observer unavailable. Case disposition: no-change.");
+    appendModelEvidence(paths, "BLOCKED. CLI observer unavailable. Case disposition: no-change.");
 
     const validation = validateFixture(paths, sourceRepoPath);
     const metrics = deriveMetrics(readEvents(paths.eventsPath), currentCase, validation, 0, paths);
 
-    expect(metrics.attemptedCapabilities).toHaveLength(12);
-    expect(metrics.failedCapabilities).toEqual(["web:observe"]);
+    expect(metrics.attemptedCapabilities).toHaveLength(6);
+    expect(metrics.failedCapabilities).toEqual(["cli:observe"]);
     expect(metrics.planExists).toBe(false);
     expect(metrics.taskRan).toBe(false);
     expect(metrics.sourceRepoChanged).toBe(false);
@@ -334,7 +336,7 @@ describe("first-tree-qa deterministic grader", () => {
       "# QA Report",
       "## Status",
       "`PASS` | `FAIL` | `BLOCKED` | `INCONCLUSIVE`",
-      "Evidence: product-events.jsonl records web:observe as unavailable.",
+      "Evidence: product-events.jsonl records cli:observe as unavailable.",
       "Performance: latency 17 ms.",
       "## Case Disposition",
       "`no-change` | `candidate-new-case` | `candidate-case-update` | `move-to-product-test` | `move-to-skill-eval` | `merge-or-retire`",
@@ -349,7 +351,7 @@ describe("first-tree-qa deterministic grader", () => {
     const { currentCase, metrics } = gradeBlockedReport([
       "# QA Report",
       "Status: BLOCKED | FAIL",
-      "Evidence: product-events.jsonl records web:observe as unavailable.",
+      "Evidence: product-events.jsonl records cli:observe as unavailable.",
       "Performance: latency 17 ms.",
       "Case disposition: no-change | candidate-new-case",
     ]);

@@ -278,7 +278,7 @@ function selectedReportValue<const TValue extends string>(
 
 function expectedCapabilityKeys(tier: QaTier): readonly string[] {
   if (tier === "test-only") return [];
-  const surfaces = tier === "focused-local" ? (["cli"] as const) : QA_SURFACES;
+  const surfaces = ["cli"] as const;
   return surfaces.flatMap((surface) => QA_CAPABILITIES.map((capability) => `${surface}:${capability}`)).sort();
 }
 
@@ -342,7 +342,8 @@ export function deriveMetrics(
   const expectedCapabilities = expectedCapabilityKeys(evalCase.expected.tier);
   const tierCapabilitiesComplete = expectedCapabilities.every((key) => successfulCapabilities.includes(key));
   const unexpectedCapabilities = attemptedCapabilities.filter((key) => !expectedCapabilities.includes(key));
-  const readinessComplete = successfulCapabilities.length === QA_SURFACES.length * QA_CAPABILITIES.length;
+  const readinessComplete =
+    evalCase.expected.tier !== "test-only" && tierCapabilitiesComplete && unexpectedCapabilities.length === 0;
   const artifactMarkdown = markdownArtifacts(artifacts);
   const runContextPath = matchingRunContextArtifact(artifactMarkdown);
   const planPath = matchingPlanArtifact(artifactMarkdown);
@@ -388,7 +389,7 @@ export function deriveMetrics(
       ? testRan && /deterministic\s+tests?\s+passed|pnpm\s+test/iu.test(combined)
       : evalCase.expected.status === "PASS"
         ? /Northstar CLI status|healthy|jobs\s*=\s*3/iu.test(combined)
-        : /web.{0,40}observ|observer unavailable|web:observe/iu.test(combined);
+        : /cli.{0,40}observ|observer unavailable|cli:observe/iu.test(combined);
   const commands = commandTexts(events);
 
   return {
@@ -430,10 +431,10 @@ export function deriveMetrics(
 }
 
 function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseScores {
-  const allCapabilitiesAttempted = metrics.attemptedCapabilities.length === QA_SURFACES.length * QA_CAPABILITIES.length;
+  const allScopedCapabilitiesAttempted = metrics.attemptedCapabilities.length === QA_CAPABILITIES.length;
   const blockedProcess =
     !metrics.readinessComplete &&
-    metrics.failedCapabilities.includes("web:observe") &&
+    metrics.failedCapabilities.includes("cli:observe") &&
     !metrics.planExists &&
     !metrics.taskRan;
   const readyProcess =
@@ -468,7 +469,8 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
       : evalCase.expected.tier === "focused-local"
         ? focusedLocalProcess
         : metrics.runContextExists &&
-          allCapabilitiesAttempted &&
+          allScopedCapabilitiesAttempted &&
+          metrics.unexpectedCapabilities.length === 0 &&
           (evalCase.expected.status === "BLOCKED" ? blockedProcess : readyProcess);
   const processPass = metrics.fixtureValidationOk && metrics.runnerExitCode === 0 && tierProcess;
   const outcomePass =
@@ -571,14 +573,14 @@ export function driftNote(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): 
     if (!metrics.planAfterTierReadiness) return "focused plan was not created after in-scope readiness";
   }
   if (evalCase.expected.status === "BLOCKED" && (metrics.planExists || metrics.taskRan)) {
-    return "task planning or execution occurred before QA readiness";
+    return "task planning or execution occurred before scoped QA readiness";
   }
   if (
     evalCase.expected.tier === "full-isolated" &&
     evalCase.expected.status === "PASS" &&
     !metrics.planAfterReadiness
   ) {
-    return "formal plan was not created after complete readiness";
+    return "formal plan was not created after scoped readiness";
   }
   return null;
 }

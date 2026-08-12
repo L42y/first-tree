@@ -1,7 +1,7 @@
 # QA Plan
 
 Create for `focused-local` only after its in-scope capabilities are ready. Create for `full-isolated` only after the
-complete harness is `QA READY`. Do not create for `test-only`.
+selected isolated scope is `QA READY`. Do not create for `test-only`.
 
 ## Target And Tier
 
@@ -9,6 +9,7 @@ complete harness is `QA READY`. Do not create for `test-only`.
 - Request:
 - Tier:
 - Run context:
+- Warm-environment task slot:
 - Maximum supported conclusion:
 
 ## Validation Question
@@ -18,6 +19,7 @@ State the single question this run must answer.
 ## Scope
 
 - In-scope surfaces and journeys:
+- Changed paths and credible adjacent boundaries:
 - Out of scope:
 - Selected tests and QA cases:
 - Task-specific and exploratory checks:
@@ -31,6 +33,7 @@ State the single question this run must answer.
 ## Limits, Escalation, And Stop Conditions
 
 - Non-isolation and resource/time limits:
+- Task reset and retained-infrastructure boundary:
 - Escalate tier if:
 - `BLOCKED` if:
 - `INCONCLUSIVE` if:

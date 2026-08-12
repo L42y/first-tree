@@ -4,7 +4,7 @@ Use a plan only for `focused-local` or `full-isolated`. A `test-only` run record
 separate QA plan.
 
 For `focused-local`, create the plan after the in-scope Build/Run/Drive/Observe/Measure/Reset capabilities are credible.
-For `full-isolated`, create it only after the complete harness is `QA READY`.
+For `full-isolated`, create it only after the selected isolated scope is `QA READY`.
 
 ## Input
 
@@ -14,8 +14,9 @@ conservative default.
 
 ## Steps
 
-- State one validation question and the maximum conclusion the selected tier can support.
-- Select relevant product paths, credible adjacent risk, existing cases, and task-specific exploratory checks.
+- State one validation question and the maximum conclusion the selected tier and scope can support.
+- Derive relevant product paths from the PR/requirement, then add only credible adjacent risk, existing cases, and
+  task-specific exploratory checks.
 - Choose data, identities, roles, failure/recovery branches, and reset points from the prepared environment.
 - Choose real-product evidence and performance work required by the question or risk.
 - Record out-of-scope behavior, non-isolation limits, resource limits, escalation conditions, and stop conditions.
@@ -26,11 +27,12 @@ when the request authorizes it or leave the case unexecuted and limit the conclu
 ## Plan Shape
 
 - target, request, selected tier, and validation question;
-- reference to the prepared run context;
+- reference to the prepared/reused run context and warm-environment task slot;
 - in-scope surfaces, journeys, tests, cases, and task-specific checks;
 - data and identity setup and reset points;
 - evidence and performance work needed for the conclusion;
-- out-of-scope behavior, limits, escalation condition, and `BLOCKED`/`INCONCLUSIVE` stop conditions.
+- out-of-scope behavior, limits, escalation condition, task reset/retention boundary, and `BLOCKED`/`INCONCLUSIVE` stop
+  conditions.
 
 If data creation is itself under test, create it through the product. Direct fixture or database setup is acceptable only
 as a recorded precondition and is not product-behavior evidence.
