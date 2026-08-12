@@ -21,6 +21,7 @@ function harness(options: {
   entry?: CapabilityEntry;
   verify?: (signal: AbortSignal) => Promise<RuntimeReadinessExecutionResult>;
   timeoutMs?: number;
+  cleanupTimeoutMs?: number;
 }) {
   let entry = options.entry ?? installed();
   const writes: CapabilityEntry[] = [];
@@ -34,6 +35,7 @@ function harness(options: {
     log: vi.fn(),
     now: () => NOW,
     timeoutMs: options.timeoutMs,
+    cleanupTimeoutMs: options.cleanupTimeoutMs,
     ttlMs: 60_000,
     drivers: { codex: { verify: ({ signal }) => verify(signal) } },
   });
@@ -146,6 +148,24 @@ describe("RuntimeReadinessCoordinator", () => {
       state: "ready",
     });
     expect(h.verify).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds an uncooperative provider seam and quarantines overlapping reruns", async () => {
+    vi.useFakeTimers();
+    const h = harness({
+      verify: async () => new Promise(() => undefined),
+      timeoutMs: 25,
+      cleanupTimeoutMs: 25,
+    });
+    const first = h.coordinator.check(command());
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(first).resolves.toMatchObject({ state: "failed", error: { code: "provider_busy" } });
+
+    await expect(h.coordinator.check({ ...command(), force: true, ref: "quarantined" })).resolves.toMatchObject({
+      state: "failed",
+      error: { code: "provider_busy" },
+    });
+    expect(h.verify).toHaveBeenCalledTimes(1);
   });
 
   it("redacts provider errors before publishing them", async () => {
@@ -273,6 +293,34 @@ describe("RuntimeReadinessCoordinator", () => {
 
     await expect(check).resolves.toMatchObject({ state: "available" });
     expect(h.current().readiness).toMatchObject({ state: "needs_login", error: { code: "needs_login" } });
+  });
+
+  it("queues the automatic login retry behind an invalidated in-flight check", async () => {
+    let release: (() => void) | undefined;
+    let callCount = 0;
+    const h = harness({
+      verify: async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Promise((resolve) => {
+            release = () => resolve({ ok: true });
+          });
+        }
+        return { ok: true };
+      },
+    });
+    const stale = h.coordinator.check(command());
+    await vi.waitFor(() => expect(h.verify).toHaveBeenCalledTimes(1));
+    await h.coordinator.markNeedsLogin("codex");
+
+    const retry = h.coordinator.retryAfterLogin("codex");
+    await Promise.resolve();
+    expect(h.verify).toHaveBeenCalledTimes(1);
+    release?.();
+
+    await expect(stale).resolves.toMatchObject({ state: "available" });
+    await expect(retry).resolves.toMatchObject({ state: "ready" });
+    expect(h.verify).toHaveBeenCalledTimes(2);
   });
 
   it("does not create a readiness verdict for auth failures before readiness was requested", async () => {

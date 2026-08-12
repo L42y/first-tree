@@ -273,6 +273,7 @@ describe("runtime readiness provider boundary", () => {
 
   it("keeps an ambiguous Codex 403 as a provider failure", () => {
     expect(classifyCodexReadinessAuthText("HTTP 403 Forbidden from the configured proxy")).toBe(false);
+    expect(classifyCodexReadinessAuthText("HTTP 403 Unauthorized from the configured proxy")).toBe(false);
     expect(classifyCodexReadinessAuthText("HTTP 401 Unauthorized")).toBe(true);
     expect(classifyCodexReadinessAuthText("invalid API key")).toBe(true);
   });

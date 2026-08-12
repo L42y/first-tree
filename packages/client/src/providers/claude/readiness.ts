@@ -1,6 +1,7 @@
 import type { Options, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
+  asRuntimeReadinessRecord,
   RUNTIME_READINESS_PROMPT,
   type RuntimeReadinessExecutionResult,
   type RuntimeReadinessInput,
@@ -20,18 +21,12 @@ export type ClaudeReadinessDeps = {
   resolveExecutable?: typeof resolveClaudeCodeExecutable;
 };
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function assistantUsedTool(message: SDKMessage): boolean {
   if (message.type !== "assistant") return false;
-  const payload = asRecord(message);
-  const nested = asRecord(payload?.message);
+  const payload = asRuntimeReadinessRecord(message);
+  const nested = asRuntimeReadinessRecord(payload?.message);
   const content = nested?.content;
-  return Array.isArray(content) && content.some((item) => asRecord(item)?.type === "tool_use");
+  return Array.isArray(content) && content.some((item) => asRuntimeReadinessRecord(item)?.type === "tool_use");
 }
 
 function isClaudeAuthText(message: string): boolean {
@@ -96,12 +91,12 @@ export async function verifyClaudeCodeReadiness(
           };
         }
         if (message.type === "assistant") {
-          const record = asRecord(message);
+          const record = asRuntimeReadinessRecord(message);
           if (typeof record?.error === "string") assistantError = record.error;
         }
         if (message.type !== "result") continue;
         if (message.subtype === "success" && !message.is_error) return { ok: true };
-        const record = asRecord(message);
+        const record = asRuntimeReadinessRecord(message);
         const status = record?.api_error_status;
         const errors = Array.isArray(record?.errors)
           ? record.errors.filter((item): item is string => typeof item === "string")

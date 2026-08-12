@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { isCodexAuthError } from "../../handlers/auth-error-hint.js";
 import {
+  asRuntimeReadinessRecord,
   RUNTIME_READINESS_PROMPT,
   type RuntimeReadinessExecutionResult,
   type RuntimeReadinessInput,
@@ -93,14 +94,8 @@ function codexArgs(input: RuntimeReadinessInput): string[] {
   return args;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function eventItemType(event: Record<string, unknown>): string | null {
-  const item = asRecord(event.item);
+  const item = asRuntimeReadinessRecord(event.item);
   return typeof item?.type === "string" ? item.type : null;
 }
 
@@ -112,7 +107,7 @@ export function isSafeCodexReadinessItemType(type: string | null): boolean {
 export function classifyCodexReadinessAuthText(text: string): boolean {
   return (
     isCodexAuthError(text) ||
-    /(?:^|\D)401(?:\D|$)|unauthori[sz]ed|not logged in|login required|invalid.*(?:api key|credential)/iu.test(text)
+    /(?:^|\D)401(?:\D|$)|not logged in|login required|invalid.*(?:api key|credential)/iu.test(text)
   );
 }
 
@@ -170,7 +165,7 @@ export async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunR
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
       try {
-        const event = asRecord(JSON.parse(line));
+        const event = asRuntimeReadinessRecord(JSON.parse(line));
         if (!event || typeof event.type !== "string") return;
         const itemType = eventItemType(event);
         if (itemType !== null && !isSafeCodexReadinessItemType(itemType)) unsafe = true;
@@ -178,7 +173,7 @@ export async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunR
         if (event.type === "turn.completed") completed = true;
         if (event.type === "turn.failed" || event.type === "error") {
           failed = true;
-          const error = asRecord(event.error);
+          const error = asRuntimeReadinessRecord(event.error);
           const message = typeof event.message === "string" ? event.message : error?.message;
           if (typeof message === "string" && classifyCodexReadinessAuthText(message)) authFailure = true;
         }

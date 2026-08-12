@@ -19,6 +19,7 @@ import type {
 } from "@first-tree/shared";
 
 export const RUNTIME_READINESS_TIMEOUT_MS = 45_000;
+export const RUNTIME_READINESS_CLEANUP_TIMEOUT_MS = 10_000;
 export const RUNTIME_READINESS_TTL_MS = 15 * 60_000;
 export const RUNTIME_READINESS_ERROR_MAX_LEN = 500;
 
@@ -29,6 +30,7 @@ type RuntimeReadinessCoordinatorDeps = {
   drivers?: RuntimeReadinessTable;
   now?: () => number;
   timeoutMs?: number;
+  cleanupTimeoutMs?: number;
   ttlMs?: number;
 };
 
@@ -125,6 +127,7 @@ export class RuntimeReadinessCoordinator {
   private readonly deps: RuntimeReadinessCoordinatorDeps;
   private readonly drivers: RuntimeReadinessTable;
   private readonly inFlight = new Map<RuntimeProvider, InFlightCheck>();
+  private readonly cleanupQuarantine = new Set<RuntimeProvider>();
   private readonly lastRequests = new Map<RuntimeProvider, RuntimeReadinessCheckCommand>();
   private readonly latestIdentities = new Map<RuntimeProvider, string>();
   private readonly latestGenerations = new Map<RuntimeProvider, number>();
@@ -151,6 +154,9 @@ export class RuntimeReadinessCoordinator {
           error: { code: "needs_login" },
         }
       );
+    }
+    if (this.cleanupQuarantine.has(command.provider)) {
+      return this.quarantinedResult(command.provider, identity);
     }
     const generation = (this.latestGenerations.get(command.provider) ?? 0) + 1;
     this.latestGenerations.set(command.provider, generation);
@@ -205,6 +211,11 @@ export class RuntimeReadinessCoordinator {
   /** Successful official login must converge automatically without another click. */
   async retryAfterLogin(provider: RuntimeProvider): Promise<RuntimeReadinessResult> {
     const previous = this.lastRequests.get(provider);
+    const active = this.inFlight.get(provider);
+    if (active?.invalidated) {
+      await active.promise;
+      if (this.inFlight.get(provider) === active) this.inFlight.delete(provider);
+    }
     return this.check({
       type: "runtime-readiness:check",
       provider,
@@ -273,7 +284,7 @@ export class RuntimeReadinessCoordinator {
 
     const driver = this.drivers[command.provider];
     const execution = driver
-      ? await this.runBounded((signal) => driver.verify({ config: command.config, signal }))
+      ? await this.runBounded(command.provider, (signal) => driver.verify({ config: command.config, signal }))
       : ({
           ok: false,
           error: {
@@ -301,6 +312,7 @@ export class RuntimeReadinessCoordinator {
   }
 
   private async runBounded(
+    provider: RuntimeProvider,
     run: (signal: AbortSignal) => Promise<RuntimeReadinessExecutionResult>,
   ): Promise<RuntimeReadinessExecutionResult> {
     const controller = new AbortController();
@@ -334,12 +346,36 @@ export class RuntimeReadinessCoordinator {
       // Codex SIGTERM→SIGKILL escalation). Do not publish `timeout`, release
       // the in-flight slot, or allow another run until the adapter has settled
       // and its isolated workspace removal has completed successfully.
-      try {
-        await rawRun;
-      } catch {
+      const cleanupTimeoutMs = this.deps.cleanupTimeoutMs ?? RUNTIME_READINESS_CLEANUP_TIMEOUT_MS;
+      let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+      const cleanupDeadline = new Promise<"cleanup_timeout">((resolve) => {
+        cleanupTimer = setTimeout(() => resolve("cleanup_timeout"), cleanupTimeoutMs);
+        cleanupTimer.unref?.();
+      });
+      const cleanup = await Promise.race([
+        rawRun.then(
+          () => "settled" as const,
+          () => "cleanup_error" as const,
+        ),
+        cleanupDeadline,
+      ]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      if (cleanup === "cleanup_error") {
         return {
           ok: false,
           error: { code: "provider_error", message: "Readiness cleanup failed after cancellation." },
+        };
+      }
+      if (cleanup === "cleanup_timeout") {
+        this.cleanupQuarantine.add(provider);
+        void rawRun.finally(() => this.cleanupQuarantine.delete(provider)).catch(() => undefined);
+        return {
+          ok: false,
+          error: {
+            code: "provider_busy",
+            message:
+              "Readiness cancellation did not confirm provider cleanup; checks are quarantined until it settles.",
+          },
         };
       }
       return { ok: false, error: { code: "timeout", message: `Readiness timed out after ${timeoutMs}ms.` } };
@@ -383,6 +419,21 @@ export class RuntimeReadinessCoordinator {
     return {
       state: "available",
       identity: this.latestIdentities.get(provider) ?? runtimeReadinessIdentity(provider, undefined, undefined),
+    };
+  }
+
+  private quarantinedResult(provider: RuntimeProvider, identity: string): RuntimeReadinessResult {
+    const now = (this.deps.now ?? Date.now)();
+    this.deps.log("⚠️", `runtime-readiness: ${provider} cleanup is quarantined`);
+    return {
+      state: "failed",
+      identity,
+      checkedAt: new Date(now).toISOString(),
+      durationMs: 0,
+      error: {
+        code: "provider_busy",
+        message: "The previous readiness provider has not confirmed cleanup; retry after it settles.",
+      },
     };
   }
 }

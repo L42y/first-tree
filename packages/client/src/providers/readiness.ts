@@ -28,6 +28,12 @@ export type RuntimeReadiness = {
 
 export type RuntimeReadinessTable = Readonly<Partial<Record<RuntimeProvider, RuntimeReadiness>>>;
 
+export function asRuntimeReadinessRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
 type IsolatedWorkspaceDeps = {
   makeTemp?: () => Promise<string>;
   list?: (path: string) => Promise<string[]>;
