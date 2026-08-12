@@ -9,19 +9,19 @@ to a current active admin of the deployment's configured
 `FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID`; the server rechecks that
 membership and optimistic-concurrency token for every mutation.
 
+Provide `FIRST_TREE_SERVER_URL` and `FIRST_TREE_ACCESS_TOKEN` through the
+deployment's secret-aware environment or credential runner before invoking
+the command. Do not paste the access token into a shell command or history.
+
 Preview the reconciliation first:
 
 ```bash
-FIRST_TREE_SERVER_URL=https://example.com \
-FIRST_TREE_ACCESS_TOKEN=<publisher-member-jwt> \
 pnpm --filter @first-tree/server agent-templates:publish
 ```
 
 Apply the reviewed definitions:
 
 ```bash
-FIRST_TREE_SERVER_URL=https://example.com \
-FIRST_TREE_ACCESS_TOKEN=<publisher-member-jwt> \
 pnpm --filter @first-tree/server agent-templates:publish -- --apply
 ```
 

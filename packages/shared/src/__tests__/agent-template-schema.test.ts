@@ -15,6 +15,8 @@ import {
   agentTemplateStatusSchema,
   createAgentTemplateSchema,
   MAX_AGENT_TEMPLATE_COMPONENTS,
+  MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS,
+  MAX_AGENT_TEMPLATE_EXAMPLE_TASKS,
   MAX_AGENT_TEMPLATE_IDS,
   publishAgentTemplateSchema,
   retireAgentTemplateSchema,
@@ -552,6 +554,9 @@ describe("write-size contract", () => {
         userValue: escaped(2000),
         instructionsSummary: escaped(2000),
         toolsAndSkillsSummary: escaped(2000),
+        exampleTasks: Array.from({ length: MAX_AGENT_TEMPLATE_EXAMPLE_TASKS }, () =>
+          escaped(MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS),
+        ),
       },
       components: Array.from({ length: MAX_AGENT_TEMPLATE_COMPONENTS }, (_, index) => ({
         key: `${"p".repeat(97)}${String(index).padStart(3, "0")}`,

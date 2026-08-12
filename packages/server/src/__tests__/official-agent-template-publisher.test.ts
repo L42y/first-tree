@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { syncOfficialAgentTemplateCatalog } from "../services/agents/templates/official-catalog-publisher.js";
 
 const TOKEN = "2026-08-12T09:00:00.000Z";
+const NEXT_TOKEN = "2026-08-12T09:05:00.000Z";
 
 const DEFINITION: CreateAgentTemplate = {
   slug: "team-teammate",
@@ -112,6 +113,86 @@ describe("official Agent Template catalog publisher", () => {
 
     expect(result).toEqual([{ slug: DEFINITION.slug, action: "unchanged" }]);
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("updates a changed active Template with its optimistic-concurrency token", async () => {
+    const stored = detail({ name: "Old Team Teammate" });
+    const updated = detail({ updatedAt: NEXT_TOKEN });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ templates: [stored] }))
+      .mockResolvedValueOnce(jsonResponse(updated));
+
+    const result = await syncOfficialAgentTemplateCatalog({
+      baseUrl: "https://opentag.example",
+      accessToken: "publisher-token",
+      definitions: [DEFINITION],
+      apply: true,
+      fetcher,
+    });
+
+    expect(result).toEqual([{ slug: DEFINITION.slug, action: "updated" }]);
+    expect(fetcher.mock.calls[1]?.[0]).toBe(`https://opentag.example/api/v1/internal/agent-templates/${stored.id}`);
+    const updateRequest = fetcher.mock.calls[1]?.[1];
+    expect(updateRequest).toEqual(expect.objectContaining({ method: "PATCH" }));
+    expect(JSON.parse(String(updateRequest?.body))).toEqual({
+      expectedUpdatedAt: TOKEN,
+      name: DEFINITION.name,
+      public: DEFINITION.public,
+      components: DEFINITION.components,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates and publishes a changed draft using the refreshed concurrency token", async () => {
+    const stored = detail({ name: "Old Team Teammate", status: "draft" });
+    const updatedDraft = detail({ status: "draft", updatedAt: NEXT_TOKEN });
+    const active = detail({ updatedAt: "2026-08-12T09:06:00.000Z" });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ templates: [stored] }))
+      .mockResolvedValueOnce(jsonResponse(updatedDraft))
+      .mockResolvedValueOnce(jsonResponse(active));
+
+    const result = await syncOfficialAgentTemplateCatalog({
+      baseUrl: "https://opentag.example",
+      accessToken: "publisher-token",
+      definitions: [DEFINITION],
+      apply: true,
+      fetcher,
+    });
+
+    expect(result).toEqual([{ slug: DEFINITION.slug, action: "updated-and-published" }]);
+    expect(fetcher.mock.calls[1]?.[1]).toEqual(expect.objectContaining({ method: "PATCH" }));
+    expect(fetcher).toHaveBeenNthCalledWith(
+      3,
+      `https://opentag.example/api/v1/internal/agent-templates/${stored.id}/publish`,
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedUpdatedAt: NEXT_TOKEN }) }),
+    );
+  });
+
+  it("publishes a matching draft without issuing an update", async () => {
+    const draft = detail({ status: "draft" });
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ templates: [draft] }))
+      .mockResolvedValueOnce(jsonResponse(detail()));
+
+    const result = await syncOfficialAgentTemplateCatalog({
+      baseUrl: "https://opentag.example",
+      accessToken: "publisher-token",
+      definitions: [DEFINITION],
+      apply: true,
+      fetcher,
+    });
+
+    expect(result).toEqual([{ slug: DEFINITION.slug, action: "published" }]);
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      `https://opentag.example/api/v1/internal/agent-templates/${draft.id}/publish`,
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ expectedUpdatedAt: TOKEN }) }),
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("fails closed instead of replacing a retired official slug", async () => {
