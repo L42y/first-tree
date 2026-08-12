@@ -43,6 +43,7 @@ const coreMocks = vi.hoisted(() => ({
   refreshServerUpdateTarget: vi.fn(),
   resolveClientRuntimeStopReason: vi.fn(),
   runRuntimeAuthLogin: vi.fn(),
+  RuntimeReadinessCoordinator: vi.fn(),
   startClientService: vi.fn(),
   uploadAgentSkills: vi.fn(),
   uploadClientCapabilities: vi.fn(),
@@ -102,6 +103,8 @@ let runtimeInstance: {
   watchAgentsDir: ReturnType<typeof vi.fn>;
   onReconnect: ReturnType<typeof vi.fn>;
   onRuntimeAuthStart: ReturnType<typeof vi.fn>;
+  onRuntimeReadinessCheck: ReturnType<typeof vi.fn>;
+  onProviderAuthFailure: ReturnType<typeof vi.fn>;
   onProviderModelsList: ReturnType<typeof vi.fn>;
   sendProviderModelsResult: ReturnType<typeof vi.fn>;
   emitConnectionResilienceEvent: ReturnType<typeof vi.fn>;
@@ -206,6 +209,12 @@ beforeEach(() => {
   coreMocks.migrateLocalAgentDirs.mockResolvedValue(undefined);
   coreMocks.reconcileLocalRuntimeProviders.mockResolvedValue(undefined);
   coreMocks.runRuntimeAuthLogin.mockResolvedValue(undefined);
+  coreMocks.RuntimeReadinessCoordinator.mockImplementation(() => ({
+    check: vi.fn().mockResolvedValue({ state: "ready" }),
+    hasCheckIntent: vi.fn(() => false),
+    markNeedsLogin: vi.fn().mockResolvedValue(undefined),
+    retryAfterLogin: vi.fn().mockResolvedValue({ state: "ready" }),
+  }));
   coreMocks.uploadClientCapabilities.mockResolvedValue(undefined);
   coreMocks.uploadAgentSkills.mockResolvedValue(undefined);
 
@@ -219,6 +228,8 @@ beforeEach(() => {
     }),
     onReconnect: vi.fn(),
     onRuntimeAuthStart: vi.fn(),
+    onRuntimeReadinessCheck: vi.fn(),
+    onProviderAuthFailure: vi.fn(),
     onProviderModelsList: vi.fn(),
     sendProviderModelsResult: vi.fn(),
     emitConnectionResilienceEvent: vi.fn(),
