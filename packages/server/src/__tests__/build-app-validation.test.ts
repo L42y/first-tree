@@ -17,6 +17,9 @@ import * as resourcesMigration from "../services/agents/resources/migration.js";
  */
 const baseConfig: Config = {
   channel: "dev",
+  opentag: {
+    agentFirstOnboardingEnabled: false,
+  },
   growth: {
     landingPagesEnabled: false,
     landingCampaignMaxAgentTurns: 1,

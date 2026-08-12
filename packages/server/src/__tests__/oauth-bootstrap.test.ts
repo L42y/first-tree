@@ -18,6 +18,31 @@ import { useTestApp } from "./helpers.js";
 describe("provider-neutral OAuth bootstrap", () => {
   const getApp = useTestApp({ googleOAuth: true });
 
+  it("keeps the existing personal-Team bootstrap while Agent-first onboarding is disabled", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: "google-gated-bootstrap-subject", name: "Gated Owner" }),
+    );
+
+    const result = await completeExternalAccountBootstrap(app.db, account, {
+      next: "/",
+      allowedOrganizationId: null,
+      ip: null,
+      userAgent: null,
+      agentFirstOnboardingEnabled: false,
+    });
+
+    expect(result).toMatchObject({
+      joinPath: "solo",
+      next: "/",
+      organizationId: expect.any(String),
+      orgPinned: true,
+      teamCreated: true,
+    });
+    expect(await app.db.select().from(members).where(eq(members.userId, account.userId))).toHaveLength(1);
+  });
+
   it("leaves a solo first sign-in with no Team and preserves the production-scan quickstart", async () => {
     const app = getApp();
     const account = await findOrCreateUserFromExternalAccount(
@@ -36,6 +61,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       allowedOrganizationId: null,
       ip: "127.0.0.1",
       userAgent: "oauth-bootstrap-test",
+      agentFirstOnboardingEnabled: true,
     });
 
     expect(result).toMatchObject({
@@ -44,6 +70,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       organizationId: null,
       // Nothing to activate: there is no Team to pin the SPA to yet.
       orgPinned: false,
+      teamCreated: false,
     });
     const [identity] = await app.db.select().from(authIdentities).where(eq(authIdentities.userId, account.userId));
     expect(identity).toMatchObject({ provider: "google", identifier: "google-bootstrap-subject" });
@@ -68,6 +95,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       allowedOrganizationId: null,
       ip: null,
       userAgent: null,
+      agentFirstOnboardingEnabled: true,
     });
 
     expect(result).toMatchObject({ joinPath: "solo", next: "/", organizationId: null });
@@ -86,6 +114,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       allowedOrganizationId: null,
       ip: null,
       userAgent: null,
+      agentFirstOnboardingEnabled: true,
     });
 
     expect(result).toMatchObject({ joinPath: "solo", next, organizationId: null });
@@ -115,6 +144,7 @@ describe("provider-neutral OAuth bootstrap", () => {
         allowedOrganizationId: team.organizationId,
         ip: null,
         userAgent: null,
+        agentFirstOnboardingEnabled: true,
       }),
     ).rejects.toThrow(OAuthBootstrapError);
     const memberships = await app.db.select().from(members).where(eq(members.userId, account.userId));
@@ -139,6 +169,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       allowedOrganizationId: null,
       ip: null,
       userAgent: null,
+      agentFirstOnboardingEnabled: true,
     });
 
     expect(result).toMatchObject({
@@ -160,6 +191,7 @@ describe("provider-neutral OAuth bootstrap", () => {
       allowedOrganizationId: null,
       ip: null,
       userAgent: "oauth-bootstrap-concurrency-test",
+      agentFirstOnboardingEnabled: true,
     };
     try {
       const results = await Promise.all(

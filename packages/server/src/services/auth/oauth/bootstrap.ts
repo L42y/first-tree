@@ -3,7 +3,12 @@ import { eq } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { users } from "../../../db/schema/users.js";
 import { findActiveByToken, recordRedemption } from "../../team/invitation.js";
-import { ensureMembership, pickPrimaryMembership } from "../../team/membership.js";
+import {
+  createPersonalTeam,
+  ensureMembership,
+  personalTeamDisplayName,
+  pickPrimaryMembership,
+} from "../../team/membership.js";
 
 export type ExternalAccountBootstrapUser = {
   userId: string;
@@ -17,6 +22,7 @@ export type ExternalAccountBootstrapInput = {
   allowedOrganizationId: string | null;
   ip: string | null;
   userAgent: string | null;
+  agentFirstOnboardingEnabled: boolean;
 };
 
 export type ExternalAccountBootstrapResult = {
@@ -24,12 +30,14 @@ export type ExternalAccountBootstrapResult = {
   joinPath: "invite" | "solo" | "returning";
   next: string;
   /**
-   * `null` for the solo path: signing in no longer provisions a Team. The
-   * account is legitimately Team-less until the user confirms their first Team
-   * Agent, which creates the Team as part of that one atomic call.
+   * `null` for a gated Agent-first solo path. Deployments that have not shipped
+   * the complete Runtime-to-channel continuation keep the established
+   * personal-Team bootstrap and return its organization id.
    */
   organizationId: string | null;
   orgPinned: boolean;
+  /** Internal funnel fact; never serialized as a Web onboarding state. */
+  teamCreated: boolean;
 };
 
 export const OAUTH_BOOTSTRAP_ERROR_CODES = ["invite-invalid", "invite-not-allowed", "invite-required"] as const;
@@ -92,6 +100,7 @@ export async function completeExternalAccountBootstrap(
         next: "/",
         organizationId: invitation.organizationId,
         orgPinned: true,
+        teamCreated: false,
       };
     }
 
@@ -103,22 +112,38 @@ export async function completeExternalAccountBootstrap(
         next: input.next,
         organizationId: primary.organizationId,
         orgPinned: false,
+        teamCreated: false,
       };
     }
 
     if (input.allowedOrganizationId) throw new OAuthBootstrapError("invite-required");
 
-    // Solo: authenticated with no Team at all. Nothing is provisioned here —
-    // an empty Team created before the user confirms anything is a resource
-    // nobody asked for, and it makes "which Team is this Agent for" a question
-    // the product has to answer twice. `POST /me/team-agents` creates the Team
-    // together with the first Agent when the user confirms it.
+    if (!input.agentFirstOnboardingEnabled) {
+      const team = await createPersonalTeam(txDb, {
+        userId: account.userId,
+        username: account.username,
+        teamDisplayName: personalTeamDisplayName(account.displayName),
+        userDisplayName: account.displayName,
+      });
+      return {
+        account,
+        joinPath: "solo",
+        next: shouldPreserveSoloSignupNext(input.next) ? input.next : "/",
+        organizationId: team.organizationId,
+        orgPinned: true,
+        teamCreated: true,
+      };
+    }
+
+    // The gated Agent-first flow deliberately leaves solo sign-in Team-less;
+    // the Team and first Agent are created together only after confirmation.
     return {
       account,
       joinPath: "solo",
       next: shouldPreserveSoloSignupNext(input.next) ? input.next : "/",
       organizationId: null,
       orgPinned: false,
+      teamCreated: false,
     };
   });
 }

@@ -5,7 +5,7 @@ import {
   parseLandingCampaignTrialChatMetadata,
 } from "@first-tree/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
@@ -235,12 +235,19 @@ async function countTrialChatsForUser(app: ReturnType<ReturnType<typeof useTestA
 
 describe("POST /me/landing-campaigns/start", () => {
   const getApp = useTestApp({
+    agentFirstOnboardingEnabled: true,
     growthLandingPagesEnabled: true,
     landingCampaignServiceUserId: SERVICE_USER_ID,
     landingCampaignServiceOrgId: SERVICE_ORG_ID,
     landingCampaignClientId: OFFICIAL_CLIENT_ID,
   });
   const getDisabledApp = useTestApp({
+    landingCampaignServiceUserId: SERVICE_USER_ID,
+    landingCampaignServiceOrgId: SERVICE_ORG_ID,
+    landingCampaignClientId: OFFICIAL_CLIENT_ID,
+  });
+  const getAgentFirstDisabledApp = useTestApp({
+    growthLandingPagesEnabled: true,
     landingCampaignServiceUserId: SERVICE_USER_ID,
     landingCampaignServiceOrgId: SERVICE_ORG_ID,
     landingCampaignClientId: OFFICIAL_CLIENT_ID,
@@ -298,6 +305,7 @@ describe("POST /me/landing-campaigns/start", () => {
     landingCampaignMaxTrialsPerUserPer24Hours: 1,
   });
   const getInvitationOnlyApp = useTestApp({
+    agentFirstOnboardingEnabled: true,
     growthLandingPagesEnabled: true,
     landingCampaignServiceUserId: SERVICE_USER_ID,
     landingCampaignServiceOrgId: SERVICE_ORG_ID,
@@ -352,6 +360,38 @@ describe("POST /me/landing-campaigns/start", () => {
         ),
       );
     expect(trialAgents).toHaveLength(0);
+  });
+
+  it("does not create a Team-less campaign Team while Agent-first onboarding is disabled", async () => {
+    const app = getAgentFirstDisabledApp();
+    const caller = await createTeamlessCaller(app, "Gated Quickstart Owner");
+
+    const res = await startCampaignWithoutOrganization(app, caller);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ error: "Active membership not found" });
+    expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toEqual([]);
+  });
+
+  it("rechecks the disabled gate under the lifecycle lock if membership disappears", async () => {
+    const app = getAgentFirstDisabledApp();
+    const caller = await createTestAdmin(app, { username: `gated-race-${crypto.randomUUID().slice(0, 8)}` });
+    await seedOfficialRuntime(app, caller.organizationId);
+    const originalTransaction = app.db.transaction.bind(app.db);
+    const transaction = vi.spyOn(app.db, "transaction").mockImplementationOnce(async (callback, config) => {
+      await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, caller.userId));
+      return originalTransaction(callback, config);
+    });
+
+    try {
+      const res = await startCampaignWithoutOrganization(app, caller);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "Active membership not found" });
+      expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toHaveLength(1);
+    } finally {
+      transaction.mockRestore();
+    }
   });
 
   it("requires the official runtime config before provisioning anything", async () => {

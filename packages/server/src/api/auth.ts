@@ -26,6 +26,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       body.refreshToken,
       app.config.secrets.jwtSecret,
       app.config.auth,
+      { allowTeamless: app.config.opentag.agentFirstOnboardingEnabled },
     );
     return reply.send(result);
   });

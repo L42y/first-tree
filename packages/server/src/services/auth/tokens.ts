@@ -157,6 +157,7 @@ export async function refreshAccessToken(
   refreshToken: string,
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
+  options: { allowTeamless?: boolean } = {},
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const secret = new TextEncoder().encode(jwtSecretKey);
 
@@ -200,9 +201,15 @@ export async function refreshAccessToken(
     });
   }
 
-  // Membership is deliberately not an authentication prerequisite. A solo
-  // OAuth account may remain signed in with zero Teams while it chooses its
-  // first Agent; org-scoped routes still authorize against live membership.
+  if (!options.allowTeamless) {
+    const [membership] = await db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, user.id), eq(members.status, "active")))
+      .limit(1);
+    if (!membership) throw new UnauthorizedError("No organization membership found");
+  }
+
   return signTokensForUser(jwtSecretKey, user.id, expiries);
 }
 

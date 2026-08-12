@@ -836,6 +836,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
    * single first Team and first Agent.
    */
   app.post("/me/team-agents", { config: { otelRecordBody: true } }, async (request, reply) => {
+    if (!app.config.opentag.agentFirstOnboardingEnabled) {
+      return reply.status(404).send({
+        error: "Agent-first onboarding is disabled on this First Tree deployment.",
+        code: "feature_disabled",
+      });
+    }
     const { userId } = requireUser(request);
     const body = provisionFirstTeamAgentSchema.parse(request.body ?? {});
 

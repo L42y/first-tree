@@ -72,7 +72,7 @@ function stubGithubAppOauth(opts: {
  * has been resolved.
  */
 describe("GitHub OAuth onboarding flow", () => {
-  const getApp = useTestApp();
+  const getApp = useTestApp({ agentFirstOnboardingEnabled: true });
 
   it("start signs a state cookie and redirects to the GitHub App authorize URL", async () => {
     const app = getApp();
@@ -586,7 +586,7 @@ describe("GitHub account-link return path", () => {
 });
 
 describe("OAuth callback rejects malformed state", () => {
-  const getApp = useTestApp();
+  const getApp = useTestApp({ agentFirstOnboardingEnabled: true });
 
   // The /callback route is a full-page browser navigation, so state
   // rejections redirect to the SPA's friendly error surface (the most
@@ -777,5 +777,25 @@ describe("OAuth callback rejects malformed state", () => {
     // No installation rows attributable to this synthetic GitHub id.
     const own = rows.filter((r) => r.accountGithubId === 910);
     expect(own).toHaveLength(0);
+  });
+});
+
+describe("GitHub OAuth Agent-first rollout gate", () => {
+  const getApp = useTestApp();
+
+  it("keeps the established personal-Team signup when the gate is off", async () => {
+    const app = getApp();
+    const login = `gated-${randomUUID().slice(0, 8)}`;
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=99001&login=${login}`,
+    });
+
+    expect(res.statusCode).toBe(302);
+    const params = new URLSearchParams(res.headers.location?.split("#")[1] ?? "");
+    expect(params.get("joinPath")).toBe("solo");
+    expect(params.get("org")).toBeTruthy();
+    expect(params.get("orgPinned")).toBe("1");
+    expect(await app.db.select().from(organizations).where(eq(organizations.name, login))).toHaveLength(1);
   });
 });

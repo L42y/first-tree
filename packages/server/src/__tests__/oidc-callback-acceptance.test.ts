@@ -122,6 +122,7 @@ describe("OIDC callback — acceptance", () => {
     const { createTestApp } = (await import("./helpers.js")) as { createTestApp: CreateTestApp };
     app = await createTestApp({
       authMode: "oidc-required",
+      agentFirstOnboardingEnabled: true,
       oidc: { issuer: ISSUER, clientId: "test-oidc-client-id", clientSecret: "test-oidc-client-secret" },
     });
   });

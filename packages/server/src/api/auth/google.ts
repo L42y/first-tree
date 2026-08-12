@@ -162,6 +162,7 @@ async function completeGoogleSignIn(
       allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
       ip: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
+      agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
     });
   } catch (error) {
     if (error instanceof OAuthBootstrapError)
@@ -171,10 +172,21 @@ async function completeGoogleSignIn(
       });
     throw error;
   }
+  if (bootstrap.teamCreated) {
+    app.log.info(
+      {
+        event: "onboarding.team_created",
+        provider: "google",
+        userId: account.userId,
+        organizationId: bootstrap.organizationId,
+        source: "oauth-bootstrap",
+      },
+      "onboarding funnel: team auto-created at OAuth bootstrap",
+    );
+  }
   const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
-  // A solo sign-in resolves to no Team at all until the user confirms their
-  // first Agent, so `org` is omitted rather than sent empty — the SPA reads a
-  // present-but-blank value as a real destination and would try to activate it.
+  // A gated Agent-first solo sign-in has no Team yet, so `org` is omitted
+  // rather than sent empty. The default flow returns its personal Team.
   const fragment = new URLSearchParams({
     access: tokens.accessToken,
     refresh: tokens.refreshToken,

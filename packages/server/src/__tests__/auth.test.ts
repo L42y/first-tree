@@ -225,7 +225,7 @@ describe("Admin Auth", () => {
       expect(second.json()).toHaveProperty("accessToken");
     });
 
-    it("rejects wrong token types, missing users, and suspended users while preserving Team-less sessions", async () => {
+    it("rejects wrong token types, missing users, suspended users, and Team-less sessions by default", async () => {
       const app = getApp();
       const admin = await createTestAdmin(app, { username: `refresh-admin-${crypto.randomUUID().slice(0, 8)}` });
       const accessTyped = await signTokensForUser(TEST_JWT_SECRET, admin.userId, EXPIRIES);
@@ -249,13 +249,27 @@ describe("Admin Auth", () => {
       const removed = await createTestAdmin(app, { username: `refresh-removed-${crypto.randomUUID().slice(0, 8)}` });
       const removedRefresh = await signRefreshToken(removed.userId);
       await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, removed.userId));
+      await expect(refreshAccessToken(app.db, removedRefresh, TEST_JWT_SECRET, EXPIRIES)).rejects.toThrow(
+        /no organization membership/i,
+      );
+    });
+
+    it("preserves a Team-less session only when Agent-first onboarding is enabled", async () => {
+      const app = getApp();
+      const removed = await createTestAdmin(app, { username: `refresh-teamless-${crypto.randomUUID().slice(0, 8)}` });
+      const removedRefresh = await signRefreshToken(removed.userId);
+      await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, removed.userId));
+
       const refresh = await app.inject({
         method: "POST",
         url: "/api/v1/auth/refresh",
         payload: { refreshToken: removedRefresh },
       });
-      expect(refresh.statusCode).toBe(200);
-      const refreshed = refresh.json<{ accessToken: string; refreshToken: string }>();
+      expect(refresh.statusCode).toBe(401);
+
+      const refreshed = await refreshAccessToken(app.db, removedRefresh, TEST_JWT_SECRET, EXPIRIES, {
+        allowTeamless: true,
+      });
       expect(refreshed.accessToken).toBeTruthy();
       expect(refreshed.refreshToken).toBeTruthy();
 

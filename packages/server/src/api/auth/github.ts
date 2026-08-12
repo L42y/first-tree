@@ -845,6 +845,7 @@ async function completeOauthFlow(
         allowedOrganizationId,
         ip: request.ip,
         userAgent: request.headers["user-agent"] ?? null,
+        agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
       });
     } catch (error) {
       if (!(error instanceof OAuthBootstrapError)) throw error;
@@ -854,13 +855,25 @@ async function completeOauthFlow(
       return reply.status(statusCode).send({ error: oauthBootstrapErrorMessage(error.code) });
     }
     joinPath = bootstrap.joinPath;
-    // "Resolved" means membership resolution ran and reached a definite
-    // answer — including the solo answer "this account has no Team yet",
-    // which is now a legitimate signed-in state rather than a failure.
+    // "Resolved" means membership resolution reached a definite answer. The
+    // gated Agent-first flow may return no Team; the default flow returns the
+    // personal Team created by bootstrap.
     resolved = true;
     resolvedOrganizationId = bootstrap.organizationId;
     orgPinned = bootstrap.orgPinned;
     next = bootstrap.next;
+    if (bootstrap.teamCreated) {
+      app.log.info(
+        {
+          event: "onboarding.team_created",
+          provider: "github",
+          userId,
+          organizationId: bootstrap.organizationId,
+          source: "oauth-bootstrap",
+        },
+        "onboarding funnel: team auto-created at OAuth bootstrap",
+      );
+    }
   } else {
     // The modern App-install state carries `kickoffUserId`; its exact GitHub
     // subject, live active-admin authority, and token/snapshot refresh were

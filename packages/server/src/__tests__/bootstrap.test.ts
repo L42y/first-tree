@@ -32,6 +32,9 @@ function makeTempConfigDir(): string {
 
 const baseServerConfig: ServerConfig = {
   channel: "dev",
+  opentag: {
+    agentFirstOnboardingEnabled: false,
+  },
   growth: {
     landingPagesEnabled: false,
     landingCampaignMaxAgentTurns: 1,

@@ -131,7 +131,10 @@ async function publishTemplate(app: TestApp, slug: string): Promise<string> {
 }
 
 describe("POST /me/team-agents — first Team Agent provisioning", () => {
-  const getApp = useTestApp({ agentTemplatePublisherOrgId: PUBLISHER_ORG_ID });
+  const getApp = useTestApp({
+    agentTemplatePublisherOrgId: PUBLISHER_ORG_ID,
+    agentFirstOnboardingEnabled: true,
+  });
 
   afterAll(async () => {
     const app = getApp();
@@ -730,7 +733,10 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
 });
 
 describe("POST /me/team-agents on an invitation-only deployment", () => {
-  const getApp = useTestApp({ allowedOrganizationId: "first-team-agent-allowed-org" });
+  const getApp = useTestApp({
+    allowedOrganizationId: "first-team-agent-allowed-org",
+    agentFirstOnboardingEnabled: true,
+  });
 
   it("refuses to mint a Team for a user who has not redeemed an invite", async () => {
     const app = getApp();
@@ -742,6 +748,26 @@ describe("POST /me/team-agents on an invitation-only deployment", () => {
     const reply = await provision(app, user, { name: "uninvited-teammate", templateIds: [uuidv7()] });
 
     expect(reply.statusCode).toBe(403);
+    expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);
+  });
+});
+
+describe("POST /me/team-agents rollout gate", () => {
+  const getApp = useTestApp({ agentTemplatePublisherOrgId: PUBLISHER_ORG_ID });
+
+  it("stays unavailable until the complete Agent-first lifecycle is enabled", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Gated Owner");
+
+    const reply = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/team-agents",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+      payload: { requestId: uuidv7(), name: "gated-agent", templateIds: [uuidv7()] },
+    });
+
+    expect(reply.statusCode).toBe(404);
+    expect(reply.json()).toMatchObject({ code: "feature_disabled" });
     expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);
   });
 });

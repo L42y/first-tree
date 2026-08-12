@@ -358,7 +358,9 @@ async function provisionTrialAgent(
     if (!caller) {
       // Supplying a Team id is an existing-Team request, never permission to
       // create a replacement when that membership cannot be resolved.
-      if (input.organizationId) throw new NotFoundError("Active membership not found");
+      if (input.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
+        throw new NotFoundError("Active membership not found");
+      }
       if (app.config.access?.allowedOrganizationId) {
         throw new ForbiddenError("This server requires an invitation link to join a team.");
       }
@@ -575,7 +577,7 @@ export async function startLandingCampaignTrial(
   const existingCaller = await resolveCallerMembership(app.db, userId, body.organizationId);
   if (existingCaller) {
     assertCallerCanStartLandingCampaign(app, existingCaller);
-  } else if (body.organizationId) {
+  } else if (body.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
     throw new NotFoundError("Active membership not found");
   }
   await assertOfficialLandingCampaignClient(app.db, config.clientId, config.serviceUserId, config.serviceOrgId);
