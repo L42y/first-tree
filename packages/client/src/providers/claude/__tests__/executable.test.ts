@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { resolveClaudeCodeExecutable } from "../executable.js";
+import { resolveClaudeCodeExecutable, resolveConfiguredClaudeExecutable } from "../executable.js";
 
 /** No login-shell dirs — keeps the existing cases hermetic (no real shell spawn). */
 const noLoginShell = () => [];
@@ -267,5 +267,23 @@ describe("resolveClaudeCodeExecutable", () => {
       loginShellPathDirs: () => [binDir],
     });
     expect(resolution).toEqual({ path: fakeClaude, source: "path" });
+  });
+});
+
+describe("resolveConfiguredClaudeExecutable", () => {
+  it("preserves an injected bundled/default decision without resolving globally again", () => {
+    const resolveExecutable = vi.fn(() => ({ path: "/tmp/unrelated-claude", source: "path" as const }));
+
+    expect(
+      resolveConfiguredClaudeExecutable({ claudeCodeExecutable: undefined }, { resolveExecutable }),
+    ).toBeUndefined();
+    expect(resolveExecutable).not.toHaveBeenCalled();
+  });
+
+  it("retains the standalone fallback when no daemon-local decision was injected", () => {
+    const resolveExecutable = vi.fn(() => ({ path: "/tmp/standalone-claude", source: "path" as const }));
+
+    expect(resolveConfiguredClaudeExecutable({}, { resolveExecutable })).toBe("/tmp/standalone-claude");
+    expect(resolveExecutable).toHaveBeenCalledOnce();
   });
 });

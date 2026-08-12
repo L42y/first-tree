@@ -1,7 +1,11 @@
 export const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.12";
-export const MIN_RUNTIME_READINESS_CLIENT_VERSION = "0.5.20";
+export const MIN_RUNTIME_READINESS_CLIENT_VERSION = "0.5.21";
 
-function supportsCurrentReleaseEpochFeature(version: string | null, minimumStablePatch: number): boolean {
+function supportsCurrentReleaseEpochFeature(
+  version: string | null,
+  minimumStablePatch: number,
+  minimumStagingPatch: number,
+): boolean {
   if (!version) return false;
   const match = /^v?0\.5\.(0|[1-9]\d*)(?:(?:\+[0-9A-Za-z.-]+)|(?:-staging\.([1-9]\d*)\.([1-9]\d*)))?$/.exec(version);
   if (!match) return false;
@@ -10,7 +14,7 @@ function supportsCurrentReleaseEpochFeature(version: string | null, minimumStabl
   const stagingAttempt = match[3] === undefined ? null : Number(match[3]);
   if (!Number.isSafeInteger(patch)) return false;
   if (stagingRun === null || stagingAttempt === null) return patch >= minimumStablePatch;
-  return Number.isSafeInteger(stagingRun) && Number.isSafeInteger(stagingAttempt) && patch >= minimumStablePatch + 1;
+  return Number.isSafeInteger(stagingRun) && Number.isSafeInteger(stagingAttempt) && patch >= minimumStagingPatch;
 }
 
 /**
@@ -26,10 +30,10 @@ function supportsCurrentReleaseEpochFeature(version: string | null, minimumStabl
  * agent runtime.
  */
 export function supportsRuntimeSwitchClientVersion(version: string | null): boolean {
-  return supportsCurrentReleaseEpochFeature(version, 12);
+  return supportsCurrentReleaseEpochFeature(version, 12, 13);
 }
 
 /** Fail closed when a connected daemon cannot understand readiness commands. */
 export function supportsRuntimeReadinessClientVersion(version: string | null): boolean {
-  return supportsCurrentReleaseEpochFeature(version, 20);
+  return supportsCurrentReleaseEpochFeature(version, 21, 21);
 }

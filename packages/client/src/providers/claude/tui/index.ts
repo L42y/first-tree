@@ -22,7 +22,7 @@ import {
   renderChatContextPrompt,
   renderRuntimeOutputContract,
 } from "../../../runtime/provider-support/index.js";
-import { resolveClaudeCodeExecutable } from "../executable.js";
+import { resolveConfiguredClaudeExecutable } from "../executable.js";
 import { mapMcpServers } from "../mcp-config.js";
 import { createToolCallProcessor } from "../tool-call-processor.js";
 import {
@@ -145,8 +145,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   // on the shared tmux server. Empty string is tolerated (falls back to a
   // placeholder tag) but the daemon always supplies a real client id.
   const clientId = (config.clientId as string | undefined) ?? "";
-  const claudeCodeExecutable =
-    (config.claudeCodeExecutable as string | undefined) ?? resolveClaudeCodeExecutable().path ?? "claude";
+  const claudeCodeExecutable = resolveConfiguredClaudeExecutable(config) ?? "claude";
 
   let cwd: string | null = null;
   let tmuxSessionName: string | null = null;

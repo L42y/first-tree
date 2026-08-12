@@ -32,11 +32,12 @@ describe("supportsRuntimeSwitchClientVersion", () => {
 
 describe("supportsRuntimeReadinessClientVersion", () => {
   it.each([
-    "0.5.20",
-    "v0.5.20",
     "0.5.21",
-    "0.5.20+build.1",
+    "v0.5.21",
+    "0.5.22",
+    "0.5.21+build.1",
     "0.5.21-staging.1.1",
+    "0.5.22-staging.1.1",
   ])("accepts supported release %s", (version) => {
     expect(supportsRuntimeReadinessClientVersion(version)).toBe(true);
   });
@@ -45,6 +46,8 @@ describe("supportsRuntimeReadinessClientVersion", () => {
     null,
     "",
     "0.5.19",
+    "0.5.20",
+    "0.5.20+build.1",
     "0.14.8",
     "0.5.020",
     "0.5.20-staging.123.1",

@@ -78,6 +78,16 @@ describe("builtin handler registry", () => {
     expect(resolveExecutable.mock.results[1]?.value.path).toBe("/tmp/claude-after-refresh");
   });
 
+  it("preserves a daemon-local bundled/default decision for a new session", () => {
+    const resolveExecutable = vi.fn(() => ({ path: undefined, source: "default" as const }));
+    const authority = createClaudeExecutableAuthority({ resolveExecutable });
+    const registry = createBuiltinHandlerRegistry({ claudeExecutableAuthority: authority });
+
+    registry["claude-code"]({ workspaceRoot: "/tmp/default-session", runtimeProvider: "claude-code" });
+
+    expect(resolveExecutable).toHaveBeenCalledOnce();
+  });
+
   it("probeCapabilities accepts an explicit probe table without a handler registry", async () => {
     const customProbe = vi.fn().mockResolvedValue({
       state: "ok",

@@ -61,7 +61,7 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { resolveClaudeCodeExecutable } from "./executable.js";
+import { resolveConfiguredClaudeExecutable } from "./executable.js";
 import { mapMcpServers } from "./mcp-config.js";
 import {
   type ClaudeProviderFailure,
@@ -397,11 +397,10 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
   // Resolved by the CLI's daemon-local authority when this handler instance is
-  // created. Standalone callers retain the same on-demand fallback. Undefined
-  // defers to the SDK's bundled native binary (see executable.ts for why we
-  // cannot always rely on it).
-  const claudeCodeExecutable =
-    (config.claudeCodeExecutable as string | undefined) ?? resolveClaudeCodeExecutable().path;
+  // created. An injected undefined deliberately selects the SDK bundle and
+  // must not trigger a second, host-global resolution. Standalone callers that
+  // omit the key retain the same on-demand fallback.
+  const claudeCodeExecutable = resolveConfiguredClaudeExecutable(config);
 
   let cwd: string | null = null;
   let claudeSessionId: string | null = null;

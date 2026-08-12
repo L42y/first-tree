@@ -59,6 +59,26 @@ export function createClaudeExecutableAuthority(deps: ClaudeExecutableAuthorityD
   return Object.freeze({ resolve: deps.resolveExecutable ?? resolveClaudeCodeExecutable });
 }
 
+export type ResolveConfiguredClaudeExecutableDeps = {
+  resolveExecutable?: () => ClaudeExecutableResolution;
+};
+
+/**
+ * Resolve the executable for a handler without erasing an injected bundled-
+ * binary decision. Registry composition always owns `claudeCodeExecutable`,
+ * including when its value is undefined; standalone callers that omit the key
+ * retain the normal host-local fallback.
+ */
+export function resolveConfiguredClaudeExecutable(
+  config: Readonly<Record<string, unknown>>,
+  deps: ResolveConfiguredClaudeExecutableDeps = {},
+): string | undefined {
+  if (Object.hasOwn(config, "claudeCodeExecutable")) {
+    return typeof config.claudeCodeExecutable === "string" ? config.claudeCodeExecutable : undefined;
+  }
+  return (deps.resolveExecutable ?? resolveClaudeCodeExecutable)().path;
+}
+
 /** Injectable seams so probe tests stay hermetic (no real shell spawn / no host install dirs). */
 export type ResolveClaudeExecutableDeps = {
   /** Returns the user's interactive-login-shell PATH dirs; defaults to the memoized probe. */
