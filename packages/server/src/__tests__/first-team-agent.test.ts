@@ -1,4 +1,4 @@
-import { AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES, PROVISION_FIRST_TEAM_AGENT_ERROR_CODES } from "@first-tree/shared";
+import { PROVISION_FIRST_TEAM_AGENT_ERROR_CODES } from "@first-tree/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -168,6 +168,24 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       status: "active",
       source: "portal",
     });
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+    });
+    expect(me.statusCode).toBe(200);
+    expect(me.json()).toMatchObject({
+      onboarding: { step: "connect", completedAt: null },
+      memberships: [
+        {
+          id: body.memberId,
+          onboardingSuppressedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
+          onboardingSuppressedReason: "invitee_skip",
+          onboardingCompletedAt: null,
+        },
+      ],
+    });
   });
 
   it("adopts the selected Template into the Team it just created", async () => {
@@ -324,18 +342,67 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     }
   });
 
-  it("preserves an Agent name conflict when the atomic first-Team transaction rolls back", async () => {
+  it("allocates a mentionable Agent name when the Template slug matches the human mirror", async () => {
     const app = getApp();
     const user = await createTeamlessUser(app, "Name Collision Owner");
     const collidingName = `collision-${crypto.randomUUID().slice(0, 8)}`;
     await app.db.update(users).set({ username: collidingName }).where(eq(users.id, user.userId));
+    const requestId = uuidv7();
 
-    const reply = await provision(app, user, { name: collidingName });
+    const reply = await provision(app, user, { requestId, name: collidingName });
 
-    expect(reply.statusCode).toBe(409);
-    expect(reply.json()).toMatchObject({ code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.NAME_CONFLICT });
-    expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);
-    expect(await app.db.select().from(organizations).where(eq(organizations.name, collidingName))).toEqual([]);
+    expect(reply.statusCode).toBe(201);
+    const body = reply.json<{ organizationId: string; agent: { uuid: string; name: string } }>();
+    expect(body.agent.name).toMatch(new RegExp(`^${collidingName}-[a-f0-9]{8}$`));
+    expect(body.agent.name).toHaveLength(collidingName.length + 9);
+
+    const [membership] = await app.db.select().from(members).where(eq(members.userId, user.userId));
+    const [mirror] = await app.db
+      .select()
+      .from(agents)
+      .where(eq(agents.uuid, membership?.agentId ?? ""));
+    expect(mirror?.name).toBe(collidingName);
+    expect(mirror?.organizationId).toBe(body.organizationId);
+
+    // Exact retries resolve the same immutable handle instead of treating the
+    // server-assigned suffix as a different request payload.
+    const retry = await provision(app, user, { requestId, name: collidingName });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({
+      agentCreated: false,
+      agent: { uuid: body.agent.uuid, name: body.agent.name },
+    });
+
+    const changedIntent = await provision(app, user, { requestId, name: body.agent.name });
+    expect(changedIntent.statusCode).toBe(409);
+  });
+
+  it("keeps exact retry recognition independent of mutable Agent state", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Mutable Retry Owner");
+    const request = { requestId: uuidv7(), name: "mutable-retry", displayName: "Original display" };
+    const first = await provision(app, user, request);
+    expect(first.statusCode).toBe(201);
+    const body = first.json<{ agent: { uuid: string } }>();
+
+    await app.db.update(agents).set({ displayName: "Changed later" }).where(eq(agents.uuid, body.agent.uuid));
+
+    const retry = await provision(app, user, request);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({
+      agentCreated: false,
+      agent: { uuid: body.agent.uuid, displayName: "Changed later" },
+    });
+  });
+
+  it("allocates a mentionable fallback when the caller omits the Agent name", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Nameless Owner");
+
+    const reply = await provision(app, user, { requestId: uuidv7() });
+
+    expect(reply.statusCode).toBe(201);
+    expect(reply.json()).toMatchObject({ agent: { name: "team-agent", displayName: "team-agent" } });
   });
 
   it("refuses Agent creation for an invited member because existing-Team creation is org-scoped", async () => {

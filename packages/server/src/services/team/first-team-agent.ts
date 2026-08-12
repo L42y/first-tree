@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import {
+  AGENT_NAME_MAX_LENGTH,
   AGENT_STATUSES,
   AGENT_TYPES,
   AGENT_VISIBILITY,
@@ -8,9 +9,8 @@ import {
   type ProvisionFirstTeamAgent,
   type ProvisionFirstTeamAgentResult,
 } from "@first-tree/shared";
-import { and, asc, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
-import { agentConfigs } from "../../db/schema/agent-configs.js";
 import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
 import { ConflictError, ForbiddenError } from "../../errors.js";
@@ -121,13 +121,14 @@ export async function provisionFirstTeamAgent(
     }
 
     const target = await createInitialTeam(txDb, input.userId, lockedUser);
-    const agentUuid = deriveFirstTeamAgentUuid(options.idempotencySecret, input.userId, input.requestId);
+    const agentUuid = deriveFirstTeamAgentUuid(options.idempotencySecret, input);
+    const agentName = await resolveFirstTeamAgentName(txDb, target.organizationId, input.name, agentUuid);
 
     const agent = await createAgent(
       txDb,
       {
         type: AGENT_TYPES.AGENT,
-        name: input.name,
+        name: agentName,
         displayName: input.displayName,
         // The object being created IS the Team's Agent; onboarding never asks
         // a second time who may use it.
@@ -146,6 +147,19 @@ export async function provisionFirstTeamAgent(
         uuid: agentUuid,
       },
     );
+
+    // This explicit Team-Agent start replaces the legacy standalone
+    // create-Team onboarding for the new membership. Reuse the existing
+    // Team-agent suppressor semantics: do not stamp completion because the
+    // unbound Agent still needs Runtime setup, but never auto-open the old
+    // Team naming wizard after this transaction succeeds.
+    await txDb
+      .update(members)
+      .set({
+        onboardingSuppressedAt: new Date(),
+        onboardingSuppressedReason: "invitee_skip",
+      })
+      .where(eq(members.id, target.memberId));
 
     return {
       organizationId: target.organizationId,
@@ -221,63 +235,85 @@ async function findExactRetry(
       displayName: agents.displayName,
       visibility: agents.visibility,
       clientId: agents.clientId,
-      source: agents.source,
       organizationId: agents.organizationId,
       memberId: agents.managerId,
-      templateIds: agentConfigs.templateIds,
     })
     .from(agents)
-    .innerJoin(agentConfigs, eq(agentConfigs.agentId, agents.uuid))
     .where(
       and(
         inArray(
           agents.managerId,
           memberships.map((membership) => membership.memberId),
         ),
-        eq(agents.uuid, deriveFirstTeamAgentUuid(idempotencySecret, input.userId, input.requestId)),
+        eq(agents.uuid, deriveFirstTeamAgentUuid(idempotencySecret, input)),
         eq(agents.type, AGENT_TYPES.AGENT),
         ne(agents.status, AGENT_STATUSES.DELETED),
       ),
-    )
-    .orderBy(asc(agents.uuid));
+    );
 
-  const expectedName = input.name ?? null;
-  const expectedDisplayName = input.displayName?.trim() || expectedName || "Unnamed Agent";
-  const expectedTemplateIds = input.templateIds ?? [];
-  const row = rows.find(
-    (candidate) =>
-      candidate.name === expectedName &&
-      candidate.displayName === expectedDisplayName &&
-      candidate.visibility === AGENT_VISIBILITY.ORGANIZATION &&
-      candidate.clientId === null &&
-      candidate.source === "portal" &&
-      candidate.templateIds.length === expectedTemplateIds.length &&
-      candidate.templateIds.every((templateId, index) => templateId === expectedTemplateIds[index]),
-  );
-  if (!row) return null;
+  const candidate = rows[0];
+  if (!candidate) return null;
   return {
-    organizationId: row.organizationId,
-    memberId: row.memberId,
+    organizationId: candidate.organizationId,
+    memberId: candidate.memberId,
     agent: {
-      uuid: row.uuid,
-      name: row.name,
-      displayName: row.displayName,
-      visibility: toAgentVisibility(row.visibility),
-      clientId: row.clientId,
+      uuid: candidate.uuid,
+      name: candidate.name,
+      displayName: candidate.displayName,
+      visibility: toAgentVisibility(candidate.visibility),
+      clientId: candidate.clientId,
     },
   };
 }
 
 /**
- * Bind a public request id to this user without storing a second idempotency
- * record. The request's UUID-v7 timestamp stays in the resulting Agent UUID;
- * HMAC-derived random bits prevent a later existing-Team caller from naming an
- * unrelated Agent as a retry.
+ * The first Team transaction creates the human mirror before the non-human
+ * Agent. Keep naming inside that transaction so the Web caller does not need
+ * to predict an org-local collision it cannot observe. The request-derived
+ * Agent UUID makes the fallback stable across exact retries.
  */
-function deriveFirstTeamAgentUuid(secret: string, userId: string, requestId: string): string {
-  const requestBytes = Buffer.from(requestId.replaceAll("-", ""), "hex");
+async function resolveFirstTeamAgentName(
+  db: Database,
+  organizationId: string,
+  requestedName: string | undefined,
+  agentUuid: string,
+): Promise<string> {
+  const baseName = requestedName ?? "team-agent";
+  const [collision] = await db
+    .select({ uuid: agents.uuid })
+    .from(agents)
+    .where(and(eq(agents.organizationId, organizationId), eq(agents.name, baseName), ne(agents.uuid, agentUuid)))
+    .limit(1);
+  if (!collision) return baseName;
+
+  const suffix = agentUuid.slice(0, 8);
+  const baseLength = AGENT_NAME_MAX_LENGTH - suffix.length - 1;
+  return `${baseName.slice(0, baseLength)}-${suffix}`;
+}
+
+/**
+ * Bind the canonical creation intent to this user and public request id without
+ * storing a second idempotency record. The request's UUID-v7 timestamp stays in
+ * the resulting Agent UUID; HMAC-derived random bits prevent either a changed
+ * payload or a later existing-Team caller from masquerading as the completed
+ * request.
+ */
+function deriveFirstTeamAgentUuid(secret: string, input: ProvisionFirstTeamAgentInput): string {
+  const requestBytes = Buffer.from(input.requestId.replaceAll("-", ""), "hex");
+  const canonicalIntent = JSON.stringify([
+    input.name ?? null,
+    input.displayName?.trim() ?? null,
+    input.templateIds ?? [],
+  ]);
   const bytes = Buffer.from(
-    createHmac("sha256", secret).update(userId).update("\0").update(requestId).digest().subarray(0, 16),
+    createHmac("sha256", secret)
+      .update(input.userId)
+      .update("\0")
+      .update(input.requestId)
+      .update("\0")
+      .update(canonicalIntent)
+      .digest()
+      .subarray(0, 16),
   );
   requestBytes.copy(bytes, 0, 0, 6);
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x70;

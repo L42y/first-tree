@@ -47,11 +47,15 @@ binding/readiness after an unbound Team Agent exists is a separate journey.
    creates exactly one Team, active Admin membership, matching human mirror,
    unbound organization-visible Agent, adopted Template configuration, Team
    Resources, and bindings.
-4. Repeat the same request identity and verify it resolves the same Team and
+4. Verify the browser opens the new Agent continuation and does not enter the
+   standalone Admin onboarding or show the legacy Team naming step. The
+   membership suppresses that legacy auto-open without marking Runtime setup as
+   complete.
+5. Repeat the same request identity and verify it resolves the same Team and
    Agent. Submit a different request identity or intent and verify it conflicts
    rather than impersonating a retry. Race two identical confirmations and
    verify one Team and Agent exist.
-5. Force Template adoption to fail and verify no Team, membership, mirror,
+6. Force Template adoption to fail and verify no Team, membership, mirror,
    Agent, Resource, or binding survives.
 
 ## Scenario B — known Quickstart
@@ -96,7 +100,7 @@ cookies, provider subjects, private repository contents, or report keys.
 
 `PASS` requires all executed branches to preserve the declared zero-Team and
 atomicity boundaries with no duplicate or partial resources. `FAIL` includes an
-empty Team at sign-in, a dropped Quickstart/action handoff, a false retry, a
-duplicate first Team/Agent, or loss of Account/Sign-out access. `BLOCKED` means
-the required fresh identity, Template, official Runtime, or database visibility
-is unavailable.
+empty Team at sign-in, a post-confirmation redirect into legacy Team naming, a
+dropped Quickstart/action handoff, a false retry, a duplicate first Team/Agent,
+or loss of Account/Sign-out access. `BLOCKED` means the required fresh identity,
+Template, official Runtime, or database visibility is unavailable.

@@ -21,9 +21,10 @@ import { shouldEnterOnboarding } from "../onboarding/steps.js";
 
 /**
  * Agent slug for the first Team Agent, derived from the Template the user
- * picked. PR2 asks for no name: the Team is brand new, so the derived slug
- * cannot collide, and the Agent stays @-mentionable from the moment it exists.
- * Reserved slugs fall back to letting the server name the row.
+ * picked. The provisioning service owns final org-local allocation because it
+ * creates the human mirror in the same transaction; this candidate keeps the
+ * Agent @-mentionable while letting the server resolve a collision. Reserved
+ * slugs fall back to letting the server name the row.
  */
 export function firstTeamAgentName(templateSlug: string): string | undefined {
   const candidate = templateSlug.slice(0, AGENT_NAME_MAX_LENGTH);
