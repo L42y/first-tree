@@ -22,7 +22,7 @@ export function literalModuleSpecifierText(node: ts.Expression | ts.LiteralTypeN
  * CommonJS loader calls — `require("…")`, immediate
  * `createRequire(…)("…")`, namespace `module.createRequire(…)("…")`,
  * namespace-destructured aliases
- * (`const { createRequire: makeRequire } = ns`), aliased binders, and
+ * (`const { "createRequire": makeRequire } = ns`), aliased binders, and
  * simple binder propagation (`const load = req`).
  * Direct binder calls are classified; `req.resolve(…)` package lookups are
  * not treated as module-edge loads. Unsupported createRequire shapes /
@@ -134,9 +134,8 @@ export function extractModuleReferences(source: string): {
     if (!parent) return false;
     // `import { createRequire }` / `import { createRequire as cr }`
     if (ts.isImportSpecifier(parent) && (parent.name === id || parent.propertyName === id)) return true;
-    // `const { createRequire: makeRequire } = ns` — local binding name and the
-    // source property token are not escapes.
-    if (ts.isBindingElement(parent) && (parent.name === id || parent.propertyName === id)) return true;
+    // `const { "createRequire": makeRequire } = ns` — local binding name is not an escape.
+    if (ts.isBindingElement(parent) && parent.name === id) return true;
     // Binding site: `const req = …` / `load = …` — the name itself is not an escape.
     if (ts.isVariableDeclaration(parent) && parent.name === id) return true;
     if (
@@ -189,16 +188,21 @@ export function extractModuleReferences(source: string): {
 
   function bindingElementSourceProp(el: ts.BindingElement): string | null {
     if (el.propertyName) {
-      return ts.isIdentifier(el.propertyName) ? el.propertyName.text : null;
+      if (ts.isIdentifier(el.propertyName)) return el.propertyName.text;
+      // `const { "createRequire": makeRequire } = ns`
+      if (ts.isStringLiteralLike(el.propertyName)) return el.propertyName.text;
+      return null;
     }
     return ts.isIdentifier(el.name) ? el.name.text : null;
   }
 
   /**
-   * `const { createRequire: makeRequire } = ns` / `const { createRequire } = ns`
-   * from a tracked `import * as ns from "node:module"`. Any other destructure
-   * of `createRequire` (unknown receiver, nested pattern, non-identifier local)
-   * fails closed.
+   * `const { createRequire: makeRequire } = ns` /
+   * `const { "createRequire": makeRequire } = ns` /
+   * `const { createRequire } = ns` from a tracked
+   * `import * as ns from "node:module"`. Any other destructure of
+   * `createRequire` (unknown receiver, nested pattern, non-identifier local,
+   * computed property name) fails closed.
    */
   function recordDestructuredCreateRequire(el: ts.BindingElement, init: ts.Expression): void {
     const sourceProp = bindingElementSourceProp(el);
@@ -214,9 +218,7 @@ export function extractModuleReferences(source: string): {
       hasUnresolvableModuleReference = true;
       return;
     }
-    // Nested binding patterns that might hide createRequire — fail closed when
-    // the source property is non-identifier (computed) or the local renames
-    // createRequire through a nested object/array pattern.
+    // Nested / computed binding patterns that might hide createRequire.
     if (ts.isObjectBindingPattern(el.name) || ts.isArrayBindingPattern(el.name)) {
       const nestedText = el.name.getText(sourceFile);
       if (/\bcreateRequire\b/.test(nestedText)) {
@@ -225,8 +227,10 @@ export function extractModuleReferences(source: string): {
     } else if (
       el.propertyName &&
       !ts.isIdentifier(el.propertyName) &&
+      !ts.isStringLiteralLike(el.propertyName) &&
       /\bcreateRequire\b/.test(el.getText(sourceFile))
     ) {
+      // Computed property name (`[createRequire]` / `[expr]`) — fail closed.
       hasUnresolvableModuleReference = true;
     }
   }

@@ -1941,10 +1941,10 @@ describe("runtime provider architecture guard", () => {
       "../../runtime/brand-new-owner.js",
     );
 
-    // Namespace-destructured createRequire alias (baixiaohang review fixture).
+    // Namespace string-key destructured createRequire alias (baixiaohang exact fixture).
     expectForbiddenRuntimeSpec(
       `import * as nodeModule from "node:module";
-       const { createRequire: makeRequire } = nodeModule;
+       const { "createRequire": makeRequire } = nodeModule;
        const load = makeRequire(import.meta.url);
        load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
