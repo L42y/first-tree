@@ -232,6 +232,21 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
     unboundContinuation: true,
     workspaceKind: "unbound-managed",
   },
+  {
+    briefingMode: "runtime-generated",
+    description:
+      "Managed unbound workspace (runtime-generated briefing, no manifest) with an explicit Context Tree read request that reports only the specific gap.",
+    expectedFacts: [],
+    expectedTrigger: false,
+    id: "first-tree-read-unbound-explicit-read-reports-gap-periodic",
+    impactNote: { mode: "absent" },
+    managedTransport: "send",
+    prompt: "Read this workspace's Context Tree and tell me what it records about JWT route scopes.",
+    promptAlternates: ["Use the Context Tree: what does it record about JWT route scopes?"],
+    readMode: "managed",
+    unboundExplicitRead: true,
+    workspaceKind: "unbound-managed",
+  },
 ];
 
 export function findFirstTreeReadCase(id: string): FirstTreeReadEvalCase | null {

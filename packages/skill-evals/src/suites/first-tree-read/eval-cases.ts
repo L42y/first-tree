@@ -117,7 +117,7 @@ export const FIRST_TREE_READ_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: FIRST_TREE_READ_PERIODIC_CASES.map((evalCase) => evalCase.id),
         description:
-          "Run the read trigger against a runtime-generated briefing fixture, plus managed-unbound continuation cases, without live First Tree Cloud E2E.",
+          "Run the read trigger against a runtime-generated briefing fixture, plus managed-unbound continuation and explicit-read gap cases, without live First Tree Cloud E2E.",
         status: "implemented",
         tier: "periodic",
       },

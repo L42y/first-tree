@@ -49,12 +49,14 @@ export async function runFirstTreeReadCase(
     evalCase.expectedFacts,
     evalCase.impactNote,
     evalCase.managedTransport,
+    { unboundWorkspace: evalCase.workspaceKind === "unbound-managed", workspacePath: paths.workspacePath },
   );
   const passed = casePassed(
     evalCase.expectedTrigger,
     metrics,
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
+    evalCase.unboundExplicitRead ?? false,
   );
   const grading = buildGrading(
     evalCase.id,
@@ -63,12 +65,19 @@ export async function runFirstTreeReadCase(
     passed,
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
+    evalCase.unboundExplicitRead ?? false,
   );
   const observability = deriveRunObservability(events);
 
   const summary: CaseRunSummary = {
     caseId: evalCase.id,
-    driftNote: driftNote(metrics, evalCase.expectedTrigger, evalCase.readMode, evalCase.unboundContinuation ?? false),
+    driftNote: driftNote(
+      metrics,
+      evalCase.expectedTrigger,
+      evalCase.readMode,
+      evalCase.unboundContinuation ?? false,
+      evalCase.unboundExplicitRead ?? false,
+    ),
     expectedTrigger: evalCase.expectedTrigger,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,
     fixtureValidation,

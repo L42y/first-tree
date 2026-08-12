@@ -411,9 +411,10 @@ At briefing generation time this agent had no Context Tree bound — a supported
 state, not a gap to fix. Ordinary tasks continue without any prompt to bind or
 create one. Re-check the binding only if the user says a tree was created or
 bound during this session. Only when the current request explicitly needs a
-Tree read/write/audit result does the missing binding matter: state which step
-is blocked and that binding is normally an operator action from the web
-console, without pushing the user toward it. The one exception is an explicit
+Tree read/write/audit result does the missing binding matter: state only that
+this specific Tree operation cannot be completed because no Tree is bound,
+without bind/create guidance and without pointing the user at setup surfaces.
+The one exception is an explicit
 **build / set up the Context Tree** request: there the seed skill's own
 create + bind is the sanctioned path — run its `tree init` directly without
 pre-confirming admin or asking "who runs the bind?". The command validates

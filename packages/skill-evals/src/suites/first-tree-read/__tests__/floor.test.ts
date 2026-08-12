@@ -210,4 +210,23 @@ describe("first-tree-read floor contract", () => {
       ),
     ).toBe(true);
   });
+
+  it("declares a managed-unbound explicit Tree read periodic case", () => {
+    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unboundExplicitRead === true);
+
+    expect(explicitRead.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unbound-explicit-read-reports-gap-periodic",
+    ]);
+    expect(
+      explicitRead.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unbound-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.expectedFacts.length === 0 &&
+          evalCase.impactNote.mode === "absent" &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+  });
 });

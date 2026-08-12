@@ -134,12 +134,15 @@ the same read trigger oracle. This covers the generated-briefing and
 skill-topology boundary only; real Cloud chat delivery, GitHub webhooks, and
 live First Tree runtime E2E remain outside skill evals. The same periodic run
 also covers the managed-unbound rows
-(`first-tree-read-unbound-software-continues-periodic` and
-`first-tree-read-unbound-pasted-content-continues-periodic`): a
+(`first-tree-read-unbound-software-continues-periodic`,
+`first-tree-read-unbound-pasted-content-continues-periodic`, and
+`first-tree-read-unbound-explicit-read-reports-gap-periodic`): a
 runtime-generated briefing that explicitly states no bound Tree, no workspace
 manifest, and no Tree checkout. The original task must continue to a result
 with zero `first-tree tree`/`context` invocations and zero bind/create/setup
-wording, while malformed or declared-but-broken bindings keep their
+wording; an explicit Context Tree read reports only that this read cannot be
+completed because nothing is bound, with no manifest/Tree creation and no
+setup actions, while malformed or declared-but-broken bindings keep their
 fail-closed Tree-operation coverage.
 
 `eval:gate -- --suite context-tree-review` runs the repair-first Context Tree

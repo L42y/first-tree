@@ -1,9 +1,12 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   CONTEXT_IMPACT_NOTE_EFFECT_LABELS,
   type ContextImpactNote,
   parseContextImpactNotes,
   parseExactContextSourceLink,
 } from "@first-tree/shared";
+
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
 import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport, ReadMode } from "./types.js";
 
@@ -481,6 +484,26 @@ function expectedFactHits(modelOutputText: string, expectedFacts: readonly strin
   return hits;
 }
 
+/**
+ * The one statement an explicit Tree read in an unbound workspace may make:
+ * this read cannot complete because nothing is bound. Bind/create/setup
+ * guidance is graded separately by `treeSetupWordingObserved`.
+ */
+function containsUnboundGapStatement(text: string): boolean {
+  return (
+    /no\s+(?:context\s+)?tree\s+is\s+bound/iu.test(text) ||
+    /no\s+bound\s+(?:context\s+)?tree/iu.test(text) ||
+    (/(?:context\s+)?tree/iu.test(text) &&
+      /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|unable\s+to\s+complete/iu.test(text))
+  );
+}
+
+function unboundTreeArtifactsCreated(workspacePath: string): boolean {
+  return (
+    existsSync(join(workspacePath, ".first-tree", "workspace.json")) || existsSync(join(workspacePath, "context-tree"))
+  );
+}
+
 export function deriveMetrics(
   events: readonly unknown[],
   fixtureValidation: FixtureValidation,
@@ -488,6 +511,7 @@ export function deriveMetrics(
   expectedFacts: readonly string[],
   impactNoteExpectation: ImpactNoteExpectation = { mode: "absent" },
   managedTransportExpectation: ManagedTransport | null = null,
+  options: { unboundWorkspace?: boolean; workspacePath?: string } = {},
 ): EvalMetrics {
   let firstTreeCalls = 0;
   let helpCalls = 0;
@@ -662,6 +686,11 @@ export function deriveMetrics(
   const treeCliInvocationCount =
     firstTreeArgv.filter(isTreeOperationArgv).length +
     firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
+  const unboundGapStatementObserved = visibleOutputTexts.some((text) => containsUnboundGapStatement(text));
+  const treeArtifactsCreated =
+    options.unboundWorkspace === true && options.workspacePath !== undefined
+      ? unboundTreeArtifactsCreated(options.workspacePath)
+      : false;
 
   return {
     expectedFactHits: factHits,
@@ -694,6 +723,8 @@ export function deriveMetrics(
     skillHit: skillFileReadObserved || firstTreeCalls > 0 || firstTreeCommandResults.length > 0,
     treeCliInvocationCount,
     treeSetupWordingObserved,
+    unboundGapStatementObserved,
+    unboundTreeArtifactsCreated: treeArtifactsCreated,
   };
 }
 
@@ -702,9 +733,22 @@ export function casePassed(
   metrics: EvalMetrics,
   readMode: ReadMode = "managed",
   unboundContinuation = false,
+  unboundExplicitRead = false,
 ): boolean {
   if (!metrics.fixtureValidationOk) return false;
   if (metrics.runnerExitCode !== 0) return false;
+
+  if (!expectedTrigger && unboundExplicitRead) {
+    return (
+      metrics.unboundGapStatementObserved &&
+      metrics.impactNoteBehaviorOk &&
+      metrics.managedFinalTransportOk &&
+      metrics.treeCliInvocationCount === 0 &&
+      metrics.modelFirstTreeCommandsOk &&
+      !metrics.treeSetupWordingObserved &&
+      !metrics.unboundTreeArtifactsCreated
+    );
+  }
 
   if (!expectedTrigger && unboundContinuation) {
     return (
@@ -713,7 +757,8 @@ export function casePassed(
       metrics.managedFinalTransportOk &&
       metrics.treeCliInvocationCount === 0 &&
       metrics.modelFirstTreeCommandsOk &&
-      !metrics.treeSetupWordingObserved
+      !metrics.treeSetupWordingObserved &&
+      !metrics.unboundTreeArtifactsCreated
     );
   }
 

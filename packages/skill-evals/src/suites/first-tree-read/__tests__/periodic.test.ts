@@ -16,6 +16,7 @@ describe("first-tree-read periodic cases", () => {
       "first-tree-read-runtime-generated-briefing-periodic",
       "first-tree-read-unbound-software-continues-periodic",
       "first-tree-read-unbound-pasted-content-continues-periodic",
+      "first-tree-read-unbound-explicit-read-reports-gap-periodic",
     ]);
     expect(FIRST_TREE_READ_PERIODIC_CASES[0]?.briefingMode).toBe("runtime-generated");
     expect(FIRST_TREE_READ_PERIODIC_CASES[0]?.workspaceKind).toBe("context-tree");

@@ -44,6 +44,13 @@ export type FirstTreeReadEvalCase = {
    * setup/binding wording, instead of triggering a read.
    */
   unboundContinuation?: boolean;
+  /**
+   * Managed unbound workspace where the user explicitly asks for a Context Tree
+   * read: the agent must state only that this read cannot be completed because
+   * nothing is bound, with zero Tree CLI invocations, no manifest/Tree
+   * creation, and no bind/create/setup/install guidance.
+   */
+  unboundExplicitRead?: boolean;
   workspaceKind: WorkspaceKind;
 };
 
@@ -108,6 +115,10 @@ export type EvalMetrics = {
   managedTransportExpected: ManagedTransport | null;
   treeCliInvocationCount: number;
   treeSetupWordingObserved: boolean;
+  /** Visible output states the specific gap: this Tree read cannot complete because nothing is bound. */
+  unboundGapStatementObserved: boolean;
+  /** An unbound run created `.first-tree/workspace.json` or a `context-tree/` checkout. */
+  unboundTreeArtifactsCreated: boolean;
   legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;

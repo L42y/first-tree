@@ -50,10 +50,13 @@ and an invitee.
    repository, connect a forge, or install anything first.
 4. Provide the minimal input the agent asked for (for example a plain directory path or pasted file contents, not a
    connected repo) and verify the agent proceeds with the task from that input rather than re-asking for setup.
-5. Exercise the remaining boundaries: ask for one Tree-dependent operation (for example "what did we decide about X?")
-   and one forge-dependent operation (for example "open a PR for this"). Each must degrade to a statement of the
-   blocked step plus a minimal-input alternative (answer from pasted decision notes; prepare the change locally and
-   hand back a diff or instructions), never a blanket refusal and never a setup demand as the price of continuing.
+5. Exercise the remaining boundaries: make one explicit Context Tree request (for example "Read the Context Tree
+   and tell me what it records about our release policy") and one forge-dependent operation (for example "open a PR
+   for this"). For the Tree request the agent must state only that this Tree read cannot be completed because no
+   Tree is bound — it must not prompt the user to bind or create a Tree, and it may continue the independent
+   analysis from pasted decision notes. For the forge request it must degrade to a statement of the blocked step
+   plus a minimal-input alternative (prepare the change locally and hand back a diff or instructions). Neither may
+   be a blanket refusal nor a setup demand as the price of continuing.
 6. Verify unrelated capabilities are untouched by the absences: ordinary chat, multi-participant addressing, and local
    file work on the connected computer all keep functioning in the same chats.
 7. Repeat the key turns at a narrow phone viewport: the agent's blocked-step asks and minimal-input options remain
@@ -71,10 +74,11 @@ real repository contents, tokens, or private identifiers.
 
 ## Expected result
 
-`PASS`: both personas complete a real non-repo task in the first chat with zero setup prompts; every
-capability-dependent request degrades to an accurate blocked-step statement plus a minimal-input ask that accepts a
-plain directory, pasted content, an attachment, or a URL; the agent proceeds once that input is given; unrelated
-capabilities keep working; desktop and narrow viewports stay usable.
+`PASS`: both personas complete a real non-repo task in the first chat with zero setup prompts; a repo- or
+forge-dependent request degrades to an accurate blocked-step statement plus a minimal-input ask that accepts a
+plain directory, pasted content, an attachment, or a URL, and the agent proceeds once that input is given; an
+explicit Context Tree read produces only the statement that this read cannot be completed because no Tree is
+bound, with no bind/create prompt; unrelated capabilities keep working; desktop and narrow viewports stay usable.
 
 `FAIL`: any turn that asks the user to bind, create, connect, or install something as a precondition for an
 independent task; a blanket refusal where a minimal-input alternative exists; a blocked-step ask that names the wrong

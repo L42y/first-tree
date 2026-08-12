@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { gradingFailureMessages } from "../../../core/grading.js";
@@ -1128,5 +1132,107 @@ describe("first-tree-read unbound continuation", () => {
     const result = unboundMetrics([...managedMessage("Inbox delivery is deduplicated at the client boundary.")]);
 
     expect(casePassed(false, result, "managed")).toBe(false);
+  });
+});
+
+describe("first-tree-read unbound explicit Tree read", () => {
+  function explicitReadMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send");
+  }
+
+  it("passes when the model states only the specific gap with zero Tree CLI invocations", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.impactNoteCount).toBe(0);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("passes the 'no bound Tree' gap phrasing as well", () => {
+    const result = explicitReadMetrics([...managedMessage("There is no bound Tree, so I cannot complete that read.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("fails when the gap statement is missing", () => {
+    const result = explicitReadMetrics([...managedMessage("I do not have access to that information right now.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", false, true);
+    expect(note).toContain("did not state the specific gap");
+  });
+
+  it("fails when the model runs a Tree CLI command or pushes setup", () => {
+    const withCommand = explicitReadMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+    expect(withCommand.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, withCommand, "managed", false, true)).toBe(false);
+
+    const withSetup = explicitReadMetrics([
+      ...managedMessage("No Tree is bound. Bind a Context Tree first to enable reads."),
+    ]);
+    expect(withSetup.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, withSetup, "managed", false, true)).toBe(false);
+  });
+});
+
+describe("first-tree-read unbound artifact guard", () => {
+  function artifactMetrics(events: readonly unknown[], workspacePath: string, unboundWorkspace = true): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send", {
+      unboundWorkspace,
+      workspacePath,
+    });
+  }
+
+  it("detects a manifest or Context Tree checkout created during an unbound run", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-unbound-artifacts-"));
+    try {
+      const events = [...managedMessage("This Tree read cannot be completed because no Tree is bound.")];
+
+      const blank = artifactMetrics(events, tempRoot);
+      expect(blank.unboundTreeArtifactsCreated).toBe(false);
+      expect(casePassed(false, blank, "managed", false, true)).toBe(true);
+
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const withManifest = artifactMetrics(events, tempRoot);
+      expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, withManifest, "managed", false, true)).toBe(false);
+
+      rmSync(join(tempRoot, ".first-tree"), { force: true, recursive: true });
+      mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
+      const withTreeCheckout = artifactMetrics(events, tempRoot);
+      expect(withTreeCheckout.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, withTreeCheckout, "managed", true)).toBe(false);
+
+      const grading = buildGrading("case", withTreeCheckout, false, false, "managed", false, true);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_tree_artifacts");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not flag artifacts when the workspace is not unbound", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-bound-artifacts-"));
+    try {
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+
+      const result = artifactMetrics([...managedMessage("Done.")], tempRoot, false);
+      expect(result.unboundTreeArtifactsCreated).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 });

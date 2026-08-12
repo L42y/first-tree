@@ -44,7 +44,9 @@ export function driftNote(
   expectedTrigger: boolean,
   readMode: ReadMode = "managed",
   unboundContinuation = false,
+  unboundExplicitRead = false,
 ): string | null {
+  const unbound = unboundContinuation || unboundExplicitRead;
   const notes: string[] = [];
   const nonZeroResults = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
   const selectorCallCount = metrics.firstTreeArgv.filter(isTreeSelectorArgv).length;
@@ -122,7 +124,7 @@ export function driftNote(
     );
   }
 
-  if (!expectedTrigger && !unboundContinuation && metrics.expectedFactHits.length > 0) {
+  if (!expectedTrigger && !unbound && metrics.expectedFactHits.length > 0) {
     notes.push(`Off-topic case surfaced Context Tree fact(s): ${metrics.expectedFactHits.join(" | ")}.`);
   }
 
@@ -130,11 +132,23 @@ export function driftNote(
     if (!metrics.expectedFactsObserved) {
       notes.push("Unbound case did not continue the task from local inputs; expected answer facts were not surfaced.");
     }
+  }
+
+  if (unboundExplicitRead && !metrics.unboundGapStatementObserved) {
+    notes.push(
+      "Unbound explicit Tree read did not state the specific gap: this read cannot be completed because nothing is bound.",
+    );
+  }
+
+  if (unbound) {
     if (metrics.treeCliInvocationCount > 0) {
       notes.push(`Unbound case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
     }
     if (metrics.treeSetupWordingObserved) {
       notes.push("Unbound case response pushed Tree setup/binding wording.");
+    }
+    if (metrics.unboundTreeArtifactsCreated) {
+      notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");
     }
   }
 
@@ -148,10 +162,12 @@ export function buildGrading(
   passed: boolean,
   readMode: ReadMode = "managed",
   unboundContinuation = false,
+  unboundExplicitRead = false,
 ): SkillCaseGrading {
+  const unbound = unboundContinuation || unboundExplicitRead;
   const unexpectedReadUse =
     metrics.skillHit || metrics.firstTreeCalls > 0 || metrics.firstTreeCommandResults.length > 0;
-  const routingPass = unboundContinuation
+  const routingPass = unbound
     ? metrics.treeCliInvocationCount === 0
     : expectedTrigger
       ? metrics.skillFileReadObserved
@@ -165,7 +181,7 @@ export function buildGrading(
       metrics.byoSnapshotDetached &&
       metrics.byoSnapshotExactHeadConsistent);
   const managedTransportPassed = readMode === "byo" || metrics.managedFinalTransportOk;
-  const processPass = unboundContinuation
+  const processPass = unbound
     ? metrics.fixtureValidationOk &&
       metrics.runnerExitCode === 0 &&
       metrics.treeCliInvocationCount === 0 &&
@@ -184,12 +200,17 @@ export function buildGrading(
         metrics.firstTreeCalls === 0 &&
         metrics.firstTreeCommandResults.length === 0 &&
         metrics.modelFirstTreeCommandsOk;
-  const outcomePass = unboundContinuation
-    ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
-    : expectedTrigger
-      ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
-      : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
-  const riskPass = metrics.modelFirstTreeCommandsOk && metrics.impactNoteMetadataFree;
+  const outcomePass = unboundExplicitRead
+    ? metrics.unboundGapStatementObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
+    : unboundContinuation
+      ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
+      : expectedTrigger
+        ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
+        : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
+  const riskPass =
+    metrics.modelFirstTreeCommandsOk &&
+    metrics.impactNoteMetadataFree &&
+    (!unbound || !metrics.unboundTreeArtifactsCreated);
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
   return {
@@ -230,6 +251,9 @@ export function buildGrading(
       ...(metrics.impactNoteMetadataFree
         ? []
         : [riskFlag("visible_receipt_metadata", "Final visible output included receipt metadata or JSON fields.")]),
+      ...(unbound && metrics.unboundTreeArtifactsCreated
+        ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout.")]
+        : []),
     ],
     scores: {
       outcome_pass: outcomePass,

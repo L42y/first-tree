@@ -964,7 +964,10 @@ describe("buildAgentBriefing — Context Tree", () => {
       "Re-check the binding only if the user says a tree was created or\nbound during this session",
     );
     expect(tree).toMatch(/[Oo]nly when the current request explicitly needs a\s+Tree read\/write\/audit result/);
-    expect(tree).toContain("operator action");
+    expect(tree).toMatch(/state only that\s+this specific Tree operation cannot be completed because no Tree is bound/);
+    expect(tree).toMatch(/without bind\/create guidance and without pointing the user at setup\s+surfaces/);
+    expect(tree).not.toContain("operator action");
+    expect(tree).not.toContain("web console");
     expect(tree).toContain("build / set up the Context Tree");
     expect(tree).toMatch(/without\s+pre-confirming admin/);
     expect(tree).toContain('asking "who runs the bind?"');
