@@ -123,6 +123,26 @@ describe("buildMessageDocumentSnapshots — capture + attachment-link rewrite", 
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it("retargets quickly when adversarial brackets never form a valid markdown link", async () => {
+    const abs = join(root, "docs", "intro.md");
+    const text = `${"[".repeat(20000)}${abs}`;
+    const started = performance.now();
+    const { refs, rewrittenText } = await buildMessageDocumentSnapshots(text, root, opts(uploader));
+    expect(refs[0]?.source?.path).toBe("docs/intro.md");
+    expect(rewrittenText).toBe(`${"[".repeat(20000)}[docs/intro.md](attachment:${fakeUploadId(1)})`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("retargets quickly when adversarial brackets close without a destination", async () => {
+    const abs = join(root, "docs", "intro.md");
+    const text = `${"[".repeat(10000)}]x ${abs}`;
+    const started = performance.now();
+    const { refs, rewrittenText } = await buildMessageDocumentSnapshots(text, root, opts(uploader));
+    expect(refs[0]?.source?.path).toBe("docs/intro.md");
+    expect(rewrittenText).toBe(`${"[".repeat(10000)}]x [docs/intro.md](attachment:${fakeUploadId(1)})`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("keeps the :line[:col] suffix on the display, points href at the attachment", async () => {
     const abs = join(root, "docs", "intro.md");
     const { refs, rewrittenText } = await buildMessageDocumentSnapshots(`open ${abs}:42:7 here`, root, opts(uploader));

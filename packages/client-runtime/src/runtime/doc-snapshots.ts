@@ -438,13 +438,26 @@ function applyRewrites(text: string, rewrites: Array<{ start: number; end: numbe
 
 type InlineLinkMatch = { target: string; start: number; end: number };
 
+/**
+ * Monotonic markdown-link scanner: each character is visited a constant number
+ * of times. Failed openers (missing `]`, missing `(`, non-`.md` target, or
+ * missing `)`) advance to the farthest inspected index so adversarial inputs
+ * such as `"[".repeat(N)` or `"[".repeat(N) + "]x"` stay linear.
+ */
 function scanInlineMarkdownLinks(text: string): InlineLinkMatch[] {
   const out: InlineLinkMatch[] = [];
-  for (let i = 0; i < text.length; i += 1) {
-    if (text[i] !== "[") continue;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== "[") {
+      i += 1;
+      continue;
+    }
     const linkStart = i;
     const prev = linkStart > 0 ? text[linkStart - 1] : "";
-    if (prev === "\\" || prev === "!") continue;
+    if (prev === "\\" || prev === "!") {
+      i += 1;
+      continue;
+    }
 
     let j = i + 1;
     let closedBracket = false;
@@ -461,7 +474,10 @@ function scanInlineMarkdownLinks(text: string): InlineLinkMatch[] {
       }
       j += 1;
     }
-    if (!closedBracket || j >= text.length || text[j] !== "(") continue;
+    if (!closedBracket || j >= text.length || text[j] !== "(") {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     const prefix = text.slice(linkStart, j + 1);
     j += 1;
     const targetStart = j;
@@ -469,7 +485,10 @@ function scanInlineMarkdownLinks(text: string): InlineLinkMatch[] {
       j += 1;
     }
     const target = text.slice(targetStart, j);
-    if (!target.endsWith(".md")) continue;
+    if (!target.endsWith(".md")) {
+      i = Math.max(i + 1, j);
+      continue;
+    }
 
     while (j < text.length && /\s/.test(text[j]!)) j += 1;
     if (j < text.length && text[j] === '"') {
@@ -477,12 +496,15 @@ function scanInlineMarkdownLinks(text: string): InlineLinkMatch[] {
       while (j < text.length && text[j] !== '"') j += 1;
       if (j < text.length && text[j] === '"') j += 1;
     }
-    if (j >= text.length || text[j] !== ")") continue;
+    if (j >= text.length || text[j] !== ")") {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     j += 1;
 
     const start = linkStart + prefix.length;
     out.push({ target, start, end: start + target.length });
-    i = j - 1;
+    i = j;
   }
   return out;
 }

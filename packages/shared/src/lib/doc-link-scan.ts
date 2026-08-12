@@ -197,10 +197,20 @@ function findHardSkipRanges(line: string): Array<{ start: number; end: number }>
   return ranges;
 }
 
+/**
+ * Monotonic markdown-link range scanner: each input character is examined a
+ * constant number of times. A failed opener advances the cursor to the farthest
+ * character already inspected so malformed prefixes such as `"[".repeat(N)` or
+ * `"[".repeat(N) + "]x"` cannot rescan the remaining suffix from every `[`.
+ */
 function scanInlineMarkdownLinkRanges(line: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
-  for (let i = 0; i < line.length; i += 1) {
-    if (line[i] !== "[") continue;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "[") {
+      i += 1;
+      continue;
+    }
     const start = i;
     let j = i + 1;
     let closedBracket = false;
@@ -218,37 +228,61 @@ function scanInlineMarkdownLinkRanges(line: string): Array<{ start: number; end:
       }
       j += 1;
     }
-    if (!closedBracket || j >= line.length || line[j] !== "(") continue;
+    if (!closedBracket || j >= line.length || line[j] !== "(") {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     j += 1;
     while (j < line.length && line[j] !== ")" && line[j] !== "\n") {
       j += 1;
     }
-    if (j >= line.length || line[j] !== ")") continue;
+    if (j >= line.length || line[j] !== ")") {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     j += 1;
     ranges.push({ start, end: j });
-    i = j - 1;
+    i = j;
   }
   return ranges;
 }
 
+/**
+ * Monotonic HTML-tag range scanner (same linear-cursor contract as
+ * {@link scanInlineMarkdownLinkRanges}). Failed `<…` openers without `>` advance
+ * past the scanned span so repeated `<a` prefixes stay Θ(N).
+ */
 function scanHtmlTagRanges(line: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
-  for (let i = 0; i < line.length; i += 1) {
-    if (line[i] !== "<") continue;
+  let i = 0;
+  while (i < line.length) {
+    if (line[i] !== "<") {
+      i += 1;
+      continue;
+    }
     const start = i;
     let j = i + 1;
     if (j < line.length && line[j] === "/") j += 1;
-    if (j >= line.length) continue;
+    if (j >= line.length) {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     const tagStart = line[j];
-    if (!tagStart || ((tagStart < "A" || tagStart > "Z") && (tagStart < "a" || tagStart > "z"))) continue;
+    if (!tagStart || ((tagStart < "A" || tagStart > "Z") && (tagStart < "a" || tagStart > "z"))) {
+      i += 1;
+      continue;
+    }
     j += 1;
     while (j < line.length && line[j] !== ">" && line[j] !== "\n") {
       j += 1;
     }
-    if (j >= line.length || line[j] !== ">") continue;
+    if (j >= line.length || line[j] !== ">") {
+      i = Math.max(i + 1, j);
+      continue;
+    }
     j += 1;
     ranges.push({ start, end: j });
-    i = j - 1;
+    i = j;
   }
   return ranges;
 }

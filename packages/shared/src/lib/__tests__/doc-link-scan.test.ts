@@ -220,9 +220,30 @@ describe("scanBareDocPathTokens", () => {
     expect(performance.now() - started).toBeLessThan(200);
   });
 
+  it("completes quickly on adversarial unclosed brackets with no valid closer", () => {
+    const text = `${"[".repeat(20000)}docs/never.md`;
+    const started = performance.now();
+    expect(tokens(text)).toEqual(["docs/never.md"]);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it("completes quickly on adversarial brackets closed without a link destination", () => {
+    const text = `${"[".repeat(10000)}]x docs/after.md`;
+    const started = performance.now();
+    expect(tokens(text)).toEqual(["docs/after.md"]);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it("completes quickly on adversarial HTML tag bodies with long attributes", () => {
     const padding = "x".repeat(5000);
     const text = `<a href="${padding}docs/html.md">link</a> and docs/after.md`;
+    const started = performance.now();
+    expect(tokens(text)).toEqual(["docs/after.md"]);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it("completes quickly on adversarial HTML openers with no closing delimiter", () => {
+    const text = `${"<a".repeat(20000)} docs/after.md`;
     const started = performance.now();
     expect(tokens(text)).toEqual(["docs/after.md"]);
     expect(performance.now() - started).toBeLessThan(200);
