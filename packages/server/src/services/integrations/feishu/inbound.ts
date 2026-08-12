@@ -15,6 +15,7 @@ import { messages } from "../../../db/schema/messages.js";
 import { processedEvents } from "../../../db/schema/processed-events.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
+import { recomputeChatWatchers } from "../../chat/membership/participants.js";
 import { sendMessage } from "../../chat/message.js";
 import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
@@ -234,6 +235,11 @@ async function resolveOrCreateChatBinding(db: Database, binding: Binding, input:
         mode: "mention_only",
         source: "feishu",
       });
+      // Web workspace visibility is driven by the manager's derived watcher
+      // row, not by the fallback supervisor access check. Raw Feishu chat
+      // creation therefore has to close the same speaker -> watcher invariant
+      // as ordinary participant writers.
+      await recomputeChatWatchers(tx, chatId);
 
       const [created] = await tx
         .insert(imChatBindings)

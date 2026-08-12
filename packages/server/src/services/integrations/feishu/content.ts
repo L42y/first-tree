@@ -1,4 +1,5 @@
 import type { FeishuMention } from "@first-tree/shared";
+import { escapeMarkdownText, renderCodeBlock, renderCodeSpan } from "./markdown.js";
 
 export type FeishuResourceDescriptor = {
   type: "image" | "file" | "audio" | "video" | "sticker";
@@ -52,7 +53,10 @@ export function convertFeishuContent(input: FeishuContentInput): FeishuContentRe
     const parsed = safeParse(input.rawContent);
     const rendered = renderMessage(input.messageType, parsed, input.rawContent, context);
     return {
-      content: resolveMentionPlaceholders(rendered || input.fallbackContent || "（空消息）", context),
+      content: resolveMentionPlaceholders(
+        rendered || (input.fallbackContent ? renderPlainText(input.fallbackContent, context) : "（空消息）"),
+        context,
+      ),
       mentions,
       resources: dedupeResources(context.resources),
     };
@@ -90,7 +94,7 @@ function renderMessage(type: string, parsed: unknown, raw: string, context: Rend
   const record = asRecord(parsed);
   switch (type) {
     case "text":
-      return readString(record, "text") ?? raw;
+      return renderPlainText(readString(record, "text") ?? raw, context);
     case "post":
       return renderPost(record, context);
     case "image":
@@ -109,7 +113,9 @@ function renderMessage(type: string, parsed: unknown, raw: string, context: Rend
     case "merge_forward":
       return "[合并转发消息：当前无法可靠展开子消息]";
     default:
-      return readString(record, "text") ?? fallbackFor(type);
+      return readString(record, "text")
+        ? renderPlainText(readString(record, "text") ?? "", context)
+        : fallbackFor(type);
   }
 }
 
@@ -158,7 +164,7 @@ function renderPostElement(element: JsonRecord | null, context: RenderContext): 
   const tag = readString(element, "tag") ?? "";
   switch (tag) {
     case "text":
-      return applyStyle(escapeInline(readString(element, "text") ?? ""), element.style);
+      return applyStyle(readString(element, "text") ?? "", element.style);
     case "a": {
       const label = escapeInline(readString(element, "text") ?? readString(element, "href") ?? "链接");
       const href = safeLink(readString(element, "href"));
@@ -243,6 +249,33 @@ function resolveMentionPlaceholders(content: string, context: RenderContext): st
   );
 }
 
+function renderPlainText(content: string, context: RenderContext): string {
+  const mentions = [...context.mentionsByKey.values()].sort((a, b) => b.key.length - a.key.length);
+  let cursor = 0;
+  let result = "";
+  while (cursor < content.length) {
+    let next: FeishuMention | undefined;
+    let nextIndex = content.length;
+    for (const mention of mentions) {
+      const index = content.indexOf(mention.key, cursor);
+      if (index >= 0 && (index < nextIndex || (index === nextIndex && mention.key.length > (next?.key.length ?? 0)))) {
+        next = mention;
+        nextIndex = index;
+      }
+    }
+    if (!next) {
+      result += escapeMarkdownText(content.slice(cursor).replace(/@_user_\d+/g, ""));
+      break;
+    }
+    result += escapeMarkdownText(content.slice(cursor, nextIndex).replace(/@_user_\d+/g, ""));
+    if (!next.isBot) {
+      result += `@${escapeMarkdownText(next.name || next.openId || next.userId || "未知用户")}`;
+    }
+    cursor = nextIndex + next.key.length;
+  }
+  return result;
+}
+
 function dedupeResources(resources: FeishuResourceDescriptor[]): FeishuResourceDescriptor[] {
   const seen = new Set<string>();
   return resources.filter((resource) => {
@@ -258,19 +291,12 @@ function applyStyle(text: string, value: unknown): string {
   if (Array.isArray(value)) for (const style of value) if (typeof style === "string") styles.add(style);
   const record = asRecord(value);
   if (record) for (const [style, enabled] of Object.entries(record)) if (enabled === true) styles.add(style);
-  let result = text;
+  let result = styles.has("codeInline") || styles.has("code") ? renderCodeSpan(text) : escapeMarkdownText(text);
   if (styles.has("bold")) result = `**${result}**`;
   if (styles.has("italic")) result = `*${result}*`;
   if (styles.has("underline")) result = `<u>${result}</u>`;
   if (styles.has("lineThrough") || styles.has("strikethrough")) result = `~~${result}~~`;
-  if (styles.has("codeInline") || styles.has("code")) result = `\`${result.replace(/([\\`])/g, "\\$1")}\``;
   return result;
-}
-
-function renderCodeBlock(text: string, language: string): string {
-  const fence = text.includes("````") ? "`````" : text.includes("```") ? "````" : "```";
-  const safeLanguage = language.replace(/[^a-zA-Z0-9_+.-]/g, "").slice(0, 40);
-  return `\n${fence}${safeLanguage}\n${text}\n${fence}\n`;
 }
 
 function unwrapLocale(record: JsonRecord | null): JsonRecord | null {
@@ -338,9 +364,7 @@ function safeLink(value: string | null): string | null {
   }
 }
 
-function escapeInline(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/([`*_{}[\]()<>#+.!|~-])/g, "\\$1");
-}
+const escapeInline = escapeMarkdownText;
 
 function escapeCardMarkdown(value: string): string {
   // Card Markdown is untrusted content, not HTML. Escape it as one inert
@@ -361,5 +385,7 @@ function adjacentUnique(values: string[]): string[] {
 }
 
 function fallbackFor(type: string, fallback?: string): string {
-  return fallback?.trim() || `[不支持的飞书消息类型：${type || "unknown"}]`;
+  return fallback?.trim()
+    ? escapeMarkdownText(fallback.trim())
+    : `[不支持的飞书消息类型：${escapeMarkdownText(type || "unknown")}]`;
 }

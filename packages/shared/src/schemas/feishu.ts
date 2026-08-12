@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { feishuMessageReferenceSchema } from "./message.js";
+import { feishuMessageReferenceSchema, feishuOutboundMediaIdentitySchema } from "./message.js";
 
 export const FEISHU_REQUIRED_SCOPES = [
   "im:message",
@@ -50,31 +50,44 @@ export const createFeishuSetupChatResponseSchema = z.object({
 });
 export type CreateFeishuSetupChatResponse = z.infer<typeof createFeishuSetupChatResponseSchema>;
 
-export const feishuCliPreflightSchema = z.object({
-  chatId: z.string().min(1).optional(),
-  operation: z.enum(["read", "write", "im.send", "im.reply"]),
-  command: z.string().min(1).max(500),
-  targetChatId: z.string().min(1).optional(),
-  targetMessageId: z.string().min(1).optional(),
-  replyInThread: z.boolean().default(false),
-  format: z.enum(["text", "markdown", "card", "file"]).optional(),
-  content: z.unknown().optional(),
-  /** Reuse an existing immutable outbound intent after a failed CLI attempt. */
-  canonicalMessageId: z.string().min(1).max(50).optional(),
-});
-export type FeishuCliPreflight = z.infer<typeof feishuCliPreflightSchema>;
+export const feishuOutboundIntentRequestSchema = z
+  .object({
+    chatId: z.string().min(1),
+    operation: z.enum(["send", "reply"]),
+    targetChatId: z.string().min(1).optional(),
+    targetMessageId: z.string().min(1).optional(),
+    replyInThread: z.boolean().default(false),
+    format: z.enum(["text", "markdown", "card", "file"]),
+    content: z.unknown().optional(),
+    media: feishuOutboundMediaIdentitySchema.optional(),
+    /** Reuse an existing immutable outbound intent after a failed official CLI attempt. */
+    canonicalMessageId: z.string().min(1).max(50).optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.format === "file" && !value.media) {
+      context.addIssue({ code: "custom", path: ["media"], message: "File intents require immutable media identity" });
+    }
+    if (value.format !== "file" && value.content === undefined) {
+      context.addIssue({ code: "custom", path: ["content"], message: "Text/card intents require content" });
+    }
+  });
+export type FeishuOutboundIntentRequest = z.infer<typeof feishuOutboundIntentRequestSchema>;
 
-export const feishuCliGrantSchema = z.object({
+export const feishuCredentialGrantSchema = z.object({
   appId: z.string().min(1),
   /** Agent-owned Bot credential; never include it in prompts, chat history, or logs. */
   appSecret: z.string().min(1),
   bindingId: z.string(),
-  canonicalMessageId: z.string().nullable(),
-  idempotencyKey: z.string().max(50).nullable(),
-  targetChatId: z.string().nullable(),
+});
+export type FeishuCredentialGrant = z.infer<typeof feishuCredentialGrantSchema>;
+
+export const feishuOutboundIntentResultSchema = z.object({
+  canonicalMessageId: z.string(),
+  idempotencyKey: z.string().max(50),
+  targetChatId: z.string(),
   targetMessageId: z.string().nullable(),
 });
-export type FeishuCliGrant = z.infer<typeof feishuCliGrantSchema>;
+export type FeishuOutboundIntentResult = z.infer<typeof feishuOutboundIntentResultSchema>;
 
 export const feishuReferenceSelectionSchema = feishuMessageReferenceSchema.pick({
   chatId: true,

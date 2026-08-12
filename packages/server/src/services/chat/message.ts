@@ -1497,6 +1497,9 @@ export async function editMessage(
     if (!msg) throw new NotFoundError(`Message "${messageId}" not found`);
     if (msg.chatId !== chatId) throw new NotFoundError(`Message "${messageId}" not found in this chat`);
     if (msg.senderId !== senderId) throw new ForbiddenError("Only the sender can edit a message");
+    if (feishuMessageMetadataSchema.safeParse(msg.metadata.feishu).success) {
+      throw new ForbiddenError("Feishu message history cannot be edited");
+    }
     const protectedContextReviewKey = Object.keys(msg.metadata).find(
       (key) => key === "contextTreeReviewer" || key.startsWith("contextReview"),
     );

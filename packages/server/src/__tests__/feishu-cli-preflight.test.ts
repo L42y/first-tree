@@ -5,6 +5,7 @@ import { imChatBindings } from "../db/schema/im-chat-bindings.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
+import { NotFoundError } from "../errors.js";
 import { createChat } from "../services/chat/conversation.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
@@ -51,10 +52,13 @@ describe("controlled Feishu CLI preflight", () => {
       feishuChatType: "group",
       status: "active",
     });
-    vi.spyOn(app.feishuIntegration, "getCliGrant").mockResolvedValue({
-      binding,
-      appId: binding.appId ?? "cli_test",
-      appSecret: "agent-owned-secret",
+    vi.spyOn(app.feishuIntegration, "getCliGrant").mockImplementation(async (agentId) => {
+      if (agentId !== a.agent.uuid) throw new NotFoundError("Active Feishu Bot binding not found");
+      return {
+        binding,
+        appId: binding.appId ?? "cli_test",
+        appSecret: "agent-owned-secret",
+      };
     });
     return { app, a, b, binding, chat };
   }
@@ -63,27 +67,21 @@ describe("controlled Feishu CLI preflight", () => {
     const { app, a, b, chat } = await setup();
     const request = {
       chatId: chat.id,
-      operation: "im.send",
-      command: "im +messages-send",
+      operation: "send",
       targetChatId: "oc_feishu",
       replyInThread: false,
       format: "markdown",
       content: "**hello**",
     };
 
-    const response = await a.request("POST", "/api/v1/agent/feishu/cli/preflight", request);
+    const response = await a.request("POST", "/api/v1/agent/feishu/intents", request);
     expect(response.statusCode).toBe(200);
     const grant = response.json<{
-      appId: string;
-      appSecret: string;
-      bindingId: string;
       canonicalMessageId: string;
       idempotencyKey: string;
       targetChatId: string;
     }>();
     expect(grant).toMatchObject({
-      appSecret: "agent-owned-secret",
-      bindingId: expect.any(String),
       canonicalMessageId: expect.any(String),
       idempotencyKey: expect.any(String),
       targetChatId: "oc_feishu",
@@ -102,7 +100,7 @@ describe("controlled Feishu CLI preflight", () => {
     expect(stored?.metadata).toMatchObject({
       feishu: {
         direction: "outbound",
-        botBindingId: grant.bindingId,
+        botBindingId: expect.any(String),
         intent: {
           operation: "send",
           chatId: "oc_feishu",
@@ -113,11 +111,16 @@ describe("controlled Feishu CLI preflight", () => {
     });
     expect((stored?.metadata as { mentions?: unknown } | undefined)?.mentions).toEqual([]);
 
+    const edit = await a.request("PATCH", `/api/v1/agent/chats/${chat.id}/messages/${grant.canonicalMessageId}`, {
+      content: "edited after provider delivery",
+    });
+    expect(edit.statusCode).toBe(403);
+
     const inbox = await app.db.select().from(inboxEntries).where(eq(inboxEntries.messageId, grant.canonicalMessageId));
     expect(inbox).toHaveLength(1);
     expect(inbox[0]).toMatchObject({ inboxId: b.agent.inboxId, notify: false });
 
-    const retry = await a.request("POST", "/api/v1/agent/feishu/cli/preflight", {
+    const retry = await a.request("POST", "/api/v1/agent/feishu/intents", {
       ...request,
       canonicalMessageId: grant.canonicalMessageId,
     });
@@ -126,7 +129,7 @@ describe("controlled Feishu CLI preflight", () => {
     expect(await app.db.select().from(messages)).toHaveLength(1);
     expect(await app.db.select().from(inboxEntries)).toHaveLength(1);
 
-    const changedRetry = await a.request("POST", "/api/v1/agent/feishu/cli/preflight", {
+    const changedRetry = await a.request("POST", "/api/v1/agent/feishu/intents", {
       ...request,
       content: "different",
       canonicalMessageId: grant.canonicalMessageId,
@@ -167,25 +170,70 @@ describe("controlled Feishu CLI preflight", () => {
     });
     const request = {
       chatId: chat.id,
-      operation: "im.reply",
-      command: "im +messages-reply",
+      operation: "reply",
       targetMessageId: "om_target",
       replyInThread: true,
       format: "text",
       content: "reply",
     };
 
-    const response = await a.request("POST", "/api/v1/agent/feishu/cli/preflight", request);
+    const response = await a.request("POST", "/api/v1/agent/feishu/intents", request);
     expect(response.statusCode).toBe(200);
     expect(response.json<{ targetMessageId: string }>().targetMessageId).toBe("om_target");
 
-    const bResponse = await b.request("POST", "/api/v1/agent/feishu/cli/preflight", request);
-    expect(bResponse.statusCode).toBe(403);
+    const bResponse = await b.request("POST", "/api/v1/agent/feishu/intents", request);
+    expect(bResponse.statusCode).toBe(404);
 
-    const unknown = await a.request("POST", "/api/v1/agent/feishu/cli/preflight", {
+    const unknown = await a.request("POST", "/api/v1/agent/feishu/intents", {
       ...request,
       targetMessageId: "om_unknown",
     });
     expect(unknown.statusCode).toBe(403);
+  });
+
+  it("allows media retry only when its immutable byte identity still matches", async () => {
+    const { a, chat } = await setup();
+    const first = await a.request("POST", "/api/v1/agent/feishu/intents", {
+      chatId: chat.id,
+      operation: "send",
+      targetChatId: "oc_feishu",
+      replyInThread: false,
+      format: "file",
+      media: { kind: "file", filename: "report.pdf", size: 12, sha256: "a".repeat(64) },
+    });
+    expect(first.statusCode).toBe(200);
+    const canonicalMessageId = first.json<{ canonicalMessageId: string }>().canonicalMessageId;
+
+    const retry = await a.request("POST", "/api/v1/agent/feishu/intents", {
+      chatId: chat.id,
+      operation: "send",
+      targetChatId: "oc_feishu",
+      replyInThread: false,
+      format: "file",
+      media: { kind: "file", filename: "report.pdf", size: 12, sha256: "a".repeat(64) },
+      canonicalMessageId,
+    });
+    expect(retry.statusCode).toBe(200);
+
+    const changed = await a.request("POST", "/api/v1/agent/feishu/intents", {
+      chatId: chat.id,
+      operation: "send",
+      targetChatId: "oc_feishu",
+      replyInThread: false,
+      format: "file",
+      media: { kind: "file", filename: "report.pdf", size: 13, sha256: "b".repeat(64) },
+      canonicalMessageId,
+    });
+    expect(changed.statusCode).toBe(403);
+  });
+
+  it("returns Bot credentials only to the bound primary Agent", async () => {
+    const { a, b } = await setup();
+    const allowed = await a.request("POST", "/api/v1/agent/feishu/credentials");
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toMatchObject({ appId: expect.any(String), appSecret: "agent-owned-secret" });
+
+    const denied = await b.request("POST", "/api/v1/agent/feishu/credentials");
+    expect(denied.statusCode).toBe(404);
   });
 });

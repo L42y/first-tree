@@ -4,6 +4,7 @@ import {
   CAPABILITY_REFRESH_BASE_MS,
   CAPABILITY_REFRESH_MAX_MS,
   hasNonOkProvider,
+  LARK_CLI_CAPABILITY_KEY,
   nextCapabilityRefreshDelayMs,
   REPROBE_MAX_AGE_MS,
   shouldFullReprobe,
@@ -16,7 +17,7 @@ import {
  *     sweep; `reprobeOnReconnect` always reports `mode: "full"`.
  *   - `shouldFullReprobe` is retained for log parity: empty snapshot OR any
  *     entry older than the TTL.
- *   - `hasNonOkProvider` is true when any enabled built-in provider is not `ok`.
+ *   - `hasNonOkProvider` is true when any enabled built-in provider or lark-cli is not `ok`.
  */
 
 const okEntry = (over: Partial<CapabilityEntry> = {}): CapabilityEntry => ({
@@ -83,8 +84,24 @@ describe("hasNonOkProvider", () => {
         "kimi-code": okEntry(),
         opencode: okEntry(),
         pi: okEntry(),
+        [LARK_CLI_CAPABILITY_KEY]: okEntry(),
       }),
     ).toBe(false);
+  });
+
+  it("keeps polling when runtimes are healthy but lark-cli is missing", () => {
+    expect(
+      hasNonOkProvider({
+        "claude-code": okEntry(),
+        codex: okEntry(),
+        cursor: okEntry(),
+        grok: okEntry(),
+        "kimi-code": okEntry(),
+        opencode: okEntry(),
+        pi: okEntry(),
+        [LARK_CLI_CAPABILITY_KEY]: okEntry({ state: "missing", available: false }),
+      }),
+    ).toBe(true);
   });
 
   it("any non-ok enabled provider keeps it degraded", () => {

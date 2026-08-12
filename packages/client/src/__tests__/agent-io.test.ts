@@ -173,8 +173,10 @@ describe("formatInboundContent", () => {
       '[From: Feishu · type=integration · externalUser={"displayName":"张三","openId":"ou_human","userId":"u_human"}]',
     );
     expect(out).toContain("<feishu-message-reference>");
-    expect(out).toContain("lark-cli im +messages-reply");
-    expect(out).toContain("internal collaborators must return their work to the primary Agent");
+    expect(out).toContain("First Tree CLI's `feishu intent` command");
+    expect(out).toContain("run `feishu credential-env`");
+    expect(out).toContain("Do not use an existing global Bot");
+    expect(out).toContain("Internal collaborators must return their work to the primary Agent");
     expect(out).toContain("firstTreeMessageId: ft-message-1");
     expect(out).toContain("messageId: om_target");
     expect(out).toContain("threadId: omt_thread");

@@ -1,5 +1,5 @@
 import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding, feishuBotBindingSchema } from "@first-tree/shared";
-import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
@@ -53,19 +53,21 @@ export function createFeishuIntegrationManager(input: {
     leaseMs?: number;
     claimIntervalMs?: number;
     initialClaimDelayMs?: number;
+    registrationQrTimeoutMs?: number;
   };
 }): FeishuIntegrationManager {
   const { db, notifier, encryptionKey, instanceId } = input;
   const leaseMs = input.timings?.leaseMs ?? LEASE_MS;
   const claimIntervalMs = input.timings?.claimIntervalMs ?? CLAIM_INTERVAL_MS;
   const initialClaimDelayMs = input.timings?.initialClaimDelayMs ?? 2_000;
+  const registrationQrTimeoutMs = input.timings?.registrationQrTimeoutMs ?? REGISTRATION_QR_TIMEOUT_MS;
   const sdk: FeishuSdkDependencies = input.sdk ?? {
     registerApp,
     createLarkChannel,
     createClient: (options) => new Client(options),
   };
   const channels = new Map<string, ConnectedChannel>();
-  const registrations = new Map<string, AbortController>();
+  const registrations = new Map<string, { controller: AbortController; cancel: (error: Error) => void }>();
   const senderNames = createFeishuSenderNameResolver();
   let timer: ReturnType<typeof setInterval> | null = null;
   let initialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -139,7 +141,6 @@ export function createFeishuIntegrationManager(input: {
     }
     const id = uuidv7();
     const controller = new AbortController();
-    registrations.set(id, controller);
     await db.insert(imBotBindings).values({
       id,
       organizationId: registration.organizationId,
@@ -153,6 +154,13 @@ export function createFeishuIntegrationManager(input: {
       resolveQr = resolve;
       rejectQr = reject;
     });
+    registrations.set(id, {
+      controller,
+      cancel: (error) => {
+        controller.abort();
+        rejectQr(error);
+      },
+    });
     // A provider can complete registration immediately after emitting the QR
     // callback. Hold that transition until the initiating request has read the
     // persisted QR state, otherwise the fast completion can clear the URL
@@ -161,10 +169,15 @@ export function createFeishuIntegrationManager(input: {
     const qrResponseRead = new Promise<void>((resolve) => {
       releaseQrResponse = resolve;
     });
-    const qrTimeout = setTimeout(
-      () => rejectQr(new Error("Timed out waiting for Feishu registration QR code")),
-      REGISTRATION_QR_TIMEOUT_MS,
-    );
+    const qrTimeout = setTimeout(() => {
+      const error = new Error("Timed out waiting for Feishu registration QR code");
+      controller.abort();
+      // Local request completion must not depend on the row transition. A
+      // concurrent revoke can legitimately make the conditional UPDATE a
+      // no-op while the provider ignores AbortSignal forever.
+      rejectQr(error);
+      void transitionRegistrationToError(id, error, true).catch(() => undefined);
+    }, registrationQrTimeoutMs);
 
     void sdk
       .registerApp({
@@ -189,19 +202,30 @@ export function createFeishuIntegrationManager(input: {
               registrationExpiresAt: expiresAt,
               updatedAt: new Date(),
             })
-            .where(eq(imBotBindings.id, id))
-            .then(resolveQr, rejectQr);
+            .where(
+              and(
+                eq(imBotBindings.id, id),
+                eq(imBotBindings.status, "provisioning"),
+                isNull(imBotBindings.appId),
+                isNull(imBotBindings.registrationExpiresAt),
+                isNotNull(imBotBindings.registrationStateCipher),
+              ),
+            )
+            .returning({ id: imBotBindings.id })
+            .then((updated) => {
+              if (updated.length === 0) throw new Error("Feishu registration is no longer active");
+              resolveQr();
+            }, rejectQr);
         },
       })
       .then(async (result) => {
-        registrations.delete(id);
         // The confirmation can complete immediately after the QR callback.
         // Serialize the credential transition behind the QR-state write so a
         // late callback update cannot restore stale registration metadata.
         await qrReady;
         await qrResponseRead;
         const cipher = encryptCredentials({ appSecret: result.client_secret }, encryptionKey);
-        await db
+        const [updated] = await db
           .update(imBotBindings)
           .set({
             appId: result.client_id,
@@ -212,22 +236,25 @@ export function createFeishuIntegrationManager(input: {
             status: "provisioning",
             updatedAt: new Date(),
           })
-          .where(eq(imBotBindings.id, id));
+          .where(
+            and(
+              eq(imBotBindings.id, id),
+              eq(imBotBindings.status, "provisioning"),
+              isNull(imBotBindings.appId),
+              isNotNull(imBotBindings.registrationExpiresAt),
+              isNotNull(imBotBindings.registrationStateCipher),
+            ),
+          )
+          .returning({ id: imBotBindings.id });
+        if (!updated) return;
         await connectNewBinding(id);
       })
       .catch(async (error) => {
-        registrations.delete(id);
-        await db
-          .update(imBotBindings)
-          .set({
-            status: "error",
-            connectionStatus: "error",
-            lastErrorCode: readErrorCode(error),
-            lastErrorMessage: safeErrorMessage(error),
-            updatedAt: new Date(),
-          })
-          .where(eq(imBotBindings.id, id));
+        await transitionRegistrationToError(id, error, false);
         rejectQr(error);
+      })
+      .finally(() => {
+        registrations.delete(id);
       });
 
     try {
@@ -241,6 +268,29 @@ export function createFeishuIntegrationManager(input: {
     }
   }
 
+  async function transitionRegistrationToError(id: string, error: unknown, requireNoQr: boolean): Promise<boolean> {
+    const updated = await db
+      .update(imBotBindings)
+      .set({
+        status: "error",
+        connectionStatus: "error",
+        lastErrorCode: readErrorCode(error),
+        lastErrorMessage: safeErrorMessage(error),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(imBotBindings.id, id),
+          eq(imBotBindings.status, "provisioning"),
+          isNull(imBotBindings.appId),
+          isNotNull(imBotBindings.registrationStateCipher),
+          ...(requireNoQr ? [isNull(imBotBindings.registrationExpiresAt)] : []),
+        ),
+      )
+      .returning({ id: imBotBindings.id });
+    return updated.length > 0;
+  }
+
   async function connectNewBinding(id: string): Promise<void> {
     const leaseUntil = new Date(Date.now() + leaseMs);
     const [claimed] = await db
@@ -252,7 +302,14 @@ export function createFeishuIntegrationManager(input: {
         connectionStatus: "connecting",
         updatedAt: new Date(),
       })
-      .where(eq(imBotBindings.id, id))
+      .where(
+        and(
+          eq(imBotBindings.id, id),
+          eq(imBotBindings.status, "provisioning"),
+          isNotNull(imBotBindings.appId),
+          isNotNull(imBotBindings.appSecretCipher),
+        ),
+      )
       .returning();
     if (claimed) await connectClaimed(claimed);
   }
@@ -458,7 +515,7 @@ export function createFeishuIntegrationManager(input: {
   async function revoke(agentId: string): Promise<void> {
     const row = await getBindingRow(agentId);
     if (!row) throw new NotFoundError("Feishu Bot binding not found");
-    registrations.get(row.id)?.abort();
+    registrations.get(row.id)?.cancel(new Error("Feishu registration was revoked"));
     registrations.delete(row.id);
     senderNames.clearBinding(row.id);
     const connected = channels.get(row.id);

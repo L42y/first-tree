@@ -23,8 +23,7 @@
   },
   "bin": {
     "first-tree-dev": "./dist/cli/index.mjs",
-    "ftd": "./dist/cli/index.mjs",
-    "lark-cli": "./dist/feishu-cli.mjs"
+    "ftd": "./dist/cli/index.mjs"
   },
   "files": [
     "dist",
@@ -41,7 +40,7 @@
   },
   "scripts": {
     "dev": "tsx src/cli/index.ts",
-    "build": "tsdown src/cli/index.ts src/index.ts src/feishu-cli.ts --format esm --no-dts --external @anthropic-ai/claude-agent-sdk --external @botiverse/kimi-code-sdk --external @openai/codex-sdk --external fs-native-extensions && node ../../scripts/copy-client-runtime-templates.mjs apps/cli && node ../../scripts/copy-cli-tree-templates.mjs && node ../../scripts/build-context-integration-bundle.mjs --out-dir context-integration",
+    "build": "tsdown src/cli/index.ts src/index.ts --format esm --no-dts --external @anthropic-ai/claude-agent-sdk --external @botiverse/kimi-code-sdk --external @openai/codex-sdk --external fs-native-extensions && node ../../scripts/copy-client-runtime-templates.mjs apps/cli && node ../../scripts/copy-cli-tree-templates.mjs && node ../../scripts/build-context-integration-bundle.mjs --out-dir context-integration",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-vitest-batches.mjs",
     "coverage": "pnpm run build && vitest run --coverage --passWithNoTests",
@@ -67,7 +66,6 @@
     "@antfu/utils": "^9.3.0",
     "@inquirer/prompts": "^8.3.0",
     "@openai/codex-sdk": "^0.144.1",
-    "@larksuite/cli": "1.0.86",
     "commander": "^13.1.0",
     "ejs": "^6.0.1",
     "fs-native-extensions": "^1.5.0",

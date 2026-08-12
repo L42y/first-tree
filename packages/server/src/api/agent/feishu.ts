@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { feishuCliPreflightSchema, MESSAGE_SOURCES, readFeishuMessageMetadata } from "@first-tree/shared";
+import {
+  type FeishuOutboundMediaIdentity,
+  feishuOutboundIntentRequestSchema,
+  MESSAGE_SOURCES,
+  readFeishuMessageMetadata,
+} from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { imBotBindings } from "../../db/schema/im-bot-bindings.js";
@@ -9,6 +14,7 @@ import { messages } from "../../db/schema/messages.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
 import * as messageService from "../../services/chat/message.js";
+import { renderCodeSpan } from "../../services/integrations/feishu/markdown.js";
 import { uuidv7 } from "../../uuid.js";
 
 type BoundConversation = {
@@ -22,23 +28,20 @@ type BoundConversation = {
 function canonicalPayload(
   format: "text" | "markdown" | "card" | "file",
   content: unknown,
+  media?: FeishuOutboundMediaIdentity,
 ): {
   format: "text" | "markdown" | "card";
   content: unknown;
 } {
   if (format !== "file") return { format, content };
-  const media =
-    content && typeof content === "object"
-      ? (content as { kind?: unknown; value?: unknown })
-      : { kind: "file", value: "attachment" };
-  const kind = typeof media.kind === "string" ? media.kind : "file";
-  const value = typeof media.value === "string" ? media.value.split(/[\\/]/).pop() || "attachment" : "attachment";
-  return { format: "markdown", content: `Sent a Feishu ${kind}: \`${value.replaceAll("`", "\\`")}\`` };
+  const kind = media?.kind ?? "file";
+  const filename = media?.filename ?? "attachment";
+  return { format: "markdown", content: `Sent a Feishu ${kind}: ${renderCodeSpan(filename)}` };
 }
 
-function payloadSha256(format: string, content: unknown): string {
+function payloadSha256(format: string, content: unknown, media?: FeishuOutboundMediaIdentity): string {
   return createHash("sha256")
-    .update(JSON.stringify([format, content]))
+    .update(JSON.stringify([format, content, media ?? null]))
     .digest("hex");
 }
 
@@ -94,37 +97,27 @@ async function assertReplyTarget(
   if (!target) throw new ForbiddenError("Reply target is not an inbound Feishu message from this Bot and chat");
 }
 
-/** Agent-runtime-only credential and message-intent broker for the supported lark-cli wrapper. */
+/** Agent-runtime-only credential and immutable intent endpoints for direct official lark-cli use. */
 export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
-  app.post("/feishu/cli/preflight", async (request, reply) => {
+  app.post("/feishu/credentials", async (request, reply) => {
     const identity = requireAgent(request);
-    const body = feishuCliPreflightSchema.parse(request.body);
     const grant = await app.feishuIntegration.getCliGrant(identity.uuid);
+    return reply.send({ appId: grant.appId, appSecret: grant.appSecret, bindingId: grant.binding.id });
+  });
 
-    if (body.operation !== "im.send" && body.operation !== "im.reply") {
-      return reply.send({
-        appId: grant.appId,
-        appSecret: grant.appSecret,
-        bindingId: grant.binding.id,
-        canonicalMessageId: null,
-        idempotencyKey: null,
-        targetChatId: null,
-        targetMessageId: null,
-      });
-    }
-
-    if (!body.chatId || body.content === undefined || !body.format) {
-      throw new BadRequestError("Feishu IM writes require a First Tree chat, format, and content");
-    }
+  app.post("/feishu/intents", async (request, reply) => {
+    const identity = requireAgent(request);
+    const body = feishuOutboundIntentRequestSchema.parse(request.body);
+    const grant = await app.feishuIntegration.getCliGrant(identity.uuid);
     const binding = await loadBoundConversation(app, body.chatId, identity.uuid, grant.binding.id);
     if (body.targetChatId && body.targetChatId !== binding.feishuChatId) {
       throw new ForbiddenError("Feishu target does not belong to this Agent and chat binding");
     }
-    if (body.operation === "im.send" && !body.targetChatId) {
-      throw new BadRequestError("Feishu send requires --chat-id");
+    if (body.operation === "send" && !body.targetChatId) {
+      throw new BadRequestError("Feishu send requires a target chat ID");
     }
-    if (body.operation === "im.reply") {
-      if (!body.targetMessageId) throw new BadRequestError("Feishu reply requires --message-id");
+    if (body.operation === "reply") {
+      if (!body.targetMessageId) throw new BadRequestError("Feishu reply requires a target message ID");
       await assertReplyTarget(app, {
         chatId: body.chatId,
         botBindingId: binding.botBindingId,
@@ -132,9 +125,9 @@ export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const payload = canonicalPayload(body.format, body.content);
-    const payloadDigest = payloadSha256(body.format, body.content);
-    const operation = body.operation === "im.reply" ? "reply" : "send";
+    const payload = canonicalPayload(body.format, body.content, body.media);
+    const payloadDigest = payloadSha256(body.format, body.content, body.media);
+    const operation = body.operation;
     const canonicalMessageId = body.canonicalMessageId ?? uuidv7();
     if (body.canonicalMessageId) {
       const [existing] = await app.db
@@ -156,6 +149,7 @@ export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
         replyInThread: body.replyInThread,
         idempotencyKey: body.canonicalMessageId,
         payloadSha256: payloadDigest,
+        media: body.media ?? null,
       };
       if (
         !existing ||
@@ -191,6 +185,7 @@ export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
                 replyInThread: body.replyInThread,
                 idempotencyKey: canonicalMessageId,
                 payloadSha256: payloadDigest,
+                media: body.media ?? null,
               },
             },
           },
@@ -206,9 +201,6 @@ export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
     }
 
     return reply.send({
-      appId: grant.appId,
-      appSecret: grant.appSecret,
-      bindingId: grant.binding.id,
       canonicalMessageId,
       idempotencyKey: canonicalMessageId,
       targetChatId: binding.feishuChatId,

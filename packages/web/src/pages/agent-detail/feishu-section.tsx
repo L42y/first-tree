@@ -96,7 +96,7 @@ export function FeishuSection() {
               ) : null
             }
           />
-          {binding.registrationUrl && binding.status === "provisioning" && (
+          {ctx.canManageAgent && binding.registrationUrl && binding.status === "provisioning" && (
             <div className="flex flex-col items-center gap-3" style={{ padding: "var(--sp-4) 0" }}>
               <QRCodeSVG
                 value={binding.registrationUrl}
@@ -124,7 +124,7 @@ export function FeishuSection() {
                     ? "Computer offline"
                     : "Not detected"
               }
-              description="The supported lark-cli build uses this Agent's Bot identity without storing the App Secret on the computer."
+              description="The Agent records outbound intent in First Tree, then calls the official lark-cli directly with a temporary Bot credential environment."
               action={
                 ctx.canManageAgent && binding.cli.state !== "ready" ? (
                   <Button size="xs" variant="outline" disabled={setup.isPending} onClick={() => setup.mutate()}>

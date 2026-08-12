@@ -40,9 +40,6 @@ importers:
       '@inquirer/prompts':
         specifier: ^8.3.0
         version: 8.3.2(@types/node@22.19.15)
-      '@larksuite/cli':
-        specifier: 1.0.86
-        version: 1.0.86
       '@openai/codex-sdk':
         specifier: ^0.144.1
         version: 0.144.1
@@ -306,6 +303,9 @@ importers:
       drizzle-kit:
         specifier: ^0.31.0
         version: 0.31.10
+      micromark:
+        specifier: ^4.0.2
+        version: 4.0.2
       testcontainers:
         specifier: ^11.13.0
         version: 11.13.0
@@ -808,14 +808,6 @@ packages:
 
   '@botiverse/kimi-code-sdk@0.26.0-botiverse.2':
     resolution: {integrity: sha512-pQzwRHZ3UOPJ7EL6nTjWHs69Y3ihcfESzbo0JNieSoLv4d4dJmyvdSwybaQg2VYZym/pXnxG9XxAuxqZsHrr5g==}
-
-  '@clack/core@1.4.3':
-    resolution: {integrity: sha512-/kr3UWNtdJfxZtPgDqUOmG2pvwlmcLGheex5yiZKdwbzZJxhV+HMNR9QNmyY5cGwTNV6LrR7Jtp+KjhUAP1qBQ==}
-    engines: {node: '>= 20.12.0'}
-
-  '@clack/prompts@1.7.0':
-    resolution: {integrity: sha512-y7/yvZ2TPAnR9+jnc00klvNNLkJiXFFrQA/hlLCcxA9a2A4zQIOimyFQ9XfwYKiGD1fb5GY8vbKIIgO8d5Tb2A==}
-    engines: {node: '>= 20.12.0'}
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
@@ -1500,13 +1492,6 @@ packages:
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
-
-  '@larksuite/cli@1.0.86':
-    resolution: {integrity: sha512-T5O/yVe0hI/Def4w8ySFXHrpbfye+Xr4ZYkKgIdXhJPoKXg1vZt3D88pdVuUYv6vIZZP+96Qw4UQH7Ha9UXb+Q==}
-    engines: {node: '>=16'}
-    cpu: [x64, arm64, riscv64]
-    os: [darwin, linux, win32]
-    hasBin: true
 
   '@larksuiteoapi/node-sdk@1.73.0':
     resolution: {integrity: sha512-gs4EiupJ6RdYAEJGtuYrCVsB7wSMBwtUDK+ilpmOHD6RTvbtciW6AWciQO9coOQVuBZfh7hvAi25dPfCsny/nA==}
@@ -5056,9 +5041,6 @@ packages:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
 
-  sisteransi@1.0.5:
-    resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
-
   smol-toml@1.7.0:
     resolution: {integrity: sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ==}
     engines: {node: '>= 18'}
@@ -6017,18 +5999,6 @@ snapshots:
       yazl: 3.3.1
       zod: 4.3.6
 
-  '@clack/core@1.4.3':
-    dependencies:
-      fast-wrap-ansi: 0.2.0
-      sisteransi: 1.0.5
-
-  '@clack/prompts@1.7.0':
-    dependencies:
-      '@clack/core': 1.4.3
-      fast-string-width: 3.0.2
-      fast-wrap-ansi: 0.2.0
-      sisteransi: 1.0.5
-
   '@drizzle-team/brocli@0.10.2': {}
 
   '@emnapi/core@1.9.1':
@@ -6520,10 +6490,6 @@ snapshots:
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
-
-  '@larksuite/cli@1.0.86':
-    dependencies:
-      '@clack/prompts': 1.7.0
 
   '@larksuiteoapi/node-sdk@1.73.0':
     dependencies:
@@ -10485,8 +10451,6 @@ snapshots:
   signal-exit@3.0.7: {}
 
   signal-exit@4.1.0: {}
-
-  sisteransi@1.0.5: {}
 
   smol-toml@1.7.0: {}
 

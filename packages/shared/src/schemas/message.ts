@@ -116,6 +116,21 @@ export const feishuResourceSchema = z.object({
 });
 export type FeishuResource = z.infer<typeof feishuResourceSchema>;
 
+export const feishuOutboundMediaIdentitySchema = z.object({
+  kind: z.enum(["file", "image", "video", "audio"]),
+  filename: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  cover: z
+    .object({
+      filename: z.string().min(1).max(255),
+      size: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
+});
+export type FeishuOutboundMediaIdentity = z.infer<typeof feishuOutboundMediaIdentitySchema>;
+
 /** Immutable external target chosen by the Agent for one outbound message. */
 export const feishuOutboundIntentSchema = z.object({
   operation: z.enum(["send", "reply"]),
@@ -127,6 +142,8 @@ export const feishuOutboundIntentSchema = z.object({
   idempotencyKey: z.string().min(1).max(50),
   /** Digest of the exact provider payload accepted when this intent was created. */
   payloadSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  /** Stable byte identity for media sent directly by official lark-cli. */
+  media: feishuOutboundMediaIdentitySchema.nullable().optional(),
 });
 export type FeishuOutboundIntent = z.infer<typeof feishuOutboundIntentSchema>;
 

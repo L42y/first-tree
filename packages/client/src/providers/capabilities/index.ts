@@ -38,7 +38,10 @@ export const CAPABILITY_REFRESH_MAX_MS = 5 * 60 * 1000;
  * a background re-probe scheduled while it stays connected.
  */
 export function hasNonOkProvider(caps: ClientCapabilities): boolean {
-  return PROBED_RUNTIME_PROVIDERS.some((provider) => caps[provider]?.state !== "ok");
+  return (
+    caps[LARK_CLI_CAPABILITY_KEY]?.state !== "ok" ||
+    PROBED_RUNTIME_PROVIDERS.some((provider) => caps[provider]?.state !== "ok")
+  );
 }
 
 /**

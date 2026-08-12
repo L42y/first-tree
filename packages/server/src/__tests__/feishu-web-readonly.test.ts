@@ -78,5 +78,21 @@ describe("Feishu Web read-only boundary", () => {
       payload: { agentIds: [a.agent.uuid] },
     });
     expect(addParticipant.statusCode).toBe(403);
+
+    for (const provider of ["github", "gitlab"] as const) {
+      const follow = await app.inject({
+        method: "POST",
+        url: `/api/v1/chats/${chat.id}/${provider}-entities`,
+        headers,
+        payload: {},
+      });
+      expect(follow.statusCode).toBe(403);
+      const unfollow = await app.inject({
+        method: "DELETE",
+        url: `/api/v1/chats/${chat.id}/${provider}-entities`,
+        headers,
+      });
+      expect(unfollow.statusCode).toBe(403);
+    }
   });
 });

@@ -1,3 +1,4 @@
+import { micromark } from "micromark";
 import { describe, expect, it } from "vitest";
 import { convertFeishuContent } from "../services/integrations/feishu/content.js";
 
@@ -17,6 +18,28 @@ describe("Feishu content normalization", () => {
     expect(result.mentions).toHaveLength(3);
   });
 
+  it("keeps plain text and fallbacks inert when the Web renders them as Markdown", () => {
+    const result = convertFeishuContent({
+      messageType: "text",
+      rawContent: JSON.stringify({
+        text: "look ![pixel](https://attacker.example/pixel) and [click](javascript:alert(1)) <script>x</script>",
+      }),
+    });
+    const rendered = micromark(result.content);
+
+    expect(rendered).not.toContain("<img");
+    expect(rendered).not.toContain("<a");
+    expect(rendered).not.toContain("<script");
+    expect(rendered).toContain("![pixel]");
+
+    const fallback = convertFeishuContent({
+      messageType: "unknown",
+      rawContent: "not-json",
+      fallbackContent: "![fallback](https://attacker.example/fallback)",
+    });
+    expect(micromark(fallback.content)).not.toContain("<img");
+  });
+
   it("renders localized post elements and returns typed resource descriptors", () => {
     const result = convertFeishuContent({
       messageType: "post",
@@ -28,8 +51,8 @@ describe("Feishu content normalization", () => {
               { tag: "text", text: "important", style: ["bold", "italic"] },
               { tag: "a", text: " docs", href: "https://example.com/a(b)" },
             ],
-            [{ tag: "text", text: "path\\`tick", style: ["codeInline"] }],
-            [{ tag: "code_block", language: "ts<script>", text: "const x = `safe`;" }],
+            [{ tag: "text", text: "path\\`tick``more", style: ["codeInline"] }],
+            [{ tag: "code_block", language: "ts<script>", text: "const x = `safe`;\n`````\nstill code" }],
             [
               { tag: "img", image_key: "img_post" },
               { tag: "media", file_key: "file_post", file_name: "a.pdf" },
@@ -43,11 +66,12 @@ describe("Feishu content normalization", () => {
     expect(result.content).toContain("**发布 \\<提醒\\>**");
     expect(result.content).toContain("***important***");
     expect(result.content).toContain("[ docs](https://example.com/a%28b%29)");
-    const inlineCode = result.content.split("\n").find((line) => line.startsWith("`path"));
-    expect(inlineCode).toMatch(/^`path/);
-    expect(inlineCode).toMatch(/tick`$/);
-    expect(inlineCode?.match(/\\/g)?.length).toBeGreaterThan(1);
-    expect(result.content).toContain("```tsscript");
+    const rendered = micromark(result.content);
+    expect(rendered).toContain("<code>path\\`tick``more</code>");
+    expect(rendered).toContain('<pre><code class="language-tsscript">');
+    expect(rendered).toContain("`````\nstill code");
+    expect(rendered.match(/<pre><code/g)).toHaveLength(1);
+    expect(rendered).not.toContain("<p>still code</p>");
     expect(result.resources).toEqual([
       { type: "image", fileKey: "img_post", origin: "post" },
       { type: "file", fileKey: "file_post", fileName: "a.pdf", origin: "post" },

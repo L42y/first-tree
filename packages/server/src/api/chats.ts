@@ -318,6 +318,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: { otelRecordBody: true } },
     async (request, reply) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       const body = followGithubEntityRequestSchema.parse(request.body);
 
       const pair = await resolveHumanScmBindingPair(app.db, chat.id, scope.humanAgentId);
@@ -354,6 +355,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/github-entities",
     async (request) => {
       const { chat } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       const entity = request.query.entity;
       if (!entity) {
         throw new BadRequestError("Pass ?entity=<GitHub URL | owner/repo#N | owner/repo@sha> to unfollow.");
@@ -376,6 +378,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: { otelRecordBody: true } },
     async (request, reply) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       await requireDirectHumanChatMembership(chat.id, scope.humanAgentId);
       const body = followGitlabEntitySchema.parse(request.body);
       const pair = await resolveHumanScmBindingPair(app.db, chat.id, scope.humanAgentId);
@@ -416,6 +419,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/gitlab-entities",
     async (request) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       await requireDirectHumanChatMembership(chat.id, scope.humanAgentId);
       if (request.query.entity) {
         return removeCurrentGitlabEntityFollow(app.db, {

@@ -372,11 +372,16 @@ export class FirstTreeHubSDK {
     });
   }
 
-  /** Obtain a short-lived, Agent-bound lark-cli grant after server-side policy checks. */
-  async createFeishuCliGrant(
-    body: import("@first-tree/shared").FeishuCliPreflight,
-  ): Promise<import("@first-tree/shared").FeishuCliGrant> {
-    return this.requestJson("/api/v1/agent/feishu/cli/preflight", {
+  /** Obtain this Agent's Bot credential for a local, direct official lark-cli call. */
+  async createFeishuCredentialGrant(): Promise<import("@first-tree/shared").FeishuCredentialGrant> {
+    return this.requestJson("/api/v1/agent/feishu/credentials", { method: "POST" });
+  }
+
+  /** Record and validate an immutable outbound Feishu intent before direct provider delivery. */
+  async createFeishuOutboundIntent(
+    body: import("@first-tree/shared").FeishuOutboundIntentRequest,
+  ): Promise<import("@first-tree/shared").FeishuOutboundIntentResult> {
+    return this.requestJson("/api/v1/agent/feishu/intents", {
       method: "POST",
       body: JSON.stringify(body),
     });

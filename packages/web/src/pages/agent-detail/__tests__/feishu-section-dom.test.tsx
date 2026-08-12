@@ -160,4 +160,18 @@ describe("Feishu Agent Detail section", () => {
     expect(window.confirm).toHaveBeenCalled();
     expect(apiMocks.revokeAgentFeishuBinding).toHaveBeenCalledWith("agent-a");
   });
+
+  it("never renders registration material for a visible non-manager", async () => {
+    contextMock.value = context({ canManageAgent: false });
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({
+        status: "provisioning",
+        connectionStatus: "disconnected",
+        registrationUrl: "https://open.feishu.cn/register?code=must-not-render",
+      }),
+    });
+    const container = await renderSection();
+    expect(container.querySelector("svg")).toBeNull();
+    expect(container.querySelector('a[href*="must-not-render"]')).toBeNull();
+  });
 });

@@ -258,6 +258,8 @@ describe("ClientConnection — additional branch coverage", () => {
         id: "message-1",
         chatId: "chat-1",
         senderId: "agent-sender",
+        senderKind: "member",
+        senderProvider: null,
         format: "text",
         content: "hello",
         metadata: {},

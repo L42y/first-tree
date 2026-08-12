@@ -2,6 +2,7 @@ import { Readable } from "node:stream";
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { attachments } from "../db/schema/attachments.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../db/schema/im-chat-bindings.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
@@ -129,6 +130,22 @@ describe("Feishu inbound pipeline", () => {
     const hydrated = await app.db.select().from(attachments);
     expect(hydrated).toHaveLength(1);
     expect(hydrated[0]?.uploadedBy).toBe(`integration:feishu:${binding.id}`);
+    const membership = await app.db.select().from(chatMembership);
+    expect(membership).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ agentId: testAgent.agent.uuid, accessMode: "speaker" }),
+        expect.objectContaining({ agentId: testAgent.humanAgentUuid, accessMode: "watcher" }),
+      ]),
+    );
+    const workspace = await app.inject({
+      method: "GET",
+      url: `/api/v1/orgs/${testAgent.organizationId}/chats?engagement=active`,
+      headers: { authorization: `Bearer ${testAgent.accessToken}` },
+    });
+    expect(workspace.statusCode).toBe(200);
+    expect(workspace.json<{ rows: Array<{ chatId: string }> }>().rows).toEqual(
+      expect.arrayContaining([expect.objectContaining({ chatId: first.state === "created" ? first.chatId : "" })]),
+    );
   });
 
   it("does nothing for an unmentioned group message and accepts the exact structured Bot mention", async () => {

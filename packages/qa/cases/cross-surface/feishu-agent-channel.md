@@ -1,6 +1,6 @@
 ---
 id: feishu-agent-channel
-description: Validate a Bot-bound Agent's Feishu registration, inbound message and attachment projection, controlled lark-cli egress, and read-only Web task end to end.
+description: Validate a Bot-bound Agent's Feishu registration, inbound message and attachment projection, agentic official lark-cli egress, and read-only Web task end to end.
 areas: [cross-surface]
 surfaces: [server, client, cli, web]
 ---
@@ -17,8 +17,8 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
 
 - Use an isolated First Tree organization, disposable Agent A and Agent B, and a disposable Feishu tenant/chat. Do not
   reuse customer conversations or an operator's logged-in browser/provider session.
-- Run the exact target Server, Web and Client builds. Agent A must be bound to the Client; its supported `lark-cli`
-  wrapper and official CLI dependency must be launchable. Keep Agent B unbound from this Bot.
+- Run the exact target Server, Web and Client builds. Agent A must be bound to the Client, and the official `lark-cli`
+  must be launchable on that machine. Keep Agent B unbound from this Bot.
 - Use the official QR registration flow from Agent A's detail page. Retain only redacted binding/connection state;
   never capture the App Secret, access tokens, raw event payloads, attachment bytes, or private member lists.
 - Prepare a private chat and a group containing the Bot. Prepare messages with text, post formatting, an image, a small
@@ -41,13 +41,13 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
   the message with explicit unavailable placeholders. Confirm the uploader actor is the Bot-scoped Integration, while
   the displayed author remains the Feishu human.
 - Invite Agent B through the ordinary Agent collaboration path. Confirm normal bounded history/backfill applies and B
-  can inspect the same canonical messages and attachments, but cannot obtain A's App Secret, pass CLI preflight, or send
+  can inspect the same canonical messages and attachments, but cannot obtain A's App Secret, record external intent, or send
   to this Feishu conversation.
-- From Agent A, use the supported `lark-cli` wrapper for a new message, reply, thread reply, Markdown/card and attachment.
-  Confirm each first attempt creates exactly one immutable recipientless First Tree message through shared
-  `sendMessage`, gives other speakers only `notify=false` context, then sends with that message id as the Feishu
-  idempotency key. A transient failure may retry only within the current invocation; a deterministic failure returns
-  immediately. Reusing the same message id with changed content/target must be rejected.
+- From Agent A, first record an outbound intent, then call the official `lark-cli` directly for a new message, reply,
+  thread reply, Markdown/card and attachment. Confirm each first attempt creates exactly one immutable recipientless
+  First Tree message through shared `sendMessage`, gives other speakers only `notify=false` context, and uses that
+  message id as the Feishu idempotency key. Reusing the same message id with changed content, target, or media bytes must
+  be rejected. Confirm the temporary credential environment is private, is available only to A, and is deleted after use.
 - Open the bound task in Web. Confirm messages, author attribution and attachments remain readable, while direct message,
   rename, membership, join/leave and other structural mutations are absent and rejected by direct Web API calls. Personal
   read, pin and archive state must continue to work.
@@ -63,7 +63,7 @@ above are observed on the exact target with no cross-Bot, cross-Agent or duplica
 First Tree member, loses a triggered message when one resource fails, exposes A's Bot credential to B, bypasses canonical
 message creation, duplicates a same-id send inside the provider window, or permits a Web structural mutation.
 
-`BLOCKED`: official QR creation, disposable tenant/chat, inbound provider connectivity, supported `lark-cli`, a
+`BLOCKED`: official QR creation, disposable tenant/chat, inbound provider connectivity, official `lark-cli`, a
 provider-backed Agent turn, or the two-replica environment cannot be established. Deterministic product tests alone do
 not satisfy this live case.
 
