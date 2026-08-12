@@ -68,8 +68,8 @@ export type AgentResourcesController = {
  * Shared success/error handlers for any mutation that writes the versioned
  * `["agent-resources", uuid]` cache (the shared resource hook AND the Instructions
  * tab's prompt-binding mutations). Centralized so every writer of this cache gets
- * the same two protections, now that the page shell, Environment, Tools & skills,
- * and Instructions all observe and write it:
+ * the same two protections, now that Profile, Repositories, Tools & skills, and
+ * Instructions all observe and write it:
  *  - onSuccess cancels any in-flight GET before writing, so a stale response can't
  *    resolve afterwards and clobber the version just written (which would desync
  *    rows/badges and 409 the next mutation);
