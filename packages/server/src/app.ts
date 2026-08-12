@@ -18,6 +18,7 @@ import { agentContextTreeInfoRoutes } from "./api/agent/context-tree-info.js";
 import { agentContextTreeIoRoutes } from "./api/agent/context-tree-io.js";
 import { agentCronJobRoutes } from "./api/agent/cron-jobs.js";
 import { agentDocumentRoutes } from "./api/agent/documents.js";
+import { agentFeishuRoutes } from "./api/agent/feishu.js";
 import { agentGithubTaskRunRoutes } from "./api/agent/github-task-runs.js";
 import { agentInboxRoutes } from "./api/agent/inbox.js";
 import { agentMeRoutes } from "./api/agent/me.js";
@@ -28,6 +29,7 @@ import { publicAgentTemplateRoutes } from "./api/agent-templates.js";
 import { agentUsageRoutes } from "./api/agent-usage.js";
 import { agentRoutes, publicAgentAvatarRoutes } from "./api/agents.js";
 import { agentConfigRoutes } from "./api/agents-config.js";
+import { agentFeishuBindingRoutes } from "./api/agents-feishu.js";
 import { agentResourcesRoutes } from "./api/agents-resources.js";
 import { attachmentRoutes } from "./api/attachments.js";
 import { githubOauthRoutes } from "./api/auth/github.js";
@@ -121,6 +123,7 @@ import {
   registerChatAudienceDispatcher,
 } from "./services/chat/membership/audience-cache.js";
 import { registerChatMessageDispatcher } from "./services/chat/workspace/projection.js";
+import { createFeishuIntegrationManager, type FeishuSdkDependencies } from "./services/integrations/feishu/manager.js";
 import { createNotifier, type Notifier } from "./services/notifier.js";
 import { createCommandVersionPoller } from "./services/runtime/daemon/command-version-poller.js";
 import { createPulseAggregator } from "./services/runtime/pulse-aggregator.js";
@@ -181,6 +184,8 @@ function namePlugin<T extends FastifyPluginAsync>(name: string, fn: T): T {
 export type BuildAppOptions = {
   attachmentBlobStore?: AttachmentBlobStore;
   backgroundTasks?: BackgroundTaskOptions;
+  /** Test-only/provider-boundary injection; production uses the official SDK directly. */
+  feishuSdk?: FeishuSdkDependencies;
 };
 
 export async function buildApp(config: Config, options: BuildAppOptions = {}) {
@@ -365,6 +370,14 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
   // Notifier: dedicated PG connection for LISTEN/NOTIFY
   const listenClient = postgres(config.database.url, { max: 1, ...sslOptions(config.database.url) });
   const notifier = createNotifier(listenClient);
+  const feishuIntegration = createFeishuIntegrationManager({
+    db,
+    notifier,
+    encryptionKey: config.secrets.encryptionKey,
+    instanceId: config.instanceId,
+    ...(options.feishuSdk ? { sdk: options.feishuSdk } : {}),
+  });
+  app.decorate("feishuIntegration", feishuIntegration);
 
   // Per-agent runtime config service and Resources resolver.
   const configService = createConfigService({
@@ -643,6 +656,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
           await scope.register(agentRoutes, { prefix: "/agents" });
           await scope.register(agentConfigRoutes, { prefix: "/agents" });
           await scope.register(agentResourcesRoutes, { prefix: "/agents" });
+          await scope.register(agentFeishuBindingRoutes, { prefix: "/agents" });
           await scope.register(agentActivityRoutes, { prefix: "/agents" });
           await scope.register(agentUsageRoutes, { prefix: "/agents" });
           await scope.register(sessionRoutes, { prefix: "/agents" });
@@ -672,6 +686,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
           await scope.register(agentCronJobRoutes, { prefix: "/chats" });
           await scope.register(agentInboxRoutes, { prefix: "/inbox" });
           await scope.register(agentRuntimeConfigRoutes);
+          await scope.register(agentFeishuRoutes);
           await scope.register(agentContextTreeInfoRoutes);
           await scope.register(agentContextTreeIoRoutes);
           if (config.docs.enabled) {
@@ -766,11 +781,13 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     backgroundTasks.start();
     pulseAggregator.start();
     commandVersionPoller.start();
+    feishuIntegration.start();
   });
 
   // Cleanup on close
   app.addHook("onClose", async () => {
     commandVersionPoller.stop();
+    await feishuIntegration.stop();
     pulseAggregator.stop();
     await backgroundTasks.stop();
     await notifier.stop();

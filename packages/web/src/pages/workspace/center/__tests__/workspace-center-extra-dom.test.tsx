@@ -292,6 +292,8 @@ function message(overrides: Partial<MessageWithDelivery> & { id: string; senderI
     id: overrides.id,
     chatId: overrides.chatId ?? "chat-1",
     senderId: overrides.senderId,
+    senderKind: overrides.senderKind ?? "member",
+    senderProvider: overrides.senderProvider ?? null,
     format: overrides.format ?? "text",
     content: overrides.content ?? "Message body",
     metadata: overrides.metadata ?? {},

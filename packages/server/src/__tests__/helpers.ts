@@ -16,6 +16,7 @@ import { createAgent } from "../services/agents/identity.js";
 import { bindAgentRuntimeSession } from "../services/agents/runtime/session.js";
 import { MemoryAttachmentBlobStore } from "../services/attachment-blob-store.js";
 import { signTokensForUser } from "../services/auth/tokens.js";
+import type { FeishuSdkDependencies } from "../services/integrations/feishu/manager.js";
 import { resolveDefaultOrgId } from "../services/team/organization.js";
 import { uuidv7 } from "../uuid.js";
 
@@ -100,6 +101,7 @@ export type CreateTestAppOptions = {
   /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
   agentTemplatePublisherOrgId?: string;
   gitlabEgressAllowlist?: NonNullable<Config["gitlab"]>["egressAllowlist"];
+  feishuSdk?: FeishuSdkDependencies;
   /**
    * Drop `oauth.githubApp.slug` from the test config. Used by the
    * `/github-app-installation/install-url` 503 test — the slug is the
@@ -277,6 +279,7 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
   const app = await buildApp(config, {
     attachmentBlobStore: new MemoryAttachmentBlobStore(),
     backgroundTasks: { cronSchedulerEnabled: opts.cronSchedulerEnabled ?? false },
+    ...(opts.feishuSdk ? { feishuSdk: opts.feishuSdk } : {}),
   });
   await app.ready();
   return app;

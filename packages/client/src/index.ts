@@ -40,6 +40,7 @@ export {
   CAPABILITY_REFRESH_BASE_MS,
   CAPABILITY_REFRESH_MAX_MS,
   hasNonOkProvider,
+  LARK_CLI_CAPABILITY_KEY,
   nextCapabilityRefreshDelayMs,
   PROBED_RUNTIME_PROVIDERS,
   probeCapabilities,

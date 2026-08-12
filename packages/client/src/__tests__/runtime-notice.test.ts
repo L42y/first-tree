@@ -159,6 +159,8 @@ describe("runtime notice formatting", () => {
       id: "msg-1",
       chatId: "chat-1",
       senderId: "agent-1",
+      senderKind: "member",
+      senderProvider: null,
       format: "text",
       content: "notice",
       metadata: {},

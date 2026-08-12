@@ -125,6 +125,63 @@ describe("formatInboundContent", () => {
     expect(await formatInboundContent(msg, cache)).toBe("[From: alice · type=agent]\n\nhello");
   });
 
+  it("attributes Feishu Integration messages to the external author and exposes the trusted reply reference", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "ft-message-1",
+      chatId: "chat-1",
+      senderId: "integration:feishu",
+      senderKind: "integration",
+      senderProvider: "feishu",
+      source: "feishu",
+      format: "markdown",
+      content: "Please inspect this thread.",
+      metadata: {
+        mentions: ["agent-a"],
+        feishu: {
+          version: 1,
+          direction: "inbound",
+          botBindingId: "binding-a",
+          externalAuthor: {
+            openId: "ou_human",
+            userId: "u_human",
+            displayName: "张三",
+            tenantKey: "tenant-a",
+          },
+          reference: {
+            messageId: "om_target",
+            chatId: "oc_feishu",
+            chatType: "group",
+            threadId: "omt_thread",
+            rootId: "om_root",
+            parentId: "om_parent",
+            sentAt: "2026-08-12T00:00:00.000Z",
+          },
+          messageType: "post",
+          mentions: [],
+          resources: [],
+        },
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain(
+      '[From: Feishu · type=integration · externalUser={"displayName":"张三","openId":"ou_human","userId":"u_human"}]',
+    );
+    expect(out).toContain("<feishu-message-reference>");
+    expect(out).toContain("lark-cli im +messages-reply");
+    expect(out).toContain("internal collaborators must return their work to the primary Agent");
+    expect(out).toContain("firstTreeMessageId: ft-message-1");
+    expect(out).toContain("messageId: om_target");
+    expect(out).toContain("threadId: omt_thread");
+    expect(out).toContain("rootId: om_root");
+    expect(out).toContain("Please inspect this thread.");
+  });
+
   it("adds the trusted Ask agent reply contract without changing the visible question", async () => {
     setCliBinding({ binName: "first-tree-staging", packageName: "first-tree-staging" });
     const human = { ...mkParticipant("human-1", "liuchao", "Liu Chao"), type: "human" };

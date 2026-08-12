@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AppearanceSection } from "./appearance-section.js";
 import { DangerZone } from "./danger-zone.js";
+import { FeishuSection } from "./feishu-section.js";
 import { IdentitySection } from "./identity-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 import { ProfileEditDialog } from "./profile-edit-dialog.js";
@@ -28,6 +29,7 @@ export function ProfileTab() {
         description={null}
         aside={<AppearanceSection agent={ctx.agent} canEdit={ctx.canManageAgent} onEdit={onEdit} variant="inline" />}
       />
+      {!ctx.isHuman && <FeishuSection />}
       {/* Agent lifecycle is identity-level, so destructive controls stay at the
           end of Profile instead of mixing with runtime configuration. */}
       {ctx.canManageAgent && ctx.agent.type !== "human" && (

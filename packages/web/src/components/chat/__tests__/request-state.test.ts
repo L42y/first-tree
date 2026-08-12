@@ -29,6 +29,8 @@ function msg(over: Partial<Message> & Pick<Message, "id">): Message {
   return {
     chatId: "c1",
     senderId: ASKER,
+    senderKind: "member",
+    senderProvider: null,
     format: "text",
     content: "",
     metadata: {},

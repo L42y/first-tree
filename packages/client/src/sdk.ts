@@ -372,6 +372,16 @@ export class FirstTreeHubSDK {
     });
   }
 
+  /** Obtain a short-lived, Agent-bound lark-cli grant after server-side policy checks. */
+  async createFeishuCliGrant(
+    body: import("@first-tree/shared").FeishuCliPreflight,
+  ): Promise<import("@first-tree/shared").FeishuCliGrant> {
+    return this.requestJson("/api/v1/agent/feishu/cli/preflight", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   /**
    * Member-scoped: every non-deleted agent pinned to a client owned by the
    * calling user. Includes suspended agents so local reconciliation/prune can
