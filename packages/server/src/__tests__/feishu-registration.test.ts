@@ -244,6 +244,41 @@ describe("official Feishu QR registration", () => {
     expect(stored).toMatchObject({ status: "revoked", registrationStateCipher: null });
   });
 
+  it("settles a registration stopped before QR even when the provider ignores abort", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const completion = deferred<{ client_id: string; client_secret: string }>();
+    const stoppedSdk = {
+      ...feishuSdk,
+      registerApp: vi.fn(async () => completion.promise),
+    } as FeishuSdkDependencies;
+    const manager = createFeishuIntegrationManager({
+      db: app.db,
+      notifier: app.notifier,
+      encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      instanceId: "registration-stop-test",
+      sdk: stoppedSdk,
+    });
+
+    const pending = manager.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db
+        .select({ id: imBotBindings.id })
+        .from(imBotBindings)
+        .where(eq(imBotBindings.agentId, a.agent.uuid));
+      return Boolean(row);
+    });
+
+    const rejected = expect(pending).rejects.toThrow("Feishu integration manager stopped");
+    await manager.stop();
+    await rejected;
+    completion.resolve({ client_id: "cli_after_stop", client_secret: "late-secret" });
+  });
+
   it("does not let a late registration failure overwrite a revoked binding", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { displayName: "Agent A" });

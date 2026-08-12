@@ -599,7 +599,9 @@ export function createFeishuIntegrationManager(input: {
       stopped = true;
       if (initialTimer) clearTimeout(initialTimer);
       if (timer) clearInterval(timer);
-      for (const controller of registrations.values()) controller.abort();
+      for (const registration of registrations.values()) {
+        registration.cancel(new Error("Feishu integration manager stopped"));
+      }
       registrations.clear();
       await Promise.allSettled([...channels.values()].map(({ channel }) => channel.disconnect()));
       channels.clear();
