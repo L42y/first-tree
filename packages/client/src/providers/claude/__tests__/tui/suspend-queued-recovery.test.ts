@@ -59,6 +59,7 @@ vi.mock("../../mcp-config.js", () => ({
 
 vi.mock("../../executable.js", () => ({
   resolveClaudeCodeExecutable: vi.fn(() => ({ path: "/bin/claude-fake" })),
+  resolveConfiguredClaudeExecutable: vi.fn(() => "/bin/claude-fake"),
 }));
 
 vi.mock("../../tui/tmux-session.js", () => ({
