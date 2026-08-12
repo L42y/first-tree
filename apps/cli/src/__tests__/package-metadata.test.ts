@@ -203,6 +203,10 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
     const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
     expect(smoke).toContain("assertNpmTarballRegistrySafe");
+    expect(smoke).toContain("assertPublicPackageManifestRegistrySafe");
+    expect(smoke).toContain("assertInstalledDistHasNoPrivateClientImports");
+    expect(smoke).toContain("readTarballPackageJson");
+    expect(smoke).toContain("public manifest must not include a devDependencies field");
     // Pack into a run-owned destination so the deterministic name/version
     // filename cannot overwrite a pre-existing apps/cli artifact.
     expect(smoke).toContain("--pack-destination");
@@ -215,6 +219,12 @@ describe("trusted-publishing npm toolchain contract", () => {
     const failFn = smoke.match(/function fail\([^)]*\) \{[^}]*\}/)?.[0] ?? "";
     expect(failFn).toContain("throw new SmokeFailure");
     expect(failFn).not.toContain("process.exit");
+
+    const materializeSrc = readText(materialize);
+    expect(materializeSrc).toContain("stagePublicPackageManifest");
+    expect(materializeSrc).toContain("delete pkg.devDependencies");
+    expect(materializeSrc).toContain("--fail-after=public-manifest");
+    expect(materializeSrc).toContain("packageJson");
   });
 
   it("declares context-integration as a turbo build output so cache hits restore the release payload", () => {
