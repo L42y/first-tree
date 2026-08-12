@@ -3,6 +3,7 @@ export type {
   ClientConnectionConfig,
   ProviderModelsListCommand,
   RuntimeAuthCommand,
+  RuntimeReadinessCommand,
   ServerWelcome,
   SessionCommand,
 } from "./client-connection.js";
@@ -137,6 +138,15 @@ export {
   resolvePiRuntimeBinary,
 } from "./providers/pi/binary.js";
 export { probePiCapability } from "./providers/pi/capability.js";
+export {
+  BUILTIN_RUNTIME_READINESS,
+  RUNTIME_READINESS_PROMPT,
+  type RuntimeReadiness,
+  type RuntimeReadinessExecutionResult,
+  type RuntimeReadinessInput,
+  type RuntimeReadinessTable,
+  withIsolatedReadinessWorkspace,
+} from "./providers/readiness.js";
 // Runtime-auth (browser OAuth)
 export {
   AUTH_URL_TOKEN_MAX,

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CapabilityRefresher,
   type CapabilityRefresherDeps,
+  preserveRuntimeReadiness,
   stableCapabilitiesJson,
   stableCapabilitySyncJson,
 } from "../core/capability-refresh.js";
@@ -115,6 +116,27 @@ describe("stableCapabilitySyncJson", () => {
         codex: missing({ detectedAt: "2026-06-17T00:05:15.000Z", latencyMs: 925 }),
       }),
     );
+  });
+});
+
+describe("preserveRuntimeReadiness", () => {
+  const ready = {
+    state: "ready" as const,
+    identity: "a".repeat(64),
+    checkedAt: "2026-08-12T08:00:00.000Z",
+    expiresAt: "2026-08-12T08:15:00.000Z",
+  };
+
+  it("keeps readiness across install-only refreshes with identical runtime facts", () => {
+    const previous = { codex: ok({ runtimeSource: "path", runtimePath: "/bin/codex", readiness: ready }) };
+    const probed = { codex: ok({ runtimeSource: "path", runtimePath: "/bin/codex" }) };
+    expect(preserveRuntimeReadiness(previous, probed).codex?.readiness).toEqual(ready);
+  });
+
+  it("invalidates readiness when provider runtime facts change", () => {
+    const previous = { codex: ok({ runtimeSource: "path", runtimePath: "/bin/codex", readiness: ready }) };
+    const probed = { codex: ok({ runtimeSource: "path", runtimePath: "/opt/codex" }) };
+    expect(preserveRuntimeReadiness(previous, probed).codex?.readiness).toBeUndefined();
   });
 });
 

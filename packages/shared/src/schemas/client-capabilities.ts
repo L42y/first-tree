@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { runtimeAuthLastErrorSchema } from "./runtime-auth.js";
+import { runtimeReadinessResultSchema } from "./runtime-readiness.js";
 
 /**
  * Capability detection is install-only: a provider is `ok` when the binary the
@@ -91,6 +92,12 @@ export const capabilityEntrySchema = z.object({
    * the next login start or a successful re-probe. See `runtimeAuthLastErrorSchema`.
    */
   lastAuthError: runtimeAuthLastErrorSchema.nullable().optional(),
+  /**
+   * On-demand usability verification. Absent on older daemons and before the
+   * first check; consumers project an installed row without this field as
+   * `available`, never `ready`.
+   */
+  readiness: runtimeReadinessResultSchema.nullable().optional(),
 });
 export type CapabilityEntry = z.infer<typeof capabilityEntrySchema>;
 

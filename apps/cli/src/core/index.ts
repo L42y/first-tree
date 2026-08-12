@@ -219,6 +219,13 @@ export {
   uploadAgentSkills,
   uploadClientCapabilities,
 } from "./runtime-provider-reconcile.js";
+export {
+  RUNTIME_READINESS_ERROR_MAX_LEN,
+  RUNTIME_READINESS_TIMEOUT_MS,
+  RUNTIME_READINESS_TTL_MS,
+  RuntimeReadinessCoordinator,
+  runtimeReadinessIdentity,
+} from "./runtime-readiness.js";
 // Background service install (launchd / systemd)
 export type { ServiceInfo, ServiceOpResult, ServiceState } from "./service-install.js";
 export {

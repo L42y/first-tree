@@ -50,6 +50,7 @@ import {
   migrateLocalAgentDirs,
   promptMissingFields,
   promptUpdate,
+  RuntimeReadinessCoordinator,
   reconcileLocalRuntimeProviders,
   refreshServerUpdateTarget,
   registerClientRuntimeMarker,
@@ -391,6 +392,18 @@ export function registerDaemonStartCommand(daemon: Command): void {
         });
         runtime.onReconnect(() => capabilityRefresher.onReconnect());
 
+        const readinessCoordinator = new RuntimeReadinessCoordinator({
+          currentEntry: (provider) => capabilityRefresher.currentEntry(provider),
+          setProviderEntry: (provider, entry) => capabilityRefresher.setProviderEntry(provider, entry),
+          log: (symbol, msg) => writeStatus(symbol, msg),
+        });
+        runtime.onRuntimeReadinessCheck((command) => {
+          void readinessCoordinator.check({ type: "runtime-readiness:check", ...command });
+        });
+        runtime.onProviderAuthFailure((provider) => {
+          void readinessCoordinator.markNeedsLogin(provider);
+        });
+
         // In-product runtime-auth: the server pushes `runtime-auth:start` when a
         // member clicks "Connect <provider>" in the console. The daemon drives
         // the provider's official browser-OAuth login on this host and surfaces
@@ -409,11 +422,19 @@ export function registerDaemonStartCommand(daemon: Command): void {
             );
             return;
           }
+          const shouldRecheckReadiness = readinessCoordinator.hasCheckIntent(command.provider);
           capabilityRefresher.beginInteractive(command.provider);
           void runRuntimeAuthLogin(command, {
             currentEntry: (provider) => capabilityRefresher.currentEntry(provider),
             setProviderEntry: (provider, entry) => capabilityRefresher.setProviderEntry(provider, entry),
             log: (symbol, msg) => writeStatus(symbol, msg),
+            onLoginComplete: async (provider, outcome) => {
+              // Runtime-auth also serves existing provider setup flows. Only a
+              // prior readiness check turns login completion into a model run.
+              if (!shouldRecheckReadiness) return;
+              if (outcome.ok) await readinessCoordinator.retryAfterLogin(provider);
+              else await readinessCoordinator.markNeedsLogin(provider);
+            },
           }).finally(() => capabilityRefresher.endInteractive(command.provider));
         });
 

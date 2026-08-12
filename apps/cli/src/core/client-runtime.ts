@@ -11,6 +11,7 @@ import {
   type HandlerFactory,
   type ProviderModelsListCommand,
   type RuntimeAuthCommand,
+  type RuntimeReadinessCommand,
   resolveAndLogClaudeExecutable,
   type UpdateHooks,
   UpdateManager,
@@ -176,6 +177,7 @@ export class ClientRuntime {
   /** Callbacks fired after a WS RE-registration (reconnect), not the first
    * register. Used by the daemon to re-probe runtime-provider capabilities. */
   private readonly reconnectListeners: Array<() => void> = [];
+  private readonly providerAuthFailureListeners: Array<(provider: RuntimeProvider) => void> = [];
   private readonly runtimeProviderRepairAttempts = new Map<string, number>();
 
   constructor(serverUrl: string, clientId: string, options: ClientRuntimeOptions = {}) {
@@ -304,6 +306,16 @@ export class ClientRuntime {
     this.connection.on("runtime-auth:start", callback);
   }
 
+  /** Register a handler for an on-demand provider readiness check. */
+  onRuntimeReadinessCheck(callback: (command: RuntimeReadinessCommand) => void): void {
+    this.connection.on("runtime-readiness:check", callback);
+  }
+
+  /** Observe credential failures emitted by normal provider sessions. */
+  onProviderAuthFailure(callback: (provider: RuntimeProvider) => void): void {
+    this.providerAuthFailureListeners.push(callback);
+  }
+
   /**
    * Register a handler for the server→client `provider-models:list` command.
    * The daemon discovers models from the host-local provider and replies with
@@ -382,6 +394,9 @@ export class ClientRuntime {
       },
       concurrency: config.concurrency,
       clientConnection: this.connection,
+      onProviderAuthFailure: (provider) => {
+        for (const listener of this.providerAuthFailureListeners) listener(provider);
+      },
     });
   }
 

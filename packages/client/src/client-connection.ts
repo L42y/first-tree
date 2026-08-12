@@ -23,11 +23,14 @@ import {
   type ProviderModelCatalog,
   providerModelsListCommandSchema,
   RUNTIME_AUTH_START_TYPE,
+  RUNTIME_READINESS_CHECK_TYPE,
   type RuntimeAuthMethod,
   type RuntimeAuthProvider,
   type RuntimeProvider,
+  type RuntimeReadinessCheckCommand,
   type RuntimeState,
   runtimeAuthStartCommandSchema,
+  runtimeReadinessCheckCommandSchema,
   type ServerWelcomeFrame,
   type SessionCommandAbortedFrame,
   type SessionCommandFinalizedFrame,
@@ -218,6 +221,9 @@ export type RuntimeAuthCommand = {
   ref: string;
 };
 
+/** Server -> client request for one on-demand host-local provider check. */
+export type RuntimeReadinessCommand = Omit<RuntimeReadinessCheckCommand, "type">;
+
 /** Server→client command to discover host-local provider models. */
 export type ProviderModelsListCommand = {
   provider: RuntimeProvider;
@@ -277,6 +283,7 @@ type ClientConnectionEvents = {
    */
   "session:command:aborted": [frame: SessionCommandAbortedFrame];
   "runtime-auth:start": [command: RuntimeAuthCommand];
+  "runtime-readiness:check": [command: RuntimeReadinessCommand];
   "provider-models:list": [command: ProviderModelsListCommand];
   "session:reconcile:result": [result: SessionReconcileResult];
   "auth:expired": [];
@@ -1936,6 +1943,20 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       if (parsed.success) {
         const { provider, method, ref } = parsed.data;
         this.emit("runtime-auth:start", { provider, method, ref });
+      }
+      return;
+    }
+
+    if (type === RUNTIME_READINESS_CHECK_TYPE) {
+      const parsed = runtimeReadinessCheckCommandSchema.safeParse(msg);
+      if (parsed.success) {
+        const { provider, config, force, ref } = parsed.data;
+        this.emit("runtime-readiness:check", {
+          provider,
+          ...(config ? { config } : {}),
+          ...(force !== undefined ? { force } : {}),
+          ref,
+        });
       }
       return;
     }

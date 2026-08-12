@@ -26,6 +26,27 @@ export function stableCapabilitySyncJson(value: unknown): string {
   return stableCapabilitiesJsonWithOmittedKeys(value, VOLATILE_CAPABILITY_FIELDS);
 }
 
+function sameRuntimeFacts(a: CapabilityEntry, b: CapabilityEntry): boolean {
+  return (
+    a.state === "ok" &&
+    b.state === "ok" &&
+    a.runtimeSource === b.runtimeSource &&
+    (a.runtimePath ?? null) === (b.runtimePath ?? null) &&
+    (a.sdkVersion ?? null) === (b.sdkVersion ?? null)
+  );
+}
+
+/** Keep readiness across install-only refreshes only while runtime facts match. */
+export function preserveRuntimeReadiness(previous: ClientCapabilities, probed: ClientCapabilities): ClientCapabilities {
+  const merged: ClientCapabilities = { ...probed };
+  for (const [provider, nextEntry] of Object.entries(probed)) {
+    const prior = previous[provider];
+    if (!prior?.readiness || nextEntry.readiness || !sameRuntimeFacts(prior, nextEntry)) continue;
+    merged[provider] = { ...nextEntry, readiness: prior.readiness };
+  }
+  return merged;
+}
+
 function stableCapabilitiesJsonWithOmittedKeys(value: unknown, omittedKeys: ReadonlySet<string>): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
   if (Array.isArray(value)) {
@@ -261,6 +282,7 @@ export class CapabilityRefresher {
         // Re-read at merge time: runtime-auth may have published provider state
         // while this aggregate probe was running.
         const current = this.snapshot ?? previous;
+        next = preserveRuntimeReadiness(current, next);
         // Preserve providers still owned by an interactive login, plus provider
         // entries written after this refresh started. The latter covers the
         // common race where login completes and clears the interactive flag

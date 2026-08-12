@@ -448,6 +448,8 @@ type SessionManagerConfig = {
   onRuntimeStateChange?: (state: RuntimeState) => void;
   /** Callback when a session emits a structured event (tool_call / error). */
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
+  /** Invalidate a provider readiness verdict after a real session auth failure. */
+  onProviderAuthFailure?: (provider: RuntimeProvider) => void;
   /** Confirmed session event channel; resolves only after the server persists the event. */
   confirmSessionEvent?: (chatId: string, event: SessionEvent) => Promise<void>;
   /**
@@ -545,6 +547,15 @@ function isTerminalProviderFailureSessionEvent(event: SessionEvent): boolean {
   const payload = parseProviderRetryEventMessage(event.payload.message);
   if (!payload) return false;
   return shouldPostProviderFailureRuntimeNotice(payload) || isRuntimeSessionProofFailure(payload);
+}
+
+function terminalProviderAuthFailure(event: SessionEvent): RuntimeProvider | null {
+  if (event.kind !== "error") return null;
+  const payload = parseProviderRetryEventMessage(event.payload.message);
+  if (!payload || payload.category !== "credential") return null;
+  return payload.event === "provider_retry_exhausted" || payload.event === "provider_failure_terminal"
+    ? payload.provider
+    : null;
 }
 
 function resumableProviderSessionId(...candidates: Array<string | null | undefined>): string | null {
@@ -2472,7 +2483,22 @@ export class SessionManager {
     return true;
   }
 
+  private notifyProviderAuthFailure(event: SessionEvent): void {
+    const provider = terminalProviderAuthFailure(event);
+    if (!provider) return;
+    try {
+      this.config.onProviderAuthFailure?.(provider);
+    } catch (err) {
+      this.config.log.warn(
+        { err, provider },
+        "provider auth failure observer threw; preserving normal session settlement",
+      );
+    }
+  }
+
   private emitSessionEvent(chatId: string, event: SessionEvent, expectedEntry: SessionEntry | null = null): void {
+    if (expectedEntry && this.sessions.get(chatId) !== expectedEntry) return;
+    this.notifyProviderAuthFailure(event);
     this.config.onSessionEvent?.(chatId, event);
     const mutationLeaseValid = expectedEntry ? () => this.sessions.get(chatId) === expectedEntry : null;
     this.captureRuntimeFailureNotice(chatId, event, mutationLeaseValid, expectedEntry);
@@ -3562,6 +3588,8 @@ export class SessionManager {
   ): Promise<boolean> {
     const captureLeaseValid = () =>
       (!expectedEntry || this.sessions.get(chatId) === expectedEntry) && (!mutationLeaseValid || mutationLeaseValid());
+    if (!captureLeaseValid()) return false;
+    this.notifyProviderAuthFailure(event);
     if (this.config.confirmSessionEvent) {
       try {
         await this.config.confirmSessionEvent(chatId, event);
@@ -4805,12 +4833,14 @@ export class SessionManager {
         // session-context events stay behind the shuttingDown adoption fence.
         if (isTerminalProviderFailureSessionEvent(event)) {
           if (settlementValid && !settlementValid()) return;
+          this.notifyProviderAuthFailure(event);
           this.config.onSessionEvent?.(chatId, event);
           if (settlementValid && !settlementValid()) return;
           this.captureRuntimeFailureNotice(chatId, event, settlementValid);
           return;
         }
         if (mutationValid && !mutationValid()) return;
+        this.notifyProviderAuthFailure(event);
         this.config.onSessionEvent?.(chatId, event);
         if (mutationValid && !mutationValid()) return;
         this.captureRuntimeFailureNotice(chatId, event, mutationValid);
@@ -4881,6 +4911,7 @@ export class SessionManager {
     if (mutationLeaseValid && !mutationLeaseValid()) {
       throw new Error("route transition invalidated");
     }
+    this.notifyProviderAuthFailure(event);
     if (!this.config.confirmSessionEvent) {
       this.config.onSessionEvent?.(chatId, event);
       throw new Error("confirmed session event channel unavailable");

@@ -3,6 +3,7 @@ import type {
   AgentRuntimeConfig,
   InboxDeliverFrame,
   InboxEntryWithMessage,
+  RuntimeProvider,
   RuntimeState,
   SessionCommandAbortReason,
   SessionEvent,
@@ -82,6 +83,8 @@ export type AgentSlotConfig = {
   clientConnection: ClientConnection;
   runtimeType?: string;
   runtimeVersion?: string;
+  /** Invalidates a cached provider readiness verdict after a real session auth failure. */
+  onProviderAuthFailure?: (provider: RuntimeProvider) => void;
 };
 
 export type AgentSlotStopOptions = {
@@ -402,6 +405,7 @@ export class AgentSlot {
         onStateChange: (chatId, state) => this.reportSessionState(chatId, state),
         onRuntimeStateChange: (state) => this.reportRuntimeState(state),
         onSessionEvent: (chatId, event) => this.reportSessionEvent(chatId, event),
+        onProviderAuthFailure: this.config.onProviderAuthFailure,
         confirmSessionEvent: (chatId, event) => this.confirmSessionEvent(chatId, event),
         onSessionRuntimeChange: (chatId, state) => this.reportSessionRuntime(chatId, state),
       });

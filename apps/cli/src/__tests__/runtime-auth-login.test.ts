@@ -176,6 +176,24 @@ describe("runRuntimeAuthLogin — browser OAuth lifecycle", () => {
     expect(h.calls[1]?.entry.pendingAuth).toBeUndefined();
   });
 
+  it("invalidates cached Ready while login runs and reconciles after success", async () => {
+    const { driver } = fakeDriver({ provider: "codex", outcome: { ok: true } });
+    const prior = okEntry({
+      readiness: {
+        state: "ready",
+        identity: "a".repeat(64),
+        checkedAt: new Date(NOW).toISOString(),
+        expiresAt: new Date(NOW + 60_000).toISOString(),
+      },
+    });
+    const h = harness(driver, "codex", prior);
+    const onLoginComplete = vi.fn(async () => undefined);
+    await runRuntimeAuthLogin({ provider: "codex", ref: "ready-login" }, { ...h.deps, onLoginComplete });
+
+    expect(h.calls[0]?.entry.readiness).toMatchObject({ state: "needs_login", error: { code: "needs_login" } });
+    expect(onLoginComplete).toHaveBeenCalledWith("codex", { ok: true });
+  });
+
   it("surfaces the browser auth URL into pendingAuth (no-auto-open recovery)", async () => {
     const { driver } = fakeDriver({ provider: "codex", fireAuthUrl: "https://auth.openai.com/x" });
     const h = harness(driver, "codex");
@@ -239,6 +257,18 @@ describe("runRuntimeAuthLogin — browser OAuth lifecycle", () => {
       message: "PATH lookup exploded",
     });
     expect(h.logs.some((l) => l.includes("codex binary lookup threw: PATH lookup exploded"))).toBe(true);
+  });
+
+  it("reconciles readiness when login cannot start", async () => {
+    const { driver } = fakeDriver({ provider: "codex", resolveError: "codex binary missing" });
+    const h = harness(driver, "codex", okEntry());
+    const onLoginComplete = vi.fn(async () => undefined);
+    await runRuntimeAuthLogin({ provider: "codex", ref: "reconcile-spawn" }, { ...h.deps, onLoginComplete });
+    expect(onLoginComplete).toHaveBeenCalledWith("codex", {
+      ok: false,
+      reason: "spawn-error",
+      error: "codex binary missing",
+    });
   });
 
   it("uses the driver's artifact wording for a CLI-backed provider", async () => {

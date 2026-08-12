@@ -37,6 +37,8 @@ export type RuntimeAuthLoginDeps = {
   /** Seam for tests — production callers omit this and get the frozen table. */
   drivers?: RuntimeAuthDriverTable;
   now?: () => number;
+  /** Reconcile readiness after the provider-owned login finishes. */
+  onLoginComplete?: (provider: RuntimeAuthCommand["provider"], outcome: LoginOutcome) => Promise<void> | void;
 };
 
 /**
@@ -130,7 +132,7 @@ function pendingEntry(base: CapabilityEntry | undefined, pending: PendingAuth, n
   // rather than spread forward: keeping detection-failure text on an entry we
   // are about to force to `ok` contradicts itself, and republishing it would
   // slip old (possibly credential-bearing) text past the sanitising boundary.
-  const { error: _staleError, lastAuthError: _staleAuthError, ...carried } = baseEntry;
+  const { error: _staleError, lastAuthError: _staleAuthError, readiness: priorReadiness, ...carried } = baseEntry;
   // A login only starts after the provider binary resolved, so the provider IS
   // installed: force the install fields rather than inheriting a possibly-stale
   // non-`ok` base (which would yield a contradictory `missing` + pendingAuth
@@ -140,6 +142,16 @@ function pendingEntry(base: CapabilityEntry | undefined, pending: PendingAuth, n
     state: "ok",
     available: true,
     pendingAuth: pending,
+    ...(priorReadiness
+      ? {
+          readiness: {
+            state: "needs_login" as const,
+            ...(priorReadiness.identity ? { identity: priorReadiness.identity } : {}),
+            checkedAt: new Date(nowMs).toISOString(),
+            error: { code: "needs_login" as const },
+          },
+        }
+      : {}),
   };
 }
 
@@ -180,6 +192,13 @@ async function driveRuntimeAuthLogin(
 ): Promise<void> {
   const now = deps.now ?? Date.now;
   const { logLabel, loginLabel, artifactLabel } = driver;
+  const reconcileReadiness = async (outcome: LoginOutcome): Promise<void> => {
+    try {
+      await deps.onLoginComplete?.(command.provider, outcome);
+    } catch {
+      deps.log("⚠️", `runtime-auth: ${logLabel} readiness reconciliation failed (ref ${command.ref})`);
+    }
+  };
 
   // Re-probe the real state and, on a terminal failure, stamp `lastAuthError`
   // onto the login target's entry so the web shows "sign-in failed — retry"
@@ -207,13 +226,17 @@ async function driveRuntimeAuthLogin(
   try {
     resolution = await driver.resolveLogin();
   } catch (err) {
+    const outcome: LoginOutcome = { ok: false, reason: "spawn-error", error: message(err) };
     deps.log("⚠️", `runtime-auth: ${logLabel} ${artifactLabel} lookup threw: ${message(err)}`);
     await reflect(`after ${artifactLabel} lookup threw`, { reason: "spawn-error", message: message(err) });
+    await reconcileReadiness(outcome);
     return;
   }
   if (!resolution.ok) {
+    const outcome: LoginOutcome = { ok: false, reason: "spawn-error", error: resolution.error };
     deps.log("⚠️", `runtime-auth: ${logLabel} ${artifactLabel} unavailable: ${resolution.error}`);
     await reflect(`after unresolved ${artifactLabel}`, { reason: "spawn-error", message: resolution.error });
+    await reconcileReadiness(outcome);
     return;
   }
 
@@ -245,14 +268,17 @@ async function driveRuntimeAuthLogin(
     // so the web can offer a fallback link when the host browser does not open.
     outcome = await resolution.login({ onAuthUrl: (url) => void setPending(url) });
   } catch (err) {
+    const outcome: LoginOutcome = { ok: false, reason: "spawn-error", error: message(err) };
     deps.log("⚠️", `runtime-auth: ${loginLabel} threw: ${message(err)}`);
     await pendingWrites;
     await reflect("after login threw", { reason: "spawn-error", message: message(err) });
+    await reconcileReadiness(outcome);
     return;
   }
 
   await pendingWrites;
   await reflect("after login", outcome.ok ? null : { reason: outcome.reason, message: outcome.error });
+  await reconcileReadiness(outcome);
   logOutcome(logLabel, command.ref, outcome, deps);
 }
 

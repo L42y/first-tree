@@ -5,6 +5,7 @@ import {
   type AgentRuntimeConfig,
   encodeProviderRetryEventMessage,
   type InboxEntryWithMessage,
+  type RuntimeProvider,
   type SessionEvent,
   type SessionState,
 } from "@first-tree/shared";
@@ -90,6 +91,7 @@ function createSessionManager(opts: {
   registryPath?: string;
   onStateChange?: (chatId: string, state: SessionState) => void;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
+  onProviderAuthFailure?: (provider: RuntimeProvider) => void;
   subprocessProbe?: SubprocessProbe;
 }) {
   const handler = opts.handler ?? createMockHandler();
@@ -122,6 +124,7 @@ function createSessionManager(opts: {
     agentConfigCache: opts.agentConfigCache,
     onStateChange: opts.onStateChange,
     onSessionEvent: opts.onSessionEvent,
+    onProviderAuthFailure: opts.onProviderAuthFailure,
   });
 }
 
@@ -463,6 +466,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
     let capturedToken: DeliveryToken | undefined;
     let capturedMessage: SessionMessage | undefined;
     const emitted: SessionEvent[] = [];
+    const onProviderAuthFailure = vi.fn();
     const handler = createMockHandler({
       start: vi.fn(async (message, ctx, token) => {
         capturedMessage = message;
@@ -478,6 +482,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
       sdk,
       handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
       onSessionEvent: (_chatId, event) => emitted.push(event),
+      onProviderAuthFailure,
     });
 
     await sm.dispatch(mockEntry({ id: 402, chatId: "chat-terminal-notice-fail", messageId: "msg-terminal-notice" }));
@@ -505,6 +510,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
     });
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(onProviderAuthFailure).toHaveBeenCalledWith("codex");
     expect(ackEntry).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-terminal-notice-fail"));
     expect(

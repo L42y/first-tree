@@ -664,11 +664,13 @@ describe("ClientConnection — additional branch coverage", () => {
     const recovered: unknown[] = [];
     const commands: unknown[] = [];
     const runtimeAuthStarts: unknown[] = [];
+    const runtimeReadinessChecks: unknown[] = [];
     const reconciles: unknown[] = [];
     connection.on("agent:unbound", (agentId, reason) => unbound.push({ agentId, reason }));
     connection.on("resilience.bind.recovered", (payload) => recovered.push(payload));
     connection.on("session:command", (command) => commands.push(command));
     connection.on("runtime-auth:start", (command) => runtimeAuthStarts.push(command));
+    connection.on("runtime-readiness:check", (command) => runtimeReadinessChecks.push(command));
     connection.on("session:reconcile:result", (result) => reconciles.push(result));
 
     const pendingRecover = connection.sendInboxRecover("agent-1", "chat-force");
@@ -725,10 +727,23 @@ describe("ClientConnection — additional branch coverage", () => {
 
     socket.emitMessage({ type: "session:resume", agentId: "agent-1", chatId: "chat-1" });
     socket.emitMessage({ type: "runtime-auth:start", provider: "codex", method: "browser", ref: "auth-ref" });
+    socket.emitMessage({
+      type: "runtime-readiness:check",
+      provider: "codex",
+      config: { model: "gpt-test", configIdentity: "b".repeat(64) },
+      force: true,
+      ref: "ready-ref",
+    });
     socket.emitMessage({ type: "session:reconcile:result", agentId: "agent-1", staleChatIds: ["chat-1"] });
 
     expect(commands).toContainEqual({ type: "session:resume", agentId: "agent-1", chatId: "chat-1" });
     expect(runtimeAuthStarts).toContainEqual({ provider: "codex", method: "browser", ref: "auth-ref" });
+    expect(runtimeReadinessChecks).toContainEqual({
+      provider: "codex",
+      config: { model: "gpt-test", configIdentity: "b".repeat(64) },
+      force: true,
+      ref: "ready-ref",
+    });
     expect(reconciles).toContainEqual({ agentId: "agent-1", staleChatIds: ["chat-1"] });
 
     priv(connection).clearTimers();

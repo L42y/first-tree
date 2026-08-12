@@ -428,6 +428,13 @@ describe("ClientRuntime context-tree wiring", () => {
     runtimeAuthStart({ provider: "codex", ref: "cmd-1" });
     expect(runtimeAuth).toHaveBeenCalledWith({ provider: "codex", ref: "cmd-1" });
 
+    const runtimeReadiness = vi.fn();
+    rt.onRuntimeReadinessCheck(runtimeReadiness);
+    const runtimeReadinessCheck = connectionListeners.get("runtime-readiness:check");
+    if (!runtimeReadinessCheck) throw new Error("runtime-readiness:check listener missing");
+    runtimeReadinessCheck({ provider: "codex", force: true, ref: "ready-1" });
+    expect(runtimeReadiness).toHaveBeenCalledWith({ provider: "codex", force: true, ref: "ready-1" });
+
     const unbound = connectionListeners.get("agent:unbound");
     if (!unbound) throw new Error("agent:unbound listener missing");
     unbound("agent-alpha", undefined);
