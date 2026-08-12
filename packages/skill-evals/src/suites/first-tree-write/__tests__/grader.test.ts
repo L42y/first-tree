@@ -170,6 +170,19 @@ describe("first-tree-write grader", () => {
     });
   });
 
+  it("fails the unbound ordinary source task when the model reads the skill file", () => {
+    const evalCase = findCase("unbound-tree-skips-write");
+    const metrics = baseMetrics({
+      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      skillFileReadObserved: true,
+    });
+
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.routing_pass).toBe(false);
+  });
+
   it("fails the unbound ordinary source task when a Tree CLI command runs", () => {
     expect(
       casePassed(
@@ -205,6 +218,19 @@ describe("first-tree-write grader", () => {
         findCase("unbound-tree-explicit-write-reports-gap"),
         baseMetrics({
           finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+          unboundGapStatementObserved: true,
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("passes the unbound explicit write even when the model reads the skill file", () => {
+    expect(
+      casePassed(
+        findCase("unbound-tree-explicit-write-reports-gap"),
+        baseMetrics({
+          finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+          skillFileReadObserved: true,
           unboundGapStatementObserved: true,
         }),
       ),

@@ -201,6 +201,7 @@ describe("prepareManagedSession", () => {
         path: join(workspaceRoot, "context-tree"),
         repoUrl: "https://example.test/tree",
         branch: "main",
+        status: "bound",
       },
     });
 
@@ -284,7 +285,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
     });
 
     expect(result.chatContext).toBeUndefined();
@@ -325,7 +326,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       }),
     ).rejects.toThrow(/managed skills unsafe/);
 
@@ -359,7 +360,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       }),
     ).rejects.toThrow(/bootstrap failed/);
 
@@ -385,7 +386,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
     });
 
     expect(currentSourceRepoNamesFromPayload).toHaveBeenCalledWith(expect.anything(), false);
@@ -410,7 +411,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: true,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
     });
     expect(ensureAgentBootstrap).toHaveBeenCalledTimes(1);
     expect(markWorkspaceInitComplete).toHaveBeenCalledTimes(1);
@@ -442,7 +443,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       atProjectionEntry,
       beforeBriefing,
     });
@@ -489,7 +490,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
         // Type escape: async is assignable to `() => void` but not `() => undefined`.
         // Cast to prove runtime still fail-closes if a thenable slips through.
         atProjectionEntry: (async () => {
@@ -523,7 +524,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
         atProjectionEntry: (() => {
           callOrder.push("atProjectionEntry");
           return null;
@@ -580,7 +581,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       atProjectionEntry: (): undefined => {
         queueMicrotask(() => {
           microtaskRan = true;
@@ -633,7 +634,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       beforeBriefing: () => {
         events.push("beforeBriefing");
         callOrder.push("beforeBriefing");
@@ -667,7 +668,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       beforeBriefing: async () => {
         callOrder.push("beforeBriefing-start");
         await Promise.resolve();
@@ -709,7 +710,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
         atProjectionEntry: (): undefined => {
           callOrder.push("atProjectionEntry");
           throw new Error("lifecycle cancelled at prepare_before_projection");
@@ -747,7 +748,7 @@ describe("prepareManagedSession", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       beforeBriefing,
     });
 
@@ -785,7 +786,7 @@ describe("prepareManagedSession", () => {
           resourceSkills: [],
         },
         payloadResolved: false,
-        contextTree: { path: null, repoUrl: null, branch: null },
+        contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
         beforeBriefing: async () => {
           callOrder.push("beforeBriefing");
           throw new Error("lifecycle cancelled at prepare_skills");
@@ -882,7 +883,7 @@ describe("projectManagedWorkspace", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       markInitComplete: false,
     });
     expect(callOrder).toEqual(["sourceRepos", "skills", "briefing", "bootstrap"]);
@@ -907,7 +908,7 @@ describe("projectManagedWorkspace", () => {
         resourceSkills: [],
       },
       payloadResolved: false,
-      contextTree: { path: null, repoUrl: null, branch: null },
+      contextTree: { path: null, repoUrl: null, branch: null, status: "explicitly-unbound" },
       markInitComplete: true,
     });
     expect(callOrder).toContain("sentinel");

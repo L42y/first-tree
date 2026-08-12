@@ -1,6 +1,6 @@
 ---
 name: first-tree-welcome
-version: 1.4.1
+version: 1.4.2
 description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for external-channel or integration messages (including Feishu), dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
@@ -93,11 +93,14 @@ available local files:
 - **matching host CLI / local credentials**: `gh` for GitHub, `glab` for
   GitLab, or plain `git` for another host; usable or not.
 
-If state is unknown, first try to resolve it yourself (read the greeting for
-role, attempt the repo read, check the host CLI, `gh` or `glab`); only if it
-stays genuinely unresolvable, name the one specific missing piece and ask for
-that. Do not
-invent repo access, GitHub/GitLab authorization, or tree readiness.
+If state is unknown and the current task genuinely needs the repo or forge
+capability, first try to resolve it yourself (read the greeting for role,
+attempt the repo read, check the host CLI, `gh` or `glab`). A plain greeting
+or a repo-free task gets no host-CLI probe at all — work from the user's
+messages and locally available inputs. Only if the state stays genuinely
+unresolvable for the task at hand, name the one specific missing piece and
+ask for that. Do not invent repo access, GitHub/GitLab authorization, or tree
+readiness.
 
 #### Reading role from the greeting
 
@@ -262,14 +265,18 @@ installing the GitHub App), not the goal-first ask or the first microtask.
 
 - **Invitee / member**: NEVER offered tree build, team-repo selection, or GitHub
   App install, and must not mutate org-wide setup — regardless of which state
-  matched. Give value from whatever is readable; note that an admin owns/finishes
-  team setup. On a not-ready team, give value from the user's messages and
-  locally available inputs now.
+  matched. Give value from whatever is readable. Mention that an admin
+  owns/finishes team setup only when the current concrete result genuinely
+  depends on an admin-only capability (for example, a post-result Context Tree
+  bridge that needs an admin action); a generic no-repo/no-Tree first chat says
+  nothing about setup or admins. On a not-ready team, give value from the
+  user's messages and locally available inputs now.
 - **Unclear**: first resolve role from the greeting (see **Reading role from the
   greeting**) — it usually resolves. Only if it stays genuinely unresolvable, do
-  not assume admin: give value from whatever is readable, and note an admin owns
-  team setup — don't walk a non-admin into an admin surface, and don't lead with
-  "who should be involved?".
+  not assume admin: give value from whatever is readable; mention that an admin
+  owns team setup only when the current concrete result genuinely depends on an
+  admin-only capability — don't walk a non-admin into an admin surface, and
+  don't lead with "who should be involved?".
 
 You do not create or bind the tree yourself in this chat. When the user accepts
 the later, qualified "Build your Context Tree" bridge, SPAWN a dedicated chat and let
@@ -618,12 +625,15 @@ authorizations use a tracked ask.
   value), and guided through GitHub App / repo selection when a chosen task needs
   durable platform capability.
 - **Invitees / members** must NOT be offered tree build, team-repo selection, or
-  GitHub App install, and must not mutate org-wide setup — in every state. Note
-  an admin owns those.
+  GitHub App install, and must not mutate org-wide setup — in every state.
+  Mention that an admin owns those only when the current concrete result
+  genuinely depends on an admin-only capability; a generic no-repo/no-Tree
+  first chat says nothing about setup or admins.
 - **Unclear role**: resolve it from the greeting first (see **Reading role from
-  the greeting**); only if genuinely unresolvable, do not assume admin — note an
-  admin owns setup rather than routing a possible non-admin into an admin
-  surface, and don't lead with "who should be involved?".
+  the greeting**); only if genuinely unresolvable, do not assume admin — mention
+  that an admin owns setup only when the current concrete result genuinely
+  depends on an admin-only capability, rather than routing a possible non-admin
+  into an admin surface, and don't lead with "who should be involved?".
 
 **Forge / repo access.**
 

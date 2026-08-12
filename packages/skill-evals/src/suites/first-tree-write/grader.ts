@@ -358,6 +358,7 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
   if (evalCase.expected.action === "skip_tree_write_unbound") {
     return (
       metrics.treeCliInvocationCount === 0 &&
+      !metrics.skillFileReadObserved &&
       !metrics.treeChanged &&
       !metrics.treeSetupGuidanceObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
@@ -386,6 +387,11 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
   if (!unboundAction && !metrics.skillFileReadObserved) {
     notes.push("first-tree-write/SKILL.md was not read by the model.");
+  }
+  if (evalCase.expected.action === "skip_tree_write_unbound" && metrics.skillFileReadObserved) {
+    notes.push(
+      "Unbound ordinary task read first-tree-write/SKILL.md; an ordinary task must not route into the Tree write skill.",
+    );
   }
   if (unboundAction && metrics.treeCliInvocationCount > 0) {
     notes.push(`Unbound case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);

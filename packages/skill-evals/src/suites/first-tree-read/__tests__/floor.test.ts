@@ -177,7 +177,7 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.8.2");
+    expect(skillVersion).toBe("0.8.3");
     expect(skill).toContain(`version: ${skillVersion}`);
   });
 
@@ -191,6 +191,10 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("do not\n  expand the absence into bind/create guidance");
     expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
     expect(skill).toContain("the broken binding blocks only Tree reads, not unrelated work");
+    expect(skill).toMatch(
+      /fully\s+declared\s+binding\s+whose\s+local\s+checkout\s+simply\s+does\s+not\s+exist\s+yet\s+is\s+not\s+broken/u,
+    );
+    expect(skill).toContain("materialize it per Tree Location (step 2B)");
   });
 
   it("declares managed-unbound continuation periodic cases", () => {

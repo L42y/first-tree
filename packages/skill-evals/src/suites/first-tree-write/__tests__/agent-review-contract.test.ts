@@ -73,11 +73,22 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toContain("do not expand the absence into bind/create guidance");
     expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
     expect(skill).toContain("the broken binding blocks only the Tree write, never unrelated work");
+    expect(skill).toMatch(
+      /fully\s+declared\s+binding\s+whose\s+local\s+checkout\s+simply\s+does\s+not\s+exist\s+yet\s+is\s+not\s+broken/u,
+    );
+    expect(skill).toMatch(/materialize\s+it\s+per\s+Tree\s+Location\s+before\s+drafting\s+and\s+continue/u);
+  });
+
+  it("keeps the source gate filesystem-first with forge CLIs scoped to forge steps", () => {
+    expect(skill).toMatch(/read local code,\s+history, and existing files from the filesystem and plain `git` first/u);
+    expect(skill).toMatch(/only for forge reads the filesystem cannot\s+answer/u);
+    expect(skill).toMatch(/missing or unauthenticated CLI blocks only that forge step/u);
+    expect(skill).toMatch(/source\s+reading and local drafting continue without it/u);
   });
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.3");
+    expect(version).toBe("0.16.4");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

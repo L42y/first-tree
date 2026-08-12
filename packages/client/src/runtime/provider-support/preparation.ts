@@ -10,7 +10,7 @@
 import type { AgentRuntimeConfig, AgentRuntimeConfigPayload, RuntimeProvider } from "@first-tree/shared";
 import { ensureAgentBootstrap } from "../agent-bootstrap.js";
 import { buildAgentBriefing } from "../agent-briefing.js";
-import type { PredeclaredSourceRepo } from "../bootstrap.js";
+import type { ContextTreeBindingStatus, PredeclaredSourceRepo } from "../bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../chat-context.js";
 import type { SessionContext } from "../handler.js";
 import {
@@ -25,11 +25,16 @@ import { acquireAgentHome, markWorkspaceInitComplete } from "../workspace.js";
 /**
  * Context Tree coordinates carried into the briefing and the stable workspace
  * identity. Grouped because callers always supply the three values together.
+ * `status` carries the tri-state resolution (`bound` / `explicitly-unbound` /
+ * `unresolved`) so the bootstrap knows whether a missing path licenses
+ * manifest retirement (explicit unbind) or last-known-good preservation
+ * (unresolved), and the briefing knows which tree-less variant to render.
  */
 export type ContextTreeCoordinates = {
   path: string | null;
   repoUrl: string | null;
   branch: string | null;
+  status: ContextTreeBindingStatus;
 };
 
 export type PrepareManagedSessionParams = {
@@ -242,6 +247,7 @@ export async function projectManagedWorkspace(
     contextTreePath: contextTree.path,
     contextTreeRepoUrl: contextTree.repoUrl,
     contextTreeBranch: contextTree.branch,
+    contextTreeBindingStatus: contextTree.status,
     teamSkills,
   });
 
@@ -249,6 +255,7 @@ export async function projectManagedWorkspace(
     workspace,
     sessionCtx,
     contextTreePath: contextTree.path,
+    contextTreeBindingStatus: contextTree.status,
     briefing,
     currentSourceRepoNames: currentSourceRepoNamesFromPayload(payload, payloadResolved),
   });
@@ -343,6 +350,7 @@ export type { AgentBootstrapParams } from "../agent-bootstrap.js";
 export { ensureAgentBootstrap } from "../agent-bootstrap.js";
 export type { BuildAgentBriefingOptions } from "../agent-briefing.js";
 export { buildAgentBriefing } from "../agent-briefing.js";
+export type { ContextTreeBindingStatus } from "../bootstrap.js";
 export type { ChatContext } from "../chat-context.js";
 export { fetchChatContext } from "../chat-context.js";
 export type {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FirstTreeHubSDK, type RegisterResult, SdkError } from "../cloud/sdk.js";
 import type { AgentSlotConfig } from "../runtime/agent-slot.js";
+import type { ContextTreeBindingResolution } from "../runtime/bootstrap.js";
 import type { ClientConnection, SessionReconcileResult } from "../runtime/client-connection.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { RuntimeSessionTokenFile } from "../runtime/runtime-session-token-file.js";
@@ -42,7 +43,7 @@ type FakeSessionState = {
 
 type MockState = {
   logger: FakeLogger;
-  syncResult: { path: string; repoUrl: string; branch: string } | null;
+  syncResult: ContextTreeBindingResolution;
   syncCalls: Array<{ sdk: unknown; messages: string[] }>;
   sessions: FakeSessionState[];
   sessionConfigs: unknown[];
@@ -204,7 +205,7 @@ function installMocks(
     logger: makeLogger(),
     syncResult:
       options.syncResult === undefined
-        ? { path: "/tmp/tree", repoUrl: "git@example/tree.git", branch: "main" }
+        ? { status: "bound", binding: { path: "/tmp/tree", repoUrl: "git@example/tree.git", branch: "main" } }
         : options.syncResult,
     syncCalls: [],
     sessions: [],
@@ -1825,7 +1826,10 @@ describe("AgentSlot", () => {
   });
 
   it("logs optional context-tree, push-dispatch, and session-command failures without crashing", async () => {
-    const { slot, connection, state } = await makeSlot({ syncResult: null, omitReconcileInterval: true });
+    const { slot, connection, state } = await makeSlot({
+      syncResult: { status: "explicitly-unbound" },
+      omitReconcileInterval: true,
+    });
     await slot.start();
     const session = state.sessions[0];
     if (!session) throw new Error("session missing");

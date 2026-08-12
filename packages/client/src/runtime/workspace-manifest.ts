@@ -18,7 +18,7 @@
 // pool — that link is tolerated (reads through it keep working) until the agent
 // replaces it with a real clone per its briefing; the runtime never deletes it.
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SOURCE_REPOS_DIRNAME,
@@ -34,6 +34,40 @@ import {
  * across tree rebinds and re-clones.
  */
 export const CONTEXT_TREE_DIRNAME = "context-tree";
+
+/**
+ * Name the runtime-generated manifest is renamed to when the server
+ * affirmatively reports the agent's Context Tree binding as removed. Retired
+ * rather than hard-deleted per repo convention, so an operator can inspect
+ * what the workspace last declared.
+ */
+export const RETIRED_WORKSPACE_MANIFEST_FILENAME = `${WORKSPACE_MANIFEST_FILENAME}.retired`;
+
+/**
+ * Retire `<workspace>/.first-tree/workspace.json` by renaming it to
+ * `workspace.json.retired`, overwriting any prior retired file. Idempotent
+ * no-op when no manifest exists. Never touches `<workspace>/context-tree/` —
+ * without a manifest that checkout is inert residue the agent may still hold
+ * local state in.
+ *
+ * Called only on an EXPLICIT unbind (the server returned `repo: null`). An
+ * unresolved binding (fetch failure / invalid payload) must keep the
+ * last-known-good manifest, so callers must never route that state here.
+ *
+ * Same never-throws-out contract as {@link ensureWorkspaceManifest}: the
+ * agent home is shared across concurrent sessions and a retirement failure
+ * must not fail the session it runs in.
+ */
+export function retireWorkspaceManifest(workspace: string, log?: (msg: string) => void): void {
+  try {
+    const stateDir = join(workspace, WORKSPACE_STATE_DIRNAME);
+    const manifestPath = join(stateDir, WORKSPACE_MANIFEST_FILENAME);
+    if (!existsSync(manifestPath)) return;
+    renameSync(manifestPath, join(stateDir, RETIRED_WORKSPACE_MANIFEST_FILENAME));
+  } catch (err) {
+    log?.(`workspace manifest retirement failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 
 /**
  * Ensure `<workspace>/.first-tree/workspace.json` records

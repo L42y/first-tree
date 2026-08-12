@@ -34,7 +34,7 @@ import {
   resolveSenderLabel,
 } from "./agent-io.js";
 import { findAttachmentFile, writeAttachmentFile } from "./attachment-store.js";
-import { type ContextTreeBinding, resolveAgentContextTreeBinding } from "./bootstrap.js";
+import { type ContextTreeBindingResolution, resolveAgentContextTreeBinding } from "./bootstrap.js";
 import type { SessionConfig } from "./config.js";
 import { reresolveUnboundTree } from "./context-tree-rebind.js";
 import type { SelfFence } from "./doc-snapshots.js";
@@ -441,7 +441,7 @@ type SessionManagerConfig = {
    * `resolveAgentContextTreeBinding(sdk, workspaceRoot)` — pure config
    * resolution, no git; injected as a stub in tests to avoid the HTTP probe.
    */
-  resolveContextTreeBinding?: () => Promise<ContextTreeBinding | null>;
+  resolveContextTreeBinding?: () => Promise<ContextTreeBindingResolution>;
   /** Callback when a session state changes (per-session granularity). */
   onStateChange?: (chatId: string, state: SessionState) => void;
   /** Callback when aggregated runtime state changes. */
@@ -3035,6 +3035,11 @@ export class SessionManager {
    * and patches `handlerConfig` in place — so the handler built in
    * `startNewSession`, and every later session on this slot, sees the tree,
    * installs the First Tree skills, and writes the W1 workspace manifest.
+   *
+   * The full tri-state resolution is tracked in `handlerConfig`: an
+   * explicitly-unbound agent that later gets bound is picked up here, and a
+   * later explicit-unbind or unresolved observation updates the recorded
+   * status (which gates manifest retirement in the agent bootstrap).
    */
   private async ensureContextTreeBinding(): Promise<void> {
     const cfg = this.config.handlerConfig;
@@ -3054,13 +3059,15 @@ export class SessionManager {
         resolveAgentContextTreeBinding(this.config.sdk, this.config.handlerConfig.workspaceRoot, (msg) =>
           this.config.log.info(msg),
         ));
-    const binding = await reresolveUnboundTree(cfg.contextTreePath, resolve);
-    if (!binding) return;
-    cfg.contextTreePath = binding.path;
-    cfg.contextTreeRepoUrl = binding.repoUrl;
-    cfg.contextTreeBranch = binding.branch;
+    const resolution = await reresolveUnboundTree(cfg.contextTreePath, resolve);
+    if (!resolution) return;
+    cfg.contextTreeBindingStatus = resolution.status;
+    if (resolution.status !== "bound") return;
+    cfg.contextTreePath = resolution.binding.path;
+    cfg.contextTreeRepoUrl = resolution.binding.repoUrl;
+    cfg.contextTreeBranch = resolution.binding.branch;
     this.config.log.info(
-      { path: binding.path, repoUrl: binding.repoUrl },
+      { path: resolution.binding.path, repoUrl: resolution.binding.repoUrl },
       "context tree binding resolved lazily (agent was unbound at slot start)",
     );
   }

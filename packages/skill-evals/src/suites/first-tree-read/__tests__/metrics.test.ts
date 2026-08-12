@@ -1089,6 +1089,23 @@ describe("first-tree-read unbound continuation", () => {
     expect(casePassed(false, result, "managed", true)).toBe(true);
   });
 
+  it("fails when the model reads the Tree read skill file during an ordinary task", () => {
+    const result = unboundMetrics([
+      skillReadEvent(),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.skillFileReadObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("must not route into the Tree read skill");
+
+    const grading = buildGrading("case", result, false, false, "managed", true);
+    expect(grading.scores.routing_pass).toBe(false);
+  });
+
   it("fails when the model invokes a Tree CLI command", () => {
     const result = unboundMetrics([
       firstTreeCall(HELP_ARGV),
@@ -1168,6 +1185,16 @@ describe("first-tree-read unbound explicit Tree read", () => {
     const result = explicitReadMetrics([...managedMessage("There is no bound Tree, so I cannot complete that read.")]);
 
     expect(result.unboundGapStatementObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("still passes when the explicit read loads the skill file", () => {
+    const result = explicitReadMetrics([
+      skillReadEvent(),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.skillFileReadObserved).toBe(true);
     expect(casePassed(false, result, "managed", false, true)).toBe(true);
   });
 

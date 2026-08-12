@@ -2,7 +2,11 @@ export type { AgentConfigCache, AgentConfigCacheOptions } from "./agent-config-c
 export { createAgentConfigCache } from "./agent-config-cache.js";
 export type { AgentSlotConfig } from "./agent-slot.js";
 export { AgentSlot } from "./agent-slot.js";
-export type { ContextTreeBinding } from "./bootstrap.js";
+export type {
+  ContextTreeBinding,
+  ContextTreeBindingResolution,
+  ContextTreeBindingStatus,
+} from "./bootstrap.js";
 export { resolveAgentContextTreeBinding } from "./bootstrap.js";
 export type {
   BoundAgent,

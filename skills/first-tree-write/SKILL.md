@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.3
+version: 0.16.4
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -40,8 +40,12 @@ remains intentionally broader than the generic automatic route.
 
 If no concrete source artifact exists, stop and ask for one. Do not invent
 ad-hoc tree edits from memory or from a broad request like "update the tree".
-When the source repo or issue lives on GitHub or GitLab, use its matching CLI
-(`gh` or `glab`) for that source artifact. Before any tree push or review
+When the source repo or issue lives on GitHub or GitLab, read local code,
+history, and existing files from the filesystem and plain `git` first; use
+its matching CLI (`gh` or `glab`) only for forge reads the filesystem cannot
+answer — PR/MRs, issues, review comments, provider metadata — and for publish
+actions. A missing or unauthenticated CLI blocks only that forge step; source
+reading and local drafting continue without it. Before any tree push or review
 request, detect the Context Tree forge from its own `origin`; never infer it
 from the source.
 
@@ -84,10 +88,14 @@ because one is absent.
   no Tree is bound; do not expand the absence into bind/create guidance. An
   explicit first-time Tree creation request routes to `first-tree-seed`, not
   this skill.
-- **Declared but broken:** when a binding is declared by the briefing or
-  workspace manifest but is missing, malformed, or inconsistent, keep failing
-  closed for Tree operations — never guess a Tree. Report the binding gap;
+- **Declared but broken:** "broken" means the binding metadata, resolved
+  path, or upstream identity is malformed or inconsistent — in that case
+  keep failing closed for Tree operations — never guess a Tree. Report
+  the binding gap;
   the broken binding blocks only the Tree write, never unrelated work.
+  A fully declared binding whose local checkout simply does not exist
+  yet is not broken: materialize it per Tree Location before drafting
+  and continue.
 
 ## Invocation Modes
 

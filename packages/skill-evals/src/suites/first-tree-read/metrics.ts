@@ -800,6 +800,7 @@ export function casePassed(
       metrics.impactNoteBehaviorOk &&
       metrics.managedFinalTransportOk &&
       metrics.treeCliInvocationCount === 0 &&
+      !metrics.skillFileReadObserved &&
       metrics.modelFirstTreeCommandsOk &&
       !metrics.treeSetupWordingObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&

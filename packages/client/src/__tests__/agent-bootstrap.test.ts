@@ -9,7 +9,7 @@ const bootstrapMocks = vi.hoisted(() => ({
   writeAgentBriefing: vi.fn(),
 }));
 const migrationMocks = vi.hoisted(() => ({ applyPendingMigrations: vi.fn() }));
-const manifestMocks = vi.hoisted(() => ({ ensureWorkspaceManifest: vi.fn() }));
+const manifestMocks = vi.hoisted(() => ({ ensureWorkspaceManifest: vi.fn(), retireWorkspaceManifest: vi.fn() }));
 
 vi.mock("../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
@@ -151,5 +151,97 @@ describe("ensureAgentBootstrap", () => {
     });
 
     expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+  });
+
+  it("retires the stale manifest on an explicit unbind, on both the normal and sentinel paths", () => {
+    // Bound → explicitly-unbound: the runtime-generated manifest left by a
+    // previously bound session is retired so the next start truly has no
+    // declaration ("unbound = no manifest"). The retirement itself (rename to
+    // `workspace.json.retired`, context-tree/ untouched) is covered by the
+    // workspace-manifest tests; here we assert the bootstrap wiring.
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: null,
+      contextTreeBindingStatus: "explicitly-unbound",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.retireWorkspaceManifest).toHaveBeenCalledWith(workspace, sessionCtx.log);
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
+    mkdirSync(dirname(sentinel), { recursive: true });
+    writeFileSync(sentinel, "1\n");
+    writeFileSync(join(workspace, ".first-tree-workspace", "identity.json"), JSON.stringify({ agentId: "agent-1" }));
+
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: null,
+      contextTreeBindingStatus: "explicitly-unbound",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.retireWorkspaceManifest).toHaveBeenCalledWith(workspace, sessionCtx.log);
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+  });
+
+  it("never retires the manifest on an unresolved binding, on both the normal and sentinel paths", () => {
+    // Unresolved (fetch failure / invalid binding) keeps last-known-good state:
+    // an existing manifest from a previously bound session must survive a
+    // transient outage.
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: null,
+      contextTreeBindingStatus: "unresolved",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.retireWorkspaceManifest).not.toHaveBeenCalled();
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+
+    const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
+    mkdirSync(dirname(sentinel), { recursive: true });
+    writeFileSync(sentinel, "1\n");
+    writeFileSync(join(workspace, ".first-tree-workspace", "identity.json"), JSON.stringify({ agentId: "agent-1" }));
+
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: null,
+      contextTreeBindingStatus: "unresolved",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.retireWorkspaceManifest).not.toHaveBeenCalled();
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+  });
+
+  it("keeps writing the manifest when bound, even with an explicit bound status", () => {
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: "/tree",
+      contextTreeBindingStatus: "bound",
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.ensureWorkspaceManifest).toHaveBeenCalledWith(
+      workspace,
+      ["source-repos/first-tree"],
+      sessionCtx.log,
+    );
+    expect(manifestMocks.retireWorkspaceManifest).not.toHaveBeenCalled();
   });
 });

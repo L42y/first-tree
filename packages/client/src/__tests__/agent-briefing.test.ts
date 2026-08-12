@@ -190,17 +190,20 @@ describe("buildAgentBriefing — generated skeleton", () => {
 
     // Raised from 220 when "Chat Topic & Description" became the single
     // normative Summary authoring contract (shape, exclusions, update timing)
-    // instead of a one-line "background + plan + progress" definition. Every
+    // instead of a one-line "background + plan + progress" definition, and
+    // again from 236 when the always-present generic Capability Degradation
+    // baseline joined the section. Every
     // other consumer — CLI help, docs, SDK/schema comments — points here, so
     // the budget buys prose the agent actually needs on every turn.
     expect(lineCount(topLevelSection(briefing, "# Working in First Tree (First Tree Managed)"))).toBeLessThanOrEqual(
-      236,
+      246,
     );
     expect(briefing).not.toContain("# Required Reading (First Tree Managed)");
     expect(lineCount(topLevelSection(briefing, "# Context Tree (First Tree Managed)"))).toBeLessThanOrEqual(210);
     expect(lineCount(topLevelSection(briefing, "# Skills (First Tree Managed)"))).toBeLessThanOrEqual(20);
-    // Tracks the same +16 the Summary authoring contract adds above.
-    expect(lineCount(briefing)).toBeLessThanOrEqual(596);
+    // Tracks the same +16 and +10 the Summary authoring contract and the
+    // Capability Degradation baseline add above.
+    expect(lineCount(briefing)).toBeLessThanOrEqual(606);
   });
 
   it("renders identity from visibility", () => {
@@ -528,6 +531,16 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(briefing).not.toContain("git clone --bare");
     expect(briefing).not.toContain("declared for this agent");
 
+    // The generic capability-degradation baseline still renders and states the
+    // no-source continuation rules without any setup steering.
+    const baseline = briefing.slice(
+      briefing.indexOf("## Capability Degradation"),
+      briefing.indexOf("## Working Directory"),
+    );
+    expect(baseline).toContain("removes only the operations that depend on that capability");
+    expect(baseline).toMatch(/pasted content\s+and attachments, and locally available inputs/);
+    expect(baseline).toMatch(/a plain directory,\s+pasted content, an attachment, or a repository URL/);
+
     // No proactive bind/create/install pushes: the missing tree is a supported
     // state, and guidance appears only for capability-dependent requests.
     expect(briefing).not.toContain("surface that gap");
@@ -544,6 +557,47 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(briefing).toContain("## Context Tree Policy");
     expect(briefing).toContain("# Skills (First Tree Managed)");
     expect(briefing.endsWith("\n")).toBe(true);
+  });
+
+  it("pins the generic capability-degradation baseline with or without a bound tree", () => {
+    const emptyPayload = {
+      kind: "claude-code" as const,
+      model: "",
+      prompt: { append: "" },
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+      reasoningEffort: "" as const,
+    };
+
+    // (a) fully capability-less session and (b) tree bound but no source repos:
+    // the same generic baseline renders in both, independent of Tree state.
+    for (const contextTreePath of [null, "/tree"]) {
+      const briefing = buildAgentBriefing(makeOpts({ payload: emptyPayload, sourceRepos: [], contextTreePath }));
+      const baseline = briefing.slice(
+        briefing.indexOf("## Capability Degradation"),
+        briefing.indexOf("## Working Directory"),
+      );
+
+      // Positive: the generic rules name every capability and the continuation
+      // and minimal-input rules.
+      expect(baseline).toMatch(
+        /Context Tree, readable source repository, local forge CLI \(`gh`\/`glab`\), or Team\s+binding\/provider\/resources/,
+      );
+      expect(baseline).toContain("removes only the operations that depend on that capability");
+      expect(baseline).toMatch(/the user's messages, chat context, pasted content\s+and attachments/);
+      expect(baseline).toContain("locally available inputs");
+      expect(baseline).toMatch(/a plain directory,\s+pasted content, an attachment, or a repository URL/);
+      expect(baseline).toMatch(/never requiring the user to create, bind, or\s+connect a git repository/);
+
+      // Negative: the baseline itself never steers toward bind/create/connect/
+      // install or repo setup as a precondition.
+      expect(baseline).not.toMatch(/ask (?:the user|a human) to (?:bind|create|connect|install)/i);
+      expect(baseline).not.toContain("connect a repository");
+      expect(baseline).not.toMatch(/\binstall\b/iu);
+      expect(baseline).not.toMatch(/set up a (?:git )?(?:repo|repository|tree)/iu);
+    }
   });
 
   it("keeps the Communication matrix markers and rich-body safety rules", () => {
@@ -977,6 +1031,42 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).not.toContain("surface the missing binding/setup gap");
     expect(tree).not.toContain("confirmed org admin");
     expect(tree).not.toContain("first-tree-onboarding");
+  });
+
+  it("renders the tree-less wording only for an explicit unbind, never for an unresolved binding", () => {
+    const unbound = topLevelSection(
+      buildAgentBriefing(makeOpts({ contextTreePath: null, contextTreeBindingStatus: "explicitly-unbound" })),
+      "# Context Tree (First Tree Managed)",
+    );
+    expect(unbound).toContain("At briefing generation time this agent had no Context Tree bound");
+    expect(unbound).toContain("This briefing was generated without a bound tree — a supported state");
+
+    const unresolved = topLevelSection(
+      buildAgentBriefing(makeOpts({ contextTreePath: null, contextTreeBindingStatus: "unresolved" })),
+      "# Context Tree (First Tree Managed)",
+    );
+    expect(unresolved).not.toContain("had no Context Tree bound");
+    expect(unresolved).not.toContain("generated without a bound Context Tree");
+    expect(unresolved).not.toContain("without a bound tree — a supported state");
+    expect(unresolved).not.toContain("because no Tree is bound");
+  });
+
+  it("renders the unresolved-binding variant: ordinary tasks continue, Tree unavailable, no setup pushes", () => {
+    const briefing = buildAgentBriefing(makeOpts({ contextTreePath: null, contextTreeBindingStatus: "unresolved" }));
+    const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
+    // Ordinary tasks continue untouched.
+    expect(tree).toContain("The Context Tree binding could not be confirmed");
+    expect(tree).toMatch(/Ordinary tasks proceed from the user's messages, chat context, and local\s+inputs/);
+    expect(tree).toMatch(/Ordinary tasks continue without the Tree/);
+    // Explicit Tree read/write/audit requests report only that the Tree is
+    // currently unavailable because the binding could not be confirmed.
+    expect(tree).toMatch(/the Tree is currently unavailable because the binding\s+could not be confirmed/);
+    expect(tree).toMatch(/The runtime re-resolves the binding at a later\s+session start/);
+    // No "no Context Tree is bound" claims and no setup pushes.
+    expect(tree).not.toContain("supported state, not a gap to fix");
+    expect(tree).not.toContain("pushing the user to bind or create one");
+    expect(tree).not.toContain("build/set-up request loads `first-tree-seed`");
+    expect(tree).not.toContain("**build / set up the Context Tree** request");
   });
 
   it("shell-quotes interpolated tree clone command values", () => {

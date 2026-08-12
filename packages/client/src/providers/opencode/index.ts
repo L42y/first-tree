@@ -19,6 +19,7 @@ import type {
 import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
 import type {
   AgentConfigCache,
+  ContextTreeBindingStatus,
   ProviderAttemptSettlement,
   ProviderProcessSupervisor,
 } from "../../runtime/provider-support/index.js";
@@ -303,6 +304,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextTreeBindingStatus =
+    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
+    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   const resolveBinary =
     (config.opencodeBinaryResolver as typeof resolveOpenCodeRuntimeBinary | undefined) ?? resolveOpenCodeRuntimeBinary;
   const processSupervisor =
@@ -439,6 +443,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
+        status: contextTreeBindingStatus,
       },
       markInitComplete: true,
     });
@@ -1175,6 +1180,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
+        status: contextTreeBindingStatus,
       },
     });
     cwd = prepared.workspace;

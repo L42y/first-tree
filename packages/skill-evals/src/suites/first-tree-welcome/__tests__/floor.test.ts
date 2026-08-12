@@ -165,6 +165,21 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).toContain("If First Tree says no repo is connected, that alone prompts nothing");
   });
 
+  it("never turns a missing capability into proactive probing or setup talk", () => {
+    // Host-CLI probing is scoped to tasks that genuinely need repo/forge
+    // capability; a plain greeting or repo-free task triggers no probe.
+    expect(skillMarkdown).toMatch(
+      /current task genuinely needs the repo or forge\s+capability, first try to resolve it yourself/u,
+    );
+    expect(skillMarkdown).toMatch(/A plain greeting\s+or a repo-free task gets no host-CLI probe at all/u);
+    // The admin handoff is mentioned only when the concrete result genuinely
+    // depends on an admin-only capability; never proactively in a generic chat.
+    expect(skillMarkdown).toMatch(
+      /owns\/finishes\s+team setup only when the current concrete result genuinely\s+depends on an admin-only capability/u,
+    );
+    expect(skillMarkdown).toMatch(/generic no-repo\/no-Tree first chat says\s+nothing about setup or admins/u);
+  });
+
   it("keeps later fan-out separate from the first microtask", () => {
     expect(skillMarkdown).toContain("Only after the user explicitly asks for multiple larger tasks");
     expect(skillMarkdown).toMatch(/The first microtask never fans out/iu);

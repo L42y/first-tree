@@ -129,6 +129,11 @@ export function driftNote(
   }
 
   if (unboundContinuation) {
+    if (metrics.skillFileReadObserved) {
+      notes.push(
+        "Unbound ordinary task read first-tree-read/SKILL.md; an ordinary task must not route into the Tree read skill.",
+      );
+    }
     if (!metrics.expectedFactsObserved) {
       notes.push("Unbound case did not continue the task from local inputs; expected answer facts were not surfaced.");
     }
@@ -174,11 +179,13 @@ export function buildGrading(
   const unbound = unboundContinuation || unboundExplicitRead;
   const unexpectedReadUse =
     metrics.skillHit || metrics.firstTreeCalls > 0 || metrics.firstTreeCommandResults.length > 0;
-  const routingPass = unbound
+  const routingPass = unboundExplicitRead
     ? metrics.treeCliInvocationCount === 0
-    : expectedTrigger
-      ? metrics.skillFileReadObserved
-      : !unexpectedReadUse;
+    : unboundContinuation
+      ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved
+      : expectedTrigger
+        ? metrics.skillFileReadObserved
+        : !unexpectedReadUse;
   const byoProcessPassed =
     readMode === "managed" ||
     (metrics.readRouteSucceeded &&
@@ -236,7 +243,9 @@ export function buildGrading(
         "routing_pass",
         expectedTrigger
           ? `trigger case skill file read observed=${metrics.skillFileReadObserved}`
-          : `non-trigger case unexpected skill/tree usage observed=${unexpectedReadUse}`,
+          : unbound
+            ? `unbound case tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}`
+            : `non-trigger case unexpected skill/tree usage observed=${unexpectedReadUse}`,
       ),
       evidence(
         "process_pass",

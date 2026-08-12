@@ -1,4 +1,4 @@
-import type { ContextTreeBinding } from "./bootstrap.js";
+import type { ContextTreeBindingResolution } from "./bootstrap.js";
 
 /**
  * Lazily re-resolve an agent's Context Tree binding when it started its slot
@@ -13,21 +13,25 @@ import type { ContextTreeBinding } from "./bootstrap.js";
  * This decides whether a fresh re-resolution is warranted at session start:
  *   - already bound (`currentPath` is a non-empty string) → returns null and
  *     does NOT call `resolve`, so the steady-state path pays nothing;
- *   - unbound → calls `resolve` once and returns whatever it produced (a
- *     binding, or null when the org still has no tree).
+ *   - unbound → calls `resolve` once and returns whatever it produced (the
+ *     full tri-state resolution: a fresh binding, an explicit unbind, or an
+ *     unresolved state when the org still has no tree / the server is
+ *     unreachable).
  *
- * Never throws — a failed re-resolution just leaves the session unbound for
- * this turn (the next new session retries). The caller owns applying the
- * returned binding to its (mutable) handler config.
+ * Never throws — a failed re-resolution degrades to the `unresolved` status
+ * for this turn (the next new session retries). The caller owns applying the
+ * returned resolution to its (mutable) handler config, including tracking the
+ * status so an explicitly-unbound agent that later gets bound is picked up
+ * and a later unbind transition updates the recorded status.
  */
 export async function reresolveUnboundTree(
   currentPath: unknown,
-  resolve: () => Promise<ContextTreeBinding | null>,
-): Promise<ContextTreeBinding | null> {
+  resolve: () => Promise<ContextTreeBindingResolution>,
+): Promise<ContextTreeBindingResolution | null> {
   if (typeof currentPath === "string" && currentPath.length > 0) return null;
   try {
     return await resolve();
   } catch {
-    return null;
+    return { status: "unresolved" };
   }
 }

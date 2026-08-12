@@ -1,9 +1,14 @@
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SOURCE_REPOS_DIRNAME } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONTEXT_TREE_DIRNAME, ensureWorkspaceManifest } from "../runtime/workspace-manifest.js";
+import {
+  CONTEXT_TREE_DIRNAME,
+  ensureWorkspaceManifest,
+  RETIRED_WORKSPACE_MANIFEST_FILENAME,
+  retireWorkspaceManifest,
+} from "../runtime/workspace-manifest.js";
 
 describe("ensureWorkspaceManifest", () => {
   let ws: string;
@@ -114,5 +119,78 @@ describe("ensureWorkspaceManifest", () => {
 
     expect(existsSync(manifestPath())).toBe(false);
     expect(logs.some((line) => line.includes("workspace manifest skipped: schema rejected manifest"))).toBe(true);
+  });
+});
+
+describe("retireWorkspaceManifest", () => {
+  let ws: string;
+
+  beforeEach(() => {
+    ws = mkdtempSync(join(tmpdir(), "ft-ws-retire-"));
+  });
+  afterEach(() => {
+    rmSync(ws, { recursive: true, force: true });
+  });
+
+  const manifestPath = () => join(ws, ".first-tree", "workspace.json");
+  const retiredPath = () => join(ws, ".first-tree", RETIRED_WORKSPACE_MANIFEST_FILENAME);
+
+  it("renames the manifest to workspace.json.retired", () => {
+    expect(RETIRED_WORKSPACE_MANIFEST_FILENAME).toBe("workspace.json.retired");
+    ensureWorkspaceManifest(ws, ["app"]);
+
+    retireWorkspaceManifest(ws);
+
+    expect(existsSync(manifestPath())).toBe(false);
+    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["app"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("overwrites a prior retired file on repeated retirements", () => {
+    mkdirSync(join(ws, ".first-tree"), { recursive: true });
+    writeFileSync(retiredPath(), "prior retired manifest\n");
+    ensureWorkspaceManifest(ws, ["api"]);
+
+    retireWorkspaceManifest(ws);
+
+    expect(existsSync(manifestPath())).toBe(false);
+    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["api"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("is an idempotent no-op when no manifest exists", () => {
+    expect(() => retireWorkspaceManifest(ws)).not.toThrow();
+    expect(existsSync(retiredPath())).toBe(false);
+  });
+
+  it("never touches the context-tree/ checkout", () => {
+    const treeDir = join(ws, CONTEXT_TREE_DIRNAME);
+    mkdirSync(treeDir, { recursive: true });
+    writeFileSync(join(treeDir, "NODE.md"), "local state\n");
+    ensureWorkspaceManifest(ws, ["app"]);
+
+    retireWorkspaceManifest(ws);
+
+    expect(readFileSync(join(treeDir, "NODE.md"), "utf-8")).toBe("local state\n");
+    expect(existsSync(manifestPath())).toBe(false);
+    expect(existsSync(retiredPath())).toBe(true);
+  });
+
+  it("logs and continues when the rename fails", () => {
+    // A directory at the retired path cannot be overwritten by renameSync.
+    ensureWorkspaceManifest(ws, ["app"]);
+    mkdirSync(join(ws, ".first-tree", RETIRED_WORKSPACE_MANIFEST_FILENAME), { recursive: true });
+    const logs: string[] = [];
+
+    expect(() => retireWorkspaceManifest(ws, (msg) => logs.push(msg))).not.toThrow();
+
+    expect(logs.some((line) => line.includes("workspace manifest retirement failed"))).toBe(true);
+    expect(existsSync(manifestPath())).toBe(true);
   });
 });

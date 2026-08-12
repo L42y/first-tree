@@ -386,7 +386,7 @@ describe("Pi handler → SessionManager custody", () => {
       concurrency: 5,
       handlerFactory: () => handler,
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -463,7 +463,7 @@ describe("Pi handler → SessionManager custody", () => {
         return handler;
       },
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -617,7 +617,7 @@ describe("Pi handler → SessionManager custody", () => {
           piRetrySleep: gatedSleep,
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -747,7 +747,7 @@ describe("Pi handler → SessionManager custody", () => {
       concurrency: 5,
       handlerFactory: () => deferredHandler,
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -966,7 +966,7 @@ describe("Pi handler → SessionManager custody", () => {
       concurrency: 5,
       handlerFactory: () => deferredHandler,
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -1133,7 +1133,7 @@ describe("Pi handler → SessionManager custody", () => {
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -1563,7 +1563,7 @@ describe("Pi handler → SessionManager custody", () => {
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -1666,7 +1666,7 @@ describe("Pi handler → SessionManager custody", () => {
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => null,
+      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",

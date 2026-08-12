@@ -154,7 +154,11 @@ export { readCanonicalContextTreeWriteRouting } from "./runtime/agent-briefing.j
 // Runtime
 export type { AgentSlotConfig } from "./runtime/agent-slot.js";
 export { AgentSlot } from "./runtime/agent-slot.js";
-export type { ContextTreeBinding } from "./runtime/bootstrap.js";
+export type {
+  ContextTreeBinding,
+  ContextTreeBindingResolution,
+  ContextTreeBindingStatus,
+} from "./runtime/bootstrap.js";
 export {
   ensureWorkspaceRuntimeDir,
   migrateLegacyRuntimeLayout,

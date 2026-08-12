@@ -59,7 +59,12 @@ export function buildGrading(
   const treeDiffPass = expectedNoDiff
     ? !metrics.treeChanged
     : metrics.treeChanged && metrics.expectedDiffSnippetsObserved;
-  const routingPass = unboundAction ? metrics.treeCliInvocationCount === 0 : metrics.skillFileReadObserved;
+  const unboundSkip = evalCase.expected.action === "skip_tree_write_unbound";
+  const routingPass = unboundSkip
+    ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved
+    : unboundAction
+      ? metrics.treeCliInvocationCount === 0
+      : metrics.skillFileReadObserved;
   const processPass =
     metrics.fixtureValidationOk &&
     metrics.runnerExitCode === 0 &&
@@ -111,9 +116,11 @@ export function buildGrading(
     evidence: [
       evidence(
         "routing_pass",
-        unboundAction
-          ? `unbound case Tree CLI invocations=${metrics.treeCliInvocationCount}`
-          : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
+        unboundSkip
+          ? `unbound ordinary case Tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}`
+          : unboundAction
+            ? `unbound case Tree CLI invocations=${metrics.treeCliInvocationCount}`
+            : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
       ),
       evidence(
         "process_pass",
