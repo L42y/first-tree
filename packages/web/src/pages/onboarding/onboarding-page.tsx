@@ -33,21 +33,32 @@ import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
  * Context access does not write onboarding completion.
  */
 export function OnboardingPage() {
-  const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
-    useAuth();
+  const {
+    meLoaded,
+    role,
+    onboardingStep,
+    onboardingDismissedAt,
+    onboardingCompletedAt,
+    currentOrgHasPersonalAgent,
+    currentMembership,
+  } = useAuth();
   const leaveDecision = useRef<boolean | null>(null);
 
   if (!meLoaded) {
     return <div className="min-h-screen bg-background" />;
   }
   if (leaveDecision.current === null) {
-    leaveDecision.current = shouldLeaveOnboarding({
-      meLoaded,
-      onboardingStep,
-      onboardingSuppressedAt: onboardingDismissedAt,
-      currentOrgHasPersonalAgent,
-      onboardingCompletedAt,
-    });
+    const agentFirstCreator =
+      currentMembership?.onboardingSuppressedReason === "invitee_skip" && currentOrgHasPersonalAgent;
+    leaveDecision.current =
+      agentFirstCreator ||
+      shouldLeaveOnboarding({
+        meLoaded,
+        onboardingStep,
+        onboardingSuppressedAt: onboardingDismissedAt,
+        currentOrgHasPersonalAgent,
+        onboardingCompletedAt,
+      });
   }
   if (leaveDecision.current) {
     return <Navigate to="/" replace />;

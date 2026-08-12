@@ -70,6 +70,7 @@ export type SetupFacts = {
   hasUsableAgent: boolean;
   hasPersonalAgent: boolean;
   onboardingSuppressedAt: string | null;
+  onboardingSuppressedReason: "finish_later" | "completed" | "invitee_skip" | null;
   onboardingCompletedAt: string | null;
   workspaceWillEnterOnboarding: boolean;
   computers: Fact<{ connected: number; saved: number; connectedHostname: string | null }>;
@@ -488,7 +489,14 @@ function combineContextTreeAndReviewStatus(
 export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
   const isAdmin = facts.role === "admin";
   const reliesOnTeamAgent = facts.hasUsableAgent && !facts.hasPersonalAgent;
-  const resumeSetup = facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null;
+  // `invitee_skip` is the existing persisted marker for an explicit Team-Agent
+  // start. When this membership already manages that Agent, the Agent-first
+  // journey continues on its Runtime surface; clearing the marker would route
+  // the Admin back into the retired Team naming / duplicate-Agent flow. An
+  // invitee who still has no personal Agent keeps the existing resumable path.
+  const agentFirstCreator = facts.onboardingSuppressedReason === "invitee_skip" && facts.hasPersonalAgent;
+  const resumeSetup =
+    facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null && !agentFirstCreator;
 
   const computerStatus =
     facts.computers.state === "loading"
@@ -648,6 +656,7 @@ export function SettingsSetupPage() {
     onboardingStep,
     onboardingDismissedAt,
     onboardingCompletedAt,
+    currentMembership,
     restoreOnboarding,
   } = useAuth();
 
@@ -699,6 +708,7 @@ export function SettingsSetupPage() {
     hasUsableAgent: currentOrgHasUsableAgent,
     hasPersonalAgent: currentOrgHasPersonalAgent,
     onboardingSuppressedAt: onboardingDismissedAt,
+    onboardingSuppressedReason: currentMembership?.onboardingSuppressedReason ?? null,
     onboardingCompletedAt,
     workspaceWillEnterOnboarding: shouldEnterOnboarding({
       meLoaded,

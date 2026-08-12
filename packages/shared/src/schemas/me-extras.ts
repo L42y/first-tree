@@ -226,7 +226,9 @@ export const provisionFirstTeamAgentSchema = z
     requestId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
     name: agentNameSchema.optional(),
     displayName: z.string().min(1).max(200).optional(),
-    templateIds: agentTemplateIdsSchema.optional(),
+    templateIds: agentTemplateIdsSchema.refine((ids) => ids.length === 1, {
+      message: "First Team Agent provisioning requires exactly one Template.",
+    }),
   })
   .strict();
 export type ProvisionFirstTeamAgent = z.infer<typeof provisionFirstTeamAgentSchema>;

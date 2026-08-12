@@ -41,12 +41,24 @@ async function createTeamlessUser(app: TestApp, displayName = "Solo Owner"): Pro
   return { userId, username, displayName, accessToken: tokens.accessToken };
 }
 
-function provision(app: TestApp, user: { accessToken: string }, payload: Record<string, unknown> = {}) {
+const defaultTemplateIds = new WeakMap<TestApp, Promise<string>>();
+
+function defaultTemplateId(app: TestApp): Promise<string> {
+  let pending = defaultTemplateIds.get(app);
+  if (!pending) {
+    pending = publishTemplate(app, `default-${crypto.randomUUID().slice(0, 8)}`);
+    defaultTemplateIds.set(app, pending);
+  }
+  return pending;
+}
+
+async function provision(app: TestApp, user: { accessToken: string }, payload: Record<string, unknown> = {}) {
+  const templateIds = "templateIds" in payload ? payload.templateIds : [await defaultTemplateId(app)];
   return app.inject({
     method: "POST",
     url: "/api/v1/me/team-agents",
     headers: { authorization: `Bearer ${user.accessToken}` },
-    payload: { requestId: uuidv7(), ...payload },
+    payload: { requestId: uuidv7(), ...payload, templateIds },
   });
 }
 
@@ -279,14 +291,16 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     try {
       const { provisionFirstTeamAgent } = await import("../services/team/first-team-agent.js");
       const requestId = uuidv7();
+      const templateId = await defaultTemplateId(app);
       const results = await Promise.all(
         [firstDb, secondDb].map((db) =>
           provisionFirstTeamAgent(
             db,
-            { userId: user.userId, requestId, name: "concurrent-teammate" },
+            { userId: user.userId, requestId, name: "concurrent-teammate", templateIds: [templateId] },
             {
               attachmentBlobStore: app.attachmentBlobStore,
               idempotencySecret: app.config.secrets.jwtSecret,
+              templatePublisherOrgId: PUBLISHER_ORG_ID,
             },
           ),
         ),
@@ -522,6 +536,27 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     expect(await app.db.select().from(members).where(eq(members.userId, outsider.userId))).toEqual([]);
   });
 
+  it("requires exactly one selected Template before creating the first Team", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Template Required Owner");
+
+    for (const templateIds of [undefined, [], [uuidv7(), uuidv7()]]) {
+      const reply = await app.inject({
+        method: "POST",
+        url: "/api/v1/me/team-agents",
+        headers: { authorization: `Bearer ${user.accessToken}` },
+        payload: {
+          requestId: uuidv7(),
+          name: "template-required",
+          ...(templateIds === undefined ? {} : { templateIds }),
+        },
+      });
+      expect(reply.statusCode).toBe(400);
+    }
+
+    expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);
+  });
+
   it("disambiguates the Team slug when two users provision under the same name", async () => {
     const app = getApp();
     const login = `duplicate-${crypto.randomUUID().slice(0, 6)}`;
@@ -565,7 +600,10 @@ describe("POST /me/team-agents on an invitation-only deployment", () => {
     const app = getApp();
     const user = await createTeamlessUser(app, "Uninvited");
 
-    const reply = await provision(app, user, { name: "uninvited-teammate" });
+    // Authorization rejects before adoption, so the Template only needs to be
+    // contract-valid; invitation-only mode intentionally blocks publishing a
+    // fixture through the same Team-less account path.
+    const reply = await provision(app, user, { name: "uninvited-teammate", templateIds: [uuidv7()] });
 
     expect(reply.statusCode).toBe(403);
     expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);

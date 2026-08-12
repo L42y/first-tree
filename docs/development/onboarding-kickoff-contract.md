@@ -72,12 +72,14 @@ and the adjacent campaign quickstart handoff.
 - A `/me/onboarding/kickoff` request may carry `stamp` to say how the
   membership's onboarding state is stamped once the kickoff chat exists:
   `"completed"` (default, same as the older `complete: true`), `"none"`
-  (same as `complete: false`), or `"invitee_skip"` — the team-agent start.
-  `"invitee_skip"` is used when a joining member starts their first chat with a
-  teammate's org-visible agent instead of creating their own: it writes only
+  (same as `complete: false`), or `"invitee_skip"` — the legacy wire name for
+  an explicit Team-Agent start. It is used both when a joining member starts
+  with a teammate's org-visible Agent and when a Team-less creator confirms
+  their own first Team Agent: it writes only
   the auto-open suppressor (`onboarding_suppressed_reason = "invitee_skip"`),
-  never `onboarding_completed_at`, so the standard connect-computer →
-  create-agent journey stays pending and resumable. `stamp` supersedes
+  never `onboarding_completed_at`. An invitee without a personal Agent may
+  resume the standard personal-Agent journey; a creator who already manages
+  the confirmed Agent continues on that Agent's Runtime surface. `stamp` supersedes
   `complete` when both are present; the kickoff key stays the normal
   `<humanAgent>:<agent>:onboarding` key, so a team-agent start and a later
   personal-agent start-chat are distinct chats.

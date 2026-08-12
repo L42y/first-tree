@@ -7,24 +7,40 @@ import {
 } from "../schemas/me-extras.js";
 
 describe("provisionFirstTeamAgentSchema", () => {
-  it("requires a stable UUID-v7 request identity and keeps the body user-scoped", () => {
+  it("requires a stable UUID-v7 request identity, one Template, and keeps the body user-scoped", () => {
+    const templateId = "0190f000-0000-7000-8000-000000000002";
     expect(
       provisionFirstTeamAgentSchema.parse({
         requestId: "0190f000-0000-7000-8000-000000000001",
         name: "pr-engineer",
+        templateIds: [templateId],
       }),
-    ).toEqual({ requestId: "0190f000-0000-7000-8000-000000000001", name: "pr-engineer" });
+    ).toEqual({ requestId: "0190f000-0000-7000-8000-000000000001", name: "pr-engineer", templateIds: [templateId] });
     expect(provisionFirstTeamAgentSchema.safeParse({ name: "pr-engineer" }).success).toBe(false);
     expect(
       provisionFirstTeamAgentSchema.safeParse({
         requestId: "3d594650-3436-4f87-9f5a-8ac4d3f7f6b3",
         name: "pr-engineer",
+        templateIds: [templateId],
       }).success,
     ).toBe(false);
     expect(
       provisionFirstTeamAgentSchema.safeParse({
         requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [templateId],
         organizationId: "org-hidden-in-body",
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [templateId, "0190f000-0000-7000-8000-000000000003"],
       }).success,
     ).toBe(false);
   });

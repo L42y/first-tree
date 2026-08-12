@@ -40,7 +40,10 @@ type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
  * lock before member rows so authorization cannot be decided from a stale
  * roster while a competing lifecycle transaction commits.
  */
-export async function lockMembershipLifecycleUser(db: DbLike, userId: string) {
+export async function lockMembershipLifecycleUser(
+  db: DbLike,
+  userId: string,
+): Promise<{ id: string; username: string; displayName: string }> {
   const [user] = await db
     .select({ id: users.id, username: users.username, displayName: users.displayName })
     .from(users)
@@ -618,11 +621,9 @@ type CreatePersonalTeamInput = {
  *   - First try: `${username}` (lowercased, sanitized)
  *   - On collision: append a 4-char hex disambiguator
  *
- * Default team display name is `${displayName}'s team` (set by the caller — see
- * first-tree-context:agent-hub/onboarding.md (was §5.5 in source design)). Reads as "this is a collective
- * space" from day one so a later teammate-invite doesn't surface a label
- * that looks like a private sandbox. Users can rename via Step 1 of the
- * onboarding flow or Settings.
+ * The caller derives the default display name from the user. It reads as a
+ * collective space from day one so a later teammate invite does not surface
+ * something that looks like a private sandbox; users can rename it in Settings.
  */
 export async function createPersonalTeam(db: Database, input: CreatePersonalTeamInput) {
   const baseSlug = sanitizeOrgSlug(input.username);
@@ -793,7 +794,7 @@ export async function leaveOrganization(db: Database, memberId: string) {
  *
  * The user only ever names the team's `displayName`; the slug is derived
  * server-side and disambiguated by `insertOrgWithSlugRetry`, exactly like the
- * personal team minted at sign-in. That matters because the slug is globally
+ * first Team created at an explicit Agent start. That matters because the slug is globally
  * unique and is not a per-tenant name: letting a client send it made every
  * team whose display name carries no ASCII alphanumerics collapse onto the
  * same `"team"` fallback slug, so the first such team anywhere blocked every

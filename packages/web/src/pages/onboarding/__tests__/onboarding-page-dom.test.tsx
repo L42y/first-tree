@@ -17,6 +17,7 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: null as string | null,
     currentOrgHasUsableAgent: false,
     currentOrgHasPersonalAgent: false,
+    currentMembership: null as { onboardingSuppressedReason: string | null } | null,
   },
 }));
 
@@ -97,6 +98,7 @@ beforeEach(() => {
     onboardingCompletedAt: null,
     currentOrgHasUsableAgent: false,
     currentOrgHasPersonalAgent: false,
+    currentMembership: null,
   };
   flowMock.activeStep = "create-team";
   document.body.innerHTML = "";
@@ -128,6 +130,20 @@ describe("OnboardingPage", () => {
     const container = await renderRoute(<OnboardingPage />);
 
     expect(container.textContent).toContain("Workspace Home");
+  });
+
+  it("does not reopen legacy onboarding for an Agent-first creator", async () => {
+    authMock.value = {
+      ...authMock.value,
+      onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
+      currentOrgHasPersonalAgent: true,
+      currentMembership: { onboardingSuppressedReason: "invitee_skip" },
+    };
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toBe("Workspace Home");
+    expect(container.textContent).not.toContain("Create Team Step");
   });
 
   it("keeps a user in the flow on a hard reload after create-agent (no completion stamp yet)", async () => {

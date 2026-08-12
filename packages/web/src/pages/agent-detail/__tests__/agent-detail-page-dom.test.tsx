@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import { ToastProvider } from "../../../components/ui/toast.js";
+import type { StoredCampaignActionHandoff } from "../../../utils/onboarding-flags.js";
 import { ResponsibilitiesTab } from "../responsibilities-tab.js";
 import { UsageTab } from "../usage-tab.js";
 
@@ -72,6 +73,15 @@ const providerModelMocks = vi.hoisted(() => ({
   getProviderModels: vi.fn(),
 }));
 
+const meChatMocks = vi.hoisted(() => ({
+  createMeTaskChat: vi.fn(),
+}));
+
+const onboardingFlagMocks = vi.hoisted(() => ({
+  readCampaignActionHandoffFlag: vi.fn((): StoredCampaignActionHandoff | null => null),
+  writeCampaignActionHandoffFlag: vi.fn(),
+}));
+
 vi.mock("../../../api/activity.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../api/activity.js")>()),
   listClients: activityMocks.listClients,
@@ -110,6 +120,13 @@ vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
 // exercise (catalog rendering is covered in model-section-catalog.test.tsx).
 vi.mock("../../../api/provider-models.js", () => ({
   getProviderModels: providerModelMocks.getProviderModels,
+}));
+
+vi.mock("../../../api/me-chats.js", () => meChatMocks);
+
+vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../utils/onboarding-flags.js")>()),
+  ...onboardingFlagMocks,
 }));
 
 const NOW = "2026-05-28T12:00:00.000Z";
@@ -469,6 +486,8 @@ beforeEach(() => {
   authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
   providerModelMocks.getProviderModels.mockResolvedValue(null);
+  meChatMocks.createMeTaskChat.mockResolvedValue({ chatId: "chat-campaign" });
+  onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue(null);
   agentMocks.getAgent.mockResolvedValue(agent());
   // Cross-agent navigation helpers use the same agent list as the Team surface.
   const switcherAgents = {
@@ -1444,6 +1463,58 @@ describe("AgentDetailPage", () => {
     await click(container.querySelector('button[aria-label="Start chat"]'));
     await waitForText(container, "/?c=draft&with=agent-1");
     expect(container.textContent).toContain("/?c=draft&with=agent-1");
+
+    await act(async () => root.unmount());
+  });
+
+  it("starts the stored campaign task with this exact Agent from the header", async () => {
+    const { PromptTab } = await import("../prompt-tab.js");
+    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: "acme-backend-20260812-abcdef",
+    });
+
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Start chat");
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+
+    await waitForCondition(() => meChatMocks.createMeTaskChat.mock.calls.length === 1, "Expected campaign task create");
+    expect(meChatMocks.createMeTaskChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "task",
+        topic: "Fix production scan blockers",
+        campaignAction: { campaign: "production-scan", repoSlug: "acme/backend" },
+        initialRecipientAgentIds: ["agent-1"],
+        initialMessage: expect.objectContaining({
+          source: "web",
+          content: expect.stringContaining("https://github.com/acme/backend"),
+        }),
+      }),
+    );
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
+    await waitForText(container, "/?c=chat-campaign");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a failed stored campaign task retryable from the Agent header", async () => {
+    const { PromptTab } = await import("../prompt-tab.js");
+    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+    });
+    meChatMocks.createMeTaskChat.mockRejectedValueOnce(new Error("server unavailable"));
+
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Start chat");
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+
+    await waitForText(container, "Couldn't start this task");
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("/?c=chat-campaign");
 
     await act(async () => root.unmount());
   });

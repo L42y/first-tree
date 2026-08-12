@@ -20,6 +20,7 @@ import {
   updateAgent,
 } from "./../api/agents.js";
 import { ApiError } from "./../api/client.js";
+import { createMeTaskChat } from "./../api/me-chats.js";
 import { useAuth } from "./../auth/auth-context.js";
 import { Avatar } from "./../components/avatar.js";
 import { AgentAvailability } from "./../components/ui/agent-availability.js";
@@ -39,6 +40,7 @@ import { useWorkspaceViewport } from "./../hooks/use-viewport.js";
 import { deriveAgentAvailability } from "./../lib/agent-availability.js";
 import { invalidateDisplayNameQueries } from "./../lib/identity-cache.js";
 import { cn } from "./../lib/utils.js";
+import { readCampaignActionHandoffFlag, writeCampaignActionHandoffFlag } from "./../utils/onboarding-flags.js";
 import { canManageAgentDetail } from "./agent-detail/access.js";
 import { isBindableClient } from "./agent-detail/action-state.js";
 import { AgentSwitcher } from "./agent-detail/agent-switcher.js";
@@ -52,6 +54,9 @@ import {
 } from "./agent-detail/tabs.js";
 import { useAgentConfigSave } from "./agent-detail/use-agent-config-save.js";
 import { PROVIDER_ORDER, runtimeProviderLabel } from "./clients/cards/shared/providers.js";
+import { getCampaign } from "./quickstart/campaigns.js";
+import { normalizeGitHubRepoUrl } from "./quickstart/intent.js";
+import { buildCampaignActionBootstrap } from "./workspace/center/onboarding/bootstrap-prose.js";
 
 type RuntimeSwitchDialogStep = "target" | "confirm";
 
@@ -133,6 +138,8 @@ function AgentDetailPageView() {
 
   const [dangerError, setDangerError] = useState<string | null>(null);
   const [reactivateError, setReactivateError] = useState<string | null>(null);
+  const [chatStartError, setChatStartError] = useState<string | null>(null);
+  const [chatStartPending, setChatStartPending] = useState(false);
 
   const currentAgentStatus = agentQuery.data?.status;
   const currentAgentClientId = agentQuery.data?.clientId;
@@ -435,7 +442,43 @@ function AgentDetailPageView() {
     onDelete: () => deleteMutation.mutate(),
   };
 
-  const openChat = () => {
+  const openChat = async () => {
+    const campaignHandoff = readCampaignActionHandoffFlag();
+    const campaign = campaignHandoff ? getCampaign(campaignHandoff.campaign) : null;
+    if (campaignHandoff && campaign?.action) {
+      setChatStartError(null);
+      setChatStartPending(true);
+      try {
+        const repoSlug = campaignHandoff.repoSlug ?? normalizeGitHubRepoUrl(campaignHandoff.repoUrl)?.repoSlug;
+        if (!repoSlug) throw new Error("The saved repository is no longer valid");
+        const created = await createMeTaskChat({
+          mode: "task",
+          topic: campaign.action.topic,
+          campaignAction: { campaign: campaignHandoff.campaign, repoSlug },
+          initialRecipientAgentIds: [agent.uuid],
+          initialRecipientNames: [],
+          contextParticipantAgentIds: [],
+          contextParticipantNames: [],
+          initialMessage: {
+            format: "text",
+            content: buildCampaignActionBootstrap(
+              agent.displayName || "your agent",
+              campaign.action,
+              campaignHandoff,
+              "direct",
+            ),
+            source: "web",
+          },
+        });
+        writeCampaignActionHandoffFlag(null);
+        navigateAway(`/?c=${encodeURIComponent(created.chatId)}`);
+      } catch {
+        setChatStartError("Couldn't start this task. Try again, or reopen the original action link.");
+      } finally {
+        setChatStartPending(false);
+      }
+      return;
+    }
     const search = new URLSearchParams({ c: "draft", with: agent.uuid });
     navigateAway(`/?${search.toString()}`);
   };
@@ -540,12 +583,13 @@ function AgentDetailPageView() {
                 <Button
                   size="sm"
                   className={cn("min-h-11", isNarrow && "w-full")}
-                  onClick={openChat}
+                  onClick={() => void openChat()}
+                  disabled={chatStartPending}
                   title="Start a chat with this agent"
                   aria-label="Start chat"
                 >
                   <MessageSquare className="h-4 w-4" />
-                  Start chat
+                  {chatStartPending ? "Starting…" : "Start chat"}
                 </Button>
               )}
             </div>
@@ -570,6 +614,15 @@ function AgentDetailPageView() {
               Retry
             </Button>
           </div>
+        ) : null}
+        {chatStartError && canStartChatFromHeader ? (
+          <p
+            className="text-caption text-right"
+            style={{ marginTop: "var(--sp-2)", color: "var(--state-error)" }}
+            role="alert"
+          >
+            {chatStartError}
+          </p>
         ) : null}
       </header>
 

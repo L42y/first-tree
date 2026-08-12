@@ -16,7 +16,7 @@ import { NewAgentDialog } from "../../components/new-agent-dialog.js";
 import { Button } from "../../components/ui/button.js";
 import { OptionCard } from "../../components/ui/option-card.js";
 import { uuidv7 } from "../../lib/uuid-v7.js";
-import { readCampaignActionHandoffFlag, writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
+import { writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 
 /**
@@ -39,8 +39,8 @@ export function firstTeamAgentName(templateSlug: string): string | undefined {
  *
  *   - No Team — one explicit confirmation atomically creates the first Team,
  *     caller identity, unbound organization-visible Agent, and Template
- *     adoption. A stored campaign action then resumes onboarding; otherwise
- *     the new Agent opens as a draft chat.
+ *     adoption, then continues to that Agent's existing Runtime surface. Any
+ *     stored campaign action stays intact until a real task chat consumes it.
  *   - Fresh / incomplete onboarding — judged by the SAME gate the workspace
  *     root uses (`shouldEnterOnboarding`), never a parallel re-derivation that
  *     could drift. The slug is stashed as a per-org sessionStorage handoff and
@@ -198,10 +198,10 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
    * There is no Team to choose between and none to name — the server derives
    * the Team, makes the caller its Admin, and adopts this Template, all or
    * nothing. An ordinary failure leaves the account exactly as it was, so
-   * retrying the same request is safe. A 409 means another explicit request
-   * created the Team first; after an authoritative /me refresh, that case
-   * rejoins the ordinary existing-Team Template path instead of retrying a
-   * request that can never win.
+   * retrying the same request is safe. The dedicated first-Team request
+   * conflict code means another explicit request created the Team first;
+   * after an authoritative /me refresh, that case rejoins the ordinary
+   * existing-Team Template path instead of retrying a request that cannot win.
    */
   async function handleProvisionFirst(): Promise<void> {
     if (provisioning) return;
@@ -232,7 +232,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       return;
     }
 
-    trackEvent("agent_create_draft_open", { template_count: 1 });
+    trackEvent("agent_template_create_success", { template_count: 1 });
     // The Agent EXISTS from here on. Activating the new Team is a separate,
     // retryable step, so its failure must not be reported as "nothing was
     // created" — that would send the user to create a second Agent.
@@ -245,11 +245,12 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       return;
     }
     firstProvisionRequestIdRef.current = null;
-    if (readCampaignActionHandoffFlag()) {
-      navigate("/onboarding");
-    } else {
-      navigate(`/?c=draft&with=${encodeURIComponent(result.agent.uuid)}`);
-    }
+    // The first Agent exists but is deliberately unbound. Continue at the
+    // existing Runtime surface for that exact Agent; the campaign handoff (if
+    // present) remains in sessionStorage until a real task chat consumes it.
+    // Never route this Agent-first path back through the legacy Team naming /
+    // duplicate-Agent onboarding sequence.
+    navigate(`/agents/${encodeURIComponent(result.agent.uuid)}/runtime`);
   }
 
   // Stay on this screen for the whole flight, after a success, and while an

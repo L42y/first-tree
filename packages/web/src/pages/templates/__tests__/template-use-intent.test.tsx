@@ -623,10 +623,11 @@ describe("TemplateUseIntent — Team-less caller", () => {
     // The destination is org-scoped, so the just-created Team is activated
     // before navigating away from this public page.
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
-    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_template_create_success", { template_count: 1 });
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
   });
 
-  it("resumes the stored campaign action through onboarding after first-Agent provisioning", async () => {
+  it("preserves the stored campaign action while continuing to the new Agent runtime", async () => {
     flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
       campaign: "production-scan",
       repoUrl: "https://github.com/acme/backend",
@@ -637,8 +638,8 @@ describe("TemplateUseIntent — Team-less caller", () => {
     await click(buttonByText("Create Team Agent"));
 
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
-    expect(navigateMock).toHaveBeenCalledWith("/onboarding");
-    expect(navigateMock).not.toHaveBeenCalledWith("/?c=draft&with=agent-new");
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
+    expect(flagsMocks.readCampaignActionHandoffFlag).not.toHaveBeenCalled();
   });
 
   it("surfaces a recoverable error and re-reads /me when provisioning fails", async () => {
@@ -657,7 +658,7 @@ describe("TemplateUseIntent — Team-less caller", () => {
     expect(teamAgentsMocks.provisionFirstTeamAgent.mock.calls[0]?.[0].requestId).toBe(
       teamAgentsMocks.provisionFirstTeamAgent.mock.calls[1]?.[0].requestId,
     );
-    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
   });
 
   it("reconciles a different-request conflict into the existing-Team Template path", async () => {
@@ -756,7 +757,7 @@ describe("TemplateUseIntent — Team-less caller", () => {
       release();
     });
     await flush();
-    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
   });
 });
 

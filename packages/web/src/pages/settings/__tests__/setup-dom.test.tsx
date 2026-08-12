@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 
-import type { OrgContextTreeFeaturesOutput, OrgContextTreeOutput, TeamSetupCapabilities } from "@first-tree/shared";
+import type {
+  MeMembership,
+  OrgContextTreeFeaturesOutput,
+  OrgContextTreeOutput,
+  TeamSetupCapabilities,
+} from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -38,6 +43,7 @@ const authMock = vi.hoisted(() => ({
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z" as string | null,
+    currentMembership: null as MeMembership | null,
     restoreOnboarding: vi.fn(async () => undefined),
   },
 }));
@@ -123,6 +129,7 @@ function facts(overrides: Partial<SetupFacts> = {}): SetupFacts {
     hasUsableAgent: true,
     hasPersonalAgent: true,
     onboardingSuppressedAt: "2026-07-23T00:00:00.000Z",
+    onboardingSuppressedReason: "completed",
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
     workspaceWillEnterOnboarding: false,
     computers: {
@@ -324,6 +331,7 @@ beforeEach(() => {
     onboardingStep: "completed",
     onboardingDismissedAt: null,
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+    currentMembership: null,
     restoreOnboarding: vi.fn(async () => undefined),
   };
 });
@@ -1782,5 +1790,18 @@ describe("Settings Setup overview", () => {
     expect(onboardingEventMocks.reportOnboardingEvent).toHaveBeenCalledWith("resumed", { source: "settings" });
     expect(view.host.querySelector("[data-location]")?.textContent).toBe("/onboarding");
     await act(async () => view.root.unmount());
+  });
+
+  it("does not resume the legacy onboarding for an Agent-first creator", async () => {
+    const agentFirst = facts({
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+    });
+
+    const agent = rowFor("agent", agentFirst);
+    expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
+    expect(agent.action).toEqual({ label: "View", to: "/team" });
   });
 });

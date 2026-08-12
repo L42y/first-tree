@@ -50,7 +50,8 @@ binding/readiness after an unbound Team Agent exists is a separate journey.
 4. Verify the browser opens the new Agent continuation and does not enter the
    standalone Admin onboarding or show the legacy Team naming step. The
    membership suppresses that legacy auto-open without marking Runtime setup as
-   complete.
+   complete. Revisit `/onboarding` and Settings → Setup: neither direct entry nor
+   an advertised Resume action may reopen the Team naming / duplicate-Agent flow.
 5. Repeat the same request identity and verify it resolves the same Team and
    Agent. Submit a different request identity or intent and verify it conflicts
    rather than impersonating a retry. Race two identical confirmations and
