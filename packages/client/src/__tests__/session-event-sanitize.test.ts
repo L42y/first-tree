@@ -1,6 +1,6 @@
 import type { SessionEvent } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { sanitizeSessionEventForTransport } from "../client-connection.js";
+import { sanitizeSessionEventForTransport } from "../runtime/client-connection.js";
 
 /**
  * Outbound boundary for client-to-server WS frames. Binary tool stdout that

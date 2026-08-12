@@ -12,10 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, SessionState } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler, SessionContext } from "../runtime/handler.js";
 import { createResultSink } from "../runtime/result-sink.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

@@ -12,9 +12,6 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { chunkAssistantText } from "../../handlers/assistant-text.js";
-import { formatAuthHint, isCursorAuthError } from "../../handlers/auth-error-hint.js";
-import { consumedErrorOutcome, resolveTurnSettlement } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -52,6 +49,10 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../handlers/assistant-text.js";
+import { formatAuthHint, isCursorAuthError } from "../handlers/auth-error-hint.js";
+import { consumedErrorOutcome, resolveTurnSettlement } from "../handlers/turn-settlement.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {
   CursorBinaryVerifyTransientError,
   formatCursorBinaryMissingMessage,
@@ -1508,6 +1509,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
         await reconcileManagedSkillsForConfig(
           cwd,
           runtimeProvider,
+          PROVIDER_SKILL_ROOTS,
           runtimeConfig,
           sessionCtx.log,
           teamSkillBundleResolverFromSdk(sessionCtx.sdk),
@@ -1615,6 +1617,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspaceRoot,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,

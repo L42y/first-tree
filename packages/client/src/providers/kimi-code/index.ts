@@ -22,8 +22,6 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { chunkAssistantText } from "../../handlers/assistant-text.js";
-import { formatAuthHint, isKimiCodeAuthError } from "../../handlers/auth-error-hint.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -50,6 +48,9 @@ import {
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
 } from "../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../handlers/assistant-text.js";
+import { formatAuthHint, isKimiCodeAuthError } from "../handlers/auth-error-hint.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 
 const RESULT_PREVIEW_LIMIT = 400;
 const KIMI_IDENTITY_VERSION = "0.1.2";
@@ -862,6 +863,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspaceRoot,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,

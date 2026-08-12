@@ -1,5 +1,5 @@
 import type { RuntimeSkillBundle } from "@first-tree/shared";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { TeamSkillBundleResolver } from "./managed-skills.js";
 
 /**

@@ -10,6 +10,7 @@ import {
 } from "@first-tree/shared";
 import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import { findAttachmentFile } from "../runtime/attachment-store.js";
 import type { ContextTreeBinding } from "../runtime/bootstrap.js";
@@ -25,7 +26,6 @@ import { findImagePath } from "../runtime/image-store.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { SessionManager, type SessionManagerShutdownOptions } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

@@ -40,6 +40,18 @@ import {
 } from "../runtime/managed-state.js";
 import { spawnWorkspaceLockWorker } from "./workspace-file-lock-worker.js";
 
+/** Local fail-closed skill-root fixture — runtime tests must not import providers. */
+const TEST_PROVIDER_SKILL_ROOTS = Object.freeze({
+  "claude-code": ".claude/skills",
+  "claude-code-tui": ".claude/skills",
+  codex: ".agents/skills",
+  cursor: ".cursor/skills",
+  grok: ".grok/skills",
+  "kimi-code": ".kimi-code/skills",
+  opencode: ".opencode/skills",
+  pi: ".agents/skills",
+});
+
 const PROVIDERS: readonly RuntimeProvider[] = [
   "claude-code",
   "claude-code-tui",
@@ -144,7 +156,7 @@ function writeCoreBundle(parent: string, version = "1.0.0", label = version): st
 }
 
 function target(workspace: string, provider: RuntimeProvider, name: string): string {
-  return join(workspace, providerSkillRoot(provider), name);
+  return join(workspace, providerSkillRoot(provider, TEST_PROVIDER_SKILL_ROOTS), name);
 }
 
 function writeLegacyState(workspace: string, skills: readonly string[]): void {
@@ -177,7 +189,7 @@ describe("managed Skill reconciler", () => {
   });
 
   it("maps every runtime to its provider-native discovery root", () => {
-    expect(PROVIDERS.map((provider) => [provider, providerSkillRoot(provider)])).toEqual([
+    expect(PROVIDERS.map((provider) => [provider, providerSkillRoot(provider, TEST_PROVIDER_SKILL_ROOTS)])).toEqual([
       ["claude-code", ".claude/skills"],
       ["claude-code-tui", ".claude/skills"],
       ["codex", ".agents/skills"],
@@ -230,6 +242,7 @@ describe("managed Skill reconciler", () => {
   it.each(PROVIDERS)("projects Core Skills only into the active %s discovery root", async (provider) => {
     const result = await reconcileManagedSkills({
       workspace,
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       provider,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
@@ -251,7 +264,11 @@ describe("managed Skill reconciler", () => {
     }
 
     for (const otherProvider of PROVIDERS) {
-      if (providerSkillRoot(otherProvider) === providerSkillRoot(provider)) continue;
+      if (
+        providerSkillRoot(otherProvider, TEST_PROVIDER_SKILL_ROOTS) ===
+        providerSkillRoot(provider, TEST_PROVIDER_SKILL_ROOTS)
+      )
+        continue;
       expect(existsSync(target(workspace, otherProvider, CORE_SKILL_NAMES[0]))).toBe(false);
     }
   });
@@ -260,6 +277,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -269,6 +287,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -285,6 +304,7 @@ describe("managed Skill reconciler", () => {
     const installed = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(10, [v10]),
       bundledSkillsRoot,
     });
@@ -304,6 +324,7 @@ describe("managed Skill reconciler", () => {
     const unavailable = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: { kind: "unavailable" },
       bundledSkillsRoot,
     });
@@ -314,6 +335,7 @@ describe("managed Skill reconciler", () => {
     const stale = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(9, []),
       bundledSkillsRoot,
     });
@@ -324,6 +346,7 @@ describe("managed Skill reconciler", () => {
     const updated = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(11, [teamSkill({ body: "# Review\n\nUpdated policy." })]),
       bundledSkillsRoot,
     });
@@ -333,6 +356,7 @@ describe("managed Skill reconciler", () => {
     const revoked = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(12, []),
       bundledSkillsRoot,
     });
@@ -345,12 +369,14 @@ describe("managed Skill reconciler", () => {
     const newer = reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(18, [teamSkill()]),
       bundledSkillsRoot,
     });
     const older = reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(17, []),
       bundledSkillsRoot,
     });
@@ -369,6 +395,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(10, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -378,6 +405,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
     });
@@ -389,6 +417,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(10, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -399,6 +428,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: { kind: "unavailable" },
         bundledSkillsRoot,
         testFailureAt: "quarantine_rename",
@@ -415,6 +445,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -427,6 +458,7 @@ describe("managed Skill reconciler", () => {
     const retry = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -445,6 +477,7 @@ describe("managed Skill reconciler", () => {
     const rootResult = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(rootZip)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -468,6 +501,7 @@ describe("managed Skill reconciler", () => {
     const wrappedResult = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(wrappedZip, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: async () => wrappedZip,
@@ -486,6 +520,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -509,6 +544,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -521,6 +557,7 @@ describe("managed Skill reconciler", () => {
     const fileRepair = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -532,6 +569,7 @@ describe("managed Skill reconciler", () => {
     const directoryRepair = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -543,6 +581,7 @@ describe("managed Skill reconciler", () => {
     const rootRepair = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -561,6 +600,7 @@ describe("managed Skill reconciler", () => {
     const installedResult = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -574,6 +614,7 @@ describe("managed Skill reconciler", () => {
     const clean = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -599,6 +640,7 @@ describe("managed Skill reconciler", () => {
     const installed = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -616,6 +658,7 @@ describe("managed Skill reconciler", () => {
     const stable = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -629,6 +672,7 @@ describe("managed Skill reconciler", () => {
     const repaired = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -650,6 +694,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -682,6 +727,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -692,6 +738,7 @@ describe("managed Skill reconciler", () => {
     const unchanged = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -703,6 +750,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [firstSkill]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -716,6 +764,7 @@ describe("managed Skill reconciler", () => {
     const failedUpdate = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -730,6 +779,7 @@ describe("managed Skill reconciler", () => {
     const updated = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -747,6 +797,7 @@ describe("managed Skill reconciler", () => {
     const failedRepair = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -762,6 +813,7 @@ describe("managed Skill reconciler", () => {
     const repaired = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(secondBundle, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -781,6 +833,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: snapshot,
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -792,6 +845,7 @@ describe("managed Skill reconciler", () => {
       const repaired = await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: snapshot,
         bundledSkillsRoot,
         bundleResolver: resolver,
@@ -808,6 +862,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -820,6 +875,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
         bundledSkillsRoot,
         bundleResolver: async () => {
@@ -833,6 +889,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -847,6 +904,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -856,6 +914,7 @@ describe("managed Skill reconciler", () => {
     const drifted = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -876,6 +935,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -890,6 +950,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -900,6 +961,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
         bundledSkillsRoot,
         bundleResolver: async () => bundle,
@@ -916,6 +978,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -924,6 +987,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
       testBeforePublication: () => {
@@ -943,6 +1007,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -952,6 +1017,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
         testBeforePublication: () => {
@@ -967,6 +1033,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -976,6 +1043,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: { kind: "unavailable" },
         bundledSkillsRoot,
         testBeforePublication: () => {
@@ -991,6 +1059,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -999,6 +1068,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: { kind: "unavailable" },
       bundledSkillsRoot,
       testBeforePublication: () => {
@@ -1016,6 +1086,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -1024,6 +1095,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
       testBeforePublication: () => {
@@ -1044,6 +1116,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1054,6 +1127,7 @@ describe("managed Skill reconciler", () => {
     const interrupted = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1070,6 +1144,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1089,6 +1164,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1099,6 +1175,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1114,6 +1191,7 @@ describe("managed Skill reconciler", () => {
     const revoked = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot,
     });
@@ -1131,6 +1209,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -1140,6 +1219,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
         bundledSkillsRoot,
         testFailureAt: "remove_target",
@@ -1150,6 +1230,7 @@ describe("managed Skill reconciler", () => {
     const removed = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot,
     });
@@ -1165,6 +1246,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1181,6 +1263,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [
         bundleSkill(bundle, { name: manifestName, resourceId: `resource-${effectiveName}` }),
       ]),
@@ -1197,6 +1280,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle, { name: "review" })]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -1224,6 +1308,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundled]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -1242,6 +1327,7 @@ describe("managed Skill reconciler", () => {
       const preserved = await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(version, [oldServerSkill]),
         bundledSkillsRoot,
         bundleResolver: resolver,
@@ -1264,6 +1350,7 @@ describe("managed Skill reconciler", () => {
     const restored = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(3, [bundleSkill(replacementBundle, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -1274,6 +1361,7 @@ describe("managed Skill reconciler", () => {
     const revoked = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(4, []),
       bundledSkillsRoot,
       bundleResolver: resolver,
@@ -1287,6 +1375,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [bundleSkill(bundle)]),
       bundledSkillsRoot,
     });
@@ -1555,6 +1644,7 @@ describe("managed Skill reconciler", () => {
     const prior = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -1565,6 +1655,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [bundleSkill(malicious, {}, BUNDLE_ID_B)]),
       bundledSkillsRoot,
       bundleResolver: async () => malicious,
@@ -1593,6 +1684,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -1613,6 +1705,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill({ resourceId: "resource-skill", name: "skill" })]),
       bundledSkillsRoot,
     });
@@ -1634,6 +1727,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
     });
@@ -1649,6 +1743,7 @@ describe("managed Skill reconciler", () => {
     const repaired = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       log: (message) => logs.push(message),
@@ -1670,6 +1765,7 @@ describe("managed Skill reconciler", () => {
     const initial = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -1678,6 +1774,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [
         teamSkill({ name: "first-tree-read" }),
         teamSkill({ resourceId: "resource-path", name: "../escape" }),
@@ -1698,6 +1795,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -1705,6 +1803,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [
         teamSkill({ name: "Review A" }),
         teamSkill({ name: "Review B", body: "different" }),
@@ -1737,6 +1836,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -1774,6 +1874,7 @@ describe("managed Skill reconciler", () => {
       const result = await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
       });
@@ -1817,6 +1918,7 @@ describe("managed Skill reconciler", () => {
         await reconcileManagedSkills({
           workspace,
           provider: "codex",
+          providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
           teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
           bundledSkillsRoot,
         });
@@ -1855,6 +1957,7 @@ describe("managed Skill reconciler", () => {
       const result = await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
       });
@@ -1887,6 +1990,7 @@ describe("managed Skill reconciler", () => {
       await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
       });
@@ -1920,6 +2024,7 @@ describe("managed Skill reconciler", () => {
         await reconcileManagedSkills({
           workspace,
           provider: "codex",
+          providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
           teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
           bundledSkillsRoot,
         });
@@ -1950,6 +2055,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -1974,6 +2080,7 @@ describe("managed Skill reconciler", () => {
     const reconcile = reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2015,6 +2122,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(3, [skill]),
       bundledSkillsRoot,
     });
@@ -2038,6 +2146,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -2057,6 +2166,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -2067,6 +2177,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
         bundledSkillsRoot,
       }),
@@ -2078,6 +2189,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -2086,6 +2198,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
         bundledSkillsRoot,
         testFailureAt: "provider_root_read",
@@ -2098,6 +2211,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2105,6 +2219,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot: v2Root,
       testCrashAt: "prepared",
@@ -2115,6 +2230,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
         bundledSkillsRoot: v2Root,
         testFailureAt: "journal_recovery",
@@ -2133,6 +2249,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2140,6 +2257,7 @@ describe("managed Skill reconciler", () => {
     const interrupted = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot: v2Root,
       testCrashAt: checkpoint,
@@ -2150,6 +2268,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot: v2Root,
     });
@@ -2167,12 +2286,14 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
     const interrupted = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot,
       testCrashAt: checkpoint,
@@ -2183,6 +2304,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(2, []),
       bundledSkillsRoot,
     });
@@ -2196,6 +2318,7 @@ describe("managed Skill reconciler", () => {
       reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
         testFailureAt: "target_installed",
@@ -2212,6 +2335,7 @@ describe("managed Skill reconciler", () => {
     const recovered = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2224,6 +2348,7 @@ describe("managed Skill reconciler", () => {
     await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -2231,6 +2356,7 @@ describe("managed Skill reconciler", () => {
     const switched = await reconcileManagedSkills({
       workspace,
       provider: "claude-code",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
       bundledSkillsRoot,
     });
@@ -2255,6 +2381,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2270,6 +2397,7 @@ describe("managed Skill reconciler", () => {
     const result = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2296,6 +2424,7 @@ describe("managed Skill reconciler", () => {
     const first = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2307,6 +2436,7 @@ describe("managed Skill reconciler", () => {
     const second = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
       bundledSkillsRoot,
     });
@@ -2327,6 +2457,7 @@ describe("managed Skill reconciler", () => {
       const result = await reconcileManagedSkills({
         workspace,
         provider: "codex",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         teamSnapshot: authoritativeTeamSkillSnapshot(1, []),
         bundledSkillsRoot,
         lockTimeoutMs: 50,
@@ -2336,7 +2467,7 @@ describe("managed Skill reconciler", () => {
         key: "workspace",
         reason: expect.stringContaining("timed out waiting for managed skills workspace lock"),
       });
-      expect(existsSync(join(workspace, providerSkillRoot("codex")))).toBe(false);
+      expect(existsSync(join(workspace, providerSkillRoot("codex", TEST_PROVIDER_SKILL_ROOTS)))).toBe(false);
     } finally {
       holder.child.stdin.end("release\n");
       const holderExit = await holder.waitForExit();
@@ -2350,6 +2481,7 @@ describe("managed Skill reconciler", () => {
     const first = await reconcileManagedSkills({
       workspace,
       provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
       bundledSkillsRoot,
       bundleResolver: async () => bundle,
@@ -2364,6 +2496,7 @@ describe("managed Skill reconciler", () => {
         reconcileManagedSkills({
           workspace,
           provider: "codex",
+          providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
           teamSnapshot: authoritativeTeamSkillSnapshot(1, [skill]),
           bundledSkillsRoot,
           bundleResolver: async () => {

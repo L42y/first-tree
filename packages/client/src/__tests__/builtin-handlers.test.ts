@@ -1,7 +1,7 @@
 import { Writable } from "node:stream";
 import { RUNTIME_PROVIDER_IDS } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyClientLoggerConfig } from "../observability/logger.js";
+import { applyClientLoggerConfig, createLogger } from "../cloud/observability/logger.js";
 import { createBuiltinHandlerRegistry, resolveAndLogClaudeExecutable } from "../providers/builtin-registry.js";
 
 function collectLogs(): { dest: Writable; read: () => string } {
@@ -46,7 +46,10 @@ describe("Built-in Handlers", () => {
 
     // Inject a resolver that finds nothing — hermetic against the dev machine's
     // real PATH / well-known install dirs and any login-shell probe.
-    resolveAndLogClaudeExecutable({ resolveExecutable: () => ({ path: undefined, source: "default" }) });
+    resolveAndLogClaudeExecutable({
+      log: createLogger("handlers"),
+      resolveExecutable: () => ({ path: undefined, source: "default" }),
+    });
 
     expect(read()).toContain('"module":"handlers"');
     expect(read()).toContain("using SDK bundled native binary");

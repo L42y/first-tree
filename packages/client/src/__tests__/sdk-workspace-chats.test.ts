@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FirstTreeHubSDK } from "../sdk.js";
+import { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 const SERVER_URL = "https://first-tree.example/";
 

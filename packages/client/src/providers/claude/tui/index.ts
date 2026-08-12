@@ -14,7 +14,6 @@ import type {
   SessionMessage,
 } from "../../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../../runtime/contracts.js";
-
 import type { AgentConfigCache, ChatContext } from "../../../runtime/provider-support/index.js";
 import {
   createContextTreeGitWriteTracker,
@@ -22,6 +21,7 @@ import {
   renderChatContextPrompt,
   renderRuntimeOutputContract,
 } from "../../../runtime/provider-support/index.js";
+import { PROVIDER_SKILL_ROOTS } from "../../skill-roots.js";
 import { resolveClaudeCodeExecutable } from "../executable.js";
 import { mapMcpServers } from "../mcp-config.js";
 import { createToolCallProcessor } from "../tool-call-processor.js";
@@ -645,6 +645,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
             sessionCtx,
             workspaceRoot,
             runtimeProvider,
+            providerSkillRoots: PROVIDER_SKILL_ROOTS,
             runtimeConfig,
             payload,
             // `false` when we fell back to `defaultPayload()` — the empty
@@ -706,6 +707,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
             sessionCtx,
             workspaceRoot,
             runtimeProvider,
+            providerSkillRoots: PROVIDER_SKILL_ROOTS,
             runtimeConfig,
             payload,
             // See PR #869 baixiaohang round-3 P0 — same gate as start().

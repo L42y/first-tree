@@ -1,8 +1,8 @@
 import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ClientConnection, SessionReconcileResult } from "../client-connection.js";
+import { type FirstTreeHubSDK, type RegisterResult, SdkError } from "../cloud/sdk.js";
 import type { AgentSlotConfig } from "../runtime/agent-slot.js";
+import type { ClientConnection, SessionReconcileResult } from "../runtime/client-connection.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { RuntimeSessionTokenFile } from "../runtime/runtime-session-token-file.js";
 import type { ResetFenceReleaseVerdict } from "../runtime/session-manager.js";
-import { type FirstTreeHubSDK, type RegisterResult, SdkError } from "../sdk.js";
 
 type FakeLogger = {
   info: ReturnType<typeof vi.fn>;
@@ -214,7 +214,7 @@ function installMocks(
   vi.doMock("@first-tree/shared/config", () => ({
     defaultDataDir: () => options.dataDir ?? "/tmp/first-tree-test-data",
   }));
-  vi.doMock("../observability/logger.js", () => ({
+  vi.doMock("../cloud/observability/logger.js", () => ({
     createLogger: () => state.logger,
   }));
   vi.doMock("../runtime/bootstrap.js", () => ({
@@ -421,7 +421,7 @@ describe("AgentSlot", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.doUnmock("@first-tree/shared/config");
-    vi.doUnmock("../observability/logger.js");
+    vi.doUnmock("../cloud/observability/logger.js");
     vi.doUnmock("../runtime/bootstrap.js");
     vi.doUnmock("../runtime/session-manager.js");
     vi.resetModules();

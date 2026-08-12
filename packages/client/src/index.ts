@@ -1,17 +1,3 @@
-export type {
-  BoundAgent,
-  ClientConnectionConfig,
-  ProviderModelsListCommand,
-  RuntimeAuthCommand,
-  ServerWelcome,
-  SessionCommand,
-} from "./client-connection.js";
-export {
-  ClientConnection,
-  ClientOrgMismatchError,
-  ClientRetiredError,
-  ClientUserMismatchError,
-} from "./client-connection.js";
 export {
   applyClientLoggerConfig,
   captureClientException,
@@ -20,7 +6,17 @@ export {
   flushClientSentry,
   initClientSentry,
   rootLogger,
-} from "./observability/index.js";
+} from "./cloud/observability/index.js";
+export type {
+  AccessTokenProvider,
+  ContextReviewRuntimeConfig,
+  ContextTreeConfig,
+  MemberProfile,
+  PaginatedResult,
+  RegisterResult,
+  SdkConfig,
+} from "./cloud/sdk.js";
+export { FirstTreeHubSDK, FirstTreeHubSDK as FirstTreeSDK, SdkError } from "./cloud/sdk.js";
 export type {
   RuntimeAuthDriver,
   RuntimeAuthLoginResolution,
@@ -31,7 +27,11 @@ export type { RuntimeAuthDriverTable } from "./providers/auth-drivers.js";
 export { RUNTIME_AUTH_DRIVERS } from "./providers/auth-drivers.js";
 export type { BuiltinProviderProbeTable, CapabilityProbe } from "./providers/builtin-probes.js";
 export { BUILTIN_PROVIDER_PROBES, probedRuntimeProviders } from "./providers/builtin-probes.js";
-export type { BuiltinHandlerRegistry, BuiltinHandlerRegistryDeps } from "./providers/builtin-registry.js";
+export type {
+  BuiltinHandlerRegistry,
+  BuiltinHandlerRegistryDeps,
+  BuiltinRegistryLog,
+} from "./providers/builtin-registry.js";
 export {
   createBuiltinHandlerRegistry,
   resolveAndLogClaudeExecutable,
@@ -171,6 +171,20 @@ export type {
 export { CHILD_CATEGORIES, getChildProcessRegistry } from "./runtime/child-process-registry.js";
 export type { CliBinding } from "./runtime/cli-binding.js";
 export { getCliBinding, setCliBinding } from "./runtime/cli-binding.js";
+export type {
+  BoundAgent,
+  ClientConnectionConfig,
+  ProviderModelsListCommand,
+  RuntimeAuthCommand,
+  ServerWelcome,
+  SessionCommand,
+} from "./runtime/client-connection.js";
+export {
+  ClientConnection,
+  ClientOrgMismatchError,
+  ClientRetiredError,
+  ClientUserMismatchError,
+} from "./runtime/client-connection.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
 export { Deduplicator } from "./runtime/deduplicator.js";
@@ -230,13 +244,3 @@ export type {
   CleanedWorkspaceEntry,
 } from "./runtime/workspace-maintenance.js";
 export { cleanAgentWorkspaces } from "./runtime/workspace-maintenance.js";
-export type {
-  AccessTokenProvider,
-  ContextReviewRuntimeConfig,
-  ContextTreeConfig,
-  MemberProfile,
-  PaginatedResult,
-  RegisterResult,
-  SdkConfig,
-} from "./sdk.js";
-export { FirstTreeHubSDK, FirstTreeHubSDK as FirstTreeSDK, SdkError } from "./sdk.js";

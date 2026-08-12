@@ -8,9 +8,6 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { chunkAssistantText } from "../../handlers/assistant-text.js";
-import { formatAuthHint, isOpenCodeAuthError } from "../../handlers/auth-error-hint.js";
-import { consumedErrorOutcome } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -43,6 +40,10 @@ import {
   toolFileRefsFromShellCommand,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../handlers/assistant-text.js";
+import { formatAuthHint, isOpenCodeAuthError } from "../handlers/auth-error-hint.js";
+import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {
   isSupportedOpenCodeVersion,
   OPENCODE_SUPPORTED_VERSION_RANGE,
@@ -430,6 +431,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspace: cwd,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: runtimeConfig !== null,
@@ -1165,6 +1167,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspaceRoot,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: runtimeConfig !== null,

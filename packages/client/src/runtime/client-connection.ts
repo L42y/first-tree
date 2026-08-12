@@ -41,9 +41,9 @@ import {
   type UpdateAttempt,
 } from "@first-tree/shared";
 import WebSocket from "ws";
-import { createLogger, type pino } from "./observability/logger.js";
-import { classify, ERROR_KINDS, nextRetryDelayMs } from "./runtime/error-taxonomy.js";
-import { type AccessTokenProvider, FirstTreeHubSDK, type RuntimeSessionTokenProvider } from "./sdk.js";
+import { createLogger, type pino } from "../cloud/observability/logger.js";
+import { type AccessTokenProvider, FirstTreeHubSDK, type RuntimeSessionTokenProvider } from "../cloud/sdk.js";
+import { classify, ERROR_KINDS, nextRetryDelayMs } from "./error-taxonomy.js";
 
 /**
  * Per-agent bind retry bookkeeping (Bug 5). A failed `agent:bind` no longer

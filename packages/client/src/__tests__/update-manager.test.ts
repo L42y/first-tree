@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { ClientConfig } from "@first-tree/shared/config";
 import { describe, expect, it, vi } from "vitest";
-import type { ServerWelcome } from "../client-connection.js";
+import type { ServerWelcome } from "../runtime/client-connection.js";
 import type { RefreshUpdateTargetResult } from "../runtime/update-manager.js";
 import { UpdateManager } from "../runtime/update-manager.js";
 

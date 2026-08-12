@@ -23,8 +23,8 @@ import {
   runtimeProviderSchema,
   SOURCE_REPOS_DIRNAME,
 } from "@first-tree/shared";
-import type { pino } from "../observability/logger.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { pino } from "../cloud/observability/logger.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "./agent-config-cache.js";
 import {
   buildAgentEnv,

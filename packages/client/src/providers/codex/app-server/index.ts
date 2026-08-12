@@ -9,9 +9,6 @@ import {
   type SessionEvent,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { chunkAssistantText } from "../../../handlers/assistant-text.js";
-import { formatAuthHint, isCodexAuthError } from "../../../handlers/auth-error-hint.js";
-import { consumedErrorOutcome, resolveTurnSettlement } from "../../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -48,6 +45,10 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../../handlers/assistant-text.js";
+import { formatAuthHint, isCodexAuthError } from "../../handlers/auth-error-hint.js";
+import { consumedErrorOutcome, resolveTurnSettlement } from "../../handlers/turn-settlement.js";
+import { PROVIDER_SKILL_ROOTS } from "../../skill-roots.js";
 import { type CodexBinaryResolution, resolveCodexRuntimeBinary } from "../capability.js";
 import {
   buildCodexConfig,
@@ -430,6 +431,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       sessionCtx,
       workspaceRoot,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: resolved,
@@ -1706,6 +1708,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         await reconcileManagedSkillsForConfig(
           cwd,
           runtimeProvider,
+          PROVIDER_SKILL_ROOTS,
           runtimeConfig,
           sessionCtx.log,
           teamSkillBundleResolverFromSdk(sessionCtx.sdk),

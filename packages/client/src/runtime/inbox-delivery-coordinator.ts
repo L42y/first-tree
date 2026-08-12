@@ -1,5 +1,5 @@
 import type { InboxEntryWithMessage, ProviderRetryEventPayload } from "@first-tree/shared";
-import type { pino } from "../observability/logger.js";
+import type { pino } from "../cloud/observability/logger.js";
 import { Deduplicator } from "./deduplicator.js";
 import type {
   DeliveryCompletionDisposition,

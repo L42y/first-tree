@@ -11,6 +11,7 @@ import type {
 } from "@first-tree/shared";
 import { encodeProviderRetryEventMessage, parseProviderRetryEventMessage } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -22,7 +23,6 @@ import type { DeliveryDecision, DeliveryRouteOwnership, DeliveryWork } from "../
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { SessionManager } from "../runtime/session-manager.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

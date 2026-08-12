@@ -29,7 +29,7 @@ describe("builtin handler registry", () => {
     expect(Object.keys(PROVIDER_SKILL_ROOTS).sort()).toEqual([...RUNTIME_PROVIDER_IDS].sort());
     for (const id of RUNTIME_PROVIDER_IDS) {
       expect(typeof registry[id]).toBe("function");
-      expect(providerSkillRoot(id)).toBe(PROVIDER_SKILL_ROOTS[id]);
+      expect(providerSkillRoot(id, PROVIDER_SKILL_ROOTS)).toBe(PROVIDER_SKILL_ROOTS[id]);
       expect(typeof BUILTIN_PROVIDER_PROBES[id]).toBe("function");
     }
   });

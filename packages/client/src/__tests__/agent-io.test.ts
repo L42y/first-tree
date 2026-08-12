@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ChatParticipantDetail } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import {
   buildAgentEnv,
   createParticipantCache,
@@ -12,7 +13,6 @@ import {
 import { writeAttachmentFile } from "../runtime/attachment-store.js";
 import { setCliBinding } from "../runtime/cli-binding.js";
 import type { SessionMessage } from "../runtime/handler.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 
 function mkParticipant(agentId: string, name: string | null, displayName?: string): ChatParticipantDetail {
   return {

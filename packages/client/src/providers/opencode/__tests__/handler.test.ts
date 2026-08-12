@@ -7,13 +7,13 @@ import { parseProviderRetryEventMessage } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { silentLogger } from "../../../__tests__/_logger-helpers.js";
 import { mockEntry } from "../../../__tests__/test-helpers.js";
+import type { FirstTreeHubSDK } from "../../../cloud/sdk.js";
 import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
 import { ManagedSkillsUnsafeDiscoveryError, reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
 import { SessionManager } from "../../../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../../../sdk.js";
 import {
   buildOpenCodeConfigContent,
   buildOpenCodeTurnArgs,
@@ -110,7 +110,9 @@ function reconciledSkillsResult(resourceConfigVersion = 1) {
 function resetManagedSkillsReconcileMock() {
   const reconcile = vi.mocked(reconcileManagedSkillsForConfig);
   reconcile.mockReset();
-  reconcile.mockImplementation(async (_workspace, _provider, config) => reconciledSkillsResult(config?.version ?? 0));
+  reconcile.mockImplementation(async (_workspace, _provider, _roots, config) =>
+    reconciledSkillsResult(config?.version ?? 0),
+  );
   return reconcile;
 }
 
@@ -333,7 +335,7 @@ describe("OpenCode V1 handler", () => {
     await handler.start(message("m-team-skill", "use the complete skill"), sessionCtx, deliveryToken());
 
     expect(reconcile).toHaveBeenCalledTimes(2);
-    const resolver = reconcile.mock.calls[0]?.[4];
+    const resolver = reconcile.mock.calls[0]?.[5];
     expect(resolver).toBeTypeOf("function");
     await expect(
       resolver?.({
