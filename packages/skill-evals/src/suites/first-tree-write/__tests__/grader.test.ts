@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -36,6 +36,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     treeDiff: "",
     treeSetupGuidanceObserved: false,
     treeStatus: "",
+    unboundTreeArtifactsCreated: false,
     verifySucceeded: false,
     ...overrides,
   };
@@ -225,6 +226,66 @@ describe("first-tree-write grader", () => {
       expect(metrics.treeSetupGuidanceObserved).toBe(true);
       expect(metrics.treeChanged).toBe(false);
       expect(metrics.forbiddenContentHits).toEqual([]);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the unbound ordinary source task when a manifest or Tree checkout appears", () => {
+    const evalCase = findCase("unbound-tree-skips-write");
+    const metrics = baseMetrics({
+      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      skillFileReadObserved: false,
+      unboundTreeArtifactsCreated: true,
+    });
+
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_tree_artifacts");
+  });
+
+  it("detects a workspace manifest or Context Tree created during an unbound run", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-artifacts-"));
+    try {
+      const paths: RunPaths = {
+        binDir: join(tempRoot, "bin"),
+        eventsPath: join(tempRoot, "events.jsonl"),
+        gradingJsonPath: join(tempRoot, "grading.json"),
+        modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
+        packageRoot: tempRoot,
+        repoRoot: tempRoot,
+        runRoot: tempRoot,
+        shellEnvDir: join(tempRoot, "shell-env"),
+        summaryJsonPath: join(tempRoot, "summary.json"),
+        summaryMdPath: join(tempRoot, "summary.md"),
+        workspacePath: tempRoot,
+      };
+      const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
+      const blank = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        paths,
+        null,
+      );
+      expect(blank.unboundTreeArtifactsCreated).toBe(false);
+
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const withManifest = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        paths,
+        null,
+      );
+      expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }

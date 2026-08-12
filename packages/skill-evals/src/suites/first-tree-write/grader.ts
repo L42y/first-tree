@@ -194,8 +194,16 @@ export function snapshotTreeState(contextTreePath: string): TreeStateSnapshot {
 
 function sourceRepoChanged(paths: RunPaths): boolean {
   const sourceRepoPath = join(paths.workspacePath, "source-repo");
+  if (!existsSync(sourceRepoPath)) return false;
   const status = runCommand("git", ["status", "--porcelain"], sourceRepoPath);
   return status.stdout.trim().length > 0;
+}
+
+function unboundTreeArtifactsCreated(paths: RunPaths): boolean {
+  return (
+    existsSync(join(paths.workspacePath, ".first-tree", "workspace.json")) ||
+    existsSync(join(paths.workspacePath, "context-tree"))
+  );
 }
 
 export function deriveMetrics(
@@ -269,6 +277,7 @@ export function deriveMetrics(
     treeDiff: treeState.diff,
     treeSetupGuidanceObserved,
     treeStatus: treeState.status,
+    unboundTreeArtifactsCreated: contextTreePath === null ? unboundTreeArtifactsCreated(paths) : false,
     verifySucceeded,
   };
 }
@@ -284,7 +293,12 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
     evalCase.expected.action === "skip_tree_write_unbound" ||
     evalCase.expected.action === "report_unbound_tree_write_gap"
   ) {
-    return metrics.treeCliInvocationCount === 0 && !metrics.treeChanged && !metrics.treeSetupGuidanceObserved;
+    return (
+      metrics.treeCliInvocationCount === 0 &&
+      !metrics.treeChanged &&
+      !metrics.treeSetupGuidanceObserved &&
+      !metrics.unboundTreeArtifactsCreated
+    );
   }
 
   if (!metrics.skillFileReadObserved) return false;
@@ -313,6 +327,9 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   }
   if (unboundAction && metrics.treeSetupGuidanceObserved) {
     notes.push("Unbound case response pushed Tree bind/create/setup guidance.");
+  }
+  if (unboundAction && metrics.unboundTreeArtifactsCreated) {
+    notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");
   }
   if (evalCase.expected.treeDiff === "none" && metrics.treeChanged) {
     notes.push("Context Tree changed even though this case expected no tree diff.");

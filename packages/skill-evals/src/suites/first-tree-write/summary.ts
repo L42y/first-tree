@@ -67,7 +67,8 @@ export function buildGrading(
     !metrics.sourceRepoChanged &&
     metrics.forbiddenContentHits.length === 0 &&
     (!expectedNoDiff || !metrics.treeChanged) &&
-    (!unboundAction || !metrics.treeSetupGuidanceObserved);
+    (!unboundAction || !metrics.treeSetupGuidanceObserved) &&
+    (!unboundAction || !metrics.unboundTreeArtifactsCreated);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
       ? [riskFlag("source_repo_changed", "source repo fixture changed during write gate")]
@@ -80,6 +81,9 @@ export function buildGrading(
       : []),
     ...(unboundAction && metrics.treeSetupGuidanceObserved
       ? [riskFlag("tree_setup_guidance", "Unbound case response pushed Tree bind/create/setup guidance")]
+      : []),
+    ...(unboundAction && metrics.unboundTreeArtifactsCreated
+      ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout")]
       : []),
   ];
 
@@ -134,6 +138,7 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - postModelVerifySucceeded: ${summary.metrics.postModelVerifySucceeded === null ? "n/a" : markdownBool(summary.metrics.postModelVerifySucceeded)}
 - verifySucceeded: ${markdownBool(summary.metrics.verifySucceeded)}
 - sourceRepoChanged: ${markdownBool(summary.metrics.sourceRepoChanged)}
+- unboundTreeArtifactsCreated: ${markdownBool(summary.metrics.unboundTreeArtifactsCreated)}
 - expectedResponseObserved: ${markdownBool(summary.metrics.expectedResponseObserved)}
 - forbiddenContentHits: ${summary.metrics.forbiddenContentHits.length === 0 ? "none" : summary.metrics.forbiddenContentHits.join(", ")}
 - runnerExitCode: ${summary.metrics.runnerExitCode === null ? "n/a" : summary.metrics.runnerExitCode}

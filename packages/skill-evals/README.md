@@ -132,7 +132,15 @@ runtime-generated `AGENTS.md`/`CLAUDE.md` pair, installs the default First
 Tree skill family, binds a deterministic Context Tree fixture, and then runs
 the same read trigger oracle. This covers the generated-briefing and
 skill-topology boundary only; real Cloud chat delivery, GitHub webhooks, and
-live First Tree runtime E2E remain outside skill evals.
+live First Tree runtime E2E remain outside skill evals. The same periodic run
+also covers the managed-unbound rows
+(`first-tree-read-unbound-software-continues-periodic` and
+`first-tree-read-unbound-pasted-content-continues-periodic`): a
+runtime-generated briefing that explicitly states no bound Tree, no workspace
+manifest, and no Tree checkout. The original task must continue to a result
+with zero `first-tree tree`/`context` invocations and zero bind/create/setup
+wording, while malformed or declared-but-broken bindings keep their
+fail-closed Tree-operation coverage.
 
 `eval:gate -- --suite context-tree-review` runs the repair-first Context Tree
 pull request review gate. A task-local bare Git origin permits only an
@@ -173,9 +181,11 @@ never performs a real provider or First Tree external write.
 - durable source material can produce a minimal tree diff and must run
   `first-tree tree verify`;
 - implementation-only source material means no Context Tree diff;
-- an unbound workspace (no bound Context Tree, no workspace manifest) silently
-  skips the Tree write on an ordinary source task, and an explicit Tree write
-  request reports only the missing binding without bind/create guidance.
+- an unbound workspace (no bound Context Tree, no workspace manifest, no
+  declared source repo) silently skips the Tree write on an ordinary source
+  task — the source result continues with zero Tree commands and no
+  manifest/Tree creation — and an explicit Tree write request reports only
+  the missing binding without bind/create guidance or any Tree mutation.
 
 `eval:gate -- --suite first-tree-welcome` runs the live tested-agent gate for
 the currently implemented `first-tree-welcome` gate rows:
@@ -192,6 +202,13 @@ the currently implemented `first-tree-welcome` gate rows:
   fan-out;
 - a selected first microtask completes in the current chat with a reviewable
   result and exactly one directly related bridge.
+
+The welcome floor also pins the forge-access contract deterministically:
+ordinary tasks are unaffected when `gh`/`glab` are absent, local and public
+repositories are read through the filesystem and plain `git` (a forge URL
+alone never requires the CLI), and only an explicit forge operation — PR/MR,
+issue, checks, comments, provider metadata — degrades to a narrowly blocked
+step with the single narrowest recovery while independent work continues.
 
 `eval:periodic -- --suite first-tree-welcome` runs the broader live welcome
 matrix. It covers every concrete setup-state row from the current

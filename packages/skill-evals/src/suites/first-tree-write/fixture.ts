@@ -292,12 +292,12 @@ export function setupFixture(evalCase: FirstTreeWriteEvalCase, paths: RunPaths, 
 
   installFirstTreeWriteSkill(paths.repoRoot, paths.workspacePath, evalCase.fixture.treeState);
   // Match the real managed runtime: no bound Tree means no workspace manifest
-  // at all, never a `tree: null` placeholder.
+  // and no declared source repo at all, never a `tree: null` placeholder.
   if (!unbound) {
     writeWorkspaceManifest(paths);
+    writeSourceRepoFixture(paths);
   }
   writeSourceArtifacts(evalCase, paths);
-  writeSourceRepoFixture(paths);
   const contextTreePath = unbound ? null : writeContextTreeFixture(paths);
 
   appendEvent(paths.eventsPath, {

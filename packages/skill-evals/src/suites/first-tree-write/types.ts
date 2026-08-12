@@ -88,6 +88,7 @@ export type EvalMetrics = {
   treeDiff: string;
   treeSetupGuidanceObserved: boolean;
   treeStatus: string;
+  unboundTreeArtifactsCreated: boolean;
   verifySucceeded: boolean;
 };
 
