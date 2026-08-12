@@ -20,6 +20,8 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(api).not.toHaveProperty("SessionManager");
     expect(api).not.toHaveProperty("SessionRegistry");
     expect(api.createBuiltinHandlerRegistry).toBeDefined();
+    expect(api.createBuiltinRuntimeReadiness).toBeDefined();
+    expect(api.createClaudeExecutableAuthority).toBeDefined();
     expect(api.resolveAndLogClaudeExecutable).toBeDefined();
     expect(api).not.toHaveProperty("registerBuiltinHandlers");
     expect(api).not.toHaveProperty("registerHandler");

@@ -32,11 +32,11 @@ export type { RuntimeAuthDriverTable } from "./providers/auth-drivers.js";
 export { RUNTIME_AUTH_DRIVERS } from "./providers/auth-drivers.js";
 export type { BuiltinProviderProbeTable, CapabilityProbe } from "./providers/builtin-probes.js";
 export { BUILTIN_PROVIDER_PROBES, probedRuntimeProviders } from "./providers/builtin-probes.js";
-export type { BuiltinHandlerRegistry, BuiltinHandlerRegistryDeps } from "./providers/builtin-registry.js";
-export {
-  createBuiltinHandlerRegistry,
-  resolveAndLogClaudeExecutable,
+export type {
+  BuiltinHandlerRegistry,
+  BuiltinHandlerRegistryDeps,
 } from "./providers/builtin-registry.js";
+export { createBuiltinHandlerRegistry, resolveAndLogClaudeExecutable } from "./providers/builtin-registry.js";
 export {
   CAPABILITY_REFRESH_BASE_MS,
   CAPABILITY_REFRESH_MAX_MS,
@@ -52,6 +52,11 @@ export {
 // Capabilities
 export { probeClaudeCodeCapability } from "./providers/claude/capability.js";
 export { probeClaudeCodeTuiCapability } from "./providers/claude/capability-tui.js";
+export type {
+  ClaudeExecutableAuthority,
+  ClaudeExecutableAuthorityDeps,
+} from "./providers/claude/executable.js";
+export { createClaudeExecutableAuthority } from "./providers/claude/executable.js";
 // Handlers
 export { detectStreamApiError, StreamApiTransientError } from "./providers/claude/index.js";
 export {
@@ -140,6 +145,8 @@ export {
 export { probePiCapability } from "./providers/pi/capability.js";
 export {
   BUILTIN_RUNTIME_READINESS,
+  type BuiltinRuntimeReadinessDeps,
+  createBuiltinRuntimeReadiness,
   RUNTIME_READINESS_PROMPT,
   type RuntimeReadiness,
   type RuntimeReadinessExecutionResult,

@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { BUILTIN_PROVIDER_PROBES } from "../providers/builtin-probes.js";
 import { createBuiltinHandlerRegistry } from "../providers/builtin-registry.js";
 import { probeCapabilities } from "../providers/capabilities/index.js";
+import { createClaudeExecutableAuthority } from "../providers/claude/executable.js";
 import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { providerSkillRoot } from "../runtime/managed-skills.js";
@@ -58,6 +59,23 @@ describe("builtin handler registry", () => {
     expect(Object.isFrozen(a)).toBe(true);
     expect(Object.isFrozen(b)).toBe(true);
     expect(a["claude-code"]).not.toBe(b["claude-code"]);
+  });
+
+  it("refreshes a changed Claude path for new sessions in a long-lived registry", () => {
+    let currentPath = "/tmp/claude-at-boot";
+    const resolveExecutable = vi.fn(() => ({ path: currentPath, source: "env" as const }));
+    const authority = createClaudeExecutableAuthority({ resolveExecutable });
+    const registry = createBuiltinHandlerRegistry({ claudeExecutableAuthority: authority });
+
+    expect(resolveExecutable).not.toHaveBeenCalled();
+    registry["claude-code"]({ workspaceRoot: "/tmp/first-session", runtimeProvider: "claude-code" });
+    expect(resolveExecutable).toHaveBeenLastCalledWith();
+
+    currentPath = "/tmp/claude-after-refresh";
+    registry["claude-code"]({ workspaceRoot: "/tmp/second-session", runtimeProvider: "claude-code" });
+
+    expect(resolveExecutable).toHaveBeenCalledTimes(2);
+    expect(resolveExecutable.mock.results[1]?.value.path).toBe("/tmp/claude-after-refresh");
   });
 
   it("probeCapabilities accepts an explicit probe table without a handler registry", async () => {

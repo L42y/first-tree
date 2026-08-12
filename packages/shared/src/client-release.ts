@@ -1,4 +1,17 @@
 export const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.12";
+export const MIN_RUNTIME_READINESS_CLIENT_VERSION = "0.5.20";
+
+function supportsCurrentReleaseEpochFeature(version: string | null, minimumStablePatch: number): boolean {
+  if (!version) return false;
+  const match = /^v?0\.5\.(0|[1-9]\d*)(?:(?:\+[0-9A-Za-z.-]+)|(?:-staging\.([1-9]\d*)\.([1-9]\d*)))?$/.exec(version);
+  if (!match) return false;
+  const patch = Number(match[1]);
+  const stagingRun = match[2] === undefined ? null : Number(match[2]);
+  const stagingAttempt = match[3] === undefined ? null : Number(match[3]);
+  if (!Number.isSafeInteger(patch)) return false;
+  if (stagingRun === null || stagingAttempt === null) return patch >= minimumStablePatch;
+  return Number.isSafeInteger(stagingRun) && Number.isSafeInteger(stagingAttempt) && patch >= minimumStablePatch + 1;
+}
 
 /**
  * Runtime reconfiguration first shipped in Client 0.5.12. The public release
@@ -13,13 +26,10 @@ export const MIN_RUNTIME_SWITCH_CLIENT_VERSION = "0.5.12";
  * agent runtime.
  */
 export function supportsRuntimeSwitchClientVersion(version: string | null): boolean {
-  if (!version) return false;
-  const match = /^v?0\.5\.(0|[1-9]\d*)(?:(?:\+[0-9A-Za-z.-]+)|(?:-staging\.([1-9]\d*)\.([1-9]\d*)))?$/.exec(version);
-  if (!match) return false;
-  const patch = Number(match[1]);
-  const stagingRun = match[2] === undefined ? null : Number(match[2]);
-  const stagingAttempt = match[3] === undefined ? null : Number(match[3]);
-  if (!Number.isSafeInteger(patch)) return false;
-  if (stagingRun === null || stagingAttempt === null) return patch >= 12;
-  return Number.isSafeInteger(stagingRun) && Number.isSafeInteger(stagingAttempt) && patch >= 13;
+  return supportsCurrentReleaseEpochFeature(version, 12);
+}
+
+/** Fail closed when a connected daemon cannot understand readiness commands. */
+export function supportsRuntimeReadinessClientVersion(version: string | null): boolean {
+  return supportsCurrentReleaseEpochFeature(version, 20);
 }

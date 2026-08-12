@@ -15,7 +15,7 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
     const admin = await createAdminContext(app, { username: `rr-${crypto.randomUUID().slice(0, 6)}` });
     await app.db
       .update(clients)
-      .set({ status: "connected", instanceId: app.config.instanceId })
+      .set({ status: "connected", instanceId: app.config.instanceId, sdkVersion: "0.5.20" })
       .where(eq(clients.id, admin.clientId));
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
     setClientConnection(admin.clientId, ws as unknown as WebSocket);
@@ -47,7 +47,7 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
     const admin = await createAdminContext(app, { username: `rr-${crypto.randomUUID().slice(0, 6)}` });
     await app.db
       .update(clients)
-      .set({ status: "connected", instanceId: "replica-other" })
+      .set({ status: "connected", instanceId: "replica-other", sdkVersion: "0.5.20" })
       .where(eq(clients.id, admin.clientId));
     const notify = vi.spyOn(app.notifier, "notifyDaemonClientCommand").mockResolvedValue();
 
@@ -68,6 +68,33 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
       }),
     );
     notify.mockRestore();
+  });
+
+  it("fails closed before delivery when the connected daemon predates readiness commands", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `rr-old-${crypto.randomUUID().slice(0, 6)}` });
+    await app.db
+      .update(clients)
+      .set({ status: "connected", instanceId: app.config.instanceId, sdkVersion: "0.5.19" })
+      .where(eq(clients.id, admin.clientId));
+    const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
+    setClientConnection(admin.clientId, ws as unknown as WebSocket);
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/clients/${admin.clientId}/runtime-readiness/start`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { provider: "codex" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({
+        error: expect.stringContaining("First Tree CLI 0.5.20 or newer"),
+      });
+      expect(ws.send).not.toHaveBeenCalled();
+    } finally {
+      removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
   });
 
   it("returns 503 without a live DB-authoritative computer", async () => {

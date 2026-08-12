@@ -396,6 +396,7 @@ export function registerDaemonStartCommand(daemon: Command): void {
           currentEntry: (provider) => capabilityRefresher.currentEntry(provider),
           setProviderEntry: (provider, entry) => capabilityRefresher.setProviderEntry(provider, entry),
           log: (symbol, msg) => writeStatus(symbol, msg),
+          drivers: runtime.getRuntimeReadinessDrivers(),
         });
         runtime.onRuntimeReadinessCheck((command) => {
           void readinessCoordinator.check({ type: "runtime-readiness:check", ...command });

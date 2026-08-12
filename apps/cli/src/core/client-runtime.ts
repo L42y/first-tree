@@ -4,14 +4,18 @@ import { dirname, join } from "node:path";
 import {
   AgentSlot,
   type BuiltinHandlerRegistry,
+  type ClaudeExecutableAuthority,
   ClientConnection,
   createBuiltinHandlerRegistry,
+  createBuiltinRuntimeReadiness,
+  createClaudeExecutableAuthority,
   createLogger,
   getChildProcessRegistry,
   type HandlerFactory,
   type ProviderModelsListCommand,
   type RuntimeAuthCommand,
   type RuntimeReadinessCommand,
+  type RuntimeReadinessTable,
   resolveAndLogClaudeExecutable,
   type UpdateHooks,
   UpdateManager,
@@ -146,11 +150,14 @@ export class ClientRuntime {
   private readonly options: ClientRuntimeOptions;
   private readonly output: ClientRuntimeOutput;
   /**
-   * Frozen built-in handler factory table. Created once in the constructor
-   * (with a single cheap Claude executable resolution + log) and held as an
-   * instance value — never process-global.
+   * Frozen built-in handler factory table. Created once in the constructor,
+   * while provider executable resolution remains lazy per handler instance.
+   * The table is held as an instance value — never process-global.
    */
   private readonly handlerFactories: BuiltinHandlerRegistry;
+  /** Provider checks share the same executable authority as new sessions. */
+  private readonly readinessDrivers: RuntimeReadinessTable;
+  private readonly claudeExecutableAuthority: ClaudeExecutableAuthority;
   private updateManager: UpdateManager | null = null;
   private watcher: FSWatcher | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -197,17 +204,17 @@ export class ClientRuntime {
       // missing / corrupt state file simply omits the field.
       getLastUpdateAttempt: () => readUpdateState()?.last ?? null,
     });
-    // Composition runs synchronously BEFORE the WS connects — so it must not
-    // block. Resolve cheap-only (`includeLoginShell: false`): daemon PATH +
-    // well-known dirs, never a login-shell `spawnSync`. A `claude` that lives
-    // only on the user's interactive shell PATH resolves to `undefined` here
-    // and is picked up lazily by the handler at session start (which
-    // re-resolves with the login-shell probe) and by the capability probe
-    // (post-construction) — neither of which is on the pre-connect path.
-    // Log once per ClientRuntime construction.
-    const resolution = resolveAndLogClaudeExecutable();
+    // Log one cheap pre-connect snapshot, but never freeze it as execution
+    // authority. The shared resolver below refreshes at each new session or
+    // readiness check, so a long-lived daemon cannot certify one Claude binary
+    // while normal work remains pinned to a stale boot-time path.
+    this.claudeExecutableAuthority = createClaudeExecutableAuthority();
+    resolveAndLogClaudeExecutable({ claudeExecutableAuthority: this.claudeExecutableAuthority });
     this.handlerFactories = createBuiltinHandlerRegistry({
-      resolveExecutable: () => resolution,
+      claudeExecutableAuthority: this.claudeExecutableAuthority,
+    });
+    this.readinessDrivers = createBuiltinRuntimeReadiness({
+      claudeExecutableAuthority: this.claudeExecutableAuthority,
     });
 
     this.connection.on("auth:expired", () => {
@@ -309,6 +316,11 @@ export class ClientRuntime {
   /** Register a handler for an on-demand provider readiness check. */
   onRuntimeReadinessCheck(callback: (command: RuntimeReadinessCommand) => void): void {
     this.connection.on("runtime-readiness:check", callback);
+  }
+
+  /** Exact drivers composed with this daemon's normal-session authorities. */
+  getRuntimeReadinessDrivers(): RuntimeReadinessTable {
+    return this.readinessDrivers;
   }
 
   /** Observe credential failures emitted by normal provider sessions. */

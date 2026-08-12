@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  MIN_RUNTIME_READINESS_CLIENT_VERSION,
   PROVIDER_MODELS_LIST_TYPE,
   providerModelCatalogSchema,
   RUNTIME_AUTH_START_TYPE,
@@ -7,11 +8,12 @@ import {
   runtimeAuthStartRequestSchema,
   runtimeProviderSchema,
   runtimeReadinessStartRequestSchema,
+  supportsRuntimeReadinessClientVersion,
   updateClientCapabilitiesSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
 import type { FastifyInstance } from "fastify";
-import { BadGatewayError, GatewayTimeoutError, ServiceUnavailableError } from "../errors.js";
+import { BadGatewayError, BadRequestError, GatewayTimeoutError, ServiceUnavailableError } from "../errors.js";
 import { stampClientResource } from "../observability/request-context.js";
 import { requireUser } from "../scope/require-user.js";
 import { expiryToSeconds } from "../services/auth/tokens.js";
@@ -116,6 +118,11 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     if (!client || !isClientConnectedSomewhere(client) || !client.instanceId) {
       throw new ServiceUnavailableError(
         "Runtime readiness could not start because this computer is not connected. Make sure the daemon is running, then retry.",
+      );
+    }
+    if (!supportsRuntimeReadinessClientVersion(client.sdkVersion)) {
+      throw new BadRequestError(
+        `Runtime readiness requires First Tree CLI ${MIN_RUNTIME_READINESS_CLIENT_VERSION} or newer. Upgrade this computer, then retry.`,
       );
     }
 

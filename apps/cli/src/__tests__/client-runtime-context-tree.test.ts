@@ -109,6 +109,10 @@ vi.mock("@first-tree/client", () => {
     "claude-code": stubFactory,
     codex: stubFactory,
   });
+  const readinessTable = Object.freeze({});
+  const claudeExecutableAuthority = Object.freeze({
+    resolve: vi.fn(() => ({ path: undefined, source: "default" })),
+  });
   return {
     AgentSlot: FakeAgentSlot,
     ClientConnection: class {
@@ -138,6 +142,8 @@ vi.mock("@first-tree/client", () => {
     })),
     getChildProcessRegistry: vi.fn(() => ({ killAll: killAllMock })),
     createBuiltinHandlerRegistry: vi.fn(() => builtinTable),
+    createBuiltinRuntimeReadiness: vi.fn(() => readinessTable),
+    createClaudeExecutableAuthority: vi.fn(() => claudeExecutableAuthority),
     resolveAndLogClaudeExecutable: vi.fn(() => ({ path: undefined, source: "default" })),
   };
 });
@@ -232,6 +238,23 @@ describe("ClientRuntime context-tree wiring", () => {
     expect(logger.warn).toHaveBeenCalledWith("degraded");
     expect(logger.warn).toHaveBeenCalledWith("⚠️ soft warning");
     expect(logger.error).toHaveBeenCalledWith("✗ hard failure");
+  });
+
+  it("shares one Claude executable authority between sessions and readiness", async () => {
+    const clientApi = await import("@first-tree/client");
+    const { ClientRuntime } = await import("../core/client-runtime.js");
+    const runtime = new ClientRuntime("https://first-tree.test", "client-test");
+    const createAuthority = vi.mocked(clientApi.createClaudeExecutableAuthority);
+    const createRegistry = vi.mocked(clientApi.createBuiltinHandlerRegistry);
+    const createReadiness = vi.mocked(clientApi.createBuiltinRuntimeReadiness);
+    const logResolution = vi.mocked(clientApi.resolveAndLogClaudeExecutable);
+    const authority = createAuthority.mock.results.at(-1)?.value;
+
+    expect(authority).toBeDefined();
+    expect(logResolution).toHaveBeenCalledWith({ claudeExecutableAuthority: authority });
+    expect(createRegistry).toHaveBeenCalledWith({ claudeExecutableAuthority: authority });
+    expect(createReadiness).toHaveBeenCalledWith({ claudeExecutableAuthority: authority });
+    expect(runtime.getRuntimeReadinessDrivers()).toBe(createReadiness.mock.results.at(-1)?.value);
   });
 
   it("wires default output and connection auth/update callbacks", async () => {

@@ -45,6 +45,20 @@ export type ClaudeExecutableResolution = {
   overrideError?: string;
 };
 
+export type ClaudeExecutableAuthority = Readonly<{
+  /** Resolve at the point a provider process is created, never at daemon boot. */
+  resolve: typeof resolveClaudeCodeExecutable;
+}>;
+
+export type ClaudeExecutableAuthorityDeps = {
+  resolveExecutable?: typeof resolveClaudeCodeExecutable;
+};
+
+/** One daemon-local executable authority shared by sessions and readiness. */
+export function createClaudeExecutableAuthority(deps: ClaudeExecutableAuthorityDeps = {}): ClaudeExecutableAuthority {
+  return Object.freeze({ resolve: deps.resolveExecutable ?? resolveClaudeCodeExecutable });
+}
+
 /** Injectable seams so probe tests stay hermetic (no real shell spawn / no host install dirs). */
 export type ResolveClaudeExecutableDeps = {
   /** Returns the user's interactive-login-shell PATH dirs; defaults to the memoized probe. */
@@ -53,10 +67,10 @@ export type ResolveClaudeExecutableDeps = {
   wellKnownDirs?: () => string[];
   /**
    * Whether to consult the login-shell PATH (which may `spawnSync` a shell).
-   * Default `true`. Set `false` on the daemon's pre-connect handler-registration
-   * path so startup never blocks on a login shell — the capability probe and the
-   * session-start handler resolution still pass `true`, finding a shell-only
-   * `claude` lazily, after the WS is connected.
+   * Default `true`. Set `false` only for the daemon's pre-connect diagnostic
+   * snapshot so startup never blocks on a login shell — capability, readiness,
+   * and session-start resolution still pass `true`, finding a shell-only
+   * `claude` lazily after the WS is connected.
    */
   includeLoginShell?: boolean;
 };
@@ -90,7 +104,7 @@ function wellKnownClaudeCandidates(dirs: readonly string[]): string[] {
  *      the daemon's frozen service PATH never sees (nvm / fnm / volta / mise /
  *      asdf, custom `export PATH=`). This step may `spawnSync` a shell, so it is
  *      consulted last (only when 2–3 miss) and is skipped entirely when
- *      `includeLoginShell: false` (the pre-connect handler-registration path).
+ *      `includeLoginShell: false` (the pre-connect diagnostic path).
  *   5. undefined — fall back to the SDK's bundled native binary
  *
  * The SDK's bundled binary ships as a per-platform **optional** npm dep
@@ -136,7 +150,7 @@ export function resolveClaudeCodeExecutable(
 
   // Login-shell PATH last — catches binaries on the user's interactive PATH
   // only (nvm / fnm / volta / mise / asdf, custom exports). Skipped on the
-  // pre-connect registration path so daemon startup never blocks on a shell.
+  // pre-connect diagnostic path so daemon startup never blocks on a shell.
   if (includeLoginShell) {
     const fromLogin = findInDirs("claude", env, loginShellPathDirs(), seen);
     if (fromLogin) return { path: fromLogin, source: "path" };

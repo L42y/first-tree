@@ -1,7 +1,11 @@
 import type { RuntimeProvider } from "@first-tree/shared";
 import { createLogger } from "../observability/logger.js";
 import type { HandlerFactory } from "../runtime/contracts.js";
-import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./claude/executable.js";
+import {
+  type ClaudeExecutableAuthority,
+  type ClaudeExecutableResolution,
+  createClaudeExecutableAuthority,
+} from "./claude/executable.js";
 import { createClaudeCodeHandler } from "./claude/index.js";
 import { createClaudeCodeTuiHandler } from "./claude/tui/index.js";
 import { createCodexHandler } from "./codex/index.js";
@@ -11,9 +15,10 @@ import { createKimiCodeHandler } from "./kimi-code/index.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
 import { createPiHandler } from "./pi/index.js";
 
-/** Injectable seam for Claude executable resolution in tests. */
+/** Injectable seams for composition and tests. */
 export type BuiltinHandlerRegistryDeps = {
-  resolveExecutable?: () => ClaudeExecutableResolution;
+  resolveExecutable?: ClaudeExecutableAuthority["resolve"];
+  claudeExecutableAuthority?: ClaudeExecutableAuthority;
 };
 
 /**
@@ -33,11 +38,13 @@ export type BuiltinHandlerRegistry = Readonly<Record<RuntimeProvider, HandlerFac
  * installed into process-global state.
  */
 export function createBuiltinHandlerRegistry(deps: BuiltinHandlerRegistryDeps = {}): BuiltinHandlerRegistry {
-  const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
+  const authority =
+    deps.claudeExecutableAuthority ?? createClaudeExecutableAuthority({ resolveExecutable: deps.resolveExecutable });
 
   return Object.freeze({
-    "claude-code": (config) => createClaudeCodeHandler({ ...config, claudeCodeExecutable: resolution.path }),
-    "claude-code-tui": (config) => createClaudeCodeTuiHandler({ ...config, claudeCodeExecutable: resolution.path }),
+    "claude-code": (config) => createClaudeCodeHandler({ ...config, claudeCodeExecutable: authority.resolve().path }),
+    "claude-code-tui": (config) =>
+      createClaudeCodeTuiHandler({ ...config, claudeCodeExecutable: authority.resolve().path }),
     codex: (config) => createCodexHandler(config),
     cursor: (config) => createCursorHandler(config),
     grok: (config) => createGrokHandler(config),
@@ -61,7 +68,9 @@ export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolu
 
 /** Resolve + log Claude executable using the same deps seam as registry creation. */
 export function resolveAndLogClaudeExecutable(deps: BuiltinHandlerRegistryDeps = {}): ClaudeExecutableResolution {
-  const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
+  const authority =
+    deps.claudeExecutableAuthority ?? createClaudeExecutableAuthority({ resolveExecutable: deps.resolveExecutable });
+  const resolution = authority.resolve({ includeLoginShell: false });
   logClaudeExecutableResolution(resolution);
   return resolution;
 }

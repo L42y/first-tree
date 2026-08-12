@@ -108,6 +108,7 @@ let runtimeInstance: {
   onProviderModelsList: ReturnType<typeof vi.fn>;
   sendProviderModelsResult: ReturnType<typeof vi.fn>;
   emitConnectionResilienceEvent: ReturnType<typeof vi.fn>;
+  getRuntimeReadinessDrivers: ReturnType<typeof vi.fn>;
 };
 let refresherInstance: {
   start: ReturnType<typeof vi.fn>;
@@ -233,6 +234,7 @@ beforeEach(() => {
     onProviderModelsList: vi.fn(),
     sendProviderModelsResult: vi.fn(),
     emitConnectionResilienceEvent: vi.fn(),
+    getRuntimeReadinessDrivers: vi.fn(() => ({ "claude-code": { verify: vi.fn() } })),
   };
   coreMocks.ClientRuntime.mockImplementation(() => runtimeInstance);
 
@@ -1031,6 +1033,16 @@ describe("daemon start command", () => {
 
     expect(output()).toContain("skills upload pin check skipped: pin check failed as string");
     expect(output()).toContain("skills upload for nova skipped: agent skill upload failed as string");
+  });
+
+  it("passes the runtime-composed readiness drivers to the daemon coordinator", async () => {
+    const drivers = { "claude-code": { verify: vi.fn() } };
+    runtimeInstance.getRuntimeReadinessDrivers.mockReturnValueOnce(drivers);
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+
+    expect(runtimeInstance.getRuntimeReadinessDrivers).toHaveBeenCalledOnce();
+    expect(coreMocks.RuntimeReadinessCoordinator).toHaveBeenCalledWith(expect.objectContaining({ drivers }));
   });
 
   it("stringifies non-Error inline startup failures", async () => {

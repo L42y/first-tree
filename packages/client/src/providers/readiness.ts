@@ -2,6 +2,7 @@ import { chmod, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RuntimeProvider, RuntimeReadinessConfig, RuntimeReadinessError } from "@first-tree/shared";
+import { type ClaudeExecutableAuthority, createClaudeExecutableAuthority } from "./claude/executable.js";
 import { verifyClaudeCodeReadiness } from "./claude/readiness.js";
 import { verifyCodexReadiness } from "./codex/readiness.js";
 
@@ -27,6 +28,10 @@ export type RuntimeReadiness = {
 };
 
 export type RuntimeReadinessTable = Readonly<Partial<Record<RuntimeProvider, RuntimeReadiness>>>;
+
+export type BuiltinRuntimeReadinessDeps = {
+  claudeExecutableAuthority?: ClaudeExecutableAuthority;
+};
 
 export function asRuntimeReadinessRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -79,7 +84,15 @@ export async function withIsolatedReadinessWorkspace(
   }
 }
 
-export const BUILTIN_RUNTIME_READINESS: RuntimeReadinessTable = Object.freeze({
-  "claude-code": { verify: verifyClaudeCodeReadiness },
-  codex: { verify: verifyCodexReadiness },
-});
+/** Build readiness drivers against the same daemon-local executable authority as sessions. */
+export function createBuiltinRuntimeReadiness(deps: BuiltinRuntimeReadinessDeps = {}): RuntimeReadinessTable {
+  const authority = deps.claudeExecutableAuthority ?? createClaudeExecutableAuthority();
+  return Object.freeze({
+    "claude-code": {
+      verify: (input) => verifyClaudeCodeReadiness(input, { resolveExecutable: authority.resolve }),
+    },
+    codex: { verify: verifyCodexReadiness },
+  });
+}
+
+export const BUILTIN_RUNTIME_READINESS: RuntimeReadinessTable = createBuiltinRuntimeReadiness();
