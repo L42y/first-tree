@@ -382,12 +382,10 @@ describe("official Feishu QR registration", () => {
     let onQRCodeReady: ((value: { url: string; expireIn: number }) => void) | undefined;
     const timeoutSdk = {
       ...feishuSdk,
-      registerApp: vi.fn(
-        async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
-          onQRCodeReady = options.onQRCodeReady;
-          return completion.promise;
-        },
-      ),
+      registerApp: vi.fn(async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
+        onQRCodeReady = options.onQRCodeReady;
+        return completion.promise;
+      }),
     } as FeishuSdkDependencies;
     const manager = createFeishuIntegrationManager({
       db: app.db,
