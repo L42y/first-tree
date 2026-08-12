@@ -820,12 +820,12 @@ async function completeOauthFlow(
   // Track which signup path the user took. Surfaced to the SPA via the
   // post-OAuth fragment so the onboarding modal can pick context-aware copy.
   // - "invite": user redeemed an invite token, joined an existing org
-  // - "solo":   first-time user, fresh org auto-provisioned
+  // - "solo":   first-time user, authenticated with no Team yet
   // - "returning": existing user signing back in
   let joinPath: "invite" | "solo" | "returning" = "returning";
 
-  // If `next` is an /invite/<token> path, join that org instead of
-  // auto-provisioning. Invite paths look like `/invite/abc123`.
+  // If `next` is an /invite/<token> path, join that org instead of preserving
+  // the legitimate Team-less solo state. Invite paths look like `/invite/abc123`.
   const inviteMatch = /^\/invite\/([^/?#]+)/.exec(next);
   let resolved = false;
   let resolvedOrganizationId: string | null = null;
@@ -928,10 +928,11 @@ async function completeOauthFlow(
 
   const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
 
-  // Carry the org this callback resolved to (the invited org for an invite
-  // link, an App-install target, otherwise the user's primary/personal org)
-  // so the web can make it the active selection. `orgPinned=1` marks the
-  // deliberate destinations (invite / solo / install-target) the SPA must
+  // Carry an org only when this callback resolved one (the invited org, an
+  // App-install target, or a returning membership) so the web can make it the
+  // active selection. A Team-less solo callback deliberately omits both org
+  // fields. `orgPinned=1` marks the deliberate destinations (invite /
+  // install-target) the SPA must
   // activate; without it the client keeps its own last-used selection, which
   // is the intended behaviour for a plain returning sign-in but would drop an
   // invitee — or an install-return — into their *previous* org.

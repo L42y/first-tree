@@ -45,7 +45,7 @@ function provision(app: TestApp, user: { accessToken: string }, payload: Record<
     method: "POST",
     url: "/api/v1/me/team-agents",
     headers: { authorization: `Bearer ${user.accessToken}` },
-    payload,
+    payload: { requestId: uuidv7(), ...payload },
   });
 }
 
@@ -57,6 +57,8 @@ async function publishTemplate(app: TestApp, slug: string): Promise<string> {
     .onConflictDoNothing();
   const memberId = uuidv7();
   await app.db.transaction(async (tx) => {
+    // Drizzle narrows the transaction type even though it exposes the same
+    // query-builder surface `createAgent` uses in production transactions.
     const human = await createAgent(tx as unknown as typeof app.db, {
       name: `pub-human-${crypto.randomUUID().slice(0, 6)}`,
       type: "human",
@@ -221,7 +223,7 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     const app = getApp();
     const user = await createTeamlessUser(app, "Retry Owner");
 
-    const request = { name: "retry-teammate", displayName: "Retry Teammate" };
+    const request = { requestId: uuidv7(), name: "retry-teammate", displayName: "Retry Teammate" };
     const first = await provision(app, user, request);
     const second = await provision(app, user, request);
 
@@ -257,12 +259,16 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     const secondDb = connectDatabase(databaseUrl);
     try {
       const { provisionFirstTeamAgent } = await import("../services/team/first-team-agent.js");
+      const requestId = uuidv7();
       const results = await Promise.all(
         [firstDb, secondDb].map((db) =>
           provisionFirstTeamAgent(
             db,
-            { userId: user.userId, name: "concurrent-teammate" },
-            { attachmentBlobStore: app.attachmentBlobStore },
+            { userId: user.userId, requestId, name: "concurrent-teammate" },
+            {
+              attachmentBlobStore: app.attachmentBlobStore,
+              idempotencySecret: app.config.secrets.jwtSecret,
+            },
           ),
         ),
       );
@@ -343,6 +349,34 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       .from(agents)
       .where(and(eq(agents.organizationId, hostTeam.organizationId), ne(agents.type, "human")));
     expect(nonHuman).toEqual([]);
+  });
+
+  it("does not mistake a matching existing-Team Agent for a first-Team retry", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Returning Owner");
+    const team = await createPersonalTeam(app.db, {
+      userId: user.userId,
+      username: user.username,
+      teamDisplayName: "Returning Owner's team",
+      userDisplayName: "Returning Owner",
+    });
+    await createAgent(app.db, {
+      name: "matching-teammate",
+      displayName: "Matching Teammate",
+      type: "agent",
+      source: "portal",
+      visibility: "organization",
+      managerId: team.memberId,
+      organizationId: team.organizationId,
+    });
+
+    const reply = await provision(app, user, {
+      requestId: uuidv7(),
+      name: "matching-teammate",
+      displayName: "Matching Teammate",
+    });
+
+    expect(reply.statusCode).toBe(409);
   });
 
   it("refuses Agent creation for a multi-Team user because existing-Team creation is org-scoped", async () => {

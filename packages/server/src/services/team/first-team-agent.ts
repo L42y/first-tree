@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   AGENT_STATUSES,
   AGENT_TYPES,
@@ -21,6 +22,7 @@ export type ProvisionFirstTeamAgentInput = ProvisionFirstTeamAgent & { userId: s
 
 export type ProvisionFirstTeamAgentOptions = {
   attachmentBlobStore: AttachmentBlobStore;
+  idempotencySecret: string;
   templatePublisherOrgId?: string;
   /**
    * Set on invitation-only deployments. A user with no Team there must redeem
@@ -72,6 +74,9 @@ export async function provisionFirstTeamAgent(
   options: ProvisionFirstTeamAgentOptions,
 ): Promise<ProvisionFirstTeamAgentOutcome> {
   return db.transaction(async (tx) => {
+    // Drizzle's transaction callback exposes the same runtime query surface as
+    // `Database`, but its inferred type omits the app's relational-query
+    // decoration. This service uses only the shared query-builder methods.
     const txDb = tx as unknown as Database;
 
     const [lockedUser] = await txDb
@@ -96,7 +101,7 @@ export async function provisionFirstTeamAgent(
       // a different name or Template intent must never be reported as if it
       // had been adopted. All other existing-Team creation belongs to the
       // org-scoped Agent endpoint.
-      const existing = await findExactRetry(txDb, memberships, input);
+      const existing = await findExactRetry(txDb, memberships, input, options.idempotencySecret);
       if (!existing) {
         throw new ConflictError(
           "A Team membership already exists or a different first Team Agent was provisioned. Create additional Agents through the Team-scoped endpoint.",
@@ -116,6 +121,7 @@ export async function provisionFirstTeamAgent(
     }
 
     const target = await createInitialTeam(txDb, input.userId, lockedUser);
+    const agentUuid = deriveFirstTeamAgentUuid(options.idempotencySecret, input.userId, input.requestId);
 
     const agent = await createAgent(
       txDb,
@@ -137,13 +143,14 @@ export async function provisionFirstTeamAgent(
         templatePublisherOrgId: options.templatePublisherOrgId,
         templateActorMemberId: target.memberId,
         templateActorHumanAgentId: target.humanAgentId,
+        uuid: agentUuid,
       },
     );
 
     return {
       organizationId: target.organizationId,
       memberId: target.memberId,
-      teamCreated: target.teamCreated,
+      teamCreated: true,
       agentCreated: true,
       agent: {
         uuid: agent.uuid,
@@ -160,7 +167,6 @@ type TargetTeam = {
   organizationId: string;
   memberId: string;
   humanAgentId: string;
-  teamCreated: boolean;
 };
 
 /**
@@ -189,7 +195,6 @@ async function createInitialTeam(
     organizationId: team.organizationId,
     memberId: team.memberId,
     humanAgentId: mirror.agentId,
-    teamCreated: true,
   };
 }
 
@@ -203,6 +208,7 @@ async function findExactRetry(
   db: Database,
   memberships: ExistingMembership[],
   input: ProvisionFirstTeamAgentInput,
+  idempotencySecret: string,
 ): Promise<{
   organizationId: string;
   memberId: string;
@@ -228,6 +234,7 @@ async function findExactRetry(
           agents.managerId,
           memberships.map((membership) => membership.memberId),
         ),
+        eq(agents.uuid, deriveFirstTeamAgentUuid(idempotencySecret, input.userId, input.requestId)),
         eq(agents.type, AGENT_TYPES.AGENT),
         ne(agents.status, AGENT_STATUSES.DELETED),
       ),
@@ -259,4 +266,22 @@ async function findExactRetry(
       clientId: row.clientId,
     },
   };
+}
+
+/**
+ * Bind a public request id to this user without storing a second idempotency
+ * record. The request's UUID-v7 timestamp stays in the resulting Agent UUID;
+ * HMAC-derived random bits prevent a later existing-Team caller from naming an
+ * unrelated Agent as a retry.
+ */
+function deriveFirstTeamAgentUuid(secret: string, userId: string, requestId: string): string {
+  const requestBytes = Buffer.from(requestId.replaceAll("-", ""), "hex");
+  const bytes = Buffer.from(
+    createHmac("sha256", secret).update(userId).update("\0").update(requestId).digest().subarray(0, 16),
+  );
+  requestBytes.copy(bytes, 0, 0, 6);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x70;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

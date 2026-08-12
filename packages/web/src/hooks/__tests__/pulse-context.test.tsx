@@ -12,7 +12,7 @@ const wsMock = vi.hoisted(() => ({
   onMessage: null as ((msg: unknown) => void) | null,
   enabled: true,
 }));
-const authMock = vi.hoisted(() => ({ organizationId: "org-1" as string | null }));
+const authMock = vi.hoisted<{ organizationId: string | null }>(() => ({ organizationId: "org-1" }));
 
 vi.mock("../use-admin-ws.js", () => ({
   useAdminWs: ({ onMessage, enabled = true }: { onMessage: (msg: unknown) => void; enabled?: boolean }) => {

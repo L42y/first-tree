@@ -45,10 +45,14 @@ and the adjacent campaign quickstart handoff.
   Web presentation of its stored bootstrap; the client must not append hidden
   onboarding directives from message metadata.
 - Campaign quickstart starts through `POST /api/v1/me/landing-campaigns/start`.
-  That server-owned path creates the trial chat, binds the managed trial prompt
-  guardrail, and wakes the agent from visible task text. The campaign skill is
-  not server-materialized: the kickoff message instructs the trial agent to
-  clone the campaign's skill repo and run the named skill on the connected repo.
+  For a caller with no active Team, a known campaign is an explicit first-Agent
+  start: one transaction creates the Team, Admin membership and human mirror,
+  tenant-local service membership, and service-managed trial Agent. Existing
+  members stay in their selected/default Team. After that boundary, the path
+  creates the trial chat, binds the managed trial prompt guardrail, and wakes
+  the agent from visible task text. The campaign skill is not
+  server-materialized: the kickoff message instructs the trial agent to clone
+  the campaign's skill repo and run the named skill on the connected repo.
 - Campaign quickstart may carry an anonymous `{ attemptId, variant }`
   attribution pair. The pair is stored only on the trial chat's JSON metadata
   and included in the internal campaign export; it does not change trial

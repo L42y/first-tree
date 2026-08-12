@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { agentNameSchema } from "./agent.js";
+import { agentNameSchema, agentVisibilitySchema } from "./agent.js";
 import { agentTemplateIdsSchema } from "./agent-template.js";
 import { landingCampaignActionContextSchema } from "./landing-campaign.js";
 
@@ -124,7 +124,7 @@ export type KickoffOnboardingResult = z.infer<typeof kickoffOnboardingResultSche
  * stream alongside server-emitted events (`team_created`, `dismissed`).
  *
  * Server emits:
- *   - `team_created`           — at OAuth callback when joinPath === "solo"
+ *   - `team_created`           — when an explicit first-Agent start creates the Team
  *   - `dismissed`              — when PATCH /me/onboarding flips dismissed
  *
  * Web reports:
@@ -207,6 +207,12 @@ export type MeMembership = z.infer<typeof meMembershipSchema>;
  */
 export const provisionFirstTeamAgentSchema = z
   .object({
+    /**
+     * Stable UUID v7 generated once for this explicit confirmation. The
+     * server derives the Agent identity from it, so only the same logical
+     * request can resolve a completed retry.
+     */
+    requestId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
     name: agentNameSchema.optional(),
     displayName: z.string().min(1).max(200).optional(),
     templateIds: agentTemplateIdsSchema.optional(),
@@ -228,7 +234,7 @@ export const provisionFirstTeamAgentResultSchema = z.object({
     uuid: z.string(),
     name: z.string().nullable(),
     displayName: z.string(),
-    visibility: z.enum(["private", "organization"]),
+    visibility: agentVisibilitySchema,
     clientId: z.string().nullable(),
   }),
 });

@@ -345,6 +345,9 @@ async function provisionTrialAgent(
   trialAgent: Awaited<ReturnType<typeof ensureTrialAgent>>;
 }> {
   return app.db.transaction(async (tx) => {
+    // Drizzle's transaction callback exposes the same runtime query surface as
+    // `Database`, but its inferred type omits the app's relational-query
+    // decoration. The provisioning helpers use only query-builder methods.
     const db = tx as unknown as Database;
     // The stable user row is the serialization point shared by every
     // first-Team entry. Two Quickstart tabs therefore cannot mint two Teams.

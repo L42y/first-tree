@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { kickoffOnboardingSchema, onboardingEventSchema, treeSetupKickoffSchema } from "../schemas/me-extras.js";
+import {
+  kickoffOnboardingSchema,
+  onboardingEventSchema,
+  provisionFirstTeamAgentSchema,
+  treeSetupKickoffSchema,
+} from "../schemas/me-extras.js";
+
+describe("provisionFirstTeamAgentSchema", () => {
+  it("requires a stable UUID-v7 request identity and keeps the body user-scoped", () => {
+    expect(
+      provisionFirstTeamAgentSchema.parse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        name: "pr-engineer",
+      }),
+    ).toEqual({ requestId: "0190f000-0000-7000-8000-000000000001", name: "pr-engineer" });
+    expect(provisionFirstTeamAgentSchema.safeParse({ name: "pr-engineer" }).success).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "3d594650-3436-4f87-9f5a-8ac4d3f7f6b3",
+        name: "pr-engineer",
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        organizationId: "org-hidden-in-body",
+      }).success,
+    ).toBe(false);
+  });
+});
 
 describe("kickoffOnboardingSchema", () => {
   it("accepts a natural onboarding kickoff without an internal kind discriminator", () => {

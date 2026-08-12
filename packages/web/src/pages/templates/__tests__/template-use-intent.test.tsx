@@ -6,12 +6,14 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StoredCampaignActionHandoff } from "../../../utils/onboarding-flags.js";
 import { firstTeamAgentName, TemplateUseIntent } from "../template-use-intent.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const flagsMocks = vi.hoisted(() => ({
   writeOnboardingTemplateIntent: vi.fn(),
+  readCampaignActionHandoffFlag: vi.fn((): StoredCampaignActionHandoff | null => null),
 }));
 
 const dialogMock = vi.hoisted(() => ({
@@ -612,6 +614,7 @@ describe("TemplateUseIntent — Team-less caller", () => {
     await click(buttonByText("Create Team Agent"));
 
     expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledWith({
+      requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
       name: "pr-engineer",
       displayName: "PR Engineer",
       templateIds: [TEMPLATE.id],
@@ -620,6 +623,21 @@ describe("TemplateUseIntent — Team-less caller", () => {
     // before navigating away from this public page.
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
     expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+  });
+
+  it("resumes the stored campaign action through onboarding after first-Agent provisioning", async () => {
+    flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+    });
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
+    expect(navigateMock).toHaveBeenCalledWith("/onboarding");
+    expect(navigateMock).not.toHaveBeenCalledWith("/?c=draft&with=agent-new");
   });
 
   it("surfaces a recoverable error and re-reads /me when provisioning fails", async () => {
@@ -635,6 +653,9 @@ describe("TemplateUseIntent — Team-less caller", () => {
     // Retry works from the same screen.
     await click(buttonByText("Create Team Agent"));
     expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(2);
+    expect(teamAgentsMocks.provisionFirstTeamAgent.mock.calls[0]?.[0].requestId).toBe(
+      teamAgentsMocks.provisionFirstTeamAgent.mock.calls[1]?.[0].requestId,
+    );
     expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
   });
 

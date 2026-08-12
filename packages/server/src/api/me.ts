@@ -500,7 +500,8 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * POST /me/onboarding/events — web-side onboarding funnel reporter.
-   * Server-side milestones (`team_created` at OAuth, `dismissed` on PATCH)
+   * Server-side milestones (`team_created` at first-Agent confirmation,
+   * `dismissed` on PATCH)
    * are emitted directly; this endpoint surfaces the web-driven ones into
    * the same log stream so a single funnel query covers the full flow.
    * Body shape is enum-validated so the server won't log arbitrary names.
@@ -789,6 +790,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       { ...body, userId },
       {
         attachmentBlobStore: app.attachmentBlobStore,
+        idempotencySecret: app.config.secrets.jwtSecret,
         templatePublisherOrgId: app.config.agentTemplates?.publisherOrgId,
         allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
       },

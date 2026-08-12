@@ -13,7 +13,8 @@ import { useAuth } from "../../auth/auth-context.js";
 import { NewAgentDialog } from "../../components/new-agent-dialog.js";
 import { Button } from "../../components/ui/button.js";
 import { OptionCard } from "../../components/ui/option-card.js";
-import { writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
+import { uuidv7 } from "../../lib/uuid-v7.js";
+import { readCampaignActionHandoffFlag, writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 
 /**
@@ -30,9 +31,13 @@ export function firstTeamAgentName(templateSlug: string): string | undefined {
 /**
  * Signed-in resolution of the canonical Template intent (`/templates/:slug?use=1`).
  *
- * Two destinations, decided only after `/me` has settled (the caller gates on
+ * Three destinations, decided only after `/me` has settled (the caller gates on
  * `meLoaded`, so no org-scoped request fires before the org is resolved):
  *
+ *   - No Team — one explicit confirmation atomically creates the first Team,
+ *     caller identity, unbound organization-visible Agent, and Template
+ *     adoption. A stored campaign action then resumes onboarding; otherwise
+ *     the new Agent opens as a draft chat.
  *   - Fresh / incomplete onboarding — judged by the SAME gate the workspace
  *     root uses (`shouldEnterOnboarding`), never a parallel re-derivation that
  *     could drift. The slug is stashed as a per-org sessionStorage handoff and
@@ -118,6 +123,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   });
 
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(organizationId);
+  const firstProvisionRequestIdRef = useRef<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   // First-provision flight, for the Team-less caller. Set synchronously on
@@ -187,7 +193,9 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
 
     let result: Awaited<ReturnType<typeof provisionFirstTeamAgent>>;
     try {
+      firstProvisionRequestIdRef.current ??= uuidv7();
       result = await provisionFirstTeamAgent({
+        requestId: firstProvisionRequestIdRef.current,
         name: firstTeamAgentName(template.slug),
         displayName: template.name,
         templateIds: [template.id],
@@ -214,7 +222,12 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       setProvisionError("Your team agent was created, but we couldn't open its team. Reload to continue.");
       return;
     }
-    navigate(`/?c=draft&with=${encodeURIComponent(result.agent.uuid)}`);
+    firstProvisionRequestIdRef.current = null;
+    if (readCampaignActionHandoffFlag()) {
+      navigate("/onboarding");
+    } else {
+      navigate(`/?c=draft&with=${encodeURIComponent(result.agent.uuid)}`);
+    }
   }
 
   // Stay on this screen for the whole flight, after a success, and while an

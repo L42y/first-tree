@@ -311,13 +311,18 @@ export async function createAgent(
   options: {
     force?: boolean;
     adoptAsDelegateIfFirst?: boolean;
+    /**
+     * Internal-only stable identity for an idempotent create boundary. Public
+     * Agent routes never accept a caller-selected UUID.
+     */
+    uuid?: string;
     attachmentBlobStore?: AttachmentBlobStore;
     templatePublisherOrgId?: string;
     templateActorMemberId?: string;
     templateActorHumanAgentId?: string;
   } = {},
 ) {
-  const uuid = uuidv7();
+  const uuid = options.uuid ?? uuidv7();
   const name = data.name ?? null;
   const runtimeProvider: RuntimeProvider = data.runtimeProvider ?? DEFAULT_RUNTIME_PROVIDER;
   assertUserAgentMetadataHasNoReservedKeys(data.metadata);

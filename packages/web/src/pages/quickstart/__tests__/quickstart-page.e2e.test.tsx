@@ -15,6 +15,7 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const authMock = vi.hoisted(() => ({
   value: {
     organizationId: "org-1" as string | null,
+    hasNoTeam: false,
     refreshMe: vi.fn(async () => undefined),
     meLoaded: true,
     onboardingStep: "connect" as "connect" | "create_agent" | "completed" | null,
@@ -93,6 +94,7 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: window.sessionStorage });
   authMock.value = {
     organizationId: "org-1",
+    hasNoTeam: false,
     refreshMe: vi.fn(async () => undefined),
     meLoaded: true,
     onboardingStep: "connect",
@@ -181,6 +183,19 @@ describe("QuickstartPage — landing campaign trial flow", () => {
       repoUrl: "https://github.com/acme/backend",
     });
     expect(readCampaignIntent()).toBeNull();
+    expect(navigateMock).toHaveBeenCalledWith("/quickstart?c=chat-1", { replace: true });
+  });
+
+  it("starts a Team-less trial without an organization selector, refreshes /me, and opens its chat", async () => {
+    authMock.value = { ...authMock.value, organizationId: null, hasNoTeam: true };
+    seedIntent("production-scan");
+    await renderPage();
+
+    expect(landingCampaignMock.startLandingCampaign).toHaveBeenCalledWith({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+    });
+    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
     expect(navigateMock).toHaveBeenCalledWith("/quickstart?c=chat-1", { replace: true });
   });
 
@@ -281,14 +296,20 @@ describe("QuickstartPage — landing campaign trial flow", () => {
 });
 
 describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
-  it("un-onboarded user: stores the handoff, routes to /onboarding, never starts a trial", async () => {
-    authMock.value = { ...authMock.value, onboardingStep: "connect", currentOrgHasPersonalAgent: false };
+  it("Team-less user: stores the handoff and routes to first-Agent Template selection", async () => {
+    authMock.value = {
+      ...authMock.value,
+      organizationId: null,
+      hasNoTeam: true,
+      onboardingStep: "connect",
+      currentOrgHasPersonalAgent: false,
+    };
     await renderPage([
       "/quickstart?campaign=production-scan&repo=https%3A%2F%2Fgithub.com%2Facme%2Fbackend&action=fix&report=acme-backend-20260101-abcdef",
     ]);
 
     expect(landingCampaignMock.startLandingCampaign).not.toHaveBeenCalled();
-    expect(navigateMock).toHaveBeenCalledWith("/onboarding", { replace: true });
+    expect(navigateMock).toHaveBeenCalledWith("/templates", { replace: true });
     expect(window.sessionStorage.getItem("onboarding:campaignActionHandoff")).toBe(
       JSON.stringify({
         campaign: "production-scan",

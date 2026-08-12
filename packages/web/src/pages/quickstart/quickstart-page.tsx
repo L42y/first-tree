@@ -36,6 +36,7 @@ export function QuickstartPage() {
   const location = useLocation();
   const {
     organizationId,
+    hasNoTeam,
     refreshMe,
     meLoaded,
     onboardingStep,
@@ -206,6 +207,13 @@ export function QuickstartPage() {
       })
     ) {
       void startActionChat();
+    } else if (hasNoTeam) {
+      // A campaign action needs the user's own Agent, but choosing that
+      // responsibility is still an explicit product decision. Preserve the
+      // handoff and route through first-Agent Template selection; after the
+      // atomic provision that surface resumes onboarding to bind the Agent and
+      // consume this action at Start Chat.
+      navigate("/templates", { replace: true });
     } else {
       navigate("/onboarding", { replace: true });
     }
@@ -219,6 +227,7 @@ export function QuickstartPage() {
     onboardingDismissedAt,
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
+    hasNoTeam,
     navigate,
     startActionChat,
   ]);

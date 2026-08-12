@@ -51,6 +51,9 @@ export async function completeExternalAccountBootstrap(
   input: ExternalAccountBootstrapInput,
 ): Promise<ExternalAccountBootstrapResult> {
   return db.transaction(async (tx) => {
+    // Drizzle's transaction callback exposes the same runtime query surface as
+    // `Database`, but its inferred type omits the app's relational-query
+    // decoration. Bootstrap uses only the shared query-builder methods.
     const txDb = tx as unknown as Database;
     const [lockedUser] = await txDb
       .select({ id: users.id })
@@ -60,8 +63,9 @@ export async function completeExternalAccountBootstrap(
       .limit(1);
     if (!lockedUser) throw new Error("External account bootstrap references a missing user");
 
-    // Serializing on the stable user row keeps two first sign-ins from both
-    // observing an empty membership set and creating separate personal teams.
+    // Serializing on the stable user row keeps invite redemption, returning
+    // membership resolution, and concurrent first-Team provisioning from
+    // observing incompatible account states.
     const inviteMatch = /^\/invite\/([^/?#]+)/.exec(input.next);
     if (inviteMatch?.[1]) {
       const invitation = await findActiveByToken(txDb, inviteMatch[1]);
