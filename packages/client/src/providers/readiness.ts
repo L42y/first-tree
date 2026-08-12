@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { RuntimeProvider, RuntimeReadinessConfig, RuntimeReadinessError } from "@first-tree/shared";
 import { type ClaudeExecutableAuthority, createClaudeExecutableAuthority } from "./claude/executable.js";
 import { verifyClaudeCodeReadiness } from "./claude/readiness.js";
+import { resolveCodexRuntimeBinary } from "./codex/capability.js";
 import { verifyCodexReadiness } from "./codex/readiness.js";
 
 /** Prompt content is intentionally never returned, persisted, or logged. */
@@ -22,9 +23,26 @@ export type RuntimeReadinessInput = {
   signal: AbortSignal;
 };
 
+/** Non-secret identity of the exact executable authority a prepared run owns. */
+export type RuntimeReadinessAuthorityIdentity = {
+  source: string;
+  executablePath: string | null;
+};
+
+export type PreparedRuntimeReadiness = {
+  authority: RuntimeReadinessAuthorityIdentity;
+  verify: (input: RuntimeReadinessInput) => Promise<RuntimeReadinessExecutionResult>;
+};
+
 /** Narrow provider seam: one controlled, single-turn host-local verification. */
 export type RuntimeReadiness = {
   verify: (input: RuntimeReadinessInput) => Promise<RuntimeReadinessExecutionResult>;
+  /**
+   * Resolve the actual runtime once, then bind verification to that resolution.
+   * Coordinators call this even for cache candidates so executable replacement
+   * invalidates a previously Ready result without relying on capability polls.
+   */
+  prepare?: () => PreparedRuntimeReadiness | Promise<PreparedRuntimeReadiness>;
 };
 
 export type RuntimeReadinessTable = Readonly<Partial<Record<RuntimeProvider, RuntimeReadiness>>>;
@@ -90,8 +108,30 @@ export function createBuiltinRuntimeReadiness(deps: BuiltinRuntimeReadinessDeps 
   return Object.freeze({
     "claude-code": {
       verify: (input) => verifyClaudeCodeReadiness(input, { resolveExecutable: authority.resolve }),
+      prepare: () => {
+        const resolution = authority.resolve();
+        return {
+          authority: {
+            source: resolution.source,
+            executablePath: resolution.path ?? null,
+          },
+          verify: (input) => verifyClaudeCodeReadiness(input, { resolveExecutable: () => resolution }),
+        };
+      },
     },
-    codex: { verify: verifyCodexReadiness },
+    codex: {
+      verify: verifyCodexReadiness,
+      prepare: async () => {
+        const resolution = await resolveCodexRuntimeBinary();
+        return {
+          authority: {
+            source: resolution.ok ? resolution.runtimeSource : "unavailable",
+            executablePath: resolution.ok ? resolution.binary : null,
+          },
+          verify: (input) => verifyCodexReadiness(input, { resolveBinary: async () => resolution }),
+        };
+      },
+    },
   });
 }
 

@@ -11,13 +11,32 @@ import {
   runCodexCli,
   verifyCodexReadiness,
 } from "../providers/codex/readiness.js";
-import { RUNTIME_READINESS_PROMPT, withIsolatedReadinessWorkspace } from "../providers/readiness.js";
+import {
+  createBuiltinRuntimeReadiness,
+  RUNTIME_READINESS_PROMPT,
+  withIsolatedReadinessWorkspace,
+} from "../providers/readiness.js";
 
 function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
 describe("runtime readiness provider boundary", () => {
+  it("prepares Claude identity from the same lazy executable authority and freezes that resolution", async () => {
+    let currentPath = "/opt/claude-a";
+    const resolve = vi.fn(() => ({ path: currentPath, source: "path" as const }));
+    const driver = createBuiltinRuntimeReadiness({ claudeExecutableAuthority: { resolve } })["claude-code"];
+    if (!driver?.prepare) throw new Error("Claude readiness driver must expose prepared execution identity");
+
+    const first = await driver.prepare();
+    currentPath = "/opt/claude-b";
+    const second = await driver.prepare();
+
+    expect(first.authority).toEqual({ source: "path", executablePath: "/opt/claude-a" });
+    expect(second.authority).toEqual({ source: "path", executablePath: "/opt/claude-b" });
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
   it("uses and removes one isolated read-only workspace", async () => {
     const modes: number[] = [];
     const remove = vi.fn(async () => undefined);

@@ -20,6 +20,7 @@ function installed(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
 function harness(options: {
   entry?: CapabilityEntry;
   verify?: (signal: AbortSignal) => Promise<RuntimeReadinessExecutionResult>;
+  authority?: () => { source: string; executablePath: string | null };
   timeoutMs?: number;
   cleanupTimeoutMs?: number;
 }) {
@@ -37,7 +38,19 @@ function harness(options: {
     timeoutMs: options.timeoutMs,
     cleanupTimeoutMs: options.cleanupTimeoutMs,
     ttlMs: 60_000,
-    drivers: { codex: { verify: ({ signal }) => verify(signal) } },
+    drivers: {
+      codex: {
+        verify: ({ signal }) => verify(signal),
+        ...(options.authority
+          ? {
+              prepare: () => ({
+                authority: options.authority?.() ?? { source: "provider-default", executablePath: null },
+                verify: ({ signal }: { signal: AbortSignal }) => verify(signal),
+              }),
+            }
+          : {}),
+      },
+    },
   });
   return {
     coordinator,
@@ -94,6 +107,28 @@ describe("RuntimeReadinessCoordinator", () => {
     ]);
     await expect(h.coordinator.check({ ...command(), ref: "cached" })).resolves.toMatchObject({ state: "ready" });
     expect(h.verify).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates cached Ready when the prepared execution authority changes without a capability poll", async () => {
+    let executablePath = "/runtime/claude-a";
+    const h = harness({
+      authority: () => ({ source: "path", executablePath }),
+    });
+
+    const first = await h.coordinator.check(command());
+    expect(first).toMatchObject({ state: "ready" });
+    expect(h.verify).toHaveBeenCalledTimes(1);
+
+    await expect(h.coordinator.check({ ...command(), ref: "same-authority" })).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(h.verify).toHaveBeenCalledTimes(1);
+
+    executablePath = "/runtime/claude-b";
+    const replacement = await h.coordinator.check({ ...command(), ref: "replacement-authority" });
+    expect(replacement).toMatchObject({ state: "ready" });
+    expect(replacement.identity).not.toBe(first.identity);
+    expect(h.verify).toHaveBeenCalledTimes(2);
   });
 
   it("times out one bounded provider turn", async () => {
@@ -225,7 +260,15 @@ describe("RuntimeReadinessCoordinator", () => {
     expect(h.verify).toHaveBeenCalledTimes(2);
     expect(h.current().readiness).toMatchObject({
       state: "ready",
-      identity: runtimeReadinessIdentity("codex", h.current(), { model: "new-model" }),
+      identity: runtimeReadinessIdentity(
+        "codex",
+        h.current(),
+        { model: "new-model" },
+        {
+          source: "provider-default",
+          executablePath: null,
+        },
+      ),
     });
   });
 

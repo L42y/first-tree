@@ -4,7 +4,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   BUILTIN_RUNTIME_READINESS,
+  type PreparedRuntimeReadiness,
   RUNTIME_READINESS_PROMPT,
+  type RuntimeReadinessAuthorityIdentity,
   type RuntimeReadinessExecutionResult,
   type RuntimeReadinessTable,
   redactErrorPreview,
@@ -90,12 +92,19 @@ export function runtimeReadinessIdentity(
   provider: RuntimeProvider,
   entry: CapabilityEntry | undefined,
   config: RuntimeReadinessConfig | undefined,
+  authority?: RuntimeReadinessAuthorityIdentity,
 ): string {
   const payload = {
     provider,
     runtimeSource: entry?.runtimeSource ?? null,
     runtimePath: runtimePathFacts(entry?.runtimePath),
     sdkVersion: entry?.sdkVersion ?? null,
+    executionAuthority: authority
+      ? {
+          source: authority.source,
+          executable: runtimePathFacts(authority.executablePath),
+        }
+      : null,
     localProviderIdentity: providerLocalIdentityFacts(provider),
     config: {
       model: config?.model ?? null,
@@ -140,7 +149,8 @@ export class RuntimeReadinessCoordinator {
   async check(command: RuntimeReadinessCheckCommand): Promise<RuntimeReadinessResult> {
     this.lastRequests.set(command.provider, command);
     const entry = this.deps.currentEntry(command.provider);
-    const identity = runtimeReadinessIdentity(command.provider, entry, command.config);
+    const prepared = await this.prepareDriver(command.provider);
+    const identity = runtimeReadinessIdentity(command.provider, entry, command.config, prepared?.authority);
     const active = this.inFlight.get(command.provider);
     if (active?.invalidated) {
       this.deps.log(
@@ -161,13 +171,14 @@ export class RuntimeReadinessCoordinator {
     const generation = (this.latestGenerations.get(command.provider) ?? 0) + 1;
     this.latestGenerations.set(command.provider, generation);
     this.latestIdentities.set(command.provider, identity);
-    return this.checkGeneration(command, identity, generation);
+    return this.checkGeneration(command, identity, generation, prepared);
   }
 
   private async checkGeneration(
     command: RuntimeReadinessCheckCommand,
     identity: string,
     generation: number,
+    prepared: PreparedRuntimeReadiness | undefined,
   ): Promise<RuntimeReadinessResult> {
     const active = this.inFlight.get(command.provider);
     if (active) {
@@ -179,7 +190,16 @@ export class RuntimeReadinessCoordinator {
       if (this.latestGenerations.get(command.provider) !== generation) {
         return this.supersededResult(command.provider);
       }
-      return this.checkGeneration(command, identity, generation);
+      const refreshedEntry = this.deps.currentEntry(command.provider);
+      const refreshedPrepared = await this.prepareDriver(command.provider);
+      const refreshedIdentity = runtimeReadinessIdentity(
+        command.provider,
+        refreshedEntry,
+        command.config,
+        refreshedPrepared?.authority,
+      );
+      this.latestIdentities.set(command.provider, refreshedIdentity);
+      return this.checkGeneration(command, refreshedIdentity, generation, refreshedPrepared);
     }
 
     const entry = this.deps.currentEntry(command.provider);
@@ -198,7 +218,7 @@ export class RuntimeReadinessCoordinator {
       return cached;
     }
 
-    const promise = this.execute(command, identity);
+    const promise = this.execute(command, identity, prepared);
     const record = { identity, promise, invalidated: false };
     this.inFlight.set(command.provider, record);
     try {
@@ -237,9 +257,10 @@ export class RuntimeReadinessCoordinator {
     if (active) active.invalidated = true;
     const previous = this.lastRequests.get(provider);
     const now = (this.deps.now ?? Date.now)();
+    const prepared = await this.prepareDriver(provider);
     const readiness: RuntimeReadinessResult = {
       state: "needs_login",
-      identity: runtimeReadinessIdentity(provider, entry, previous?.config),
+      identity: runtimeReadinessIdentity(provider, entry, previous?.config, prepared?.authority),
       checkedAt: new Date(now).toISOString(),
       error: { code: "needs_login" },
     };
@@ -251,7 +272,11 @@ export class RuntimeReadinessCoordinator {
     return this.lastRequests.has(provider) || Boolean(this.deps.currentEntry(provider)?.readiness);
   }
 
-  private async execute(command: RuntimeReadinessCheckCommand, identity: string): Promise<RuntimeReadinessResult> {
+  private async execute(
+    command: RuntimeReadinessCheckCommand,
+    identity: string,
+    prepared: PreparedRuntimeReadiness | undefined,
+  ): Promise<RuntimeReadinessResult> {
     const startedAt = (this.deps.now ?? Date.now)();
     const entry = this.deps.currentEntry(command.provider);
     if (!installedEntry(entry)) {
@@ -282,9 +307,8 @@ export class RuntimeReadinessCoordinator {
     await this.deps.setProviderEntry(command.provider, { ...baseEntry, readiness: checking });
     this.deps.log("•", `runtime-readiness: checking ${command.provider} (ref ${command.ref})`);
 
-    const driver = this.drivers[command.provider];
-    const execution = driver
-      ? await this.runBounded(command.provider, (signal) => driver.verify({ config: command.config, signal }))
+    const execution = prepared
+      ? await this.runBounded(command.provider, (signal) => prepared.verify({ config: command.config, signal }))
       : ({
           ok: false,
           error: {
@@ -390,7 +414,13 @@ export class RuntimeReadinessCoordinator {
     readiness: RuntimeReadinessResult,
   ): Promise<RuntimeReadinessResult> {
     const current = this.deps.currentEntry(command.provider);
-    const currentIdentity = runtimeReadinessIdentity(command.provider, current, command.config);
+    const currentPrepared = await this.prepareDriver(command.provider);
+    const currentIdentity = runtimeReadinessIdentity(
+      command.provider,
+      current,
+      command.config,
+      currentPrepared?.authority,
+    );
     const active = this.inFlight.get(command.provider);
     if (
       currentIdentity !== identity ||
@@ -435,5 +465,26 @@ export class RuntimeReadinessCoordinator {
         message: "The previous readiness provider has not confirmed cleanup; retry after it settles.",
       },
     };
+  }
+
+  private async prepareDriver(provider: RuntimeProvider): Promise<PreparedRuntimeReadiness | undefined> {
+    const driver = this.drivers[provider];
+    if (!driver) return undefined;
+    if (!driver.prepare) {
+      return {
+        authority: { source: "provider-default", executablePath: null },
+        verify: driver.verify,
+      };
+    }
+    try {
+      return await driver.prepare();
+    } catch {
+      // A preparation failure must miss any Ready cache. The direct verify
+      // seam still produces the provider's bounded, redacted failure result.
+      return {
+        authority: { source: "resolution-error", executablePath: null },
+        verify: driver.verify,
+      };
+    }
   }
 }
