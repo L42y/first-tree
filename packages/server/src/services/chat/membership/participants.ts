@@ -71,6 +71,8 @@ export type AddChatParticipantSpec = {
 };
 
 export type AddChatParticipantsOptions = {
+  /** Provenance for the speaker row. Defaults to the ordinary manual path. */
+  source?: string;
   /**
    * When true, `INSERT ... ON CONFLICT DO NOTHING` is used so an idempotent
    * caller doesn't blow up when the row already exists.
@@ -195,7 +197,7 @@ export async function addChatParticipants(
     role: spec.role ?? ("member" as const),
     accessMode: "speaker" as const,
     mode: "mention_only" as const,
-    source: "manual" as const,
+    source: options.source ?? "manual",
   }));
 
   const insert = tx.insert(chatMembership).values(rows);
@@ -207,7 +209,7 @@ export async function addChatParticipants(
       set: {
         accessMode: "speaker",
         mode: "mention_only",
-        source: "manual",
+        source: options.source ?? "manual",
       },
     });
   } else if (options.onConflictDoNothing) {

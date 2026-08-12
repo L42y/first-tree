@@ -16,6 +16,7 @@ import { z } from "zod";
  *                 integrations); the catch-all for client runtime-initiated
  *                 writes that aren't typed via the CLI.
  *   - "github"  — Inbound message bridged from a GitHub webhook.
+ *   - "feishu"  — Inbound message accepted from the trusted Feishu channel.
  *
  * NOT a behaviour discriminator — use `purpose` for that (e.g. distinguishing
  * a regular agent send from a deliberate `agent-final-text` runtime notice,
@@ -28,10 +29,152 @@ export const MESSAGE_SOURCES = {
   GITHUB: "github",
   GITLAB: "gitlab",
   API: "api",
+  FEISHU: "feishu",
 } as const;
 
-export const messageSourceSchema = z.enum(["web", "cli", "github", "gitlab", "api"]);
+export const messageSourceSchema = z.enum(["web", "cli", "github", "gitlab", "api", "feishu"]);
 export type MessageSource = z.infer<typeof messageSourceSchema>;
+
+export const MESSAGE_SENDER_KINDS = {
+  MEMBER: "member",
+  INTEGRATION: "integration",
+} as const;
+export const messageSenderKindSchema = z.enum(["member", "integration"]);
+export type MessageSenderKind = z.infer<typeof messageSenderKindSchema>;
+
+export const MESSAGE_SENDER_PROVIDERS = {
+  FEISHU: "feishu",
+} as const;
+export const messageSenderProviderSchema = z.enum(["feishu"]);
+export type MessageSenderProvider = z.infer<typeof messageSenderProviderSchema>;
+
+/** Stable sender id used by trusted Feishu ingress. It never resolves to an Agent row. */
+export const FEISHU_INTEGRATION_SENDER_ID = "integration:feishu";
+
+export const feishuExternalAuthorSchema = z.object({
+  openId: z.string().min(1),
+  unionId: z.string().min(1).nullable().optional(),
+  userId: z.string().min(1).nullable().optional(),
+  displayName: z.string().min(1),
+  tenantKey: z.string().min(1).nullable().optional(),
+});
+export type FeishuExternalAuthor = z.infer<typeof feishuExternalAuthorSchema>;
+
+export const feishuMessageReferenceSchema = z.object({
+  messageId: z.string().min(1),
+  chatId: z.string().min(1),
+  chatType: z.enum(["p2p", "group"]),
+  threadId: z.string().min(1).nullable().optional(),
+  rootId: z.string().min(1).nullable().optional(),
+  parentId: z.string().min(1).nullable().optional(),
+  sentAt: z.string().datetime().nullable().optional(),
+});
+export type FeishuMessageReference = z.infer<typeof feishuMessageReferenceSchema>;
+
+export const feishuMentionSchema = z.object({
+  key: z.string().min(1),
+  openId: z.string().min(1).nullable().optional(),
+  userId: z.string().min(1).nullable().optional(),
+  name: z.string().nullable().optional(),
+  isBot: z.boolean().default(false),
+});
+export type FeishuMention = z.infer<typeof feishuMentionSchema>;
+
+export const feishuResourceUnavailableReasonSchema = z.enum([
+  "too_many",
+  "too_large",
+  "permission_denied",
+  "confidential",
+  "deleted",
+  "unsupported",
+  "download_failed",
+  "invalid_response",
+]);
+export type FeishuResourceUnavailableReason = z.infer<typeof feishuResourceUnavailableReasonSchema>;
+
+/** A provider resource reference plus the result of the one ingress hydration attempt. */
+export const feishuResourceSchema = z.object({
+  type: z.enum(["image", "file", "audio", "video", "sticker"]),
+  fileKey: z.string().min(1),
+  fileName: z.string().min(1).nullable().optional(),
+  durationMs: z.number().int().nonnegative().nullable().optional(),
+  coverImageKey: z.string().min(1).nullable().optional(),
+  origin: z.enum(["message", "post", "interactive", "merge_forward"]).default("message"),
+  hydration: z.discriminatedUnion("state", [
+    z.object({
+      state: z.literal("succeeded"),
+      attachmentId: z.string().uuid(),
+      mimeType: z.string().min(1),
+      size: z.number().int().positive(),
+    }),
+    z.object({
+      state: z.literal("unavailable"),
+      reason: feishuResourceUnavailableReasonSchema,
+      detail: z.string().min(1).max(500).nullable().optional(),
+    }),
+  ]),
+});
+export type FeishuResource = z.infer<typeof feishuResourceSchema>;
+
+export const feishuOutboundMediaIdentitySchema = z.object({
+  kind: z.enum(["file", "image", "video", "audio"]),
+  filename: z.string().min(1).max(255),
+  size: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+  cover: z
+    .object({
+      filename: z.string().min(1).max(255),
+      size: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+    })
+    .optional(),
+});
+export type FeishuOutboundMediaIdentity = z.infer<typeof feishuOutboundMediaIdentitySchema>;
+
+/** Immutable external target chosen by the Agent for one outbound message. */
+export const feishuOutboundIntentSchema = z.object({
+  operation: z.enum(["send", "reply"]),
+  chatId: z.string().min(1),
+  chatType: z.enum(["p2p", "group"]),
+  targetMessageId: z.string().min(1).nullable().optional(),
+  replyInThread: z.boolean().default(false),
+  /** First Tree message id, also supplied to Feishu as its one-hour idempotency key. */
+  idempotencyKey: z.string().min(1).max(50),
+  /** Digest of the exact provider payload accepted when this intent was created. */
+  payloadSha256: z.string().regex(/^[0-9a-f]{64}$/),
+  /** Stable byte identity for media sent directly by official lark-cli. */
+  media: feishuOutboundMediaIdentitySchema.nullable().optional(),
+});
+export type FeishuOutboundIntent = z.infer<typeof feishuOutboundIntentSchema>;
+
+/** Server-authored metadata for a canonical message bridged to or from Feishu. */
+export const feishuMessageMetadataSchema = z.discriminatedUnion("direction", [
+  z.object({
+    version: z.literal(1),
+    direction: z.literal("inbound"),
+    botBindingId: z.string().min(1),
+    reference: feishuMessageReferenceSchema,
+    externalAuthor: feishuExternalAuthorSchema,
+    eventId: z.string().min(1).nullable().optional(),
+    messageType: z.string().min(1),
+    mentions: z.array(feishuMentionSchema).default([]),
+    resources: z.array(feishuResourceSchema).default([]),
+  }),
+  z.object({
+    version: z.literal(1),
+    direction: z.literal("outbound"),
+    botBindingId: z.string().min(1),
+    intent: feishuOutboundIntentSchema,
+  }),
+]);
+export type FeishuMessageMetadata = z.infer<typeof feishuMessageMetadataSchema>;
+
+export function readFeishuMessageMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): FeishuMessageMetadata | null {
+  const parsed = feishuMessageMetadataSchema.safeParse(metadata?.feishu);
+  return parsed.success ? parsed.data : null;
+}
 
 /**
  * Send-time-only marker set by the CLI for body channels that intentionally
@@ -315,17 +458,23 @@ export const sendMessageSchema = z.object({
 });
 export type SendMessage = z.infer<typeof sendMessageSchema>;
 
-export const messageSchema = z.object({
-  id: z.string(),
-  chatId: z.string(),
-  senderId: z.string(),
-  format: z.string(),
-  content: z.unknown(),
-  metadata: z.record(z.string(), z.unknown()),
-  inReplyTo: z.string().nullable(),
-  source: messageSourceSchema.nullable(),
-  createdAt: z.string(),
-});
+export const messageSchema = z
+  .object({
+    id: z.string(),
+    chatId: z.string(),
+    senderId: z.string(),
+    senderKind: messageSenderKindSchema.default("member"),
+    senderProvider: messageSenderProviderSchema.nullable().default(null),
+    format: z.string(),
+    content: z.unknown(),
+    metadata: z.record(z.string(), z.unknown()),
+    inReplyTo: z.string().nullable(),
+    source: messageSourceSchema.nullable(),
+    createdAt: z.string(),
+  })
+  .refine((message) => (message.senderKind === "member") === (message.senderProvider === null), {
+    message: "member senders cannot declare a provider and integration senders must declare one",
+  });
 export type Message = z.infer<typeof messageSchema>;
 
 /** Per-chat participation mode exposed to the recipient runtime. */
@@ -344,15 +493,21 @@ export type ParticipantMode = z.infer<typeof participantModeSchema>;
  * metadata marker. It is optional for rolling compatibility with older
  * servers that did not include it in preceding context.
  */
-export const precedingMessageSchema = z.object({
-  id: z.string(),
-  senderId: z.string(),
-  format: z.string(),
-  content: z.unknown(),
-  metadata: z.record(z.string(), z.unknown()).default({}),
-  source: messageSourceSchema.nullable().catch(null).optional(),
-  createdAt: z.string(),
-});
+export const precedingMessageSchema = z
+  .object({
+    id: z.string(),
+    senderId: z.string(),
+    senderKind: messageSenderKindSchema.default("member"),
+    senderProvider: messageSenderProviderSchema.nullable().default(null),
+    format: z.string(),
+    content: z.unknown(),
+    metadata: z.record(z.string(), z.unknown()).default({}),
+    source: messageSourceSchema.nullable().catch(null).optional(),
+    createdAt: z.string(),
+  })
+  .refine((message) => (message.senderKind === "member") === (message.senderProvider === null), {
+    message: "member senders cannot declare a provider and integration senders must declare one",
+  });
 export type PrecedingMessage = z.infer<typeof precedingMessageSchema>;
 
 /**
@@ -374,7 +529,7 @@ export type PrecedingMessage = z.infer<typeof precedingMessageSchema>;
  * context). The runtime renders them as "earlier in chat" before the
  * triggering message — see proposals/group-chat-ux-improvements §1.
  */
-export const clientMessageSchema = messageSchema.extend({
+export const clientMessageSchema = messageSchema.safeExtend({
   configVersion: z.number().int().positive(),
   // Forward-roll defence: the server may push new source values before the
   // client ships the matching enum update (e.g. a new source is added).

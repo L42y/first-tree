@@ -21,6 +21,8 @@ export { githubEntityChatMappings } from "./github-entity-chat-mappings.js";
 export { gitlabConnections } from "./gitlab-connections.js";
 export { gitlabEntityChatMappings } from "./gitlab-entity-chat-mappings.js";
 export { gitlabIdentityLinks } from "./gitlab-identity-links.js";
+export { imBotBindings } from "./im-bot-bindings.js";
+export { imChatBindings } from "./im-chat-bindings.js";
 export { inboxEntries } from "./inbox-entries.js";
 export { invitationRedemptions, invitations } from "./invitations.js";
 export { members } from "./members.js";

@@ -109,6 +109,14 @@ export const agentChatMetadataSchema = z.object({
 });
 export type AgentChatMetadata = z.infer<typeof agentChatMetadataSchema>;
 
+export const feishuChatMetadataSchema = z.object({
+  source: z.literal("feishu"),
+  botBindingId: z.string().min(1),
+  externalChatId: z.string().min(1),
+  externalChatType: z.enum(["p2p", "group"]),
+});
+export type FeishuChatMetadata = z.infer<typeof feishuChatMetadataSchema>;
+
 /**
  * Discriminated union of typed chat-metadata shapes. Currently `github` is
  * joined by agent-created task chats; future writers should add new `source`
@@ -118,6 +126,7 @@ export const chatMetadataSchema = z.discriminatedUnion("source", [
   githubChatMetadataSchema,
   gitlabChatMetadataSchema,
   agentChatMetadataSchema,
+  feishuChatMetadataSchema,
 ]);
 export type ChatMetadata = z.infer<typeof chatMetadataSchema>;
 
@@ -175,6 +184,6 @@ export type CallerWritableChatMetadata = z.infer<typeof callerWritableChatMetada
  * then extend this enum, then both the SQL CASE and the
  * `sourceFilterSql` switch.
  */
-export const CHAT_SOURCES = ["manual", "github", "gitlab", "agent"] as const;
+export const CHAT_SOURCES = ["manual", "github", "gitlab", "agent", "feishu"] as const;
 export const chatSourceSchema = z.enum(CHAT_SOURCES);
 export type ChatSource = z.infer<typeof chatSourceSchema>;

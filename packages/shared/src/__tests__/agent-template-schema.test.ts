@@ -15,6 +15,8 @@ import {
   agentTemplateStatusSchema,
   createAgentTemplateSchema,
   MAX_AGENT_TEMPLATE_COMPONENTS,
+  MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS,
+  MAX_AGENT_TEMPLATE_EXAMPLE_TASKS,
   MAX_AGENT_TEMPLATE_IDS,
   publishAgentTemplateSchema,
   retireAgentTemplateSchema,
@@ -126,6 +128,33 @@ describe("agentTemplatePayloadSchema", () => {
     const parsed = agentTemplatePayloadSchema.parse(validPayload());
     expect(parsed.schemaVersion).toBe(1);
     expect(parsed.components).toHaveLength(3);
+  });
+
+  it("accepts optional example tasks while keeping the public profile bounded", () => {
+    const withTwoTasks = {
+      ...VALID_PUBLIC_PROFILE,
+      exampleTasks: ["Summarize this discussion and propose next steps.", "Research an option and recommend a path."],
+    };
+    expect(agentTemplatePayloadSchema.parse(validPayloadWithPublic(withTwoTasks)).public.exampleTasks).toEqual(
+      withTwoTasks.exampleTasks,
+    );
+
+    const withThreeTasks = {
+      ...VALID_PUBLIC_PROFILE,
+      exampleTasks: [...withTwoTasks.exampleTasks, "Check this plan against our existing decisions."],
+    };
+    expect(agentTemplatePayloadSchema.safeParse(validPayloadWithPublic(withThreeTasks)).success).toBe(true);
+
+    for (const exampleTasks of [
+      ["Only one task."],
+      [...withThreeTasks.exampleTasks, "A fourth task."],
+      ["", "A valid task."],
+      ["x".repeat(301), "A valid task."],
+    ]) {
+      expect(
+        agentTemplatePayloadSchema.safeParse(validPayloadWithPublic({ ...VALID_PUBLIC_PROFILE, exampleTasks })).success,
+      ).toBe(false);
+    }
   });
 
   it("requires schemaVersion 1", () => {
@@ -525,6 +554,9 @@ describe("write-size contract", () => {
         userValue: escaped(2000),
         instructionsSummary: escaped(2000),
         toolsAndSkillsSummary: escaped(2000),
+        exampleTasks: Array.from({ length: MAX_AGENT_TEMPLATE_EXAMPLE_TASKS }, () =>
+          escaped(MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS),
+        ),
       },
       components: Array.from({ length: MAX_AGENT_TEMPLATE_COMPONENTS }, (_, index) => ({
         key: `${"p".repeat(97)}${String(index).padStart(3, "0")}`,

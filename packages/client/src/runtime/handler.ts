@@ -297,6 +297,10 @@ export type SessionMessage = {
   chatId: string;
   /** Sender agent ID. */
   senderId: string;
+  /** Whether the sender is a First Tree member or a trusted integration. */
+  senderKind?: "member" | "integration";
+  /** Provider identity when senderKind is integration. */
+  senderProvider?: "feishu" | null;
   /** Message format. */
   format: string;
   /** Message content (text or structured). */
@@ -326,6 +330,8 @@ export type SessionMessage = {
 export type PrecedingMessage = {
   id: string;
   senderId: string;
+  senderKind?: "member" | "integration";
+  senderProvider?: "feishu" | null;
   format: string;
   content: unknown;
   metadata: Record<string, unknown>;

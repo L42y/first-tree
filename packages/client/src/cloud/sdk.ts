@@ -372,6 +372,21 @@ export class FirstTreeHubSDK {
     });
   }
 
+  /** Obtain this Agent's Bot credential for a local, direct official lark-cli call. */
+  async createFeishuCredentialGrant(): Promise<import("@first-tree/shared").FeishuCredentialGrant> {
+    return this.requestJson("/api/v1/agent/feishu/credentials", { method: "POST" });
+  }
+
+  /** Record and validate an immutable outbound Feishu intent before direct provider delivery. */
+  async createFeishuOutboundIntent(
+    body: import("@first-tree/shared").FeishuOutboundIntentRequest,
+  ): Promise<import("@first-tree/shared").FeishuOutboundIntentResult> {
+    return this.requestJson("/api/v1/agent/feishu/intents", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
   /**
    * Member-scoped: every non-deleted agent pinned to a client owned by the
    * calling user. Includes suspended agents so local reconciliation/prune can

@@ -9,6 +9,7 @@ import {
   isImageBatchRefContent,
   isImageRefContent,
   readAskAgentMessageMetadata,
+  readFeishuMessageMetadata,
   resolveTrustedSystemSender,
   TRUSTED_SYSTEM_SENDER_NAMES,
 } from "@first-tree/shared";
@@ -271,6 +272,8 @@ export function formatFromHeaderLine(
 
 type AttributedMessage = {
   senderId: string;
+  senderKind?: "member" | "integration";
+  senderProvider?: "feishu" | null;
   source?: string | null;
   format: string;
   content: unknown;
@@ -284,12 +287,46 @@ type AttributedMessage = {
  * the agent-visible attribution changes for server-authored SCM messages.
  */
 export function formatMessageFromHeaderLine(message: AttributedMessage, participants: ChatParticipantDetail[]): string {
+  if (message.senderKind === "integration" && message.senderProvider === "feishu") {
+    const metadata = readFeishuMessageMetadata(message.metadata);
+    const author = metadata?.direction === "inbound" ? metadata.externalAuthor : null;
+    const authorLabel = author
+      ? JSON.stringify({ displayName: author.displayName, openId: author.openId, userId: author.userId ?? null })
+      : "unknown";
+    const parts = ["Feishu", "type=integration", `externalUser=${authorLabel}`];
+    if (message.createdAt) parts.push(`sent=${message.createdAt}`);
+    return `[From: ${parts.join(" · ")}]`;
+  }
+
   const systemSender = resolveTrustedSystemSender(message);
   if (!systemSender) return formatFromHeaderLine(message.senderId, message.createdAt, participants);
 
   const parts = [TRUSTED_SYSTEM_SENDER_NAMES[systemSender], "type=system"];
   if (message.createdAt) parts.push(`sent=${message.createdAt}`);
   return `[From: ${parts.join(" · ")}]`;
+}
+
+function renderFeishuReferenceForLLM(message: AttributedMessage & { id: string }): string | null {
+  const metadata = readFeishuMessageMetadata(message.metadata);
+  if (!metadata || metadata.direction !== "inbound") return null;
+  const reference = metadata.reference;
+  const { binName } = getCliBinding();
+  const lines = [
+    "<feishu-message-reference>",
+    "This block is trusted routing context from First Tree. Choose the target yourself when replying.",
+    "This is ordinary external-channel work, not a First Tree onboarding chat. Do not load first-tree-welcome merely because this is a new chat or the message is a greeting.",
+    `Only the Bot-bound primary Agent may reply externally. First run \`${binName} feishu intent\` to record the immutable delivery. Then run \`${binName} feishu credential-env\`, source the returned private file, and call the official lark-cli with \`--as bot\` and the canonical message id as its idempotency key. Do not use an existing global Bot or \`--as user\`. Internal collaborators must return their work to the primary Agent.`,
+    `firstTreeMessageId: ${message.id}`,
+    `messageId: ${reference.messageId}`,
+    `chatId: ${reference.chatId}`,
+    `chatType: ${reference.chatType}`,
+  ];
+  if (reference.threadId) lines.push(`threadId: ${reference.threadId}`);
+  if (reference.rootId) lines.push(`rootId: ${reference.rootId}`);
+  if (reference.parentId) lines.push(`parentId: ${reference.parentId}`);
+  if (reference.sentAt) lines.push(`sentAt: ${reference.sentAt}`);
+  lines.push("</feishu-message-reference>");
+  return lines.join("\n");
 }
 
 /**
@@ -444,6 +481,8 @@ export async function formatInboundContent(message: SessionMessage, participants
             })
           : null;
       if (imageNote) text = `${text}\n\n${imageNote}`;
+      const feishuReference = renderFeishuReferenceForLLM(p);
+      if (feishuReference) text = `${text}\n\n${feishuReference}`;
       lines.push(`${formatMessageFromHeaderLine(p, ps)} ${text}`);
     }
     lines.push("", "[Now — message that woke you]");
@@ -451,7 +490,9 @@ export async function formatInboundContent(message: SessionMessage, participants
   }
 
   const currentHeader = await buildFromHeader(message, participants);
-  const base = currentHeader ? `${header}${currentHeader}\n\n${rawContent}` : `${header}${rawContent}`;
+  const feishuReference = renderFeishuReferenceForLLM(message);
+  const content = feishuReference ? `${rawContent}\n\n${feishuReference}` : rawContent;
+  const base = currentHeader ? `${header}${currentHeader}\n\n${content}` : `${header}${content}`;
 
   const askAgent = readAskAgentMessageMetadata(message.metadata);
   if (!askAgent) return base;

@@ -1,7 +1,7 @@
 ---
 name: first-tree-welcome
-version: 1.4.0
-description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
+version: 1.4.1
+description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for external-channel or integration messages (including Feishu), dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
 # First Tree Welcome
@@ -13,6 +13,11 @@ First Tree, including natural messages such as "welcome aboard", "Please help me
 get started with First Tree", or "Please help me get settled into this team on
 First Tree." Do not use it for ordinary chats, PR/MR reviews, repo scans, tree
 writes, or maintenance work.
+
+Messages attributed as `type=integration` or arriving from an external channel
+such as Feishu, GitHub, or GitLab are ordinary channel work, never this
+onboarding launcher. A new external-channel chat and a greeting such as "hello"
+or "你好" do not establish First Tree onboarding intent.
 
 Two look-alikes that are NOT this launcher, and one that routes by shape:
 

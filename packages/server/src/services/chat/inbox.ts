@@ -228,6 +228,8 @@ export async function bundleDeliveryWithSilentContext(
           id: msg.id,
           chatId: msg.chatId,
           senderId: msg.senderId,
+          senderKind: msg.senderKind === "integration" ? ("integration" as const) : ("member" as const),
+          senderProvider: msg.senderProvider === "feishu" ? ("feishu" as const) : null,
           format: msg.format,
           content: msg.content,
           metadata: msg.metadata,
@@ -558,6 +560,8 @@ async function collectPrecedingContext(
         .select({
           messageId: messages.id,
           senderId: messages.senderId,
+          senderKind: messages.senderKind,
+          senderProvider: messages.senderProvider,
           format: messages.format,
           content: messages.content,
           metadata: messages.metadata,
@@ -586,6 +590,8 @@ async function collectPrecedingContext(
         .map((r) => ({
           id: r.messageId,
           senderId: r.senderId,
+          senderKind: r.senderKind === "integration" ? ("integration" as const) : ("member" as const),
+          senderProvider: r.senderProvider === "feishu" ? ("feishu" as const) : null,
           format: r.format,
           content: r.content,
           metadata: (r.metadata ?? {}) as Record<string, unknown>,

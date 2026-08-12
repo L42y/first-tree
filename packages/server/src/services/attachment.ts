@@ -29,7 +29,7 @@ export type CreateAttachmentInput = {
   body: Buffer | Readable;
   /** Parsed Content-Length, when the transport supplied one. */
   contentLength?: number;
-  /** `agents.uuid` of the uploader; humans pass their humanAgentId. */
+  /** Stable uploader actor id (member uuid or a trusted integration actor id). */
   uploadedBy: string;
 };
 
