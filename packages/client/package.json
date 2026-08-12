@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "description": "First Tree SDK — programmatic client for First Tree Cloud",
+  "description": "Private First Tree Client: Cloud SDK, Agent Runtime, and built-in providers",
   "exports": {
     ".": {
       "types": "./src/index.ts",

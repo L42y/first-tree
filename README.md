@@ -174,7 +174,7 @@ Run `first-tree <namespace> --help` for the full list under any namespace.
 - `apps/cli/` — published CLI (`first-tree` / `ft`)
 - `packages/shared/` — Zod schemas, types, config system (`@first-tree/shared`)
 - `packages/server/` — Fastify API server (`@first-tree/server`)
-- `packages/client/` — Agent SDK + Runtime (`@first-tree/client`)
+- `packages/client/` — Cloud SDK, AgentRuntime, and built-in providers (`@first-tree/client`)
 - `packages/web/` — React web workspace (`@first-tree/web`)
 - `packages/qa/` — internal QA workflow assets for agent-run validation (`@first-tree/qa`)
 - `skills/` — repo-local skill payloads for First Tree agents
