@@ -221,8 +221,9 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     const app = getApp();
     const user = await createTeamlessUser(app, "Retry Owner");
 
-    const first = await provision(app, user, { name: "retry-teammate" });
-    const second = await provision(app, user, { name: "retry-teammate-again" });
+    const request = { name: "retry-teammate", displayName: "Retry Teammate" };
+    const first = await provision(app, user, request);
+    const second = await provision(app, user, request);
 
     expect(first.statusCode).toBe(201);
     // 200, not 201: the retry resolved an existing Agent instead of creating one.
@@ -257,10 +258,10 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     try {
       const { provisionFirstTeamAgent } = await import("../services/team/first-team-agent.js");
       const results = await Promise.all(
-        [firstDb, secondDb].map((db, index) =>
+        [firstDb, secondDb].map((db) =>
           provisionFirstTeamAgent(
             db,
-            { userId: user.userId, name: `concurrent-teammate-${index}` },
+            { userId: user.userId, name: "concurrent-teammate" },
             { attachmentBlobStore: app.attachmentBlobStore },
           ),
         ),
@@ -284,7 +285,36 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
     }
   });
 
-  it("uses the Team an invited member already belongs to instead of making a personal one", async () => {
+  it("rejects different concurrent Template intents instead of silently returning the winner", async () => {
+    const app = getApp();
+    const firstTemplateId = await publishTemplate(app, `concurrent-a-${crypto.randomUUID().slice(0, 6)}`);
+    const secondTemplateId = await publishTemplate(app, `concurrent-b-${crypto.randomUUID().slice(0, 6)}`);
+    try {
+      const user = await createTeamlessUser(app, "Conflicting Owner");
+
+      const replies = await Promise.all([
+        provision(app, user, { name: "first-intent", templateIds: [firstTemplateId] }),
+        provision(app, user, { name: "second-intent", templateIds: [secondTemplateId] }),
+      ]);
+
+      expect(replies.map((reply) => reply.statusCode).sort()).toEqual([201, 409]);
+      const winner = replies.find((reply) => reply.statusCode === 201);
+      const conflict = replies.find((reply) => reply.statusCode === 409);
+      expect(conflict?.json()).toMatchObject({ error: expect.stringContaining("different first Team Agent") });
+      const winnerBody = winner?.json<{ agent: { uuid: string } }>();
+      const [config] = await app.db
+        .select({ templateIds: agentConfigs.templateIds })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, winnerBody?.agent.uuid ?? ""));
+      expect([[firstTemplateId], [secondTemplateId]]).toContainEqual(config?.templateIds);
+      expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toHaveLength(1);
+    } finally {
+      await app.db.delete(agentTemplates).where(eq(agentTemplates.id, firstTemplateId));
+      await app.db.delete(agentTemplates).where(eq(agentTemplates.id, secondTemplateId));
+    }
+  });
+
+  it("refuses Agent creation for an invited member because existing-Team creation is org-scoped", async () => {
     const app = getApp();
     const host = await createTeamlessUser(app, "Host Owner");
     const hostTeam = await createPersonalTeam(app.db, {
@@ -305,15 +335,17 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
 
     const reply = await provision(app, invitee, { name: "invitee-teammate" });
 
-    expect(reply.statusCode).toBe(201);
-    const body = reply.json<{ organizationId: string; teamCreated: boolean }>();
-    expect(body.organizationId).toBe(hostTeam.organizationId);
-    expect(body.teamCreated).toBe(false);
+    expect(reply.statusCode).toBe(409);
     // One membership only — the invited member never gets a personal Team.
     expect(await app.db.select().from(members).where(eq(members.userId, invitee.userId))).toHaveLength(1);
+    const nonHuman = await app.db
+      .select()
+      .from(agents)
+      .where(and(eq(agents.organizationId, hostTeam.organizationId), ne(agents.type, "human")));
+    expect(nonHuman).toEqual([]);
   });
 
-  it("defaults a multi-Team user to their current Team and honours an explicit one", async () => {
+  it("refuses Agent creation for a multi-Team user because existing-Team creation is org-scoped", async () => {
     const app = getApp();
     const user = await createTeamlessUser(app, "Multi Owner");
     const older = await createPersonalTeam(app.db, {
@@ -329,29 +361,22 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       userDisplayName: "Multi Owner",
     });
 
-    // No explicit Team: the most recently joined Team is the current one, the
-    // same rule `/me`'s defaultOrganizationId uses.
     const implicit = await provision(app, user, { name: "current-team-teammate" });
-    expect(implicit.statusCode).toBe(201);
-    expect(implicit.json<{ organizationId: string; teamCreated: boolean }>()).toMatchObject({
-      organizationId: newer.organizationId,
-      teamCreated: false,
-    });
+    expect(implicit.statusCode).toBe(409);
 
     const explicit = await provision(app, user, {
       organizationId: older.organizationId,
       name: "older-team-teammate",
     });
-    expect(explicit.statusCode).toBe(201);
-    expect(explicit.json<{ organizationId: string; teamCreated: boolean }>()).toMatchObject({
-      organizationId: older.organizationId,
-      teamCreated: false,
-    });
+    expect(explicit.statusCode).toBe(400);
 
     expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toHaveLength(2);
+    const nonHuman = await app.db.select().from(agents).where(ne(agents.type, "human"));
+    expect(nonHuman).toEqual([]);
+    expect(newer.organizationId).not.toBe(older.organizationId);
   });
 
-  it("rejects an organizationId the caller is not an active member of", async () => {
+  it("rejects organizationId because the user-scoped contract cannot hide Team scope in the body", async () => {
     const app = getApp();
     const outsider = await createTeamlessUser(app, "Outsider");
     const stranger = await createTeamlessUser(app, "Stranger");
@@ -367,7 +392,7 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       name: "intruder",
     });
 
-    expect(reply.statusCode).toBe(404);
+    expect(reply.statusCode).toBe(400);
     // Nothing is created anywhere — not in the stranger's Team, and not a
     // consolation personal Team for the caller.
     const strangerAgents = await app.db

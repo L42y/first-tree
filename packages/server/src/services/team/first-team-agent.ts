@@ -6,15 +6,15 @@ import {
   type ProvisionFirstTeamAgent,
   type ProvisionFirstTeamAgentResult,
 } from "@first-tree/shared";
-import { and, asc, eq, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, ne } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
+import { agentConfigs } from "../../db/schema/agent-configs.js";
 import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
 import { users } from "../../db/schema/users.js";
-import { ForbiddenError, NotFoundError } from "../../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError } from "../../errors.js";
 import { createAgent } from "../agents/identity.js";
 import type { AttachmentBlobStore } from "../attachment-blob-store.js";
-import { pickDefaultMembership } from "./default-membership.js";
 import { createPersonalTeam, MEMBER_STATUSES, personalTeamDisplayName } from "./membership.js";
 
 export type ProvisionFirstTeamAgentInput = ProvisionFirstTeamAgent & { userId: string };
@@ -82,21 +82,40 @@ export async function provisionFirstTeamAgent(
       .limit(1);
     if (!lockedUser) throw new NotFoundError(`User "${input.userId}" not found`);
 
-    const target = await resolveTargetTeam(txDb, input, options, lockedUser);
+    const memberships = await txDb
+      .select({
+        memberId: members.id,
+        organizationId: members.organizationId,
+      })
+      .from(members)
+      .where(and(eq(members.userId, input.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)));
 
-    // Idempotent resolve. This route provisions THE first Agent, so a caller
-    // who already has one in the target Team gets it back instead of a second
-    // one — that is what makes a retry after an ambiguous network failure safe.
-    const existing = await findFirstOwnAgent(txDb, target.memberId);
-    if (existing) {
+    if (memberships.length > 0) {
+      // A request that lost the user-row race may now observe the Team and
+      // Agent created by the winner. Only an exact logical retry converges;
+      // a different name or Template intent must never be reported as if it
+      // had been adopted. All other existing-Team creation belongs to the
+      // org-scoped Agent endpoint.
+      const existing = await findExactRetry(txDb, memberships, input);
+      if (!existing) {
+        throw new ConflictError(
+          "A Team membership already exists or a different first Team Agent was provisioned. Create additional Agents through the Team-scoped endpoint.",
+        );
+      }
       return {
-        organizationId: target.organizationId,
-        memberId: target.memberId,
-        teamCreated: target.teamCreated,
+        organizationId: existing.organizationId,
+        memberId: existing.memberId,
+        teamCreated: false,
         agentCreated: false,
-        agent: existing,
+        agent: existing.agent,
       };
     }
+
+    if (options.allowedOrganizationId) {
+      throw new ForbiddenError("This server requires an invitation link to join a team.");
+    }
+
+    const target = await createInitialTeam(txDb, input.userId, lockedUser);
 
     const agent = await createAgent(
       txDb,
@@ -145,62 +164,17 @@ type TargetTeam = {
 };
 
 /**
- * Decide which Team this Agent belongs to, creating one only for the genuine
- * no-org starting state.
- *
- * An explicit `organizationId` must resolve to an active membership of the
- * caller — it selects among Teams they already belong to and can never create
- * one. Without it the caller's current Team semantics apply: the default active
- * membership when they have any (so invited members act inside the Team that
- * invited them, and returning users stay in their own), otherwise a new Team.
+ * Create the Team for the genuine no-membership starting state. Membership
+ * resolution is deliberately absent: once a Team exists, Agent creation is a
+ * Class B operation on `POST /orgs/:orgId/agents`.
  */
-async function resolveTargetTeam(
+async function createInitialTeam(
   db: Database,
-  input: ProvisionFirstTeamAgentInput,
-  options: ProvisionFirstTeamAgentOptions,
+  userId: string,
   user: { username: string; displayName: string },
 ): Promise<TargetTeam> {
-  const memberships = await db
-    .select({
-      memberId: members.id,
-      organizationId: members.organizationId,
-      agentId: members.agentId,
-      createdAt: members.createdAt,
-    })
-    .from(members)
-    .where(and(eq(members.userId, input.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)));
-
-  if (input.organizationId) {
-    const picked = memberships.find((m) => m.organizationId === input.organizationId);
-    // Same response whether the Team does not exist or the caller is not in
-    // it — membership is not something a non-member gets to probe.
-    if (!picked) throw new NotFoundError(`Team "${input.organizationId}" not found`);
-    return {
-      organizationId: picked.organizationId,
-      memberId: picked.memberId,
-      humanAgentId: picked.agentId,
-      teamCreated: false,
-    };
-  }
-
-  // Reuse `/me`'s own selector rather than re-deriving "current Team" here:
-  // the two must never disagree about which Team a user is acting in.
-  const current = pickDefaultMembership(memberships.map((m) => ({ ...m, id: m.memberId })));
-  if (current) {
-    return {
-      organizationId: current.organizationId,
-      memberId: current.memberId,
-      humanAgentId: current.agentId,
-      teamCreated: false,
-    };
-  }
-
-  if (options.allowedOrganizationId) {
-    throw new ForbiddenError("This server requires an invitation link to join a team.");
-  }
-
   const team = await createPersonalTeam(db, {
-    userId: input.userId,
+    userId,
     username: user.username,
     teamDisplayName: personalTeamDisplayName(user.displayName),
     userDisplayName: user.displayName,
@@ -219,29 +193,70 @@ async function resolveTargetTeam(
   };
 }
 
-/** The member's own oldest live non-human Agent, if provisioning already ran. */
-async function findFirstOwnAgent(
+type ExistingMembership = {
+  memberId: string;
+  organizationId: string;
+};
+
+/** Resolve only an exact retry of the first-Team request. */
+async function findExactRetry(
   db: Database,
-  memberId: string,
-): Promise<ProvisionFirstTeamAgentOutcome["agent"] | null> {
-  const [row] = await db
+  memberships: ExistingMembership[],
+  input: ProvisionFirstTeamAgentInput,
+): Promise<{
+  organizationId: string;
+  memberId: string;
+  agent: ProvisionFirstTeamAgentOutcome["agent"];
+} | null> {
+  const rows = await db
     .select({
       uuid: agents.uuid,
       name: agents.name,
       displayName: agents.displayName,
       visibility: agents.visibility,
       clientId: agents.clientId,
+      source: agents.source,
+      organizationId: agents.organizationId,
+      memberId: agents.managerId,
+      templateIds: agentConfigs.templateIds,
     })
     .from(agents)
+    .innerJoin(agentConfigs, eq(agentConfigs.agentId, agents.uuid))
     .where(
       and(
-        eq(agents.managerId, memberId),
+        inArray(
+          agents.managerId,
+          memberships.map((membership) => membership.memberId),
+        ),
         eq(agents.type, AGENT_TYPES.AGENT),
         ne(agents.status, AGENT_STATUSES.DELETED),
       ),
     )
-    .orderBy(asc(agents.uuid))
-    .limit(1);
+    .orderBy(asc(agents.uuid));
+
+  const expectedName = input.name ?? null;
+  const expectedDisplayName = input.displayName?.trim() || expectedName || "Unnamed Agent";
+  const expectedTemplateIds = input.templateIds ?? [];
+  const row = rows.find(
+    (candidate) =>
+      candidate.name === expectedName &&
+      candidate.displayName === expectedDisplayName &&
+      candidate.visibility === AGENT_VISIBILITY.ORGANIZATION &&
+      candidate.clientId === null &&
+      candidate.source === "portal" &&
+      candidate.templateIds.length === expectedTemplateIds.length &&
+      candidate.templateIds.every((templateId, index) => templateId === expectedTemplateIds[index]),
+  );
   if (!row) return null;
-  return { ...row, visibility: toAgentVisibility(row.visibility) };
+  return {
+    organizationId: row.organizationId,
+    memberId: row.memberId,
+    agent: {
+      uuid: row.uuid,
+      name: row.name,
+      displayName: row.displayName,
+      visibility: toAgentVisibility(row.visibility),
+      clientId: row.clientId,
+    },
+  };
 }

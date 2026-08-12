@@ -612,28 +612,30 @@ describe("OIDC callback — acceptance", () => {
     );
     const userId = identity?.userId;
     expect(userId).toBeDefined();
+    if (!userId) throw new Error("Expected returning OIDC identity to resolve a user");
 
     // Fetch user info needed for createPersonalTeam.
     const [userRow] = await app.db
       .select({ username: users.username, displayName: users.displayName })
       .from(users)
-      .where(eq(users.id, userId!))
+      .where(eq(users.id, userId))
       .limit(1);
     expect(userRow).toBeDefined();
+    if (!userRow) throw new Error("Expected returning OIDC user row");
 
     // Give the user the two Teams this case is about. Both are created
     // explicitly now that sign-in provisions none.
     await createPersonalTeam(app.db, {
-      userId: userId!,
-      username: `${userRow!.username}-team1`,
+      userId,
+      username: `${userRow.username}-team1`,
       teamDisplayName: "First Team",
-      userDisplayName: userRow!.displayName,
+      userDisplayName: userRow.displayName,
     });
     await createPersonalTeam(app.db, {
-      userId: userId!,
-      username: `${userRow!.username}-team2`,
+      userId,
+      username: `${userRow.username}-team2`,
       teamDisplayName: "Second Team",
-      userDisplayName: userRow!.displayName,
+      userDisplayName: userRow.displayName,
     });
 
     // Snapshot exact org + member rows BEFORE the returning callback.
@@ -641,7 +643,7 @@ describe("OIDC callback — acceptance", () => {
     const membersBefore = await app.db
       .select({ id: members.id, userId: members.userId, orgId: members.organizationId, role: members.role })
       .from(members)
-      .where(eq(members.userId, userId!));
+      .where(eq(members.userId, userId));
     expect(membersBefore).toHaveLength(2); // Must have 2 teams before the callback.
 
     // Second sign-in: IdP returns extra org/groups/roles claims that must be ignored.
@@ -666,7 +668,7 @@ describe("OIDC callback — acceptance", () => {
     const membersAfter = await app.db
       .select({ id: members.id, userId: members.userId, orgId: members.organizationId, role: members.role })
       .from(members)
-      .where(eq(members.userId, userId!));
+      .where(eq(members.userId, userId));
     expect(membersAfter).toEqual(membersBefore);
   });
 });

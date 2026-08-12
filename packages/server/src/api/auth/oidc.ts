@@ -44,7 +44,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     let discovery: Awaited<ReturnType<typeof fetchDiscovery>>;
     try {
       discovery = await fetchDiscovery(app.config.oidc.issuer);
-    } catch (error) {
+    } catch {
       // Do not log provider-controlled error details to prevent log injection
       app.log.error({ event: "oauth.discovery_failed", provider: "oidc" }, "OIDC discovery failed at start");
       // Redirect through /auth/complete with bounded error instead of returning raw 503 JSON
