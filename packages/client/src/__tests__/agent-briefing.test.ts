@@ -1069,6 +1069,32 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).not.toContain("**build / set up the Context Tree** request");
   });
 
+  it("never renders the bound variant from a stale path when the status is non-bound", () => {
+    // The binding status is authoritative over the coordinates: a leftover
+    // non-null path with an `explicitly-unbound` or `unresolved` status must
+    // not masquerade as a bound tree (no Tree Location section, no stale
+    // path) — it renders the matching non-bound variant instead.
+    const stalePath = "/var/lib/context-trees/stale";
+
+    const unbound = buildAgentBriefing(
+      makeOpts({ contextTreePath: stalePath, contextTreeBindingStatus: "explicitly-unbound" }),
+    );
+    expect(unbound).not.toContain("## Tree Location (agent-managed clone)");
+    expect(unbound).not.toContain(stalePath);
+    expect(topLevelSection(unbound, "# Context Tree (First Tree Managed)")).toContain(
+      "At briefing generation time this agent had no Context Tree bound",
+    );
+
+    const unresolved = buildAgentBriefing(
+      makeOpts({ contextTreePath: stalePath, contextTreeBindingStatus: "unresolved" }),
+    );
+    expect(unresolved).not.toContain("## Tree Location (agent-managed clone)");
+    expect(unresolved).not.toContain(stalePath);
+    const unresolvedTree = topLevelSection(unresolved, "# Context Tree (First Tree Managed)");
+    expect(unresolvedTree).toContain("The Context Tree binding could not be confirmed");
+    expect(unresolvedTree).not.toContain("had no Context Tree bound");
+  });
+
   it("shell-quotes interpolated tree clone command values", () => {
     const briefing = buildAgentBriefing(
       makeOpts({

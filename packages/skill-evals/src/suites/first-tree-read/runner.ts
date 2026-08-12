@@ -4,7 +4,7 @@ import { createRunPaths } from "../../core/paths.js";
 import { runAgentProvider } from "../../core/provider/index.js";
 import { createEvalReporter } from "../../core/reporter.js";
 import { createFirstTreeShim } from "../../core/shims/first-tree.js";
-import { setupFixture, validateFixture } from "./fixture.js";
+import { setupFixture, snapshotTreeArtifactBaseline, validateFixture } from "./fixture.js";
 import { casePassed, deriveMetrics } from "./metrics.js";
 import { buildGrading, driftNote, writeCaseSummaries } from "./summary.js";
 import type { CaseRunSummary, CliOptions, FirstTreeReadEvalCase } from "./types.js";
@@ -27,6 +27,13 @@ export async function runFirstTreeReadCase(
 
   createFirstTreeShim(paths);
   const contextTreePath = setupFixture(evalCase, paths, reporter);
+  const unboundWorkspace =
+    evalCase.workspaceKind === "unbound-managed" || evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout";
+  const unresolvedWorkspace = evalCase.workspaceKind === "unresolved-managed";
+  // Record the pre-run artifact baseline so the guard can tell a retired
+  // stale checkout (legal residue) from anything the run created or modified.
+  const artifactBaseline =
+    unboundWorkspace || unresolvedWorkspace ? snapshotTreeArtifactBaseline(paths.workspacePath) : null;
   const fixtureValidation = validateFixture(paths, contextTreePath, evalCase.id, options.verbose, reporter);
   const runnerResult = await runAgentProvider(
     {
@@ -49,7 +56,7 @@ export async function runFirstTreeReadCase(
     evalCase.expectedFacts,
     evalCase.impactNote,
     evalCase.managedTransport,
-    { unboundWorkspace: evalCase.workspaceKind === "unbound-managed", workspacePath: paths.workspacePath },
+    { artifactBaseline, unboundWorkspace, unresolvedWorkspace, workspacePath: paths.workspacePath },
   );
   const passed = casePassed(
     evalCase.expectedTrigger,

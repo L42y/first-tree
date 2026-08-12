@@ -132,6 +132,54 @@ export const FIRST_TREE_WRITE_GATE_CASES: readonly FirstTreeWriteEvalCase[] = [
   {
     briefingMode: "minimal",
     expected: {
+      action: "skip_tree_write_unbound",
+      requireVerify: false,
+      responseHints: ["deterministic", "quality", "judge"],
+      treeDiff: "none",
+    },
+    fixture: {
+      sourceArtifact: "durable-decision-note",
+      treeState: "explicitly-unbound-with-stale-checkout",
+    },
+    forbidden: {
+      content: [],
+      sideEffects: ["tree_write", "tree_pr"],
+    },
+    id: "unbound-stale-checkout-skips-write",
+    prompt: "Summarize `source-artifacts/durable-decision-note.md` in three bullets.",
+    provider: "codex",
+    skill: "first-tree-write",
+    status: "implemented",
+    tags: ["unbound-tree", "stale-checkout"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "minimal",
+    expected: {
+      action: "report_unbound_tree_write_gap",
+      requireVerify: false,
+      responseHints: ["no tree is bound", "no bound tree", "cannot be completed"],
+      treeDiff: "none",
+    },
+    fixture: {
+      sourceArtifact: "durable-decision-note",
+      treeState: "explicitly-unbound-with-stale-checkout",
+    },
+    forbidden: {
+      content: [],
+      sideEffects: ["tree_write", "tree_pr"],
+    },
+    id: "unbound-stale-checkout-explicit-write-reports-gap",
+    prompt: "Use first-tree-write to reflect `source-artifacts/durable-decision-note.md` into the Context Tree.",
+    provider: "codex",
+    skill: "first-tree-write",
+    status: "implemented",
+    tags: ["unbound-tree", "stale-checkout", "source-boundary"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "minimal",
+    expected: {
       action: "skip_tree_write_unresolved",
       requireVerify: false,
       responseHints: ["deterministic", "quality", "judge"],
@@ -188,7 +236,7 @@ export const FIRST_TREE_WRITE_EVAL_CASES: readonly SkillEvalCase[] = [
     },
     fixture: {
       sourceArtifacts: ["absent", "durable-decision-note", "implementation-only-diff"],
-      treeStates: ["populated", "unbound", "unresolved"],
+      treeStates: ["populated", "unbound", "explicitly-unbound-with-stale-checkout", "unresolved"],
     },
     id: FLOOR_CASE_ID,
     skill: "first-tree-write",

@@ -17,6 +17,8 @@ describe("first-tree-read periodic cases", () => {
       "first-tree-read-unbound-software-continues-periodic",
       "first-tree-read-unbound-pasted-content-continues-periodic",
       "first-tree-read-unbound-explicit-read-reports-gap-periodic",
+      "first-tree-read-stale-checkout-software-continues-periodic",
+      "first-tree-read-stale-checkout-explicit-read-reports-gap-periodic",
       "first-tree-read-unresolved-software-continues-periodic",
       "first-tree-read-unresolved-pasted-content-continues-periodic",
       "first-tree-read-unresolved-explicit-read-reports-gap-periodic",
@@ -104,6 +106,44 @@ describe("first-tree-read periodic cases", () => {
       expect(briefing).toContain("generated without a bound Context Tree — a supported state");
       expect(briefing).not.toContain("binding repository");
       expect(briefing).not.toContain("first-tree tree tree");
+
+      const identity = JSON.parse(
+        readFileSync(join(paths.workspacePath, ".first-tree-workspace", "identity.json"), "utf8"),
+      ) as { contextTreePath: unknown };
+      expect(identity.contextTreePath).toBeNull();
+
+      expect(readFileSync(join(paths.workspacePath, "source-repo", "README.md"), "utf8")).toContain(
+        "Inbox delivery is deduplicated at the client boundary",
+      );
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("builds the stale-checkout briefing without a manifest but with the retired Tree checkout present", () => {
+    const evalCase = findFirstTreeReadPeriodicCase("first-tree-read-stale-checkout-software-continues-periodic");
+    if (evalCase === null) throw new Error("missing stale-checkout read periodic case");
+
+    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+    const paths = createRunPaths({
+      caseId: "read-stale-checkout-briefing-fixture-test",
+      packageRoot,
+      startedAt: new Date().toISOString(),
+    });
+
+    try {
+      const contextTreePath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
+
+      // Explicit unbind retires the manifest but keeps the clean checkout as
+      // inert residue; the briefing must still say explicitly unbound.
+      expect(contextTreePath).not.toBeNull();
+      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(false);
+      expect(existsSync(join(paths.workspacePath, "context-tree", "NODE.md"))).toBe(true);
+
+      const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
+      expect(briefing).toContain("generated without a bound Context Tree — a supported state");
+      expect(briefing).not.toContain("binding repository");
+      expect(briefing).not.toContain("could not be confirmed");
 
       const identity = JSON.parse(
         readFileSync(join(paths.workspacePath, ".first-tree-workspace", "identity.json"), "utf8"),

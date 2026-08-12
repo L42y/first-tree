@@ -13,7 +13,14 @@ export const FIRST_TREE_READ_EVAL_CASES: readonly SkillEvalCase[] = [
     },
     fixture: {
       caseIds: FIRST_TREE_READ_CASES.map((evalCase) => evalCase.id),
-      workspaceKinds: ["blank", "byo-context-tree", "context-tree", "unbound-managed", "unresolved-managed"],
+      workspaceKinds: [
+        "blank",
+        "byo-context-tree",
+        "context-tree",
+        "explicitly-unbound-with-stale-checkout",
+        "unbound-managed",
+        "unresolved-managed",
+      ],
     },
     id: FLOOR_CASE_ID,
     skill: "first-tree-read",

@@ -5,9 +5,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { gradingFailureMessages } from "../../../core/grading.js";
+import { snapshotTreeArtifactBaseline } from "../fixture.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
 import { buildGrading, driftNote } from "../summary.js";
-import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport } from "../types.js";
+import type {
+  EvalMetrics,
+  FixtureValidation,
+  ImpactNoteExpectation,
+  ManagedTransport,
+  TreeArtifactBaseline,
+} from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const SELECTOR_ARGV = ["tree", "tree", "/domains/payments"];
@@ -1422,9 +1429,15 @@ describe("first-tree-read unbound explicit Tree read", () => {
 });
 
 describe("first-tree-read unbound artifact guard", () => {
-  function artifactMetrics(events: readonly unknown[], workspacePath: string, unboundWorkspace = true): EvalMetrics {
+  function artifactMetrics(
+    events: readonly unknown[],
+    workspacePath: string,
+    options: { baseline?: TreeArtifactBaseline | null; unboundWorkspace?: boolean; unresolvedWorkspace?: boolean } = {},
+  ): EvalMetrics {
     return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send", {
-      unboundWorkspace,
+      artifactBaseline: options.baseline ?? null,
+      unboundWorkspace: options.unboundWorkspace ?? true,
+      unresolvedWorkspace: options.unresolvedWorkspace ?? false,
       workspacePath,
     });
   }
@@ -1433,20 +1446,21 @@ describe("first-tree-read unbound artifact guard", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-unbound-artifacts-"));
     try {
       const events = [...managedMessage("This Tree read cannot be completed because no Tree is bound.")];
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
 
-      const blank = artifactMetrics(events, tempRoot);
+      const blank = artifactMetrics(events, tempRoot, { baseline });
       expect(blank.unboundTreeArtifactsCreated).toBe(false);
       expect(casePassed(false, blank, "managed", false, true)).toBe(true);
 
       mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
       writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
-      const withManifest = artifactMetrics(events, tempRoot);
+      const withManifest = artifactMetrics(events, tempRoot, { baseline });
       expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
       expect(casePassed(false, withManifest, "managed", false, true)).toBe(false);
 
       rmSync(join(tempRoot, ".first-tree"), { force: true, recursive: true });
       mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
-      const withTreeCheckout = artifactMetrics(events, tempRoot);
+      const withTreeCheckout = artifactMetrics(events, tempRoot, { baseline });
       expect(withTreeCheckout.unboundTreeArtifactsCreated).toBe(true);
       expect(casePassed(false, withTreeCheckout, "managed", true)).toBe(false);
 
@@ -1458,13 +1472,78 @@ describe("first-tree-read unbound artifact guard", () => {
     }
   });
 
+  it("treats a retired stale checkout as a legal baseline but flags run modifications", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-stale-checkout-baseline-"));
+    try {
+      const events = [...managedMessage("This Tree read cannot be completed because no Tree is bound.")];
+      // Explicit unbind residue: no manifest, but a clean Tree checkout left
+      // by the previous binding.
+      mkdirSync(join(tempRoot, "context-tree", "system"), { recursive: true });
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "system", "NODE.md"), "# System\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+
+      // The untouched residue must NOT trip the guard.
+      const untouched = artifactMetrics(events, tempRoot, { baseline });
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+      expect(casePassed(false, untouched, "managed", false, true)).toBe(true);
+
+      // Modifying the stale checkout DOES trip it.
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Rewritten by the model\n", "utf8");
+      const modified = artifactMetrics(events, tempRoot, { baseline });
+      expect(modified.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, modified, "managed", false, true)).toBe(false);
+
+      // So does a newly created manifest on top of the residue.
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const withManifest = artifactMetrics(events, tempRoot, { baseline });
+      expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requires the unresolved stale manifest and checkout to stay byte-identical", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-unresolved-baseline-"));
+    try {
+      const events = [...managedMessage("Inbox delivery is deduplicated at the client boundary.")];
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"context-tree"}\n', "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+      const unresolvedOptions = { baseline, unboundWorkspace: false, unresolvedWorkspace: true };
+
+      const untouched = artifactMetrics(events, tempRoot, unresolvedOptions);
+      expect(untouched.staleTreeArtifactModifiedObserved).toBe(false);
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"elsewhere"}\n', "utf8");
+      const modifiedManifest = artifactMetrics(events, tempRoot, unresolvedOptions);
+      expect(modifiedManifest.staleTreeArtifactModifiedObserved).toBe(true);
+
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"context-tree"}\n', "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Rewritten\n", "utf8");
+      const modifiedCheckout = artifactMetrics(events, tempRoot, unresolvedOptions);
+      expect(modifiedCheckout.staleTreeArtifactModifiedObserved).toBe(true);
+
+      const grading = buildGrading("case", modifiedCheckout, false, false, "managed", false, false, true);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_modified");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("does not flag artifacts when the workspace is not unbound", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-bound-artifacts-"));
     try {
       mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
       writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
 
-      const result = artifactMetrics([...managedMessage("Done.")], tempRoot, false);
+      const result = artifactMetrics([...managedMessage("Done.")], tempRoot, { unboundWorkspace: false });
       expect(result.unboundTreeArtifactsCreated).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
@@ -1675,5 +1754,81 @@ describe("first-tree-read unresolved-binding explicit Tree read", () => {
 
     expect(result.treeCliInvocationCount).toBe(2);
     expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+  });
+});
+
+describe("first-tree-read stale-checkout residue access", () => {
+  const UNBOUND_FACTS = ["Inbox delivery is deduplicated at the client boundary."] as const;
+
+  function staleCheckoutMetrics(events: readonly unknown[], expectedFacts: readonly string[] = UNBOUND_FACTS) {
+    return deriveMetrics(events, VALID_FIXTURE, 0, expectedFacts, { mode: "absent" }, "send");
+  }
+
+  function staleArtifactReadEvent(command: string): unknown {
+    return {
+      event: {
+        command,
+        type: "tool_call",
+      },
+      type: "codex_event",
+    };
+  }
+
+  it("fails the unbound ordinary branch when the model reads the retired checkout or manifest path", () => {
+    for (const command of ["cat .first-tree/workspace.json", "sed -n 1,80p context-tree/NODE.md"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(false, result, "managed", true)).toBe(false);
+    }
+
+    const grading = buildGrading(
+      "case",
+      staleCheckoutMetrics([
+        staleArtifactReadEvent("cat .first-tree/workspace.json"),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]),
+      false,
+      false,
+      "managed",
+      true,
+    );
+    expect(grading.scores.routing_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_access");
+  });
+
+  it("fails the unbound explicit read branch when the model reads the retired checkout", () => {
+    const result = staleCheckoutMetrics(
+      [
+        staleArtifactReadEvent("sed -n 1,80p context-tree/NODE.md"),
+        ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+      ],
+      [],
+    );
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("fails the unresolved branches when the run modifies the stale artifacts", () => {
+    const continuation = staleCheckoutMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(casePassed(false, continuation, "managed", false, false, true)).toBe(true);
+    const continuationModified = { ...continuation, staleTreeArtifactModifiedObserved: true };
+    expect(casePassed(false, continuationModified, "managed", false, false, true)).toBe(false);
+
+    const explicit = staleCheckoutMetrics(
+      [...managedMessage("This Tree read cannot be completed right now because the binding could not be confirmed.")],
+      [],
+    );
+    expect(casePassed(false, explicit, "managed", false, false, false, true)).toBe(true);
+    const explicitModified = { ...explicit, staleTreeArtifactModifiedObserved: true };
+    expect(casePassed(false, explicitModified, "managed", false, false, false, true)).toBe(false);
   });
 });

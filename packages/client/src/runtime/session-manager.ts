@@ -77,6 +77,18 @@ type SessionEntry = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
+  /**
+   * Binding epoch (`SessionManager.bindingEpoch`) the CURRENT handler was
+   * built from. A landed binding refresh that changed the recorded status or
+   * coordinates bumps the manager epoch; on the next route/resume for an
+   * entry without a healthy live handler, `handlerForRouteTransition`
+   * compares this stamp and rebuilds from the new config on mismatch — the
+   * backstop for handlers the eager `retireStaleBindingHandlers` sweep had
+   * to skip (e.g. an in-flight route transition owned by the adoption
+   * fence). Re-stamped wherever `entry.handler` is replaced with a fresh
+   * `createHandler()` result.
+   */
+  bindingEpoch: number;
   status: SessionState;
   /** Whether this entry currently owns one unit of `_activeCount`. */
   activeSlotHeld: boolean;
@@ -602,6 +614,16 @@ export class SessionManager {
   private readonly inboxDelivery: InboxDeliveryCoordinator;
   /** Last Context-Tree binding refresh attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
   private lastTreeResolveAttemptAt = 0;
+  /**
+   * Monotonic Context-Tree binding epoch, bumped whenever a landed refresh
+   * CHANGES the recorded status or coordinates (see
+   * `performContextTreeBindingRefresh`). Each session entry is stamped with
+   * the epoch its handler was built from; a stale stamp on route/resume
+   * forces a rebuild from the new config even when no new resolver call is
+   * made (e.g. inside the rate-limit window after ANOTHER chat's admission
+   * landed the change).
+   */
+  private bindingEpoch = 0;
   /**
    * In-flight Context-Tree binding refresh shared by concurrent admissions —
    * see `ensureContextTreeBinding`. While set, every admission joins the same
@@ -2164,10 +2186,16 @@ export class SessionManager {
   }
 
   private handlerForRouteTransition(entry: SessionEntry): AgentHandler {
+    // An old-epoch handler was built from a superseded binding config (the
+    // eager retire sweep skips entries with an in-flight route transition);
+    // retire it here so it takes the same rebuild-and-teardown-debt path as
+    // an explicitly retired handler.
+    if (entry.bindingEpoch !== this.bindingEpoch) this.retiredHandlers.add(entry.handler);
     if (!this.retiredHandlers.has(entry.handler)) return entry.handler;
     const previous = entry.handler;
     const handler = this.createHandler();
     entry.handler = handler;
+    entry.bindingEpoch = this.bindingEpoch;
     // The quarantined generation has no trustworthy teardown join. Keep it
     // exclusively in quarantinedSessions: ordinary pendingTeardowns would
     // make later routes and manager shutdown wait on the lost callback again.
@@ -3059,7 +3087,10 @@ export class SessionManager {
    * A refresh that CHANGES the recorded status or coordinates retires every
    * reusable stale handler (see `retireStaleBindingHandlers`), so a suspended
    * session's next resume rebuilds its handler from the new config instead of
-   * reusing its old snapshot.
+   * reusing its old snapshot. It also bumps `bindingEpoch`: a handler the
+   * sweep had to skip (in-flight route transition) is caught by the epoch
+   * stamp comparison in `handlerForRouteTransition` on its next route/resume,
+   * even inside the rate-limit window where no new resolver call is made.
    */
   private async ensureContextTreeBinding(): Promise<void> {
     // Single-flight: a concurrent admission joins the in-flight refresh
@@ -3129,6 +3160,11 @@ export class SessionManager {
       (prevStatus !== null && prevStatus !== (cfg.contextTreeBindingStatus ?? null));
     if (!changed) return;
 
+    // Bump the binding epoch BEFORE retiring: every handler built from the
+    // previous config is now old-epoch, including any the sweep below must
+    // skip (in-flight route transition). `handlerForRouteTransition` catches
+    // those via the entry's epoch stamp on their next route/resume.
+    this.bindingEpoch++;
     if (resolution.status === "bound") {
       this.config.log.info(
         { path: resolution.binding.path, repoUrl: resolution.binding.repoUrl },
@@ -3218,6 +3254,7 @@ export class SessionManager {
       chatId,
       claudeSessionId: evicted?.claudeSessionId ?? "",
       handler,
+      bindingEpoch: this.bindingEpoch,
       status: "active",
       activeSlotHeld: false,
       lastActivity: Date.now(),
@@ -3957,6 +3994,7 @@ export class SessionManager {
 
     const newHandler = this.createHandler();
     entry.handler = newHandler;
+    entry.bindingEpoch = this.bindingEpoch;
     entry.status = "active";
     this.claimActiveSlot(entry);
     entry.lastActivity = Date.now();

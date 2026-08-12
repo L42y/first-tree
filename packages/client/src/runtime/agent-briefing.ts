@@ -231,7 +231,11 @@ function buildContextTreeRenderModel(
   status: ContextTreeBindingStatus,
 ): ContextTreeRenderModel {
   const branch = configuredBranch ?? "main";
-  if (path === null) {
+  // The status is authoritative over the coordinates: a non-bound status with
+  // a stale non-null path must NOT masquerade as bound (the template renders
+  // the bound sections off `bound`), and a bound status without a path
+  // degrades to `unresolved` rather than claiming an explicit unbind.
+  if (path === null || status !== "bound") {
     return {
       bound: false,
       status: status === "bound" ? "unresolved" : status,

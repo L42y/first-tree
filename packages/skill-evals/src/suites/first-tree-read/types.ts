@@ -2,7 +2,25 @@ import type { AgentProviderName } from "../../core/provider/types.js";
 import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
-export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree" | "unbound-managed" | "unresolved-managed";
+export type WorkspaceKind =
+  | "blank"
+  | "byo-context-tree"
+  | "context-tree"
+  | "explicitly-unbound-with-stale-checkout"
+  | "unbound-managed"
+  | "unresolved-managed";
+
+/**
+ * Pre-run record of the Tree artifacts a treeless run must leave alone: the
+ * workspace manifest content (null = absent) and a content fingerprint of the
+ * `context-tree/` checkout (null = absent). A post-run comparison flags only
+ * NEWLY created artifacts or MODIFIED pre-existing stale artifacts, so a clean
+ * checkout left by a retired binding is a legal baseline, never a violation.
+ */
+export type TreeArtifactBaseline = {
+  checkoutFingerprint: string | null;
+  manifestContent: string | null;
+};
 export type BriefingMode = "minimal" | "runtime-generated";
 export type ReadMode = "byo" | "managed";
 export type ManagedTransport = "ask" | "send";
@@ -138,10 +156,12 @@ export type EvalMetrics = {
   unboundGapStatementObserved: boolean;
   /** Delivered output for an explicit Tree read carried any setup/recovery steering. */
   unboundSetupSteeringObserved: boolean;
-  /** An unbound run created `.first-tree/workspace.json` or a `context-tree/` checkout. */
+  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale checkout baseline. */
   unboundTreeArtifactsCreated: boolean;
   /** The run read or referenced the stale `.first-tree/workspace.json` manifest or `context-tree/` checkout. */
   staleTreeArtifactAccessObserved: boolean;
+  /** An unresolved-binding run modified or deleted the stale manifest or Tree checkout; stale artifacts must stay byte-identical. */
+  staleTreeArtifactModifiedObserved: boolean;
   /** Delivered output states the unresolved gap: this read cannot complete right now because the binding could not be confirmed. */
   unresolvedGapStatementObserved: boolean;
   /** Delivered output mentioned the unconfirmed binding outside the explicit unresolved Tree-read gap statement. */

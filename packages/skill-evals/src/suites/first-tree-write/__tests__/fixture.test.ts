@@ -61,6 +61,26 @@ describe("first-tree-write fixture shape", { timeout: 20_000 }, () => {
     }
   });
 
+  it("stale-checkout cases keep the retired Tree checkout without a manifest, with the explicitly-unbound briefing", () => {
+    const { contextTreePath, paths } = runFixture("unbound-stale-checkout-skips-write");
+    try {
+      // The fixture reports no active binding (null) even though the retired
+      // checkout is on disk: the residue is never Tree authority for the run.
+      expect(contextTreePath).toBeNull();
+      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(false);
+      expect(existsSync(join(paths.workspacePath, "source-repo"))).toBe(false);
+      expect(existsSync(join(paths.workspacePath, "context-tree", "NODE.md"))).toBe(true);
+      expect(existsSync(join(paths.workspacePath, "source-artifacts", "durable-decision-note.md"))).toBe(true);
+
+      const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
+      expect(briefing).toContain("generated without a bound Context Tree");
+      expect(briefing).not.toContain("The Context Tree is at `./context-tree`.");
+      expect(briefing).not.toContain("could not be confirmed");
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
   it("unresolved cases keep the stale manifest, source repo, and Tree checkout with an unconfirmed-binding briefing", () => {
     const { contextTreePath, paths } = runFixture("unresolved-tree-skips-write");
     try {

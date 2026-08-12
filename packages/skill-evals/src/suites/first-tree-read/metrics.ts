@@ -1,5 +1,3 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import {
   CONTEXT_IMPACT_NOTE_EFFECT_LABELS,
   type ContextImpactNote,
@@ -8,7 +6,15 @@ import {
 } from "@first-tree/shared";
 
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
-import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport, ReadMode } from "./types.js";
+import { treeArtifactBaselineViolation } from "./fixture.js";
+import type {
+  EvalMetrics,
+  FixtureValidation,
+  ImpactNoteExpectation,
+  ManagedTransport,
+  ReadMode,
+  TreeArtifactBaseline,
+} from "./types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
@@ -598,12 +604,6 @@ function containsUnboundSetupSteering(text: string): boolean {
   return UNBOUND_SETUP_STEERING.test(text);
 }
 
-function unboundTreeArtifactsCreated(workspacePath: string): boolean {
-  return (
-    existsSync(join(workspacePath, ".first-tree", "workspace.json")) || existsSync(join(workspacePath, "context-tree"))
-  );
-}
-
 export function deriveMetrics(
   events: readonly unknown[],
   fixtureValidation: FixtureValidation,
@@ -611,7 +611,12 @@ export function deriveMetrics(
   expectedFacts: readonly string[],
   impactNoteExpectation: ImpactNoteExpectation = { mode: "absent" },
   managedTransportExpectation: ManagedTransport | null = null,
-  options: { unboundWorkspace?: boolean; workspacePath?: string } = {},
+  options: {
+    artifactBaseline?: TreeArtifactBaseline | null;
+    unboundWorkspace?: boolean;
+    unresolvedWorkspace?: boolean;
+    workspacePath?: string;
+  } = {},
 ): EvalMetrics {
   let firstTreeCalls = 0;
   let helpCalls = 0;
@@ -782,10 +787,16 @@ export function deriveMetrics(
     selectedExactCommit,
     visibleOutputKinds,
   });
+  const artifactViolation =
+    options.artifactBaseline != null && options.workspacePath !== undefined
+      ? treeArtifactBaselineViolation(options.artifactBaseline, options.workspacePath)
+      : { created: false, modified: false };
+  // The guard is a PRE/POST comparison against the fixture-setup baseline: a
+  // retired stale checkout left on disk is legal residue, but anything newly
+  // created — or a stale artifact the run modified — is a violation.
   const unboundTreeArtifactsCreatedValue =
-    options.unboundWorkspace === true && options.workspacePath !== undefined
-      ? unboundTreeArtifactsCreated(options.workspacePath)
-      : false;
+    options.unboundWorkspace === true ? artifactViolation.created || artifactViolation.modified : false;
+  const staleTreeArtifactModifiedObserved = options.unresolvedWorkspace === true ? artifactViolation.modified : false;
   const treeCliInvocationCount =
     firstTreeArgv.filter(isTreeOperationArgv).length +
     firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
@@ -854,6 +865,7 @@ export function deriveMetrics(
     skillFileReadObserved,
     skillHit: skillFileReadObserved || firstTreeCalls > 0 || firstTreeCommandResults.length > 0,
     staleTreeArtifactAccessObserved,
+    staleTreeArtifactModifiedObserved,
     treeCliInvocationCount,
     treeSetupWordingObserved,
     treeSetupSurfaceGuidanceObserved,
@@ -891,7 +903,8 @@ export function casePassed(
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundAbsenceMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 
@@ -907,7 +920,8 @@ export function casePassed(
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.unresolvedBindingMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 
@@ -921,7 +935,8 @@ export function casePassed(
       !metrics.treeSetupWordingObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
-      !metrics.unboundTreeArtifactsCreated
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved
     );
   }
 
@@ -936,7 +951,8 @@ export function casePassed(
       !metrics.treeSetupWordingObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
-      !metrics.unboundTreeArtifactsCreated
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved
     );
   }
 

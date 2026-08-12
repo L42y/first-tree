@@ -67,13 +67,13 @@ export function buildGrading(
   const unboundSkip = evalCase.expected.action === "skip_tree_write_unbound";
   const unresolvedSkip = evalCase.expected.action === "skip_tree_write_unresolved";
   const routingPass = unboundSkip
-    ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved
+    ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved && !metrics.staleTreeArtifactAccessObserved
     : unresolvedSkip
       ? metrics.treeCliInvocationCount === 0 &&
         !metrics.skillFileReadObserved &&
         !metrics.staleTreeArtifactAccessObserved
       : treelessAction
-        ? metrics.treeCliInvocationCount === 0 && (!unresolvedAction || !metrics.staleTreeArtifactAccessObserved)
+        ? metrics.treeCliInvocationCount === 0 && !metrics.staleTreeArtifactAccessObserved
         : metrics.skillFileReadObserved;
   const processPass =
     metrics.fixtureValidationOk &&
@@ -88,7 +88,8 @@ export function buildGrading(
     (!unboundAction || !metrics.unboundTreeArtifactsCreated) &&
     (!unboundSkip || !metrics.unboundAbsenceMentionObserved) &&
     (!unboundExplicit || !metrics.unboundSetupSteeringObserved) &&
-    (!unresolvedAction || !metrics.staleTreeArtifactAccessObserved) &&
+    (!treelessAction || !metrics.staleTreeArtifactAccessObserved) &&
+    (!unresolvedAction || !metrics.staleTreeArtifactModifiedObserved) &&
     (!unresolvedAction || !metrics.unboundAbsenceMentionObserved) &&
     (!unresolvedSkip || !metrics.unresolvedBindingMentionObserved) &&
     (!unresolvedExplicit || !metrics.unboundSetupSteeringObserved);
@@ -161,6 +162,22 @@ export function buildGrading(
           ),
         ]
       : []),
+    ...(unboundAction && metrics.staleTreeArtifactAccessObserved
+      ? [
+          riskFlag(
+            "stale_tree_artifact_access",
+            "Unbound case read or referenced the retired Context Tree checkout or manifest path; it is inert residue, never Tree authority.",
+          ),
+        ]
+      : []),
+    ...(unresolvedAction && metrics.staleTreeArtifactModifiedObserved
+      ? [
+          riskFlag(
+            "stale_tree_artifact_modified",
+            "Unresolved-binding case modified the last-known workspace manifest or Context Tree checkout; stale artifacts must stay byte-identical.",
+          ),
+        ]
+      : []),
     ...(unboundAction && metrics.unboundTreeArtifactsCreated
       ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout")]
       : []),
@@ -202,7 +219,10 @@ export function buildGrading(
           !metrics.unboundSetupSteeringObserved &&
           treeDiffPass
         : unboundSkip
-          ? metrics.expectedResponseObserved && treeDiffPass && !metrics.unboundAbsenceMentionObserved
+          ? metrics.expectedResponseObserved &&
+            metrics.ordinarySummaryShapeObserved &&
+            treeDiffPass &&
+            !metrics.unboundAbsenceMentionObserved
           : unresolvedExplicit
             ? metrics.unresolvedGapStatementObserved &&
               !metrics.treeSetupGuidanceObserved &&
@@ -212,6 +232,7 @@ export function buildGrading(
               treeDiffPass
             : unresolvedSkip
               ? metrics.expectedResponseObserved &&
+                metrics.ordinarySummaryShapeObserved &&
                 treeDiffPass &&
                 !metrics.unboundAbsenceMentionObserved &&
                 !metrics.unresolvedBindingMentionObserved

@@ -216,7 +216,9 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("declares managed-unbound continuation periodic cases", () => {
-    const unbound = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unboundContinuation === true);
+    const unbound = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.unboundContinuation === true && evalCase.workspaceKind === "unbound-managed",
+    );
 
     expect(unbound.map((evalCase) => evalCase.id)).toEqual([
       "first-tree-read-unbound-software-continues-periodic",
@@ -234,7 +236,9 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("declares a managed-unbound explicit Tree read periodic case", () => {
-    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unboundExplicitRead === true);
+    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.unboundExplicitRead === true && evalCase.workspaceKind === "unbound-managed",
+    );
 
     expect(explicitRead.map((evalCase) => evalCase.id)).toEqual([
       "first-tree-read-unbound-explicit-read-reports-gap-periodic",
@@ -250,6 +254,29 @@ describe("first-tree-read floor contract", () => {
           evalCase.managedTransport === "send",
       ),
     ).toBe(true);
+  });
+
+  it("declares explicitly-unbound stale-checkout periodic cases", () => {
+    const staleCheckout = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout",
+    );
+
+    expect(staleCheckout.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-stale-checkout-software-continues-periodic",
+      "first-tree-read-stale-checkout-explicit-read-reports-gap-periodic",
+    ]);
+    expect(
+      staleCheckout.every(
+        (evalCase) =>
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.impactNote.mode === "absent" &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+    expect(staleCheckout[0]?.unboundContinuation).toBe(true);
+    expect(staleCheckout[1]?.unboundExplicitRead).toBe(true);
+    expect(staleCheckout[1]?.expectedFacts.length).toBe(0);
   });
 
   it("declares managed-unresolved continuation periodic cases", () => {

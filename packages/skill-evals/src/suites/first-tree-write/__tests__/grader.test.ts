@@ -6,9 +6,14 @@ import { describe, expect, it } from "vitest";
 
 import type { RunPaths } from "../../../core/types.js";
 import { FIRST_TREE_WRITE_GATE_CASES } from "../cases.js";
+import { snapshotTreeArtifactBaseline } from "../fixture.js";
 import { casePassed, deriveMetrics } from "../grader.js";
 import { buildGrading } from "../summary.js";
 import type { EvalMetrics, FirstTreeWriteEvalCase } from "../types.js";
+
+const GOOD_THREE_BULLET_SUMMARY = `- The note separates deterministic gate checks from the optional quality judge.
+- Deterministic gates cover hard risks such as missing sources, forbidden tree side effects, and verify failures.
+- The quality judge runs only for an explicit quality command, keeping default gates deterministic.`;
 
 function findCase(id: string): FirstTreeWriteEvalCase {
   const evalCase = FIRST_TREE_WRITE_GATE_CASES.find((candidate) => candidate.id === id);
@@ -20,29 +25,33 @@ function unboundEventMetrics(evalCase: FirstTreeWriteEvalCase, text: string): Ev
   return eventMetrics(evalCase, [{ event: { text, type: "agent_message" }, type: "codex_event" }]);
 }
 
+function tempPaths(tempRoot: string): RunPaths {
+  return {
+    binDir: join(tempRoot, "bin"),
+    eventsPath: join(tempRoot, "events.jsonl"),
+    gradingJsonPath: join(tempRoot, "grading.json"),
+    modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
+    packageRoot: tempRoot,
+    repoRoot: tempRoot,
+    runRoot: tempRoot,
+    shellEnvDir: join(tempRoot, "shell-env"),
+    summaryJsonPath: join(tempRoot, "summary.json"),
+    summaryMdPath: join(tempRoot, "summary.md"),
+    workspacePath: tempRoot,
+  };
+}
+
 function eventMetrics(evalCase: FirstTreeWriteEvalCase, events: readonly unknown[]): EvalMetrics {
   const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-event-"));
   try {
-    const paths: RunPaths = {
-      binDir: join(tempRoot, "bin"),
-      eventsPath: join(tempRoot, "events.jsonl"),
-      gradingJsonPath: join(tempRoot, "grading.json"),
-      modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
-      packageRoot: tempRoot,
-      repoRoot: tempRoot,
-      runRoot: tempRoot,
-      shellEnvDir: join(tempRoot, "shell-env"),
-      summaryJsonPath: join(tempRoot, "summary.json"),
-      summaryMdPath: join(tempRoot, "summary.md"),
-      workspacePath: tempRoot,
-    };
     return deriveMetrics(
       events,
       evalCase,
       { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
       0,
       null,
-      paths,
+      tempPaths(tempRoot),
+      null,
       null,
     );
   } finally {
@@ -60,12 +69,14 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     fixtureValidationOk: true,
     forbiddenContentHits: [],
     modelVerifySucceeded: false,
+    ordinarySummaryShapeObserved: false,
     postModelVerifyResult: null,
     postModelVerifySucceeded: null,
     runnerExitCode: 0,
     skillFileReadObserved: true,
     sourceRepoChanged: false,
     staleTreeArtifactAccessObserved: false,
+    staleTreeArtifactModifiedObserved: false,
     treeChanged: false,
     treeCliInvocationCount: 0,
     treeDiff: "",
@@ -163,7 +174,8 @@ describe("first-tree-write grader", () => {
   it("passes the unbound ordinary source task when the tree write is silently skipped", () => {
     const evalCase = findCase("unbound-tree-skips-write");
     const metrics = baseMetrics({
-      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: false,
     });
 
@@ -181,7 +193,8 @@ describe("first-tree-write grader", () => {
   it("fails the unbound ordinary source task when the model reads the skill file", () => {
     const evalCase = findCase("unbound-tree-skips-write");
     const metrics = baseMetrics({
-      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: true,
     });
 
@@ -196,8 +209,9 @@ describe("first-tree-write grader", () => {
       casePassed(
         findCase("unbound-tree-skips-write"),
         baseMetrics({
-          finalResponse: "The note separates deterministic gate checks from the quality judge.",
+          finalResponse: GOOD_THREE_BULLET_SUMMARY,
           firstTreeArgv: [["tree", "tree", "--help"]],
+          ordinarySummaryShapeObserved: true,
           skillFileReadObserved: false,
           treeCliInvocationCount: 1,
         }),
@@ -209,6 +223,7 @@ describe("first-tree-write grader", () => {
     const evalCase = findCase("unbound-tree-skips-write");
     const metrics = baseMetrics({
       finalResponse: "You should bind a Context Tree first.",
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: false,
       treeSetupGuidanceObserved: true,
     });
@@ -326,10 +341,11 @@ describe("first-tree-write grader", () => {
     const evalCase = findCase("unbound-tree-skips-write");
 
     for (const text of [
-      "The note separates deterministic gate checks from the quality judge. Use the web console to export the report.",
-      "The note separates deterministic gate checks from the quality judge. Ask your admin for billing access.",
+      `${GOOD_THREE_BULLET_SUMMARY}\nUse the web console to export the report.`,
+      `${GOOD_THREE_BULLET_SUMMARY}\nAsk your admin for billing access.`,
     ]) {
       const metrics = unboundEventMetrics(evalCase, text);
+      expect(metrics.ordinarySummaryShapeObserved).toBe(true);
       expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
       expect(metrics.unboundAbsenceMentionObserved).toBe(false);
       expect(casePassed(evalCase, metrics)).toBe(true);
@@ -340,9 +356,10 @@ describe("first-tree-write grader", () => {
     const evalCase = findCase("unbound-tree-skips-write");
     const metrics = unboundEventMetrics(
       evalCase,
-      "The note separates deterministic gate checks from the quality judge; an admin can tweak settings later.",
+      `${GOOD_THREE_BULLET_SUMMARY}\nAn admin can tweak notification settings later.`,
     );
 
+    expect(metrics.ordinarySummaryShapeObserved).toBe(true);
     expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
     expect(casePassed(evalCase, metrics)).toBe(true);
   });
@@ -350,19 +367,6 @@ describe("first-tree-write grader", () => {
   it("detects Tree CLI invocations and setup guidance from unbound run events", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-metrics-"));
     try {
-      const paths: RunPaths = {
-        binDir: join(tempRoot, "bin"),
-        eventsPath: join(tempRoot, "events.jsonl"),
-        gradingJsonPath: join(tempRoot, "grading.json"),
-        modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
-        packageRoot: tempRoot,
-        repoRoot: tempRoot,
-        runRoot: tempRoot,
-        shellEnvDir: join(tempRoot, "shell-env"),
-        summaryJsonPath: join(tempRoot, "summary.json"),
-        summaryMdPath: join(tempRoot, "summary.md"),
-        workspacePath: tempRoot,
-      };
       const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
       const metrics = deriveMetrics(
         [
@@ -376,8 +380,9 @@ describe("first-tree-write grader", () => {
         { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
         0,
         null,
-        paths,
+        tempPaths(tempRoot),
         null,
+        snapshotTreeArtifactBaseline(tempRoot),
       );
 
       expect(metrics.treeCliInvocationCount).toBe(1);
@@ -407,28 +412,17 @@ describe("first-tree-write grader", () => {
   it("detects a workspace manifest or Context Tree created during an unbound run", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-artifacts-"));
     try {
-      const paths: RunPaths = {
-        binDir: join(tempRoot, "bin"),
-        eventsPath: join(tempRoot, "events.jsonl"),
-        gradingJsonPath: join(tempRoot, "grading.json"),
-        modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
-        packageRoot: tempRoot,
-        repoRoot: tempRoot,
-        runRoot: tempRoot,
-        shellEnvDir: join(tempRoot, "shell-env"),
-        summaryJsonPath: join(tempRoot, "summary.json"),
-        summaryMdPath: join(tempRoot, "summary.md"),
-        workspacePath: tempRoot,
-      };
       const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
       const blank = deriveMetrics(
         [],
         evalCase,
         { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
         0,
         null,
-        paths,
+        tempPaths(tempRoot),
         null,
+        baseline,
       );
       expect(blank.unboundTreeArtifactsCreated).toBe(false);
 
@@ -440,10 +434,114 @@ describe("first-tree-write grader", () => {
         { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
         0,
         null,
-        paths,
+        tempPaths(tempRoot),
         null,
+        baseline,
       );
       expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("treats a retired stale checkout as a legal baseline but flags run modifications", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-stale-checkout-baseline-"));
+    try {
+      const evalCase = findCase("unbound-stale-checkout-explicit-write-reports-gap");
+      // Explicit unbind residue: no manifest, but a clean Tree checkout left
+      // by the previous binding.
+      mkdirSync(join(tempRoot, "context-tree", "system"), { recursive: true });
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "system", "NODE.md"), "# System\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+
+      // The untouched residue must NOT trip the guard.
+      const untouched = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        tempPaths(tempRoot),
+        null,
+        baseline,
+      );
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+
+      // Modifying the stale checkout DOES trip it.
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Rewritten by the model\n", "utf8");
+      const modified = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        tempPaths(tempRoot),
+        null,
+        baseline,
+      );
+      expect(modified.unboundTreeArtifactsCreated).toBe(true);
+
+      // So does deleting it, and so does a newly created manifest.
+      rmSync(join(tempRoot, "context-tree"), { force: true, recursive: true });
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const deletedAndManifest = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        tempPaths(tempRoot),
+        null,
+        baseline,
+      );
+      expect(deletedAndManifest.unboundTreeArtifactsCreated).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requires the unresolved stale manifest and checkout to stay byte-identical", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unresolved-baseline-"));
+    try {
+      const evalCase = findCase("unresolved-tree-skips-write");
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"context-tree"}\n', "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+
+      const untouched = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        tempPaths(tempRoot),
+        join(tempRoot, "context-tree"),
+        baseline,
+      );
+      expect(untouched.staleTreeArtifactModifiedObserved).toBe(false);
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"elsewhere"}\n', "utf8");
+      const modified = deriveMetrics(
+        [],
+        evalCase,
+        { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+        0,
+        null,
+        tempPaths(tempRoot),
+        join(tempRoot, "context-tree"),
+        baseline,
+      );
+      expect(modified.staleTreeArtifactModifiedObserved).toBe(true);
+      expect(casePassed(evalCase, modified)).toBe(false);
+
+      const grading = buildGrading(evalCase, modified, false);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_modified");
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
@@ -452,19 +550,6 @@ describe("first-tree-write grader", () => {
   it("does not read the specific missing-binding statement as setup guidance", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-gap-metrics-"));
     try {
-      const paths: RunPaths = {
-        binDir: join(tempRoot, "bin"),
-        eventsPath: join(tempRoot, "events.jsonl"),
-        gradingJsonPath: join(tempRoot, "grading.json"),
-        modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
-        packageRoot: tempRoot,
-        repoRoot: tempRoot,
-        runRoot: tempRoot,
-        shellEnvDir: join(tempRoot, "shell-env"),
-        summaryJsonPath: join(tempRoot, "summary.json"),
-        summaryMdPath: join(tempRoot, "summary.md"),
-        workspacePath: tempRoot,
-      };
       const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
       const metrics = deriveMetrics(
         [
@@ -477,8 +562,9 @@ describe("first-tree-write grader", () => {
         { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
         0,
         null,
-        paths,
+        tempPaths(tempRoot),
         null,
+        snapshotTreeArtifactBaseline(tempRoot),
       );
 
       expect(metrics.treeCliInvocationCount).toBe(0);
@@ -493,7 +579,8 @@ describe("first-tree-write grader", () => {
   it("passes the unresolved ordinary source task when the tree write is silently skipped", () => {
     const evalCase = findCase("unresolved-tree-skips-write");
     const metrics = baseMetrics({
-      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: false,
     });
 
@@ -511,7 +598,8 @@ describe("first-tree-write grader", () => {
   it("fails the unresolved ordinary source task when the model reads the skill file", () => {
     const evalCase = findCase("unresolved-tree-skips-write");
     const metrics = baseMetrics({
-      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: true,
     });
 
@@ -524,7 +612,8 @@ describe("first-tree-write grader", () => {
   it("fails the unresolved ordinary source task when the model reads the stale manifest or checkout", () => {
     const evalCase = findCase("unresolved-tree-skips-write");
     const metrics = baseMetrics({
-      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
       skillFileReadObserved: false,
       staleTreeArtifactAccessObserved: true,
     });
@@ -544,7 +633,7 @@ describe("first-tree-write grader", () => {
         { event: { command, type: "tool_call" }, type: "codex_event" },
         {
           event: {
-            text: "The note separates deterministic gate checks from the quality judge.",
+            text: GOOD_THREE_BULLET_SUMMARY,
             type: "agent_message",
           },
           type: "codex_event",
@@ -561,7 +650,7 @@ describe("first-tree-write grader", () => {
     const metrics = eventMetrics(evalCase, [
       {
         event: {
-          text: "The note separates deterministic gate checks from the quality judge.",
+          text: GOOD_THREE_BULLET_SUMMARY,
           type: "agent_message",
         },
         type: "codex_event",
@@ -569,6 +658,7 @@ describe("first-tree-write grader", () => {
     ]);
 
     expect(metrics.staleTreeArtifactAccessObserved).toBe(false);
+    expect(metrics.ordinarySummaryShapeObserved).toBe(true);
     expect(casePassed(evalCase, metrics)).toBe(true);
   });
 
@@ -664,5 +754,128 @@ describe("first-tree-write grader", () => {
       unresolvedGapStatementObserved: true,
     });
     expect(casePassed(evalCase, cli)).toBe(false);
+  });
+
+  it.each([
+    "unbound-tree-skips-write",
+    "unresolved-tree-skips-write",
+    "unbound-stale-checkout-skips-write",
+  ])("passes the ordinary skip task for %s only with the full three-bullet summary shape", (caseId) => {
+    const evalCase = findCase(caseId);
+    const metrics = unboundEventMetrics(evalCase, GOOD_THREE_BULLET_SUMMARY);
+
+    expect(metrics.ordinarySummaryShapeObserved).toBe(true);
+    expect(metrics.expectedResponseObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(true);
+  });
+
+  it.each([
+    "unbound-tree-skips-write",
+    "unresolved-tree-skips-write",
+    "unbound-stale-checkout-skips-write",
+  ])("fails the ordinary skip task for %s when the response only says deterministic", (caseId) => {
+    const evalCase = findCase(caseId);
+    const metrics = unboundEventMetrics(evalCase, "Deterministic.");
+
+    // The loose hint OR-logic still matches; the shape oracle must not.
+    expect(metrics.expectedResponseObserved).toBe(true);
+    expect(metrics.ordinarySummaryShapeObserved).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
+  it.each([
+    "unbound-tree-skips-write",
+    "unresolved-tree-skips-write",
+    "unbound-stale-checkout-skips-write",
+  ])("fails the ordinary skip task for %s when it reports the Tree gap first and gives one fact", (caseId) => {
+    const evalCase = findCase(caseId);
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "No Tree is bound in this workspace. The note is about deterministic gate checks.",
+    );
+
+    expect(metrics.ordinarySummaryShapeObserved).toBe(false);
+    expect(metrics.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
+  it.each([
+    "unbound-tree-skips-write",
+    "unresolved-tree-skips-write",
+    "unbound-stale-checkout-skips-write",
+  ])("fails the ordinary skip task for %s on a refusal or input ask", (caseId) => {
+    const evalCase = findCase(caseId);
+
+    for (const text of [
+      "I cannot summarize the note without the Tree.",
+      "Please provide the source note so I can summarize it.",
+    ]) {
+      const metrics = unboundEventMetrics(evalCase, text);
+      expect(metrics.ordinarySummaryShapeObserved, `refusal not detected: ${text}`).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    }
+  });
+
+  it("fails unbound branches when the model reads the retired checkout or manifest path", () => {
+    const skipCase = findCase("unbound-stale-checkout-skips-write");
+    const skip = baseMetrics({
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
+      skillFileReadObserved: false,
+      staleTreeArtifactAccessObserved: true,
+    });
+    expect(casePassed(skipCase, skip)).toBe(false);
+
+    const grading = buildGrading(skipCase, skip, false);
+    expect(grading.scores.routing_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_access");
+
+    const explicitCase = findCase("unbound-stale-checkout-explicit-write-reports-gap");
+    const explicit = baseMetrics({
+      finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+      skillFileReadObserved: false,
+      staleTreeArtifactAccessObserved: true,
+      unboundGapStatementObserved: true,
+    });
+    expect(casePassed(explicitCase, explicit)).toBe(false);
+  });
+
+  it("passes the stale-checkout unbound cases with clean residue behavior", () => {
+    const skip = baseMetrics({
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
+      skillFileReadObserved: false,
+    });
+    expect(casePassed(findCase("unbound-stale-checkout-skips-write"), skip)).toBe(true);
+
+    const explicit = baseMetrics({
+      finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+      skillFileReadObserved: false,
+      unboundGapStatementObserved: true,
+    });
+    expect(casePassed(findCase("unbound-stale-checkout-explicit-write-reports-gap"), explicit)).toBe(true);
+  });
+
+  it("fails unresolved branches when the run modifies the stale manifest or checkout", () => {
+    const skip = baseMetrics({
+      finalResponse: GOOD_THREE_BULLET_SUMMARY,
+      ordinarySummaryShapeObserved: true,
+      skillFileReadObserved: false,
+      staleTreeArtifactModifiedObserved: true,
+    });
+    expect(casePassed(findCase("unresolved-tree-skips-write"), skip)).toBe(false);
+
+    const explicit = baseMetrics({
+      finalResponse: "This Tree write cannot be completed right now because the binding could not be confirmed.",
+      staleTreeArtifactModifiedObserved: true,
+      unresolvedGapStatementObserved: true,
+    });
+    const explicitCase = findCase("unresolved-tree-explicit-write-reports-gap");
+    expect(casePassed(explicitCase, explicit)).toBe(false);
+
+    const grading = buildGrading(explicitCase, explicit, false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_modified");
   });
 });

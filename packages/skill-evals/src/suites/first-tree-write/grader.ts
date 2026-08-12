@@ -4,7 +4,14 @@ import { join, relative } from "node:path";
 import { runCommand } from "../../core/commands.js";
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
 import type { CommandResult, RunPaths } from "../../core/types.js";
-import type { EvalMetrics, FirstTreeWriteEvalCase, FixtureValidation, TreeStateSnapshot } from "./types.js";
+import { treeArtifactBaselineViolation } from "./fixture.js";
+import type {
+  EvalMetrics,
+  FirstTreeWriteEvalCase,
+  FixtureValidation,
+  TreeArtifactBaseline,
+  TreeStateSnapshot,
+} from "./types.js";
 
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
 
@@ -271,6 +278,32 @@ function containsUnboundSetupSteering(text: string): boolean {
   return UNBOUND_SETUP_STEERING.test(text);
 }
 
+/**
+ * Ordinary-skip response contract. The prompt asks for a three-bullet summary
+ * of the source note, so the final response must (a) fully carry the note's
+ * deterministic-gate / quality-judge distinction — not just one loose
+ * keyword, (b) keep the three-bullet shape, and (c) contain no refusal or
+ * input ask. The loose `responseHints` OR-logic alone cannot express this.
+ */
+const ORDINARY_SUMMARY_DISTINCTION = ["deterministic", "gate", "quality", "judge"] as const;
+const BULLET_LINE = /^\s*(?:[-*•]|\d{1,2}[.)])\s+\S/u;
+const REFUSAL_OR_INPUT_ASK =
+  /\b(?:cannot|can't|unable\s+to)\b[^.!?\n]{0,80}\b(?:summar\w*|answer|complet\w*|proceed|do\s+that)\b|\bplease\s+(?:provide|share|paste|supply|give)\b|\bi\s+need\s+(?:the\s+)?(?:file|note|content|source|input)\b/iu;
+
+function bulletLineCount(text: string): number {
+  return text.split("\n").filter((line) => BULLET_LINE.test(line)).length;
+}
+
+function containsRefusalOrInputAsk(text: string): boolean {
+  return REFUSAL_OR_INPUT_ASK.test(text);
+}
+
+function containsOrdinarySummaryShape(text: string): boolean {
+  return (
+    containsAll(text, ORDINARY_SUMMARY_DISTINCTION) && bulletLineCount(text) >= 3 && !containsRefusalOrInputAsk(text)
+  );
+}
+
 function collectMarkdownFiles(root: string): string[] {
   const files: string[] = [];
   function walk(dir: string): void {
@@ -318,13 +351,6 @@ function sourceRepoChanged(paths: RunPaths): boolean {
   return status.stdout.trim().length > 0;
 }
 
-function unboundTreeArtifactsCreated(paths: RunPaths): boolean {
-  return (
-    existsSync(join(paths.workspacePath, ".first-tree", "workspace.json")) ||
-    existsSync(join(paths.workspacePath, "context-tree"))
-  );
-}
-
 export function deriveMetrics(
   events: readonly unknown[],
   evalCase: FirstTreeWriteEvalCase,
@@ -333,6 +359,7 @@ export function deriveMetrics(
   postModelVerifyResult: CommandResult | null,
   paths: RunPaths,
   contextTreePath: string | null,
+  treeArtifactBaseline: TreeArtifactBaseline | null,
 ): EvalMetrics {
   let skillFileReadObserved = false;
   let staleTreeArtifactAccessObserved = false;
@@ -370,6 +397,16 @@ export function deriveMetrics(
   const finalResponse = modelOutputTexts.at(-1) ?? "";
   const markdown = contextTreePath === null ? "" : contextTreeMarkdown(contextTreePath);
   const treeCliInvocationCount = firstTreeArgv.filter(argvIsTreeCommand).length;
+  const unboundState =
+    evalCase.fixture.treeState === "unbound" || evalCase.fixture.treeState === "explicitly-unbound-with-stale-checkout";
+  // PRE/POST comparison against the fixture-setup baseline: a retired stale
+  // checkout left on disk is legal residue, but anything newly created — or a
+  // stale artifact the run modified — is a violation.
+  const artifactViolation =
+    treeArtifactBaseline === null
+      ? { created: false, modified: false }
+      : treeArtifactBaselineViolation(treeArtifactBaseline, paths.workspacePath);
+  const ordinarySummaryShapeObserved = containsOrdinarySummaryShape(finalResponse);
   const treeSetupGuidanceObserved = containsTreeSetupGuidance(finalResponse);
   const treeSetupSurfaceGuidanceObserved = containsTreeSetupSurfaceGuidance(finalResponse);
   const unboundAbsenceMentionObserved = containsUnboundAbsenceMention(finalResponse);
@@ -402,6 +439,8 @@ export function deriveMetrics(
     skillFileReadObserved,
     sourceRepoChanged: sourceRepoChanged(paths),
     staleTreeArtifactAccessObserved,
+    staleTreeArtifactModifiedObserved: evalCase.fixture.treeState === "unresolved" ? artifactViolation.modified : false,
+    ordinarySummaryShapeObserved,
     treeChanged: treeState.status.trim().length > 0,
     treeCliInvocationCount,
     treeDiff: treeState.diff,
@@ -411,7 +450,7 @@ export function deriveMetrics(
     unboundAbsenceMentionObserved,
     unboundGapStatementObserved,
     unboundSetupSteeringObserved,
-    unboundTreeArtifactsCreated: contextTreePath === null ? unboundTreeArtifactsCreated(paths) : false,
+    unboundTreeArtifactsCreated: unboundState ? artifactViolation.created || artifactViolation.modified : false,
     unresolvedBindingMentionObserved,
     unresolvedGapStatementObserved,
     verifySucceeded,
@@ -435,7 +474,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeSetupGuidanceObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
-      !metrics.unboundTreeArtifactsCreated
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved
     );
   }
 
@@ -452,7 +492,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundAbsenceMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 
@@ -460,18 +501,21 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
 
   if (evalCase.expected.action === "skip_tree_write_unbound") {
     return (
+      metrics.ordinarySummaryShapeObserved &&
       metrics.treeCliInvocationCount === 0 &&
       !metrics.skillFileReadObserved &&
       !metrics.treeChanged &&
       !metrics.treeSetupGuidanceObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
-      !metrics.unboundTreeArtifactsCreated
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved
     );
   }
 
   if (evalCase.expected.action === "skip_tree_write_unresolved") {
     return (
+      metrics.ordinarySummaryShapeObserved &&
       metrics.treeCliInvocationCount === 0 &&
       !metrics.skillFileReadObserved &&
       !metrics.treeChanged &&
@@ -479,7 +523,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.unresolvedBindingMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 
@@ -545,6 +590,25 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   if (unresolvedAction && metrics.staleTreeArtifactAccessObserved) {
     notes.push(
       "Unresolved-binding case read or referenced the last-known workspace manifest or Context Tree checkout; this session never confirmed that binding.",
+    );
+  }
+  if (unboundAction && metrics.staleTreeArtifactAccessObserved) {
+    notes.push(
+      "Unbound case read or referenced the retired Context Tree checkout or manifest path; explicit unbind keeps the checkout as inert residue, never as Tree authority.",
+    );
+  }
+  if (unresolvedAction && metrics.staleTreeArtifactModifiedObserved) {
+    notes.push(
+      "Unresolved-binding case modified the last-known workspace manifest or Context Tree checkout; stale artifacts must stay byte-identical.",
+    );
+  }
+  if (
+    (evalCase.expected.action === "skip_tree_write_unbound" ||
+      evalCase.expected.action === "skip_tree_write_unresolved") &&
+    !metrics.ordinarySummaryShapeObserved
+  ) {
+    notes.push(
+      "Ordinary task did not deliver the requested three-bullet summary: the final response must fully carry the deterministic-gate / quality-judge distinction, keep three bullet lines, and contain no refusal or input ask.",
     );
   }
   if (unboundExplicit && !metrics.unboundGapStatementObserved) {

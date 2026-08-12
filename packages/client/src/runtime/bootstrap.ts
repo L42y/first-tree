@@ -87,12 +87,11 @@ export async function resolveAgentContextTreeBinding(
 ): Promise<ContextTreeBindingResolution> {
   try {
     const config: unknown = await sdk.getAgentContextTreeConfig();
-    if (
-      typeof config === "object" &&
-      config !== null &&
-      "repo" in config &&
-      (config.repo === null || config.repo === undefined)
-    ) {
+    // Only an explicit `repo: null` is an affirmative unbind. A `repo:
+    // undefined` / missing-key / otherwise-invalid payload is NOT: it falls
+    // through to the schema parse below and degrades to `unresolved`, so a
+    // malformed response can never trigger manifest retirement.
+    if (typeof config === "object" && config !== null && "repo" in config && config.repo === null) {
       log("Context Tree binding skipped: not configured on server");
       return { status: "explicitly-unbound" };
     }

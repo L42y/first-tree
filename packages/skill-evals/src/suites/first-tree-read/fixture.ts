@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -7,7 +8,7 @@ import { runFixtureVerify } from "../../core/fixture-verify.js";
 import type { EvalReporter } from "../../core/reporter.js";
 import { installRepoSkill, parseSkillDescription } from "../../core/skills/install.js";
 import type { CommandResult, RunPaths } from "../../core/types.js";
-import type { FirstTreeReadEvalCase, FixtureValidation, WorkspaceKind } from "./types.js";
+import type { FirstTreeReadEvalCase, FixtureValidation, TreeArtifactBaseline, WorkspaceKind } from "./types.js";
 
 const DOMAIN_NODE_TARGET_COUNT = 100;
 const NAVIGATION_NODE_MARKER = "evalNodeKind: navigation";
@@ -471,9 +472,13 @@ function navigationParentPaths(nodes: readonly DomainNode[]): readonly string[] 
 
 function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind): string {
   const managedWorkspace = workspaceKind === "context-tree" || workspaceKind === "unresolved-managed";
-  const contextTreePath = managedWorkspace
-    ? join(paths.workspacePath, "context-tree")
-    : join(paths.runRoot, "byo-context-tree-source");
+  // A previous binding was explicitly retired: the manifest is gone, but the
+  // clean Tree checkout stays on disk as inert residue.
+  const staleCheckout = workspaceKind === "explicitly-unbound-with-stale-checkout";
+  const contextTreePath =
+    managedWorkspace || staleCheckout
+      ? join(paths.workspacePath, "context-tree")
+      : join(paths.runRoot, "byo-context-tree-source");
   const sourceRepoPath = join(paths.workspacePath, "source-repo");
   mkdirSync(contextTreePath, { recursive: true });
   mkdirSync(sourceRepoPath, { recursive: true });
@@ -516,7 +521,9 @@ function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind):
     writeText(join(contextTreePath, node.path, "NODE.md"), nodeMarkdown(node));
   }
 
-  initializeGitRepo(paths, contextTreePath, managedWorkspace);
+  // The retired checkout keeps the old binding remote, exactly as explicit
+  // unbind leaves it behind.
+  initializeGitRepo(paths, contextTreePath, managedWorkspace || staleCheckout);
   return contextTreePath;
 }
 
@@ -555,10 +562,15 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
     evalCase.workspaceKind === "blank" || evalCase.workspaceKind === "unbound-managed"
       ? null
       : writeContextTreeFixture(paths, evalCase.workspaceKind);
-  if (evalCase.workspaceKind === "unbound-managed") {
+  if (
+    evalCase.workspaceKind === "unbound-managed" ||
+    evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
+  ) {
     // A managed workspace with source repos but no bound Tree: the real
     // runtime writes no `.first-tree/workspace.json` in this state, so the
-    // fixture writes no manifest either.
+    // fixture writes no manifest either. The stale-checkout variant
+    // additionally keeps the retired checkout that explicit unbind leaves
+    // behind; the briefing must still say explicitly unbound.
     const sourceRepoPath = join(paths.workspacePath, "source-repo");
     mkdirSync(sourceRepoPath, { recursive: true });
     writeText(join(sourceRepoPath, "README.md"), unboundSourceReadmeMarkdown());
@@ -573,7 +585,8 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
     // on disk, but the briefing must not confirm them: the model must ignore
     // those stale artifacts entirely.
     const briefingTreeState: BriefingTreeState =
-      evalCase.workspaceKind === "unbound-managed"
+      evalCase.workspaceKind === "unbound-managed" ||
+      evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
         ? "explicitly-unbound"
         : evalCase.workspaceKind === "unresolved-managed"
           ? "unresolved"
@@ -592,6 +605,60 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
   reporter.fixtureSetupFinished(evalCase.workspaceKind, contextTreePath);
 
   return contextTreePath;
+}
+
+function fingerprintDirectory(root: string): string | null {
+  if (!existsSync(root)) return null;
+  const entries: string[] = [];
+  function walk(dir: string): void {
+    for (const entry of readdirSafe(dir)) {
+      if (entry === ".git" || entry === "node_modules") continue;
+      const child = join(dir, entry);
+      if (isDirectory(child)) {
+        walk(child);
+        continue;
+      }
+      const relPath = relative(root, child).replace(/\\/gu, "/");
+      const digest = createHash("sha256").update(readFileSync(child)).digest("hex");
+      entries.push(`${relPath}\0${digest}`);
+    }
+  }
+  walk(root);
+  return createHash("sha256").update(entries.sort().join("\n")).digest("hex");
+}
+
+/**
+ * Pre-run record of the workspace manifest and Tree checkout state. Snapshot
+ * it right after fixture setup; the post-run comparison treats whatever it
+ * captured as the legal baseline.
+ */
+export function snapshotTreeArtifactBaseline(workspacePath: string): TreeArtifactBaseline {
+  const manifestPath = join(workspacePath, ".first-tree", "workspace.json");
+  return {
+    checkoutFingerprint: fingerprintDirectory(join(workspacePath, "context-tree")),
+    manifestContent: existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : null,
+  };
+}
+
+/**
+ * PRE/POST artifact guard: a violation is a manifest or checkout NEWLY
+ * created by the run, or a pre-existing stale manifest/checkout MODIFIED
+ * (including deleted) by the run. A clean checkout left by a retired binding
+ * never trips this guard on its own.
+ */
+export function treeArtifactBaselineViolation(
+  baseline: TreeArtifactBaseline,
+  workspacePath: string,
+): { created: boolean; modified: boolean } {
+  const current = snapshotTreeArtifactBaseline(workspacePath);
+  return {
+    created:
+      (baseline.manifestContent === null && current.manifestContent !== null) ||
+      (baseline.checkoutFingerprint === null && current.checkoutFingerprint !== null),
+    modified:
+      (baseline.manifestContent !== null && current.manifestContent !== baseline.manifestContent) ||
+      (baseline.checkoutFingerprint !== null && current.checkoutFingerprint !== baseline.checkoutFingerprint),
+  };
 }
 
 function requiredTreeFiles(contextTreePath: string): readonly RequiredTreeFile[] {

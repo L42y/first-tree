@@ -124,6 +124,33 @@ describe("bootstrap edge coverage", () => {
     expect(logs.join("\n")).not.toContain(invalidBranch);
   });
 
+  it("treats only an explicit repo:null as an unbind — undefined or missing repo is unresolved", async () => {
+    const logs: string[] = [];
+
+    // `repo: undefined` is not an affirmative unbind: the payload fails the
+    // schema parse and degrades to `unresolved`, so it can never trigger
+    // manifest retirement.
+    const undefinedRepoSdk = {
+      getAgentContextTreeConfig: vi.fn(async () => ({ repo: undefined, branch: "main" })),
+    } as unknown as FirstTreeHubSDK;
+    await expect(
+      resolveAgentContextTreeBinding(undefinedRepoSdk, "/workspace", (msg) => logs.push(msg)),
+    ).resolves.toEqual({ status: "unresolved" });
+
+    // A missing repo key is equally invalid, not an unbind.
+    const missingRepoSdk = {
+      getAgentContextTreeConfig: vi.fn(async () => ({ branch: "main" })),
+    } as unknown as FirstTreeHubSDK;
+    await expect(
+      resolveAgentContextTreeBinding(missingRepoSdk, "/workspace", (msg) => logs.push(msg)),
+    ).resolves.toEqual({ status: "unresolved" });
+
+    expect(logs).toEqual([
+      "Context Tree binding skipped: server returned an invalid binding",
+      "Context Tree binding skipped: server returned an invalid binding",
+    ]);
+  });
+
   it("merges legacy runtime directories recursively without overwriting newer target files", () => {
     const workspace = join(tmpBase, "workspace");
     mkdirSync(join(workspace, ".agent", "nested"), { recursive: true });

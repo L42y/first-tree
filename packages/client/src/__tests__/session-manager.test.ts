@@ -3093,6 +3093,175 @@ describe("SessionManager Context Tree binding refresh", () => {
 
     await sm.shutdown();
   });
+
+  it("resumes a suspended chat on the new binding inside the rate-limit window (unbind AND rebind)", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    let resolution: ContextTreeBindingResolution = BOUND;
+    const resolve = vi.fn(async () => resolution);
+    const builtWith: HandlerConfig[] = [];
+    const handlers: AgentHandler[] = [];
+    const ctxs: Array<SessionContext | undefined> = [];
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: resolve,
+      handlerFactory: (cfg) => {
+        const index = handlers.length;
+        builtWith.push({ ...cfg });
+        const handler = createMockHandler({
+          start: vi.fn(async (_msg: unknown, ctx: SessionContext) => {
+            ctxs[index] = ctx;
+            return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
+          }),
+          resume: vi.fn(async (_msg: unknown, _sid: unknown, ctx: SessionContext) => {
+            ctxs[index] = ctx;
+            return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
+          }),
+        });
+        handlers.push(handler);
+        return handler;
+      },
+    });
+
+    await withMockedNow(Date.now(), async (advance) => {
+      // Chat B starts bound and suspends with the epoch-0 handler. The
+      // operator suspend confirms the stop (shutdown exactly once).
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-epoch-b", messageId: "m1" }));
+      expect(builtWith[0]?.contextTreePath).toBe("/clones/abc");
+      await finishEntry(ctxs[0], 1, "c-epoch-b", "m1");
+      await sm.handleCommand("c-epoch-b", "session:suspend");
+      await vi.waitFor(() => expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(1));
+
+      // Chat A's admission lands the unbind past the interval.
+      resolution = { status: "explicitly-unbound" };
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 2, chatId: "c-epoch-a", messageId: "m2" }));
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(builtWith[1]?.contextTreePath).toBeNull();
+      expect(builtWith[1]?.contextTreeBindingStatus).toBe("explicitly-unbound");
+
+      // B resumes INSIDE the rate-limit window: no new resolver call, but the
+      // handler is rebuilt from the new config and the old one is retired
+      // (confirmed-stopped at suspend, so no second teardown fires).
+      await sm.dispatch(mockEntry({ id: 3, chatId: "c-epoch-b", messageId: "m3" }));
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(handlers[0]?.resume).not.toHaveBeenCalled();
+      expect(handlers[2]?.resume).toHaveBeenCalled();
+      expect(builtWith[2]?.contextTreePath).toBeNull();
+      expect(builtWith[2]?.contextTreeBindingStatus).toBe("explicitly-unbound");
+      expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(1);
+
+      // Suspend B again, then a third chat lands a rebind past the interval.
+      await finishEntry(ctxs[2], 3, "c-epoch-b", "m3");
+      await sm.handleCommand("c-epoch-b", "session:suspend");
+      await vi.waitFor(() => expect(handlers[2]?.shutdown).toHaveBeenCalledTimes(1));
+      resolution = REBOUND;
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 4, chatId: "c-epoch-c", messageId: "m4" }));
+      expect(resolve).toHaveBeenCalledTimes(3);
+      expect(builtWith[3]?.contextTreePath).toBe("/clones/def");
+
+      // B resumes inside the window again: rebuilt onto the rebound binding.
+      await sm.dispatch(mockEntry({ id: 5, chatId: "c-epoch-b", messageId: "m5" }));
+      expect(resolve).toHaveBeenCalledTimes(3);
+      expect(handlers[4]?.resume).toHaveBeenCalled();
+      expect(builtWith[4]?.contextTreePath).toBe("/clones/def");
+      expect(builtWith[4]?.contextTreeBranch).toBe("trunk");
+      expect(builtWith[4]?.contextTreeBindingStatus).toBe("bound");
+      expect(handlers[2]?.shutdown).toHaveBeenCalledTimes(1);
+    });
+
+    await sm.shutdown();
+  });
+
+  it("rebuilds an old-epoch handler the retire sweep had to skip (in-flight route transition)", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    let resolution: ContextTreeBindingResolution = BOUND;
+    const resolve = vi.fn(async () => resolution);
+    const builtWith: HandlerConfig[] = [];
+    const handlers: AgentHandler[] = [];
+    const ctxs: Array<SessionContext | undefined> = [];
+    const resumeGate = deferred<{ sessionId: string; route: { kind: "owned"; mode: "queued" } }>();
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: resolve,
+      handlerFactory: (cfg) => {
+        const index = handlers.length;
+        builtWith.push({ ...cfg });
+        const handler = createMockHandler({
+          async start(_msg, ctx) {
+            ctxs[index] = ctx;
+            return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
+          },
+          // Only the FIRST handler's resume blocks: it keeps B's route
+          // transition in flight while chat A's refresh lands.
+          ...(index === 0
+            ? {
+                resume: vi.fn(async (_msg: unknown, _sid: unknown, ctx: SessionContext) => {
+                  ctxs[index] = ctx;
+                  return resumeGate.promise;
+                }),
+              }
+            : {
+                resume: vi.fn(async (_msg: unknown, _sid: unknown, ctx: SessionContext) => {
+                  ctxs[index] = ctx;
+                  return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
+                }),
+              }),
+        });
+        handlers.push(handler);
+        return handler;
+      },
+    });
+
+    await withMockedNow(Date.now(), async (advance) => {
+      // Chat B starts bound and suspends with the epoch-0 handler. The
+      // operator suspend confirms the stop (shutdown exactly once).
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-skip-b", messageId: "m1" }));
+      expect(builtWith[0]?.contextTreePath).toBe("/clones/abc");
+      await finishEntry(ctxs[0], 1, "c-skip-b", "m1");
+      await sm.handleCommand("c-skip-b", "session:suspend");
+      await vi.waitFor(() => expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(1));
+
+      // B's resume begins inside the rate-limit window (no refresh) and stays
+      // in flight on the gated old-epoch handler.
+      const bResume = sm.dispatch(mockEntry({ id: 2, chatId: "c-skip-b", messageId: "m2" }));
+      await vi.waitFor(() => expect(handlers[0]?.resume).toHaveBeenCalledTimes(1));
+      expect(resolve).toHaveBeenCalledTimes(1);
+
+      // Chat A's admission lands the unbind. The retire sweep must skip B:
+      // its in-flight route transition owns the old handler (still only the
+      // suspend-time shutdown, no extra teardown).
+      resolution = { status: "explicitly-unbound" };
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 3, chatId: "c-skip-a", messageId: "m3" }));
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(builtWith[1]?.contextTreePath).toBeNull();
+      expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(1);
+
+      // B's in-flight resume completes on the OLD handler (active turns stay
+      // frozen), then B suspends again — the unretired old handler is stopped
+      // a second and final time.
+      resumeGate.resolve({ sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } });
+      await bResume;
+      await finishEntry(ctxs[0], 2, "c-skip-b", "m2");
+      await sm.handleCommand("c-skip-b", "session:suspend");
+      await vi.waitFor(() => expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(2));
+
+      // B's next resume lands inside the rate-limit window: no new resolver
+      // call, but the epoch stamp is stale, so the handler is rebuilt from
+      // the unbound config and the old one is retired per the existing
+      // teardown discipline (confirmed-stopped, so no third shutdown).
+      await sm.dispatch(mockEntry({ id: 4, chatId: "c-skip-b", messageId: "m4" }));
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(handlers[0]?.resume).toHaveBeenCalledTimes(1);
+      expect(handlers[2]?.resume).toHaveBeenCalled();
+      expect(builtWith[2]?.contextTreePath).toBeNull();
+      expect(builtWith[2]?.contextTreeBindingStatus).toBe("explicitly-unbound");
+      expect(handlers[0]?.shutdown).toHaveBeenCalledTimes(2);
+    });
+
+    await sm.shutdown();
+  });
 });
 
 describe("SessionManager subprocess-aware suspend/eviction", () => {
