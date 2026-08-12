@@ -607,9 +607,27 @@ function configurationReason(text: string, base: Classification, provider: Runti
 
 function isCodexServiceTierConfiguration(text: string): boolean {
   return (
-    /configured service tier .* is not advertised as supported .* will be omitted from requests/.test(text) ||
-    /configured service tier .* was not activated by codex .* will not be used for requests/.test(text)
+    containsOrderedSubstrings(text, [
+      "configured service tier",
+      "is not advertised as supported",
+      "will be omitted from requests",
+    ]) ||
+    containsOrderedSubstrings(text, [
+      "configured service tier",
+      "was not activated by codex",
+      "will not be used for requests",
+    ])
   );
+}
+
+function containsOrderedSubstrings(text: string, parts: readonly string[]): boolean {
+  let pos = 0;
+  for (const part of parts) {
+    const idx = text.indexOf(part, pos);
+    if (idx === -1) return false;
+    pos = idx + part.length;
+  }
+  return true;
 }
 
 function isDeterministicInput(text: string, base: Classification): boolean {

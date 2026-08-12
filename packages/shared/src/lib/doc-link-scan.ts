@@ -51,9 +51,7 @@
 const BARE_PATH_RE =
   /(^|[\s([{"'`])(?<path>(?:\.{1,2}\/|\/)?(?:[A-Za-z0-9_.~+@%-]+\/)*[A-Za-z0-9_.~+@%-]+\.md(?::\d+(?::\d+)?)?)(?=$|[\s)\]}"',.;!?`])/g;
 
-const INLINE_MARKDOWN_LINK_RE = /\[(?:[^\]\\\n]|\\.)*\]\([^)\n]*\)/g;
 const REFERENCE_LINK_DEFINITION_RE = /^\s*\[[^\]\n]+\]:\s*\S+/;
-const HTML_TAG_RE = /<\/?[A-Za-z][^>\n]*>/g;
 const FENCE_MARKER_RE = /^(?: {0,3})(?<marker>`{3,}|~{3,})/;
 const INDENT_CODE_RE = /^(?: {4}|\t)/;
 const DOMAIN_LIKE_PREFIX_RE = /^[a-z][a-z0-9.-]*\.[a-z]{2,}\//i;
@@ -190,11 +188,67 @@ export function stripDocPathLineSuffix(raw: string): string {
  */
 function findHardSkipRanges(line: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
-  for (const match of line.matchAll(INLINE_MARKDOWN_LINK_RE)) {
-    if (match.index !== undefined) ranges.push({ start: match.index, end: match.index + match[0].length });
+  for (const range of scanInlineMarkdownLinkRanges(line)) {
+    ranges.push(range);
   }
-  for (const match of line.matchAll(HTML_TAG_RE)) {
-    if (match.index !== undefined) ranges.push({ start: match.index, end: match.index + match[0].length });
+  for (const range of scanHtmlTagRanges(line)) {
+    ranges.push(range);
+  }
+  return ranges;
+}
+
+function scanInlineMarkdownLinkRanges(line: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] !== "[") continue;
+    const start = i;
+    let j = i + 1;
+    let closedBracket = false;
+    while (j < line.length) {
+      const ch = line[j];
+      if (ch === "\n") break;
+      if (ch === "\\") {
+        j += 2;
+        continue;
+      }
+      if (ch === "]") {
+        closedBracket = true;
+        j += 1;
+        break;
+      }
+      j += 1;
+    }
+    if (!closedBracket || j >= line.length || line[j] !== "(") continue;
+    j += 1;
+    while (j < line.length && line[j] !== ")" && line[j] !== "\n") {
+      j += 1;
+    }
+    if (j >= line.length || line[j] !== ")") continue;
+    j += 1;
+    ranges.push({ start, end: j });
+    i = j - 1;
+  }
+  return ranges;
+}
+
+function scanHtmlTagRanges(line: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (let i = 0; i < line.length; i += 1) {
+    if (line[i] !== "<") continue;
+    const start = i;
+    let j = i + 1;
+    if (j < line.length && line[j] === "/") j += 1;
+    if (j >= line.length) continue;
+    const tagStart = line[j];
+    if (!tagStart || ((tagStart < "A" || tagStart > "Z") && (tagStart < "a" || tagStart > "z"))) continue;
+    j += 1;
+    while (j < line.length && line[j] !== ">" && line[j] !== "\n") {
+      j += 1;
+    }
+    if (j >= line.length || line[j] !== ">") continue;
+    j += 1;
+    ranges.push({ start, end: j });
+    i = j - 1;
   }
   return ranges;
 }

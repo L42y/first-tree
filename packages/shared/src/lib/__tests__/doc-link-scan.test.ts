@@ -211,6 +211,22 @@ describe("scanBareDocPathTokens", () => {
     if (!m) throw new Error("expected one match");
     expect(text.slice(m.start, m.end)).toBe("docs/intro.md");
   });
+
+  it("completes quickly on adversarial unclosed bracket prefixes before real links", () => {
+    const padding = "[".repeat(4000);
+    const text = `${padding}see [intro](docs/intro.md) please`;
+    const started = performance.now();
+    expect(tokens(text)).toEqual([]);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it("completes quickly on adversarial HTML tag bodies with long attributes", () => {
+    const padding = "x".repeat(5000);
+    const text = `<a href="${padding}docs/html.md">link</a> and docs/after.md`;
+    const started = performance.now();
+    expect(tokens(text)).toEqual(["docs/after.md"]);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
 });
 
 describe("stripDocPathLineSuffix", () => {

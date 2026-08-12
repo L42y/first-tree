@@ -40,6 +40,7 @@ import {
   sessionCommandFinalizedFrameSchema,
   sessionEventAcceptedFrameSchema,
   sessionEventRejectedFrameSchema,
+  stripTrailingSlashes,
   type UpdateAttempt,
 } from "@first-tree/shared";
 import WebSocket from "ws";
@@ -608,7 +609,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
   constructor(config: ClientConnectionConfig) {
     super();
     this.clientId = config.clientId ?? process.env.FIRST_TREE_CLIENT_ID ?? `client_${randomUUID().slice(0, 8)}`;
-    this.serverUrl = config.serverUrl.replace(/\/+$/, "");
+    this.serverUrl = stripTrailingSlashes(config.serverUrl);
     this.sdkVersion = config.sdkVersion;
     this.userAgent = config.userAgent;
     this.getAccessToken = config.getAccessToken;

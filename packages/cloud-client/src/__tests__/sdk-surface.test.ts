@@ -87,6 +87,18 @@ describe("FirstTreeHubSDK public surface", () => {
     expect(sdk.agentId).toBe("agent-1");
   });
 
+  it("strips many trailing slashes from serverUrl without backtracking risk", () => {
+    const started = performance.now();
+    const sdk = new FirstTreeHubSDK({
+      serverUrl: `https://first-tree.example${"/".repeat(5000)}`,
+      agentId: "agent-1",
+      userAgent: "first-tree-test",
+      getAccessToken: () => "access-token",
+    });
+    expect(sdk.serverUrl).toBe("https://first-tree.example");
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
   it("register maps agent identity defaults", async () => {
     makeFetchMock([
       jsonResponse({

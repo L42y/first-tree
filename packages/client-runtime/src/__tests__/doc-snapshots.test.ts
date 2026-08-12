@@ -112,6 +112,17 @@ describe("buildMessageDocumentSnapshots — capture + attachment-link rewrite", 
     expect(rewrittenText).toBe(`see [intro](attachment:${fakeUploadId(1)}) for setup`);
   });
 
+  it("retargets inline markdown links quickly on adversarial unclosed bracket prefixes", async () => {
+    const abs = join(root, "docs", "intro.md");
+    const padding = "[".repeat(4000);
+    const text = `${padding}see [intro](${abs}) for setup`;
+    const started = performance.now();
+    const { refs, rewrittenText } = await buildMessageDocumentSnapshots(text, root, opts(uploader));
+    expect(refs[0]?.source?.path).toBe("docs/intro.md");
+    expect(rewrittenText).toBe(`${padding}see [intro](attachment:${fakeUploadId(1)}) for setup`);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("keeps the :line[:col] suffix on the display, points href at the attachment", async () => {
     const abs = join(root, "docs", "intro.md");
     const { refs, rewrittenText } = await buildMessageDocumentSnapshots(`open ${abs}:42:7 here`, root, opts(uploader));

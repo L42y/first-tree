@@ -67,6 +67,7 @@ export {
 } from "./lib/doc-path.js";
 // -- GitHub-style identicon avatar generator (shared by web Avatar fallback; pure, browser + Node safe) --
 export { type IdenticonSvgOptions, identiconCells, identiconSvg } from "./lib/identicon.js";
+export { stripTrailingSlashes } from "./lib/strip-trailing-slashes.js";
 export {
   extractMentions,
   MENTION_REGEX,

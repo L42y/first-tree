@@ -84,6 +84,7 @@ import {
   type PublishDocResponse,
   type RuntimeProvider,
   type SendMessage,
+  stripTrailingSlashes,
   type UnfollowChatGitlabEntityResponse,
   type UnfollowGithubEntityResponse,
   type UpdateCronJobRequest,
@@ -310,7 +311,7 @@ export class FirstTreeHubSDK {
   private readonly logger = createLogger("sdk");
 
   constructor(config: SdkConfig) {
-    this._baseUrl = config.serverUrl.replace(/\/+$/, "");
+    this._baseUrl = stripTrailingSlashes(config.serverUrl);
     this.getAccessToken = config.getAccessToken;
     this._agentId = config.agentId;
     const runtimeSessionToken = config.runtimeSessionToken;

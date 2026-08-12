@@ -15,11 +15,7 @@ function shellArg(value: string): string {
   return SAFE_SHELL_ARG_PATTERN.test(value) ? value : shellQuote(value);
 }
 
-function stripTrailingSlashes(value: string): string {
-  let end = value.length;
-  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
-  return value.slice(0, end);
-}
+import { stripTrailingSlashes } from "./lib/strip-trailing-slashes.js";
 
 function normalizeDownloadBaseUrl(value: string): string {
   return stripTrailingSlashes(value);

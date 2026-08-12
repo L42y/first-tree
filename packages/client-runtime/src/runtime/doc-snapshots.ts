@@ -440,18 +440,49 @@ type InlineLinkMatch = { target: string; start: number; end: number };
 
 function scanInlineMarkdownLinks(text: string): InlineLinkMatch[] {
   const out: InlineLinkMatch[] = [];
-  const re = /(\[(?:[^\]\\]|\\.)*\]\()(\S+?\.md)(?:\s+"[^"]*")?\)/g;
-  let match: RegExpExecArray | null = re.exec(text);
-  while (match !== null) {
-    const linkStart = match.index;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] !== "[") continue;
+    const linkStart = i;
     const prev = linkStart > 0 ? text[linkStart - 1] : "";
-    const prefix = match[1];
-    const target = match[2];
-    if (prev !== "\\" && prev !== "!" && prefix !== undefined && target) {
-      const start = linkStart + prefix.length;
-      out.push({ target, start, end: start + target.length });
+    if (prev === "\\" || prev === "!") continue;
+
+    let j = i + 1;
+    let closedBracket = false;
+    while (j < text.length) {
+      const ch = text[j];
+      if (ch === "\\") {
+        j += 2;
+        continue;
+      }
+      if (ch === "]") {
+        closedBracket = true;
+        j += 1;
+        break;
+      }
+      j += 1;
     }
-    match = re.exec(text);
+    if (!closedBracket || j >= text.length || text[j] !== "(") continue;
+    const prefix = text.slice(linkStart, j + 1);
+    j += 1;
+    const targetStart = j;
+    while (j < text.length && !/\s/.test(text[j]!) && text[j] !== ")") {
+      j += 1;
+    }
+    const target = text.slice(targetStart, j);
+    if (!target.endsWith(".md")) continue;
+
+    while (j < text.length && /\s/.test(text[j]!)) j += 1;
+    if (j < text.length && text[j] === '"') {
+      j += 1;
+      while (j < text.length && text[j] !== '"') j += 1;
+      if (j < text.length && text[j] === '"') j += 1;
+    }
+    if (j >= text.length || text[j] !== ")") continue;
+    j += 1;
+
+    const start = linkStart + prefix.length;
+    out.push({ target, start, end: start + target.length });
+    i = j - 1;
   }
   return out;
 }

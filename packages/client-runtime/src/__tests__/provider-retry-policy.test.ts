@@ -202,6 +202,35 @@ describe("classifyProviderFailure", () => {
     });
   });
 
+  it("maps Codex service-tier activation failure to a terminal configuration failure", () => {
+    expect(
+      classifyProviderFailure(
+        new Error("Configured service tier `fast` was not activated by Codex and will not be used for requests."),
+        { provider: "codex", scope: "provider_turn", source: "sdk" },
+      ),
+    ).toMatchObject({
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+  });
+
+  it("classifies Codex service-tier messages quickly even with long padding", () => {
+    const padding = "x".repeat(5000);
+    const message = `${padding} configured service tier ${padding} is not advertised as supported ${padding} will be omitted from requests ${padding}`;
+    const started = performance.now();
+    expect(
+      classifyProviderFailure(new Error(message), {
+        provider: "codex",
+        scope: "provider_turn",
+        source: "sdk",
+      }),
+    ).toMatchObject({
+      category: "configuration",
+      reasonCode: "codex_service_tier_unsupported",
+    });
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
   it("classifies Kimi's stable SDK error codes without depending on prose", () => {
     const classifyKimi = (code: string) =>
       classifyProviderFailure(Object.assign(new Error("provider stopped"), { code }), {
