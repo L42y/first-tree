@@ -20,6 +20,11 @@ const CLAIM_INTERVAL_MS = 15_000;
 const REGISTRATION_QR_TIMEOUT_MS = 20_000;
 
 type BindingRow = typeof imBotBindings.$inferSelect;
+type RegistrationEntry = {
+  controller: AbortController;
+  terminal: boolean;
+  cancel(error: Error): void;
+};
 
 type RegistrationState = { url: string; expiresAt: string };
 type ConnectedChannel = { channel: LarkChannel; epoch: number };
@@ -67,10 +72,7 @@ export function createFeishuIntegrationManager(input: {
     createClient: (options) => new Client(options),
   };
   const channels = new Map<string, ConnectedChannel>();
-  const registrations = new Map<
-    string,
-    { controller: AbortController; terminal: boolean; cancel: (error: Error) => void }
-  >();
+  const registrations = new Map<string, RegistrationEntry>();
   const senderNames = createFeishuSenderNameResolver();
   let timer: ReturnType<typeof setInterval> | null = null;
   let initialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -157,7 +159,7 @@ export function createFeishuIntegrationManager(input: {
       resolveQr = resolve;
       rejectQr = reject;
     });
-    const registrationEntry = {
+    const registrationEntry: RegistrationEntry = {
       controller,
       terminal: false,
       cancel: (error) => {
