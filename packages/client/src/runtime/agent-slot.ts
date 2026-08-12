@@ -10,11 +10,11 @@ import type {
 } from "@first-tree/shared";
 import { runtimeProviderSchema } from "@first-tree/shared";
 import { defaultDataDir } from "@first-tree/shared/config";
-import type { BoundAgent, ClientConnection, SessionReconcileResult } from "../client-connection.js";
-import { createLogger, type pino } from "../observability/logger.js";
-import type { FirstTreeHubSDK, RegisterResult } from "../sdk.js";
+import { createLogger, type pino } from "../cloud/observability/logger.js";
+import type { FirstTreeHubSDK, RegisterResult } from "../cloud/sdk.js";
 import { type AgentConfigCache, createAgentConfigCache } from "./agent-config-cache.js";
 import { resolveAgentContextTreeBinding } from "./bootstrap.js";
+import type { BoundAgent, ClientConnection, SessionReconcileResult } from "./client-connection.js";
 import type { SessionConfig } from "./config.js";
 import { clampRetryAttempt, classify, ERROR_KINDS, nextRetryDelayMs } from "./error-taxonomy.js";
 import type { HandlerFactory } from "./handler.js";

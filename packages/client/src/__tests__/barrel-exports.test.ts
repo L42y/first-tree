@@ -41,7 +41,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
       exports?: Record<string, unknown>;
     };
     const exportPaths = Object.keys(pkg.exports ?? {}).sort();
-    expect(exportPaths).toEqual([".", "./observability"]);
+    expect(exportPaths).toEqual([".", "./cloud", "./observability", "./providers", "./runtime", "./runtime/contracts", "./runtime/provider-support"]);
     expect(exportPaths).not.toContain("./contracts");
     expect(exportPaths).not.toContain("./provider-support");
     expect(pkg.exports).not.toHaveProperty("./contracts");
@@ -73,7 +73,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
   });
 
   it("loads observability barrel exports", async () => {
-    const observability = await import("../observability/index.js");
+    const observability = await import("../cloud/observability/index.js");
 
     expect(observability.createLogger).toBeDefined();
     expect(observability.rootLogger).toBeDefined();

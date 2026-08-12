@@ -10,7 +10,6 @@ import {
   runtimeProviderSchema,
   type ToolFileRef,
 } from "@first-tree/shared";
-import { formatAuthHint, isPiAuthError } from "../../handlers/auth-error-hint.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -48,6 +47,8 @@ import {
   withContextTreeRepoHeadCommit,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { formatAuthHint, isPiAuthError } from "../handlers/auth-error-hint.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {
   isSupportedPiVersion,
   PI_SUPPORTED_VERSION_RANGE,
@@ -1471,6 +1472,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspace: cwd,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,
@@ -1829,6 +1831,7 @@ export const createPiHandler: HandlerFactory = (config) => {
       sessionCtx,
       workspaceRoot,
       runtimeProvider,
+      providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,

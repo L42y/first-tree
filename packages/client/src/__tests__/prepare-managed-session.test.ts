@@ -12,6 +12,18 @@ const markWorkspaceInitComplete = vi.fn();
 const fetchChatContext = vi.fn();
 const declaredSourceRepos = vi.fn();
 const currentSourceRepoNamesFromPayload = vi.fn();
+
+const TEST_PROVIDER_SKILL_ROOTS = Object.freeze({
+  "claude-code": ".claude/skills",
+  "claude-code-tui": ".claude/skills",
+  codex: ".agents/skills",
+  cursor: ".cursor/skills",
+  grok: ".grok/skills",
+  "kimi-code": ".kimi-code/skills",
+  opencode: ".opencode/skills",
+  pi: ".agents/skills",
+});
+
 const reconcileManagedSkillsForConfig = vi.fn();
 const teamSkillBundleResolverFromSdk = vi.fn(() => vi.fn());
 const buildAgentBriefing = vi.fn();
@@ -40,10 +52,11 @@ vi.mock("../runtime/managed-skills.js", () => ({
   reconcileManagedSkillsForConfig: (
     workspace: unknown,
     provider: unknown,
+    providerSkillRoots: unknown,
     runtimeConfig: unknown,
     log: unknown,
     resolver: unknown,
-  ) => reconcileManagedSkillsForConfig(workspace, provider, runtimeConfig, log, resolver),
+  ) => reconcileManagedSkillsForConfig(workspace, provider, providerSkillRoots, runtimeConfig, log, resolver),
   reconcileManagedSkills: vi.fn(),
   isManagedSkillsUnsafeDiscoveryError: () => false,
 }));
@@ -180,6 +193,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: runtimeConfig as never,
       payload,
       payloadResolved: true,
@@ -258,6 +272,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(logs),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -298,6 +313,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "cursor",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "cursor",
@@ -330,6 +346,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "grok",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "grok",
@@ -356,6 +373,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -380,6 +398,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -411,6 +430,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -457,6 +477,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "cursor",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "cursor",
@@ -490,6 +511,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "cursor",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "cursor",
@@ -546,6 +568,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -598,6 +621,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -631,6 +655,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -672,6 +697,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "cursor",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "cursor",
@@ -709,6 +735,7 @@ describe("prepareManagedSession", () => {
       sessionCtx: sessionCtx(),
       workspaceRoot,
       runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "cursor",
@@ -746,6 +773,7 @@ describe("prepareManagedSession", () => {
         sessionCtx: sessionCtx(),
         workspaceRoot,
         runtimeProvider: "cursor",
+        providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
         payload: {
           kind: "cursor",
@@ -842,6 +870,7 @@ describe("projectManagedWorkspace", () => {
       sessionCtx: sessionCtx(),
       workspace: workspaceRoot,
       runtimeProvider: "pi",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "pi",
@@ -866,6 +895,7 @@ describe("projectManagedWorkspace", () => {
       sessionCtx: sessionCtx(),
       workspace: workspaceRoot,
       runtimeProvider: "opencode",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
       payload: {
         kind: "opencode",

@@ -1,8 +1,8 @@
 import type { UpdateAttempt } from "@first-tree/shared";
-import { ClientConnection } from "../client-connection.js";
-import { createLogger, type pino } from "../observability/logger.js";
-import type { AccessTokenProvider } from "../sdk.js";
+import { createLogger, type pino } from "../cloud/observability/logger.js";
+import type { AccessTokenProvider } from "../cloud/sdk.js";
 import { AgentSlot } from "./agent-slot.js";
+import { ClientConnection } from "./client-connection.js";
 import type { RuntimeConfig } from "./config.js";
 import type { HandlerFactoryMap } from "./handler.js";
 import { type UpdateHooks, UpdateManager } from "./update-manager.js";

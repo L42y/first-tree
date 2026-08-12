@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { contextTreeActiveBindingSchema } from "@first-tree/shared";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentIdentity } from "./handler.js";
 import { CONTEXT_TREE_DIRNAME } from "./workspace-manifest.js";
 

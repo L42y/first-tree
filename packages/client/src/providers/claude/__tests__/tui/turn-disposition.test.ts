@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveTuiTurnSettlement } from "../../../../handlers/turn-settlement.js";
+import { resolveTuiTurnSettlement } from "../../../handlers/turn-settlement.js";
 
 const CLEAN = { aborted: false, timedOut: false, turnFailed: false, forwardFailed: false };
 

@@ -1,5 +1,4 @@
 import type { RuntimeProvider } from "@first-tree/shared";
-import { createLogger } from "../observability/logger.js";
 import type { HandlerFactory } from "../runtime/contracts.js";
 import { type ClaudeExecutableResolution, resolveClaudeCodeExecutable } from "./claude/executable.js";
 import { createClaudeCodeHandler } from "./claude/index.js";
@@ -10,6 +9,11 @@ import { createGrokHandler } from "./grok/index.js";
 import { createKimiCodeHandler } from "./kimi-code/index.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
 import { createPiHandler } from "./pi/index.js";
+
+/** Narrow log seam — composition supplies cloud createLogger; providers never import it. */
+export type BuiltinRegistryLog = {
+  info: (message: string) => void;
+};
 
 /** Injectable seam for Claude executable resolution in tests. */
 export type BuiltinHandlerRegistryDeps = {
@@ -48,8 +52,7 @@ export function createBuiltinHandlerRegistry(deps: BuiltinHandlerRegistryDeps = 
 }
 
 /** Log Claude executable resolution (cheap PATH / well-known dirs only). */
-export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolution): void {
-  const log = createLogger("handlers");
+export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolution, log: BuiltinRegistryLog): void {
   if (resolution.path) {
     log.info(`Claude Code executable: ${resolution.path} (source=${resolution.source})`);
   } else {
@@ -60,8 +63,10 @@ export function logClaudeExecutableResolution(resolution: ClaudeExecutableResolu
 }
 
 /** Resolve + log Claude executable using the same deps seam as registry creation. */
-export function resolveAndLogClaudeExecutable(deps: BuiltinHandlerRegistryDeps = {}): ClaudeExecutableResolution {
+export function resolveAndLogClaudeExecutable(
+  deps: BuiltinHandlerRegistryDeps & { log: BuiltinRegistryLog },
+): ClaudeExecutableResolution {
   const resolution = (deps.resolveExecutable ?? (() => resolveClaudeCodeExecutable({ includeLoginShell: false })))();
-  logClaudeExecutableResolution(resolution);
+  logClaudeExecutableResolution(resolution, deps.log);
   return resolution;
 }

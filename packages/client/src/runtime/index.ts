@@ -4,6 +4,20 @@ export type { AgentSlotConfig } from "./agent-slot.js";
 export { AgentSlot } from "./agent-slot.js";
 export type { ContextTreeBinding } from "./bootstrap.js";
 export { resolveAgentContextTreeBinding } from "./bootstrap.js";
+export type {
+  BoundAgent,
+  ClientConnectionConfig,
+  ProviderModelsListCommand,
+  RuntimeAuthCommand,
+  ServerWelcome,
+  SessionCommand,
+} from "./client-connection.js";
+export {
+  ClientConnection,
+  ClientOrgMismatchError,
+  ClientRetiredError,
+  ClientUserMismatchError,
+} from "./client-connection.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./config.js";
 export { loadRuntimeConfig } from "./config.js";
 export { Deduplicator } from "./deduplicator.js";

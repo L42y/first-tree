@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { applyClientLoggerConfig } from "../observability/logger.js";
+import { applyClientLoggerConfig } from "../cloud/observability/logger.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
 
 function collectLogs(): { dest: Writable; read: () => string } {
@@ -378,7 +378,7 @@ describe("SessionRegistry", () => {
         },
       };
     });
-    const loggerMod = await import("../observability/logger.js");
+    const loggerMod = await import("../cloud/observability/logger.js");
     const { dest, read } = collectLogs();
     loggerMod.applyClientLoggerConfig({ level: "warn", format: "json", destination: dest });
     const mod = await import("../runtime/session-registry.js");

@@ -1,13 +1,13 @@
 import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type { SessionEvent, ToolFileRef } from "@first-tree/shared";
-import { chunkAssistantText } from "../../handlers/assistant-text.js";
 import type { ContextTreeGitWriteTracker } from "../../runtime/provider-support/index.js";
 import {
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
 } from "../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../handlers/assistant-text.js";
 
 /**
  * Claude provider-family tool-call processor.

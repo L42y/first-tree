@@ -5,7 +5,7 @@ import type {
   SDKAuthStatusMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
-import { isClaudeAuthError } from "../../../handlers/auth-error-hint.js";
+import { isClaudeAuthError } from "../../handlers/auth-error-hint.js";
 import { detectClaudeAuthFailure } from "../index.js";
 
 /**

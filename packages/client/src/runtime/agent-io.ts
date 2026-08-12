@@ -12,7 +12,7 @@ import {
   resolveTrustedSystemSender,
   TRUSTED_SYSTEM_SENDER_NAMES,
 } from "@first-tree/shared";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import { findAttachmentFile } from "./attachment-store.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity, SessionMessage } from "./handler.js";

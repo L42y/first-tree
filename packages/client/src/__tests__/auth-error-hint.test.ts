@@ -5,7 +5,7 @@ import {
   isCodexAuthError,
   isGrokAuthError,
   isOpenCodeAuthError,
-} from "../handlers/auth-error-hint.js";
+} from "../providers/handlers/auth-error-hint.js";
 
 /**
  * Locks the behavioural contract of the auth-error hint module that

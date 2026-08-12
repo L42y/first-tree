@@ -52,7 +52,7 @@ const GUARDED_CLIENT_FILES = [
   "runtime/runtime-notice.ts",
   "runtime/session-manager.ts",
   "runtime/error-taxonomy.ts",
-  "handlers/auth-error-hint.ts",
+  "providers/handlers/auth-error-hint.ts",
 ] as const;
 
 /**
@@ -390,8 +390,8 @@ function normalizeClientSrcRelativeTarget(fromFileAbs: string, specifier: string
  */
 function isForbiddenConcreteProviderModuleTarget(relPosix: string): boolean {
   const rel = relPosix.replaceAll("\\", "/").replace(/\.tsx?$/, ".js");
-  if (rel === "handlers/kimi-code.js") return true;
-  if (/^handlers\/(cursor|kimi-code|opencode|pi)\//.test(rel)) return true;
+  if (rel === "handlers/kimi-code.js" || rel === "providers/handlers/kimi-code.js") return true;
+  if (/^(?:providers\/)?handlers\/(cursor|kimi-code|opencode|pi)\//.test(rel)) return true;
   if (/^providers\/(claude|codex|cursor|grok|kimi-code|opencode|pi)(\/|$)/.test(rel)) return true;
   // Shared capability foundation — Runtime must not reverse-load it.
   // Do not forbid providers/skill-roots (managed-skills composition seam).
@@ -446,7 +446,7 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/pages/clients/cards/shared/providers.ts",
   "packages/web/src/pages/clients/cards/shared/runtime-auth-view.ts",
   "packages/web/src/pages/clients/cards/shared/bound-agents-list.tsx",
-  "packages/client/src/handlers/auth-error-hint.ts",
+  "packages/client/src/providers/handlers/auth-error-hint.ts",
   "packages/client/src/runtime/runtime-notice.ts",
   "packages/client/src/providers/claude/capability.ts",
   "packages/client/src/providers/codex/binary.ts",
@@ -490,7 +490,9 @@ describe("runtime provider architecture guard", () => {
       }
 
       if (relPosix === "runtime/managed-skills.ts") {
-        expect(source).toContain("PROVIDER_SKILL_ROOTS");
+        expect(source).toContain("providerSkillRoots");
+        expect(source).toContain("ProviderSkillRootProjection");
+        expect(source).not.toContain('from "../providers/skill-roots.js"');
         expect(source).not.toContain("getProviderSkillRoots");
         const hit = containsAnyProviderLiteral(source);
         // managed-skills may mention providers only via typed RuntimeProvider params;
@@ -511,7 +513,7 @@ describe("runtime provider architecture guard", () => {
         continue;
       }
 
-      if (relPosix === "handlers/auth-error-hint.ts") {
+      if (relPosix === "providers/handlers/auth-error-hint.ts") {
         expect(source).toContain("runtimeProviderChatAuthLoginPhrase");
         expect(source).toContain("runtimeProviderAuthOwnerLabel");
         expect(source).not.toMatch(/case ["']codex["']/);
@@ -604,7 +606,7 @@ describe("runtime provider architecture guard", () => {
   });
 
   it("keeps production handlers from owning a second binary-missing matcher or reason-code table", () => {
-    const handlersRoot = join(clientSrc, "handlers");
+    const handlersRoot = join(clientSrc, "providers", "handlers");
     const providersRoot = join(clientSrc, "providers");
     const productionFiles = [
       ...listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts")),
@@ -1697,7 +1699,7 @@ describe("runtime provider architecture guard", () => {
     }
 
     // handlers/index.ts was the old process-global registration root — gone.
-    expect(() => readFileSync(join(clientSrc, "handlers/index.ts"), "utf8")).toThrow();
+    expect(() => readFileSync(join(clientSrc, "providers/handlers/index.ts"), "utf8")).toThrow();
 
     const cliRuntime = readFileSync(join(repoRoot, "apps/cli/src/core/client-runtime.ts"), "utf8");
     expect(cliRuntime).toContain("createBuiltinHandlerRegistry");
@@ -1795,7 +1797,7 @@ describe("runtime provider architecture guard", () => {
     const forbiddenOwners = ["runtime/handler.js", "runtime/runtime-login.js", "runtime/replay-fence.js"] as const;
 
     const productionProviderFiles = [
-      ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(join(clientSrc, "providers", "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
       ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
     ];
 
@@ -1822,7 +1824,7 @@ describe("runtime provider architecture guard", () => {
       "providers/kimi-code/index.ts",
       "providers/opencode/index.ts",
       "providers/pi/index.ts",
-      "handlers/turn-settlement.ts",
+      "providers/handlers/turn-settlement.ts",
       "providers/builtin-registry.ts",
       "providers/auth-driver.ts",
     ] as const;
@@ -2105,7 +2107,7 @@ describe("runtime provider architecture guard", () => {
 
     function listProviderSideFiles(): string[] {
       return [
-        ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...listFilesRecursive(join(clientSrc, "providers", "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
         ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
         ...TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => join(clientSrc, rel)),
       ];
@@ -2626,7 +2628,7 @@ describe("runtime provider architecture guard", () => {
       // --- 12 deleted owners from this S3 final slice ---
       {
         importer: runtimeRootImporter,
-        source: `import { createOpenCodeHandler } from "../handlers/opencode/index.js";\n`,
+        source: `import { createOpenCodeHandler } from "../providers/handlers/opencode/index.js";\n`,
         note: "deleted opencode handler index static",
       },
       {
@@ -2728,12 +2730,12 @@ describe("runtime provider architecture guard", () => {
       // --- prior S3 Cursor/Kimi durability (must not regress) ---
       {
         importer: runtimeRootImporter,
-        source: `import { createCursorHandler } from "../handlers/cursor/index.js";\n`,
+        source: `import { createCursorHandler } from "../providers/handlers/cursor/index.js";\n`,
         note: "legacy cursor handler static",
       },
       {
         importer: runtimeRootImporter,
-        source: `import { createKimiCodeHandler } from "../handlers/kimi-code.js";\n`,
+        source: `import { createKimiCodeHandler } from "../providers/handlers/kimi-code.js";\n`,
         note: "legacy kimi handler static",
       },
       {

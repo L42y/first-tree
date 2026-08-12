@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FirstTreeHubSDK, type SdkError } from "../sdk.js";
+import { FirstTreeHubSDK, type SdkError } from "../cloud/sdk.js";
 
 const originalFetch = globalThis.fetch;
 

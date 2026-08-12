@@ -20,8 +20,6 @@ import {
   runtimeProviderSchema,
   SUPPORTED_IMAGE_MIMES as SHARED_SUPPORTED_IMAGE_MIMES,
 } from "@first-tree/shared";
-import { formatAuthHint, isClaudeAuthError } from "../../handlers/auth-error-hint.js";
-import { consumedErrorOutcome } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -61,6 +59,9 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { formatAuthHint, isClaudeAuthError } from "../handlers/auth-error-hint.js";
+import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import { resolveClaudeCodeExecutable } from "./executable.js";
 import { mapMcpServers } from "./mcp-config.js";
 import {
@@ -1172,6 +1173,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       const reconcileResult = await reconcileManagedSkillsForConfig(
         cwd,
         runtimeProvider,
+        PROVIDER_SKILL_ROOTS,
         cached,
         sessionCtx.log,
         teamSkillBundleResolverFromSdk(sessionCtx.sdk),
@@ -1704,6 +1706,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         sessionCtx,
         workspaceRoot,
         runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,
@@ -1800,6 +1803,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           await reconcileManagedSkillsForConfig(
             cwd,
             runtimeProvider,
+            PROVIDER_SKILL_ROOTS,
             runtimeConfig,
             sessionCtx.log,
             teamSkillBundleResolverFromSdk(sessionCtx.sdk),
@@ -1837,6 +1841,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         sessionCtx,
         workspaceRoot,
         runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,

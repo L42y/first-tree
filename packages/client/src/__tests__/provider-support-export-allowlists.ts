@@ -118,6 +118,7 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
     "type|PreparedManagedSession|PreparedManagedSession|<local>",
     "type|ProjectManagedWorkspaceParams|ProjectManagedWorkspaceParams|<local>",
     "type|ProjectedManagedWorkspace|ProjectedManagedWorkspace|<local>",
+    "type|ProviderSkillRootProjection|ProviderSkillRootProjection|../managed-skills.js",
     "type|ReconcileManagedSkillsResult|ReconcileManagedSkillsResult|../managed-skills.js",
     "type|ReconciledTeamSkill|ReconciledTeamSkill|../managed-skills.js",
     "value|acquireAgentHome|acquireAgentHome|../workspace.js",

@@ -147,10 +147,10 @@ function installRuntimeMocks(options?: {
   vi.doMock("@first-tree/shared/config", () => ({
     defaultDataDir: () => "/tmp/first-tree-data",
   }));
-  vi.doMock("../observability/logger.js", () => ({
+  vi.doMock("../cloud/observability/logger.js", () => ({
     createLogger: () => state.logger,
   }));
-  vi.doMock("../client-connection.js", () => ({
+  vi.doMock("../runtime/client-connection.js", () => ({
     ClientConnection: class extends EventEmitter implements FakeConnection {
       clientId: string;
       config: FakeConnection["config"];
@@ -230,8 +230,8 @@ describe("AgentRuntime", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.doUnmock("@first-tree/shared/config");
-    vi.doUnmock("../observability/logger.js");
-    vi.doUnmock("../client-connection.js");
+    vi.doUnmock("../cloud/observability/logger.js");
+    vi.doUnmock("../runtime/client-connection.js");
     vi.doUnmock("../runtime/handler.js");
     vi.doUnmock("../runtime/agent-slot.js");
     vi.doUnmock("../runtime/update-manager.js");

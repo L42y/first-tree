@@ -13,7 +13,11 @@ import { buildAgentBriefing } from "../agent-briefing.js";
 import type { PredeclaredSourceRepo } from "../bootstrap.js";
 import { type ChatContext, fetchChatContext } from "../chat-context.js";
 import type { SessionContext } from "../handler.js";
-import { type ReconciledTeamSkill, reconcileManagedSkillsForConfig } from "../managed-skills.js";
+import {
+  type ProviderSkillRootProjection,
+  type ReconciledTeamSkill,
+  reconcileManagedSkillsForConfig,
+} from "../managed-skills.js";
 import { currentSourceRepoNamesFromPayload, declaredSourceRepos } from "../source-repos.js";
 import { teamSkillBundleResolverFromSdk } from "../team-skill-bundle-resolver.js";
 import { acquireAgentHome, markWorkspaceInitComplete } from "../workspace.js";
@@ -33,6 +37,8 @@ export type PrepareManagedSessionParams = {
   /** Absolute agent-home root passed to {@link acquireAgentHome}. */
   workspaceRoot: string;
   runtimeProvider: RuntimeProvider;
+  /** Composition-owned provider → native skill-root projection (fail-closed). */
+  providerSkillRoots: ProviderSkillRootProjection;
   /**
    * Live agent runtime config, or `null` when the caller had no config cache.
    * Supplies the Team Skill snapshot to the reconciler.
@@ -99,6 +105,8 @@ export type ProjectManagedWorkspaceParams = {
   /** Already-acquired agent home (no re-acquire). */
   workspace: string;
   runtimeProvider: RuntimeProvider;
+  /** Composition-owned provider → native skill-root projection (fail-closed). */
+  providerSkillRoots: ProviderSkillRootProjection;
   runtimeConfig: AgentRuntimeConfig | null;
   payload: AgentRuntimeConfigPayload;
   payloadResolved: boolean;
@@ -189,6 +197,7 @@ export async function projectManagedWorkspace(
     sessionCtx,
     workspace,
     runtimeProvider,
+    providerSkillRoots,
     runtimeConfig,
     payload,
     payloadResolved,
@@ -209,6 +218,7 @@ export async function projectManagedWorkspace(
   const { teamSkills, resourceConfigVersion } = await reconcileManagedSkillsForConfig(
     workspace,
     runtimeProvider,
+    providerSkillRoots,
     runtimeConfig,
     sessionCtx.log,
     teamSkillBundleResolverFromSdk(sessionCtx.sdk),
@@ -276,6 +286,7 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     sessionCtx,
     workspaceRoot,
     runtimeProvider,
+    providerSkillRoots,
     runtimeConfig,
     payload,
     payloadResolved,
@@ -291,6 +302,7 @@ export async function prepareManagedSession(params: PrepareManagedSessionParams)
     sessionCtx,
     workspace,
     runtimeProvider,
+    providerSkillRoots,
     runtimeConfig,
     payload,
     payloadResolved,
@@ -333,7 +345,11 @@ export type { BuildAgentBriefingOptions } from "../agent-briefing.js";
 export { buildAgentBriefing } from "../agent-briefing.js";
 export type { ChatContext } from "../chat-context.js";
 export { fetchChatContext } from "../chat-context.js";
-export type { ReconciledTeamSkill, ReconcileManagedSkillsResult } from "../managed-skills.js";
+export type {
+  ProviderSkillRootProjection,
+  ReconciledTeamSkill,
+  ReconcileManagedSkillsResult,
+} from "../managed-skills.js";
 export {
   isManagedSkillsUnsafeDiscoveryError,
   reconcileManagedSkills,

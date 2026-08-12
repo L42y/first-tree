@@ -32,7 +32,6 @@ import {
 } from "@first-tree/shared";
 import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
-import { PROVIDER_SKILL_ROOTS } from "../providers/skill-roots.js";
 import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
@@ -59,7 +58,11 @@ const MAX_SKILL_DEPTH = TEAM_SKILL_BUNDLE_LIMITS.maxDepth;
 const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
 const MANAGED_SKILLS_QUARANTINE_PREFIX = ".managed-skill-quarantine-";
 
-const ALLOWED_TARGET_ROOTS = new Set<string>([...Object.values(PROVIDER_SKILL_ROOTS), LEGACY_RESOURCE_SKILLS_ROOT]);
+export type ProviderSkillRootProjection = Readonly<Record<RuntimeProvider, string>>;
+
+export function allowedTargetRootsFromProjection(projection: ProviderSkillRootProjection): ReadonlySet<string> {
+  return new Set([...Object.values(projection), LEGACY_RESOURCE_SKILLS_ROOT]);
+}
 
 const RETIRED_CORE_SKILL_NAMES = ["first-tree-guide", "first-tree-kickoff", "first-tree-gitlab"] as const;
 const ALL_KNOWN_CORE_SKILL_NAMES = [...CORE_SKILL_NAMES, ...RETIRED_CORE_SKILL_NAMES] as const;
@@ -138,6 +141,8 @@ export type TeamSkillBundleResolver = (bundle: RuntimeSkillBundle) => Promise<Bu
 export type ReconcileManagedSkillsOptions = Readonly<{
   workspace: string;
   provider: RuntimeProvider;
+  /** Composition-owned provider → native skill-root projection (required; fail-closed lookup). */
+  providerSkillRoots: ProviderSkillRootProjection;
   teamSnapshot: TeamSkillSnapshot;
   log?: (message: string) => void;
   /** Test/build override. Production resolves the bundled client skills directory. */
@@ -217,9 +222,12 @@ export function isManagedSkillsUnsafeDiscoveryError(error: unknown): error is Ma
 
 const processMutexTails = new Map<string, Promise<void>>();
 
-export function providerSkillRoot(provider: RuntimeProvider): string {
-  // Immutable composition projection — exhaustive over RuntimeProvider.
-  return PROVIDER_SKILL_ROOTS[provider];
+export function providerSkillRoot(provider: RuntimeProvider, projection: ProviderSkillRootProjection): string {
+  const root = projection[provider];
+  if (typeof root !== "string" || root.length === 0) {
+    throw new ManagedSkillsFatalError(`provider skill root projection missing for ${provider}`);
+  }
+  return root;
 }
 
 export function authoritativeTeamSkillSnapshot(
@@ -238,6 +246,7 @@ export function teamSkillSnapshotFromConfig(config: AgentRuntimeConfig | null | 
 export async function reconcileManagedSkillsForConfig(
   workspace: string,
   provider: RuntimeProvider,
+  providerSkillRoots: ProviderSkillRootProjection,
   config: AgentRuntimeConfig | null | undefined,
   log?: (message: string) => void,
   bundleResolver?: TeamSkillBundleResolver,
@@ -245,6 +254,7 @@ export async function reconcileManagedSkillsForConfig(
   return reconcileManagedSkills({
     workspace,
     provider,
+    providerSkillRoots,
     teamSnapshot: teamSkillSnapshotFromConfig(config),
     log,
     bundleResolver,
@@ -265,7 +275,7 @@ export async function reconcileManagedSkills(
     };
     let lock: WorkspaceFileLock | null = null;
     try {
-      assertManagedWorkspaceRootsSafe(options.workspace);
+      assertManagedWorkspaceRootsSafe(options.workspace, allowedTargetRootsFromProjection(options.providerSkillRoots));
       lock = await acquireWorkspaceLock(options);
       await recoverPendingJournal(options);
       let state = await loadOrMigrateManagedState(options);
@@ -293,7 +303,13 @@ export async function reconcileManagedSkills(
         });
       }
       if (authoritative && options.teamSnapshot.kind === "authoritative") {
-        state = await adoptLegacyResourceSkills(options.workspace, state, options.teamSnapshot.skills, options.log);
+        state = await adoptLegacyResourceSkills(
+          options.workspace,
+          state,
+          options.teamSnapshot.skills,
+          allowedTargetRootsFromProjection(options.providerSkillRoots),
+          options.log,
+        );
       } else if (options.teamSnapshot.kind === "unavailable") {
         options.log?.(
           "Managed skills Team Resource snapshot unavailable; preserving last-known-good Team Skills until control-plane recovery",
@@ -318,7 +334,12 @@ export async function reconcileManagedSkills(
           continue;
         }
         try {
-          state = await ensureTargetOwnership(options.workspace, state, allocated);
+          state = await ensureTargetOwnership(
+            options.workspace,
+            state,
+            allocated,
+            allowedTargetRootsFromProjection(options.providerSkillRoots),
+          );
           const current = state.skills.find(
             (entry) => entry.key === allocated.desired.key && entry.target === allocated.target,
           );
@@ -326,9 +347,14 @@ export async function reconcileManagedSkills(
           if (current) {
             let actualDigest: `sha256:${string}` | null = null;
             try {
-              actualDigest = await digestManagedTarget(options.workspace, current.target, {
-                modePlatform: options.testModePlatform,
-              });
+              actualDigest = await digestManagedTarget(
+                options.workspace,
+                current.target,
+                allowedTargetRootsFromProjection(options.providerSkillRoots),
+                {
+                  modePlatform: options.testModePlatform,
+                },
+              );
             } catch (error) {
               options.log?.(
                 `Managed skill target cannot be verified (${current.key}): ${
@@ -394,7 +420,13 @@ export async function reconcileManagedSkills(
           mutable.removed.push(`${entry.key}@${entry.target}`);
         } catch (error) {
           if (error instanceof ManagedSkillsSimulatedCrash) throw error;
-          if (await managedTargetExistsAfterFailedRemoval(options.workspace, entry.target)) {
+          if (
+            await managedTargetExistsAfterFailedRemoval(
+              options.workspace,
+              entry.target,
+              allowedTargetRootsFromProjection(options.providerSkillRoots),
+            )
+          ) {
             throw new ManagedSkillsUnsafeDiscoveryError(
               `Managed Skill target ${entry.target} could not be removed from provider discovery`,
               { cause: error },
@@ -442,7 +474,10 @@ export async function reconcileManagedSkills(
       options.log?.(`Managed skills reconcile skipped: ${reason.slice(0, 300)}`);
       let resourceConfigVersion = 0;
       try {
-        assertManagedWorkspaceRootsSafe(options.workspace);
+        assertManagedWorkspaceRootsSafe(
+          options.workspace,
+          allowedTargetRootsFromProjection(options.providerSkillRoots),
+        );
         const stateResult = readManagedStateResult(options.workspace);
         if (stateResult.kind === "current") resourceConfigVersion = stateResult.state.resourceConfigVersion;
       } catch {
@@ -509,7 +544,12 @@ async function withProcessMutex<T>(workspace: string, task: () => Promise<T>): P
 
 async function acquireWorkspaceLock(options: ReconcileManagedSkillsOptions): Promise<WorkspaceFileLock> {
   const lockRel = toPortablePath(MANAGED_SKILLS_LOCK_REL);
-  const lockPath = resolveWorkspacePath(options.workspace, lockRel, "lock");
+  const lockPath = resolveWorkspacePath(
+    options.workspace,
+    lockRel,
+    "lock",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
   const timeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   await mkdir(dirname(lockPath), { recursive: true });
   // The file is deliberately permanent: removing or renaming a lock inode
@@ -541,7 +581,11 @@ async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions)
   for (const name of ALL_KNOWN_CORE_SKILL_NAMES) {
     const agentsTarget = `.agents/skills/${name}`;
     const claudeTarget = `.claude/skills/${name}`;
-    const pairOwned = await isLegacyCorePair(options.workspace, name);
+    const pairOwned = await isLegacyCorePair(
+      options.workspace,
+      name,
+      allowedTargetRootsFromProjection(options.providerSkillRoots),
+    );
     const bundledPath = bundledRoot ? join(bundledRoot, name) : null;
     for (const target of [agentsTarget, claudeTarget]) {
       const digest = await digestLegacyTargetIfOwned(
@@ -550,6 +594,7 @@ async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions)
         `core:${name}`,
         explicitlyManaged.has(name) || pairOwned,
         bundledPath,
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
       );
       if (!digest) continue;
       adopted.push({
@@ -567,7 +612,12 @@ async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions)
     if (!isSafeSkillName(name)) continue;
     for (const root of [".agents/skills", ".claude/skills"]) {
       const target = `${root}/${name}`;
-      const digest = await digestManagedTarget(options.workspace, target, { followExpectedLegacySymlink: true });
+      const digest = await digestManagedTarget(
+        options.workspace,
+        target,
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
+        { followExpectedLegacySymlink: true },
+      );
       if (!digest) continue;
       adopted.push({
         key: `core:${name}`,
@@ -587,8 +637,8 @@ async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions)
   return migrated;
 }
 
-async function isLegacyCorePair(workspace: string, name: string): Promise<boolean> {
-  const claudePath = resolveWorkspacePath(workspace, `.claude/skills/${name}`, "target");
+async function isLegacyCorePair(workspace: string, name: string, allowedRoots: ReadonlySet<string>): Promise<boolean> {
+  const claudePath = resolveWorkspacePath(workspace, `.claude/skills/${name}`, "target", allowedRoots);
   try {
     const linkStat = await lstat(claudePath);
     if (!linkStat.isSymbolicLink()) return false;
@@ -605,15 +655,16 @@ async function digestLegacyTargetIfOwned(
   key: ManagedSkillEntry["key"],
   ownershipProven: boolean,
   bundledPath: string | null,
+  allowedRoots: ReadonlySet<string>,
 ): Promise<`sha256:${string}` | null> {
-  const marker = await readOwnershipMarker(workspace, target);
+  const marker = await readOwnershipMarker(workspace, target, allowedRoots);
   if (marker?.key === key) {
-    return digestManagedTarget(workspace, target, {
+    return digestManagedTarget(workspace, target, allowedRoots, {
       followExpectedLegacySymlink: true,
       modePolicy: "normalize-bundled",
     });
   }
-  const targetDigest = await digestManagedTarget(workspace, target, {
+  const targetDigest = await digestManagedTarget(workspace, target, allowedRoots, {
     followExpectedLegacySymlink: true,
     modePolicy: "normalize-bundled",
   });
@@ -627,7 +678,7 @@ async function digestLegacyTargetIfOwned(
   // Normalized mode comparison is only an ownership probe. If no ownership
   // evidence matches, retain the ordinary strict digest gate so an unsafe
   // same-name target cannot remain in provider discovery unnoticed.
-  await digestManagedTarget(workspace, target, { followExpectedLegacySymlink: true });
+  await digestManagedTarget(workspace, target, allowedRoots, { followExpectedLegacySymlink: true });
   return null;
 }
 
@@ -635,6 +686,7 @@ async function adoptLegacyResourceSkills(
   workspace: string,
   state: ManagedState,
   skills: readonly RuntimeResourceSkill[],
+  allowedRoots: ReadonlySet<string>,
   log?: (message: string) => void,
 ): Promise<ManagedState> {
   const additions: ManagedSkillEntry[] = [];
@@ -645,12 +697,15 @@ async function adoptLegacyResourceSkills(
     if (state.skills.some((entry) => entry.target === target)) continue;
     let actual: string;
     try {
-      actual = await readFile(resolveWorkspacePath(workspace, `${target}/SKILL.md`, "legacy-resource-file"), "utf-8");
+      actual = await readFile(
+        resolveWorkspacePath(workspace, `${target}/SKILL.md`, "legacy-resource-file", allowedRoots),
+        "utf-8",
+      );
     } catch {
       continue;
     }
     if (actual !== buildLegacyResourceSkillMarkdown(skill)) continue;
-    const digest = await digestManagedTarget(workspace, target);
+    const digest = await digestManagedTarget(workspace, target, allowedRoots);
     if (!digest) continue;
     let requestedSlug: string;
     try {
@@ -786,12 +841,15 @@ async function allocateTargets(
   desired: readonly DesiredManagedSkill[],
 ): Promise<Map<ManagedSkillEntry["key"], AllocatedManagedSkill>> {
   const { workspace, provider } = options;
-  const root = providerSkillRoot(provider);
+  const allowedRoots = allowedTargetRootsFromProjection(options.providerSkillRoots);
+  const root = providerSkillRoot(provider, options.providerSkillRoots);
   const occupied = new Map<string, ManagedSkillEntry["key"] | "unmanaged">();
   const onDiskSpellings = new Map<string, string>();
   try {
     maybeFault(options, "provider_root_read");
-    for (const entry of await readdir(resolveWorkspacePath(workspace, root, "root"), { withFileTypes: true })) {
+    for (const entry of await readdir(resolveWorkspacePath(workspace, root, "root", allowedRoots), {
+      withFileTypes: true,
+    })) {
       const folded = foldPortableTeamSkillPath(entry.name);
       occupied.set(folded, "unmanaged");
       onDiskSpellings.set(folded, entry.name);
@@ -820,7 +878,7 @@ async function allocateTargets(
         owner !== undefined &&
         owner !== "unmanaged" &&
         owner !== skill.key &&
-        !(await targetMarkerMatches(workspace, target, skill.key))
+        !(await targetMarkerMatches(workspace, target, skill.key, allowedRoots))
       ) {
         continue;
       }
@@ -856,7 +914,11 @@ async function allocateTargets(
       const target = `${root}/${effectiveName}`;
       const key = foldPortableTeamSkillPath(effectiveName);
       const owner = occupied.get(key);
-      if (owner === undefined || owner === skill.key || (await targetMarkerMatches(workspace, target, skill.key))) {
+      if (
+        owner === undefined ||
+        owner === skill.key ||
+        (await targetMarkerMatches(workspace, target, skill.key, allowedRoots))
+      ) {
         allocations.set(skill.key, { desired: skill, effectiveName, target });
         occupied.set(key, skill.key);
         break;
@@ -870,11 +932,12 @@ async function ensureTargetOwnership(
   workspace: string,
   state: ManagedState,
   allocated: AllocatedManagedSkill,
+  allowedRoots: ReadonlySet<string>,
 ): Promise<ManagedState> {
   if (state.skills.some((entry) => entry.key === allocated.desired.key && entry.target === allocated.target)) {
     return state;
   }
-  const targetPath = resolveWorkspacePath(workspace, allocated.target, "target");
+  const targetPath = resolveWorkspacePath(workspace, allocated.target, "target", allowedRoots);
   let targetExists = true;
   try {
     await lstat(targetPath);
@@ -884,14 +947,14 @@ async function ensureTargetOwnership(
   }
   if (!targetExists) return state;
 
-  const marker = await readOwnershipMarker(workspace, allocated.target);
+  const marker = await readOwnershipMarker(workspace, allocated.target, allowedRoots);
   if (marker?.key !== allocated.desired.key) {
     if (allocated.desired.kind === "core") {
       const sourceDigest =
         allocated.desired.source.kind === "bundled-directory"
           ? await digestDirectoryIfPresent(allocated.desired.source.path, undefined, "normalize-bundled")
           : null;
-      const targetDigest = await digestManagedTarget(workspace, allocated.target, {
+      const targetDigest = await digestManagedTarget(workspace, allocated.target, allowedRoots, {
         followExpectedLegacySymlink: true,
       });
       if (!sourceDigest || sourceDigest !== targetDigest) {
@@ -901,7 +964,9 @@ async function ensureTargetOwnership(
       throw new Error(`refusing to overwrite unowned Team Skill target ${allocated.target}`);
     }
   }
-  const digest = await digestManagedTarget(workspace, allocated.target, { followExpectedLegacySymlink: true });
+  const digest = await digestManagedTarget(workspace, allocated.target, allowedRoots, {
+    followExpectedLegacySymlink: true,
+  });
   if (!digest) throw new Error(`cannot adopt unreadable managed target ${allocated.target}`);
   return persistStateMonotonic(workspace, {
     ...state,
@@ -924,7 +989,12 @@ async function stageManagedSkill(
   allocated: AllocatedManagedSkill,
 ): Promise<StagedManagedSkill> {
   const workspace = options.workspace;
-  const targetPath = resolveWorkspacePath(workspace, allocated.target, "target");
+  const targetPath = resolveWorkspacePath(
+    workspace,
+    allocated.target,
+    "target",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
   await mkdir(dirname(targetPath), { recursive: true });
   const stagingName = `.${basename(targetPath)}.ft-${randomBytes(8).toString("hex")}.staging`;
   const stagingPath = join(dirname(targetPath), stagingName);
@@ -987,8 +1057,17 @@ async function quarantineDriftedManagedTarget(
   entry: ManagedSkillEntry,
 ): Promise<void> {
   try {
-    const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
-    const quarantinePath = managedTargetQuarantinePath(options.workspace, entry.target);
+    const targetPath = resolveWorkspacePath(
+      options.workspace,
+      entry.target,
+      "target",
+      allowedTargetRootsFromProjection(options.providerSkillRoots),
+    );
+    const quarantinePath = managedTargetQuarantinePath(
+      options.workspace,
+      entry.target,
+      allowedTargetRootsFromProjection(options.providerSkillRoots),
+    );
     if (!(await pathExists(targetPath))) {
       try {
         await rm(quarantinePath, { recursive: true, force: true });
@@ -1026,25 +1105,34 @@ async function quarantineDriftedManagedTarget(
   }
 }
 
-function managedTargetQuarantinePath(workspace: string, target: string): string {
+function managedTargetQuarantinePath(workspace: string, target: string, allowedRoots: ReadonlySet<string>): string {
   const quarantineKey = createHash("sha256").update(target).digest("hex").slice(0, 24);
   const quarantine = `.first-tree-workspace/${MANAGED_SKILLS_QUARANTINE_PREFIX}${quarantineKey}`;
-  return resolveWorkspacePath(workspace, quarantine, "quarantine");
+  return resolveWorkspacePath(workspace, quarantine, "quarantine", allowedRoots);
 }
 
-async function removeManagedTargetQuarantine(workspace: string, target: string): Promise<void> {
-  await rm(managedTargetQuarantinePath(workspace, target), { recursive: true, force: true });
+async function removeManagedTargetQuarantine(
+  workspace: string,
+  target: string,
+  allowedRoots: ReadonlySet<string>,
+): Promise<void> {
+  await rm(managedTargetQuarantinePath(workspace, target, allowedRoots), { recursive: true, force: true });
 }
 
 async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions, state: ManagedState): Promise<void> {
-  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  const providerRoot = `${providerSkillRoot(options.provider, options.providerSkillRoots)}/`;
   for (const entry of state.skills) {
     if (!entry.key.startsWith("resource:") || !entry.target.startsWith(providerRoot)) continue;
     let actualDigest: `sha256:${string}` | null = null;
     try {
-      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
-        modePlatform: options.testModePlatform,
-      });
+      actualDigest = await digestManagedTarget(
+        options.workspace,
+        entry.target,
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
+        {
+          modePlatform: options.testModePlatform,
+        },
+      );
     } catch (error) {
       options.log?.(
         `Preserved Team Skill target cannot be verified (${entry.key}): ${
@@ -1060,7 +1148,12 @@ async function verifyPreservedTeamTargets(options: ReconcileManagedSkillsOptions
 
 async function providerDiscoveryMayContainManagedContent(options: ReconcileManagedSkillsOptions): Promise<boolean> {
   try {
-    const providerRoot = resolveWorkspacePath(options.workspace, providerSkillRoot(options.provider), "root");
+    const providerRoot = resolveWorkspacePath(
+      options.workspace,
+      providerSkillRoot(options.provider, options.providerSkillRoots),
+      "root",
+      allowedTargetRootsFromProjection(options.providerSkillRoots),
+    );
     const rootStat = await lstat(providerRoot);
     if (!rootStat.isDirectory()) return true;
     return (await readdir(providerRoot)).length > 0;
@@ -1072,9 +1165,13 @@ async function providerDiscoveryMayContainManagedContent(options: ReconcileManag
   }
 }
 
-async function managedTargetExistsAfterFailedRemoval(workspace: string, target: string): Promise<boolean> {
+async function managedTargetExistsAfterFailedRemoval(
+  workspace: string,
+  target: string,
+  allowedRoots: ReadonlySet<string>,
+): Promise<boolean> {
   try {
-    return await pathExists(resolveWorkspacePath(workspace, target, "target"));
+    return await pathExists(resolveWorkspacePath(workspace, target, "target", allowedRoots));
   } catch {
     // An unsafe/unresolvable discovery path is not proof that the provider
     // cannot see it, so provider preflight must fail closed.
@@ -1088,8 +1185,18 @@ async function installStagedSkill(
   staged: StagedManagedSkill,
 ): Promise<ManagedState> {
   const afterState = replaceEntry(beforeState, staged.entry);
-  const targetPath = resolveWorkspacePath(options.workspace, staged.entry.target, "target");
-  const stagingPath = resolveWorkspacePath(options.workspace, staged.staging, "temporary");
+  const targetPath = resolveWorkspacePath(
+    options.workspace,
+    staged.entry.target,
+    "target",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
+  const stagingPath = resolveWorkspacePath(
+    options.workspace,
+    staged.staging,
+    "temporary",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
   const backupPath = join(dirname(targetPath), `.${basename(targetPath)}.ft-${randomBytes(8).toString("hex")}.backup`);
   const backup = portableRelative(options.workspace, backupPath);
   const targetExists = await pathExists(targetPath);
@@ -1140,14 +1247,23 @@ async function removeManagedEntry(
   beforeState: ManagedState,
   entry: ManagedSkillEntry,
 ): Promise<ManagedState> {
-  assertManagedTarget(entry.target);
+  assertManagedTarget(entry.target, allowedTargetRootsFromProjection(options.providerSkillRoots));
   const afterState = removeEntry(beforeState, entry);
-  const targetPath = resolveWorkspacePath(options.workspace, entry.target, "target");
+  const targetPath = resolveWorkspacePath(
+    options.workspace,
+    entry.target,
+    "target",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
   // A previous drift quarantine may have moved the target out of discovery
   // before the process stopped. Clear that one stable, target-derived slot
   // while the ledger entry still exists so a failed cleanup is retried rather
   // than orphaned by authoritative removal.
-  await removeManagedTargetQuarantine(options.workspace, entry.target);
+  await removeManagedTargetQuarantine(
+    options.workspace,
+    entry.target,
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
   if (!(await pathExists(targetPath))) {
     return persistStateMonotonic(options.workspace, afterState);
   }
@@ -1227,9 +1343,11 @@ async function recoverPendingJournal(options: ReconcileManagedSkillsOptions): Pr
   }
   maybeFault(options, "journal_recovery");
   const journal = result.journal;
-  assertManagedTarget(journal.target);
-  if (journal.staging) assertTemporaryTarget(journal.staging, ".staging");
-  if (journal.backup) assertTemporaryTarget(journal.backup, ".backup");
+  assertManagedTarget(journal.target, allowedTargetRootsFromProjection(options.providerSkillRoots));
+  if (journal.staging)
+    assertTemporaryTarget(journal.staging, ".staging", allowedTargetRootsFromProjection(options.providerSkillRoots));
+  if (journal.backup)
+    assertTemporaryTarget(journal.backup, ".backup", allowedTargetRootsFromProjection(options.providerSkillRoots));
 
   const stateResult = readManagedStateResult(workspace);
   if (stateResult.kind === "future" || stateResult.kind === "invalid" || stateResult.kind === "legacy") {
@@ -1240,15 +1358,39 @@ async function recoverPendingJournal(options: ReconcileManagedSkillsOptions): Pr
     throw new ManagedSkillsFatalError("managed skills journal would cross a newer Team Resource version fence");
   }
 
-  const targetPath = resolveWorkspacePath(workspace, journal.target, "target");
-  const stagingPath = journal.staging ? resolveWorkspacePath(workspace, journal.staging, "temporary") : null;
-  const backupPath = journal.backup ? resolveWorkspacePath(workspace, journal.backup, "temporary") : null;
+  const targetPath = resolveWorkspacePath(
+    workspace,
+    journal.target,
+    "target",
+    allowedTargetRootsFromProjection(options.providerSkillRoots),
+  );
+  const stagingPath = journal.staging
+    ? resolveWorkspacePath(
+        workspace,
+        journal.staging,
+        "temporary",
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
+      )
+    : null;
+  const backupPath = journal.backup
+    ? resolveWorkspacePath(
+        workspace,
+        journal.backup,
+        "temporary",
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
+      )
+    : null;
   const targetExists = await pathExists(targetPath);
   const backupExists = backupPath ? await pathExists(backupPath) : false;
 
   if (journal.operation === "install") {
     const actualDigest = targetExists
-      ? await digestManagedTarget(workspace, journal.target, { modePlatform: options.testModePlatform })
+      ? await digestManagedTarget(
+          workspace,
+          journal.target,
+          allowedTargetRootsFromProjection(options.providerSkillRoots),
+          { modePlatform: options.testModePlatform },
+        )
       : null;
     if (actualDigest === journal.expectedInstalledDigest) {
       persistStateMonotonic(workspace, journal.afterState);
@@ -1352,16 +1494,21 @@ async function verifyLedgerTargetsForPublication(
     invalidated: readonly ManagedSkillEntry[];
   }>
 > {
-  const providerRoot = `${providerSkillRoot(options.provider)}/`;
+  const providerRoot = `${providerSkillRoot(options.provider, options.providerSkillRoots)}/`;
   const verifiedTargets = new Set<string>();
   const invalidated: ManagedSkillEntry[] = [];
   for (const entry of state.skills) {
     if (!entry.target.startsWith(providerRoot)) continue;
     let actualDigest: `sha256:${string}` | null = null;
     try {
-      actualDigest = await digestManagedTarget(options.workspace, entry.target, {
-        modePlatform: options.testModePlatform,
-      });
+      actualDigest = await digestManagedTarget(
+        options.workspace,
+        entry.target,
+        allowedTargetRootsFromProjection(options.providerSkillRoots),
+        {
+          modePlatform: options.testModePlatform,
+        },
+      );
     } catch (error) {
       options.log?.(
         `Managed skill final publication target cannot be verified (${entry.key}): ${
@@ -1448,10 +1595,11 @@ function ownershipMarkerContent(key: ManagedSkillEntry["key"], revision: string)
 async function readOwnershipMarker(
   workspace: string,
   target: string,
+  allowedRoots: ReadonlySet<string>,
 ): Promise<Readonly<{ key: ManagedSkillEntry["key"]; revision: string }> | null> {
   try {
     const raw: unknown = JSON.parse(
-      await readFile(join(resolveWorkspacePath(workspace, target, "target"), OWNERSHIP_MARKER), "utf-8"),
+      await readFile(join(resolveWorkspacePath(workspace, target, "target", allowedRoots), OWNERSHIP_MARKER), "utf-8"),
     );
     if (!isRecord(raw) || raw.schemaVersion !== 1 || typeof raw.key !== "string" || typeof raw.revision !== "string") {
       return null;
@@ -1467,8 +1615,13 @@ async function readOwnershipMarker(
   }
 }
 
-async function targetMarkerMatches(workspace: string, target: string, key: ManagedSkillEntry["key"]): Promise<boolean> {
-  return (await readOwnershipMarker(workspace, target))?.key === key;
+async function targetMarkerMatches(
+  workspace: string,
+  target: string,
+  key: ManagedSkillEntry["key"],
+  allowedRoots: ReadonlySet<string>,
+): Promise<boolean> {
+  return (await readOwnershipMarker(workspace, target, allowedRoots))?.key === key;
 }
 
 async function validateSkillManifest(
@@ -1867,14 +2020,15 @@ async function copySanitizedDirectory(
 async function digestManagedTarget(
   workspace: string,
   target: string,
+  allowedRoots: ReadonlySet<string>,
   options?: Readonly<{
     followExpectedLegacySymlink?: boolean;
     modePlatform?: NodeJS.Platform;
     modePolicy?: SkillTreeModePolicy;
   }>,
 ): Promise<`sha256:${string}` | null> {
-  assertManagedTarget(target);
-  const path = resolveWorkspacePath(workspace, target, "target");
+  assertManagedTarget(target, allowedRoots);
+  const path = resolveWorkspacePath(workspace, target, "target", allowedRoots);
   const modePolicy = options?.modePolicy ?? "enforce-safe";
   try {
     const targetStat = await lstat(path);
@@ -2164,30 +2318,34 @@ function stateEquivalent(left: ManagedState, right: ManagedState): boolean {
   return normalize(left) === normalize(right);
 }
 
-function assertManagedTarget(target: string): void {
+function assertManagedTarget(target: string, allowedRoots: ReadonlySet<string>): void {
   const parts = target.split("/");
   if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\\") || part.includes("\0"))) {
     throw new ManagedSkillsFatalError(`unsafe managed Skill target: ${target}`);
   }
   const root = parts.slice(0, -1).join("/");
-  if (!ALLOWED_TARGET_ROOTS.has(root) || parts.length < 3) {
+  if (!allowedRoots.has(root) || parts.length < 3) {
     throw new ManagedSkillsFatalError(`managed Skill target is outside allowed roots: ${target}`);
   }
 }
 
-function assertTemporaryTarget(target: string, suffix: ".staging" | ".backup"): void {
+function assertTemporaryTarget(
+  target: string,
+  suffix: ".staging" | ".backup",
+  allowedRoots: ReadonlySet<string>,
+): void {
   const parts = target.split("/");
   const root = parts.slice(0, -1).join("/");
   const name = parts.at(-1) ?? "";
-  if (!ALLOWED_TARGET_ROOTS.has(root) || !name.startsWith(".") || !name.includes(".ft-") || !name.endsWith(suffix)) {
+  if (!allowedRoots.has(root) || !name.startsWith(".") || !name.includes(".ft-") || !name.endsWith(suffix)) {
     throw new ManagedSkillsFatalError(`unsafe managed Skill transaction path: ${target}`);
   }
 }
 
-function assertManagedWorkspaceRootsSafe(workspace: string): void {
-  resolveWorkspacePath(workspace, toPortablePath(MANAGED_SKILLS_LOCK_REL), "lock");
-  for (const root of ALLOWED_TARGET_ROOTS) {
-    resolveWorkspacePath(workspace, root, "root");
+function assertManagedWorkspaceRootsSafe(workspace: string, allowedRoots: ReadonlySet<string>): void {
+  resolveWorkspacePath(workspace, toPortablePath(MANAGED_SKILLS_LOCK_REL), "lock", allowedRoots);
+  for (const root of allowedRoots) {
+    resolveWorkspacePath(workspace, root, "root", allowedRoots);
   }
 }
 
@@ -2195,8 +2353,9 @@ function resolveWorkspacePath(
   workspace: string,
   portablePath: string,
   kind: "target" | "temporary" | "lock" | "root" | "legacy-resource-file" | "quarantine",
+  allowedRoots: ReadonlySet<string>,
 ): string {
-  if (kind === "target") assertManagedTarget(portablePath);
+  if (kind === "target") assertManagedTarget(portablePath, allowedRoots);
   if (kind === "quarantine") {
     const parts = portablePath.split("/");
     if (
@@ -2208,8 +2367,8 @@ function resolveWorkspacePath(
     }
   }
   if (kind === "temporary") {
-    if (portablePath.endsWith(".staging")) assertTemporaryTarget(portablePath, ".staging");
-    else assertTemporaryTarget(portablePath, ".backup");
+    if (portablePath.endsWith(".staging")) assertTemporaryTarget(portablePath, ".staging", allowedRoots);
+    else assertTemporaryTarget(portablePath, ".backup", allowedRoots);
   }
   const workspaceRoot = realpathSync(resolve(workspace));
   if (!lstatSync(workspaceRoot).isDirectory()) {

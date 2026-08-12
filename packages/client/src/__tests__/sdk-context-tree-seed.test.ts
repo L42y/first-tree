@@ -1,6 +1,6 @@
 import { AGENT_RUNTIME_SESSION_HEADER, AGENT_SELECTOR_HEADER } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { FirstTreeHubSDK } from "../sdk.js";
+import { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 const SERVER_URL = "https://first-tree.example";
 

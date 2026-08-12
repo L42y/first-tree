@@ -1,5 +1,6 @@
 import type { ProviderRetryScope, ReplaySafety, RuntimeProvider } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
+import { SdkError } from "../cloud/sdk.js";
 import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
 import {
   buildProviderRetryEvent,
@@ -9,7 +10,6 @@ import {
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "../runtime/provider-retry-policy.js";
-import { SdkError } from "../sdk.js";
 
 class FakeRateLimit extends Error {
   override name = "RateLimitError";

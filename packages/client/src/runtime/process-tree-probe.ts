@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
-import type { pino } from "../observability/logger.js";
+import type { pino } from "../cloud/observability/logger.js";
 
 const execFileAsync = promisify(execFile);
 

@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BoundAgent } from "../client-connection.js";
+import type { BoundAgent } from "../runtime/client-connection.js";
 
-type ClientConnectionModule = typeof import("../client-connection.js");
+type ClientConnectionModule = typeof import("../runtime/client-connection.js");
 type ClientConnectionInstance = InstanceType<ClientConnectionModule["ClientConnection"]>;
 type ClientConnectionConfig = ConstructorParameters<ClientConnectionModule["ClientConnection"]>[0];
 
@@ -103,7 +103,7 @@ async function loadClientConnection(): Promise<ClientConnectionModule> {
   vi.resetModules();
   FakeWebSocket.instances = [];
   vi.doMock("ws", () => ({ default: FakeWebSocket }));
-  return import("../client-connection.js");
+  return import("../runtime/client-connection.js");
 }
 
 async function makeConnection(overrides: Partial<ClientConnectionConfig> = {}): Promise<ClientConnectionInstance> {

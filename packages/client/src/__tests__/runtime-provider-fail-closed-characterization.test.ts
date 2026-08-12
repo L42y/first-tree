@@ -11,9 +11,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RuntimeProvider } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler } from "../runtime/handler.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));

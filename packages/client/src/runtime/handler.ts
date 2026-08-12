@@ -1,5 +1,5 @@
 import type { AgentVisibility, RuntimeProvider, SessionEvent } from "@first-tree/shared";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 /** Agent identity fields flowing from Server through the runtime pipeline. */
 export type AgentIdentity = {

@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection } from "../client-connection.js";
+import { ClientConnection } from "../runtime/client-connection.js";
 
 // Regression: auth:expired must schedule a reconnect, not silently drop the socket.
 describe("ClientConnection — auth:expired reconnect", () => {

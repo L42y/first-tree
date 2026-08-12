@@ -7,12 +7,12 @@ import { encodeProviderRetryEventMessage, RUNTIME_NOTICE_METADATA_KEY } from "@f
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { silentLogger } from "../../../__tests__/_logger-helpers.js";
 import { mockEntry } from "../../../__tests__/test-helpers.js";
+import type { FirstTreeHubSDK } from "../../../cloud/sdk.js";
 import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
 import type { AgentHandler } from "../../../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import { SessionManager } from "../../../runtime/session-manager.js";
 import { SessionRegistry } from "../../../runtime/session-registry.js";
-import type { FirstTreeHubSDK } from "../../../sdk.js";
 import { createPiHandler, freshStartPiSessionId, type PiRetrySleep } from "../index.js";
 
 function mockAckEntry() {

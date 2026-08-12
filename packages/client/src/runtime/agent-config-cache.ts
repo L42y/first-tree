@@ -1,6 +1,6 @@
 import type { AgentRuntimeConfig } from "@first-tree/shared";
-import type { pino } from "../observability/logger.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { pino } from "../cloud/observability/logger.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 /**
  * In-memory cache of per-agent runtime configs (Step 4).

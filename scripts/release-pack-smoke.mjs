@@ -4,9 +4,10 @@
  * built CLI under the trusted-publishing npm client the workflow pins.
  *
  *   1. `npm pack` the built apps/cli package through REAL pack semantics
- *      (prepack copies skills + materializes bundled deps, postpack restores —
- *      no --ignore-scripts), writing the tarball into a run-owned temp
- *      directory via `--pack-destination` so apps/cli is never overwritten.
+ *      (prepack copies skills + materializes bundled deps + stages a
+ *      registry-safe package.json with `devDependencies` stripped, postpack
+ *      restores — no --ignore-scripts), writing the tarball into a run-owned
+ *      temp directory via `--pack-destination` so apps/cli is never overwritten.
  *   2. Enumerate every tarball entry and reject traversal / absolute /
  *      escaping-link / non-canonical package paths (the npm registry E415 class).
  *   3. Install the tarball into an empty consumer with plain npm.
@@ -14,7 +15,13 @@
  *   5. Fail-closed if the built `context-integration` release payload is
  *      missing from the pack source or from the empty-consumer install
  *      (guards Turbo cache hits that restore only `dist/**`).
- *   6. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
+ *   6. Fail-closed if the packed or installed public manifest exposes any
+ *      `workspace:` coordinate or private `@first-tree/client` package name in any dependency
+ *      section (including a residual `devDependencies` field).
+ *   7. Fail-closed if installed `dist/**` still contains unresolved imports of
+ *      those private packages (inlining is not a substitute for safe metadata,
+ *      and safe metadata is not a substitute for inlining).
+ *   8. Resolve the bundled `@botiverse/kimi-code-sdk` from the consumer and
  *      assert the patched sites this release ships: create-time drain flag,
  *      resume option threading, resume main-agent flag application, and the
  *      awaited replay-fence authorization hook.
@@ -58,6 +65,9 @@ const MANIFEST_PATH = join(CLI_ROOT, ".bundled-deps-materialize.json");
 const CONTEXT_INTEGRATION_ROOT = join(CLI_ROOT, "context-integration");
 const CONTEXT_INTEGRATION_MANIFEST = join(CONTEXT_INTEGRATION_ROOT, "release-manifest.json");
 const PACKAGED_CONTEXT_MANIFEST_ENTRY = "package/context-integration/release-manifest.json";
+const PRIVATE_CLIENT_PACKAGES = ["@first-tree/client"];
+const DEPENDENCY_SECTIONS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
+const PRIVATE_CLIENT_IMPORT_RE = /(?:from|import)\s*\(?\s*["']@first-tree\/client(?:\/[^"']*)?["']/g;
 
 class SmokeFailure extends Error {
   /** @param {string} message */
@@ -88,6 +98,89 @@ function run(command, args, options = {}) {
 
 function sha256File(filePath) {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+}
+
+function sha256Text(text) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * Fail closed when a public CLI manifest still exposes private workspace build
+ * inputs. Prefer absence of the entire `devDependencies` field (consumers never
+ * install it); also reject any residual `workspace:` coordinate or private S4
+ * package name in every dependency section.
+ * @param {unknown} pkg
+ * @param {string} label
+ */
+function assertPublicPackageManifestRegistrySafe(pkg, label) {
+  if (!pkg || typeof pkg !== "object") fail(`${label}: package.json is not an object`);
+  if (Object.hasOwn(pkg, "devDependencies")) {
+    fail(`${label}: public manifest must not include a devDependencies field`);
+  }
+  for (const section of DEPENDENCY_SECTIONS) {
+    const deps = /** @type {Record<string, unknown>} */ (pkg)[section];
+    if (deps === undefined) continue;
+    if (!deps || typeof deps !== "object") {
+      fail(`${label}: ${section} must be an object when present`);
+    }
+    for (const [name, value] of Object.entries(deps)) {
+      if (typeof value === "string" && value.startsWith("workspace:")) {
+        fail(`${label}: ${section}.${name}=${value} leaks the workspace protocol`);
+      }
+      if (PRIVATE_CLIENT_PACKAGES.includes(name)) {
+        fail(`${label}: private package ${name} must not appear in ${section}`);
+      }
+    }
+  }
+}
+
+/**
+ * @param {string} tarballPath
+ * @returns {unknown}
+ */
+function readTarballPackageJson(tarballPath) {
+  const result = spawnSync("tar", ["-xOf", tarballPath, "package/package.json"], { encoding: "utf8" });
+  if (result.error) fail(`tar failed to start while reading packed package.json: ${result.error.message}`);
+  if (result.status !== 0) {
+    fail(`tar -xOf ${tarballPath} package/package.json exited ${result.status}\n${result.stderr || result.stdout}`);
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    fail(`packed package/package.json is not valid JSON: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * @param {string} root
+ * @param {(path: string) => boolean} predicate
+ * @param {string[]} out
+ */
+function walkFiles(root, predicate, out = []) {
+  for (const entry of readdirSync(root)) {
+    const path = join(root, entry);
+    const st = statSync(path);
+    if (st.isDirectory()) walkFiles(path, predicate, out);
+    else if (predicate(path)) out.push(path);
+  }
+  return out;
+}
+
+/**
+ * @param {string} installedPackageRoot
+ */
+function assertInstalledDistHasNoPrivateClientImports(installedPackageRoot) {
+  const distRoot = join(installedPackageRoot, "dist");
+  if (!existsSync(distRoot)) fail(`consumer is missing installed dist at ${distRoot}`);
+  const hits = [];
+  for (const file of walkFiles(distRoot, (path) => path.endsWith(".mjs"))) {
+    const source = readFileSync(file, "utf8");
+    PRIVATE_CLIENT_IMPORT_RE.lastIndex = 0;
+    if (PRIVATE_CLIENT_IMPORT_RE.test(source)) hits.push(file);
+  }
+  if (hits.length > 0) {
+    fail(`installed dist still contains unresolved private client package imports:\n${hits.slice(0, 20).join("\n")}`);
+  }
 }
 
 function listCliTarballs() {
@@ -168,8 +261,9 @@ function cleanupPackArtifacts(workDir) {
 
 /**
  * @param {Map<string, string>} symlinkSnapshot
+ * @param {{ text: string, sha256: string }} packageJsonSnapshot
  */
-function assertCleanWorkspace(symlinkSnapshot) {
+function assertCleanWorkspace(symlinkSnapshot, packageJsonSnapshot) {
   const current = new Set(listCliTarballs());
   for (const tarball of current) {
     if (!preexistingTarballDigests.has(tarball)) {
@@ -187,6 +281,10 @@ function assertCleanWorkspace(symlinkSnapshot) {
   }
   if (existsSync(MANIFEST_PATH)) {
     fail("cleanup left stranded materialize manifest");
+  }
+  const packageJsonNow = readFileSync(join(CLI_ROOT, "package.json"), "utf8");
+  if (packageJsonNow !== packageJsonSnapshot.text || sha256Text(packageJsonNow) !== packageJsonSnapshot.sha256) {
+    fail("source apps/cli/package.json was not restored byte-for-byte after pack/smoke");
   }
   for (const [name, target] of symlinkSnapshot) {
     const dir = join(CLI_ROOT, "node_modules", ...name.split("/"));
@@ -429,6 +527,8 @@ function runSmoke() {
   }
   const contextIntegration = assertSourceContextIntegrationPresent();
 
+  const packageJsonText = readFileSync(join(CLI_ROOT, "package.json"), "utf8");
+  const packageJsonSnapshot = { text: packageJsonText, sha256: sha256Text(packageJsonText) };
   const symlinkSnapshot = captureBundledSymlinks();
   const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-"));
   activeWorkDir = work;
@@ -440,11 +540,17 @@ function runSmoke() {
 
     const safety = assertNpmTarballRegistrySafe(tarball);
     assertTarballContainsContextIntegration(tarball);
+    const packedPkg = readTarballPackageJson(tarball);
+    assertPublicPackageManifestRegistrySafe(packedPkg, "tarball package/package.json");
 
     run("npm", ["install", "--prefix", consumerDir, tarball]);
     const binName = "first-tree-dev";
     const binPath = join(consumerDir, "node_modules", ".bin", binName);
     if (!existsSync(binPath)) fail(`consumer is missing ${binPath}`);
+    const installedRoot = join(consumerDir, "node_modules", "first-tree-dev");
+    const installedPkg = JSON.parse(readFileSync(join(installedRoot, "package.json"), "utf8"));
+    assertPublicPackageManifestRegistrySafe(installedPkg, "installed first-tree-dev/package.json");
+    assertInstalledDistHasNoPrivateClientImports(installedRoot);
     const version = run(binPath, ["--version"]);
     const versionText = version.stdout.trim();
     if (!/^\d+\.\d+\.\d+/.test(versionText)) fail(`unexpected --version output: ${versionText}`);
@@ -485,11 +591,11 @@ function runSmoke() {
     const sha256 = sha256File(tarball);
     const bytes = statSync(tarball).size;
     console.log(
-      `release-pack-smoke: PASS — packed ${tarballName} (${bytes} B, sha256=${sha256}, ${safety.entryCount} entries), consumer CLI ${versionText}, registry-safe paths, exact-release Context loader ${contextIntegration.bundleDigest}, bundled patched Kimi SDK verified`,
+      `release-pack-smoke: PASS — packed ${tarballName} (${bytes} B, sha256=${sha256}, ${safety.entryCount} entries), consumer CLI ${versionText}, registry-safe paths + manifests (0 workspace:/private-client findings), exact-release Context loader ${contextIntegration.bundleDigest}, bundled patched Kimi SDK verified`,
     );
   } finally {
     cleanupPackArtifacts(work);
-    assertCleanWorkspace(symlinkSnapshot);
+    assertCleanWorkspace(symlinkSnapshot, packageJsonSnapshot);
   }
 }
 
@@ -502,6 +608,8 @@ function selftestCleanup() {
   if (!existsSync(join(CLI_ROOT, "dist", "cli", "index.mjs"))) {
     fail("apps/cli/dist is missing — run `pnpm build` before selftest-cleanup");
   }
+  const packageJsonText = readFileSync(join(CLI_ROOT, "package.json"), "utf8");
+  const packageJsonSnapshot = { text: packageJsonText, sha256: sha256Text(packageJsonText) };
   const symlinkSnapshot = captureBundledSymlinks();
   const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-neg-"));
   activeWorkDir = work;
@@ -523,7 +631,7 @@ function selftestCleanup() {
   }
 
   if (!failedAsExpected) fail("selftest-cleanup did not take the injected failure path");
-  assertCleanWorkspace(symlinkSnapshot);
+  assertCleanWorkspace(symlinkSnapshot, packageJsonSnapshot);
   if (existsSync(work)) fail("selftest-cleanup left consumer work directory");
   if (packedPath && existsSync(packedPath)) fail("selftest-cleanup left run-owned packed tarball");
   console.log("release-pack-smoke: selftest-cleanup PASS");
@@ -537,6 +645,7 @@ function selftestCleanup() {
  * @param {string} expectedDigest
  * @param {Buffer} expectedBytes
  * @param {Map<string, string>} symlinkSnapshot
+ * @param {{ text: string, sha256: string }} packageJsonSnapshot
  * @param {string} phase
  * @param {string | undefined} workDir
  * @param {string | undefined} packedPath
@@ -546,6 +655,7 @@ function assertPreservedCollision(
   expectedDigest,
   expectedBytes,
   symlinkSnapshot,
+  packageJsonSnapshot,
   phase,
   workDir,
   packedPath,
@@ -560,7 +670,7 @@ function assertPreservedCollision(
   if (Buffer.compare(readFileSync(collisionPath), expectedBytes) !== 0) {
     fail(`selftest-preserve [${phase}]: preexisting bytes changed`);
   }
-  assertCleanWorkspace(symlinkSnapshot);
+  assertCleanWorkspace(symlinkSnapshot, packageJsonSnapshot);
   if (workDir && existsSync(workDir)) {
     fail(`selftest-preserve [${phase}]: left run-owned work directory`);
   }
@@ -605,6 +715,8 @@ function selftestPreservePreexistingTarball() {
     if (!existsSync(join(CLI_ROOT, "dist", "cli", "index.mjs"))) {
       fail("apps/cli/dist is missing — run `pnpm build` before selftest-preserve-preexisting");
     }
+    const packageJsonText = readFileSync(join(CLI_ROOT, "package.json"), "utf8");
+    const packageJsonSnapshot = { text: packageJsonText, sha256: sha256Text(packageJsonText) };
     const symlinkSnapshot = captureBundledSymlinks();
 
     // 1) Success-path: pack into run-owned destination; collision path untouched.
@@ -626,7 +738,16 @@ function selftestPreservePreexistingTarball() {
       } finally {
         cleanupPackArtifacts(work);
       }
-      assertPreservedCollision(collisionPath, expectedDigest, expectedBytes, symlinkSnapshot, "success", work, packed);
+      assertPreservedCollision(
+        collisionPath,
+        expectedDigest,
+        expectedBytes,
+        symlinkSnapshot,
+        packageJsonSnapshot,
+        "success",
+        work,
+        packed,
+      );
     }
 
     // 2) Post-pack failure: pack succeeds into temp, then injected failure cleanup
@@ -655,6 +776,7 @@ function selftestPreservePreexistingTarball() {
         expectedDigest,
         expectedBytes,
         symlinkSnapshot,
+        packageJsonSnapshot,
         "post-pack-failure",
         work,
         packed,
@@ -673,6 +795,7 @@ function selftestPreservePreexistingTarball() {
       expectedDigest,
       expectedBytes,
       symlinkSnapshot,
+      packageJsonSnapshot,
       "early-failure",
       undefined,
       undefined,

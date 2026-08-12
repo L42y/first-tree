@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection, ClientRetiredError } from "../client-connection.js";
+import { ClientConnection, ClientRetiredError } from "../runtime/client-connection.js";
 
 describe("ClientConnection - client:register CLIENT_RETIRED", () => {
   let httpServer: HttpServer;

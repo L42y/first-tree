@@ -1,4 +1,4 @@
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentIdentity } from "./handler.js";
 
 /**

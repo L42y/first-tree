@@ -6,7 +6,7 @@ import {
   runtimeProviderLabel,
 } from "@first-tree/shared";
 import { daemonEnvFile } from "@first-tree/shared/config";
-import type { FirstTreeHubSDK } from "../sdk.js";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 
 export function shouldPostProviderFailureRuntimeNotice(payload: ProviderRetryEventPayload): boolean {
