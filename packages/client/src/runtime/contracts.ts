@@ -1,10 +1,9 @@
 /**
- * Provider-facing contracts entry for `@first-tree/client` runtime.
+ * Provider-facing contracts entry for `@first-tree/client/runtime/contracts`.
  *
- * This is the in-tree source of the future `@first-tree/client-runtime/contracts`
- * subpath. It is an explicit allowlist of stable symbols that provider
- * production code may depend on — not a new package, and not a temporary
- * `@first-tree/client` public subpath export.
+ * Explicit allowlist of stable symbols that provider production code may
+ * depend on through the present single-package runtime seam — not a separate
+ * package and not a catch-all Runtime barrel.
  *
  * Values re-export the owner module bindings so identity is preserved
  * (`noopDeliveryToken` / `requireDeliveryToken` stay single-owner).

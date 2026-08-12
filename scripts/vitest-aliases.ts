@@ -36,7 +36,7 @@ export const monorepoSourceAliases: { find: RegExp; replacement: string }[] = [
   },
   {
     find: /^@first-tree\/client\/observability$/,
-    replacement: resolve(root, "packages/client/src/observability/index.ts"),
+    replacement: resolve(root, "packages/client/src/cloud/observability/index.ts"),
   },
   {
     find: /^@first-tree\/client$/,

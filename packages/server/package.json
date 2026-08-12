@@ -52,6 +52,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@first-tree/client": "workspace:*",
     "@opentelemetry/context-async-hooks": "^2.7.0",
     "@opentelemetry/sdk-trace-base": "^2.7.0",
     "@testcontainers/postgresql": "^11.13.0",
