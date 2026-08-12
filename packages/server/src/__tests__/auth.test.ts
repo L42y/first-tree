@@ -225,7 +225,7 @@ describe("Admin Auth", () => {
       expect(second.json()).toHaveProperty("accessToken");
     });
 
-    it("rejects wrong token types, missing users, suspended users, and users without active memberships", async () => {
+    it("rejects wrong token types, missing users, and suspended users while preserving Team-less sessions", async () => {
       const app = getApp();
       const admin = await createTestAdmin(app, { username: `refresh-admin-${crypto.randomUUID().slice(0, 8)}` });
       const accessTyped = await signTokensForUser(TEST_JWT_SECRET, admin.userId, EXPIRIES);
@@ -249,9 +249,23 @@ describe("Admin Auth", () => {
       const removed = await createTestAdmin(app, { username: `refresh-removed-${crypto.randomUUID().slice(0, 8)}` });
       const removedRefresh = await signRefreshToken(removed.userId);
       await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, removed.userId));
-      await expect(refreshAccessToken(app.db, removedRefresh, TEST_JWT_SECRET, EXPIRIES)).rejects.toThrow(
-        /no active membership/i,
-      );
+      const refresh = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/refresh",
+        payload: { refreshToken: removedRefresh },
+      });
+      expect(refresh.statusCode).toBe(200);
+      const refreshed = refresh.json<{ accessToken: string; refreshToken: string }>();
+      expect(refreshed.accessToken).toBeTruthy();
+      expect(refreshed.refreshToken).toBeTruthy();
+
+      const me = await app.inject({
+        method: "GET",
+        url: "/api/v1/me",
+        headers: { authorization: `Bearer ${refreshed.accessToken}` },
+      });
+      expect(me.statusCode).toBe(200);
+      expect(me.json<{ memberships: unknown[] }>().memberships).toEqual([]);
     });
   });
 

@@ -200,23 +200,9 @@ export async function refreshAccessToken(
     });
   }
 
-  // Confirm the user still has at least one active membership; otherwise
-  // refreshing would yield a token that lets them call /me but every
-  // org-scoped route would 403. Surface the "you've been removed" state
-  // at refresh time so the client redirects to login cleanly.
-  const [anyMember] = await db
-    .select({ id: members.id })
-    .from(members)
-    .where(and(eq(members.userId, user.id), eq(members.status, "active")))
-    .limit(1);
-
-  if (!anyMember) {
-    throw new UnauthorizedError("No active membership", {
-      "auth.refresh.reason": "no_active_membership",
-      "auth.refresh.user_id": payload.sub,
-    });
-  }
-
+  // Membership is deliberately not an authentication prerequisite. A solo
+  // OAuth account may remain signed in with zero Teams while it chooses its
+  // first Agent; org-scoped routes still authorize against live membership.
   return signTokensForUser(jwtSecretKey, user.id, expiries);
 }
 
