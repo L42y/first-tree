@@ -198,6 +198,17 @@ export const meMembershipSchema = z.object({
 export type MeMembership = z.infer<typeof meMembershipSchema>;
 
 /**
+ * Stable conflict codes for the first-Team Agent boundary. A generic 409 may
+ * also describe an atomic creation failure (for example an Agent name
+ * collision), so the Web must branch only on this exact race identity.
+ */
+export const PROVISION_FIRST_TEAM_AGENT_ERROR_CODES = {
+  REQUEST_CONFLICT: "first_team_agent_request_conflict",
+} as const;
+export type ProvisionFirstTeamAgentErrorCode =
+  (typeof PROVISION_FIRST_TEAM_AGENT_ERROR_CODES)[keyof typeof PROVISION_FIRST_TEAM_AGENT_ERROR_CODES];
+
+/**
  * Body of `POST /me/team-agents` — the user-scoped provisioning call a signed-in
  * user makes when they confirm their first Team Agent. It is user-scoped (Class
  * A) rather than org-scoped because the starting state has no organization at

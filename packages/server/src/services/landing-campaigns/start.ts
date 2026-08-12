@@ -34,6 +34,7 @@ import { sendToClient } from "../runtime/connection-manager.js";
 import { pickDefaultMembership } from "../team/default-membership.js";
 import {
   createPersonalTeam,
+  lockMembershipLifecycleUser,
   MEMBER_STATUSES,
   personalTeamDisplayName,
   reactivateMembership,
@@ -351,13 +352,7 @@ async function provisionTrialAgent(
     const db = tx as unknown as Database;
     // The stable user row is the serialization point shared by every
     // first-Team entry. Two Quickstart tabs therefore cannot mint two Teams.
-    const [lockedUser] = await db
-      .select({ id: users.id, username: users.username, displayName: users.displayName })
-      .from(users)
-      .where(eq(users.id, input.userId))
-      .for("no key update")
-      .limit(1);
-    if (!lockedUser) throw new NotFoundError(`User "${input.userId}" not found`);
+    const lockedUser = await lockMembershipLifecycleUser(db, input.userId);
 
     let caller = await resolveCallerMembership(db, input.userId, input.organizationId);
     if (!caller) {

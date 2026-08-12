@@ -15,7 +15,12 @@ import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "..
 import { forceDisconnect } from "../runtime/connection-manager.js";
 import * as presenceService from "../runtime/presence.js";
 import { suspendGitlabLinksForMembership } from "../scm/gitlab/identities.js";
-import { MEMBER_STATUSES, reactivateMembership, syncUserDisplayName } from "./membership.js";
+import {
+  lockMembershipLifecycleUser,
+  MEMBER_STATUSES,
+  reactivateMembership,
+  syncUserDisplayName,
+} from "./membership.js";
 
 const SALT_ROUNDS = 10;
 
@@ -274,7 +279,7 @@ export async function updateOwnProfile(db: Database, userId: string, displayName
 export async function deleteMember(db: Database, id: string, callerOrgId: string) {
   const transferredAgentIds = await db.transaction(async (tx) => {
     const [targetRef] = await tx
-      .select({ organizationId: members.organizationId })
+      .select({ organizationId: members.organizationId, userId: members.userId })
       .from(members)
       .where(eq(members.id, id))
       .limit(1);
@@ -283,6 +288,7 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
     if (!targetRef || targetRef.organizationId !== callerOrgId) {
       throw new NotFoundError(`Member "${id}" not found`);
     }
+    await lockMembershipLifecycleUser(tx, targetRef.userId);
 
     const [projectedFallback] = await tx
       .select({ id: members.id })

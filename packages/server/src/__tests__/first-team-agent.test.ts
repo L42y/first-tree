@@ -1,3 +1,4 @@
+import { AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES, PROVISION_FIRST_TEAM_AGENT_ERROR_CODES } from "@first-tree/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -306,7 +307,10 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       expect(replies.map((reply) => reply.statusCode).sort()).toEqual([201, 409]);
       const winner = replies.find((reply) => reply.statusCode === 201);
       const conflict = replies.find((reply) => reply.statusCode === 409);
-      expect(conflict?.json()).toMatchObject({ error: expect.stringContaining("different first Team Agent") });
+      expect(conflict?.json()).toMatchObject({
+        code: PROVISION_FIRST_TEAM_AGENT_ERROR_CODES.REQUEST_CONFLICT,
+        error: expect.stringContaining("different first Team Agent"),
+      });
       const winnerBody = winner?.json<{ agent: { uuid: string } }>();
       const [config] = await app.db
         .select({ templateIds: agentConfigs.templateIds })
@@ -318,6 +322,20 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       await app.db.delete(agentTemplates).where(eq(agentTemplates.id, firstTemplateId));
       await app.db.delete(agentTemplates).where(eq(agentTemplates.id, secondTemplateId));
     }
+  });
+
+  it("preserves an Agent name conflict when the atomic first-Team transaction rolls back", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Name Collision Owner");
+    const collidingName = `collision-${crypto.randomUUID().slice(0, 8)}`;
+    await app.db.update(users).set({ username: collidingName }).where(eq(users.id, user.userId));
+
+    const reply = await provision(app, user, { name: collidingName });
+
+    expect(reply.statusCode).toBe(409);
+    expect(reply.json()).toMatchObject({ code: AGENT_TEMPLATE_LIFECYCLE_ERROR_CODES.NAME_CONFLICT });
+    expect(await app.db.select().from(members).where(eq(members.userId, user.userId))).toEqual([]);
+    expect(await app.db.select().from(organizations).where(eq(organizations.name, collidingName))).toEqual([]);
   });
 
   it("refuses Agent creation for an invited member because existing-Team creation is org-scoped", async () => {

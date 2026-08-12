@@ -661,7 +661,9 @@ describe("TemplateUseIntent — Team-less caller", () => {
   });
 
   it("reconciles a different-request conflict into the existing-Team Template path", async () => {
-    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(new ApiError(409, "A different request won"));
+    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(
+      new ApiError(409, "A different request won", undefined, "first_team_agent_request_conflict"),
+    );
     authMock.value.refreshMe = vi.fn(async () => {
       authMock.value.hasNoTeam = false;
       authMock.value.memberships = [membership("m-winner", "org-winner", "Winner Team")];
@@ -683,6 +685,21 @@ describe("TemplateUseIntent — Team-less caller", () => {
     expect(winner).not.toBeNull();
     expect(winner?.checked).toBe(true);
     expect(buttonByText("Continue").disabled).toBe(false);
+  });
+
+  it("keeps an atomic Agent name conflict on the ordinary retry path", async () => {
+    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(
+      new ApiError(409, "Agent name already exists", undefined, "agent_name_conflict"),
+    );
+
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+    await rerender();
+
+    expect(authMock.value.refreshMe).toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Nothing was created");
+    expect(document.body.textContent).not.toContain("Another request created your team first");
+    expect(buttonByText("Create Team Agent")).not.toBeNull();
   });
 
   it("does not claim nothing was created when only activating the new Team failed", async () => {

@@ -4,6 +4,7 @@ import {
   AGENT_TYPES,
   AGENT_VISIBILITY,
   type AgentVisibility,
+  PROVISION_FIRST_TEAM_AGENT_ERROR_CODES,
   type ProvisionFirstTeamAgent,
   type ProvisionFirstTeamAgentResult,
 } from "@first-tree/shared";
@@ -12,11 +13,15 @@ import type { Database } from "../../db/connection.js";
 import { agentConfigs } from "../../db/schema/agent-configs.js";
 import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
-import { users } from "../../db/schema/users.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../../errors.js";
+import { ConflictError, ForbiddenError } from "../../errors.js";
 import { createAgent } from "../agents/identity.js";
 import type { AttachmentBlobStore } from "../attachment-blob-store.js";
-import { createPersonalTeam, MEMBER_STATUSES, personalTeamDisplayName } from "./membership.js";
+import {
+  createPersonalTeam,
+  lockMembershipLifecycleUser,
+  MEMBER_STATUSES,
+  personalTeamDisplayName,
+} from "./membership.js";
 
 export type ProvisionFirstTeamAgentInput = ProvisionFirstTeamAgent & { userId: string };
 
@@ -79,13 +84,7 @@ export async function provisionFirstTeamAgent(
     // decoration. This service uses only the shared query-builder methods.
     const txDb = tx as unknown as Database;
 
-    const [lockedUser] = await txDb
-      .select({ id: users.id, username: users.username, displayName: users.displayName })
-      .from(users)
-      .where(eq(users.id, input.userId))
-      .for("no key update")
-      .limit(1);
-    if (!lockedUser) throw new NotFoundError(`User "${input.userId}" not found`);
+    const lockedUser = await lockMembershipLifecycleUser(txDb, input.userId);
 
     const memberships = await txDb
       .select({
@@ -105,6 +104,7 @@ export async function provisionFirstTeamAgent(
       if (!existing) {
         throw new ConflictError(
           "A Team membership already exists or a different first Team Agent was provisioned. Create additional Agents through the Team-scoped endpoint.",
+          { code: PROVISION_FIRST_TEAM_AGENT_ERROR_CODES.REQUEST_CONFLICT },
         );
       }
       return {

@@ -3,6 +3,7 @@ import {
   type AgentTemplatePublicTemplate,
   isReservedAgentName,
   type MeMembership,
+  PROVISION_FIRST_TEAM_AGENT_ERROR_CODES,
 } from "@first-tree/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -217,7 +218,8 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
         templateIds: [template.id],
       });
     } catch (error) {
-      const conflict = error instanceof ApiError && error.status === 409;
+      const conflict =
+        error instanceof ApiError && error.code === PROVISION_FIRST_TEAM_AGENT_ERROR_CODES.REQUEST_CONFLICT;
       if (conflict) setProvisionConflict(true);
       setProvisioning(false);
       // `/me` is the authority on what actually landed. Re-read it so a

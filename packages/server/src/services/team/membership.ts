@@ -35,6 +35,23 @@ export type MemberStatus = (typeof MEMBER_STATUSES)[keyof typeof MEMBER_STATUSES
 type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
 
 /**
+ * Stable per-user serialization point for membership lifecycle changes.
+ * Every supported active-membership create/leave/remove boundary takes this
+ * lock before member rows so authorization cannot be decided from a stale
+ * roster while a competing lifecycle transaction commits.
+ */
+export async function lockMembershipLifecycleUser(db: DbLike, userId: string) {
+  const [user] = await db
+    .select({ id: users.id, username: users.username, displayName: users.displayName })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for("no key update")
+    .limit(1);
+  if (!user) throw new NotFoundError(`User "${userId}" not found`);
+  return user;
+}
+
+/**
  * Persist the user-global display label and fan it out to every
  * membership-backed human mirror. Call this inside the surrounding lifecycle
  * transaction so no supported member write can leave user and agent identity
@@ -93,13 +110,7 @@ async function syncUserDisplayNameInternal<T>(
   // NO KEY UPDATE remains compatible with the KEY SHARE lock taken by a
   // concurrent membership FK insert, avoiding a lock-upgrade deadlock while
   // still making the later contender observe and update the earlier row.
-  const [user] = await db
-    .select({ id: users.id, displayName: users.displayName })
-    .from(users)
-    .where(eq(users.id, userId))
-    .for("no key update")
-    .limit(1);
-  if (!user) throw new NotFoundError(`User "${userId}" not found`);
+  const user = await lockMembershipLifecycleUser(db, userId);
   const effectiveDisplayName = requestedDisplayName ?? user.displayName;
   if (requestedDisplayName !== undefined) {
     await db.update(users).set({ displayName: effectiveDisplayName }).where(eq(users.id, userId));
@@ -385,11 +396,12 @@ export async function deactivateMembership(
     // ordering to `deleteMember` so concurrent removals/leaves in the same org
     // serialize instead of deadlocking on the admin selection.
     const [targetRef] = await tx
-      .select({ organizationId: members.organizationId })
+      .select({ organizationId: members.organizationId, userId: members.userId })
       .from(members)
       .where(eq(members.id, memberId))
       .limit(1);
     if (!targetRef) throw new NotFoundError(`Membership "${memberId}" not found`);
+    await lockMembershipLifecycleUser(tx, targetRef.userId);
 
     const [projectedFallback] = await tx
       .select({ id: members.id })
