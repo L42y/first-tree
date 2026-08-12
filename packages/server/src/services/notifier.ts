@@ -1,4 +1,10 @@
-import { PROVIDER_MODELS_LIST_TYPE, type SessionCommandAbortReason } from "@first-tree/shared";
+import {
+  PROVIDER_MODELS_LIST_TYPE,
+  RUNTIME_READINESS_CHECK_TYPE,
+  type RuntimeReadinessCheckCommand,
+  runtimeReadinessCheckCommandSchema,
+  type SessionCommandAbortReason,
+} from "@first-tree/shared";
 import type postgres from "postgres";
 import type { WebSocket } from "ws";
 
@@ -121,6 +127,11 @@ export type DaemonClientCommandPayload =
       /** DB-authoritative `clients.instance_id` — only that replica may deliver. */
       targetInstanceId: string;
     }
+  | (RuntimeReadinessCheckCommand & {
+      /** On-demand host-local provider readiness verification. */
+      clientId: string;
+      targetInstanceId: string;
+    })
   | {
       /** Chat-session Reset: forward the ref'd terminate to the owning replica. */
       type: "session:terminate";
@@ -757,6 +768,8 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
             if (parsed.type === "session:command:aborted" && typeof sessionPayload.reason !== "string") return;
           } else if (parsed.type === PROVIDER_MODELS_LIST_TYPE) {
             if (typeof (parsed as { provider?: unknown }).provider !== "string") return;
+          } else if (parsed.type === RUNTIME_READINESS_CHECK_TYPE) {
+            if (!runtimeReadinessCheckCommandSchema.safeParse(parsed).success) return;
           } else {
             return;
           }

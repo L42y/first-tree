@@ -4,6 +4,8 @@ import type {
   ConnectTokenResponse,
   RuntimeAuthStartRequest,
   RuntimeAuthStartResponse,
+  RuntimeReadinessStartRequest,
+  RuntimeReadinessStartResponse,
   UpdateAttempt,
 } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
@@ -125,6 +127,14 @@ export function disconnectClient(clientId: string): Promise<{ disconnected: bool
  */
 export function startRuntimeAuth(clientId: string, body: RuntimeAuthStartRequest): Promise<RuntimeAuthStartResponse> {
   return api.post(`/clients/${encodeURIComponent(clientId)}/runtime-auth/start`, body);
+}
+
+/** Trigger a bounded host-local readiness verification; callers poll clients for the verdict. */
+export function startRuntimeReadiness(
+  clientId: string,
+  body: RuntimeReadinessStartRequest,
+): Promise<RuntimeReadinessStartResponse> {
+  return api.post(`/clients/${encodeURIComponent(clientId)}/runtime-readiness/start`, body);
 }
 
 export function resetAgentActivity(agentId: string): Promise<{ reset: boolean }> {

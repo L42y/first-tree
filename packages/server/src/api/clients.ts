@@ -3,8 +3,10 @@ import {
   PROVIDER_MODELS_LIST_TYPE,
   providerModelCatalogSchema,
   RUNTIME_AUTH_START_TYPE,
+  RUNTIME_READINESS_CHECK_TYPE,
   runtimeAuthStartRequestSchema,
   runtimeProviderSchema,
+  runtimeReadinessStartRequestSchema,
   updateClientCapabilitiesSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
@@ -41,7 +43,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     // snapshot is coerced to the canonical install-only shape rather than served
     // raw — the chat login button polls this endpoint and must not receive a
     // legacy `unauthenticated` state the web no longer handles.
-    const capabilities = clientService.extractCapabilities(client.metadata);
+    const capabilities = clientService.capabilitiesForApi(client.metadata, client);
     const refreshExpirySeconds = expiryToSeconds(app.config.auth.refreshTokenExpiry);
     const binName = getChannelConfig(app.config.channel).binName;
     return {
@@ -96,6 +98,47 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       throw new ServiceUnavailableError(
         "Runtime-auth could not start because this computer is not connected. Make sure the daemon is running, then retry.",
       );
+    }
+    return { ref, started: true as const };
+  });
+
+  // Readiness is deliberately separate from install-only capability probing.
+  // The daemon uses the same host-local provider runtime and identity as real
+  // work, then reports only a bounded verdict through capability metadata.
+  app.post<{ Params: { id: string } }>("/:id/runtime-readiness/start", async (request) => {
+    const { userId } = requireUser(request);
+    const clientId = request.params.id;
+    stampClientResource(request, clientId);
+    await clientService.assertClientOwner(app.db, clientId, { userId });
+    await clientService.assertClientNotRetired(app.db, clientId);
+    const body = runtimeReadinessStartRequestSchema.parse(request.body);
+    const client = await clientService.getClient(app.db, clientId);
+    if (!client || !isClientConnectedSomewhere(client) || !client.instanceId) {
+      throw new ServiceUnavailableError(
+        "Runtime readiness could not start because this computer is not connected. Make sure the daemon is running, then retry.",
+      );
+    }
+
+    const ref = randomUUID();
+    const frame = {
+      type: RUNTIME_READINESS_CHECK_TYPE,
+      provider: body.provider,
+      ...(body.config ? { config: body.config } : {}),
+      ...(body.force !== undefined ? { force: body.force } : {}),
+      ref,
+    };
+    if (client.instanceId === app.config.instanceId) {
+      if (!sendToClient(clientId, frame)) {
+        throw new ServiceUnavailableError(
+          "Runtime readiness could not start because this computer is not connected. Make sure the daemon is running, then retry.",
+        );
+      }
+    } else {
+      await app.notifier.notifyDaemonClientCommand({
+        ...frame,
+        clientId,
+        targetInstanceId: client.instanceId,
+      });
     }
     return { ref, started: true as const };
   });

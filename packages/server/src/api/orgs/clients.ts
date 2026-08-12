@@ -37,7 +37,7 @@ export async function orgClientRoutes(app: FastifyInstance): Promise<void> {
       agentCount: c.agentCount,
       connectedAt: serializeDate(c.connectedAt),
       lastSeenAt: c.lastSeenAt.toISOString(),
-      capabilities: clientService.extractCapabilities(c.metadata),
+      capabilities: clientService.capabilitiesForApi(c.metadata, c),
       lastUpdateAttempt: clientService.extractLastUpdateAttempt(c.metadata),
       ...clientCommandVersionHint(app, c.sdkVersion),
     }));

@@ -137,6 +137,7 @@ describe("api wrapper paths", () => {
     await activity.getClient("client-1");
     await activity.getClientCapabilities("client-2");
     await activity.disconnectClient("client-3");
+    await activity.startRuntimeReadiness("client/4", { provider: "codex", force: true });
     await activity.resetAgentActivity("agent/id");
     await activity.generateConnectToken();
 
@@ -201,6 +202,10 @@ describe("api wrapper paths", () => {
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/current/clients");
     expect(apiMock.get).toHaveBeenCalledWith("/clients/client-1");
     expect(apiMock.post).toHaveBeenCalledWith("/clients/client-3/disconnect");
+    expect(apiMock.post).toHaveBeenCalledWith("/clients/client%2F4/runtime-readiness/start", {
+      provider: "codex",
+      force: true,
+    });
     expect(apiMock.post).toHaveBeenCalledWith("/agents/agent%2Fid/reset-activity");
     expect(apiMock.post).toHaveBeenCalledWith("/me/connect-tokens");
     expect(apiMock.get).toHaveBeenCalledWith("/orgs/org%2Fid/context-tree/snapshot?window=7d");

@@ -250,6 +250,62 @@ export function extractCapabilities(metadata: unknown): ClientCapabilities {
   return parsed.success ? parsed.data : {};
 }
 
+/**
+ * Project daemon-owned readiness into states that are safe for API consumers.
+ * The stored capability snapshot remains untouched: expiry and computer
+ * liveness are read-time facts, not new persistence semantics.
+ */
+export function capabilitiesForApi(
+  metadata: unknown,
+  row: { status: string; retiredAt?: Date | null },
+  nowMs = Date.now(),
+): ClientCapabilities {
+  const capabilities = extractCapabilities(metadata);
+  const offline = clientStatusForApi(row) !== "connected";
+  return Object.fromEntries(
+    Object.entries(capabilities).map(([provider, entry]) => {
+      const readiness = entry.readiness;
+      if (offline) {
+        return [
+          provider,
+          {
+            ...entry,
+            readiness: {
+              state: "computer_offline" as const,
+              ...(readiness?.identity ? { identity: readiness.identity } : {}),
+              ...(readiness?.checkedAt ? { checkedAt: readiness.checkedAt } : {}),
+            },
+          },
+        ];
+      }
+      if (entry.pendingAuth || entry.lastAuthError) {
+        return [
+          provider,
+          {
+            ...entry,
+            readiness: {
+              state: "needs_login" as const,
+              ...(readiness?.identity ? { identity: readiness.identity } : {}),
+              ...(readiness?.checkedAt ? { checkedAt: readiness.checkedAt } : {}),
+              error: { code: "needs_login" as const },
+            },
+          },
+        ];
+      }
+      if (readiness?.state === "ready") {
+        const expiryMs = readiness.expiresAt ? Date.parse(readiness.expiresAt) : Number.NaN;
+        if (!Number.isFinite(expiryMs) || expiryMs <= nowMs) {
+          return [provider, { ...entry, readiness: { ...readiness, state: "expired" as const } }];
+        }
+      }
+      if (!readiness && entry.state === "ok" && entry.available) {
+        return [provider, { ...entry, readiness: { state: "available" as const } }];
+      }
+      return [provider, entry];
+    }),
+  );
+}
+
 export function clientStatusForApi(row: {
   status: string;
   retiredAt?: Date | null;

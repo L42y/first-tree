@@ -1,4 +1,9 @@
-import { agentPinnedMessageSchema, PROVIDER_MODELS_LIST_TYPE } from "@first-tree/shared";
+import {
+  agentPinnedMessageSchema,
+  PROVIDER_MODELS_LIST_TYPE,
+  RUNTIME_READINESS_CHECK_TYPE,
+  runtimeReadinessCheckCommandSchema,
+} from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import type { Notifier } from "../../../services/notifier.js";
 import * as connectionManager from "../../../services/runtime/connection-manager.js";
@@ -36,6 +41,24 @@ export function registerClientWsServerEvents(app: FastifyInstance, notifier: Not
         provider: payload.provider,
         ref: payload.ref,
       });
+      return;
+    }
+    if (payload.type === RUNTIME_READINESS_CHECK_TYPE) {
+      const frame = runtimeReadinessCheckCommandSchema.safeParse({
+        type: payload.type,
+        provider: payload.provider,
+        ...(payload.config ? { config: payload.config } : {}),
+        ...(payload.force !== undefined ? { force: payload.force } : {}),
+        ref: payload.ref,
+      });
+      if (!frame.success) {
+        app.log.warn(
+          { err: frame.error.flatten(), clientId: payload.clientId, ref: payload.ref },
+          "runtime readiness frame failed schema validation — not sending",
+        );
+        return;
+      }
+      connectionManager.sendToClient(payload.clientId, frame.data);
       return;
     }
     if (payload.type === "session:command:finalized" || payload.type === "session:command:aborted") {

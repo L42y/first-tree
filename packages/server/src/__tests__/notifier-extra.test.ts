@@ -259,6 +259,17 @@ describe("createNotifier", () => {
         targetInstanceId: "instance_1",
       }),
     );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({
+        type: "runtime-readiness:check",
+        clientId: "client_1",
+        provider: "codex",
+        config: { model: "gpt-test" },
+        force: true,
+        ref: "ref_3",
+        targetInstanceId: "instance_1",
+      }),
+    );
     listeners.get("daemon_client_commands")?.("{not json");
     listeners.get("daemon_client_commands")?.(JSON.stringify({ type: "provider-models:list" }));
     // Discriminated-union rejects: wrong/missing discriminator fields and unknown types.
@@ -279,6 +290,15 @@ describe("createNotifier", () => {
     );
     listeners.get("daemon_client_commands")?.(
       JSON.stringify({ type: "unknown:command", clientId: "c", ref: "r", targetInstanceId: "i" }),
+    );
+    listeners.get("daemon_client_commands")?.(
+      JSON.stringify({
+        type: "runtime-readiness:check",
+        clientId: "c",
+        provider: "unknown",
+        ref: "r",
+        targetInstanceId: "i",
+      }),
     );
     listeners.get("daemon_client_command_results")?.(JSON.stringify({ clientId: "client_1", ref: "ref_1" }));
     listeners.get("daemon_client_command_results")?.("{not json");
@@ -335,10 +355,19 @@ describe("createNotifier", () => {
       ref: "ref_2",
       targetInstanceId: "instance_1",
     });
-    // Both handlers saw exactly the two well-formed commands — every
+    expect(daemonCommandSecond).toHaveBeenCalledWith({
+      type: "runtime-readiness:check",
+      clientId: "client_1",
+      provider: "codex",
+      config: { model: "gpt-test" },
+      force: true,
+      ref: "ref_3",
+      targetInstanceId: "instance_1",
+    });
+    // Both handlers saw exactly the three well-formed commands — every
     // malformed/discriminator-mismatched payload was rejected above.
-    expect(daemonCommand).toHaveBeenCalledTimes(2);
-    expect(daemonCommandSecond).toHaveBeenCalledTimes(2);
+    expect(daemonCommand).toHaveBeenCalledTimes(3);
+    expect(daemonCommandSecond).toHaveBeenCalledTimes(3);
     expect(daemonResultSecond).toHaveBeenCalledWith({ clientId: "client_1", ref: "ref_1" });
 
     await notifier.stop();
