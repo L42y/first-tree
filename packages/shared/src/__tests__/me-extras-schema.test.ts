@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   kickoffOnboardingSchema,
+  meMembershipSchema,
   onboardingEventSchema,
   provisionFirstTeamAgentSchema,
   treeSetupKickoffSchema,
@@ -43,6 +44,31 @@ describe("provisionFirstTeamAgentSchema", () => {
         templateIds: [templateId, "0190f000-0000-7000-8000-000000000003"],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("meMembershipSchema", () => {
+  it("projects the exact first-Team Agent continuation without changing legacy memberships", () => {
+    const base = {
+      id: "member-1",
+      organizationId: "org-1",
+      organizationName: "Acme",
+      role: "admin",
+      agentId: "human-1",
+      orgHasOtherMembers: false,
+      hasUsableAgent: true,
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: null,
+      onboardingSuppressedReason: null,
+      onboardingCompletedAt: null,
+    };
+    expect(meMembershipSchema.parse(base).firstTeamAgentContinuation).toBeUndefined();
+    expect(
+      meMembershipSchema.parse({
+        ...base,
+        firstTeamAgentContinuation: { agentId: "agent-1", status: "active" },
+      }).firstTeamAgentContinuation,
+    ).toEqual({ agentId: "agent-1", status: "active" });
   });
 });
 

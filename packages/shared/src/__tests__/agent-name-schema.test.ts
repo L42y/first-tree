@@ -4,7 +4,9 @@ import {
   AGENT_NAME_REGEX,
   agentSchema,
   createAgentSchema,
+  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
   findReservedAgentMetadataKey,
+  getFirstTeamAgentContinuation,
   isReservedAgentName,
   listAgentsQuerySchema,
   RESERVED_AGENT_NAMES,
@@ -72,6 +74,17 @@ describe("agent metadata guards", () => {
       "runtimeSwitch",
     );
     expect(findReservedAgentMetadataKey({ theme: "dark", runtimeSession: { active: true } })).toBe("runtimeSession");
+    expect(findReservedAgentMetadataKey({ [FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY]: { agentId: "agent-1" } })).toBe(
+      FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
+    );
+  });
+
+  it("reads only a well-formed first-Team Agent continuation", () => {
+    expect(
+      getFirstTeamAgentContinuation({ [FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY]: { agentId: "agent-1" } }),
+    ).toEqual({ agentId: "agent-1" });
+    expect(getFirstTeamAgentContinuation({ [FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY]: { agentId: "" } })).toBeNull();
+    expect(getFirstTeamAgentContinuation({})).toBeNull();
   });
 
   it("rejects user metadata that tries to write reserved runtime keys", () => {

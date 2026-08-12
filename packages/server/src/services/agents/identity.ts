@@ -67,7 +67,7 @@ export type NewChatDefaultCandidateAgent = {
 export function assertUserAgentMetadataHasNoReservedKeys(metadata: Record<string, unknown> | undefined): void {
   const key = findReservedAgentMetadataKey(metadata);
   if (!key) return;
-  throw new BadRequestError(`metadata.${key} is reserved for First Tree internal runtime state`);
+  throw new BadRequestError(`metadata.${key} is reserved for First Tree internal state`);
 }
 
 export function stripReservedAgentMetadata(metadata: unknown): Record<string, unknown> {
@@ -79,11 +79,12 @@ export function stripReservedAgentMetadata(metadata: unknown): Record<string, un
   return publicMetadata;
 }
 
-// Callers provide public metadata; internal runtime state is copied from the existing row.
+// Callers provide public metadata; internal state is copied from the existing row.
 export function agentMetadataUpdateExpressionPreservingRuntimeState(metadata: Record<string, unknown>) {
   return sql`${JSON.stringify(metadata)}::jsonb || jsonb_strip_nulls(jsonb_build_object(
     'runtimeSwitch', ${agents.metadata}->'runtimeSwitch',
-    'runtimeSession', ${agents.metadata}->'runtimeSession'
+    'runtimeSession', ${agents.metadata}->'runtimeSession',
+    'firstTeamAgentContinuation', ${agents.metadata}->'firstTeamAgentContinuation'
   ))`;
 }
 

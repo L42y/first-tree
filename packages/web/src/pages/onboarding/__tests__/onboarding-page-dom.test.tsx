@@ -17,7 +17,10 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: null as string | null,
     currentOrgHasUsableAgent: false,
     currentOrgHasPersonalAgent: false,
-    currentMembership: null as { onboardingSuppressedReason: string | null } | null,
+    currentMembership: null as {
+      onboardingSuppressedReason: string | null;
+      firstTeamAgentContinuation?: { agentId: string; status: "active" | "suspended" | "deleted" } | null;
+    } | null,
   },
 }));
 
@@ -74,6 +77,8 @@ async function renderRoute(element: ReactElement, route = "/onboarding"): Promis
       <MemoryRouter initialEntries={[route]}>
         <Routes>
           <Route path="/" element={<div>Workspace Home</div>} />
+          <Route path="/agents/:agentId/runtime" element={<div>Agent Runtime</div>} />
+          <Route path="/templates" element={<div>Template Library</div>} />
           <Route path="/onboarding" element={element} />
         </Routes>
       </MemoryRouter>,
@@ -132,18 +137,37 @@ describe("OnboardingPage", () => {
     expect(container.textContent).toContain("Workspace Home");
   });
 
-  it("does not reopen legacy onboarding for an Agent-first creator", async () => {
+  it("resumes an Agent-first creator at the exact Agent Runtime", async () => {
     authMock.value = {
       ...authMock.value,
       onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
       currentOrgHasPersonalAgent: true,
-      currentMembership: { onboardingSuppressedReason: "invitee_skip" },
+      currentMembership: {
+        onboardingSuppressedReason: "invitee_skip",
+        firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+      },
     };
 
     const container = await renderRoute(<OnboardingPage />);
 
-    expect(container.textContent).toBe("Workspace Home");
+    expect(container.textContent).toBe("Agent Runtime");
     expect(container.textContent).not.toContain("Create Team Step");
+  });
+
+  it("keeps a promoted invitee resumable when no creator continuation exists", async () => {
+    authMock.value = {
+      ...authMock.value,
+      role: "admin",
+      onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
+      currentOrgHasPersonalAgent: true,
+      currentMembership: { onboardingSuppressedReason: "invitee_skip" },
+    };
+    flowMock.activeStep = "start-chat";
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Start Chat Step");
+    expect(container.textContent).not.toContain("Agent Runtime");
   });
 
   it("keeps a Member's personal-Agent setup resumable after using a Team Agent", async () => {

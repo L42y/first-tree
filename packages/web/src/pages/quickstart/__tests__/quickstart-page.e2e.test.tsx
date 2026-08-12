@@ -22,6 +22,9 @@ const authMock = vi.hoisted(() => ({
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: null as string | null,
     currentOrgHasPersonalAgent: false,
+    currentMembership: null as {
+      firstTeamAgentContinuation?: { agentId: string; status: "active" | "suspended" | "deleted" } | null;
+    } | null,
   },
 }));
 const growthLandingMock = vi.hoisted(() => ({
@@ -101,6 +104,7 @@ beforeEach(() => {
     onboardingDismissedAt: null,
     onboardingCompletedAt: null,
     currentOrgHasPersonalAgent: false,
+    currentMembership: null,
   };
   growthLandingMock.value = { enabled: true, settled: true };
   landingCampaignMock.startLandingCampaign.mockResolvedValue({
@@ -419,6 +423,30 @@ describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
         repoSlug: "acme/backend",
       }),
     );
+  });
+
+  it("Agent-first creator reopens the action on the exact Agent instead of legacy onboarding", async () => {
+    authMock.value = {
+      ...authMock.value,
+      onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
+      currentOrgHasPersonalAgent: true,
+      currentMembership: {
+        firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+      },
+    };
+    agentsApiMock.getNewChatDefaultCandidates.mockResolvedValueOnce({
+      agent: { uuid: "agent-first-1", displayName: "First Agent" },
+    });
+
+    await renderPage([
+      "/quickstart?campaign=production-scan&repo=https%3A%2F%2Fgithub.com%2Facme%2Fbackend&action=fix&report=acme-backend-20260101-abcdef",
+    ]);
+
+    expect(agentsApiMock.getNewChatDefaultCandidates).toHaveBeenCalledWith({ cachedAgentId: "agent-first-1" });
+    expect(meChatsApiMock.createMeTaskChat.mock.calls[0]?.[0]).toMatchObject({
+      initialRecipientAgentIds: ["agent-first-1"],
+    });
+    expect(navigateMock).not.toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 
   it("a stale trial intent cannot hijack a fix link into a trial", async () => {

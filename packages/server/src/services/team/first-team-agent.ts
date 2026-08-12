@@ -5,11 +5,12 @@ import {
   AGENT_TYPES,
   AGENT_VISIBILITY,
   type AgentVisibility,
+  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
   PROVISION_FIRST_TEAM_AGENT_ERROR_CODES,
   type ProvisionFirstTeamAgent,
   type ProvisionFirstTeamAgentResult,
 } from "@first-tree/shared";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
 import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
@@ -148,11 +149,24 @@ export async function provisionFirstTeamAgent(
       },
     );
 
-    // This explicit Team-Agent start replaces the legacy standalone
-    // create-Team onboarding for the new membership. Reuse the existing
-    // Team-agent suppressor semantics: do not stamp completion because the
-    // unbound Agent still needs Runtime setup, but never auto-open the old
-    // Team naming wizard after this transaction succeeds.
+    // Stable creator provenance and continuation live on the membership's
+    // 1:1 human mirror, not on mutable role or Agent-manager relationships.
+    // The marker is written inside the same transaction as the Team graph.
+    await txDb
+      .update(agents)
+      .set({
+        metadata: sql`jsonb_set(
+          ${agents.metadata},
+          ARRAY[${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}]::text[],
+          ${JSON.stringify({ agentId: agent.uuid })}::jsonb,
+          true
+        )`,
+      })
+      .where(eq(agents.uuid, target.humanAgentId));
+
+    // Keep the existing Team-agent suppressor as an auto-open control only.
+    // The internal human-mirror marker above is the unambiguous creator and
+    // exact Runtime continuation identity.
     await txDb
       .update(members)
       .set({

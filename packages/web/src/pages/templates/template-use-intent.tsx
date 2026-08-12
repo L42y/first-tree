@@ -16,7 +16,11 @@ import { NewAgentDialog } from "../../components/new-agent-dialog.js";
 import { Button } from "../../components/ui/button.js";
 import { OptionCard } from "../../components/ui/option-card.js";
 import { uuidv7 } from "../../lib/uuid-v7.js";
-import { writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
+import {
+  readCampaignActionHandoffFlag,
+  writeCampaignActionHandoffFlag,
+  writeOnboardingTemplateIntent,
+} from "../../utils/onboarding-flags.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
 
 /**
@@ -245,6 +249,14 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       return;
     }
     firstProvisionRequestIdRef.current = null;
+    const campaignHandoff = readCampaignActionHandoffFlag();
+    if (campaignHandoff) {
+      writeCampaignActionHandoffFlag({
+        ...campaignHandoff,
+        targetOrganizationId: result.organizationId,
+        targetAgentId: result.agent.uuid,
+      });
+    }
     // The first Agent exists but is deliberately unbound. Continue at the
     // existing Runtime surface for that exact Agent; the campaign handoff (if
     // present) remains in sessionStorage until a real task chat consumes it.

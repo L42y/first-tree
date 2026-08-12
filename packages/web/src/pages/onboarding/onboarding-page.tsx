@@ -47,20 +47,22 @@ export function OnboardingPage() {
   if (!meLoaded) {
     return <div className="min-h-screen bg-background" />;
   }
+  const firstTeamContinuation = currentMembership?.firstTeamAgentContinuation;
+  if (firstTeamContinuation) {
+    const destination =
+      firstTeamContinuation.status === "deleted"
+        ? "/templates"
+        : `/agents/${encodeURIComponent(firstTeamContinuation.agentId)}/runtime`;
+    return <Navigate to={destination} replace />;
+  }
   if (leaveDecision.current === null) {
-    const agentFirstCreator =
-      role === "admin" &&
-      currentMembership?.onboardingSuppressedReason === "invitee_skip" &&
-      currentOrgHasPersonalAgent;
-    leaveDecision.current =
-      agentFirstCreator ||
-      shouldLeaveOnboarding({
-        meLoaded,
-        onboardingStep,
-        onboardingSuppressedAt: onboardingDismissedAt,
-        currentOrgHasPersonalAgent,
-        onboardingCompletedAt,
-      });
+    leaveDecision.current = shouldLeaveOnboarding({
+      meLoaded,
+      onboardingStep,
+      onboardingSuppressedAt: onboardingDismissedAt,
+      currentOrgHasPersonalAgent,
+      onboardingCompletedAt,
+    });
   }
   if (leaveDecision.current) {
     return <Navigate to="/" replace />;

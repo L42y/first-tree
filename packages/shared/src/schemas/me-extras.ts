@@ -194,6 +194,13 @@ export const meMembershipSchema = z.object({
   onboardingSuppressedAt: z.string().nullable(),
   onboardingSuppressedReason: z.enum(["finish_later", "completed", "invitee_skip"]).nullable(),
   onboardingCompletedAt: z.string().nullable(),
+  firstTeamAgentContinuation: z
+    .object({
+      agentId: z.string(),
+      status: z.enum(["active", "suspended", "deleted"]),
+    })
+    .nullable()
+    .optional(),
 });
 export type MeMembership = z.infer<typeof meMembershipSchema>;
 

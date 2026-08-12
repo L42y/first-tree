@@ -15,6 +15,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const flagsMocks = vi.hoisted(() => ({
   writeOnboardingTemplateIntent: vi.fn(),
   readCampaignActionHandoffFlag: vi.fn((): StoredCampaignActionHandoff | null => null),
+  writeCampaignActionHandoffFlag: vi.fn(),
 }));
 
 const dialogMock = vi.hoisted(() => ({
@@ -627,7 +628,7 @@ describe("TemplateUseIntent — Team-less caller", () => {
     expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
   });
 
-  it("preserves the stored campaign action while continuing to the new Agent runtime", async () => {
+  it("binds the stored campaign action to the new Team and Agent before continuing", async () => {
     flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
       campaign: "production-scan",
       repoUrl: "https://github.com/acme/backend",
@@ -639,7 +640,14 @@ describe("TemplateUseIntent — Team-less caller", () => {
 
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
     expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
-    expect(flagsMocks.readCampaignActionHandoffFlag).not.toHaveBeenCalled();
+    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+      targetOrganizationId: "org-new",
+      targetAgentId: "agent-new",
+    });
   });
 
   it("surfaces a recoverable error and re-reads /me when provisioning fails", async () => {

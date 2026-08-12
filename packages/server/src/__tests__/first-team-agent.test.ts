@@ -183,6 +183,7 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       .from(agents)
       .where(eq(agents.uuid, membership?.agentId ?? ""));
     expect(mirror).toMatchObject({ type: "human", displayName: "Atomic Owner" });
+    expect(mirror?.metadata).toMatchObject({ firstTeamAgentContinuation: { agentId: body.agent.uuid } });
 
     const [agent] = await app.db.select().from(agents).where(eq(agents.uuid, body.agent.uuid));
     expect(agent).toMatchObject({
@@ -207,6 +208,23 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
           onboardingSuppressedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
           onboardingSuppressedReason: "invitee_skip",
           onboardingCompletedAt: null,
+          firstTeamAgentContinuation: { agentId: body.agent.uuid, status: "active" },
+        },
+      ],
+    });
+
+    await app.db.update(members).set({ role: "member" }).where(eq(members.id, body.memberId));
+    await app.db.update(agents).set({ status: "deleted", name: null }).where(eq(agents.uuid, body.agent.uuid));
+    const changedLifecycle = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+    });
+    expect(changedLifecycle.json()).toMatchObject({
+      memberships: [
+        {
+          role: "member",
+          firstTeamAgentContinuation: { agentId: body.agent.uuid, status: "deleted" },
         },
       ],
     });

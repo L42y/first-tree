@@ -445,7 +445,9 @@ function AgentDetailPageView() {
   const openChat = async () => {
     const campaignHandoff = readCampaignActionHandoffFlag();
     const campaign = campaignHandoff ? getCampaign(campaignHandoff.campaign) : null;
-    if (campaignHandoff && campaign?.action) {
+    const isCampaignTarget =
+      campaignHandoff?.targetOrganizationId === agent.organizationId && campaignHandoff?.targetAgentId === agent.uuid;
+    if (campaignHandoff && campaign?.action && isCampaignTarget) {
       setChatStartError(null);
       setChatStartPending(true);
       try {

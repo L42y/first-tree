@@ -131,6 +131,7 @@ function facts(overrides: Partial<SetupFacts> = {}): SetupFacts {
     onboardingSuppressedAt: "2026-07-23T00:00:00.000Z",
     onboardingSuppressedReason: "completed",
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+    firstTeamAgentContinuation: null,
     workspaceWillEnterOnboarding: false,
     computers: {
       state: "ready",
@@ -1792,17 +1793,35 @@ describe("Settings Setup overview", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("does not resume the legacy onboarding for an Agent-first creator", async () => {
+  it("resumes an Agent-first creator at the exact Agent Runtime", async () => {
     const agentFirst = facts({
       hasPersonalAgent: true,
       onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
       onboardingSuppressedReason: "invitee_skip",
       onboardingCompletedAt: null,
+      firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
     });
 
     const agent = rowFor("agent", agentFirst);
     expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
-    expect(agent.action).toEqual({ label: "View", to: "/team" });
+    expect(agent.action).toEqual({ label: "Resume setup", to: "/agents/agent-first-1/runtime" });
+  });
+
+  it("does not misclassify a promoted invitee as an Agent-first creator", async () => {
+    const invitee = facts({
+      role: "admin",
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+      firstTeamAgentContinuation: null,
+    });
+
+    expect(rowFor("agent", invitee).action).toEqual({
+      label: "Resume setup",
+      to: "/onboarding",
+      intent: "resume-onboarding",
+    });
   });
 
   it("keeps personal-Agent setup resumable for a Member who first used a Team Agent", async () => {

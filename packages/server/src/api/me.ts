@@ -6,6 +6,7 @@ import {
   contextSessionCandidateIssueResponseSchema,
   contextSessionCandidateValidateRequestSchema,
   createOrgFromMeSchema,
+  getFirstTeamAgentContinuation,
   joinByInvitationSchema,
   kickoffOnboardingSchema,
   type OnboardingStep,
@@ -258,6 +259,34 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       memberships.map((mb) => ({ memberId: mb.memberId, organizationId: mb.organizationId })),
     );
 
+    const humanMirrorRows =
+      memberships.length > 0
+        ? await app.db
+            .select({ uuid: agents.uuid, metadata: agents.metadata })
+            .from(agents)
+            .where(
+              inArray(
+                agents.uuid,
+                memberships.map((mb) => mb.agentId),
+              ),
+            )
+        : [];
+    const continuationByMirrorId = new Map(
+      humanMirrorRows.flatMap((row) => {
+        const continuation = getFirstTeamAgentContinuation(row.metadata);
+        return continuation ? [[row.uuid, continuation] as const] : [];
+      }),
+    );
+    const continuationAgentIds = [...new Set([...continuationByMirrorId.values()].map((value) => value.agentId))];
+    const continuationAgentRows =
+      continuationAgentIds.length > 0
+        ? await app.db
+            .select({ uuid: agents.uuid, organizationId: agents.organizationId, status: agents.status })
+            .from(agents)
+            .where(inArray(agents.uuid, continuationAgentIds))
+        : [];
+    const continuationAgentById = new Map(continuationAgentRows.map((row) => [row.uuid, row]));
+
     // Surface invite URL only for users who admin at least one org. The
     // web client picks the relevant org from `selectedOrganizationId`
     // first; this is purely a convenience fallback for the default org.
@@ -275,24 +304,36 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     return {
       user: user ?? null,
       defaultOrganizationId: defaultOrgId,
-      memberships: memberships.map((mb) => ({
-        id: mb.memberId,
-        organizationId: mb.organizationId,
-        organizationName: mb.orgDisplayName,
-        role: mb.role,
-        agentId: mb.agentId,
-        orgHasOtherMembers: (memberCounts.get(mb.organizationId) ?? 1) > 1,
-        hasUsableAgent: orgsWithUsableAgent.has(mb.organizationId),
-        hasPersonalAgent: orgsWithPersonalAgent.has(mb.organizationId),
-        onboardingSuppressedAt: mb.onboardingSuppressedAt ? mb.onboardingSuppressedAt.toISOString() : null,
-        onboardingSuppressedReason:
-          mb.onboardingSuppressedReason === "finish_later" ||
-          mb.onboardingSuppressedReason === "completed" ||
-          mb.onboardingSuppressedReason === "invitee_skip"
-            ? mb.onboardingSuppressedReason
-            : null,
-        onboardingCompletedAt: mb.onboardingCompletedAt ? mb.onboardingCompletedAt.toISOString() : null,
-      })),
+      memberships: memberships.map((mb) => {
+        const continuation = continuationByMirrorId.get(mb.agentId);
+        const continuationAgent = continuation ? continuationAgentById.get(continuation.agentId) : undefined;
+        const firstTeamAgentContinuation =
+          continuationAgent?.organizationId === mb.organizationId &&
+          (continuationAgent.status === "active" ||
+            continuationAgent.status === "suspended" ||
+            continuationAgent.status === "deleted")
+            ? { agentId: continuationAgent.uuid, status: continuationAgent.status }
+            : null;
+        return {
+          id: mb.memberId,
+          organizationId: mb.organizationId,
+          organizationName: mb.orgDisplayName,
+          role: mb.role,
+          agentId: mb.agentId,
+          orgHasOtherMembers: (memberCounts.get(mb.organizationId) ?? 1) > 1,
+          hasUsableAgent: orgsWithUsableAgent.has(mb.organizationId),
+          hasPersonalAgent: orgsWithPersonalAgent.has(mb.organizationId),
+          onboardingSuppressedAt: mb.onboardingSuppressedAt ? mb.onboardingSuppressedAt.toISOString() : null,
+          onboardingSuppressedReason:
+            mb.onboardingSuppressedReason === "finish_later" ||
+            mb.onboardingSuppressedReason === "completed" ||
+            mb.onboardingSuppressedReason === "invitee_skip"
+              ? mb.onboardingSuppressedReason
+              : null,
+          onboardingCompletedAt: mb.onboardingCompletedAt ? mb.onboardingCompletedAt.toISOString() : null,
+          firstTeamAgentContinuation,
+        };
+      }),
       onboarding: {
         step: onboardingStep,
         dismissedAt: defaultRow?.onboardingSuppressedAt ? defaultRow.onboardingSuppressedAt.toISOString() : null,

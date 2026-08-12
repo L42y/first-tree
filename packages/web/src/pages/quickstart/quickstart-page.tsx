@@ -43,6 +43,7 @@ export function QuickstartPage() {
     onboardingDismissedAt,
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
+    currentMembership,
   } = useAuth();
   const { enabled: growthLandingPagesEnabled, settled } = useGrowthLandingPagesState();
   // The trial chat is selected with the normal workspace `?c=` param so
@@ -168,9 +169,13 @@ export function QuickstartPage() {
     actionStartedRef.current = true;
     setActionError(null);
     try {
-      const { agent } = await getNewChatDefaultCandidates({});
+      const exactAgentId = currentMembership?.firstTeamAgentContinuation?.agentId;
+      const { agent } = await getNewChatDefaultCandidates(exactAgentId ? { cachedAgentId: exactAgentId } : {});
       if (!agent) {
         throw new Error("No connected agent yet. Connect your computer, then open this campaign action link again.");
+      }
+      if (exactAgentId && agent.uuid !== exactAgentId) {
+        throw new Error("Your first agent is not connected yet. Finish its Runtime setup, then try again.");
       }
       const created = await createMeTaskChat({
         mode: "task",
@@ -197,15 +202,19 @@ export function QuickstartPage() {
       actionStartedRef.current = false;
       setActionError(err instanceof Error ? err.message : "Couldn't start the campaign task. Please try again.");
     }
-  }, [actionHandoff, actionCampaign, navigate]);
+  }, [actionHandoff, actionCampaign, currentMembership?.firstTeamAgentContinuation?.agentId, navigate]);
 
   useEffect(() => {
     if (!actionHandoff || !actionCampaign || !settled || !growthLandingPagesEnabled || !meLoaded) return;
+    const firstTeamContinuation = currentMembership?.firstTeamAgentContinuation;
     writeCampaignActionHandoffFlag({
       campaign: actionHandoff.campaign,
       repoUrl: actionHandoff.url,
       reportKey: actionHandoff.reportKey,
       repoSlug: actionHandoff.repoSlug,
+      ...(firstTeamContinuation && organizationId
+        ? { targetOrganizationId: organizationId, targetAgentId: firstTeamContinuation.agentId }
+        : {}),
     });
     // Direct-chat eligibility is `shouldLeaveOnboarding` — the membership is
     // terminally done (past connect, has a personal agent, AND carries the
@@ -214,7 +223,9 @@ export function QuickstartPage() {
     // auto-entry suppressor — using it here would misroute dismissed-but-
     // incomplete members into the direct-chat path. `meLoaded` is re-checked
     // in the guard above because both gates return false on unloaded /me.
-    if (
+    if (firstTeamContinuation && firstTeamContinuation.status !== "deleted") {
+      void startActionChat();
+    } else if (
       shouldLeaveOnboarding({
         meLoaded,
         onboardingStep,
@@ -228,8 +239,8 @@ export function QuickstartPage() {
       // A campaign action needs the user's own Agent, but choosing that
       // responsibility is still an explicit product decision. Preserve the
       // handoff and route through first-Agent Template selection; after the
-      // atomic provision that surface resumes onboarding to bind the Agent and
-      // consume this action at Start Chat.
+      // atomic provision that surface opens the exact Agent Runtime and the
+      // Agent header consumes this action only for that target.
       navigate("/templates", { replace: true });
     } else {
       navigate("/onboarding", { replace: true });
@@ -244,6 +255,8 @@ export function QuickstartPage() {
     onboardingDismissedAt,
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
+    currentMembership,
+    organizationId,
     hasNoTeam,
     navigate,
     startActionChat,
