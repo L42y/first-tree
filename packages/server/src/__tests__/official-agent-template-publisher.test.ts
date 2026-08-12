@@ -6,8 +6,8 @@ const TOKEN = "2026-08-12T09:00:00.000Z";
 const NEXT_TOKEN = "2026-08-12T09:05:00.000Z";
 
 const DEFINITION: CreateAgentTemplate = {
-  slug: "team-teammate",
-  name: "Team Teammate",
+  slug: "team-assistant",
+  name: "Team Assistant",
   public: {
     tagline: "Recommended for a team's first AI teammate.",
     purpose: "Helps with everyday team work.",
@@ -19,9 +19,9 @@ const DEFINITION: CreateAgentTemplate = {
   },
   components: [
     {
-      key: "team-teammate-instructions",
+      key: "team-assistant-instructions",
       type: "prompt",
-      name: "Team Teammate Instructions",
+      name: "Team Assistant Instructions",
       payload: { body: "Help the team.", description: "Core responsibilities." },
     },
   ],
@@ -116,7 +116,7 @@ describe("official Agent Template catalog publisher", () => {
   });
 
   it("updates a changed active Template with its optimistic-concurrency token", async () => {
-    const stored = detail({ name: "Old Team Teammate" });
+    const stored = detail({ name: "Old Team Assistant" });
     const updated = detail({ updatedAt: NEXT_TOKEN });
     const fetcher = vi
       .fn<typeof fetch>()
@@ -145,7 +145,7 @@ describe("official Agent Template catalog publisher", () => {
   });
 
   it("updates and publishes a changed draft using the refreshed concurrency token", async () => {
-    const stored = detail({ name: "Old Team Teammate", status: "draft" });
+    const stored = detail({ name: "Old Team Assistant", status: "draft" });
     const updatedDraft = detail({ status: "draft", updatedAt: NEXT_TOKEN });
     const active = detail({ updatedAt: "2026-08-12T09:06:00.000Z" });
     const fetcher = vi
@@ -208,7 +208,7 @@ describe("official Agent Template catalog publisher", () => {
         apply: true,
         fetcher,
       }),
-    ).rejects.toThrow('Official Agent Template "team-teammate" is retired');
+    ).rejects.toThrow('Official Agent Template "team-assistant" is retired');
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
