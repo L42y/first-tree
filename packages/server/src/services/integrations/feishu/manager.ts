@@ -153,6 +153,14 @@ export function createFeishuIntegrationManager(input: {
       resolveQr = resolve;
       rejectQr = reject;
     });
+    // A provider can complete registration immediately after emitting the QR
+    // callback. Hold that transition until the initiating request has read the
+    // persisted QR state, otherwise the fast completion can clear the URL
+    // before the registration response is serialized.
+    let releaseQrResponse!: () => void;
+    const qrResponseRead = new Promise<void>((resolve) => {
+      releaseQrResponse = resolve;
+    });
     const qrTimeout = setTimeout(
       () => rejectQr(new Error("Timed out waiting for Feishu registration QR code")),
       REGISTRATION_QR_TIMEOUT_MS,
@@ -191,6 +199,7 @@ export function createFeishuIntegrationManager(input: {
         // Serialize the credential transition behind the QR-state write so a
         // late callback update cannot restore stale registration metadata.
         await qrReady;
+        await qrResponseRead;
         const cipher = encryptCredentials({ appSecret: result.client_secret }, encryptionKey);
         await db
           .update(imBotBindings)
@@ -223,12 +232,13 @@ export function createFeishuIntegrationManager(input: {
 
     try {
       await qrReady;
+      const view = await getBinding(registration.agentId);
+      if (!view) throw new Error("Feishu registration row disappeared");
+      return view;
     } finally {
       clearTimeout(qrTimeout);
+      releaseQrResponse();
     }
-    const view = await getBinding(registration.agentId);
-    if (!view) throw new Error("Feishu registration row disappeared");
-    return view;
   }
 
   async function connectNewBinding(id: string): Promise<void> {
