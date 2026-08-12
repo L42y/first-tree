@@ -127,7 +127,7 @@ first-tree
 - `apps/cli/` — 发布的 CLI 包（`first-tree` / `ft`）
 - `packages/shared/` — Zod schema、类型、配置系统（`@first-tree/shared`）
 - `packages/server/` — Fastify API 服务（`@first-tree/server`）
-- `packages/client/` — Cloud SDK、AgentRuntime 与内置 providers（`@first-tree/client`）
+- `packages/client/` — Cloud SDK/observability、Runtime 与内置 Providers（`@first-tree/client`）
 - `packages/web/` — React Web 工作空间（`@first-tree/web`）
 - `skills/` — First Tree Agent 使用的仓库内技能内容
 

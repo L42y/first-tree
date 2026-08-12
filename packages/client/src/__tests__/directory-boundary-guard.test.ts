@@ -221,27 +221,49 @@ describe("client directory production dependency direction", () => {
     expect(violations.some((v) => v.includes("orphan.ts") && v.includes("outside cloud|runtime|providers"))).toBe(true);
   });
 
-  it("negative fixture: layer import of root Client barrel fails closed", () => {
+  it("negative fixture: layer import/re-export/dynamic-import of root Client barrel fails closed", () => {
     const src = makeFixtureSrc();
     writeFileSync(
       join(src, "cloud", "bypass.ts"),
       `import { something } from "@first-tree/client";\nexport const x = something;\n`,
     );
     writeFileSync(join(src, "runtime", "bypass-relative.ts"), `export { cloud } from "../index.js";\n`);
+    writeFileSync(
+      join(src, "providers", "bypass-dynamic.ts"),
+      `export async function load() {\n  return import("@first-tree/client");\n}\n`,
+    );
     const violations = collectDirectoryBoundaryViolations(src);
     expect(violations.some((v) => v.includes("cloud/bypass.ts") && v.includes("root Client barrel bypass"))).toBe(true);
     expect(
       violations.some((v) => v.includes("runtime/bypass-relative.ts") && v.includes("root Client barrel bypass")),
     ).toBe(true);
+    expect(
+      violations.some((v) => v.includes("providers/bypass-dynamic.ts") && v.includes("root Client barrel bypass")),
+    ).toBe(true);
   });
 
-  it("negative fixture: unresolved relative TypeScript module fails closed", () => {
+  it("negative fixture: observability compatibility path is cloud ownership, not a skipped root barrel", () => {
+    const src = makeFixtureSrc();
+    writeFileSync(
+      join(src, "providers", "obs.ts"),
+      `import { createLogger } from "@first-tree/client/observability";\nexport const log = createLogger;\n`,
+    );
+    const violations = collectDirectoryBoundaryViolations(src);
+    expect(violations.some((v) => v.includes("providers/obs.ts") && v.includes("(cloud)"))).toBe(true);
+    expect(violations.some((v) => v.includes("providers/obs.ts") && v.includes("root Client barrel bypass"))).toBe(
+      false,
+    );
+  });
+
+  it("negative fixture: unresolved relative TypeScript module fails closed; external packages stay allowed", () => {
     const src = makeFixtureSrc();
     writeFileSync(join(src, "providers", "missing.ts"), `import { missing } from "./does-not-exist.js";\n`);
+    writeFileSync(join(src, "cloud", "external.ts"), `import { z } from "zod";\nexport type Z = typeof z;\n`);
     const violations = collectDirectoryBoundaryViolations(src);
     expect(
       violations.some((v) => v.includes("providers/missing.ts") && v.includes("unresolved relative TypeScript module")),
     ).toBe(true);
+    expect(violations.some((v) => v.includes("cloud/external.ts"))).toBe(false);
   });
 
   it("negative fixture: does not mutate the real packages/client production tree", () => {

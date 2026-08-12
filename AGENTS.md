@@ -10,7 +10,7 @@ What first-tree is NOT:
 ## Tech Stack
 
 - **Server:** Fastify / Drizzle ORM / PostgreSQL / Zod
-- **Client:** fetch + ws (Cloud SDK + AgentRuntime + built-in providers)
+- **Client:** fetch + ws (Cloud SDK/observability + generic Runtime + built-in Providers)
 - **Command:** Commander.js / @inquirer/prompts (unified CLI)
 - **Shared:** Zod schemas + TypeScript types + config system
 - **Web:** React 19 / Vite
@@ -56,7 +56,7 @@ Operator-only flows such as `login`, `daemon install`, and `agent create` belong
 - `apps/doc-website/` — documentation website
 - `packages/shared/` — `@first-tree/shared` schemas, types, and config
 - `packages/server/` — `@first-tree/server` Fastify API server
-- `packages/client/` — `@first-tree/client` Cloud SDK, AgentRuntime, and built-in providers
+- `packages/client/` — `@first-tree/client` Cloud SDK/observability, generic Runtime, and built-in Providers
 - `packages/web/` — `@first-tree/web` React workspace
 - `packages/skill-evals/` — eval tooling for repo-local skills
 - `packages/qa/` — internal QA workflow assets for agent-run validation
@@ -92,7 +92,7 @@ Operator-only flows such as `login`, `daemon install`, and `agent create` belong
 - Do not make or delegate any database change—including schema, migrations, constraints, indexes, defaults, backfills, data rewrites, or persistence semantics—without first obtaining the human's explicit approval for that specific change.
 - Update shared schemas/types first when a change crosses packages.
 - Server features usually flow: shared schema -> Drizzle table (if persistent) -> service -> API route -> migration -> tests.
-- Client Cloud SDK lives in `src/cloud/sdk.ts`; provider integrations and shared handler helpers live under `src/providers/`; generic AgentRuntime lives under `src/runtime/`.
+- Client Cloud SDK/observability lives under `src/cloud/` (`src/cloud/sdk.ts`); provider families and shared handler helpers live under `src/providers/`; generic Runtime lives under `src/runtime/`.
 - CLI business logic belongs in `core/`; command files should stay thin and call `core/*`. Wire commands in `cli/index.ts`, and export public helpers from both `core/index.ts` and `src/index.ts`.
 - Config changes belong in `shared/src/config/`.
 
