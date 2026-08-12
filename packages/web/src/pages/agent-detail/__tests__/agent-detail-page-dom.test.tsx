@@ -1415,7 +1415,7 @@ describe("AgentDetailPage", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps a created campaign task authoritative when the completion stamp fails", async () => {
+  it("keeps the idempotent campaign handoff retryable when the completion stamp fails", async () => {
     authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
     authMock.value.markOnboardingCompleted.mockRejectedValueOnce(new Error("completion unavailable"));
     const { PromptTab } = await import("../prompt-tab.js");
@@ -1432,9 +1432,8 @@ describe("AgentDetailPage", () => {
     await waitForText(container, "Start chat");
     await click(container.querySelector('button[aria-label="Start chat"]'));
 
-    await waitForText(container, "/?c=chat-campaign");
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
-    expect(container.textContent).not.toContain("Couldn't start this task");
+    await waitForText(container, "Couldn't start this task");
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalledWith(null);
 
     await act(async () => root.unmount());
   });

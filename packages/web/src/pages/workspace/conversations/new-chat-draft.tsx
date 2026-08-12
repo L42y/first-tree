@@ -468,8 +468,10 @@ export function NewChatDraft({
     // the still-visible continuation will retry on a later task.
     try {
       await markOnboardingCompleted();
-    } catch {
-      // Best-effort terminal stamp; task creation remains authoritative.
+    } catch (error) {
+      // This task is not idempotently keyed, so never turn a successful send
+      // into a duplicate-task retry just because the terminal stamp failed.
+      console.warn("Agent-first setup completion could not be saved", error);
     }
   };
 

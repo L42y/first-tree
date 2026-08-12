@@ -430,15 +430,7 @@ function AgentDetailPageView() {
             source: "web",
           },
         });
-        if (completesAgentFirstSetup) {
-          try {
-            await markOnboardingCompleted();
-          } catch {
-            // The task already exists. Keep that success authoritative and
-            // let the still-visible continuation retry its terminal stamp on
-            // a later task instead of offering a duplicate campaign retry.
-          }
-        }
+        if (completesAgentFirstSetup) await markOnboardingCompleted();
         writeCampaignActionHandoffFlag(null);
         navigateAway(`/?c=${encodeURIComponent(created.chatId)}`);
       } catch {

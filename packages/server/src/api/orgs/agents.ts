@@ -162,7 +162,7 @@ export async function orgAgentRoutes(app: FastifyInstance): Promise<void> {
         templatePublisherOrgId: app.config.agentTemplates?.publisherOrgId,
         templateActorMemberId: scope.memberId,
         templateActorHumanAgentId: scope.humanAgentId,
-        retargetDeletedFirstTeamContinuation: managerId === scope.memberId,
+        retargetFirstTeamContinuationForHumanAgentId: managerId === scope.memberId ? scope.humanAgentId : undefined,
       },
     );
     notifyClientAgentPinned(agent);

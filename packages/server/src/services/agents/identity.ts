@@ -323,8 +323,8 @@ export async function createAgent(
     templatePublisherOrgId?: string;
     templateActorMemberId?: string;
     templateActorHumanAgentId?: string;
-    /** Retarget a deleted first-Agent continuation during an explicit self-create. */
-    retargetDeletedFirstTeamContinuation?: boolean;
+    /** Retarget this human's deleted first-Agent continuation to the newly created Agent. */
+    retargetFirstTeamContinuationForHumanAgentId?: string;
   } = {},
 ) {
   const uuid = options.uuid ?? uuidv7();
@@ -548,11 +548,11 @@ export async function createAgent(
         );
       }
 
-      if (options.retargetDeletedFirstTeamContinuation && options.templateActorHumanAgentId) {
+      if (options.retargetFirstTeamContinuationForHumanAgentId) {
         const [human] = await tx
           .select({ metadata: agents.metadata })
           .from(agents)
-          .where(eq(agents.uuid, options.templateActorHumanAgentId))
+          .where(eq(agents.uuid, options.retargetFirstTeamContinuationForHumanAgentId))
           .limit(1);
         const continuation = getFirstTeamAgentContinuation(human?.metadata);
         if (continuation) {
@@ -572,7 +572,7 @@ export async function createAgent(
                   true
                 )`,
               })
-              .where(eq(agents.uuid, options.templateActorHumanAgentId));
+              .where(eq(agents.uuid, options.retargetFirstTeamContinuationForHumanAgentId));
           }
         }
       }
