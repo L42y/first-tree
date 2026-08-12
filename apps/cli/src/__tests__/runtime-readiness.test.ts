@@ -236,6 +236,26 @@ describe("RuntimeReadinessCoordinator", () => {
     expect(h.current().readiness).toBeUndefined();
   });
 
+  it("discards a result when the prepared execution authority changes in flight", async () => {
+    let executablePath = "/runtime/claude-a";
+    let release: (() => void) | undefined;
+    const h = harness({
+      authority: () => ({ source: "path", executablePath }),
+      verify: async () =>
+        new Promise<{ ok: true }>((resolve) => {
+          release = () => resolve({ ok: true });
+        }),
+    });
+
+    const result = h.coordinator.check(command());
+    await vi.waitFor(() => expect(h.verify).toHaveBeenCalledTimes(1));
+    executablePath = "/runtime/claude-b";
+    release?.();
+
+    await expect(result).resolves.toMatchObject({ state: "available" });
+    expect(h.current().readiness).toBeUndefined();
+  });
+
   it("lets the newest provider configuration supersede an older in-flight result", async () => {
     let releaseFirst: (() => void) | undefined;
     let callCount = 0;

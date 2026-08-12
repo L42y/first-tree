@@ -428,6 +428,10 @@ export class RuntimeReadinessCoordinator {
       (active?.identity === identity && active.invalidated)
     ) {
       this.deps.log("•", `runtime-readiness: discarded stale ${command.provider} result (ref ${command.ref})`);
+      if (current?.readiness?.state === "checking" && current.readiness.identity === identity) {
+        const { readiness: _staleChecking, ...withoutStaleChecking } = current;
+        await this.deps.setProviderEntry(command.provider, withoutStaleChecking);
+      }
       return { state: "available", identity: currentIdentity };
     }
     if (current?.readiness && current.readiness.identity !== identity && current.readiness.state === "checking") {
