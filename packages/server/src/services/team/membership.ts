@@ -165,38 +165,42 @@ export async function ensureMembership(db: Database, data: CreateMembershipForUs
         return existing;
       }
 
-      const memberId = uuidv7();
-      const agentName = sanitizeAgentName(data.username);
-      const inboxId = `inbox_${uuidv7()}`;
-      const agentUuid = uuidv7();
-
-      await tx.insert(agents).values({
-        uuid: agentUuid,
-        name: agentName,
-        organizationId: data.organizationId,
-        type: "human",
-        displayName: effectiveDisplayName,
-        inboxId,
-        source: "oauth",
-        visibility: "organization",
-        managerId: memberId,
-      });
-
-      const [row] = await tx
-        .insert(members)
-        .values({
-          id: memberId,
-          userId: data.userId,
-          organizationId: data.organizationId,
-          agentId: agentUuid,
-          role: data.role,
-          status: MEMBER_STATUSES.ACTIVE,
-        })
-        .returning();
-      if (!row) throw new Error("Unexpected: INSERT RETURNING produced no row");
-      return row;
+      return insertNewMembershipRows(tx, data, effectiveDisplayName);
     });
   });
+}
+
+async function insertNewMembershipRows(db: DbLike, data: CreateMembershipForUser, displayName: string) {
+  const memberId = uuidv7();
+  const agentName = sanitizeAgentName(data.username);
+  const inboxId = `inbox_${uuidv7()}`;
+  const agentUuid = uuidv7();
+
+  await db.insert(agents).values({
+    uuid: agentUuid,
+    name: agentName,
+    organizationId: data.organizationId,
+    type: "human",
+    displayName,
+    inboxId,
+    source: "oauth",
+    visibility: "organization",
+    managerId: memberId,
+  });
+
+  const [row] = await db
+    .insert(members)
+    .values({
+      id: memberId,
+      userId: data.userId,
+      organizationId: data.organizationId,
+      agentId: agentUuid,
+      role: data.role,
+      status: MEMBER_STATUSES.ACTIVE,
+    })
+    .returning();
+  if (!row) throw new Error("Unexpected: INSERT RETURNING produced no row");
+  return row;
 }
 
 function sanitizeAgentName(login: string): string {
@@ -644,7 +648,7 @@ function sanitizeOrgSlug(raw: string): string {
  * transaction used by OAuth bootstrap, where catching a 23505 would leave
  * the transaction aborted before the retry can run.
  */
-async function insertOrgWithSlugRetry(db: Database, orgId: string, base: string, displayName: string): Promise<string> {
+async function insertOrgWithSlugRetry(db: DbLike, orgId: string, base: string, displayName: string): Promise<string> {
   const [existing] = await db
     .select({ id: organizations.id })
     .from(organizations)
@@ -770,7 +774,10 @@ export async function leaveOrganization(db: Database, memberId: string) {
 
 /**
  * Self-service "create another team" (operator clicks "Create team" in the
- * org switcher). Caller is the new team's admin.
+ * org switcher). Caller must already have an active membership and becomes the
+ * new team's admin. The prerequisite check and new Team graph share the user
+ * identity transaction so concurrent membership lifecycle writes cannot turn
+ * this into a first-Team creation path.
  *
  * The user only ever names the team's `displayName`; the slug is derived
  * server-side and disambiguated by `insertOrgWithSlugRetry`, exactly like the
@@ -786,16 +793,33 @@ export async function leaveOrganization(db: Database, memberId: string) {
  */
 export async function selfCreateOrganization(
   db: Database,
-  data: { userId: string; userDisplayName: string; username: string; displayName: string },
+  data: { userId: string; username: string; displayName: string },
 ) {
-  const orgId = uuidv7();
-  const name = await insertOrgWithSlugRetry(db, orgId, sanitizeOrgSlug(data.displayName), data.displayName);
-  const member = await ensureMembership(db, {
-    userId: data.userId,
-    organizationId: orgId,
-    role: "admin",
-    displayName: data.userDisplayName,
-    username: data.username,
+  return db.transaction(async (tx) => {
+    return syncCurrentUserDisplayName(tx, data.userId, async (effectiveDisplayName) => {
+      const [activeMembership] = await tx
+        .select({ id: members.id })
+        .from(members)
+        .where(and(eq(members.userId, data.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)))
+        .limit(1);
+      if (!activeMembership) {
+        throw new ConflictError("Create your first Team by starting an Agent");
+      }
+
+      const orgId = uuidv7();
+      const name = await insertOrgWithSlugRetry(tx, orgId, sanitizeOrgSlug(data.displayName), data.displayName);
+      const member = await insertNewMembershipRows(
+        tx,
+        {
+          userId: data.userId,
+          organizationId: orgId,
+          role: "admin",
+          displayName: effectiveDisplayName,
+          username: data.username,
+        },
+        effectiveDisplayName,
+      );
+      return { organizationId: orgId, memberId: member.id, name, displayName: data.displayName };
+    });
   });
-  return { organizationId: orgId, memberId: member.id, name, displayName: data.displayName };
 }

@@ -1186,19 +1186,14 @@ describe("Members API", () => {
 
     it("selfCreateOrganization derives a free slug instead of failing on a taken one", async () => {
       const app = getApp();
-      const userId = `user-${randomUUID()}`;
-      const username = `self-org-admin-${randomUUID().slice(0, 8)}`;
-      await app.db
-        .insert(usersTable)
-        .values({ id: userId, username, passwordHash: "x", displayName: "Self Org Admin" });
+      const admin = await createTestAdmin(app, { username: `self-org-admin-${randomUUID().slice(0, 8)}` });
 
       // "Default" sanitizes to the `default` slug, which always exists. A slug
       // collision is the server's problem, not a user-visible failure: the
       // retry helper moves to a suffixed slug and the caller still gets a team.
       const created = await selfCreateOrganization(app.db, {
-        userId,
-        userDisplayName: "Self Org Admin",
-        username,
+        userId: admin.userId,
+        username: admin.username,
         displayName: "Default",
       });
       expect(created.name).toMatch(/^default-.+/);
@@ -1210,6 +1205,26 @@ describe("Members API", () => {
         .limit(1);
       expect(defaultOrg?.id).toBeDefined();
       expect(defaultOrg?.id).not.toBe(created.organizationId);
+    });
+
+    it("selfCreateOrganization rejects a caller without an active membership", async () => {
+      const app = getApp();
+      const admin = await createTestAdmin(app, { username: `inactive-self-org-${randomUUID().slice(0, 8)}` });
+      await app.db.update(membersTable).set({ status: "left" }).where(eq(membersTable.id, admin.memberId));
+
+      await expect(
+        selfCreateOrganization(app.db, {
+          userId: admin.userId,
+          username: admin.username,
+          displayName: "Empty First Team",
+        }),
+      ).rejects.toThrow("Create your first Team by starting an Agent");
+
+      const created = await app.db
+        .select({ id: organizationsTable.id })
+        .from(organizationsTable)
+        .where(eq(organizationsTable.displayName, "Empty First Team"));
+      expect(created).toHaveLength(0);
     });
   });
 });

@@ -23,7 +23,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
+import { ForbiddenError, NotFoundError } from "../errors.js";
 import { requireUser } from "../scope/require-user.js";
 import {
   listAgentsManagedByUser,
@@ -705,21 +705,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
   app.post("/me/organizations", { config: { otelRecordBody: true } }, async (request, reply) => {
     const { userId } = requireUser(request);
     const body = createOrgFromMeSchema.parse(request.body);
-    const existingMemberships = await listActiveMemberships(app.db, userId);
-    if (existingMemberships.length === 0) {
-      throw new ConflictError("Create your first Team by starting an Agent");
-    }
 
-    const [u] = await app.db
-      .select({ username: users.username, displayName: users.displayName })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+    const [u] = await app.db.select({ username: users.username }).from(users).where(eq(users.id, userId)).limit(1);
     if (!u) throw new NotFoundError("User not found");
 
     const created = await selfCreateOrganization(app.db, {
       userId,
-      userDisplayName: u.displayName,
       username: u.username,
       displayName: body.displayName,
     });
