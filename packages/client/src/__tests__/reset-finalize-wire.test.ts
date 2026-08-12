@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
-import { ClientConnection } from "../client-connection.js";
 import { AgentSlot } from "../runtime/agent-slot.js";
+import { ClientConnection } from "../runtime/client-connection.js";
 import type { AgentHandler, SessionContext, SessionMessage } from "../runtime/handler.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
 

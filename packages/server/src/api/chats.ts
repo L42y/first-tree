@@ -17,6 +17,7 @@ import type { FastifyInstance } from "fastify";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
+import { imChatBindings } from "../db/schema/im-chat-bindings.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
@@ -76,6 +77,15 @@ import { sendFollowResult } from "./github-entity-reply.js";
  * and gates participation/supervision.
  */
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
+  async function assertWebMutableChat(chatId: string): Promise<void> {
+    const [binding] = await app.db
+      .select({ id: imChatBindings.id })
+      .from(imChatBindings)
+      .where(eq(imChatBindings.chatId, chatId))
+      .limit(1);
+    if (binding) throw new ForbiddenError("Feishu chats are read-only in the Web app");
+  }
+
   async function requireDirectHumanChatMembership(chatId: string, humanAgentId: string): Promise<void> {
     const [direct] = await app.db
       .select({ chatId: chatMembership.chatId })
@@ -308,6 +318,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: { otelRecordBody: true } },
     async (request, reply) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       const body = followGithubEntityRequestSchema.parse(request.body);
 
       const pair = await resolveHumanScmBindingPair(app.db, chat.id, scope.humanAgentId);
@@ -344,6 +355,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/github-entities",
     async (request) => {
       const { chat } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       const entity = request.query.entity;
       if (!entity) {
         throw new BadRequestError("Pass ?entity=<GitHub URL | owner/repo#N | owner/repo@sha> to unfollow.");
@@ -366,6 +378,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     { config: { otelRecordBody: true } },
     async (request, reply) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       await requireDirectHumanChatMembership(chat.id, scope.humanAgentId);
       const body = followGitlabEntitySchema.parse(request.body);
       const pair = await resolveHumanScmBindingPair(app.db, chat.id, scope.humanAgentId);
@@ -406,6 +419,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/gitlab-entities",
     async (request) => {
       const { chat, scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(chat.id);
       await requireDirectHumanChatMembership(chat.id, scope.humanAgentId);
       if (request.query.entity) {
         return removeCurrentGitlabEntityFollow(app.db, {
@@ -447,6 +461,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   app.patch<{ Params: { chatId: string } }>("/:chatId", { config: { otelRecordBody: true } }, async (request) => {
     // Access enforcement only — the patch attributes to no specific actor now.
     await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     const body = updateChatSchema.parse(request.body);
     // Both the console rename / re-describe and the agent `chat update` path go
     // through `updateChatMetadata`, so description-freshness stamping stays in
@@ -474,6 +489,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         id: messages.id,
         chatId: messages.chatId,
         senderId: messages.senderId,
+        senderKind: messages.senderKind,
+        senderProvider: messages.senderProvider,
         format: messages.format,
         content: messages.content,
         metadata: messages.metadata,
@@ -504,6 +521,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         id: m.id,
         chatId: m.chatId,
         senderId: m.senderId,
+        senderKind: m.senderKind,
+        senderProvider: m.senderProvider,
         format: m.format,
         content: m.content,
         metadata: m.metadata,
@@ -543,6 +562,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/requests/:requestId/ask-agent",
     async (request, reply) => {
       const { scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(request.params.chatId);
       const body = askAgentQuestionSchema.parse(request.body);
       await ensureParticipant(app.db, request.params.chatId, scope.humanAgentId);
 
@@ -572,6 +592,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
         id: result.message.id,
         chatId: result.message.chatId,
         senderId: result.message.senderId,
+        senderKind: result.message.senderKind,
+        senderProvider: result.message.senderProvider,
         format: result.message.format,
         content: result.message.content,
         metadata: result.message.metadata,
@@ -590,6 +612,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { chatId: string } }>("/:chatId/leave", async (request, reply) => {
     const { scope } = await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     const participants = await leaveChat(app.db, request.params.chatId, scope.humanAgentId);
     return reply.status(200).send({
       chatId: request.params.chatId,
@@ -614,6 +637,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post<{ Params: { chatId: string } }>("/:chatId/messages", async (request, reply) => {
     const { chat, scope } = await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     const body = sendMessageSchema.parse(request.body);
     assertLandingCampaignTrialChatAcceptsHumanMessage(chat.metadata, body);
 
@@ -635,6 +659,8 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
       id: result.message.id,
       chatId: result.message.chatId,
       senderId: result.message.senderId,
+      senderKind: result.message.senderKind,
+      senderProvider: result.message.senderProvider,
       format: result.message.format,
       content: result.message.content,
       // Return the STORED row's metadata + inReplyTo (mirrors the GET list
@@ -678,6 +704,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   /** POST /chats/:chatId/participants — add speaking participants. Idempotent. */
   app.post<{ Params: { chatId: string } }>("/:chatId/participants", async (request, reply) => {
     const { chat, scope } = await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     if (parseLandingCampaignTrialChatMetadata(chat.metadata)) {
       throw new ForbiddenError("Landing campaign trial chats are managed by First Tree.");
     }
@@ -698,6 +725,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     "/:chatId/participants/:agentId",
     async (request, reply) => {
       const { scope } = await requireChatAccess(request, app.db);
+      await assertWebMutableChat(request.params.chatId);
       await removeParticipant(app.db, request.params.chatId, scope.humanAgentId, request.params.agentId);
       return reply.status(204).send();
     },
@@ -706,6 +734,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   /** Watcher → speaking participant. State-carry. */
   app.post<{ Params: { chatId: string } }>("/:chatId/workspace-join", async (request, reply) => {
     const { scope } = await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     await joinMeChat(app.db, request.params.chatId, scope.humanAgentId);
     return reply.status(204).send();
   });
@@ -713,6 +742,7 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
   /** Speaking participant → watcher (or detach). */
   app.post<{ Params: { chatId: string } }>("/:chatId/workspace-leave", async (request) => {
     const { scope } = await requireChatAccess(request, app.db);
+    await assertWebMutableChat(request.params.chatId);
     return leaveMeChat(app.db, request.params.chatId, scope.humanAgentId);
   });
 }

@@ -10,6 +10,7 @@ import {
 } from "@first-tree/shared";
 import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import { findAttachmentFile } from "../runtime/attachment-store.js";
 import type { ContextTreeBinding } from "../runtime/bootstrap.js";
@@ -25,7 +26,6 @@ import { findImagePath } from "../runtime/image-store.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { SessionManager, type SessionManagerShutdownOptions } from "../runtime/session-manager.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -666,6 +666,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             {
               id: "request-for-human",
               senderId: "agent-2",
+              senderKind: "member",
+              senderProvider: null,
               format: "request",
               content: "Which layout should ship?",
               metadata: {
@@ -735,6 +737,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             ...imageIds.map((attachmentId, index) => ({
               id: `preceding-${index}`,
               senderId: "agent-2",
+              senderKind: "member" as const,
+              senderProvider: null,
               format: "request" as const,
               content: `Decision ${index}`,
               metadata: {
@@ -754,6 +758,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             {
               id: "newer-non-request-image",
               senderId: "agent-2",
+              senderKind: "member",
+              senderProvider: null,
               format: "text",
               content: "An unrelated image",
               metadata: {

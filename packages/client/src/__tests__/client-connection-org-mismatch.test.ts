@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection, ClientOrgMismatchError } from "../client-connection.js";
+import { ClientConnection, ClientOrgMismatchError } from "../runtime/client-connection.js";
 
 /**
  * Behavior contract: when the server rejects `client:register` with

@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection, ClientUserMismatchError } from "../client-connection.js";
+import { ClientConnection, ClientUserMismatchError } from "../runtime/client-connection.js";
 
 /**
  * Behavior contract under decouple-client-from-identity §4.4 + §4.10.4:

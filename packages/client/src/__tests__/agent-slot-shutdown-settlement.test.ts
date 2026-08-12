@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_RUNTIME_SESSION_HEADER, encodeProviderRetryEventMessage } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler } from "../runtime/handler.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import { FirstTreeHubSDK } from "../sdk.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

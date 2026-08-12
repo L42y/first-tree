@@ -60,6 +60,8 @@ const TRUNCATE_TABLES = [
   "adapter_agent_mappings",
   "github_entity_chat_mappings",
   "context_tree_io_events",
+  "im_chat_bindings",
+  "im_bot_bindings",
   "inbox_entries",
   "session_events",
   "notifications",

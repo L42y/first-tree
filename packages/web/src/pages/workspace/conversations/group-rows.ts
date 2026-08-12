@@ -174,6 +174,7 @@ const SOURCE_BUCKETS: ReadonlyArray<{ key: string; label: string; match: (row: M
   { key: "agent", label: "Started by agents", match: (row) => row.source === "agent" },
   { key: "github", label: "From GitHub", match: (row) => row.source === "github" },
   { key: "gitlab", label: "From GitLab", match: (row) => row.source === "gitlab" },
+  { key: "feishu", label: "From Feishu", match: (row) => row.source === "feishu" },
 ];
 
 function groupBySource(rows: ReadonlyArray<MeChatRow>): ReadonlyArray<GroupBucket> {

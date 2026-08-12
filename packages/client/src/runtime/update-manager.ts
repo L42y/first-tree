@@ -1,6 +1,6 @@
 import type { ClientConfig } from "@first-tree/shared/config";
 import * as semver from "semver";
-import type { ServerWelcome } from "../client-connection.js";
+import type { ServerWelcome } from "./client-connection.js";
 
 /**
  * Narrow subset of `ClientConnection` the manager uses. Declared structurally

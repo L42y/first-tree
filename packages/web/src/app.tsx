@@ -14,7 +14,6 @@ import { ProfileTab } from "./pages/agent-detail/profile-tab.js";
 import { PromptTab } from "./pages/agent-detail/prompt-tab.js";
 import { RepositoriesTab } from "./pages/agent-detail/repositories-tab.js";
 import { ResourcesTab } from "./pages/agent-detail/resources-tab.js";
-import { ResponsibilitiesTab } from "./pages/agent-detail/responsibilities-tab.js";
 import { RuntimeTab } from "./pages/agent-detail/runtime-tab.js";
 import { UsageTab } from "./pages/agent-detail/usage-tab.js";
 import { AgentDetailPage } from "./pages/agent-detail.js";
@@ -505,7 +504,7 @@ export function App() {
                   <Route path="agents/:uuid" element={<AgentDetailPage />}>
                     <Route index element={<Navigate to="profile" replace />} />
                     <Route path="profile" element={<ProfileTab />} />
-                    <Route path="responsibilities" element={<ResponsibilitiesTab />} />
+                    <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
                     <Route path="runtime" element={<RuntimeTab />} />
                     <Route path="prompt" element={<PromptTab />} />
                     <Route path="capabilities" element={<ResourcesTab />} />

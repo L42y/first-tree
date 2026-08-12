@@ -12,6 +12,7 @@ import {
 } from "@first-tree/shared";
 import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
+import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { ContextTreeBinding } from "../runtime/bootstrap.js";
 import type {
@@ -27,7 +28,6 @@ import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
 import { ReplayFenceStore } from "../runtime/replay-fence.js";
 import { SessionManager } from "../runtime/session-manager.js";
-import { type FirstTreeHubSDK, SdkError } from "../sdk.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 

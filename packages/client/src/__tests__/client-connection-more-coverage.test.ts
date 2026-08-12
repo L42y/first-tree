@@ -1,9 +1,9 @@
 import { EventEmitter } from "node:events";
 import { type ClientPausedReason, runtimeAuthProviderSchema, type SessionEvent } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BoundAgent } from "../client-connection.js";
+import type { BoundAgent } from "../runtime/client-connection.js";
 
-type ClientConnectionModule = typeof import("../client-connection.js");
+type ClientConnectionModule = typeof import("../runtime/client-connection.js");
 type ClientConnectionInstance = InstanceType<ClientConnectionModule["ClientConnection"]>;
 type ClientConnectionConfig = ConstructorParameters<ClientConnectionModule["ClientConnection"]>[0];
 
@@ -111,7 +111,7 @@ async function loadClientConnection(): Promise<ClientConnectionModule> {
   vi.resetModules();
   FakeWebSocket.instances = [];
   vi.doMock("ws", () => ({ default: FakeWebSocket }));
-  return import("../client-connection.js");
+  return import("../runtime/client-connection.js");
 }
 
 async function makeConnection(overrides: Partial<ClientConnectionConfig> = {}): Promise<ClientConnectionInstance> {
@@ -258,6 +258,8 @@ describe("ClientConnection — additional branch coverage", () => {
         id: "message-1",
         chatId: "chat-1",
         senderId: "agent-sender",
+        senderKind: "member",
+        senderProvider: null,
         format: "text",
         content: "hello",
         metadata: {},

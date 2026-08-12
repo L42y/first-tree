@@ -25,7 +25,7 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
  * per-attachment ACL. Stronger, attachment-scoped authorization is the
  * consumer's responsibility. Upload is org-scoped
  * (`POST /api/v1/orgs/:orgId/attachments`) so `uploaded_by` resolves to a
- * stable member identity.
+ * stable actor identity. Trusted ingress may use a namespaced integration id.
  *
  * Lifecycle: write-once. Uploads reserve quota as `uploading` and become
  * `ready` only after their `bytea` payload is published. `deleting` remains a
@@ -56,8 +56,9 @@ export const attachments = pgTable(
     /** Immutable PostgreSQL payload; null only while uploading or before the reverse backfill. */
     data: bytea("data"),
     /**
-     * `agents.uuid` of the team member who uploaded these bytes. Humans
-     * store their `humanAgentId`; AI agents store their own uuid. No FK —
+     * Stable actor id for the uploader. Humans store their `humanAgentId`, AI
+     * agents store their uuid, and trusted ingress stores a namespaced
+     * integration id. No FK —
      * mirrors `messages.sender_id`, which dropped its FK so soft-deleting
      * an agent does not cascade or orphan existing rows.
      */

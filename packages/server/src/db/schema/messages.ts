@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { check, index, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { chats } from "./chats.js";
 
 /** Messages. Immutable after creation. Each message belongs to exactly one Chat. */
@@ -12,6 +12,8 @@ export const messages = pgTable(
       .references(() => chats.id),
     /** No FK constraint — agents may be soft-deleted while messages are preserved. */
     senderId: text("sender_id").notNull(),
+    senderKind: text("sender_kind").notNull().default("member"),
+    senderProvider: text("sender_provider"),
     /** "text" | "markdown" | "card" | "reference" | "file" | "request" */
     format: text("format").notNull(),
     content: jsonb("content").$type<unknown>().notNull(),
@@ -49,7 +51,7 @@ export const messages = pgTable(
      */
     inReplyTo: text("in_reply_to"),
     /**
-     * Entry point that created this message: web / cli / github / gitlab / api.
+     * Entry point that created this message: web / cli / github / gitlab / api / feishu.
      * NOT NULL after migration 0047 — every write path declares its
      * caller-stack origin so observability / loop / egress diagnostics can
      * group on it without a backfilling join.
@@ -71,5 +73,14 @@ export const messages = pgTable(
     index("idx_messages_attachment_image_id").on(sql`(${table.content} ->> 'imageId')`),
     index("idx_messages_content_attachments").using("gin", sql`((${table.content} -> 'attachments')) jsonb_path_ops`),
     index("idx_messages_metadata_attachments").using("gin", sql`((${table.metadata} -> 'attachments')) jsonb_path_ops`),
+    uniqueIndex("uq_messages_feishu_inbound_message")
+      .on(table.chatId, sql`(${table.metadata} -> 'feishu' -> 'reference' ->> 'messageId')`)
+      .where(
+        sql`${table.senderKind} = 'integration' AND ${table.senderProvider} = 'feishu' AND ${table.metadata} -> 'feishu' ->> 'direction' = 'inbound'`,
+      ),
+    check(
+      "chk_messages_sender_identity",
+      sql`(${table.senderKind} = 'member' AND ${table.senderProvider} IS NULL) OR (${table.senderKind} = 'integration' AND ${table.senderProvider} = 'feishu' AND ${table.senderId} = 'integration:feishu')`,
+    ),
   ],
 );

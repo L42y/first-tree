@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ASSISTANT_TEXT_EVENT_LIMIT, chunkAssistantText } from "../handlers/assistant-text.js";
+import { ASSISTANT_TEXT_EVENT_LIMIT, chunkAssistantText } from "../providers/handlers/assistant-text.js";
 
 describe("chunkAssistantText", () => {
   it("returns [] for whitespace-only input", () => {

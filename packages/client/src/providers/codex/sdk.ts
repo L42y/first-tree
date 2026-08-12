@@ -19,9 +19,6 @@ import {
   type ThreadOptions,
   type Usage,
 } from "@openai/codex-sdk";
-import { chunkAssistantText } from "../../handlers/assistant-text.js";
-import { formatAuthHint, isCodexAuthError } from "../../handlers/auth-error-hint.js";
-import { resolveTurnSettlement } from "../../handlers/turn-settlement.js";
 import type {
   AgentHandler,
   AgentIdentity,
@@ -63,6 +60,10 @@ import {
   writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { chunkAssistantText } from "../handlers/assistant-text.js";
+import { formatAuthHint, isCodexAuthError } from "../handlers/auth-error-hint.js";
+import { resolveTurnSettlement } from "../handlers/turn-settlement.js";
+import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {
   createCodexClientWithBinaryFallback,
   formatCodexBinaryMissingMessage,
@@ -1422,6 +1423,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
         await reconcileManagedSkillsForConfig(
           cwd,
           runtimeProvider,
+          PROVIDER_SKILL_ROOTS,
           runtimeConfig,
           sessionCtx.log,
           teamSkillBundleResolverFromSdk(sessionCtx.sdk),
@@ -1540,6 +1542,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
         sessionCtx,
         workspaceRoot,
         runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,
@@ -1626,6 +1629,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
         sessionCtx,
         workspaceRoot,
         runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved: resumePayloadResolved,

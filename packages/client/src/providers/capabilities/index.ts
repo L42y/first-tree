@@ -5,7 +5,14 @@ import {
   RUNTIME_PROVIDER_IDS,
   type RuntimeProvider,
 } from "@first-tree/shared";
-import { BUILTIN_PROVIDER_PROBES, type BuiltinProviderProbeTable, probedRuntimeProviders } from "../builtin-probes.js";
+import {
+  BUILTIN_PROVIDER_PROBES,
+  type BuiltinProviderProbeTable,
+  probedRuntimeProviders,
+  probeExternalTool,
+} from "../builtin-probes.js";
+
+export const LARK_CLI_CAPABILITY_KEY = "lark-cli";
 
 /** Periodic full re-probe ceiling: re-detect at most this often on reconnect to
  * catch silent drift (a provider uninstalled while connected). Detection is
@@ -31,7 +38,10 @@ export const CAPABILITY_REFRESH_MAX_MS = 5 * 60 * 1000;
  * a background re-probe scheduled while it stays connected.
  */
 export function hasNonOkProvider(caps: ClientCapabilities): boolean {
-  return PROBED_RUNTIME_PROVIDERS.some((provider) => caps[provider]?.state !== "ok");
+  return (
+    caps[LARK_CLI_CAPABILITY_KEY]?.state !== "ok" ||
+    PROBED_RUNTIME_PROVIDERS.some((provider) => caps[provider]?.state !== "ok")
+  );
 }
 
 /**
@@ -55,9 +65,7 @@ function errorEntry(err: unknown): CapabilityEntry {
   };
 }
 
-async function aggregate(
-  probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]>,
-): Promise<ClientCapabilities> {
+async function aggregate(probes: Array<readonly [string, Promise<CapabilityEntry>]>): Promise<ClientCapabilities> {
   // Settle concurrently, then publish in the input/provider order. Writing
   // into `out` inside each async branch would make capability-map insertion
   // order depend on probe completion timing, which agent-creation surfaces
@@ -83,6 +91,8 @@ export type ProbeCapabilitiesOptions = {
    * use the immutable {@link BUILTIN_PROVIDER_PROBES} composition table.
    */
   probes?: BuiltinProviderProbeTable;
+  /** Test seam for the machine-level lark-cli check. Custom provider tables skip it unless explicitly supplied. */
+  externalToolProbe?: (name: string) => CapabilityEntry;
 };
 
 /**
@@ -94,10 +104,14 @@ export type ProbeCapabilitiesOptions = {
  */
 export async function probeCapabilities(options: ProbeCapabilitiesOptions = {}): Promise<ClientCapabilities> {
   const probeTable = options.probes ?? BUILTIN_PROVIDER_PROBES;
-  const probes: Array<readonly [RuntimeProvider, Promise<CapabilityEntry>]> = [];
+  const probes: Array<readonly [string, Promise<CapabilityEntry>]> = [];
   for (const provider of RUNTIME_PROVIDER_IDS) {
     if (!isRuntimeProviderEnabled(provider)) continue;
     probes.push([provider, probeTable[provider]()]);
+  }
+  const externalToolProbe = options.externalToolProbe ?? (options.probes ? null : probeExternalTool);
+  if (externalToolProbe) {
+    probes.push([LARK_CLI_CAPABILITY_KEY, Promise.resolve(externalToolProbe("lark-cli"))]);
   }
   return aggregate(probes);
 }

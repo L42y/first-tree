@@ -163,9 +163,6 @@ vi.mock("../pages/agent-detail.js", async () => {
   };
 });
 vi.mock("../pages/agent-detail/profile-tab.js", () => ({ ProfileTab: () => <div>profile tab</div> }));
-vi.mock("../pages/agent-detail/responsibilities-tab.js", () => ({
-  ResponsibilitiesTab: () => <div>responsibilities tab</div>,
-}));
 vi.mock("../pages/agent-detail/runtime-tab.js", () => ({ RuntimeTab: () => <div>runtime tab</div> }));
 vi.mock("../pages/agent-detail/prompt-tab.js", () => ({ PromptTab: () => <div>prompt tab</div> }));
 vi.mock("../pages/agent-detail/resources-tab.js", () => ({ ResourcesTab: () => <div>resources tab</div> }));
@@ -353,7 +350,8 @@ describe("App routes", () => {
     expect(await renderAppAt("/agents/agent-1/usage")).toContain("usage tab");
     await resetRenderedApp();
 
-    expect(await renderAppAt("/agents/agent-1/responsibilities")).toContain("responsibilities tab");
+    expect(await renderAppAt("/agents/agent-1/responsibilities")).toContain("profile tab");
+    expect(window.location.pathname).toBe("/agents/agent-1/profile");
     await resetRenderedApp();
 
     expect(await renderAppAt("/agents/agent-1/runtime")).toContain("runtime tab");

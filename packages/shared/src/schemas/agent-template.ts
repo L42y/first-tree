@@ -236,6 +236,11 @@ export const agentTemplateComponentSchema = z.discriminatedUnion("type", [
 ]);
 export type AgentTemplateComponent = z.infer<typeof agentTemplateComponentSchema>;
 
+/** Public example-task copy is deliberately small enough for catalog cards and handoff surfaces. */
+export const MIN_AGENT_TEMPLATE_EXAMPLE_TASKS = 2;
+export const MAX_AGENT_TEMPLATE_EXAMPLE_TASKS = 3;
+export const MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS = 300;
+
 /**
  * Public-safe profile: the only Template data a public/marketing surface may
  * ever serialize. Raw instructions, bundle references, and MCP connection
@@ -255,6 +260,12 @@ export const agentTemplatePublicProfileSchema = z
     instructionsSummary: z.string().max(2000),
     /** Summary of the tools and skills the Template adds. */
     toolsAndSkillsSummary: z.string().max(2000),
+    /** Concrete, public-safe work examples. Optional for payload compatibility. */
+    exampleTasks: z
+      .array(z.string().min(1).max(MAX_AGENT_TEMPLATE_EXAMPLE_TASK_CHARS))
+      .min(MIN_AGENT_TEMPLATE_EXAMPLE_TASKS)
+      .max(MAX_AGENT_TEMPLATE_EXAMPLE_TASKS)
+      .optional(),
   })
   .strict();
 export type AgentTemplatePublicProfile = z.infer<typeof agentTemplatePublicProfileSchema>;

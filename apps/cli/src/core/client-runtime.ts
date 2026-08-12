@@ -203,7 +203,8 @@ export class ClientRuntime {
     // re-resolves with the login-shell probe) and by the capability probe
     // (post-construction) — neither of which is on the pre-connect path.
     // Log once per ClientRuntime construction.
-    const resolution = resolveAndLogClaudeExecutable();
+    const handlersLog = createLogger("handlers");
+    const resolution = resolveAndLogClaudeExecutable({ log: handlersLog });
     this.handlerFactories = createBuiltinHandlerRegistry({
       resolveExecutable: () => resolution,
     });

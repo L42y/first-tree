@@ -28,6 +28,7 @@ export const ORIGIN_OPTIONS: ReadonlyArray<{ value: ChatSource; label: string }>
   { value: "github", label: "GitHub" },
   { value: "gitlab", label: "GitLab" },
   { value: "agent", label: "Agent" },
+  { value: "feishu", label: "Feishu" },
 ];
 
 /** Map a `ChatSource` to its short user-facing label. */

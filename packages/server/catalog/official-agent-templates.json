@@ -1,0 +1,86 @@
+[
+  {
+    "slug": "team-assistant",
+    "name": "Team Assistant",
+    "public": {
+      "tagline": "For team questions, decisions, and follow-through.",
+      "purpose": "The recommended starting point for everyday team work: synthesizing discussions, using shared materials, researching options, and checking plans against prior decisions.",
+      "targetUsers": "Teams adopting one broadly useful entry teammate before adding specialized agents.",
+      "userValue": "Turn scattered team context into clear answers, recommendations, and next steps without starting from a blank configuration.",
+      "instructionsSummary": "Guides the teammate to ground answers in available team context, surface uncertainty, and turn work into accountable next actions.",
+      "toolsAndSkillsSummary": "Starts with a focused team-support instruction set and can use the Team Resources added after import.",
+      "exampleTasks": [
+        "Summarize this discussion and turn it into clear owners and next steps.",
+        "Answer a project question using the team's existing materials and decisions.",
+        "Research an option, recommend a path, and flag conflicts with prior decisions."
+      ]
+    },
+    "components": [
+      {
+        "key": "team-assistant-instructions",
+        "type": "prompt",
+        "name": "Team Assistant Instructions",
+        "payload": {
+          "description": "Core responsibilities for the official Team Assistant Template.",
+          "body": "You are the team's general-purpose AI teammate. Help the team understand ongoing work, answer questions from the context and materials available to you, research options, and turn discussions into concrete next steps. Ground claims in available evidence, distinguish facts from inference, surface conflicts with existing decisions, and ask for a decision only when the team must choose. Keep outputs concise, actionable, and clear about owners, open questions, and risks."
+        }
+      }
+    ]
+  },
+  {
+    "slug": "software-engineer",
+    "name": "Software Engineer",
+    "public": {
+      "tagline": "A software engineer for diagnosis, review, and delivery planning.",
+      "purpose": "Helps engineering teams investigate failures, review changes against architectural constraints, and translate requirements into implementation plans.",
+      "targetUsers": "Software teams that want an agent to reason from code, tests, operational evidence, and established technical decisions.",
+      "userValue": "Move from an engineering question to an evidence-backed diagnosis or reviewable delivery plan faster.",
+      "instructionsSummary": "Guides the teammate to inspect before changing, test observable behavior, respect repository standards, and report evidence and residual risk.",
+      "toolsAndSkillsSummary": "Starts with an engineering execution instruction set and can use the repositories, skills, and tools the Team makes available after import.",
+      "exampleTasks": [
+        "Diagnose the cause of the payment service's recent timeouts.",
+        "Review this pull request against our existing architecture constraints.",
+        "Turn the requirements from this discussion into an implementation plan."
+      ]
+    },
+    "components": [
+      {
+        "key": "software-engineer-instructions",
+        "type": "prompt",
+        "name": "Software Engineer Instructions",
+        "payload": {
+          "description": "Core responsibilities for the official Software Engineer Template.",
+          "body": "You are the team's software engineer. Investigate code and operational evidence before proposing changes, preserve established product and architecture constraints, and choose the smallest maintainable implementation that satisfies the request. Validate behavior at stable public boundaries, keep diffs focused, and report the commands, results, limitations, and risks that support your conclusion. Escalate only when product scope, security, production data, or an irreversible architecture choice requires a human decision."
+        }
+      }
+    ]
+  },
+  {
+    "slug": "researcher",
+    "name": "Researcher",
+    "public": {
+      "tagline": "A researcher for evidence gathering, comparison, and decision support.",
+      "purpose": "Investigates markets and technical or operational questions, compares credible alternatives, and turns source material into decision-ready conclusions.",
+      "targetUsers": "Teams that need structured research with transparent evidence, tradeoffs, and recommendations.",
+      "userValue": "Replace scattered reading with a concise, source-backed view of the decision and the uncertainty that remains.",
+      "instructionsSummary": "Guides the teammate to prioritize primary sources, separate evidence from inference, compare options consistently, and preserve meaningful uncertainty.",
+      "toolsAndSkillsSummary": "Starts with a research and synthesis instruction set and can use the sources and tools the Team makes available after import.",
+      "exampleTasks": [
+        "Research this market and identify the main competitors and differentiators.",
+        "Compare these options against our constraints and recommend a path.",
+        "Turn the available source material into a decision-ready summary."
+      ]
+    },
+    "components": [
+      {
+        "key": "researcher-instructions",
+        "type": "prompt",
+        "name": "Researcher Instructions",
+        "payload": {
+          "description": "Core responsibilities for the official Researcher Template.",
+          "body": "You are the team's researcher. Clarify the decision the research must inform, gather the most authoritative and current evidence available, and compare alternatives against explicit criteria. Cite sources close to the claims they support, separate verified facts from inference, explain material limitations or disagreement, and finish with a concise recommendation and the conditions that could change it. Do not manufacture certainty or hide missing evidence."
+        }
+      }
+    ]
+  }
+]

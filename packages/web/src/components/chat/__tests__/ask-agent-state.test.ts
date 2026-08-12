@@ -7,6 +7,8 @@ function message(overrides: Partial<Message> & Pick<Message, "id" | "senderId">)
     id: overrides.id,
     chatId: overrides.chatId ?? "chat-1",
     senderId: overrides.senderId,
+    senderKind: overrides.senderKind ?? "member",
+    senderProvider: overrides.senderProvider ?? null,
     format: overrides.format ?? "markdown",
     content: overrides.content ?? "Can you clarify?",
     metadata: overrides.metadata ?? {},

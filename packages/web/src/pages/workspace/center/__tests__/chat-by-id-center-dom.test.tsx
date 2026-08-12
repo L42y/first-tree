@@ -472,6 +472,36 @@ describe("ChatByIdView and CenterPanel", () => {
     await act(async () => root.unmount());
   });
 
+  it("forces Feishu chats read-only without offering the watcher join action", async () => {
+    chatMocks.getChat.mockResolvedValueOnce(
+      chatDetail({
+        metadata: {
+          source: "feishu",
+          botBindingId: "binding-1",
+          externalChatId: "oc_1",
+          externalChatType: "group",
+        },
+        viewerMembershipKind: "participant",
+        title: "Feishu task",
+      }),
+    );
+    const { ChatByIdView } = await import("../chat-by-id.js");
+    const { container, root } = await renderDom(
+      <ChatByIdView chatId="chat-feishu" narrow={false} onShowConversations={null} />,
+    );
+
+    await waitForText(container, "read-only");
+    expect(chatViewMocks.props.at(-1)).toMatchObject({
+      chatId: "chat-feishu",
+      readOnly: true,
+      joinAction: undefined,
+      titleFallback: "Feishu task",
+    });
+    expect(container.querySelector("button")).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
   it("routes CenterPanel between draft, selected chat, and empty state", async () => {
     const { CenterPanel } = await import("../index.js");
     const onSelectChat = vi.fn();

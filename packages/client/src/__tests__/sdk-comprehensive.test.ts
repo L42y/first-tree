@@ -5,8 +5,8 @@ import {
   ATTACHMENT_MIME_HEADER,
 } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { applyClientLoggerConfig } from "../observability/logger.js";
-import { FirstTreeHubSDK, SdkError } from "../sdk.js";
+import { applyClientLoggerConfig } from "../cloud/observability/logger.js";
+import { FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
 
 const SERVER_URL = "https://first-tree.example";
 type TestHeaders = Record<string, string>;

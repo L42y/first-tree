@@ -13,7 +13,7 @@ import type {
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement, ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Navigate, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient, RuntimeAgent } from "../../api/activity.js";
 import { chatAgentStatusQueryKey } from "../../api/agent-status.js";
@@ -332,6 +332,8 @@ function message(overrides: Partial<Message> & { id: string; senderId: string; c
     id: overrides.id,
     chatId: overrides.chatId ?? "chat-1",
     senderId: overrides.senderId,
+    senderKind: overrides.senderKind ?? "member",
+    senderProvider: overrides.senderProvider ?? null,
     format: overrides.format ?? "text",
     content: overrides.content ?? "Please review `docs/plan.md` and @nova for rollout risks.",
     metadata: overrides.metadata ?? {},
@@ -985,7 +987,6 @@ describe("page SSR smoke coverage", () => {
     const { ProfileTab } = await import("../agent-detail/profile-tab.js");
     const { PromptTab } = await import("../agent-detail/prompt-tab.js");
     const { RepositoriesTab } = await import("../agent-detail/repositories-tab.js");
-    const { ResponsibilitiesTab } = await import("../agent-detail/responsibilities-tab.js");
     const { ResourcesTab } = await import("../agent-detail/resources-tab.js");
     const { RuntimeTab } = await import("../agent-detail/runtime-tab.js");
 
@@ -993,7 +994,7 @@ describe("page SSR smoke coverage", () => {
       <Routes>
         <Route path="/agents/:uuid" element={<AgentDetailPage />}>
           <Route path="profile" element={<ProfileTab />} />
-          <Route path="responsibilities" element={<ResponsibilitiesTab />} />
+          <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
           <Route path="runtime" element={<RuntimeTab />} />
           <Route path="prompt" element={<PromptTab />} />
           <Route path="resources" element={<ResourcesTab />} />
@@ -1009,7 +1010,6 @@ describe("page SSR smoke coverage", () => {
     for (const [route, expected] of [
       // IA recut: runtime shows model/effort/execution/env; repos + context tree
       // moved to their own Repositories tab; Tools & skills lists only skills + MCP.
-      ["/agents/agent-1/responsibilities", "No starting responsibilities yet."],
       ["/agents/agent-1/runtime", "Reasoning effort"],
       ["/agents/agent-1/repositories", "Team web"],
       ["/agents/agent-1/prompt", "Instructions"],
@@ -1020,7 +1020,7 @@ describe("page SSR smoke coverage", () => {
           <Routes>
             <Route path="/agents/:uuid" element={<AgentDetailPage />}>
               <Route path="profile" element={<ProfileTab />} />
-              <Route path="responsibilities" element={<ResponsibilitiesTab />} />
+              <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
               <Route path="runtime" element={<RuntimeTab />} />
               <Route path="prompt" element={<PromptTab />} />
               <Route path="resources" element={<ResourcesTab />} />

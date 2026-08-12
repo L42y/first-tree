@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { createLogger } from "../observability/logger.js";
+import { createLogger } from "../cloud/observability/logger.js";
 
 const REGISTRY_VERSION = 1;
 

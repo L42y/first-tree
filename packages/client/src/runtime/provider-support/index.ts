@@ -1,12 +1,12 @@
 /**
- * Provider-facing Runtime support entry for `@first-tree/client`.
+ * Provider-facing Runtime support entry for
+ * `@first-tree/client/runtime/provider-support`.
  *
- * This is the in-tree source of the future
- * `@first-tree/client-runtime/provider-support` subpath. Provider production
- * code may depend on Runtime-owned capabilities only through this entry (or
- * `runtime/contracts.ts`). It is an explicit allowlist organized by ownership
- * group — not a mechanical barrel of every Runtime helper, and not a public
- * `@first-tree/client` package subpath.
+ * Provider production code may depend on Runtime-owned capabilities only
+ * through this present single-package seam (or
+ * `@first-tree/client/runtime/contracts`). It is an explicit allowlist
+ * organized by ownership group — not a mechanical barrel of every Runtime
+ * helper, and not a separate package.
  *
  * Groups:
  * - preparation — managed start/resume admission + lower-level projection refresh

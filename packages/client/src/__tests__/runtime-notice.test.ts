@@ -1,5 +1,6 @@
 import { type ProviderRetryEventPayload, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
+import { FirstTreeHubSDK } from "../cloud/sdk.js";
 import {
   formatProviderFailureRuntimeNotice,
   isEgressForbiddenText,
@@ -7,7 +8,6 @@ import {
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
 } from "../runtime/runtime-notice.js";
-import { FirstTreeHubSDK } from "../sdk.js";
 
 function payload(overrides: Partial<ProviderRetryEventPayload> = {}): ProviderRetryEventPayload {
   return {
@@ -159,6 +159,8 @@ describe("runtime notice formatting", () => {
       id: "msg-1",
       chatId: "chat-1",
       senderId: "agent-1",
+      senderKind: "member",
+      senderProvider: null,
       format: "text",
       content: "notice",
       metadata: {},

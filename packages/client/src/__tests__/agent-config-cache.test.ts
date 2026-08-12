@@ -1,7 +1,7 @@
 import type { AgentRuntimeConfig } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
+import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import { type AgentConfigCacheLogger, createAgentConfigCache } from "../runtime/agent-config-cache.js";
-import type { FirstTreeHubSDK } from "../sdk.js";
 
 type Deferred<T> = {
   promise: Promise<T>;

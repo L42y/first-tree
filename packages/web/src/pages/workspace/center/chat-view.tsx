@@ -20,6 +20,7 @@ import {
   type RequestResolution,
   type RuntimeAuthProvider,
   readAskAgentMessageMetadata,
+  readFeishuMessageMetadata,
   readFirstChatOrientationChatState,
   readFirstChatOrientationMessageMetadata,
   statusReasonFromProviderRetryEvent,
@@ -984,12 +985,16 @@ const MessageRow = memo(function MessageRow({
   // card the dispatcher wrote on their row.
   const isGithubSystem = isTrustedGithubDispatcherMessage(msg);
   const isGitlabSystem = isTrustedGitlabDispatcherMessage(msg);
-  const isSystem = isGithubSystem || isGitlabSystem;
+  const feishuMetadata = readFeishuMessageMetadata(msg.metadata);
+  const isFeishuIntegration = msg.senderKind === "integration" && msg.senderProvider === "feishu";
+  const isSystem = isGithubSystem || isGitlabSystem || isFeishuIntegration;
   const senderName = isGithubSystem
     ? GITHUB_SYSTEM_SENDER_NAME
     : isGitlabSystem
       ? GITLAB_SYSTEM_SENDER_NAME
-      : agentNameFn(msg.senderId);
+      : isFeishuIntegration && feishuMetadata?.direction === "inbound"
+        ? `Feishu · ${feishuMetadata.externalAuthor.displayName}`
+        : agentNameFn(msg.senderId);
   const isSelf = !isSystem && myAgentId === msg.senderId;
   const orientationTargetAgentId = firstChatOrientationTargetAgentId(msg);
   const orientationTargetName = orientationTargetAgentId ? agentNameFn(orientationTargetAgentId) : null;
@@ -1033,6 +1038,8 @@ const MessageRow = memo(function MessageRow({
         <GithubSystemAvatar size={20} />
       ) : isGitlabSystem ? (
         <GitlabSystemAvatar size={20} />
+      ) : isFeishuIntegration ? (
+        <Avatar name="Feishu" seed="integration:feishu" />
       ) : isTrial ? (
         <span className="block self-start rounded-full">
           <Avatar
@@ -1086,6 +1093,11 @@ const MessageRow = memo(function MessageRow({
           <span className="mono text-caption" style={{ color: "var(--fg-4)" }}>
             {formatClockTime(msg.createdAt)}
           </span>
+          {feishuMetadata?.direction === "outbound" && (
+            <span className="mono text-caption" style={{ color: "var(--fg-3)" }}>
+              → Feishu
+            </span>
+          )}
           <span style={{ marginLeft: "auto" }}>
             <ReadReceipt msg={msg} myAgentId={myAgentId} />
           </span>
@@ -1188,6 +1200,8 @@ function messageBodyFieldsEqual(a: MessageWithDelivery, b: MessageWithDelivery):
     a.id === b.id &&
     a.chatId === b.chatId &&
     a.senderId === b.senderId &&
+    a.senderKind === b.senderKind &&
+    a.senderProvider === b.senderProvider &&
     a.format === b.format &&
     a.source === b.source &&
     a.inReplyTo === b.inReplyTo &&
@@ -1731,6 +1745,8 @@ export function ChatView({
    *  list overlay (which lives in `WorkspacePage`). */
   onShowConversations?: (() => void) | null;
 }) {
+  const parsedInitialMetadata = initialChatDetail ? chatMetadataSchema.safeParse(initialChatDetail.metadata) : null;
+  const feishuReadOnly = parsedInitialMetadata?.success === true && parsedInitialMetadata.data.source === "feishu";
   const queryClient = useQueryClient();
   const { addToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -2200,6 +2216,8 @@ export function ChatView({
         id: `optimistic-${crypto.randomUUID()}`,
         chatId,
         senderId: myAgentId,
+        senderKind: "member",
+        senderProvider: null,
         format: "text",
         content: text,
         // Stamp the routing/lifecycle metadata on the optimistic row so
@@ -2572,6 +2590,8 @@ export function ChatView({
               id: `optimistic-${crypto.randomUUID()}`,
               chatId,
               senderId: myAgentId,
+              senderKind: "member",
+              senderProvider: null,
               format: "file",
               content: optimisticContent,
               metadata: fileMetadata ?? {},
@@ -5075,7 +5095,9 @@ export function ChatView({
                     <Eye className="h-4 w-4 shrink-0" style={{ color: "var(--fg-3)" }} />
                     <div className="flex-1 min-w-0">
                       <div className="text-body" style={{ color: "var(--fg-2)" }}>
-                        You're watching this chat — read-only.
+                        {feishuReadOnly
+                          ? "This task is connected to Feishu. Reply from the bound Agent using lark-cli."
+                          : "You're watching this chat — read-only."}
                       </div>
                       {joinAction?.error && (
                         <div className="mono text-label" style={{ color: "var(--state-error)", marginTop: 2 }}>

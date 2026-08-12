@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection, type ServerWelcome } from "../client-connection.js";
+import { ClientConnection, type ServerWelcome } from "../runtime/client-connection.js";
 
 describe("ClientConnection — server:welcome dispatch", () => {
   let httpServer: HttpServer;

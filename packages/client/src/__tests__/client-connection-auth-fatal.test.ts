@@ -1,7 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import { ClientConnection } from "../client-connection.js";
+import { ClientConnection } from "../runtime/client-connection.js";
 
 /**
  * Regression coverage for the May 6 incident captured in client.log:
