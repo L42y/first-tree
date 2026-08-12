@@ -2,9 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { FIRST_TREE_WORKSPACE_MARKER } from "@first-tree/client-runtime/runtime/bootstrap.js";
+import { setCliBinding } from "@first-tree/client-runtime/runtime/cli-binding.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { FIRST_TREE_WORKSPACE_MARKER } from "../../../../runtime/bootstrap.js";
-import { setCliBinding } from "../../../../runtime/cli-binding.js";
 import { CodexAppServerClient, type CodexAppServerNotification } from "../../app-server/client.js";
 import {
   buildLandingCodexAppServerArgs,

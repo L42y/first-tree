@@ -1,13 +1,13 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mockCtxPlumbing } from "@first-tree/client-runtime/__tests__/test-helpers.js";
+import { writeAgentBriefing } from "@first-tree/client-runtime/runtime/bootstrap.js";
+import { setCliBinding } from "@first-tree/client-runtime/runtime/cli-binding.js";
+import type { DeliveryToken, SessionContext, SessionMessage } from "@first-tree/client-runtime/runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "@first-tree/client-runtime/runtime/handler.js";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mockCtxPlumbing } from "../../../../__tests__/test-helpers.js";
-import { writeAgentBriefing } from "../../../../runtime/bootstrap.js";
-import { setCliBinding } from "../../../../runtime/cli-binding.js";
-import type { DeliveryToken, SessionContext, SessionMessage } from "../../../../runtime/handler.js";
-import { deliveryTokenFromSessionContext } from "../../../../runtime/handler.js";
 import { CodexAppServerRpcError, CodexAppServerTransportError } from "../../app-server/client.js";
 import { createCodexAppServerHandler } from "../../app-server/index.js";
 import { LANDING_TRIAL_TURN_COMPLETION_CONFIRM_FAILED } from "../../turn-completion.js";

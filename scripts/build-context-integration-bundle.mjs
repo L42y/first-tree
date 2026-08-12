@@ -268,7 +268,15 @@ export function buildContextIntegrationBundle(rawOptions) {
     "claude-code": writeClaudeBundle(join(options.outDir, "claude-code"), marketplaceName),
     codex: writeCodexBundle(join(options.outDir, "codex"), marketplaceName),
   };
-  const policyPath = join(options.coreRoot, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md");
+  const policyPath = join(
+    options.coreRoot,
+    "packages",
+    "client-runtime",
+    "src",
+    "runtime",
+    "assets",
+    "context-tree-policy.md",
+  );
   const policy = readFileSync(policyPath);
   const policyDigest = sha256(policy);
   const coreSkills = Object.fromEntries(

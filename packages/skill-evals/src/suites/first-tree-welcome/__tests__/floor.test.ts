@@ -242,7 +242,7 @@ describe("first-tree-welcome floor invariants", () => {
     // scan-first chat into the welcome launcher. Bind both so neither drifts back
     // to an un-hardened hint.
     const briefingTemplate = readFileSync(
-      join(process.cwd(), "../client/src/runtime/templates/agent-briefing.ejs"),
+      join(process.cwd(), "../client-runtime/src/runtime/templates/agent-briefing.ejs"),
       "utf8",
     );
     const welcomeRows = briefingTemplate.match(/^\|[ \t]*`first-tree-welcome`[ \t]*\|[^\n]*$/gm) ?? [];

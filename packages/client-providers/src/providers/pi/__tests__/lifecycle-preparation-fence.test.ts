@@ -24,10 +24,8 @@ import { createPiHandler } from "../index.js";
  * than rethrowing — assert admission side effects stayed closed.
  */
 
-vi.mock("@first-tree/client-runtime/runtime/managed-skills.js", async () => {
-  const actual = await vi.importActual<typeof import("@first-tree/client-runtime/runtime/managed-skills.js")>(
-    "../../../runtime/managed-skills.js",
-  );
+vi.mock("@first-tree/client-runtime/runtime/managed-skills.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@first-tree/client-runtime/runtime/managed-skills.js")>();
   return {
     ...actual,
     reconcileManagedSkillsForConfig: vi.fn(),

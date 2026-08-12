@@ -270,10 +270,10 @@ describe("context integration bundle", () => {
     roots.push(firstRoot, secondRoot, planRoot, coreRoot);
     const repoRoot = resolve(import.meta.dirname, "../../../..");
     cpSync(join(repoRoot, "skills"), join(coreRoot, "skills"), { recursive: true });
-    const policyTarget = join(coreRoot, "packages", "client", "src", "runtime", "assets");
+    const policyTarget = join(coreRoot, "packages", "client-runtime", "src", "runtime", "assets");
     mkdirSync(policyTarget, { recursive: true });
     cpSync(
-      join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"),
+      join(repoRoot, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md"),
       join(policyTarget, "context-tree-policy.md"),
     );
     execFileSync(

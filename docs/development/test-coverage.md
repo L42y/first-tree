@@ -4,7 +4,9 @@ Local unit-test coverage is available for the main source packages:
 
 - `apps/cli`
 - `packages/server`
-- `packages/client`
+- `packages/cloud-client`
+- `packages/client-runtime`
+- `packages/client-providers`
 - `packages/shared`
 - `packages/web`
 

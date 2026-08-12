@@ -56,13 +56,13 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   };
 });
 
+import { mockCtxPlumbing } from "@first-tree/client-runtime/__tests__/test-helpers.js";
 import { createAgentConfigCache } from "@first-tree/client-runtime/runtime/agent-config-cache.js";
 import { IDENTITY_JSON_REL } from "@first-tree/client-runtime/runtime/bootstrap.js";
 import type { SessionContext } from "@first-tree/client-runtime/runtime/handler.js";
 import { noopDeliveryToken } from "@first-tree/client-runtime/runtime/handler.js";
 import { INIT_COMPLETE_SENTINEL_REL } from "@first-tree/client-runtime/runtime/workspace.js";
 import { createClaudeCodeHandler } from "../providers/claude/index.js";
-import { mockCtxPlumbing } from "./test-helpers.js";
 
 const AGENT_ID = "019d9a97-90b0-716b-8317-a8c0be8430d7";
 

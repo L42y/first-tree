@@ -148,11 +148,14 @@ function prepareCoreRoot(target: string): void {
   mkdirSync(target, { recursive: true });
   rmSync(join(target, "skills"), { recursive: true, force: true });
   cpSync(join(repoRoot, "skills"), join(target, "skills"), { recursive: true });
-  const sourcePolicy = join(target, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md");
+  const sourcePolicy = join(target, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md");
   const releasePolicy = join(target, "dist", "runtime-assets", "context-tree-policy.md");
   mkdirSync(join(sourcePolicy, ".."), { recursive: true });
   mkdirSync(join(releasePolicy, ".."), { recursive: true });
-  cpSync(join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"), sourcePolicy);
+  cpSync(
+    join(repoRoot, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md"),
+    sourcePolicy,
+  );
   cpSync(sourcePolicy, releasePolicy);
 }
 

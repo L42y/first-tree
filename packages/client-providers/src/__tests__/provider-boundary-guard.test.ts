@@ -1,17 +1,39 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, relative } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
-import ts from "typescript";
-import { describe, expect, it } from "vitest";
 import {
   PROVIDER_SUPPORT_EXPORT_ALLOWLISTS,
   TRANSITIONAL_PROVIDER_FAMILY_FILES,
-} from "./provider-support-export-allowlists.js";
+} from "@first-tree/client-runtime/__tests__/provider-support-export-allowlists.js";
+import { RUNTIME_PROVIDER_IDS, runtimeAuthProviderSchema } from "@first-tree/shared";
+import ts from "typescript";
+import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const clientSrc = join(here, "..");
-const repoRoot = join(clientSrc, "..", "..", "..");
+const providersSrc = join(here, "..");
+const repoRoot = join(providersSrc, "..", "..", "..");
+const runtimeSrc = join(repoRoot, "packages/client-runtime/src");
+
+/** Map a pre-split client-relative path onto the owning package after S4. */
+function ownedPath(rel: string): string {
+  const n = rel.replaceAll("\\", "/");
+  if (n === "index.ts") {
+    throw new Error('ownedPath("index.ts") is ambiguous; pick providersSrc or runtimeSrc');
+  }
+  if (n === "runtime" || n.startsWith("runtime/") || n === "client-connection.ts") {
+    return join(runtimeSrc, n);
+  }
+  return join(providersSrc, n);
+}
+
+/** Client-relative path for a file under providersSrc or runtimeSrc. */
+function clientRel(absolute: string): string {
+  const fromProviders = relative(providersSrc, absolute).replaceAll("\\", "/");
+  if (!fromProviders.startsWith("..")) return fromProviders;
+  const fromRuntime = relative(runtimeSrc, absolute).replaceAll("\\", "/");
+  if (!fromRuntime.startsWith("..")) return fromRuntime;
+  throw new Error(`path outside client packages: ${absolute}`);
+}
 
 /** Quote tokens derived from the Zod ID set — auto-expands when a provider is added. */
 const PROVIDER_LITERAL_TOKENS: readonly string[] = RUNTIME_PROVIDER_IDS.flatMap((id) => [`"${id}"`, `'${id}'`]);
@@ -378,7 +400,7 @@ function extractModuleReferences(source: string): {
 function normalizeClientSrcRelativeTarget(fromFileAbs: string, specifier: string): string | null {
   if (!specifier.startsWith(".")) return null;
   const abs = normalize(join(dirname(fromFileAbs), specifier));
-  const rel = relative(clientSrc, abs).replaceAll("\\", "/");
+  const rel = clientRel(abs).replaceAll("\\", "/");
   if (rel.startsWith("../") || rel === ".." || rel.startsWith("/")) return null;
   return rel.replace(/\.tsx?$/, ".js");
 }
@@ -447,7 +469,7 @@ const CATALOG_CONSUMER_FILES = [
   "packages/web/src/pages/clients/cards/shared/runtime-auth-view.ts",
   "packages/web/src/pages/clients/cards/shared/bound-agents-list.tsx",
   "packages/client-providers/src/handlers/auth-error-hint.ts",
-  "packages/client-providers/src/runtime/runtime-notice.ts",
+  "packages/client-runtime/src/runtime/runtime-notice.ts",
   "packages/client-providers/src/providers/claude/capability.ts",
   "packages/client-providers/src/providers/codex/binary.ts",
   "packages/client-providers/src/providers/cursor/binary.ts",
@@ -482,7 +504,7 @@ function containsAnyProviderLiteral(source: string): string | null {
 describe("runtime provider architecture guard", () => {
   it("keeps migrated generic client files free of concrete provider literals and handler imports", () => {
     for (const rel of GUARDED_CLIENT_FILES) {
-      const source = readFileSync(join(clientSrc, rel), "utf8");
+      const source = readFileSync(ownedPath(rel), "utf8");
       const relPosix = rel.replaceAll("\\", "/");
 
       if (COMPOSITION_ALLOWLIST.has(relPosix)) {
@@ -538,7 +560,7 @@ describe("runtime provider architecture guard", () => {
         // a concrete runtime id (including the retired silent Claude-era default).
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not hard-code provider literal ${hit}`).toBeNull();
-        expect(concreteProviderModuleEdgeViolations(join(clientSrc, rel), source)).toEqual([]);
+        expect(concreteProviderModuleEdgeViolations(ownedPath(rel), source)).toEqual([]);
         expect(source).toContain("runtimeProviderSchema");
         expect(source).toMatch(/runtimeProvider is required/);
         continue;
@@ -548,12 +570,12 @@ describe("runtime provider architecture guard", () => {
         // Generic taxonomy consumes normalized binary-failure signals only.
         expect(source).toContain("recognizeProviderBinaryFailure");
         expect(source).toContain("provider-support/binary-failure");
-        expect(concreteProviderModuleEdgeViolations(join(clientSrc, rel), source)).toEqual([]);
+        expect(concreteProviderModuleEdgeViolations(ownedPath(rel), source)).toEqual([]);
         expect(source).not.toMatch(/from ["']\.\/(?:codex|cursor|grok|pi)-binary/);
         continue;
       }
 
-      expect(concreteProviderModuleEdgeViolations(join(clientSrc, rel), source)).toEqual([]);
+      expect(concreteProviderModuleEdgeViolations(ownedPath(rel), source)).toEqual([]);
       if (relPosix === "runtime/handler.ts" || relPosix === "runtime/runtime.ts") {
         const hit = containsAnyProviderLiteral(source);
         expect(hit, `${rel} must not contain ${hit}`).toBeNull();
@@ -564,7 +586,7 @@ describe("runtime provider architecture guard", () => {
 
   it("keeps the provider-support binary-failure seam free of concrete provider implementations", () => {
     const rel = "runtime/provider-support/binary-failure.ts";
-    const absolute = join(clientSrc, rel);
+    const absolute = ownedPath(rel);
     const source = readFileSync(absolute, "utf8");
     expect(source).toContain("recognizeProviderBinaryFailure");
     expect(source).toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
@@ -595,9 +617,9 @@ describe("runtime provider architecture guard", () => {
       ["providers/grok/binary.ts", "isGrokBinaryMissingError"],
       ["providers/pi/binary.ts", "isPiBinaryMissingError"],
     ] as const) {
-      const source = readFileSync(join(clientSrc, file), "utf8");
-      expect(source, `${file} must re-export ${symbol} from provider-support index`).toContain(
-        "provider-support/index.js",
+      const source = readFileSync(ownedPath(file), "utf8");
+      expect(source, `${file} must re-export ${symbol} from provider-support package seam`).toContain(
+        "@first-tree/client-runtime/provider-support",
       );
       expect(source).toContain(symbol);
       // No second owner of the match tables / regexes.
@@ -609,8 +631,8 @@ describe("runtime provider architecture guard", () => {
   });
 
   it("keeps production handlers from owning a second binary-missing matcher or reason-code table", () => {
-    const handlersRoot = join(clientSrc, "handlers");
-    const providersRoot = join(clientSrc, "providers");
+    const handlersRoot = ownedPath("handlers");
+    const providersRoot = ownedPath("providers");
     const productionFiles = [
       ...listFilesRecursive(handlersRoot, (p) => p.endsWith(".ts")),
       ...listFilesRecursive(
@@ -618,7 +640,7 @@ describe("runtime provider architecture guard", () => {
         (p) => p.endsWith(".ts") && !p.endsWith("/binary.ts") && !p.endsWith("\\binary.ts"),
       ),
     ];
-    const productionRels = productionFiles.map((file) => relative(clientSrc, file).replaceAll("\\", "/"));
+    const productionRels = productionFiles.map((file) => clientRel(file).replaceAll("\\", "/"));
     // Capability modules stay in the scan set after S3 family moves — never
     // exempt by basename (that would fail-open Claude/Grok capability owners).
     expect(productionRels).toContain("providers/claude/capability.ts");
@@ -1016,7 +1038,7 @@ describe("runtime provider architecture guard", () => {
 
     for (const file of productionFiles) {
       const source = readFileSync(file, "utf8");
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const rel = clientRel(file).replaceAll("\\", "/");
       for (const matcher of secondOwnerMatchers) {
         if (rel === "providers/codex/capability.ts" && matcher === codexBundledLocateMatcher) {
           const spans = approvedCodexBundledLocateErrorSpans(source);
@@ -1652,15 +1674,15 @@ describe("runtime provider architecture guard", () => {
     );
 
     // Pi sanitizer must consume the Pi-detail seam entry (not a local table).
-    const piHandler = readFileSync(join(clientSrc, "providers/pi/index.ts"), "utf8");
+    const piHandler = readFileSync(ownedPath("providers/pi/index.ts"), "utf8");
     expect(piHandler).toContain("piProviderDetailBinaryMissingReasonCode");
-    expect(piHandler).toMatch(/runtime\/provider-support\/(?:index|binary-failure)/);
+    expect(piHandler).toMatch(/@first-tree\/client-runtime\/provider-support/);
     expect(piHandler).not.toContain("isPiBinaryMissingError");
     expect(piHandler).not.toContain("PROVIDER_BINARY_FAILURE_REASON_CODES");
   });
 
   it("names only the concrete composition file as the built-in handler factory root", () => {
-    const registry = readFileSync(join(clientSrc, "providers/builtin-registry.ts"), "utf8");
+    const registry = readFileSync(ownedPath("providers/builtin-registry.ts"), "utf8");
     expect(registry).toContain("createBuiltinHandlerRegistry");
     expect(registry).toContain("Object.freeze");
     expect(registry).toContain("satisfies Record<RuntimeProvider, HandlerFactory>");
@@ -1675,11 +1697,14 @@ describe("runtime provider architecture guard", () => {
     expect(registry).not.toMatch(/probe\s*:/);
     expect(registry).not.toMatch(/skillRoot\s*:/);
     expect(registry).not.toMatch(/\{\s*factory\s*:/);
-    expect(registry).not.toMatch(/createLogger/);
-    expect(registry).not.toMatch(/observability/);
+    // Injected log seam only — composition supplies createLogger; providers never import it.
+    expect(registry).toContain("BuiltinRegistryLog");
+    expect(registry).not.toMatch(/from\s+["'][^"']*createLogger[^"']*["']/);
+    expect(registry).not.toMatch(/from\s+["']@first-tree\/cloud-client/);
+    expect(registry).not.toMatch(/from\s+["'][^"']*observability[^"']*["']/);
 
-    const probes = readFileSync(join(clientSrc, "providers/builtin-probes.ts"), "utf8");
-    const skills = readFileSync(join(clientSrc, "providers/skill-roots.ts"), "utf8");
+    const probes = readFileSync(ownedPath("providers/builtin-probes.ts"), "utf8");
+    const skills = readFileSync(ownedPath("providers/skill-roots.ts"), "utf8");
     expect(probes).toContain("Object.freeze");
     expect(probes).not.toContain("builtinProbeProviderIds");
     expect(skills).toContain("Object.freeze");
@@ -1694,17 +1719,20 @@ describe("runtime provider architecture guard", () => {
       "hasHandler",
       "registerBuiltinHandlers",
     ] as const;
-    const productionFiles = listFilesRecursive(clientSrc, (p) => p.endsWith(".ts") && !p.includes("__tests__"));
+    const productionFiles = [
+      ...listFilesRecursive(providersSrc, (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(runtimeSrc, (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+    ];
     for (const file of productionFiles) {
       const source = readFileSync(file, "utf8");
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const rel = clientRel(file).replaceAll("\\", "/");
       for (const symbol of forbidden) {
         expect(source, `${rel} must not retain ${symbol}`).not.toMatch(new RegExp(`\\b${symbol}\\b`));
       }
     }
 
     // handlers/index.ts was the old process-global registration root — gone.
-    expect(() => readFileSync(join(clientSrc, "handlers/index.ts"), "utf8")).toThrow();
+    expect(() => readFileSync(ownedPath("handlers/index.ts"), "utf8")).toThrow();
 
     const cliRuntime = readFileSync(join(repoRoot, "apps/cli/src/core/client-runtime.ts"), "utf8");
     expect(cliRuntime).toContain("createBuiltinHandlerRegistry");
@@ -1716,25 +1744,32 @@ describe("runtime provider architecture guard", () => {
       expect(cliRuntime, `CLI must not retain ${symbol}`).not.toMatch(new RegExp(`\\b${symbol}\\b`));
     }
 
-    const agentRuntime = readFileSync(join(clientSrc, "runtime/runtime.ts"), "utf8");
+    const agentRuntime = readFileSync(ownedPath("runtime/runtime.ts"), "utf8");
     expect(agentRuntime).toContain("handlerFactories");
     expect(agentRuntime).not.toMatch(/\bgetHandlerFactory\b/);
     expect(agentRuntime).not.toMatch(/\bHANDLER_REGISTRY\b/);
   });
 
   it("keeps SessionManager/SessionRegistry off public barrels and out of CLI production", () => {
-    const rootIndex = readFileSync(join(clientSrc, "index.ts"), "utf8");
-    const runtimeIndex = readFileSync(join(clientSrc, "runtime/index.ts"), "utf8");
+    const providersIndex = readFileSync(join(providersSrc, "index.ts"), "utf8");
+    const runtimeIndex = readFileSync(join(runtimeSrc, "index.ts"), "utf8");
+    const runtimeRuntimeIndex = readFileSync(ownedPath("runtime/index.ts"), "utf8");
+
     for (const [label, source] of [
-      ["packages/client-providers/src/index.ts", rootIndex],
-      ["packages/client-providers/src/runtime/index.ts", runtimeIndex],
+      ["packages/client-providers/src/index.ts", providersIndex],
+      ["packages/client-runtime/src/index.ts", runtimeIndex],
+      ["packages/client-runtime/src/runtime/index.ts", runtimeRuntimeIndex],
     ] as const) {
       expect(source, `${label} must not re-export SessionManager`).not.toMatch(/export\s*\{[^}]*\bSessionManager\b/);
       expect(source, `${label} must not re-export SessionRegistry`).not.toMatch(/export\s*\{[^}]*\bSessionRegistry\b/);
-      expect(source, `${label} must expose cleanAgentWorkspaces`).toContain("cleanAgentWorkspaces");
-      // contracts entry is provider-internal, not a new package public API / barrel export.
       expect(source, `${label} must not re-export runtime/contracts`).not.toMatch(/runtime\/contracts/);
     }
+
+    expect(runtimeIndex, "runtime public barrel must expose cleanAgentWorkspaces").toContain("cleanAgentWorkspaces");
+    expect(runtimeRuntimeIndex, "runtime/index must expose cleanAgentWorkspaces").toContain("cleanAgentWorkspaces");
+    expect(providersIndex, "providers barrel must not expose cleanAgentWorkspaces").not.toContain(
+      "cleanAgentWorkspaces",
+    );
 
     const cliProduction = listFilesRecursive(join(repoRoot, "apps/cli/src"), (p) => {
       return p.endsWith(".ts") && !p.includes("__tests__") && !p.includes("/__mocks__/");
@@ -1745,19 +1780,22 @@ describe("runtime provider architecture guard", () => {
       expect(source, `${rel} must not import SessionRegistry`).not.toMatch(/\bSessionRegistry\b/);
       expect(source, `${rel} must not import SessionManager`).not.toMatch(/\bSessionManager\b/);
       expect(source, `${rel} must not call low-level cleanWorkspaces`).not.toMatch(/\bcleanWorkspaces\b/);
-      expect(source, `${rel} must not deep-import client`).not.toMatch(/from ["']@first-tree\/client\//);
+      expect(source, `${rel} must not deep-import deleted client`).not.toMatch(/from ["']@first-tree\/client\//);
+      expect(source, `${rel} must not import deleted @first-tree/client`).not.toMatch(
+        /from ["']@first-tree\/client["']/,
+      );
     }
 
     const cleanCommand = readFileSync(join(repoRoot, "apps/cli/src/commands/agent/workspace/clean.ts"), "utf8");
     expect(cleanCommand).toContain("cleanAgentWorkspaces");
-    const clientImport = cleanCommand.match(/import\s*\{([^}]*)\}\s*from\s*["']@first-tree\/client["']/);
+    const clientImport = cleanCommand.match(/import\s*\{([^}]*)\}\s*from\s*["']@first-tree\/client-runtime["']/);
     expect(clientImport?.[1]?.replace(/\s+/g, " ").trim()).toBe("cleanAgentWorkspaces");
     expect(cleanCommand).toMatch(/const DEFAULT_WORKSPACE_TTL_MS = 7 \* 24 \* 60 \* 60 \* 1000/);
     expect(cleanCommand).not.toMatch(/\bfrom ["']node:fs["']/);
     expect(cleanCommand).not.toMatch(/\bfrom ["']node:path["']/);
     expect(cleanCommand).not.toContain("defaultDataDir");
 
-    const maintenance = readFileSync(join(clientSrc, "runtime/workspace-maintenance.ts"), "utf8");
+    const maintenance = readFileSync(ownedPath("runtime/workspace-maintenance.ts"), "utf8");
     const optionsMatch = maintenance.match(/export type CleanAgentWorkspacesOptions = \{([\s\S]*?)\n\};/);
     expect(optionsMatch?.[1], "CleanAgentWorkspacesOptions must be declared").toBeTruthy();
     const optionsBody = optionsMatch?.[1] ?? "";
@@ -1766,8 +1804,9 @@ describe("runtime provider architecture guard", () => {
     expect(optionsBody).not.toMatch(/\bdataDir\b/);
     expect(optionsBody).not.toMatch(/\bcleanWorkspacesFn\b/);
     for (const [label, source] of [
-      ["packages/client-providers/src/index.ts", rootIndex],
-      ["packages/client-providers/src/runtime/index.ts", runtimeIndex],
+      ["packages/client-providers/src/index.ts", providersIndex],
+      ["packages/client-runtime/src/index.ts", runtimeIndex],
+      ["packages/client-runtime/src/runtime/index.ts", runtimeRuntimeIndex],
     ] as const) {
       expect(source, `${label} must not re-export cleanAgentWorkspacesWithDeps`).not.toMatch(
         /\bcleanAgentWorkspacesWithDeps\b/,
@@ -1780,8 +1819,7 @@ describe("runtime provider architecture guard", () => {
     const cliRuntime = readFileSync(join(repoRoot, "apps/cli/src/core/client-runtime.ts"), "utf8");
     expect(cliRuntime).toMatch(/resolveHandlerFactory[\s\S]*Object\.hasOwn/);
   });
-
-  it("routes provider production contract imports through runtime/contracts only", () => {
+  it("routes provider production contract imports through @first-tree/client-runtime/contracts only", () => {
     const contractSymbols = [
       "AgentHandler",
       "AgentIdentity",
@@ -1802,21 +1840,24 @@ describe("runtime provider architecture guard", () => {
     const forbiddenOwners = ["runtime/handler.js", "runtime/runtime-login.js", "runtime/replay-fence.js"] as const;
 
     const productionProviderFiles = [
-      ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-      ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(join(providersSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(join(providersSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
     ];
 
     for (const file of productionProviderFiles) {
       const source = readFileSync(file, "utf8");
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const rel = clientRel(file);
       for (const owner of forbiddenOwners) {
         expect(source, `${rel} must not deep-import ${owner}`).not.toMatch(
           new RegExp(`from\\s+["'][^"']*${owner.replace(".", "\\.")}["']`),
         );
       }
+      expect(source, `${rel} must not deep-import client-runtime internals`).not.toMatch(
+        /from\s+["']@first-tree\/client-runtime\/(?!contracts(?:["'])|provider-support(?:["']))/,
+      );
     }
 
-    // Positive: at least the known contract consumers resolve contracts.js.
+    // Positive: known contract consumers resolve the package contracts seam.
     const mustUseContracts = [
       "providers/claude/index.ts",
       "providers/claude/tui/index.ts",
@@ -1834,12 +1875,14 @@ describe("runtime provider architecture guard", () => {
       "providers/auth-driver.ts",
     ] as const;
     for (const rel of mustUseContracts) {
-      const source = readFileSync(join(clientSrc, rel), "utf8");
-      expect(source, `${rel} must import runtime/contracts.js`).toMatch(/runtime\/contracts\.js/);
+      const source = readFileSync(ownedPath(rel), "utf8");
+      expect(source, `${rel} must import @first-tree/client-runtime/contracts`).toMatch(
+        /@first-tree\/client-runtime\/contracts/,
+      );
     }
 
     // contracts entry itself stays an allowlist and does not import forbidden owners as values beyond the declared re-exports.
-    const contractsSource = readFileSync(join(clientSrc, "runtime/contracts.ts"), "utf8");
+    const contractsSource = readFileSync(ownedPath("runtime/contracts.ts"), "utf8");
     expect(contractsSource).toContain('from "./handler.js"');
     expect(contractsSource).toContain('from "./runtime-login.js"');
     expect(contractsSource).toContain('from "./replay-fence.js"');
@@ -1857,9 +1900,8 @@ describe("runtime provider architecture guard", () => {
       expect(contractsSource, `contracts must not mention ${banned}`).not.toMatch(new RegExp(`\\b${banned}\\b`));
     }
   });
-
   it("keeps the runtime-auth driver projection in one frozen, schema-exhaustive composition root", () => {
-    const drivers = readFileSync(join(clientSrc, "providers/auth-drivers.ts"), "utf8");
+    const drivers = readFileSync(ownedPath("providers/auth-drivers.ts"), "utf8");
     expect(drivers).toContain("Object.freeze");
     // The key set is a projection of the narrow server-accepted auth enum, not
     // a second handwritten known-provider list.
@@ -1868,7 +1910,7 @@ describe("runtime provider architecture guard", () => {
       expect(drivers, `auth-drivers must register ${provider}`).toContain(provider);
     }
     // The contract itself stays provider-neutral.
-    const contract = readFileSync(join(clientSrc, "providers/auth-driver.ts"), "utf8");
+    const contract = readFileSync(ownedPath("providers/auth-driver.ts"), "utf8");
     expect(containsAnyProviderLiteral(contract)).toBeNull();
     // Method-shorthand type syntax (`resolveLogin(): ...`) is NOT readonly, so
     // the contract must declare its function members as readonly properties -
@@ -1886,7 +1928,7 @@ describe("runtime provider architecture guard", () => {
       "providers/cursor/login.ts",
       "providers/grok/login.ts",
     ]) {
-      const source = readFileSync(join(clientSrc, rel), "utf8");
+      const source = readFileSync(ownedPath(rel), "utf8");
       expect(source, `${rel} must freeze its returned driver`).toContain("Object.freeze");
     }
   });
@@ -1917,7 +1959,7 @@ describe("runtime provider architecture guard", () => {
   });
 
   it("keeps provider login output bounded and incrementally scanned", () => {
-    const source = readFileSync(join(clientSrc, "providers/runtime-login.ts"), "utf8");
+    const source = readFileSync(ownedPath("providers/runtime-login.ts"), "utf8");
     expect(source).toContain("createAuthUrlScanner");
     expect(source).toContain("AUTH_URL_TOKEN_MAX");
     expect(source).toContain("LOGIN_STDERR_TAIL_MAX");
@@ -2084,41 +2126,39 @@ describe("runtime provider architecture guard", () => {
     expect(activityTs).not.toMatch(/provider:\s*RuntimeProvider/);
   });
 
-  it("fail-closes provider-side Runtime imports to contracts or provider-support/index only", () => {
+  it("fail-closes provider-side Runtime imports to contracts or provider-support package seams only", () => {
     /**
-     * Fail-closed classification for provider-side production code.
+     * Fail-closed classification for provider-side production code after S4.
      *
-     * Provider-side files: handlers/**, providers/** (including feature-first
-     * family roots such as providers/grok/**), and the exact transitional
-     * provider-family modules listed in TRANSITIONAL_PROVIDER_FAMILY_FILES.
-     * For any import that resolves into
-     * `runtime/`, the only legal targets are:
-     *   - runtime/contracts.js
-     *   - runtime/provider-support/index.js
-     *   - an exact transitional provider-owned module from that list
-     * Every other runtime path — including provider-support/<group>.js and
-     * newly named `*-login` / `*-binary` files — fails closed because it is
-     * absent from the explicit allowlist.
+     * Legal Runtime edges are only the published package seams:
+     *   - @first-tree/client-runtime/contracts
+     *   - @first-tree/client-runtime/provider-support
+     * plus any exact transitional provider-family modules still listed in
+     * TRANSITIONAL_PROVIDER_FAMILY_FILES (currently empty).
+     * Relative `runtime/**` reaches and deep `@first-tree/client-runtime/...`
+     * package paths fail closed.
      */
     const transitionalTargets = new Set(TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => rel.replace(/\.ts$/, ".js")));
+    const ALLOWED_PACKAGE_SEAMS = new Set([
+      "@first-tree/client-runtime/contracts",
+      "@first-tree/client-runtime/provider-support",
+    ]);
 
-    // Explicit list must stay in sync with on-disk transitional modules.
     for (const rel of TRANSITIONAL_PROVIDER_FAMILY_FILES) {
-      expect(existsSync(join(clientSrc, rel)), `missing transitional file ${rel}`).toBe(true);
+      expect(existsSync(ownedPath(rel)), `missing transitional file ${rel}`).toBe(true);
     }
-    // Pattern-shaped newcomers are NOT automatically trusted.
     expect(transitionalTargets.has("runtime/brand-new-login.js")).toBe(false);
     expect(transitionalTargets.has("runtime/brand-new-binary.js")).toBe(false);
 
     function listProviderSideFiles(): string[] {
       return [
-        ...listFilesRecursive(join(clientSrc, "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-        ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
-        ...TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => join(clientSrc, rel)),
+        ...listFilesRecursive(ownedPath("handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...listFilesRecursive(ownedPath("providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => ownedPath(rel)),
       ];
     }
 
-    /** Resolve an import specifier from `fromFile` into a runtime/*.js path, or null. */
+    /** Resolve relative / path-shaped imports into a runtime/*.js path, or null. */
     function resolveRuntimeImport(fromFile: string, specifier: string): string | null {
       if (!specifier.endsWith(".js")) return null;
       if (specifier.startsWith("@") || specifier.startsWith("node:")) return null;
@@ -2127,12 +2167,11 @@ describe("runtime provider architecture guard", () => {
       if (specifier.startsWith(".")) {
         absolute = join(fromDir, specifier);
       } else if (specifier.includes("/runtime/")) {
-        // unusual but tolerate
-        absolute = join(clientSrc, specifier.slice(specifier.indexOf("runtime/")));
+        absolute = join(runtimeSrc, specifier.slice(specifier.indexOf("runtime/")));
       } else {
         return null;
       }
-      const rel = relative(clientSrc, absolute).replaceAll("\\", "/");
+      const rel = clientRel(absolute).replaceAll("\\", "/");
       if (!rel.startsWith("runtime/") || rel.includes("..")) return null;
       return rel;
     }
@@ -2142,6 +2181,14 @@ describe("runtime provider architecture guard", () => {
       if (runtimeRel === "runtime/provider-support/index.js") return "ok";
       if (transitionalTargets.has(runtimeRel)) return "ok";
       return "forbidden";
+    }
+
+    function classifyPackageRuntimeSpec(spec: string): "ok" | "forbidden" | "ignore" {
+      if (ALLOWED_PACKAGE_SEAMS.has(spec)) return "ok";
+      if (spec.startsWith("@first-tree/client-runtime/")) return "forbidden";
+      if (spec.startsWith("@first-tree/cloud-client")) return "forbidden";
+      if (spec === "@first-tree/client" || spec.startsWith("@first-tree/client/")) return "forbidden";
+      return "ignore";
     }
 
     const violations: string[] = [];
@@ -2154,7 +2201,7 @@ describe("runtime provider architecture guard", () => {
 
     for (const file of listProviderSideFiles()) {
       const source = readFileSync(file, "utf8");
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const rel = clientRel(file).replaceAll("\\", "/");
       const refs = extractModuleReferences(source);
       if (refs.hasUnresolvableModuleReference) {
         violations.push(
@@ -2162,6 +2209,18 @@ describe("runtime provider architecture guard", () => {
         );
       }
       for (const spec of refs.literalSpecifiers) {
+        const packageVerdict = classifyPackageRuntimeSpec(spec);
+        if (packageVerdict === "ok") {
+          if (spec === "@first-tree/client-runtime/contracts") residualByClass.contracts.push(`${rel} -> ${spec}`);
+          else residualByClass.providerSupportIndex.push(`${rel} -> ${spec}`);
+          continue;
+        }
+        if (packageVerdict === "forbidden") {
+          residualByClass.forbiddenRuntime.push(`${rel} -> ${spec}`);
+          violations.push(`${rel} imports forbidden Runtime package path ${spec}`);
+          continue;
+        }
+
         const runtimeRel = resolveRuntimeImport(file, spec);
         if (!runtimeRel) continue;
         const verdict = classifyRuntimeImport(runtimeRel);
@@ -2178,11 +2237,10 @@ describe("runtime provider architecture guard", () => {
     }
 
     expect(violations, violations.join("\n")).toEqual([]);
-    // Mechanically supported residual report for the review freeze note.
     expect(residualByClass.forbiddenRuntime).toEqual([]);
+    expect(residualByClass.contracts.length).toBeGreaterThan(0);
     expect(residualByClass.providerSupportIndex.length).toBeGreaterThan(0);
 
-    // Negative fixtures: newly introduced Runtime owners / deep support paths fail closed.
     expect(classifyRuntimeImport("runtime/brand-new-owner.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/provider-support/preparation.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/provider-support/binary-failure.js")).toBe("forbidden");
@@ -2190,9 +2248,12 @@ describe("runtime provider architecture guard", () => {
     expect(classifyRuntimeImport("runtime/install-locations.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/brand-new-login.js")).toBe("forbidden");
     expect(classifyRuntimeImport("runtime/brand-new-binary.js")).toBe("forbidden");
+    expect(classifyPackageRuntimeSpec("@first-tree/client-runtime/runtime/brand-new-owner.js")).toBe("forbidden");
+    expect(classifyPackageRuntimeSpec("@first-tree/client-runtime/contracts")).toBe("ok");
+    expect(classifyPackageRuntimeSpec("@first-tree/client-runtime/provider-support")).toBe("ok");
 
-    const cursorHandler = join(clientSrc, "providers/cursor/index.ts");
-    function expectForbiddenRuntimeSpec(source: string, expectedSpec: string): void {
+    const cursorHandler = ownedPath("providers/cursor/index.ts");
+    function expectForbiddenRelativeRuntimeSpec(source: string, expectedSpec: string): void {
       const refs = extractModuleReferences(source);
       expect(refs.hasUnresolvableModuleReference).toBe(false);
       expect(refs.literalSpecifiers).toContain(expectedSpec);
@@ -2201,79 +2262,70 @@ describe("runtime provider architecture guard", () => {
       expect(classifyRuntimeImport(resolved ?? "")).toBe("forbidden");
     }
 
-    // Bare side-effect import (no bindings) must still be classified.
-    expectForbiddenRuntimeSpec(`import "../../runtime/brand-new-owner.js";`, "../../runtime/brand-new-owner.js");
+    function expectForbiddenPackageRuntimeSpec(source: string, expectedSpec: string): void {
+      const refs = extractModuleReferences(source);
+      expect(refs.hasUnresolvableModuleReference).toBe(false);
+      expect(refs.literalSpecifiers).toContain(expectedSpec);
+      expect(classifyPackageRuntimeSpec(expectedSpec)).toBe("forbidden");
+    }
 
-    // Literal dynamic import must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
+      `import "../../runtime/brand-new-owner.js";`,
+      "../../runtime/brand-new-owner.js",
+    );
+    expectForbiddenPackageRuntimeSpec(
       `await import("@first-tree/client-runtime/runtime/brand-new-owner.js");`,
-      "../../runtime/brand-new-owner.js",
+      "@first-tree/client-runtime/runtime/brand-new-owner.js",
     );
-
-    // Import type query (`ImportTypeNode`) must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenPackageRuntimeSpec(
       `type Hidden = import("@first-tree/client-runtime/runtime/brand-new-owner.js").Hidden;`,
-      "../../runtime/brand-new-owner.js",
+      "@first-tree/client-runtime/runtime/brand-new-owner.js",
     );
-
-    // External import-equals (`import x = require("…")`) must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import Owner = require("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Immediate createRequire(…)("…") CommonJS load must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import { createRequire } from "node:module";
        createRequire(import.meta.url)("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Aliased createRequire binder call must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import { createRequire } from "node:module";
        const req = createRequire(import.meta.url);
        req("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Renamed createRequire import + binder call must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import { createRequire as cr } from "node:module";
        const load = cr(import.meta.url);
        load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Namespace import `import * as module from "node:module"` must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import * as module from "node:module";
        const req = module.createRequire(import.meta.url);
        req("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Namespace import under a non-`module` local name (yzw-codex fixture).
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import * as moduleApi from "node:module";
        const load = moduleApi.createRequire(import.meta.url);
        load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Simple binder propagation (`const load = req`) must still be classified.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import { createRequire } from "node:module";
        const req = createRequire(import.meta.url);
        const load = req;
        load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
+    expectForbiddenRelativeRuntimeSpec(
+      `require("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
 
-    // Free require("…") CommonJS load must still be classified.
-    expectForbiddenRuntimeSpec(`require("../../runtime/brand-new-owner.js");`, "../../runtime/brand-new-owner.js");
-
-    // Aliased / multiline static import continues to fail closed.
     const multilineFixture = `
       import {
         prepareManagedSession as prep,
@@ -2281,22 +2333,17 @@ describe("runtime provider architecture guard", () => {
       } from "@first-tree/client-runtime/runtime/agent-bootstrap.js";
     `;
     const multilineRefs = extractModuleReferences(multilineFixture);
-    expect(multilineRefs.literalSpecifiers).toEqual(["../../runtime/agent-bootstrap.js"]);
-    const resolvedMultiline = resolveRuntimeImport(cursorHandler, multilineRefs.literalSpecifiers[0] ?? "");
-    expect(resolvedMultiline).toBe("runtime/agent-bootstrap.js");
-    expect(classifyRuntimeImport(resolvedMultiline ?? "")).toBe("forbidden");
+    expect(multilineRefs.literalSpecifiers).toEqual(["@first-tree/client-runtime/runtime/agent-bootstrap.js"]);
+    expect(classifyPackageRuntimeSpec(multilineRefs.literalSpecifiers[0] ?? "")).toBe("forbidden");
 
-    // Non-literal dynamic import cannot be classified → fail closed.
     const unresolvableDynamic = extractModuleReferences(`const p = "./x.js"; await import(p);`);
     expect(unresolvableDynamic.hasUnresolvableModuleReference).toBe(true);
     expect(unresolvableDynamic.literalSpecifiers).toEqual([]);
 
-    // Non-literal import-equals require() → fail closed.
     const unresolvableEquals = extractModuleReferences(`import Owner = require(someVar);`);
     expect(unresolvableEquals.hasUnresolvableModuleReference).toBe(true);
     expect(unresolvableEquals.literalSpecifiers).toEqual([]);
 
-    // Non-literal createRequire binder call → fail closed.
     const unresolvableCjs = extractModuleReferences(`
       import { createRequire } from "node:module";
       const req = createRequire(import.meta.url);
@@ -2305,14 +2352,12 @@ describe("runtime provider architecture guard", () => {
     expect(unresolvableCjs.hasUnresolvableModuleReference).toBe(true);
     expect(unresolvableCjs.literalSpecifiers).toEqual(["node:module"]);
 
-    // Unsupported `*.createRequire` (not a tracked node:module namespace) → fail closed.
     const unresolvableNsCreateRequire = extractModuleReferences(`
       const req = someApi.createRequire(import.meta.url);
       req("../../runtime/brand-new-owner.js");
     `);
     expect(unresolvableNsCreateRequire.hasUnresolvableModuleReference).toBe(true);
 
-    // Default-import property alias is untracked → fail closed (not namespace import).
     const defaultImportPropAlias = extractModuleReferences(`
       import moduleApi from "node:module";
       const cr = moduleApi.createRequire;
@@ -2322,7 +2367,6 @@ describe("runtime provider architecture guard", () => {
     expect(defaultImportPropAlias.hasUnresolvableModuleReference).toBe(true);
     expect(defaultImportPropAlias.literalSpecifiers).toEqual(["node:module"]);
 
-    // Dynamic-import namespace property alias is untracked → fail closed.
     const dynamicImportPropAlias = extractModuleReferences(`
       const moduleApi = await import("node:module");
       const cr = moduleApi.createRequire;
@@ -2332,15 +2376,12 @@ describe("runtime provider architecture guard", () => {
     expect(dynamicImportPropAlias.hasUnresolvableModuleReference).toBe(true);
     expect(dynamicImportPropAlias.literalSpecifiers).toEqual(["node:module"]);
 
-    // Free `require` alias must still classify the literal load.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `const load = require;
        load("../../runtime/brand-new-owner.js");`,
       "../../runtime/brand-new-owner.js",
     );
-
-    // Namespace factory property alias must still classify the binder load.
-    expectForbiddenRuntimeSpec(
+    expectForbiddenRelativeRuntimeSpec(
       `import * as moduleApi from "node:module";
        const cr = moduleApi.createRequire;
        const load = cr(import.meta.url);
@@ -2348,7 +2389,6 @@ describe("runtime provider architecture guard", () => {
       "../../runtime/brand-new-owner.js",
     );
 
-    // Property storage of a known binder → fail closed (unsupported escape).
     const propEscape = extractModuleReferences(`
       import { createRequire } from "node:module";
       const req = createRequire(import.meta.url);
@@ -2357,7 +2397,6 @@ describe("runtime provider architecture guard", () => {
     `);
     expect(propEscape.hasUnresolvableModuleReference).toBe(true);
 
-    // Passing a known binder as a call argument → fail closed.
     const argEscape = extractModuleReferences(`
       import { createRequire } from "node:module";
       const req = createRequire(import.meta.url);
@@ -2365,7 +2404,6 @@ describe("runtime provider architecture guard", () => {
     `);
     expect(argEscape.hasUnresolvableModuleReference).toBe(true);
 
-    // Package-resolution `.resolve(...)` is not a direct module-edge load.
     const resolveOnly = extractModuleReferences(`
       import { createRequire } from "node:module";
       const req = createRequire(import.meta.url);
@@ -2386,8 +2424,10 @@ describe("runtime provider architecture guard", () => {
       "providers/pi/index.ts",
     ] as const;
     for (const rel of mustUseProviderSupport) {
-      const source = readFileSync(join(clientSrc, rel), "utf8");
-      expect(source, `${rel} must import provider-support/index.js`).toMatch(/runtime\/provider-support\/index\.js/);
+      const source = readFileSync(ownedPath(rel), "utf8");
+      expect(source, `${rel} must import @first-tree/client-runtime/provider-support`).toMatch(
+        /@first-tree\/client-runtime\/provider-support/,
+      );
       expect(source, `${rel} must call prepareManagedSession`).toMatch(/\bprepareManagedSession\b/);
       expect(source, `${rel} must not call acquireAgentHome directly`).not.toMatch(/\bacquireAgentHome\s*\(/);
       expect(source, `${rel} must not call markWorkspaceInitComplete directly`).not.toMatch(
@@ -2395,6 +2435,9 @@ describe("runtime provider architecture guard", () => {
       );
       expect(source, `${rel} must not call ensureAgentBootstrap directly`).not.toMatch(/\bensureAgentBootstrap\s*\(/);
       expect(source, `${rel} must not deep-import provider-support groups`).not.toMatch(
+        /@first-tree\/client-runtime\/runtime\/provider-support\//,
+      );
+      expect(source, `${rel} must not relative-deep-import provider-support groups`).not.toMatch(
         /provider-support\/(?!index\.js)[\w-]+\.js/,
       );
     }
@@ -2526,7 +2569,7 @@ describe("runtime provider architecture guard", () => {
       return { tuples: [...tuples].sort(), violations };
     }
 
-    const supportDir = join(clientSrc, "runtime/provider-support");
+    const supportDir = ownedPath("runtime/provider-support");
     let totalTuples = 0;
     for (const [relKey, expected] of Object.entries(PROVIDER_SUPPORT_EXPORT_ALLOWLISTS)) {
       const fileRel = `runtime/provider-support/${relKey}.ts`;
@@ -2597,7 +2640,7 @@ describe("runtime provider architecture guard", () => {
   });
 
   it("keeps generic Runtime free of handler and concrete provider implementation imports", () => {
-    const runtimeRoot = join(clientSrc, "runtime");
+    const runtimeRoot = ownedPath("runtime");
     // Scan the full runtime tree, including capabilities/; only exact
     // transitional paths are exempt — basename / directory patterns are not.
     const runtimeFiles = listFilesRecursive(runtimeRoot, (p) => p.endsWith(".ts") && !p.includes("__tests__"));
@@ -2614,7 +2657,7 @@ describe("runtime provider architecture guard", () => {
     expect(isExplicitTransitionalProviderFamilyPath("runtime/opencode-binary.ts")).toBe(false);
 
     for (const file of runtimeFiles) {
-      const rel = relative(clientSrc, file).replaceAll("\\", "/");
+      const rel = clientRel(file).replaceAll("\\", "/");
       if (isExplicitTransitionalProviderFamilyPath(rel)) continue;
       const source = readFileSync(file, "utf8");
       const violations = concreteProviderModuleEdgeViolations(file, source);
@@ -2625,9 +2668,9 @@ describe("runtime provider architecture guard", () => {
   it("fail-closes concrete provider-family module edges via AST + normalized targets", () => {
     // Mutation matrix: same predicate the recursive Runtime scan uses. Synthetic
     // importer paths cover Runtime root and nested capabilities/.
-    const runtimeRootImporter = join(clientSrc, "runtime", "synthetic-guard-importer.ts");
-    const capabilitiesImporter = join(clientSrc, "runtime", "capabilities", "synthetic-guard-importer.ts");
-    const managedSkillsImporter = join(clientSrc, "runtime", "managed-skills.ts");
+    const runtimeRootImporter = join(runtimeSrc, "runtime", "synthetic-guard-importer.ts");
+    const capabilitiesImporter = join(runtimeSrc, "runtime", "capabilities", "synthetic-guard-importer.ts");
+    const managedSkillsImporter = join(runtimeSrc, "runtime", "managed-skills.ts");
 
     // Every deleted OpenCode/Pi/shared-capability owner + current family /
     // shared-foundation targets must fail via real module-edge extraction

@@ -6,12 +6,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const cliRoot = join(repoRoot, "apps", "cli");
-const clientRoot = join(repoRoot, "packages", "client");
-const canonicalPolicyPath = join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md");
+const clientRoot = join(repoRoot, "packages", "client-runtime");
+const canonicalPolicyPath = join(
+  repoRoot,
+  "packages",
+  "client-runtime",
+  "src",
+  "runtime",
+  "assets",
+  "context-tree-policy.md",
+);
 const canonicalWriteRoutingPath = join(
   repoRoot,
   "packages",
-  "client",
+  "client-runtime",
   "src",
   "runtime",
   "assets",

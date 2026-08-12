@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from "vitest";
  *
  * Force the failure by mocking the capture builder to throw.
  */
-vi.mock("@first-tree/cloud-client", () => ({
+vi.mock("@first-tree/client-runtime", () => ({
   buildMessageDocumentSnapshots: vi.fn(async () => {
     throw new Error("capture exploded");
   }),

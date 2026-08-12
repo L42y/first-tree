@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { setCliBinding } from "@first-tree/client-runtime/runtime/cli-binding.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setCliBinding } from "../../../../runtime/cli-binding.js";
 import {
   assertPathInsideWorkspace,
   buildLandingCodexAppServerArgs,

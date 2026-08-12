@@ -339,7 +339,8 @@ describe("OpenCode V1 handler", () => {
     await handler.start(message("m-team-skill", "use the complete skill"), sessionCtx, deliveryToken());
 
     expect(reconcile).toHaveBeenCalledTimes(2);
-    const resolver = reconcile.mock.calls[0]?.[4];
+    // reconcileManagedSkillsForConfig(workspace, provider, providerSkillRoots, config, log?, bundleResolver?)
+    const resolver = reconcile.mock.calls[0]?.[5];
     expect(resolver).toBeTypeOf("function");
     await expect(
       resolver?.({

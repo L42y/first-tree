@@ -2,8 +2,8 @@
 // Installs a default CLI binding and stubs managed-skills reconcile so provider
 // transport unit suites do not pay real fsync-backed skill projection cost.
 
-import { vi } from "vitest";
 import { setCliBinding } from "@first-tree/client-runtime/runtime/cli-binding.js";
+import { vi } from "vitest";
 
 vi.mock("@first-tree/client-runtime/runtime/managed-skills.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@first-tree/client-runtime/runtime/managed-skills.js")>();

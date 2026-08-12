@@ -3,79 +3,66 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-const clientSrc = join(dirname(fileURLToPath(import.meta.url)), "..");
-const clientPkgRoot = join(clientSrc, "..");
+const providersSrc = join(dirname(fileURLToPath(import.meta.url)), "..");
+const providersPkgRoot = join(providersSrc, "..");
 
 describe("public barrel exports", { timeout: 30_000 }, () => {
-  it("loads the package entrypoint exports", async () => {
+  it("loads the provider package entrypoint exports", async () => {
     const api = await import("../index.js");
 
-    expect(api.FirstTreeHubSDK).toBeDefined();
-    expect(api.FirstTreeSDK).toBe(api.FirstTreeHubSDK);
-    expect(api.ClientConnection).toBeDefined();
-    expect(api.AgentSlot).toBeDefined();
-    expect(api.AgentRuntime).toBeDefined();
-    expect(api.cleanAgentWorkspaces).toBeDefined();
-    expect(api).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
-    expect(api).not.toHaveProperty("SessionManager");
-    expect(api).not.toHaveProperty("SessionRegistry");
     expect(api.createBuiltinHandlerRegistry).toBeDefined();
     expect(api.resolveAndLogClaudeExecutable).toBeDefined();
+    expect(api.RUNTIME_AUTH_DRIVERS).toBeDefined();
+    expect(api.BUILTIN_PROVIDER_PROBES).toBeDefined();
+    expect(api.probeCapabilities).toBeDefined();
+    expect(api.discoverProviderModels).toBeDefined();
+
+    // Private composition / runtime owners are not re-exported from providers.
+    expect(api).not.toHaveProperty("FirstTreeHubSDK");
+    expect(api).not.toHaveProperty("FirstTreeSDK");
+    expect(api).not.toHaveProperty("ClientConnection");
+    expect(api).not.toHaveProperty("AgentSlot");
+    expect(api).not.toHaveProperty("AgentRuntime");
+    expect(api).not.toHaveProperty("SessionManager");
+    expect(api).not.toHaveProperty("SessionRegistry");
     expect(api).not.toHaveProperty("registerBuiltinHandlers");
     expect(api).not.toHaveProperty("registerHandler");
     expect(api).not.toHaveProperty("getHandlerFactory");
     expect(api).not.toHaveProperty("hasHandler");
-    // S1d/S2 contracts + provider-support entries are not package public APIs /
-    // temporary subpath exports.
     expect(api).not.toHaveProperty("contracts");
     expect(api).not.toHaveProperty("provider-support");
     expect(api).not.toHaveProperty("prepareManagedSession");
-    const publicKeys = Object.keys(api).sort();
-    expect(publicKeys).not.toContain("SessionManager");
-    expect(publicKeys).not.toContain("SessionRegistry");
-    expect(publicKeys).not.toContain("noopDeliveryToken");
-    expect(publicKeys).not.toContain("requireDeliveryToken");
-    expect(publicKeys).not.toContain("prepareManagedSession");
+    expect(api).not.toHaveProperty("noopDeliveryToken");
+    expect(api).not.toHaveProperty("requireDeliveryToken");
 
-    const pkg = JSON.parse(readFileSync(join(clientPkgRoot, "package.json"), "utf8")) as {
+    const pkg = JSON.parse(readFileSync(join(providersPkgRoot, "package.json"), "utf8")) as {
       exports?: Record<string, unknown>;
     };
-    const exportPaths = Object.keys(pkg.exports ?? {}).sort();
-    expect(exportPaths).toEqual([".", "./observability"]);
-    expect(exportPaths).not.toContain("./contracts");
-    expect(exportPaths).not.toContain("./provider-support");
+    expect(Object.keys(pkg.exports ?? {}).sort()).toEqual(["."]);
     expect(pkg.exports).not.toHaveProperty("./contracts");
     expect(pkg.exports).not.toHaveProperty("./provider-support");
+    expect(pkg.exports).not.toHaveProperty("./observability");
 
-    const rootIndex = readFileSync(join(clientSrc, "index.ts"), "utf8");
-    expect(rootIndex).not.toMatch(/runtime\/contracts|from ["']\.\/runtime\/contracts\.js["']/);
-    expect(rootIndex).not.toMatch(/provider-support|prepareManagedSession/);
+    const rootIndex = readFileSync(join(providersSrc, "index.ts"), "utf8");
+    expect(rootIndex).not.toMatch(/@first-tree\/cloud-client/);
+    expect(rootIndex).not.toMatch(/client-runtime\/(?!contracts|provider-support)/);
   });
 
-  it("loads runtime barrel exports", async () => {
-    const runtime = await import("@first-tree/client-runtime/runtime/index.js");
-
+  it("keeps runtime and cloud barrels on their owning packages", async () => {
+    const runtime = await import("@first-tree/client-runtime");
     expect(runtime.AgentSlot).toBeDefined();
     expect(runtime.AgentRuntime).toBeDefined();
     expect(runtime.cleanAgentWorkspaces).toBeDefined();
-    expect(runtime).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
     expect(runtime).not.toHaveProperty("SessionManager");
     expect(runtime).not.toHaveProperty("SessionRegistry");
-    expect(runtime).not.toHaveProperty("contracts");
     expect(runtime).not.toHaveProperty("prepareManagedSession");
-    expect(runtime).not.toHaveProperty("providerSupport");
-    expect(runtime.resolveAgentContextTreeBinding).toBeDefined();
-    expect(runtime.registerShutdownHook).toBeDefined();
 
-    const runtimeIndex = readFileSync(join(clientSrc, "runtime/index.ts"), "utf8");
-    expect(runtimeIndex).not.toMatch(/from ["']\.\/contracts\.js["']/);
-    expect(runtimeIndex).not.toMatch(/provider-support|prepareManagedSession/);
-  });
-
-  it("loads observability barrel exports", async () => {
     const observability = await import("@first-tree/cloud-client/observability");
-
     expect(observability.createLogger).toBeDefined();
     expect(observability.rootLogger).toBeDefined();
+
+    const cloud = await import("@first-tree/cloud-client");
+    expect(cloud.FirstTreeHubSDK).toBeDefined();
+    expect(cloud.FirstTreeSDK).toBe(cloud.FirstTreeHubSDK);
   });
 });

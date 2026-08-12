@@ -1,10 +1,10 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mockCtxPlumbing } from "@first-tree/client-runtime/__tests__/test-helpers.js";
+import type { ChatContext } from "@first-tree/client-runtime/runtime/chat-context.js";
+import type { SessionContext, SessionMessage } from "@first-tree/client-runtime/runtime/handler.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mockCtxPlumbing } from "../../../../__tests__/test-helpers.js";
-import type { ChatContext } from "../../../../runtime/chat-context.js";
-import type { SessionContext, SessionMessage } from "../../../../runtime/handler.js";
 
 const state = vi.hoisted(() => ({
   workspaceRoot: "",
@@ -96,7 +96,7 @@ vi.mock("../../tui/transcript-tail.js", () => ({
   },
 }));
 
-import { deliveryTokenFromSessionContext } from "../../../../runtime/handler.js";
+import { deliveryTokenFromSessionContext } from "@first-tree/client-runtime/runtime/handler.js";
 import { createClaudeCodeTuiHandler } from "../../tui/index.js";
 import { newSession } from "../../tui/tmux-session.js";
 

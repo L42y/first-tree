@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const buildSnapshotsMock = vi.hoisted(() => vi.fn());
 
-vi.mock("@first-tree/cloud-client", () => ({
+vi.mock("@first-tree/client-runtime", () => ({
   buildMessageDocumentSnapshots: buildSnapshotsMock,
 }));
 

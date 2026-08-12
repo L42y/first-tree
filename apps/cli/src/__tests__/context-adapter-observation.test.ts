@@ -237,9 +237,9 @@ function testDriver(): ContextIntegrationProviderDriver {
 function prepareCoreRoot(target: string): void {
   const repoRoot = resolve(import.meta.dirname, "../../../..");
   cpSync(join(repoRoot, "skills"), join(target, "skills"), { recursive: true });
-  const policy = join(target, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md");
+  const policy = join(target, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md");
   mkdirSync(join(policy, ".."), { recursive: true });
-  cpSync(join(repoRoot, "packages", "client", "src", "runtime", "assets", "context-tree-policy.md"), policy);
+  cpSync(join(repoRoot, "packages", "client-runtime", "src", "runtime", "assets", "context-tree-policy.md"), policy);
 }
 
 function buildRelease(target: string, source: string): void {
