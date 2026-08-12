@@ -1,4 +1,4 @@
-import { RUNTIME_READINESS_PROMPT } from "@first-tree/client";
+import { RUNTIME_READINESS_PROMPT, type RuntimeReadinessExecutionResult } from "@first-tree/client";
 import type { CapabilityEntry, RuntimeProvider } from "@first-tree/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeReadinessCoordinator, runtimeReadinessIdentity } from "../core/runtime-readiness.js";
@@ -19,9 +19,7 @@ function installed(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
 
 function harness(options: {
   entry?: CapabilityEntry;
-  verify?: (
-    signal: AbortSignal,
-  ) => Promise<{ ok: true } | { ok: false; error: { code: "needs_login" | "provider_error"; message?: string } }>;
+  verify?: (signal: AbortSignal) => Promise<RuntimeReadinessExecutionResult>;
   timeoutMs?: number;
 }) {
   let entry = options.entry ?? installed();
@@ -98,33 +96,56 @@ describe("RuntimeReadinessCoordinator", () => {
 
   it("times out one bounded provider turn", async () => {
     vi.useFakeTimers();
-    const h = harness({ verify: async () => new Promise(() => undefined), timeoutMs: 25 });
+    const h = harness({
+      verify: async (signal) =>
+        new Promise((resolve) => {
+          signal.addEventListener("abort", () => resolve({ ok: false, error: { code: "cancelled" } }), {
+            once: true,
+          });
+        }),
+      timeoutMs: 25,
+    });
     const result = h.coordinator.check(command());
     await vi.advanceTimersByTimeAsync(25);
     await expect(result).resolves.toMatchObject({ state: "failed", error: { code: "timeout" } });
   });
 
-  it("does not overlap a new run when a timed-out provider ignores cancellation", async () => {
+  it("publishes timeout only after cancellation cleanup and then permits a new run", async () => {
     vi.useFakeTimers();
-    let release: (() => void) | undefined;
+    let finishCleanup: (() => void) | undefined;
+    let callCount = 0;
     const h = harness({
-      verify: async () =>
-        new Promise<{ ok: true }>((resolve) => {
-          release = () => resolve({ ok: true });
-        }),
+      verify: async (signal) => {
+        callCount += 1;
+        if (callCount > 1) return { ok: true };
+        return new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              finishCleanup = () => resolve({ ok: false, error: { code: "cancelled" } });
+            },
+            { once: true },
+          );
+        });
+      },
       timeoutMs: 25,
     });
     const first = h.coordinator.check(command());
     await vi.advanceTimersByTimeAsync(25);
-    await expect(first).resolves.toMatchObject({ state: "failed", error: { code: "timeout" } });
-
-    await expect(h.coordinator.check({ ...command(), force: true, ref: "no-overlap" })).resolves.toMatchObject({
-      state: "failed",
-      error: { code: "provider_busy" },
+    await vi.waitFor(() => expect(finishCleanup).toBeDefined());
+    let published = false;
+    void first.then(() => {
+      published = true;
     });
-    expect(h.verify).toHaveBeenCalledTimes(1);
-    release?.();
-    await vi.runAllTicks();
+    await Promise.resolve();
+    expect(published).toBe(false);
+
+    finishCleanup?.();
+    await expect(first).resolves.toMatchObject({ state: "failed", error: { code: "timeout" } });
+    await expect(h.coordinator.check({ ...command(), force: true, ref: "after-cleanup" })).resolves.toMatchObject({
+      state: "ready",
+    });
+    expect(h.verify).toHaveBeenCalledTimes(2);
   });
 
   it("redacts provider errors before publishing them", async () => {

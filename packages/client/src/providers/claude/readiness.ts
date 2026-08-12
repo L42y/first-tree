@@ -9,7 +9,11 @@ import {
 import { resolveClaudeCodeExecutable } from "./executable.js";
 import { detectClaudeAuthFailure } from "./index.js";
 
-type ClaudeReadinessQuery = (input: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>;
+type ClaudeReadinessStream = AsyncIterable<SDKMessage> & {
+  return?: () => Promise<unknown>;
+};
+
+type ClaudeReadinessQuery = (input: { prompt: string; options: Options }) => ClaudeReadinessStream;
 
 export type ClaudeReadinessDeps = {
   runQuery?: ClaudeReadinessQuery;
@@ -53,13 +57,18 @@ export async function verifyClaudeCodeReadiness(
   deps: ClaudeReadinessDeps = {},
 ): Promise<RuntimeReadinessExecutionResult> {
   const runQuery = deps.runQuery ?? query;
-  const resolution = (deps.resolveExecutable ?? resolveClaudeCodeExecutable)({ includeLoginShell: false });
+  // Match the install-only probe and the normal session's lazy fallback. The
+  // daemon's frozen registry intentionally skips login-shell probing at boot,
+  // but both capability detection and actual session admission resolve it on
+  // demand when the cheap pre-resolution found nothing.
+  const resolution = (deps.resolveExecutable ?? resolveClaudeCodeExecutable)();
 
   return withIsolatedReadinessWorkspace(async (cwd) => {
     let assistantError: string | null = null;
     let authFailure = false;
+    let messages: ClaudeReadinessStream | null = null;
     try {
-      const messages = runQuery({
+      messages = runQuery({
         prompt: RUNTIME_READINESS_PROMPT,
         options: {
           cwd,
@@ -97,7 +106,7 @@ export async function verifyClaudeCodeReadiness(
         const errors = Array.isArray(record?.errors)
           ? record.errors.filter((item): item is string => typeof item === "string")
           : [];
-        if (status === 401 || status === 403 || errors.some(isClaudeAuthText)) {
+        if (status === 401 || errors.some(isClaudeAuthText)) {
           authFailure = true;
         }
         return failureResult(authFailure ? "authentication_failed" : (assistantError ?? message.subtype));
@@ -106,6 +115,11 @@ export async function verifyClaudeCodeReadiness(
     } catch (err) {
       if (input.signal.aborted) return { ok: false, error: { code: "cancelled" } };
       return failureResult(err instanceof Error ? err.message : String(err));
+    } finally {
+      // The SDK's Query.return() owns its bounded subprocess cleanup. Await it
+      // after cancellation so isolated-workspace removal, and therefore the
+      // coordinator's timeout verdict, cannot race a still-running Claude CLI.
+      if (input.signal.aborted) await messages?.return?.();
     }
   });
 }

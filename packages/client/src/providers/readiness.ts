@@ -66,7 +66,10 @@ export async function withIsolatedReadinessWorkspace(
     // Restore owner write permission only so the exact generated temp target can
     // be removed. Never operate on a caller-supplied or unresolved path.
     await setMode(cwd, 0o700).catch(() => undefined);
-    await remove(cwd).catch(() => undefined);
+    // A verdict is not safe to publish while its provider workspace may still
+    // exist. Let removal failure reject the run so the coordinator cannot
+    // misreport a completed timeout or success before cleanup is proven.
+    await remove(cwd);
   }
 }
 

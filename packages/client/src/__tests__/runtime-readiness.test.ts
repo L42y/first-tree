@@ -1,7 +1,16 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it, vi } from "vitest";
+import { resolveClaudeCodeExecutable } from "../providers/claude/executable.js";
 import { verifyClaudeCodeReadiness } from "../providers/claude/readiness.js";
-import { isSafeCodexReadinessItemType, verifyCodexReadiness } from "../providers/codex/readiness.js";
+import {
+  classifyCodexReadinessAuthText,
+  isSafeCodexReadinessItemType,
+  runCodexCli,
+  verifyCodexReadiness,
+} from "../providers/codex/readiness.js";
 import { RUNTIME_READINESS_PROMPT, withIsolatedReadinessWorkspace } from "../providers/readiness.js";
 
 function signal(): AbortSignal {
@@ -40,6 +49,19 @@ describe("runtime readiness provider boundary", () => {
       remove: async () => undefined,
     });
     expect(result).toMatchObject({ ok: false, error: { code: "unsafe_activity" } });
+  });
+
+  it("does not report a provider result when isolated-workspace cleanup fails", async () => {
+    await expect(
+      withIsolatedReadinessWorkspace(async () => ({ ok: true }), {
+        makeTemp: async () => "/tmp/isolated-readiness",
+        setMode: async () => undefined,
+        list: async () => [],
+        remove: async () => {
+          throw new Error("cleanup failed");
+        },
+      }),
+    ).rejects.toThrow("cleanup failed");
   });
 
   it("runs Claude through the official SDK with tools and setting sources disabled", async () => {
@@ -101,6 +123,65 @@ describe("runtime readiness provider boundary", () => {
       error: { code: "needs_login", message: "Claude authentication is required." },
     });
     expect(JSON.stringify(result)).not.toContain("private provider output");
+  });
+
+  it("keeps an ambiguous Claude 403 as a provider failure", async () => {
+    const result = await verifyClaudeCodeReadiness(
+      { signal: signal() },
+      {
+        resolveExecutable: () => ({ path: "/opt/claude", source: "path" }),
+        runQuery: async function* () {
+          yield {
+            type: "result",
+            subtype: "error_during_execution",
+            is_error: true,
+            api_error_status: 403,
+            errors: ["request forbidden by regional policy"],
+          } as unknown as SDKMessage;
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: { code: "provider_error", message: "Claude readiness turn failed." },
+    });
+  });
+
+  it("uses the login-shell Claude executable shared by capability detection and normal sessions", async () => {
+    const home = mkdtempSync(join(tmpdir(), "first-tree-claude-readiness-"));
+    const loginBin = join(home, "login-bin");
+    const executable = join(loginBin, "claude");
+    mkdirSync(loginBin);
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const resolveExecutable = vi.fn((options: Parameters<typeof resolveClaudeCodeExecutable>[0] = {}) =>
+      resolveClaudeCodeExecutable({
+        ...options,
+        env: { HOME: home, PATH: "" },
+        wellKnownDirs: () => [],
+        loginShellPathDirs: () => [loginBin],
+      }),
+    );
+    let resolvedPath: unknown;
+
+    try {
+      const result = await verifyClaudeCodeReadiness(
+        { signal: signal() },
+        {
+          resolveExecutable,
+          runQuery: async function* ({ options }) {
+            resolvedPath = options.pathToClaudeCodeExecutable;
+            yield { type: "result", subtype: "success", is_error: false } as SDKMessage;
+          },
+        },
+      );
+
+      expect(result).toEqual({ ok: true });
+      expect(resolvedPath).toBe(executable);
+      expect(resolveExecutable).toHaveBeenCalledWith();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("runs Codex through the actual CLI in an ephemeral no-tools mode and rejects tool activity", async () => {
@@ -188,5 +269,41 @@ describe("runtime readiness provider boundary", () => {
       ok: false,
       error: { code: "needs_login", message: "Codex authentication is required." },
     });
+  });
+
+  it("keeps an ambiguous Codex 403 as a provider failure", () => {
+    expect(classifyCodexReadinessAuthText("HTTP 403 Forbidden from the configured proxy")).toBe(false);
+    expect(classifyCodexReadinessAuthText("HTTP 401 Unauthorized")).toBe(true);
+    expect(classifyCodexReadinessAuthText("invalid API key")).toBe(true);
+  });
+
+  it("hard-stops an uncooperative Codex process and permits the next run", async () => {
+    const controller = new AbortController();
+    const first = runCodexCli({
+      binary: process.execPath,
+      args: ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+      cwd: process.cwd(),
+      prompt: "",
+      signal: controller.signal,
+      terminationGraceMs: 25,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controller.abort();
+    await expect(first).resolves.toMatchObject({ completed: false, replied: false });
+
+    const second = await runCodexCli({
+      binary: process.execPath,
+      args: [
+        "-e",
+        "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message'}}));" +
+          "console.log(JSON.stringify({type:'turn.completed'}));",
+      ],
+      cwd: process.cwd(),
+      prompt: "",
+      signal: signal(),
+      terminationGraceMs: 25,
+    });
+    expect(second).toMatchObject({ exitCode: 0, completed: true, replied: true, failed: false });
   });
 });

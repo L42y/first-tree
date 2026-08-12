@@ -125,7 +125,6 @@ export class RuntimeReadinessCoordinator {
   private readonly deps: RuntimeReadinessCoordinatorDeps;
   private readonly drivers: RuntimeReadinessTable;
   private readonly inFlight = new Map<RuntimeProvider, InFlightCheck>();
-  private readonly providerSettlements = new Map<RuntimeProvider, Promise<void>>();
   private readonly lastRequests = new Map<RuntimeProvider, RuntimeReadinessCheckCommand>();
   private readonly latestIdentities = new Map<RuntimeProvider, string>();
   private readonly latestGenerations = new Map<RuntimeProvider, number>();
@@ -175,21 +174,6 @@ export class RuntimeReadinessCoordinator {
         return this.supersededResult(command.provider);
       }
       return this.checkGeneration(command, identity, generation);
-    }
-
-    if (this.providerSettlements.has(command.provider)) {
-      this.deps.log("•", `runtime-readiness: suppressed overlapping ${command.provider} run (ref ${command.ref})`);
-      const now = (this.deps.now ?? Date.now)();
-      return this.publishIfCurrent(command, identity, {
-        state: "failed",
-        identity,
-        checkedAt: new Date(now).toISOString(),
-        durationMs: 0,
-        error: {
-          code: "provider_busy",
-          message: "The previous readiness process is still settling after cancellation. Retry shortly.",
-        },
-      });
     }
 
     const entry = this.deps.currentEntry(command.provider);
@@ -289,7 +273,7 @@ export class RuntimeReadinessCoordinator {
 
     const driver = this.drivers[command.provider];
     const execution = driver
-      ? await this.runBounded(command.provider, (signal) => driver.verify({ config: command.config, signal }))
+      ? await this.runBounded((signal) => driver.verify({ config: command.config, signal }))
       : ({
           ok: false,
           error: {
@@ -317,35 +301,48 @@ export class RuntimeReadinessCoordinator {
   }
 
   private async runBounded(
-    provider: RuntimeProvider,
     run: (signal: AbortSignal) => Promise<RuntimeReadinessExecutionResult>,
   ): Promise<RuntimeReadinessExecutionResult> {
     const controller = new AbortController();
     const timeoutMs = this.deps.timeoutMs ?? RUNTIME_READINESS_TIMEOUT_MS;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const timeout = new Promise<RuntimeReadinessExecutionResult>((resolve) => {
+    const timeout = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => {
         controller.abort(new Error("runtime readiness timed out"));
-        resolve({ ok: false, error: { code: "timeout", message: `Readiness timed out after ${timeoutMs}ms.` } });
+        resolve("timeout");
       }, timeoutMs);
       timer.unref?.();
     });
-    const rawRun = Promise.resolve()
-      .then(() => run(controller.signal))
-      .catch(
-        () =>
-          ({
-            ok: false,
-            error: { code: "provider_error", message: "The readiness provider failed unexpectedly." },
-          }) satisfies RuntimeReadinessExecutionResult,
-      );
-    const settlement = rawRun.then(() => undefined);
-    this.providerSettlements.set(provider, settlement);
-    void settlement.finally(() => {
-      if (this.providerSettlements.get(provider) === settlement) this.providerSettlements.delete(provider);
-    });
+    const rawRun = Promise.resolve().then(() => run(controller.signal));
     try {
-      return await Promise.race([rawRun, timeout]);
+      const first = await Promise.race([
+        rawRun.then(
+          (result) => ({ kind: "result" as const, result }),
+          () => ({ kind: "error" as const }),
+        ),
+        timeout.then(() => ({ kind: "timeout" as const })),
+      ]);
+      if (first.kind === "result") return first.result;
+      if (first.kind === "error") {
+        return {
+          ok: false,
+          error: { code: "provider_error", message: "The readiness provider failed unexpectedly." },
+        };
+      }
+
+      // Provider adapters own bounded teardown (Claude SDK abort cleanup;
+      // Codex SIGTERM→SIGKILL escalation). Do not publish `timeout`, release
+      // the in-flight slot, or allow another run until the adapter has settled
+      // and its isolated workspace removal has completed successfully.
+      try {
+        await rawRun;
+      } catch {
+        return {
+          ok: false,
+          error: { code: "provider_error", message: "Readiness cleanup failed after cancellation." },
+        };
+      }
+      return { ok: false, error: { code: "timeout", message: `Readiness timed out after ${timeoutMs}ms.` } };
     } finally {
       if (timer) clearTimeout(timer);
     }

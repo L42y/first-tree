@@ -24,7 +24,10 @@ type CodexCliRunInput = {
   cwd: string;
   prompt: string;
   signal: AbortSignal;
+  terminationGraceMs?: number;
 };
+
+export const CODEX_READINESS_TERMINATION_GRACE_MS = 2_000;
 
 export type CodexReadinessDeps = {
   resolveBinary?: typeof resolveCodexRuntimeBinary;
@@ -106,16 +109,14 @@ export function isSafeCodexReadinessItemType(type: string | null): boolean {
   return type === "agent_message" || type === "reasoning" || type === "error";
 }
 
-function classifyAuthText(text: string): boolean {
+export function classifyCodexReadinessAuthText(text: string): boolean {
   return (
     isCodexAuthError(text) ||
-    /(?:^|\D)(?:401|403)(?:\D|$)|unauthori[sz]ed|not logged in|login required|invalid.*(?:api key|credential)/iu.test(
-      text,
-    )
+    /(?:^|\D)401(?:\D|$)|unauthori[sz]ed|not logged in|login required|invalid.*(?:api key|credential)/iu.test(text)
   );
 }
 
-async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> {
+export async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(input.binary, input.args, {
       cwd: input.cwd,
@@ -130,11 +131,18 @@ async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> 
     let authFailure = false;
     let authTail = "";
     let settled = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const cleanup = () => {
+      input.signal.removeEventListener("abort", abort);
+      if (killTimer) clearTimeout(killTimer);
+      killTimer = null;
+    };
 
     const settle = (exitCode: number | null) => {
       if (settled) return;
       settled = true;
-      input.signal.removeEventListener("abort", abort);
+      cleanup();
       resolve({
         exitCode,
         completed,
@@ -144,9 +152,20 @@ async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> 
         failed,
       });
     };
-    const abort = () => child.kill("SIGTERM");
-    if (input.signal.aborted) abort();
-    else input.signal.addEventListener("abort", abort, { once: true });
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const abort = () => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, input.terminationGraceMs ?? CODEX_READINESS_TERMINATION_GRACE_MS);
+      killTimer.unref?.();
+    };
 
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
@@ -161,7 +180,7 @@ async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> 
           failed = true;
           const error = asRecord(event.error);
           const message = typeof event.message === "string" ? event.message : error?.message;
-          if (typeof message === "string" && classifyAuthText(message)) authFailure = true;
+          if (typeof message === "string" && classifyCodexReadinessAuthText(message)) authFailure = true;
         }
       } catch {
         // Ignore non-JSON diagnostic lines. stderr still feeds bounded auth
@@ -170,10 +189,12 @@ async function runCodexCli(input: CodexCliRunInput): Promise<CodexCliRunResult> 
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
       authTail = `${authTail}${chunk.toString()}`.slice(-512);
-      if (classifyAuthText(authTail)) authFailure = true;
+      if (classifyCodexReadinessAuthText(authTail)) authFailure = true;
     });
-    child.once("error", reject);
+    child.once("error", fail);
     child.once("close", (code) => settle(code));
+    if (input.signal.aborted) abort();
+    else input.signal.addEventListener("abort", abort, { once: true });
     child.stdin.end(input.prompt);
   });
 }
