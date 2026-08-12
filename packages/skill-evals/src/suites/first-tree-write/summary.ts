@@ -54,6 +54,7 @@ export function buildGrading(
   const unboundAction =
     evalCase.expected.action === "skip_tree_write_unbound" ||
     evalCase.expected.action === "report_unbound_tree_write_gap";
+  const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
   const expectedNoDiff = evalCase.expected.treeDiff === "none";
   const treeDiffPass = expectedNoDiff
     ? !metrics.treeChanged
@@ -68,7 +69,9 @@ export function buildGrading(
     metrics.forbiddenContentHits.length === 0 &&
     (!expectedNoDiff || !metrics.treeChanged) &&
     (!unboundAction || !metrics.treeSetupGuidanceObserved) &&
-    (!unboundAction || !metrics.unboundTreeArtifactsCreated);
+    (!unboundAction || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!unboundAction || !metrics.unboundTreeArtifactsCreated) &&
+    (!unboundExplicit || !metrics.unboundSetupSteeringObserved);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
       ? [riskFlag("source_repo_changed", "source repo fixture changed during write gate")]
@@ -81,6 +84,22 @@ export function buildGrading(
       : []),
     ...(unboundAction && metrics.treeSetupGuidanceObserved
       ? [riskFlag("tree_setup_guidance", "Unbound case response pushed Tree bind/create/setup guidance")]
+      : []),
+    ...(unboundAction && metrics.treeSetupSurfaceGuidanceObserved
+      ? [
+          riskFlag(
+            "tree_setup_surface_guidance",
+            "Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+          ),
+        ]
+      : []),
+    ...(unboundExplicit && metrics.unboundSetupSteeringObserved
+      ? [
+          riskFlag(
+            "tree_setup_steering",
+            "Unbound explicit Tree write carried extra setup/recovery steering beyond the gap statement.",
+          ),
+        ]
       : []),
     ...(unboundAction && metrics.unboundTreeArtifactsCreated
       ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout")]
@@ -112,7 +131,13 @@ export function buildGrading(
     passed,
     riskFlags,
     scores: {
-      outcome_pass: metrics.expectedResponseObserved && treeDiffPass,
+      outcome_pass: unboundExplicit
+        ? metrics.unboundGapStatementObserved &&
+          !metrics.treeSetupGuidanceObserved &&
+          !metrics.treeSetupSurfaceGuidanceObserved &&
+          !metrics.unboundSetupSteeringObserved &&
+          treeDiffPass
+        : metrics.expectedResponseObserved && treeDiffPass,
       process_pass: processPass,
       risk_pass: riskPass,
       routing_pass: routingPass,

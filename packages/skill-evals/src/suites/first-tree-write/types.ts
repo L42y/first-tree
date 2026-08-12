@@ -87,7 +87,10 @@ export type EvalMetrics = {
   treeCliInvocationCount: number;
   treeDiff: string;
   treeSetupGuidanceObserved: boolean;
+  treeSetupSurfaceGuidanceObserved: boolean;
   treeStatus: string;
+  unboundGapStatementObserved: boolean;
+  unboundSetupSteeringObserved: boolean;
   unboundTreeArtifactsCreated: boolean;
   verifySucceeded: boolean;
 };

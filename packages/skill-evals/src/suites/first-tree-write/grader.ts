@@ -152,6 +152,50 @@ function containsTreeSetupGuidance(text: string): boolean {
   );
 }
 
+/**
+ * The one statement an explicit Tree write in an unbound workspace may make:
+ * this write cannot complete because nothing is bound. A qualifying output
+ * must express BOTH the blocked write AND the no-binding reason anchored to
+ * the Tree — "cannot be completed right now" without the reason, or a reason
+ * about something else, does not qualify.
+ */
+const UNBOUND_REASON =
+  /no\s+(?:context\s+)?tree\s+is\s+bound|no\s+bound\s+(?:context\s+)?tree|(?:context\s+)?tree\s+is\s+not\s+bound|no\s+(?:context\s+)?tree\s+binding|without\s+a\s+bound\s+(?:context\s+)?tree/iu;
+const CANNOT_COMPLETE =
+  /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|can'?t\s+complete|unable\s+to\s+complete|not\s+possible/iu;
+
+function containsUnboundGapStatement(text: string): boolean {
+  return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNBOUND_REASON.test(text);
+}
+
+/**
+ * Setup-surface steering: pointing the user at Settings, the web console, an
+ * operator/admin, or Tree configuration as the way out of a missing binding.
+ * A pure "no Tree is bound" gap statement must not match.
+ */
+function containsTreeSetupSurfaceGuidance(text: string): boolean {
+  return (
+    /\bsettings\b\s*(?:→|->|>|:)?[^.!?\n]{0,40}(?:context\s+)?tree\b/iu.test(text) ||
+    /(?:context\s+)?tree\b[^.!?\n]{0,40}\bsettings\b/iu.test(text) ||
+    /\bweb\s+console\b/iu.test(text) ||
+    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(text) ||
+    /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
+  );
+}
+
+/**
+ * Strict steering check for the explicit Tree-write branch: the delivered
+ * answer may contain only the gap statement, so ANY setup-surface mention
+ * fails. The ordinary unbound branch intentionally does NOT use this
+ * detector, so business prose mentioning an admin or settings stays safe.
+ */
+const UNBOUND_SETUP_STEERING =
+  /\bsettings\b|\bweb\s+console\b|\boperators?\b|\badmin(?:istrator)?s?\b|\bconfigur(?:e|ation|ing)\b|\bset\s*up\b|\bsetup\b|\binstall(?:ing|ation)?\b/iu;
+
+function containsUnboundSetupSteering(text: string): boolean {
+  return UNBOUND_SETUP_STEERING.test(text);
+}
+
 function collectMarkdownFiles(root: string): string[] {
   const files: string[] = [];
   function walk(dir: string): void {
@@ -248,6 +292,9 @@ export function deriveMetrics(
   const markdown = contextTreePath === null ? "" : contextTreeMarkdown(contextTreePath);
   const treeCliInvocationCount = firstTreeArgv.filter(argvIsTreeCommand).length;
   const treeSetupGuidanceObserved = containsTreeSetupGuidance(finalResponse);
+  const treeSetupSurfaceGuidanceObserved = containsTreeSetupSurfaceGuidance(finalResponse);
+  const unboundGapStatementObserved = containsUnboundGapStatement(finalResponse);
+  const unboundSetupSteeringObserved = containsUnboundSetupSteering(finalResponse);
   const forbiddenContentHits = evalCase.forbidden.content.filter((pattern) => markdown.includes(pattern));
   const requiredDiffSnippets = evalCase.expected.requiredDiffSnippets ?? [];
   const modelVerifySucceeded = firstTreeCommandResults.some(
@@ -276,7 +323,10 @@ export function deriveMetrics(
     treeCliInvocationCount,
     treeDiff: treeState.diff,
     treeSetupGuidanceObserved,
+    treeSetupSurfaceGuidanceObserved,
     treeStatus: treeState.status,
+    unboundGapStatementObserved,
+    unboundSetupSteeringObserved,
     unboundTreeArtifactsCreated: contextTreePath === null ? unboundTreeArtifactsCreated(paths) : false,
     verifySucceeded,
   };
@@ -287,16 +337,30 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
   if (metrics.runnerExitCode !== 0) return false;
   if (metrics.sourceRepoChanged) return false;
   if (metrics.forbiddenContentHits.length > 0) return false;
+
+  if (evalCase.expected.action === "report_unbound_tree_write_gap") {
+    // The explicit unbound write is graded on the anchored gap statement, not
+    // the loose response-hint OR-logic: the reply must express both the
+    // blocked write and the no-binding reason, and nothing beyond it.
+    return (
+      metrics.unboundGapStatementObserved &&
+      metrics.treeCliInvocationCount === 0 &&
+      !metrics.treeChanged &&
+      !metrics.treeSetupGuidanceObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved &&
+      !metrics.unboundTreeArtifactsCreated
+    );
+  }
+
   if (!metrics.expectedResponseObserved) return false;
 
-  if (
-    evalCase.expected.action === "skip_tree_write_unbound" ||
-    evalCase.expected.action === "report_unbound_tree_write_gap"
-  ) {
+  if (evalCase.expected.action === "skip_tree_write_unbound") {
     return (
       metrics.treeCliInvocationCount === 0 &&
       !metrics.treeChanged &&
       !metrics.treeSetupGuidanceObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }
@@ -319,6 +383,7 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   const unboundAction =
     evalCase.expected.action === "skip_tree_write_unbound" ||
     evalCase.expected.action === "report_unbound_tree_write_gap";
+  const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
   if (!unboundAction && !metrics.skillFileReadObserved) {
     notes.push("first-tree-write/SKILL.md was not read by the model.");
   }
@@ -327,6 +392,17 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   }
   if (unboundAction && metrics.treeSetupGuidanceObserved) {
     notes.push("Unbound case response pushed Tree bind/create/setup guidance.");
+  }
+  if (unboundAction && metrics.treeSetupSurfaceGuidanceObserved) {
+    notes.push("Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).");
+  }
+  if (unboundExplicit && !metrics.unboundGapStatementObserved) {
+    notes.push(
+      "Unbound explicit Tree write did not state the specific gap: this write cannot be completed because nothing is bound.",
+    );
+  }
+  if (unboundExplicit && metrics.unboundSetupSteeringObserved) {
+    notes.push("Unbound explicit Tree write carried extra setup/recovery steering beyond the gap statement.");
   }
   if (unboundAction && metrics.unboundTreeArtifactsCreated) {
     notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");

@@ -119,6 +119,8 @@ export type EvalMetrics = {
   treeSetupSurfaceGuidanceObserved: boolean;
   /** Visible output states the specific gap: this Tree read cannot complete because nothing is bound. */
   unboundGapStatementObserved: boolean;
+  /** Delivered output for an explicit Tree read carried any setup/recovery steering. */
+  unboundSetupSteeringObserved: boolean;
   /** An unbound run created `.first-tree/workspace.json` or a `context-tree/` checkout. */
   unboundTreeArtifactsCreated: boolean;
   legacyReadActivationCalls: number;

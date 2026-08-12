@@ -740,6 +740,99 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("fails the concrete-task row on a refusal or input request dressed in task keywords", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-refusal-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      for (const fake of [
+        "I cannot complete the checkout session draft; need more input.",
+        "I need more input before drafting the checkout session announcement.",
+      ]) {
+        const metrics = deriveMetrics(
+          [
+            skillReadEvent(),
+            {
+              argv: ["chat", "send", "baixiaohang", fake],
+              phase: "model",
+              type: "first_tree_call",
+            },
+          ],
+          evalCase,
+          fixtureValidation(),
+          0,
+          baseRunPaths(tempRoot),
+          null,
+        );
+
+        expect(metrics.expectedResponseObserved, `fake result accepted: ${fake}`).toBe(false);
+        expect(casePassed(evalCase, metrics)).toBe(false);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the goal-first row when the sole ask is a bare readiness statement", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-empty-ask-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "ask", "baixiaohang", "Ready."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(1);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("passes the goal-first row on natural qualifying goal-request phrasings", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-natural-ask-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      for (const ask of [
+        "I'm ready to work. What's the first outcome you'd like from me?",
+        "Ready when you are — what would you like me to work on first?",
+        "I'm ready to work. Tell me the outcome you want first.",
+      ]) {
+        const metrics = deriveMetrics(
+          [
+            skillReadEvent(),
+            {
+              argv: ["chat", "ask", "baixiaohang", ask],
+              phase: "model",
+              type: "first_tree_call",
+            },
+          ],
+          evalCase,
+          fixtureValidation(),
+          0,
+          baseRunPaths(tempRoot),
+          null,
+        );
+
+        expect(metrics.expectedResponseObserved, `goal ask rejected: ${ask}`).toBe(true);
+        expect(casePassed(evalCase, metrics)).toBe(true);
+      }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("fails tree-unknown row when the model claims the Context Tree is ready", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-tree-ready-claim-"));
     try {

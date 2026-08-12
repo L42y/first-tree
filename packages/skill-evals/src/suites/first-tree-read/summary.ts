@@ -155,6 +155,10 @@ export function driftNote(
     }
   }
 
+  if (unboundExplicitRead && metrics.unboundSetupSteeringObserved) {
+    notes.push("Unbound explicit Tree read carried extra setup/recovery steering beyond the gap statement.");
+  }
+
   return notes.length > 0 ? notes.join(" ") : null;
 }
 
@@ -207,7 +211,8 @@ export function buildGrading(
     ? metrics.unboundGapStatementObserved &&
       metrics.impactNoteBehaviorOk &&
       !metrics.treeSetupWordingObserved &&
-      !metrics.treeSetupSurfaceGuidanceObserved
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved
     : unboundContinuation
       ? metrics.expectedFactsObserved &&
         metrics.impactNoteBehaviorOk &&
@@ -219,7 +224,9 @@ export function buildGrading(
   const riskPass =
     metrics.modelFirstTreeCommandsOk &&
     metrics.impactNoteMetadataFree &&
-    (!unbound || !metrics.unboundTreeArtifactsCreated);
+    (!unbound || !metrics.unboundTreeArtifactsCreated) &&
+    (!unbound || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!unboundExplicitRead || !metrics.unboundSetupSteeringObserved);
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
   return {
@@ -268,6 +275,14 @@ export function buildGrading(
             riskFlag(
               "tree_setup_surface_guidance",
               "Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+            ),
+          ]
+        : []),
+      ...(unboundExplicitRead && metrics.unboundSetupSteeringObserved
+        ? [
+            riskFlag(
+              "tree_setup_steering",
+              "Unbound explicit Tree read carried extra setup/recovery steering beyond the gap statement.",
             ),
           ]
         : []),

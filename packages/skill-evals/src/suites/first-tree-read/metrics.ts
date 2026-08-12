@@ -487,13 +487,14 @@ function expectedFactHits(modelOutputText: string, expectedFacts: readonly strin
 /**
  * The one statement an explicit Tree read in an unbound workspace may make:
  * this read cannot complete because nothing is bound. A qualifying output must
- * express BOTH the blocked read AND the no-binding reason — "cannot be
- * completed right now" without the reason does not qualify. Bind/create/setup
- * guidance is graded separately by `treeSetupWordingObserved` and
- * `treeSetupSurfaceGuidanceObserved`.
+ * express BOTH the blocked read AND the no-binding reason anchored to the
+ * Tree — "cannot be completed right now" without the reason, or a reason
+ * about something else ("the source repository is not bound"), does not
+ * qualify. Bind/create/setup guidance is graded separately by
+ * `treeSetupWordingObserved` and `treeSetupSurfaceGuidanceObserved`.
  */
 const UNBOUND_REASON =
-  /no\s+(?:context\s+)?tree\s+is\s+bound|no\s+bound\s+(?:context\s+)?tree|(?:context\s+)?tree\s+is\s+not\s+bound|nothing\s+is\s+bound|not\s+bound|unbound/iu;
+  /no\s+(?:context\s+)?tree\s+is\s+bound|no\s+bound\s+(?:context\s+)?tree|(?:context\s+)?tree\s+is\s+not\s+bound|no\s+(?:context\s+)?tree\s+binding|without\s+a\s+bound\s+(?:context\s+)?tree/iu;
 const CANNOT_COMPLETE =
   /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|can'?t\s+complete|unable\s+to\s+complete|not\s+possible/iu;
 
@@ -514,6 +515,21 @@ function containsTreeSetupSurfaceGuidance(text: string): boolean {
     /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(text) ||
     /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
   );
+}
+
+/**
+ * Strict setup/recovery steering check for the explicit Tree-read branch: the
+ * delivered answer may contain only the gap statement, so ANY setup-surface
+ * mention — Settings, the web console, an operator/admin, configuration, or
+ * setup/install wording — fails, even when split across separate deliveries.
+ * The ordinary unbound continuation branch intentionally does NOT use this
+ * detector, so business prose mentioning an admin or settings stays safe.
+ */
+const UNBOUND_SETUP_STEERING =
+  /\bsettings\b|\bweb\s+console\b|\boperators?\b|\badmin(?:istrator)?s?\b|\bconfigur(?:e|ation|ing)\b|\bset\s*up\b|\bsetup\b|\binstall(?:ing|ation)?\b/iu;
+
+function containsUnboundSetupSteering(text: string): boolean {
+  return UNBOUND_SETUP_STEERING.test(text);
 }
 
 function unboundTreeArtifactsCreated(workspacePath: string): boolean {
@@ -704,12 +720,17 @@ export function deriveMetrics(
   const treeCliInvocationCount =
     firstTreeArgv.filter(isTreeOperationArgv).length +
     firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
-  const unboundGapStatementObserved = visibleOutputTexts.some((text) => containsUnboundGapStatement(text));
-  const treeSetupSurfaceGuidanceObserved = visibleOutputTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
-  const treeArtifactsCreated =
+  const unboundTreeArtifactsCreatedValue =
     options.unboundWorkspace === true && options.workspacePath !== undefined
       ? unboundTreeArtifactsCreated(options.workspacePath)
       : false;
+  // The positive gap signal must come from the teammate-visible delivery:
+  // authored chat bodies, falling back to native final output only when no
+  // chat authoring exists. Console narration alone never satisfies it.
+  const deliveredOutputTexts = authoringCalls.length > 0 ? authoredOutputTexts : modelOutputTexts;
+  const unboundGapStatementObserved = deliveredOutputTexts.some((text) => containsUnboundGapStatement(text));
+  const treeSetupSurfaceGuidanceObserved = visibleOutputTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
+  const unboundSetupSteeringObserved = containsUnboundSetupSteering(deliveredOutputTexts.join("\n"));
 
   return {
     expectedFactHits: factHits,
@@ -744,7 +765,8 @@ export function deriveMetrics(
     treeSetupWordingObserved,
     treeSetupSurfaceGuidanceObserved,
     unboundGapStatementObserved,
-    unboundTreeArtifactsCreated: treeArtifactsCreated,
+    unboundSetupSteeringObserved,
+    unboundTreeArtifactsCreated: unboundTreeArtifactsCreatedValue,
   };
 }
 
@@ -767,6 +789,7 @@ export function casePassed(
       metrics.modelFirstTreeCommandsOk &&
       !metrics.treeSetupWordingObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
@@ -89,14 +89,15 @@ function writeWorkspaceManifest(paths: RunPaths, evalCase: FirstTreeWelcomeEvalC
   // Match the real managed runtime: `.first-tree/workspace.json` is written
   // only when a Context Tree binding resolved (agent-bootstrap gates the
   // writer on `contextTreePath !== null`); no tree means no manifest at all,
-  // never a `tree: null` placeholder.
+  // never a `tree: null` placeholder. The fixture builds its source repo flat
+  // at `<workspace>/source-repo`, so the manifest uses the schema's legacy
+  // flat form (no `sourcesRoot`), keeping the declared binding path real.
   if (!hasContextTree) return;
   const hasReadableRepo =
     evalCase.fixture.repoState === "selected-readable" || evalCase.fixture.repoState === "local-readable";
   const manifest = {
     tree: "context-tree",
     sources: hasReadableRepo ? ["source-repo"] : [],
-    sourcesRoot: "source-repos",
   };
   writeText(join(paths.workspacePath, ".first-tree", "workspace.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -370,6 +371,22 @@ export function validateFixture(
       ok: true,
       requiredFilesOk: true,
     };
+  }
+
+  // A declared binding must be real: every source the workspace manifest
+  // names must exist at its schema-resolved path (flat at the workspace root
+  // without `sourcesRoot`, under `<sourcesRoot>/` with it).
+  const manifestPath = join(paths.workspacePath, ".first-tree", "workspace.json");
+  if (existsSync(manifestPath)) {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { sources?: unknown; sourcesRoot?: unknown };
+    const sources = Array.isArray(manifest.sources) ? manifest.sources.filter((s) => typeof s === "string") : [];
+    const sourcesRoot = typeof manifest.sourcesRoot === "string" ? manifest.sourcesRoot : null;
+    for (const source of sources) {
+      const declaredPath = join(paths.workspacePath, ...(sourcesRoot === null ? [source] : [sourcesRoot, source]));
+      if (!existsSync(declaredPath)) {
+        errors.push(`manifest declares source "${source}" but ${declaredPath} does not exist`);
+      }
+    }
   }
 
   const requiredFiles = [

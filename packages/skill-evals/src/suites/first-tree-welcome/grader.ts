@@ -186,6 +186,30 @@ function containsGoalAskPlumbing(text: string): boolean {
   );
 }
 
+/**
+ * The goal-first ask must actually request the user's first outcome — a bare
+ * readiness statement ("Ready.") does not qualify.
+ */
+function containsGoalOutcomeRequest(text: string): boolean {
+  return (
+    /\bwhat\b[^.!?\n]{0,80}\b(?:outcome|goal|task|work|result|accomplish|achieve|deliver|like|want|need)\b[^.!?\n]{0,20}\?/iu.test(
+      text,
+    ) ||
+    /\b(?:outcome|goal)\b[^.!?\n]{0,60}\?/iu.test(text) ||
+    /\b(?:tell|share)\s+me\b[^.!?\n]{0,60}\b(?:outcome|goal|want|need|work)/iu.test(text)
+  );
+}
+
+/**
+ * A `complete_task_directly` delivery must be a real result, not a refusal or
+ * a request for more input dressed up with the task's keywords.
+ */
+function containsTaskRefusal(text: string): boolean {
+  return /\bcannot\s+(?:be\s+)?complet|can'?t\s+(?:be\s+)?complet|unable\s+to\s+complete|cannot\s+proceed|can'?t\s+proceed|need\s+(?:more\s+)?(?:input|information)|missing\s+(?:input|information)/iu.test(
+    text,
+  );
+}
+
 function countMatches(haystack: string, needles: readonly string[]): number {
   const normalizedHaystack = normalizeForMatch(haystack);
   let count = 0;
@@ -1359,8 +1383,12 @@ export function deriveMetrics(
     expectedBridgeSatisfied,
     expectedResponseObserved:
       evalCase.expected.action === "ask_for_first_goal"
-        ? containsAny(combinedText, evalCase.expected.requiredResponseHints) && !containsGoalAskPlumbing(combinedText)
-        : containsAny(combinedText, evalCase.expected.requiredResponseHints),
+        ? containsAny(combinedText, evalCase.expected.requiredResponseHints) &&
+          !containsGoalAskPlumbing(combinedText) &&
+          containsGoalOutcomeRequest(combinedText)
+        : evalCase.expected.action === "complete_task_directly"
+          ? containsAll(combinedText, evalCase.expected.requiredResponseHints) && !containsTaskRefusal(combinedText)
+          : containsAny(combinedText, evalCase.expected.requiredResponseHints),
     finalResponse,
     firstTreeArgv,
     forbiddenActionHits: forbiddenActions,

@@ -16,6 +16,36 @@ function findCase(id: string): FirstTreeWriteEvalCase {
   return evalCase;
 }
 
+function unboundEventMetrics(evalCase: FirstTreeWriteEvalCase, text: string): EvalMetrics {
+  const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-event-"));
+  try {
+    const paths: RunPaths = {
+      binDir: join(tempRoot, "bin"),
+      eventsPath: join(tempRoot, "events.jsonl"),
+      gradingJsonPath: join(tempRoot, "grading.json"),
+      modelEventsPath: join(tempRoot, ".first-tree-eval", "events.jsonl"),
+      packageRoot: tempRoot,
+      repoRoot: tempRoot,
+      runRoot: tempRoot,
+      shellEnvDir: join(tempRoot, "shell-env"),
+      summaryJsonPath: join(tempRoot, "summary.json"),
+      summaryMdPath: join(tempRoot, "summary.md"),
+      workspacePath: tempRoot,
+    };
+    return deriveMetrics(
+      [{ event: { text, type: "agent_message" }, type: "codex_event" }],
+      evalCase,
+      { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
+      0,
+      null,
+      paths,
+      null,
+    );
+  } finally {
+    rmSync(tempRoot, { force: true, recursive: true });
+  }
+}
+
 function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
   return {
     expectedDiffSnippetsObserved: true,
@@ -35,7 +65,10 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     treeCliInvocationCount: 0,
     treeDiff: "",
     treeSetupGuidanceObserved: false,
+    treeSetupSurfaceGuidanceObserved: false,
     treeStatus: "",
+    unboundGapStatementObserved: false,
+    unboundSetupSteeringObserved: false,
     unboundTreeArtifactsCreated: false,
     verifySucceeded: false,
     ...overrides,
@@ -172,6 +205,7 @@ describe("first-tree-write grader", () => {
         findCase("unbound-tree-explicit-write-reports-gap"),
         baseMetrics({
           finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+          unboundGapStatementObserved: true,
         }),
       ),
     ).toBe(true);
@@ -183,10 +217,67 @@ describe("first-tree-write grader", () => {
         findCase("unbound-tree-explicit-write-reports-gap"),
         baseMetrics({
           finalResponse: "This Tree write cannot be completed because no Tree is bound.",
+          unboundGapStatementObserved: true,
           treeSetupGuidanceObserved: true,
         }),
       ),
     ).toBe(false);
+  });
+
+  it("fails the unbound explicit write when the reason is missing or not Tree-anchored", () => {
+    const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
+
+    // The loose response-hint OR-logic accepts both of these; the anchored gap
+    // metric must not.
+    const noReason = baseMetrics({ finalResponse: "This write cannot be completed right now." });
+    expect(noReason.expectedResponseObserved).toBe(true);
+    expect(noReason.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(evalCase, noReason)).toBe(false);
+
+    const wrongReason = baseMetrics({
+      finalResponse: "This Tree write cannot be completed because the source repository is not bound.",
+    });
+    expect(wrongReason.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(evalCase, wrongReason)).toBe(false);
+  });
+
+  it("fails the unbound explicit write when the reply steers at a setup surface", () => {
+    const evalCase = findCase("unbound-tree-explicit-write-reports-gap");
+
+    for (const steering of [
+      "This Tree write cannot be completed because no Tree is bound. Go to Settings → Context Tree.",
+      "This Tree write cannot be completed because no Tree is bound. Use the web console to bind one.",
+      "This Tree write cannot be completed because no Tree is bound. Ask an operator to bind it.",
+      "This Tree write cannot be completed because no Tree is bound. Configure the Tree first.",
+      "This Tree write cannot be completed because no Tree is bound. Go to Settings.",
+    ]) {
+      const metrics = unboundEventMetrics(evalCase, steering);
+      expect(
+        metrics.treeSetupSurfaceGuidanceObserved || metrics.unboundSetupSteeringObserved,
+        `steering not detected: ${steering}`,
+      ).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    }
+
+    const surface = baseMetrics({
+      finalResponse: "This Tree write cannot be completed because no Tree is bound. Go to Settings → Context Tree.",
+      treeSetupSurfaceGuidanceObserved: true,
+      unboundGapStatementObserved: true,
+    });
+    const grading = buildGrading(evalCase, surface, false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_surface_guidance");
+  });
+
+  it("passes the unbound ordinary task with business prose mentioning an admin or settings", () => {
+    const evalCase = findCase("unbound-tree-skips-write");
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "The note separates deterministic gate checks from the quality judge; an admin can tweak settings later.",
+    );
+
+    expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(true);
   });
 
   it("detects Tree CLI invocations and setup guidance from unbound run events", () => {
