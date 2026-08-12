@@ -96,6 +96,27 @@ describe("npm package metadata", () => {
     }
     expect(dependencies["@botiverse/kimi-code-sdk"]).toBe("0.26.0-botiverse.2");
   });
+
+  it("keeps private First Tree client packages as build-time workspace devDependencies only", () => {
+    const pkg = readJson(join(CLI_ROOT, "package.json")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const privateClientPackages = [
+      "@first-tree/cloud-client",
+      "@first-tree/client-runtime",
+      "@first-tree/client-providers",
+    ] as const;
+    const dependencies = pkg.dependencies ?? {};
+    const devDependencies = pkg.devDependencies ?? {};
+
+    for (const name of privateClientPackages) {
+      expect(dependencies[name], `${name} must not be a public runtime dependency`).toBeUndefined();
+      expect(devDependencies[name]).toBe("workspace:*");
+    }
+    expect(dependencies["@first-tree/client"]).toBeUndefined();
+    expect(devDependencies["@first-tree/client"]).toBeUndefined();
+  });
 });
 
 describe("workspace dependency-patch distribution", () => {

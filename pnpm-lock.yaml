@@ -37,15 +37,6 @@ importers:
       '@botiverse/kimi-code-sdk':
         specifier: 0.26.0-botiverse.2
         version: 0.26.0-botiverse.2(patch_hash=d1b4ebdff0d387514d10b9b1bc2ee8b5eb9ba86cd1ae42d2030bc5c57b73d20a)
-      '@first-tree/client-providers':
-        specifier: workspace:*
-        version: link:../../packages/client-providers
-      '@first-tree/client-runtime':
-        specifier: workspace:*
-        version: link:../../packages/client-runtime
-      '@first-tree/cloud-client':
-        specifier: workspace:*
-        version: link:../../packages/cloud-client
       '@inquirer/prompts':
         specifier: ^8.3.0
         version: 8.3.2(@types/node@22.19.15)
@@ -89,6 +80,15 @@ importers:
         specifier: ^4.0.0
         version: 4.3.6
     devDependencies:
+      '@first-tree/client-providers':
+        specifier: workspace:*
+        version: link:../../packages/client-providers
+      '@first-tree/client-runtime':
+        specifier: workspace:*
+        version: link:../../packages/client-runtime
+      '@first-tree/cloud-client':
+        specifier: workspace:*
+        version: link:../../packages/cloud-client
       '@first-tree/shared':
         specifier: workspace:*
         version: link:../../packages/shared

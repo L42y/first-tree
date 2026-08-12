@@ -77,12 +77,12 @@
     "ws": "^8.20.0",
     "yaml": "^2.8.3",
     "yazl": "^3.3.1",
-    "zod": "^4.0.0",
-    "@first-tree/cloud-client": "workspace:*",
-    "@first-tree/client-runtime": "workspace:*",
-    "@first-tree/client-providers": "workspace:*"
+    "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@first-tree/cloud-client": "workspace:*",
+    "@first-tree/client-runtime": "workspace:*",
+    "@first-tree/client-providers": "workspace:*",
     "@first-tree/shared": "workspace:*",
     "@types/ejs": "^3.1.5",
     "@types/node": "^22.16.0",

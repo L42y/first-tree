@@ -84,4 +84,20 @@ describe("S4 three-package production dependency direction", () => {
       }
     }
   });
+
+  it("public CLI keeps private client packages as workspace:devDependencies only", () => {
+    const pkg = JSON.parse(readFileSync(join(repoRoot, "apps/cli/package.json"), "utf8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    const privateClientPackages = [
+      "@first-tree/cloud-client",
+      "@first-tree/client-runtime",
+      "@first-tree/client-providers",
+    ] as const;
+    for (const name of privateClientPackages) {
+      expect(pkg.dependencies?.[name]).toBeUndefined();
+      expect(pkg.devDependencies?.[name]).toBe("workspace:*");
+    }
+  });
 });
