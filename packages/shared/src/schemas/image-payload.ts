@@ -2,7 +2,7 @@ import { z } from "zod";
 
 /**
  * MIME types the web + client image paths recognise. Kept in sync with
- * Claude's vision API (see packages/client/src/providers/claude/index.ts).
+ * Claude's vision API (see packages/client-providers/src/providers/claude/index.ts).
  */
 export const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 export const supportedImageMimeSchema = z.enum(SUPPORTED_IMAGE_MIMES);

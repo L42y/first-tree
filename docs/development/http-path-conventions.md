@@ -2,7 +2,7 @@
 
 > **Read this first** if your work touches any of:
 > - `packages/server/src/api/`, `middleware/`, `scope/`, `services/auth/tokens.ts`
-> - `packages/web/src/api/`, `packages/client/src/sdk.ts`
+> - `packages/web/src/api/`, `packages/cloud-client/src/sdk.ts`
 > - Any "cross-org / multi-org / switch-org" bug
 >
 > This is the single source of truth for route naming. Any conflicting older code, comment, or design doc is wrong — fix it to match this.
@@ -71,7 +71,7 @@ Example: `GET /api/v1/agents/:uuid`, `POST /api/v1/chats/:chatId/messages`.
 |---|---|---|
 | `/api/v1/agent/...` (singular) | `agentSelector` | user JWT + `X-Agent-Id` header |
 
-For the AgentRuntime process speaking as an agent. Parallels `/me` (user self) — both are first-person `self` namespaces, distinct from `/agents/:uuid` (resource collection). Only used by `packages/client/src/sdk.ts`.
+For the AgentRuntime process speaking as an agent. Parallels `/me` (user self) — both are first-person `self` namespaces, distinct from `/agents/:uuid` (resource collection). Only used by `packages/cloud-client/src/sdk.ts`.
 
 Example: `GET /api/v1/agent/me`, `POST /api/v1/agent/chats/:chatId/messages`, `WS /api/v1/agent/ws`.
 

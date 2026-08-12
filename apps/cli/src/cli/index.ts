@@ -2,7 +2,7 @@
 
 // MUST be the first import: this side-effect module sets
 // `process.env.FIRST_TREE_HOME` from the channel default AND installs the
-// channel-resolved CLI binding into `@first-tree/client`, before any other
+// channel-resolved CLI binding into `@first-tree/client-runtime`, before any other
 // module loads `@first-tree/shared/config` or instantiates ClientRuntime.
 // Re-ordering this line after a config-touching or runtime-instantiating
 // import re-introduces the multi-env footgun where staging/dev binaries

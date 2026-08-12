@@ -56,7 +56,7 @@ export function cleanAgentWorkspaces(options: CleanAgentWorkspacesOptions): Clea
 
 /**
  * @internal Orchestration core with injectable data-root / cleaner for tests.
- * Import only via the module path — never from `@first-tree/client` barrels.
+ * Import only via the module path — never from `@first-tree/client-runtime` barrels.
  */
 export function cleanAgentWorkspacesWithDeps(
   options: CleanAgentWorkspacesOptions,

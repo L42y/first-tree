@@ -9,10 +9,10 @@ import { describe, expect, it, vi } from "vitest";
  * pure behaviours that are observable without spawning npm: input
  * validation, channel mismatch, and the back-compat alias.
  */
-// The update module pulls in `@first-tree/client` via a barrel import, which
-// transitively loads the Anthropic SDK and a few heavy modules. In the full
-// concurrent test run that import can take >5s on cold caches, so we keep
-// timeouts generous on the import-bearing tests.
+// The update module pulls in `@first-tree/client-runtime` via a barrel import,
+// which transitively loads heavy runtime modules. In the full concurrent test
+// run that import can take >5s on cold caches, so we keep timeouts generous on
+// the import-bearing tests.
 describe("update.installGlobalSpec — input validation", () => {
   it("refuses install specs with a leading dash", async () => {
     const mod = await import("../core/update.js");

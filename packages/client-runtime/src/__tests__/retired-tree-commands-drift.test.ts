@@ -36,7 +36,7 @@ import { describe, expect, it } from "vitest";
 import { buildAgentBriefing } from "../runtime/agent-briefing.js";
 
 const repoRoot = (() => {
-  // packages/client/src/__tests__/<this file>  →  walk up to repo root.
+  // packages/client-runtime/src/__tests__/<this file>  →  walk up to repo root.
   let dir = dirname(fileURLToPath(import.meta.url));
   while (dir !== "/") {
     if (

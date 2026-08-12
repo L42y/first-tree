@@ -164,7 +164,7 @@ export function inferChannelFromVersion(version: string): ChannelName | "unknown
  *
  * Client / CLI code paths must NOT use this — their channel comes from
  * `apps/cli/src/build-info.ts` at build time and is installed into
- * `@first-tree/client` via `setCliBinding` (`packages/client/src/runtime/
+ * `@first-tree/client-runtime` via `setCliBinding` (`packages/client-runtime/src/runtime/
  * cli-binding.ts`). The two surfaces stay symmetric: server reads its own
  * config; client receives an entrypoint-supplied binding.
  */

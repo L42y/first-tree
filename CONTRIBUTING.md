@@ -10,7 +10,9 @@ architecture rules. Quick map:
 
 - `apps/cli/` — the published `first-tree` CLI.
 - `packages/server/` — Fastify API server.
-- `packages/client/` — Agent SDK + Runtime.
+- `packages/cloud-client/` — Cloud HTTP SDK + observability.
+- `packages/client-runtime/` — Agent connection / session / workspace runtime.
+- `packages/client-providers/` — Built-in providers + shared handler helpers.
 - `packages/web/` — React admin dashboard.
 - `packages/shared/` — internal Zod schemas, types, config.
 - `skills/` — per-skill markdown payloads.

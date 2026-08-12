@@ -56,7 +56,9 @@ Operator-only flows such as `login`, `daemon install`, and `agent create` belong
 - `apps/doc-website/` — documentation website
 - `packages/shared/` — `@first-tree/shared` schemas, types, and config
 - `packages/server/` — `@first-tree/server` Fastify API server
-- `packages/client/` — `@first-tree/client` SDK and AgentRuntime
+- `packages/cloud-client/` — `@first-tree/cloud-client` Cloud HTTP SDK and observability
+- `packages/client-runtime/` — `@first-tree/client-runtime` connection, session, and workspace runtime
+- `packages/client-providers/` — `@first-tree/client-providers` built-in providers and shared handler helpers
 - `packages/web/` — `@first-tree/web` React workspace
 - `packages/skill-evals/` — eval tooling for repo-local skills
 - `packages/qa/` — internal QA workflow assets for agent-run validation

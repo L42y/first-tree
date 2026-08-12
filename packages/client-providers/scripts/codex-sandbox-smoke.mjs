@@ -12,9 +12,9 @@
  * as intended on this machine.
  *
  * Usage:
- *   pnpm --filter @first-tree/client smoke:codex-sandbox
+ *   pnpm --filter @first-tree/client-providers smoke:codex-sandbox
  *   # or
- *   node packages/client/scripts/codex-sandbox-smoke.mjs
+ *   node packages/client-providers/scripts/codex-sandbox-smoke.mjs
  *
  * Exit code: 0 = both tasks succeeded; non-zero = any task failed.
  * Stdout streams codex events live so you can watch the agent run.

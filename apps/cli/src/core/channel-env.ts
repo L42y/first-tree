@@ -1,6 +1,6 @@
 // Side-effect module: channel-derived process setup that must run before
 // any code touches `@first-tree/shared/config` (for FIRST_TREE_HOME) or
-// `@first-tree/client` runtime helpers (for the CLI binding). The CLI
+// `@first-tree/client-runtime` helpers (for the CLI binding). The CLI
 // entry imports this as its first statement.
 //
 // Two wires here, same lifecycle reason — both are "translate the
@@ -12,7 +12,7 @@
 //    this env at call time, so we just have to set it before the first
 //    config call — which the CLI entry guarantees by importing this
 //    first.
-// 2. CLI binding (binName + packageName) into `@first-tree/client` so
+// 2. CLI binding (binName + packageName) into `@first-tree/client-runtime` so
 //    runtime helpers — `runtime/agent-briefing.ts`'s briefing builder
 //    and `runtime/bootstrap.ts`'s `installFirstTreeIntegration` — emit
 //    the correct binary name (`first-tree` / `first-tree-staging` /
