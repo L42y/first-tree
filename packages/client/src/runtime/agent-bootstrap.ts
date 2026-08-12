@@ -34,8 +34,9 @@ export type AgentBootstrapParams = {
    * Authoritative source-repo `localPath` set from the live, resolved agent
    * config payload (`currentSourceRepoNamesFromPayload`). `null` when the
    * caller could not resolve a payload (cache miss, default-payload
-   * fallback). Gates the workspace-manifest write and is threaded into
-   * `applyPendingMigrations` so config-dependent migrations can defer
+   * fallback). Threaded into the workspace-manifest write as a possibly-null
+   * source set (the manifest omits `sources` rather than claiming zero) and
+   * into `applyPendingMigrations` so config-dependent migrations can defer
    * instead of acting on an empty fallback.
    */
   currentSourceRepoNames: ReadonlySet<string> | null;
@@ -117,9 +118,14 @@ export function ensureAgentBootstrap(params: AgentBootstrapParams): void {
   // agent-managed — the agent clones it on first use per its briefing
   // protocol; the manifest may legitimately name a not-yet-materialised
   // tree. Runs every session (cheap + idempotent) so the manifest tracks
-  // source-repo changes. Gated on BOTH a resolved tree binding and a resolved
-  // source set — a null source set (cache miss) would write a manifest that
-  // falsely claims zero sources, which `first-tree-seed`'s self-check reads.
+  // source-repo changes. Gated only on a resolved TREE binding: the manifest
+  // keeps tree binding and source-set authority independent — a null source
+  // set (cache miss) omits the `sources` key (and preserves any last-known
+  // declared sources) instead of falsely claiming zero sources or skipping
+  // the write and leaving the bound tree undiscoverable. `first-tree-seed`'s
+  // self-check treats an empty-or-absent `manifest.sources` as valid
+  // (skills/first-tree-seed, "Resolve readable sources"), so a sources-less
+  // manifest does not trip it.
   //
   // An explicit unbind (`repo: null` from the server) instead RETIRES a stale
   // manifest left by a previously bound session, restoring the "unbound = no
@@ -129,8 +135,12 @@ export function ensureAgentBootstrap(params: AgentBootstrapParams): void {
   // paths.
   if (bindingStatus === "explicitly-unbound") {
     retireWorkspaceManifest(workspace, sessionCtx.log);
-  } else if (contextTreePath !== null && currentSourceRepoNames !== null) {
-    ensureWorkspaceManifest(workspace, [...currentSourceRepoNames], sessionCtx.log);
+  } else if (contextTreePath !== null) {
+    ensureWorkspaceManifest(
+      workspace,
+      currentSourceRepoNames === null ? null : [...currentSourceRepoNames],
+      sessionCtx.log,
+    );
   }
 
   const sentinelPresent = existsSync(join(workspace, INIT_COMPLETE_SENTINEL_REL));

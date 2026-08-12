@@ -117,6 +117,8 @@ export type EvalMetrics = {
   treeSetupWordingObserved: boolean;
   /** Visible output steers the user at a setup surface (Settings, web console, operator/admin, Tree configuration). */
   treeSetupSurfaceGuidanceObserved: boolean;
+  /** Delivered output proactively mentioned the Tree's absence; only the explicit Tree-read branch may state it. */
+  unboundAbsenceMentionObserved: boolean;
   /** Visible output states the specific gap: this Tree read cannot complete because nothing is bound. */
   unboundGapStatementObserved: boolean;
   /** Delivered output for an explicit Tree read carried any setup/recovery steering. */

@@ -18,7 +18,7 @@
 // pool — that link is tolerated (reads through it keep working) until the agent
 // replaces it with a real clone per its briefing; the runtime never deletes it.
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SOURCE_REPOS_DIRNAME,
@@ -71,7 +71,7 @@ export function retireWorkspaceManifest(workspace: string, log?: (msg: string) =
 
 /**
  * Ensure `<workspace>/.first-tree/workspace.json` records
- * `{ tree, sources, sourcesRoot }`.
+ * `{ tree, sources?, sourcesRoot }`.
  *
  * A best-effort, idempotent, **never-throws-out** session-bootstrap step. The
  * agent home is shared across the agent's concurrent sessions, so the write
@@ -95,28 +95,37 @@ export function retireWorkspaceManifest(workspace: string, log?: (msg: string) =
  * not as an invalid workspace.
  *
  * @param sourceNames immediate-subdir names of the bound source repos (the
- *   agent's resolved `gitRepos` localPaths). Pass the resolved set only — never
- *   call this with an unresolved/empty-as-unknown source set.
+ *   agent's resolved `gitRepos` localPaths), or `null` when the source set is
+ *   unresolved (config/cache miss). `null` never publishes unknown as
+ *   resolved-empty: the `sources` key is omitted, and when an existing valid
+ *   manifest already declares sources those last-known names are preserved so
+ *   a transient resolution failure does not clobber last-known-good state.
+ *   Once the source set resolves again the manifest refills via the normal
+ *   overwrite path.
  */
 export function ensureWorkspaceManifest(
   workspace: string,
-  sourceNames: readonly string[],
+  sourceNames: readonly string[] | null,
   log?: (msg: string) => void,
 ): void {
   // Drop names that can't be immediate-subdir manifest entries (nested
   // `localPath`). Better than failing the whole manifest write.
-  const usable = [...sourceNames].filter((name) => {
+  const usable = sourceNames?.filter((name) => {
     if (isImmediateSubdirName(name)) return true;
     log?.(`workspace manifest: dropping source "${name}" — not an immediate subdirectory name`);
     return false;
   });
+
+  // Unresolved source set: keep the last-known declared sources from an
+  // existing valid manifest; otherwise omit the key entirely.
+  const sources = usable ?? readDeclaredSources(workspace);
 
   // Validate (and pre-serialize) BEFORE any filesystem mutation.
   let serialized: string;
   try {
     const manifest = workspaceManifestSchema.parse({
       tree: CONTEXT_TREE_DIRNAME,
-      sources: usable,
+      ...(sources !== undefined ? { sources } : {}),
       sourcesRoot: SOURCE_REPOS_DIRNAME,
     });
     serialized = `${JSON.stringify(manifest, null, 2)}\n`;
@@ -131,6 +140,23 @@ export function ensureWorkspaceManifest(
     writeFileSync(join(stateDir, WORKSPACE_MANIFEST_FILENAME), serialized, "utf-8");
   } catch (err) {
     log?.(`workspace manifest write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Read the declared `sources` from an existing valid manifest, or `undefined`
+ * when there is none (missing, corrupt, or itself sources-less). Used to
+ * preserve last-known-good sources across a transient resolution gap. Never
+ * throws.
+ */
+function readDeclaredSources(workspace: string): string[] | undefined {
+  try {
+    const manifestPath = join(workspace, WORKSPACE_STATE_DIRNAME, WORKSPACE_MANIFEST_FILENAME);
+    if (!existsSync(manifestPath)) return undefined;
+    const parsed = workspaceManifestSchema.safeParse(JSON.parse(readFileSync(manifestPath, "utf-8")));
+    return parsed.success ? parsed.data.sources : undefined;
+  } catch {
+    return undefined;
   }
 }
 

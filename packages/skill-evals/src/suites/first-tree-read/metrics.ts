@@ -503,16 +503,35 @@ function containsUnboundGapStatement(text: string): boolean {
 }
 
 /**
+ * Proactive missing-binding mention. An ordinary unbound task must stay
+ * silent about the Tree's absence; only the explicit Tree-read branch may
+ * state it, as part of the required gap statement.
+ */
+function containsUnboundAbsenceMention(text: string): boolean {
+  return UNBOUND_REASON.test(text);
+}
+
+/**
  * Setup-surface steering: pointing the user at Settings, the web console, an
  * operator/admin, or Tree configuration as the way out of a missing binding.
- * A pure "no Tree is bound" gap statement must not match.
+ * A pure "no Tree is bound" gap statement must not match, and ordinary
+ * business prose ("use the web console to export the report", "ask your admin
+ * for billing access") must not match either: the web-console and
+ * operator/admin alternatives fire only when Tree/binding/setup wording
+ * appears nearby.
  */
 function containsTreeSetupSurfaceGuidance(text: string): boolean {
   return (
     /\bsettings\b\s*(?:→|->|>|:)?[^.!?\n]{0,40}(?:context\s+)?tree\b/iu.test(text) ||
     /(?:context\s+)?tree\b[^.!?\n]{0,40}\bsettings\b/iu.test(text) ||
-    /\bweb\s+console\b/iu.test(text) ||
-    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(text) ||
+    /\bweb\s+console\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(text) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bweb\s+console\b/iu.test(text) ||
+    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(
+      text,
+    ) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(
+      text,
+    ) ||
     /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
   );
 }
@@ -712,25 +731,33 @@ export function deriveMetrics(
     selectedExactCommit,
     visibleOutputKinds,
   });
-  const treeSetupWordingObserved = visibleOutputTexts.some((text) =>
-    /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}(?<!first-)\btree\b|(?<!first-)\btree\b[^.!?\n]{0,80}\b(?:binding|creation|setup)\b/iu.test(
-      text,
-    ),
-  );
-  const treeCliInvocationCount =
-    firstTreeArgv.filter(isTreeOperationArgv).length +
-    firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
   const unboundTreeArtifactsCreatedValue =
     options.unboundWorkspace === true && options.workspacePath !== undefined
       ? unboundTreeArtifactsCreated(options.workspacePath)
       : false;
-  // The positive gap signal must come from the teammate-visible delivery:
-  // authored chat bodies, falling back to native final output only when no
-  // chat authoring exists. Console narration alone never satisfies it.
-  const deliveredOutputTexts = authoringCalls.length > 0 ? authoredOutputTexts : modelOutputTexts;
-  const unboundGapStatementObserved = deliveredOutputTexts.some((text) => containsUnboundGapStatement(text));
-  const treeSetupSurfaceGuidanceObserved = visibleOutputTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
-  const unboundSetupSteeringObserved = containsUnboundSetupSteering(deliveredOutputTexts.join("\n"));
+  const treeCliInvocationCount =
+    firstTreeArgv.filter(isTreeOperationArgv).length +
+    firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
+  // Negative signals scan every genuinely teammate-visible delivery —
+  // successful chat send/ask bodies plus successful chat update (current-state)
+  // bodies — never console narration. Console output is the fallback only when
+  // the run produced no such deliveries at all.
+  const teammateDeliveredTexts = [...authoredOutputTexts, ...successfulProgressCalls.map((call) => call.body)];
+  const negativeScanTexts = teammateDeliveredTexts.length > 0 ? teammateDeliveredTexts : modelOutputTexts;
+  const treeSetupWordingObserved = negativeScanTexts.some((text) =>
+    /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}(?<!first-)\btree\b|(?<!first-)\btree\b[^.!?\n]{0,80}\b(?:binding|creation|setup)\b/iu.test(
+      text,
+    ),
+  );
+  const treeSetupSurfaceGuidanceObserved = negativeScanTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
+  const unboundSetupSteeringObserved = containsUnboundSetupSteering(negativeScanTexts.join("\n"));
+  const unboundAbsenceMentionObserved = negativeScanTexts.some((text) => containsUnboundAbsenceMention(text));
+  // The positive gap signal is judged by the LAST real delivery only: an
+  // earlier correct gap statement cannot cover a final delivery that drops it.
+  // Native final output is the fallback only when no chat authoring exists.
+  const finalDeliveredText =
+    authoringCalls.length > 0 ? (successfulAuthoringCalls.at(-1)?.body ?? "") : (modelOutputTexts.at(-1) ?? "");
+  const unboundGapStatementObserved = containsUnboundGapStatement(finalDeliveredText);
 
   return {
     expectedFactHits: factHits,
@@ -764,6 +791,7 @@ export function deriveMetrics(
     treeCliInvocationCount,
     treeSetupWordingObserved,
     treeSetupSurfaceGuidanceObserved,
+    unboundAbsenceMentionObserved,
     unboundGapStatementObserved,
     unboundSetupSteeringObserved,
     unboundTreeArtifactsCreated: unboundTreeArtifactsCreatedValue,
@@ -804,6 +832,7 @@ export function casePassed(
       metrics.modelFirstTreeCommandsOk &&
       !metrics.treeSetupWordingObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundAbsenceMentionObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }

@@ -89,6 +89,8 @@ export type EvalMetrics = {
   treeSetupGuidanceObserved: boolean;
   treeSetupSurfaceGuidanceObserved: boolean;
   treeStatus: string;
+  /** Final response proactively mentioned the Tree's absence; only the explicit Tree-write branch may state it. */
+  unboundAbsenceMentionObserved: boolean;
   unboundGapStatementObserved: boolean;
   unboundSetupSteeringObserved: boolean;
   unboundTreeArtifactsCreated: boolean;

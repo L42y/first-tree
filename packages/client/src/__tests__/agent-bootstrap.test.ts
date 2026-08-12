@@ -226,6 +226,25 @@ describe("ensureAgentBootstrap", () => {
     expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
   });
 
+  it("writes the manifest when the tree is bound even if the source set is unresolved", () => {
+    // A bound tree with an unresolved payload (cache miss) must still get a
+    // manifest so the tree stays discoverable; the null source set is passed
+    // through so ensureWorkspaceManifest omits/preserves `sources` rather than
+    // claiming zero.
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      contextTreePath: "/tree",
+      contextTreeBindingStatus: "bound",
+      briefing: "briefing\n",
+      currentSourceRepoNames: null,
+    });
+
+    expect(manifestMocks.ensureWorkspaceManifest).toHaveBeenCalledWith(workspace, null, sessionCtx.log);
+    expect(manifestMocks.retireWorkspaceManifest).not.toHaveBeenCalled();
+  });
+
   it("keeps writing the manifest when bound, even with an explicit bound status", () => {
     const sessionCtx = fakeSessionCtx();
     ensureAgentBootstrap({

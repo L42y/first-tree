@@ -76,6 +76,7 @@ export function buildGrading(
     (!unboundAction || !metrics.treeSetupGuidanceObserved) &&
     (!unboundAction || !metrics.treeSetupSurfaceGuidanceObserved) &&
     (!unboundAction || !metrics.unboundTreeArtifactsCreated) &&
+    (!unboundSkip || !metrics.unboundAbsenceMentionObserved) &&
     (!unboundExplicit || !metrics.unboundSetupSteeringObserved);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
@@ -103,6 +104,14 @@ export function buildGrading(
           riskFlag(
             "tree_setup_steering",
             "Unbound explicit Tree write carried extra setup/recovery steering beyond the gap statement.",
+          ),
+        ]
+      : []),
+    ...(unboundSkip && metrics.unboundAbsenceMentionObserved
+      ? [
+          riskFlag(
+            "unbound_absence_mention",
+            "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
           ),
         ]
       : []),
@@ -144,7 +153,9 @@ export function buildGrading(
           !metrics.treeSetupSurfaceGuidanceObserved &&
           !metrics.unboundSetupSteeringObserved &&
           treeDiffPass
-        : metrics.expectedResponseObserved && treeDiffPass,
+        : unboundSkip
+          ? metrics.expectedResponseObserved && treeDiffPass && !metrics.unboundAbsenceMentionObserved
+          : metrics.expectedResponseObserved && treeDiffPass,
       process_pass: processPass,
       risk_pass: riskPass,
       routing_pass: routingPass,

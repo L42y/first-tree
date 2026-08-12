@@ -1136,13 +1136,58 @@ describe("first-tree-read unbound continuation", () => {
     expect(casePassed(false, result, "managed", true)).toBe(false);
   });
 
-  it("does not treat the plain missing-binding statement as setup wording", () => {
+  it("does not treat the plain missing-binding statement as setup wording, but fails the ordinary branch for it", () => {
     const result = unboundMetrics([
       ...managedMessage("No Tree is bound in this workspace. Inbox delivery is deduplicated at the client boundary."),
     ]);
 
     expect(result.treeSetupWordingObserved).toBe(false);
-    expect(casePassed(false, result, "managed", true)).toBe(true);
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("fails when the answer facts are correct but the reply proactively mentions the missing binding", () => {
+    const result = unboundMetrics([
+      ...managedMessage(
+        "Inbox delivery is deduplicated at the client boundary. Note that there is no bound Context Tree here.",
+      ),
+    ]);
+
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("proactively mentioned the Tree's absence");
+
+    const grading = buildGrading("case", result, false, false, "managed", true);
+    expect(grading.scores.outcome_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_absence_mention");
+  });
+
+  it("passes ordinary business prose mentioning the web console or an admin", () => {
+    for (const body of [
+      "Inbox delivery is deduplicated at the client boundary. Use the web console to export the report.",
+      "Inbox delivery is deduplicated at the client boundary. Ask your admin for billing access.",
+    ]) {
+      const result = unboundMetrics([...managedMessage(body)]);
+
+      expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+      expect(result.unboundAbsenceMentionObserved).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
+
+  it("falls back to console output for setup wording when no delivery exists", () => {
+    const result = unboundMetrics([
+      assistantTextEvent("Inbox delivery is deduplicated at the client boundary. You can bind a Context Tree later."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
   });
 
   it("keeps the unbound branch off when the flag is not set", () => {
@@ -1283,8 +1328,8 @@ describe("first-tree-read unbound explicit Tree read", () => {
 
   it("fails when the gap and the steering are split across separate deliveries", () => {
     const result = explicitReadMetrics([
-      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
       ...managedMessage("Go to Settings."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
     ]);
 
     expect(result.unboundGapStatementObserved).toBe(true);
@@ -1294,6 +1339,39 @@ describe("first-tree-read unbound explicit Tree read", () => {
     const grading = buildGrading("case", result, false, false, "managed", false, true);
     expect(grading.scores.risk_pass).toBe(false);
     expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_steering");
+  });
+
+  it("judges the gap statement by the last real delivery only", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+      ...managedMessage("I cannot help."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("scans chat update bodies for setup steering", () => {
+    const result = explicitReadMetrics([
+      ...managedStatus("Go to Settings."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.unboundSetupSteeringObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("ignores console narration for negative setup signals when a delivery exists", () => {
+    const result = explicitReadMetrics([
+      assistantTextEvent("Go to Settings → Context Tree to finish setup."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.unboundSetupSteeringObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
   });
 
   it("counts the surface-guidance risk flag in risk_pass", () => {

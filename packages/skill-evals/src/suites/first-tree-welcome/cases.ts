@@ -22,6 +22,7 @@ type WelcomeRow = {
   chatScenario: FirstTreeWelcomeEvalCase["fixture"]["chatScenario"];
   prompt: string;
   repoState: FirstTreeWelcomeEvalCase["fixture"]["repoState"];
+  requiredDeliveryConcepts?: readonly (readonly string[])[];
   requiredResponseHints: readonly string[];
   role: FirstTreeWelcomeEvalCase["fixture"]["role"];
   tags: readonly string[];
@@ -100,6 +101,11 @@ Please help me get started with First Tree.`,
 
 Please help me get started with First Tree. First task: draft a two-sentence release announcement from this pasted note — "Checkout recovery now retries expired sessions automatically and support agents see a clear re-auth prompt." Deliver the draft in this chat; no repository or Context Tree is needed.`,
     repoState: "none",
+    requiredDeliveryConcepts: [
+      ["retr", "automat"],
+      ["expired", "session"],
+      ["auth", "prompt"],
+    ],
     requiredResponseHints: ["checkout", "session"],
     role: "admin",
     tags: ["welcome-row-3c", "concrete-task", "no-repo"],
@@ -309,6 +315,7 @@ function caseFromRow(
       action: row.action,
       bridgeForbiddenHints: row.bridgeForbiddenHints,
       bridgeRequiredHints: row.bridgeRequiredHints,
+      requiredDeliveryConcepts: row.requiredDeliveryConcepts,
       requiredResponseHints: row.requiredResponseHints,
       taskOptionHints: row.taskOptionHints,
     },

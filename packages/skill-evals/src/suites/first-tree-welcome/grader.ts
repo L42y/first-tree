@@ -175,14 +175,14 @@ function containsAll(haystack: string, needles: readonly string[]): boolean {
   });
 }
 
-function containsGoalAskPlumbing(text: string): boolean {
+function containsGoalAskPlumbing(text: string, allowAdminOwnershipNote: boolean): boolean {
   const checkedText = withoutNegatedSetupLanguage(text);
   return (
     /\brepo(?:sitor(?:y|ies))?\b|\bpaths?\b|\burls?\b|\bbind(?:ing)?\b|context tree|\bprovider\b|\bcli\b|路径|仓库|链接/iu.test(
       checkedText,
     ) ||
     containsSetupTaskLanguage(text) ||
-    containsAdminSetupAction(text)
+    containsAdminSetupAction(text, allowAdminOwnershipNote)
   );
 }
 
@@ -207,6 +207,30 @@ function containsGoalOutcomeRequest(text: string): boolean {
 function containsTaskRefusal(text: string): boolean {
   return /\bcannot\s+(?:be\s+)?complet|can'?t\s+(?:be\s+)?complet|unable\s+to\s+complete|cannot\s+proceed|can'?t\s+proceed|need\s+(?:more\s+)?(?:input|information)|missing\s+(?:input|information)/iu.test(
     text,
+  );
+}
+
+/**
+ * Each required delivery concept is a small synonym set: every needle in the
+ * inner list must appear (normalized substring match) for the concept to
+ * count, so a keyword echo cannot stand in for the source note's content.
+ */
+function deliveryConceptsSatisfied(text: string, concepts: readonly (readonly string[])[]): boolean {
+  return concepts.every((needles) => containsAll(text, needles));
+}
+
+/**
+ * The concrete release announcement must be exactly two sentences. Counted
+ * deterministically: split after each sentence terminator (. ! ? 。 ！ ？)
+ * followed by whitespace, then count the non-empty parts — a trailing
+ * terminator does not add a sentence.
+ */
+function hasExactlyTwoSentences(text: string): boolean {
+  return (
+    text
+      .trim()
+      .split(/(?<=[.!?。！？])\s+/u)
+      .filter((sentence) => sentence.trim().length > 0).length === 2
   );
 }
 
@@ -308,10 +332,36 @@ function containsRepoSelectionLanguage(text: string): boolean {
   );
 }
 
-function containsAdminSetupAction(text: string): boolean {
-  const checkedText = withoutNegatedSetupLanguage(text)
-    .replace(/\b(?:an?\s+)?admin\s+(?:finishes|handles|owns|will finish|can finish)\s+(?:team\s+)?setup\b/giu, "")
-    .replace(/\b(?:team\s+)?setup\s+(?:is|stays|remains)\s+(?:with|for)\s+(?:an?\s+)?admin\b/giu, "");
+const ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS: readonly RegExp[] = [
+  /\b(?:an?\s+)?admin\s+(?:finishes|handles|owns|will finish|can finish)\s+(?:team\s+)?setup\b/iu,
+  /\b(?:team\s+)?setup\s+(?:is|stays|remains)\s+(?:with|for)\s+(?:an?\s+)?admin\b/iu,
+];
+
+/**
+ * Only post-result bridge rows may keep the admin-ownership-note allowance:
+ * there the completed concrete result can genuinely depend on an admin-only
+ * capability, so noting who finishes setup is not a setup steer. Taskless
+ * rows (for example the goal-first ask) get no such allowance.
+ */
+function allowsAdminOwnershipNote(evalCase: FirstTreeWelcomeEvalCase): boolean {
+  return evalCase.fixture.chatScenario === "post-result";
+}
+
+/**
+ * "An admin owns/finishes team setup"-style ownership notes are stripped
+ * before admin-setup detection when the row allows them. On rows without the
+ * allowance, merely noting admin setup ownership is itself a forbidden
+ * admin-setup action.
+ */
+function containsAdminSetupAction(text: string, allowOwnershipNote: boolean): boolean {
+  const baseText = withoutNegatedSetupLanguage(text);
+  if (!allowOwnershipNote && ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS.some((pattern) => pattern.test(baseText))) {
+    return true;
+  }
+  let checkedText = baseText;
+  for (const pattern of ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS) {
+    checkedText = checkedText.replace(pattern, "");
+  }
   return /(?:ask|tell|have|route|send).{0,80}(admin|owner).{0,80}(setup|set up|install|authori[sz]e|github app|create|bind|seed)|\b(admin|owner)\b.{0,40}(needs?|must|should|has to).{0,60}(setup|set up|install|authori[sz]e|github app|create|bind|seed)|\b(install|authori[sz]e).{0,40}github app\b/iu.test(
     checkedText,
   );
@@ -1049,7 +1099,8 @@ function forbiddenActionHits(
   for (const action of evalCase.forbidden.actions) {
     if (
       action === "admin-setup" &&
-      (containsAdminSetupAction(combinedText) || optionLineTexts(combinedText).some(containsTreeSetupLanguage))
+      (containsAdminSetupAction(combinedText, allowsAdminOwnershipNote(evalCase)) ||
+        optionLineTexts(combinedText).some(containsTreeSetupLanguage))
     ) {
       hits.push(action);
     }
@@ -1217,6 +1268,7 @@ export function deriveMetrics(
   const chatOptionTexts: string[] = [];
   let taskChatCreateCount = 0;
   const deliveryTexts: string[] = [];
+  let lastSendText = "";
   const modelCommands: CommandInvocation[] = [];
   let chatAskCount = 0;
   let chatOptionCount: number | null = null;
@@ -1266,7 +1318,10 @@ export function deriveMetrics(
         if (argv[1] === "send") chatSendCount += 1;
         if (argv[1] === "ask" || argv[1] === "send") {
           const body = recordedBody || argv[3];
-          if (typeof body === "string") deliveryTexts.push(body);
+          if (typeof body === "string") {
+            deliveryTexts.push(body);
+            if (argv[1] === "send") lastSendText = body;
+          }
         }
         if (argv[1] === "update" && argv.includes("--description")) {
           workingStatusObserved = true;
@@ -1288,6 +1343,10 @@ export function deriveMetrics(
   // menu or bridge. Fall back to final output only for non-chat responses.
   const responseText = deliveredText.length > 0 ? deliveredText : finalResponse;
   const combinedText = deliveredText.length > 0 ? chatText : finalResponse;
+  // A direct task result is judged on the final real chat send — an earlier
+  // correct send cannot carry an empty or hollow final delivery. Fall back to
+  // the final console response only when nothing was sent.
+  const finalDeliveryText = chatSendCount > 0 ? lastSendText : finalResponse;
   const taskOptionHints = evalCase.expected.taskOptionHints ?? [];
   const explicitTaskOptionTexts =
     chatOptionTexts.length > 0
@@ -1384,10 +1443,13 @@ export function deriveMetrics(
     expectedResponseObserved:
       evalCase.expected.action === "ask_for_first_goal"
         ? containsAny(combinedText, evalCase.expected.requiredResponseHints) &&
-          !containsGoalAskPlumbing(combinedText) &&
+          !containsGoalAskPlumbing(combinedText, allowsAdminOwnershipNote(evalCase)) &&
           containsGoalOutcomeRequest(combinedText)
         : evalCase.expected.action === "complete_task_directly"
-          ? containsAll(combinedText, evalCase.expected.requiredResponseHints) && !containsTaskRefusal(combinedText)
+          ? containsAll(finalDeliveryText, evalCase.expected.requiredResponseHints) &&
+            !containsTaskRefusal(finalDeliveryText) &&
+            deliveryConceptsSatisfied(finalDeliveryText, evalCase.expected.requiredDeliveryConcepts ?? []) &&
+            (evalCase.expected.requiredDeliveryConcepts === undefined || hasExactlyTwoSentences(finalDeliveryText))
           : containsAny(combinedText, evalCase.expected.requiredResponseHints),
     finalResponse,
     firstTreeArgv,

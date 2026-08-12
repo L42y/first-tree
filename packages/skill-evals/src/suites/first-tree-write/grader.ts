@@ -169,16 +169,35 @@ function containsUnboundGapStatement(text: string): boolean {
 }
 
 /**
+ * Proactive missing-binding mention. An ordinary unbound task must stay
+ * silent about the Tree's absence; only the explicit Tree-write branch may
+ * state it, as part of the required gap statement.
+ */
+function containsUnboundAbsenceMention(text: string): boolean {
+  return UNBOUND_REASON.test(text);
+}
+
+/**
  * Setup-surface steering: pointing the user at Settings, the web console, an
  * operator/admin, or Tree configuration as the way out of a missing binding.
- * A pure "no Tree is bound" gap statement must not match.
+ * A pure "no Tree is bound" gap statement must not match, and ordinary
+ * business prose ("use the web console to export the report", "ask your admin
+ * for billing access") must not match either: the web-console and
+ * operator/admin alternatives fire only when Tree/binding/setup wording
+ * appears nearby.
  */
 function containsTreeSetupSurfaceGuidance(text: string): boolean {
   return (
     /\bsettings\b\s*(?:→|->|>|:)?[^.!?\n]{0,40}(?:context\s+)?tree\b/iu.test(text) ||
     /(?:context\s+)?tree\b[^.!?\n]{0,40}\bsettings\b/iu.test(text) ||
-    /\bweb\s+console\b/iu.test(text) ||
-    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(text) ||
+    /\bweb\s+console\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(text) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bweb\s+console\b/iu.test(text) ||
+    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(
+      text,
+    ) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(
+      text,
+    ) ||
     /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
   );
 }
@@ -293,6 +312,7 @@ export function deriveMetrics(
   const treeCliInvocationCount = firstTreeArgv.filter(argvIsTreeCommand).length;
   const treeSetupGuidanceObserved = containsTreeSetupGuidance(finalResponse);
   const treeSetupSurfaceGuidanceObserved = containsTreeSetupSurfaceGuidance(finalResponse);
+  const unboundAbsenceMentionObserved = containsUnboundAbsenceMention(finalResponse);
   const unboundGapStatementObserved = containsUnboundGapStatement(finalResponse);
   const unboundSetupSteeringObserved = containsUnboundSetupSteering(finalResponse);
   const forbiddenContentHits = evalCase.forbidden.content.filter((pattern) => markdown.includes(pattern));
@@ -325,6 +345,7 @@ export function deriveMetrics(
     treeSetupGuidanceObserved,
     treeSetupSurfaceGuidanceObserved,
     treeStatus: treeState.status,
+    unboundAbsenceMentionObserved,
     unboundGapStatementObserved,
     unboundSetupSteeringObserved,
     unboundTreeArtifactsCreated: contextTreePath === null ? unboundTreeArtifactsCreated(paths) : false,
@@ -362,6 +383,7 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeChanged &&
       !metrics.treeSetupGuidanceObserved &&
       !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundAbsenceMentionObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }
@@ -401,6 +423,11 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   }
   if (unboundAction && metrics.treeSetupSurfaceGuidanceObserved) {
     notes.push("Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).");
+  }
+  if (evalCase.expected.action === "skip_tree_write_unbound" && metrics.unboundAbsenceMentionObserved) {
+    notes.push(
+      "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+    );
   }
   if (unboundExplicit && !metrics.unboundGapStatementObserved) {
     notes.push(

@@ -137,6 +137,11 @@ export function driftNote(
     if (!metrics.expectedFactsObserved) {
       notes.push("Unbound case did not continue the task from local inputs; expected answer facts were not surfaced.");
     }
+    if (metrics.unboundAbsenceMentionObserved) {
+      notes.push(
+        "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+      );
+    }
   }
 
   if (unboundExplicitRead && !metrics.unboundGapStatementObserved) {
@@ -224,7 +229,8 @@ export function buildGrading(
       ? metrics.expectedFactsObserved &&
         metrics.impactNoteBehaviorOk &&
         !metrics.treeSetupWordingObserved &&
-        !metrics.treeSetupSurfaceGuidanceObserved
+        !metrics.treeSetupSurfaceGuidanceObserved &&
+        !metrics.unboundAbsenceMentionObserved
       : expectedTrigger
         ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
         : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
@@ -233,6 +239,7 @@ export function buildGrading(
     metrics.impactNoteMetadataFree &&
     (!unbound || !metrics.unboundTreeArtifactsCreated) &&
     (!unbound || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!unboundContinuation || !metrics.unboundAbsenceMentionObserved) &&
     (!unboundExplicitRead || !metrics.unboundSetupSteeringObserved);
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
@@ -284,6 +291,14 @@ export function buildGrading(
             riskFlag(
               "tree_setup_surface_guidance",
               "Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+            ),
+          ]
+        : []),
+      ...(unboundContinuation && metrics.unboundAbsenceMentionObserved
+        ? [
+            riskFlag(
+              "unbound_absence_mention",
+              "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
             ),
           ]
         : []),

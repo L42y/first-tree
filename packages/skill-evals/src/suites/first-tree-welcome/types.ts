@@ -34,6 +34,13 @@ export type FirstTreeWelcomeExpected = {
   bridgeKind?: "pull_request";
   bridgeRequiredHints?: readonly string[];
   evidenceSnippets?: readonly string[];
+  /**
+   * `complete_task_directly` only: each inner list is one source-note concept
+   * whose needles must ALL appear (normalized substring match) in the final
+   * chat-send delivery. Setting this also requires the delivery to be exactly
+   * two sentences (deterministic sentence-terminator count).
+   */
+  requiredDeliveryConcepts?: readonly (readonly string[])[];
   requiredResponseHints: readonly string[];
   taskOptionHints?: readonly string[];
 };

@@ -100,6 +100,15 @@ describe("readWorkspaceManifest", () => {
     expect(manifest).toEqual({ tree: "context", sources: ["api", "web"] });
   });
 
+  it("parses a manifest with the sources key omitted (unresolved source set)", () => {
+    makeWorkspaceManifest(workspaceRoot, { tree: "context", sourcesRoot: "source-repos" });
+
+    const manifest = readWorkspaceManifest(workspaceRoot);
+
+    expect(manifest).toEqual({ tree: "context", sourcesRoot: "source-repos" });
+    expect(manifest.sources).toBeUndefined();
+  });
+
   it("rejects a manifest where tree appears in sources", () => {
     makeWorkspaceManifest(workspaceRoot, { tree: "context", sources: ["context", "api"] });
 
@@ -153,6 +162,22 @@ describe("writeWorkspaceManifest", () => {
 });
 
 describe("computeWorkspaceStatus", () => {
+  it("resolves the tree from a sources-less manifest (unresolved source set)", () => {
+    // Regression: a bound tree with an unresolved source snapshot writes a
+    // manifest with no `sources` key. Tree discovery must not depend on the
+    // source list — the tree still resolves and no sources are declared.
+    makeGitRepo(workspaceRoot, "context");
+    makeWorkspaceManifest(workspaceRoot, { tree: "context", sourcesRoot: "source-repos" });
+
+    const status = computeWorkspaceStatus(workspaceRoot);
+
+    expect(status.treePath).toBe(join(workspaceRoot, "context"));
+    expect(status.treePresent).toBe(true);
+    expect(status.boundSources).toEqual([]);
+    expect(status.missingBoundSources).toEqual([]);
+    expect(status.unboundGitSiblings).toEqual([]);
+  });
+
   it("reports tree presence and bound-source presence", () => {
     makeGitRepo(workspaceRoot, "context");
     makeGitRepo(workspaceRoot, "api");

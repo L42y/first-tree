@@ -56,6 +56,66 @@ describe("ensureWorkspaceManifest", () => {
     });
   });
 
+  it("writes tree + sourcesRoot with NO sources key when the source set is unresolved (null)", () => {
+    // Unresolved must not publish unknown as resolved-empty: the sources key
+    // stays absent, keeping the tree discoverable without claiming zero
+    // sources.
+    ensureWorkspaceManifest(ws, null);
+    expect(existsSync(manifestPath())).toBe(true);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("keeps resolved-empty ([]) distinguishable from unresolved (key absent) on disk", () => {
+    ensureWorkspaceManifest(ws, []);
+    const resolvedEmpty = JSON.parse(readFileSync(manifestPath(), "utf-8"));
+    expect(resolvedEmpty.sources).toEqual([]);
+
+    ensureWorkspaceManifest(ws, null);
+    const stillResolvedEmpty = JSON.parse(readFileSync(manifestPath(), "utf-8"));
+    // Last-known-good preservation: null over a resolved-empty manifest keeps
+    // the declared (empty) list rather than reverting to absent.
+    expect(stillResolvedEmpty.sources).toEqual([]);
+
+    rmSync(manifestPath());
+    ensureWorkspaceManifest(ws, null);
+    const unresolved = JSON.parse(readFileSync(manifestPath(), "utf-8"));
+    expect("sources" in unresolved).toBe(false);
+  });
+
+  it("preserves last-known sources across a transient unresolved run", () => {
+    ensureWorkspaceManifest(ws, ["api"]);
+    ensureWorkspaceManifest(ws, null);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["api"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("refills sources normally once the source set resolves again", () => {
+    ensureWorkspaceManifest(ws, ["api"]);
+    ensureWorkspaceManifest(ws, null);
+    ensureWorkspaceManifest(ws, ["api", "web"]);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["api", "web"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("omits sources when unresolved and the existing manifest is corrupt", () => {
+    mkdirSync(join(ws, ".first-tree"), { recursive: true });
+    writeFileSync(manifestPath(), "{ not valid json", "utf-8");
+    ensureWorkspaceManifest(ws, null);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
   it("drops a source with a nested localPath instead of dropping the whole manifest", () => {
     const logs: string[] = [];
     ensureWorkspaceManifest(ws, ["app", "nested/path", "api"], (msg) => logs.push(msg));

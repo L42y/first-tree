@@ -772,6 +772,171 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("fails the concrete-task row when the delivery only echoes task keywords", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-keyword-echo-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "send", "baixiaohang", "Checkout session."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatSendCount).toBe(1);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the concrete-task row when a correct first send is followed by an empty final send", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-empty-final-send-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "Checkout recovery now retries expired sessions automatically. Support agents see a clear re-auth prompt instead of a dead end.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "send", "baixiaohang", ""],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatSendCount).toBe(2);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the concrete-task row when the delivery covers every concept but is not two sentences", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-one-sentence-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "Checkout recovery now retries expired sessions automatically and support agents see a clear re-auth prompt.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the goal-first row when the ask merely notes admin setup ownership", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-admin-ownership-note-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I'm ready to work. What's the first outcome you'd like from me? An admin owns team setup.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(1);
+      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("keeps the admin setup ownership allowance on the post-result bridge rows", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-bridge-admin-ownership-note-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-invitee-result-bridge-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "Should I verify the checkout recovery branch against its focused test? An admin owns team setup.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(metrics.expectedBridgeSatisfied).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("fails the goal-first row when the sole ask is a bare readiness statement", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-empty-ask-"));
     try {

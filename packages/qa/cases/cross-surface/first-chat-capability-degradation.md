@@ -13,7 +13,8 @@ Confirm that a missing capability — no connected code repository, no Context T
 computer — removes only the operations that depend on it, and never becomes a gate on the first chat itself. A fresh
 admin and an invited member must each be able to complete a concrete task that needs no repository, and the agent must
 keep working from the user's messages, chat context, and pasted or attached content. The absence of a capability must
-never by itself produce a prompt to bind, create, connect, or install anything. Only when the concrete result of the
+never by itself produce a prompt to bind, create, connect, or install anything — in the first chat or in any ordinary
+later chat. Only when the concrete result of the
 current request genuinely depends on the capability may the agent name the blocked step and ask for the minimal input
 or recovery action.
 
@@ -46,8 +47,9 @@ and an invitee.
 3. Repeat steps 1–2 as the invited member in their own first chat. The same opener and task behavior must hold even
    though this member did not create the team and has no admin path to fix the missing capabilities — neither the
    opener nor any later turn may route the invitee toward setup they cannot perform.
-4. In each chat, send the prepared repo-dependent follow-up (for example: "summarize the open issues" or "review the
-   latest changes in our repo"). Verify the agent states which step is blocked by the missing capability and asks for
+4. In each chat, send the prepared repo-dependent follow-up (for example: "review the latest local changes" or
+   "summarize what changed recently in the local project"). Verify the agent states which step is blocked by the
+   missing capability and asks for
    the minimal input or recovery action. The ask must accept whatever the user can already provide — a plain local
    directory path, pasted content, an attachment, or a repository URL — and must not demand that the user create a git
    repository, connect a forge, or install anything first.
@@ -55,14 +57,19 @@ and an invitee.
    connected repo) and verify the agent proceeds with the task from that input rather than re-asking for setup.
 6. Exercise the remaining boundaries: make one explicit Context Tree request (for example "Read the Context Tree
    and tell me what it records about our release policy") and one forge-dependent operation (for example "open a PR
-   for this"). For the Tree request the agent must state only that this Tree read cannot be completed because no
+   for this" or "summarize the open issues"). For the Tree request the agent must state only that this Tree read cannot be completed because no
    Tree is bound — it must not prompt the user to bind or create a Tree, and it may continue the independent
    analysis from pasted decision notes. For the forge request it must degrade to a statement of the blocked step
    plus a minimal-input alternative (prepare the change locally and hand back a diff or instructions). Neither may
    be a blanket refusal nor a setup demand as the price of continuing.
 7. Verify unrelated capabilities are untouched by the absences: ordinary chat, multi-participant addressing, and local
    file work on the connected computer all keep functioning in the same chats.
-8. Repeat the key turns at a narrow phone viewport: the onboarding opener's goal ask, the agent's blocked-step asks,
+8. Open an ordinary, non-onboarding chat (not the team's first chat) under the same absences. Send a concrete
+   non-repo task that the conversation alone can answer and verify the agent completes it end to end with zero
+   bind/create/connect/install prompts. Then send a repo-dependent follow-up in that chat and verify the agent
+   names the blocked step and asks for exactly one minimal input — a plain local directory path, pasted content, an
+   attachment, or a repository URL — never demanding that the user create, bind, or connect a repository first.
+9. Repeat the key turns at a narrow phone viewport: the onboarding opener's goal ask, the agent's blocked-step asks,
    and the minimal-input options remain fully readable and actionable, the composer stays usable, and no capability
    prompt overflows or traps the conversation.
 
@@ -73,14 +80,16 @@ the completed non-repo task, each blocked-step ask, and the continuation after m
 capability claimed to be absent, show the boundary evidence that proves it (no connected repo or Context Tree for the
 team, `gh`/`glab` not found on the agent host) alongside the turn that depended on it. Capture desktop and
 narrow-viewport screenshots of the first chat, including the onboarding opener with its tracked goal ask and at least
-one blocked-step ask with its minimal-input options. Keep task content synthetic; do not retain real repository
-contents, tokens, or private identifiers.
+one blocked-step ask with its minimal-input options, plus the ordinary-chat non-repo task completion. Keep task
+content synthetic; do not retain real repository contents, tokens, or private identifiers.
 
 ## Expected result
 
 `PASS`: each taskless first chat opens with a brief readiness statement plus exactly one tracked goal ask carrying no
 repo/path/URL/binding/setup/auth/install wording and no offered task options; both personas then complete a real
-non-repo task in the first chat with zero setup prompts; a repo- or
+non-repo task in the first chat with zero setup prompts; an ordinary non-onboarding chat under the same absences
+likewise completes a concrete non-repo task with zero setup prompts and degrades its repo-dependent follow-up to the
+same one-minimal-input ask; a repo- or
 forge-dependent request degrades to an accurate blocked-step statement plus a minimal-input ask that accepts a
 plain directory, pasted content, an attachment, or a URL, and the agent proceeds once that input is given; an
 explicit Context Tree read produces only the statement that this read cannot be completed because no Tree is

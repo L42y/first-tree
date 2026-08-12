@@ -268,10 +268,13 @@ export function computeWorkspaceStatus(workspaceRoot: string): WorkspaceStatus {
 
   // Source clones live under `<workspaceRoot>/<sourcesRoot>/` when the manifest
   // declares a sourcesRoot (the agent-managed layout); a legacy flat manifest
-  // omits it and keeps sources at the workspace root.
+  // omits it and keeps sources at the workspace root. An absent `sources` key
+  // means the source set is unresolved (never published as resolved-empty) —
+  // status reports it as no declared sources.
   const sourcesBase = manifest.sourcesRoot ? join(workspaceRoot, manifest.sourcesRoot) : workspaceRoot;
+  const declaredSources = manifest.sources ?? [];
 
-  const boundSources: WorkspaceBoundSource[] = manifest.sources.map((name) => {
+  const boundSources: WorkspaceBoundSource[] = declaredSources.map((name) => {
     const sourcePath = join(sourcesBase, name);
     const present = isDirectory(sourcePath);
     const remoteUrl = present ? readGitRemoteUrl(sourcePath) : undefined;
@@ -292,8 +295,8 @@ export function computeWorkspaceStatus(workspaceRoot: string): WorkspaceStatus {
   // (e.g. a source literally named `context-tree`, now schema-valid) is a real
   // unbound sibling and must NOT be filtered out by the tree name.
   const declaredNames = manifest.sourcesRoot
-    ? new Set<string>(manifest.sources)
-    : new Set<string>([manifest.tree, ...manifest.sources]);
+    ? new Set<string>(declaredSources)
+    : new Set<string>([manifest.tree, ...declaredSources]);
   const unboundGitSiblings: WorkspaceUnboundSibling[] = [];
   for (const childName of listImmediateChildDirs(sourcesBase)) {
     if (declaredNames.has(childName)) {

@@ -67,6 +67,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     treeSetupGuidanceObserved: false,
     treeSetupSurfaceGuidanceObserved: false,
     treeStatus: "",
+    unboundAbsenceMentionObserved: false,
     unboundGapStatementObserved: false,
     unboundSetupSteeringObserved: false,
     unboundTreeArtifactsCreated: false,
@@ -293,6 +294,39 @@ describe("first-tree-write grader", () => {
     const grading = buildGrading(evalCase, surface, false);
     expect(grading.scores.risk_pass).toBe(false);
     expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_surface_guidance");
+  });
+
+  it("fails the unbound ordinary source task when the reply proactively mentions the missing binding", () => {
+    const evalCase = findCase("unbound-tree-skips-write");
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "The note separates deterministic gate checks from the quality judge. No Tree is bound in this workspace.",
+    );
+
+    expect(metrics.expectedResponseObserved).toBe(true);
+    expect(metrics.treeSetupGuidanceObserved).toBe(false);
+    expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(metrics.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.outcome_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_absence_mention");
+  });
+
+  it("passes the unbound ordinary task with business prose mentioning the web console or an admin", () => {
+    const evalCase = findCase("unbound-tree-skips-write");
+
+    for (const text of [
+      "The note separates deterministic gate checks from the quality judge. Use the web console to export the report.",
+      "The note separates deterministic gate checks from the quality judge. Ask your admin for billing access.",
+    ]) {
+      const metrics = unboundEventMetrics(evalCase, text);
+      expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
+      expect(metrics.unboundAbsenceMentionObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    }
   });
 
   it("passes the unbound ordinary task with business prose mentioning an admin or settings", () => {
