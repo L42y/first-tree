@@ -52,7 +52,18 @@ export type ProductEvent = {
   at: number;
   capability?: QaCapability;
   durationMs?: number;
-  kind: "capability_failed" | "capability_ok" | "shared_inspected" | "shared_mutated" | "task_ok" | "test_ok";
+  kind:
+    | "capability_failed"
+    | "capability_ok"
+    | "environment_inspected"
+    | "environment_reused"
+    | "infrastructure_retained"
+    | "lease_released"
+    | "shared_inspected"
+    | "shared_mutated"
+    | "task_ok"
+    | "task_state_reset"
+    | "test_ok";
   surface?: QaSurface;
   task?: string;
 };
@@ -60,6 +71,11 @@ export type ProductEvent = {
 export type EvalMetrics = {
   attemptedCapabilities: readonly string[];
   dispositionObserved: boolean;
+  environmentBaselineObserved: boolean;
+  environmentFinalizedAfterUse: boolean;
+  environmentLifecycleComplete: boolean;
+  environmentLifecycleReported: boolean;
+  environmentPreparedBeforeUse: boolean;
   evidenceObserved: boolean;
   expectedTierObserved: boolean;
   expectedStatusObserved: boolean;
@@ -67,6 +83,8 @@ export type EvalMetrics = {
   finalResponse: string;
   fixtureValidationOk: boolean;
   fullIsolationCommandObserved: boolean;
+  infrastructureRetained: boolean;
+  leaseReleased: boolean;
   performanceObserved: boolean;
   planAfterReadiness: boolean;
   planAfterTierReadiness: boolean;
@@ -86,10 +104,12 @@ export type EvalMetrics = {
   successfulCapabilities: readonly string[];
   taskAfterPlan: boolean;
   taskRan: boolean;
+  taskStateReset: boolean;
   testRan: boolean;
   tierCapabilitiesComplete: boolean;
   tierRationaleObserved: boolean;
   unexpectedCapabilities: readonly string[];
+  warmEnvironmentReused: boolean;
 };
 
 export type CaseRunSummary = {

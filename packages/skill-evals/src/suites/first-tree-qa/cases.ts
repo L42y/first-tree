@@ -44,7 +44,7 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["focused-local", "tier-selection", "shared-state-safety", "scope-limit"],
+    tags: ["focused-local", "tier-selection", "warm-environment", "shared-state-safety", "scope-limit"],
     tier: "gate",
   },
   {
@@ -63,7 +63,7 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["full-isolated", "risk-scoped", "readiness-gate"],
+    tags: ["full-isolated", "risk-scoped", "warm-environment", "readiness-gate"],
     tier: "gate",
   },
   {
@@ -82,7 +82,7 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["full-isolated", "risk-scoped", "task-scope", "performance"],
+    tags: ["full-isolated", "risk-scoped", "warm-environment", "task-scope", "performance"],
     tier: "gate",
   },
 ];
@@ -214,7 +214,7 @@ export const FIRST_TREE_QA_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: FIRST_TREE_QA_LIVE_GATE_CASES.map((evalCase) => evalCase.id),
         description:
-          "Behavioral tier selection for deterministic and focused-local requests plus scoped full-isolated readiness.",
+          "Behavioral tier selection, observable warm-environment lifecycle, and scoped full-isolated readiness.",
         status: "implemented",
         tier: "gate",
       },

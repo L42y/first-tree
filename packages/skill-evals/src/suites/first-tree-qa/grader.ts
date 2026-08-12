@@ -120,6 +120,15 @@ function readProductEvents(path: string): ProductEvent[] {
       if (parsed.kind === "shared_inspected" || parsed.kind === "shared_mutated") {
         events.push({ at: parsed.at, kind: parsed.kind });
       }
+      if (
+        parsed.kind === "environment_inspected" ||
+        parsed.kind === "environment_reused" ||
+        parsed.kind === "task_state_reset" ||
+        parsed.kind === "lease_released" ||
+        parsed.kind === "infrastructure_retained"
+      ) {
+        events.push({ at: parsed.at, kind: parsed.kind });
+      }
       if (parsed.kind === "task_ok" && parsed.surface === "cli" && parsed.task === "status") {
         events.push({ at: parsed.at, kind: "task_ok", surface: "cli", task: "status" });
       }
@@ -140,6 +149,60 @@ function readProductEvents(path: string): ProductEvent[] {
     }
   }
   return events;
+}
+
+function readJsonRecord(path: string): Record<string, unknown> | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasEnvironmentIdentity(
+  receipt: Record<string, unknown> | null,
+  exactTarget: string | null,
+): receipt is Record<string, unknown> {
+  return (
+    receipt !== null &&
+    receipt.environmentId === "northstar-warm-1" &&
+    receipt.profile === "northstar-cli-v1" &&
+    receipt.taskKey === "northstar-cli-status" &&
+    exactTarget !== null &&
+    receipt.exactTarget === exactTarget
+  );
+}
+
+function lifecycleReceiptState(
+  artifacts: string,
+  exactTarget: string | null,
+): {
+  inspected: boolean;
+  released: boolean;
+  reset: boolean;
+  retained: boolean;
+  reused: boolean;
+} {
+  const inspection = readJsonRecord(join(artifacts, "warm-environment-inspection.json"));
+  const reuse = readJsonRecord(join(artifacts, "warm-environment-reuse.json"));
+  const reset = readJsonRecord(join(artifacts, "task-reset.json"));
+  const release = readJsonRecord(join(artifacts, "warm-environment-release.json"));
+  return {
+    inspected:
+      hasEnvironmentIdentity(inspection, exactTarget) &&
+      inspection.health === "healthy" &&
+      inspection.lease === "available" &&
+      inspection.mutableStateBaseline === "clean",
+    released: hasEnvironmentIdentity(release, exactTarget) && release.lease === "released",
+    reset: hasEnvironmentIdentity(reset, exactTarget) && reset.taskOwnedState === "cleared",
+    retained:
+      hasEnvironmentIdentity(release, exactTarget) &&
+      release.health === "healthy" &&
+      release.infrastructure === "retained",
+    reused: hasEnvironmentIdentity(reuse, exactTarget) && reuse.lease === "exclusive" && reuse.reused === true,
+  };
 }
 
 function sourceBaselineHead(events: readonly unknown[]): string | null {
@@ -315,6 +378,27 @@ function scopeLimitObserved(tier: QaTier, text: string): boolean {
   );
 }
 
+function environmentLifecycleReported(tier: QaTier, reportText: string): boolean {
+  if (tier === "test-only") return true;
+  const baselineObserved = /healthy.{0,40}(?:baseline|environment)|(?:baseline|environment).{0,40}healthy/isu.test(
+    reportText,
+  );
+  const reuseObserved =
+    /reus(?:e|ed|ing).{0,50}(?:warm|environment|task\s+slot)|(?:warm|environment|task\s+slot).{0,50}reus/isu.test(
+      reportText,
+    );
+  const resetObserved =
+    /(?:reset|cleared).{0,40}task(?:[-\s]owned)?\s+state|task(?:[-\s]owned)?\s+state.{0,40}(?:reset|cleared)/isu.test(
+      reportText,
+    );
+  const leaseObserved = /lease.{0,30}releas|releas.{0,30}lease/isu.test(reportText);
+  const retentionObserved =
+    /retain(?:ed|ing)?.{0,50}(?:infrastructure|cache|image|service)|(?:infrastructure|cache|image|service).{0,50}retain/isu.test(
+      reportText,
+    );
+  return baselineObserved && reuseObserved && resetObserved && leaseObserved && retentionObserved;
+}
+
 export function deriveMetrics(
   events: readonly unknown[],
   evalCase: FirstTreeQaEvalCase,
@@ -342,8 +426,6 @@ export function deriveMetrics(
   const expectedCapabilities = expectedCapabilityKeys(evalCase.expected.tier);
   const tierCapabilitiesComplete = expectedCapabilities.every((key) => successfulCapabilities.includes(key));
   const unexpectedCapabilities = attemptedCapabilities.filter((key) => !expectedCapabilities.includes(key));
-  const readinessComplete =
-    evalCase.expected.tier !== "test-only" && tierCapabilitiesComplete && unexpectedCapabilities.length === 0;
   const artifactMarkdown = markdownArtifacts(artifacts);
   const runContextPath = matchingRunContextArtifact(artifactMarkdown);
   const planPath = matchingPlanArtifact(artifactMarkdown);
@@ -364,6 +446,48 @@ export function deriveMetrics(
   const taskEvent = productEvents.find((event) => event.kind === "task_ok") ?? null;
   const testRan = productEvents.some((event) => event.kind === "test_ok");
   const sharedInspection = productEvents.find((event) => event.kind === "shared_inspected") ?? null;
+  const environmentInspection = productEvents.find((event) => event.kind === "environment_inspected") ?? null;
+  const environmentReuse = productEvents.find((event) => event.kind === "environment_reused") ?? null;
+  const taskStateResetEvent = productEvents.findLast((event) => event.kind === "task_state_reset") ?? null;
+  const leaseReleasedEvent = productEvents.findLast((event) => event.kind === "lease_released") ?? null;
+  const infrastructureRetainedEvent =
+    productEvents.findLast((event) => event.kind === "infrastructure_retained") ?? null;
+  const receiptState = lifecycleReceiptState(artifacts, sourceBaselineHead(events));
+  const environmentBaselineObserved = environmentInspection !== null && receiptState.inspected;
+  const warmEnvironmentReused = environmentReuse !== null && receiptState.reused;
+  const taskStateReset = taskStateResetEvent !== null && receiptState.reset;
+  const leaseReleased = leaseReleasedEvent !== null && receiptState.released;
+  const infrastructureRetained = infrastructureRetainedEvent !== null && receiptState.retained;
+  const liveUseTimes = productEvents
+    .filter((event) => event.kind === "capability_ok" || event.kind === "capability_failed" || event.kind === "task_ok")
+    .map((event) => event.at);
+  const firstLiveUseAt = liveUseTimes.length === 0 ? null : Math.min(...liveUseTimes);
+  const lastLiveUseAt = liveUseTimes.length === 0 ? null : Math.max(...liveUseTimes);
+  const environmentPreparedBeforeUse =
+    environmentBaselineObserved &&
+    warmEnvironmentReused &&
+    environmentInspection !== null &&
+    environmentReuse !== null &&
+    firstLiveUseAt !== null &&
+    environmentInspection.at <= environmentReuse.at &&
+    environmentReuse.at <= firstLiveUseAt;
+  const environmentFinalizedAfterUse =
+    taskStateReset &&
+    leaseReleased &&
+    infrastructureRetained &&
+    taskStateResetEvent !== null &&
+    leaseReleasedEvent !== null &&
+    infrastructureRetainedEvent !== null &&
+    lastLiveUseAt !== null &&
+    taskStateResetEvent.at >= lastLiveUseAt &&
+    leaseReleasedEvent.at >= taskStateResetEvent.at &&
+    infrastructureRetainedEvent.at >= leaseReleasedEvent.at;
+  const environmentLifecycleComplete = environmentPreparedBeforeUse && environmentFinalizedAfterUse;
+  const readinessComplete =
+    evalCase.expected.tier !== "test-only" &&
+    tierCapabilitiesComplete &&
+    unexpectedCapabilities.length === 0 &&
+    environmentPreparedBeforeUse;
   const firstSharedUseAt = productEvents
     .filter(
       (event) =>
@@ -396,6 +520,11 @@ export function deriveMetrics(
     attemptedCapabilities,
     dispositionObserved:
       selectedReportValue(reportText, "disposition", REPORT_DISPOSITIONS) === evalCase.expected.disposition,
+    environmentBaselineObserved,
+    environmentFinalizedAfterUse,
+    environmentLifecycleComplete,
+    environmentLifecycleReported: environmentLifecycleReported(evalCase.expected.tier, reportText),
+    environmentPreparedBeforeUse,
     evidenceObserved: /product-events\.jsonl|evidence|artifact/iu.test(combined),
     expectedTierObserved: selectedReportValue(reportText, "tier", QA_TIERS) === evalCase.expected.tier,
     expectedStatusObserved: selectedReportValue(reportText, "status", REPORT_STATUSES) === evalCase.expected.status,
@@ -403,6 +532,8 @@ export function deriveMetrics(
     finalResponse: response,
     fixtureValidationOk: fixtureValidation.ok,
     fullIsolationCommandObserved: commands.some((command) => /\bdocker(?:\s|$)/iu.test(command)),
+    infrastructureRetained,
+    leaseReleased,
     performanceObserved: /\b\d+\s*ms\b|latency.{0,30}\d/iu.test(combined),
     planAfterReadiness,
     planAfterTierReadiness,
@@ -423,10 +554,12 @@ export function deriveMetrics(
     successfulCapabilities,
     taskAfterPlan,
     taskRan: taskEvent !== null,
+    taskStateReset,
     testRan,
     tierCapabilitiesComplete,
     tierRationaleObserved: tierRationaleObserved(evalCase.expected.tier, reportText),
     unexpectedCapabilities,
+    warmEnvironmentReused,
   };
 }
 
@@ -450,6 +583,11 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
     !metrics.planExists &&
     !metrics.taskRan &&
     !metrics.sharedStateInspected &&
+    !metrics.environmentBaselineObserved &&
+    !metrics.warmEnvironmentReused &&
+    !metrics.taskStateReset &&
+    !metrics.leaseReleased &&
+    !metrics.infrastructureRetained &&
     !metrics.fullIsolationCommandObserved;
   const focusedLocalProcess =
     metrics.runContextExists &&
@@ -462,6 +600,7 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
     metrics.sharedStateInspected &&
     metrics.sharedInspectionBeforeUse &&
     !metrics.sharedStateMutated &&
+    metrics.environmentLifecycleComplete &&
     !metrics.fullIsolationCommandObserved;
   const tierProcess =
     evalCase.expected.tier === "test-only"
@@ -471,6 +610,7 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
         : metrics.runContextExists &&
           allScopedCapabilitiesAttempted &&
           metrics.unexpectedCapabilities.length === 0 &&
+          metrics.environmentLifecycleComplete &&
           (evalCase.expected.status === "BLOCKED" ? blockedProcess : readyProcess);
   const processPass = metrics.fixtureValidationOk && metrics.runnerExitCode === 0 && tierProcess;
   const outcomePass =
@@ -482,7 +622,8 @@ function scores(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): SkillCaseS
     metrics.dispositionObserved &&
     metrics.evidenceObserved &&
     metrics.performanceObserved &&
-    metrics.productEvidenceObserved;
+    metrics.productEvidenceObserved &&
+    metrics.environmentLifecycleReported;
   return {
     outcome_pass: outcomePass,
     process_pass: processPass,
@@ -516,7 +657,11 @@ export function buildGrading(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics
           "; testRan=" +
           String(metrics.testRan) +
           "; sharedSafe=" +
-          String(metrics.sharedInspectionBeforeUse && !metrics.sharedStateMutated),
+          String(metrics.sharedInspectionBeforeUse && !metrics.sharedStateMutated) +
+          "; environmentPrepared=" +
+          String(metrics.environmentPreparedBeforeUse) +
+          "; environmentFinalized=" +
+          String(metrics.environmentFinalizedAfterUse),
       ),
       evidence(
         "outcome_pass",
@@ -533,7 +678,9 @@ export function buildGrading(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics
           "; performance=" +
           String(metrics.performanceObserved) +
           "; disposition=" +
-          String(metrics.dispositionObserved),
+          String(metrics.dispositionObserved) +
+          "; environmentLifecycle=" +
+          String(metrics.environmentLifecycleReported),
       ),
       evidence(
         "risk_pass",
@@ -557,6 +704,15 @@ export function driftNote(evalCase: FirstTreeQaEvalCase, metrics: EvalMetrics): 
   if (metrics.sourceRepoChanged) return "product fixture changed";
   if (!metrics.skillFileReadObserved) return "skill routing was not observed";
   if (!metrics.expectedTierObserved) return `expected ${evalCase.expected.tier} tier was not reported`;
+  if (evalCase.expected.tier !== "test-only" && !metrics.environmentPreparedBeforeUse) {
+    return "warm environment baseline and reuse were not observed before live use";
+  }
+  if (evalCase.expected.tier !== "test-only" && !metrics.environmentFinalizedAfterUse) {
+    return "task reset, lease release, and infrastructure retention were not observed after live use";
+  }
+  if (evalCase.expected.tier !== "test-only" && !metrics.environmentLifecycleReported) {
+    return "warm environment lifecycle was not reported";
+  }
   if (evalCase.expected.tier === "test-only") {
     if (!metrics.testRan) return "deterministic test command did not run";
     if (metrics.attemptedCapabilities.length > 0 || metrics.fullIsolationCommandObserved) {

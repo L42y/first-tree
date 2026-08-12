@@ -79,6 +79,20 @@ function runProductCommand(sourceRepoPath: string, args: readonly string[]): Ret
   });
 }
 
+function prepareWarmEnvironment(sourceRepoPath: string): void {
+  const inspection = runProductCommand(sourceRepoPath, ["environment", "inspect"]);
+  expect(inspection.status, inspection.stderr.toString()).toBe(0);
+  const reuse = runProductCommand(sourceRepoPath, ["environment", "reuse"]);
+  expect(reuse.status, reuse.stderr.toString()).toBe(0);
+}
+
+function finalizeWarmEnvironment(sourceRepoPath: string): void {
+  const reset = runProductCommand(sourceRepoPath, ["environment", "reset"]);
+  expect(reset.status, reset.stderr.toString()).toBe(0);
+  const release = runProductCommand(sourceRepoPath, ["environment", "release"]);
+  expect(release.status, release.stderr.toString()).toBe(0);
+}
+
 function appendModelEvidence(paths: ReturnType<typeof createRunPaths>, finalText: string): void {
   appendEvent(paths.eventsPath, {
     event: {
@@ -101,7 +115,9 @@ function appendModelEvidence(paths: ReturnType<typeof createRunPaths>, finalText
 
 function gradeBlockedReport(reportLines: readonly string[]) {
   const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-readiness-blocked");
+  prepareWarmEnvironment(sourceRepoPath);
   runCapabilities(sourceRepoPath, ["cli"], undefined, true);
+  finalizeWarmEnvironment(sourceRepoPath);
   writeText(join(paths.workspacePath, "qa-artifacts", "run-context.md"), "# Run Context\n");
   writeText(join(paths.workspacePath, "qa-artifacts", "report.md"), reportLines.join("\n"));
   appendModelEvidence(
@@ -150,6 +166,7 @@ describe("first-tree-qa deterministic grader", () => {
     const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-focused-local");
     const inspection = runProductCommand(sourceRepoPath, ["shared", "inspect"]);
     expect(inspection.status, inspection.stderr.toString()).toBe(0);
+    prepareWarmEnvironment(sourceRepoPath);
     runCapabilities(sourceRepoPath, ["cli"]);
     writeText(
       join(paths.workspacePath, "qa-artifacts", "run-context.md"),
@@ -166,6 +183,7 @@ describe("first-tree-qa deterministic grader", () => {
     );
     const task = runProductCommand(sourceRepoPath, ["task", "cli", "status"]);
     expect(task.status, task.stderr.toString()).toBe(0);
+    finalizeWarmEnvironment(sourceRepoPath);
     writeText(
       join(paths.workspacePath, "qa-artifacts", "report.md"),
       [
@@ -174,6 +192,7 @@ describe("first-tree-qa deterministic grader", () => {
         "Tier: focused-local",
         "Tier rationale: ordinary feature validation needs real CLI behavior locally, not release qualification.",
         "Maximum supported conclusion: only the observed CLI status path passed under local non-isolated conditions; this does not prove Web or release readiness.",
+        "Environment lifecycle: inspected a healthy baseline, reused the warm task slot, reset task-owned state, released the lease, and retained healthy infrastructure.",
         "Shared state: inspected operator/read-only/seeded/healthy before use and did not mutate it.",
         "Evidence: product-events.jsonl and Northstar CLI status healthy (jobs=3).",
         "Performance: CLI latency 17 ms.",
@@ -190,6 +209,8 @@ describe("first-tree-qa deterministic grader", () => {
     expect(metrics.unexpectedCapabilities).toEqual([]);
     expect(metrics.sharedInspectionBeforeUse).toBe(true);
     expect(metrics.sharedStateMutated).toBe(false);
+    expect(metrics.environmentLifecycleComplete).toBe(true);
+    expect(metrics.environmentLifecycleReported).toBe(true);
     expect(metrics.planAfterTierReadiness).toBe(true);
     expect(metrics.taskAfterPlan).toBe(true);
     expect(casePassed(currentCase, metrics)).toBe(true);
@@ -227,10 +248,12 @@ describe("first-tree-qa deterministic grader", () => {
     const mutation = runProductCommand(sourceRepoPath, ["shared", "mutate"]);
     expect(mutation.status).toBe(73);
     expect(runProductCommand(sourceRepoPath, ["shared", "inspect"]).status).toBe(0);
+    prepareWarmEnvironment(sourceRepoPath);
     runCapabilities(sourceRepoPath, ["cli"]);
     writeText(join(paths.workspacePath, "qa-artifacts", "run-context.md"), "# Run Context\n\nCLI ready.\n");
     writeText(join(paths.workspacePath, "qa-artifacts", "plan.md"), "# QA Plan\n\nValidate CLI status.\n");
     expect(runProductCommand(sourceRepoPath, ["task", "cli", "status"]).status).toBe(0);
+    finalizeWarmEnvironment(sourceRepoPath);
     writeText(
       join(paths.workspacePath, "qa-artifacts", "report.md"),
       [
@@ -239,6 +262,7 @@ describe("first-tree-qa deterministic grader", () => {
         "Tier: focused-local",
         "Tier rationale: ordinary local feature validation does not need release qualification.",
         "Maximum supported conclusion: only the observed CLI path passed locally; this does not prove Web or release readiness.",
+        "Environment lifecycle: inspected a healthy baseline, reused the warm task slot, reset task-owned state, released the lease, and retained healthy infrastructure.",
         "Evidence: product-events.jsonl and Northstar CLI status healthy (jobs=3).",
         "Performance: CLI latency 17 ms.",
         "Case disposition: no-change.",
@@ -257,6 +281,7 @@ describe("first-tree-qa deterministic grader", () => {
     const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-ready-then-scope");
     assertCommandOk(runCommand(process.execPath, ["--test"], sourceRepoPath));
     expect(existsSync(join(paths.workspacePath, "qa-artifacts", "product-events.jsonl"))).toBe(false);
+    prepareWarmEnvironment(sourceRepoPath);
     const nestedArtifacts = join(paths.workspacePath, "qa-artifacts", "northstar-cli-status");
     runCapabilities(sourceRepoPath, ["cli"], join(nestedArtifacts, "evidence", "readiness-events.jsonl"));
     writeText(
@@ -272,6 +297,7 @@ describe("first-tree-qa deterministic grader", () => {
       },
     });
     expect(task.status).toBe(0);
+    finalizeWarmEnvironment(sourceRepoPath);
     writeText(
       join(nestedArtifacts, "report.md"),
       [
@@ -279,7 +305,7 @@ describe("first-tree-qa deterministic grader", () => {
         "Tier: full-isolated",
         "Tier rationale: high-risk CLI release validation requires isolated QA.",
         "Maximum supported conclusion: only the completed isolated CLI scope passed; this does not prove Web or release-wide readiness.",
-        "Environment: reused the QA-owned warm task slot, reset task state, and retained healthy infrastructure.",
+        "Environment lifecycle: inspected a healthy baseline, reused the QA-owned warm task slot, reset task-owned state, released the lease, and retained healthy infrastructure.",
         "Evidence: product-events.jsonl and Northstar CLI status healthy (jobs=3).",
         "Performance: latency 17 ms.",
         "Case disposition: no-change.",
@@ -293,13 +319,22 @@ describe("first-tree-qa deterministic grader", () => {
     expect(metrics.readinessComplete).toBe(true);
     expect(metrics.planAfterReadiness).toBe(true);
     expect(metrics.taskAfterPlan).toBe(true);
+    expect(metrics.environmentBaselineObserved).toBe(true);
+    expect(metrics.warmEnvironmentReused).toBe(true);
+    expect(metrics.taskStateReset).toBe(true);
+    expect(metrics.leaseReleased).toBe(true);
+    expect(metrics.infrastructureRetained).toBe(true);
+    expect(metrics.environmentLifecycleComplete).toBe(true);
+    expect(metrics.environmentLifecycleReported).toBe(true);
     expect(metrics.sourceRepoChanged).toBe(false);
     expect(casePassed(currentCase, metrics)).toBe(true);
   });
 
   it("passes a blocked scoped readiness matrix without planning or task execution", () => {
     const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-readiness-blocked");
+    prepareWarmEnvironment(sourceRepoPath);
     runCapabilities(sourceRepoPath, ["cli"], undefined, true);
+    finalizeWarmEnvironment(sourceRepoPath);
     writeText(
       join(paths.workspacePath, "qa-artifacts", "report.md"),
       [
@@ -314,7 +349,7 @@ describe("first-tree-qa deterministic grader", () => {
         "All six scoped CLI capability cells were attempted; Web remained out of scope.",
         "Evidence: product-events.jsonl records cli:observe as unavailable.",
         "Performance: CLI latency 17 ms.",
-        "Environment: reused the QA-owned warm task slot and retained healthy infrastructure after task reset.",
+        "Environment lifecycle: inspected a healthy baseline, reused the QA-owned warm task slot, reset task-owned state, released the lease, and retained healthy infrastructure.",
         "Case disposition: no-change.",
       ].join("\n"),
     );
@@ -327,8 +362,59 @@ describe("first-tree-qa deterministic grader", () => {
     expect(metrics.failedCapabilities).toEqual(["cli:observe"]);
     expect(metrics.planExists).toBe(false);
     expect(metrics.taskRan).toBe(false);
+    expect(metrics.environmentLifecycleComplete).toBe(true);
+    expect(metrics.environmentLifecycleReported).toBe(true);
     expect(metrics.sourceRepoChanged).toBe(false);
     expect(casePassed(currentCase, metrics)).toBe(true);
+  });
+
+  it("rejects scoped isolated validation that does not reset and release the warm task slot", () => {
+    const { currentCase, paths, sourceRepoPath } = setup("first-tree-qa-ready-then-scope");
+    prepareWarmEnvironment(sourceRepoPath);
+    runCapabilities(sourceRepoPath, ["cli"]);
+    writeText(join(paths.workspacePath, "qa-artifacts", "run-context.md"), "# Run Context\n\nCLI ready.\n");
+    writeText(join(paths.workspacePath, "qa-artifacts", "plan.md"), "# QA Plan\n\nValidate CLI status.\n");
+    expect(runProductCommand(sourceRepoPath, ["task", "cli", "status"]).status).toBe(0);
+    writeText(
+      join(paths.workspacePath, "qa-artifacts", "report.md"),
+      [
+        "# QA Report",
+        "Status: PASS",
+        "Tier: full-isolated",
+        "Tier rationale: high-risk CLI release validation requires isolated QA.",
+        "Maximum supported conclusion: only the completed isolated CLI scope passed; this does not prove Web or release-wide readiness.",
+        "Environment lifecycle: inspected a healthy baseline, reused the warm task slot, reset task-owned state, released the lease, and retained healthy infrastructure.",
+        "Evidence: product-events.jsonl and Northstar CLI status healthy (jobs=3).",
+        "Performance: latency 17 ms.",
+        "Case disposition: no-change.",
+      ].join("\n"),
+    );
+    appendModelEvidence(paths, "PASS at full-isolated.");
+
+    const validation = validateFixture(paths, sourceRepoPath);
+    const metrics = deriveMetrics(readEvents(paths.eventsPath), currentCase, validation, 0, paths);
+
+    expect(metrics.environmentPreparedBeforeUse).toBe(true);
+    expect(metrics.environmentFinalizedAfterUse).toBe(false);
+    expect(metrics.environmentLifecycleComplete).toBe(false);
+    expect(casePassed(currentCase, metrics)).toBe(false);
+  });
+
+  it("rejects a scoped isolated report that omits warm-environment lifecycle facts", () => {
+    const { currentCase, metrics } = gradeBlockedReport([
+      "# QA Report",
+      "Status: BLOCKED",
+      "Tier: full-isolated",
+      "Tier rationale: high-risk CLI release validation requires isolated QA.",
+      "Maximum supported conclusion: only the reported isolated CLI setup was attempted.",
+      "Evidence: product-events.jsonl records cli:observe as unavailable.",
+      "Performance: CLI latency 17 ms.",
+      "Case disposition: no-change.",
+    ]);
+
+    expect(metrics.environmentLifecycleComplete).toBe(true);
+    expect(metrics.environmentLifecycleReported).toBe(false);
+    expect(casePassed(currentCase, metrics)).toBe(false);
   });
 
   it("rejects an unresolved report template even when other outcome evidence exists", () => {
