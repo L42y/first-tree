@@ -2765,13 +2765,30 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
   });
 });
 
-describe("SessionManager lazy Context Tree binding", () => {
+describe("SessionManager Context Tree binding refresh", () => {
   const BINDING: ContextTreeBinding = {
     path: "/clones/abc",
     repoUrl: "https://github.com/acme/context-tree",
     branch: "main",
   };
   const BOUND: ContextTreeBindingResolution = { status: "bound", binding: BINDING };
+  const REBOUND: ContextTreeBindingResolution = {
+    status: "bound",
+    binding: { path: "/clones/def", repoUrl: "https://github.com/acme/other-tree", branch: "trunk" },
+  };
+
+  /** Run `fn` with `Date.now` frozen at `base`; `advance(ms)` moves the clock. */
+  async function withMockedNow(base: number, fn: (advance: (ms: number) => void) => Promise<void>): Promise<void> {
+    let now = base;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      await fn((ms) => {
+        now += ms;
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  }
 
   it("upgrades a tree-less handler config to tree-bound on a new session", async () => {
     const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
@@ -2798,7 +2815,7 @@ describe("SessionManager lazy Context Tree binding", () => {
     await sm.shutdown();
   });
 
-  it("tracks an explicit unbind observed during re-resolution without binding a path", async () => {
+  it("tracks an explicit unbind observed during a refresh without binding a path", async () => {
     const handlerConfig: HandlerConfig = {
       workspaceRoot: "/tmp/test",
       runtimeProvider: "codex",
@@ -2812,12 +2829,12 @@ describe("SessionManager lazy Context Tree binding", () => {
     await sm.dispatch(mockEntry({ id: 1, chatId: "c-unbind", messageId: "m1" }));
 
     expect(handlerConfig.contextTreeBindingStatus).toBe("explicitly-unbound");
-    expect(handlerConfig.contextTreePath).toBeUndefined();
+    expect(handlerConfig.contextTreePath).toBeNull();
 
     await sm.shutdown();
   });
 
-  it("tracks an unresolved re-resolution (fetch failure) without touching the path", async () => {
+  it("tracks an unresolved refresh (fetch failure) without binding a path", async () => {
     const handlerConfig: HandlerConfig = {
       workspaceRoot: "/tmp/test",
       runtimeProvider: "codex",
@@ -2833,12 +2850,12 @@ describe("SessionManager lazy Context Tree binding", () => {
     await sm.dispatch(mockEntry({ id: 1, chatId: "c-unresolved", messageId: "m1" }));
 
     expect(handlerConfig.contextTreeBindingStatus).toBe("unresolved");
-    expect(handlerConfig.contextTreePath).toBeUndefined();
+    expect(handlerConfig.contextTreePath).toBeNull();
 
     await sm.shutdown();
   });
 
-  it("does not re-resolve when already bound (steady state pays nothing)", async () => {
+  it("refreshes a bound slot too, but rate-limits: one resolver call per interval", async () => {
     const resolve = vi.fn(async () => BOUND);
     const handlerConfig: HandlerConfig = {
       workspaceRoot: "/tmp/test",
@@ -2848,10 +2865,21 @@ describe("SessionManager lazy Context Tree binding", () => {
     };
     const sm = createSessionManager({ handlerConfig, resolveContextTreeBinding: resolve });
 
-    await sm.dispatch(mockEntry({ id: 1, chatId: "c-bound", messageId: "m1" }));
+    await withMockedNow(Date.now(), async (advance) => {
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-bound-1", messageId: "m1" }));
+      expect(resolve).toHaveBeenCalledTimes(1);
 
-    expect(resolve).not.toHaveBeenCalled();
-    expect(handlerConfig.contextTreePath).toBe("/already/bound");
+      // A second admission INSIDE the interval reuses the landed state.
+      await sm.dispatch(mockEntry({ id: 2, chatId: "c-bound-2", messageId: "m2" }));
+      expect(resolve).toHaveBeenCalledTimes(1);
+
+      // Past the interval the next admission refreshes again.
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 3, chatId: "c-bound-3", messageId: "m3" }));
+      expect(resolve).toHaveBeenCalledTimes(2);
+    });
+
+    expect(handlerConfig.contextTreePath).toBe("/clones/abc");
     expect(handlerConfig.contextTreeBindingStatus).toBe("bound");
 
     await sm.shutdown();
@@ -2866,6 +2894,202 @@ describe("SessionManager lazy Context Tree binding", () => {
     await sm.dispatch(mockEntry({ id: 2, chatId: "c-once", messageId: "m2" }));
 
     expect(resolve).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+  });
+
+  it("clears a previously-bound slot on explicit unbind and rebuilds a suspended chat's handler", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    let resolution: ContextTreeBindingResolution = BOUND;
+    const resolve = vi.fn(async () => resolution);
+    const builtWith: HandlerConfig[] = [];
+    const handlers: AgentHandler[] = [];
+    let capturedCtx: SessionContext | undefined;
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: resolve,
+      handlerFactory: (cfg) => {
+        builtWith.push({ ...cfg });
+        const handler = createMockHandler({
+          async start(_msg, ctx) {
+            capturedCtx = ctx;
+            return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
+          },
+        });
+        handlers.push(handler);
+        return handler;
+      },
+    });
+
+    await withMockedNow(Date.now(), async (advance) => {
+      // Session starts while the slot is bound.
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-flip", messageId: "m1" }));
+      expect(builtWith[0]?.contextTreePath).toBe("/clones/abc");
+      // Settle the first turn so the follow-up dispatch resumes instead of
+      // routing into pre-dispatch recovery.
+      await finishEntry(capturedCtx, 1, "c-flip", "m1");
+
+      // Suspend the chat: its entry keeps the OLD handler snapshot.
+      await sm.handleCommand("c-flip", "session:suspend");
+
+      // The org unbinds the tree; the next admission past the interval refreshes.
+      resolution = { status: "explicitly-unbound" };
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 2, chatId: "c-flip", messageId: "m2" }));
+
+      expect(resolve).toHaveBeenCalledTimes(2);
+      expect(handlerConfig.contextTreePath).toBeNull();
+      expect(handlerConfig.contextTreeRepoUrl).toBeNull();
+      expect(handlerConfig.contextTreeBranch).toBeNull();
+      expect(handlerConfig.contextTreeBindingStatus).toBe("explicitly-unbound");
+      // The resume rebuilt the handler from the new config…
+      expect(builtWith).toHaveLength(2);
+      expect(builtWith[1]?.contextTreePath).toBeNull();
+      expect(builtWith[1]?.contextTreeBindingStatus).toBe("explicitly-unbound");
+      expect(handlers[0]?.resume).not.toHaveBeenCalled();
+      expect(handlers[1]?.resume).toHaveBeenCalled();
+      // …and the old handler was retired under the existing teardown-debt
+      // discipline (fire-and-forget shutdown via handlerForRouteTransition).
+      await vi.waitFor(() => expect(handlers[0]?.shutdown).toHaveBeenCalled());
+    });
+
+    await sm.shutdown();
+  });
+
+  it("applies a rebind to a different repo/branch on the next admission", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    let resolution: ContextTreeBindingResolution = BOUND;
+    const builtWith: HandlerConfig[] = [];
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: async () => resolution,
+      handlerFactory: (cfg) => {
+        builtWith.push({ ...cfg });
+        return createMockHandler();
+      },
+    });
+
+    await withMockedNow(Date.now(), async (advance) => {
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-rebind-1", messageId: "m1" }));
+      expect(builtWith[0]?.contextTreePath).toBe("/clones/abc");
+
+      resolution = REBOUND;
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 2, chatId: "c-rebind-2", messageId: "m2" }));
+
+      expect(handlerConfig.contextTreePath).toBe("/clones/def");
+      expect(handlerConfig.contextTreeRepoUrl).toBe("https://github.com/acme/other-tree");
+      expect(handlerConfig.contextTreeBranch).toBe("trunk");
+      expect(builtWith[1]?.contextTreePath).toBe("/clones/def");
+      expect(builtWith[1]?.contextTreeBranch).toBe("trunk");
+    });
+
+    await sm.shutdown();
+  });
+
+  it("fails closed when the resolver is unavailable: stale path cleared, ordinary work continues", async () => {
+    const handlerConfig: HandlerConfig = {
+      workspaceRoot: "/tmp/test",
+      runtimeProvider: "codex",
+      contextTreePath: "/old/tree",
+      contextTreeRepoUrl: "https://github.com/acme/old",
+      contextTreeBranch: "main",
+      contextTreeBindingStatus: "bound",
+    };
+    const builtWith: HandlerConfig[] = [];
+    const handlers: AgentHandler[] = [];
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: async () => {
+        throw new Error("network down");
+      },
+      handlerFactory: (cfg) => {
+        builtWith.push({ ...cfg });
+        const handler = createMockHandler();
+        handlers.push(handler);
+        return handler;
+      },
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "c-failclosed", messageId: "m1" }));
+
+    // Fail closed for the Tree: the stale path is not exposed to the handler…
+    expect(handlerConfig.contextTreePath).toBeNull();
+    expect(handlerConfig.contextTreeBindingStatus).toBe("unresolved");
+    expect(builtWith[0]?.contextTreePath).toBeNull();
+    // …but ordinary work continues: the session started normally. (The
+    // on-disk checkout and last-known manifest are bootstrap concerns —
+    // bootstrap does nothing for `unresolved`.)
+    expect(handlers[0]?.start).toHaveBeenCalledTimes(1);
+
+    await sm.shutdown();
+  });
+
+  it("never switches an active chat's handler mid-flight when the binding changes", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    let resolution: ContextTreeBindingResolution = BOUND;
+    const builtWith: HandlerConfig[] = [];
+    const handlers: AgentHandler[] = [];
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: async () => resolution,
+      handlerFactory: (cfg) => {
+        builtWith.push({ ...cfg });
+        const handler = createMockHandler();
+        handlers.push(handler);
+        return handler;
+      },
+    });
+
+    await withMockedNow(Date.now(), async (advance) => {
+      // c-active starts bound and keeps a live turn (the mock never finishes it).
+      await sm.dispatch(mockEntry({ id: 1, chatId: "c-active", messageId: "m1" }));
+
+      // The org rebinds; a DIFFERENT chat's admission lands the change.
+      resolution = REBOUND;
+      advance(61_000);
+      await sm.dispatch(mockEntry({ id: 2, chatId: "c-bystander", messageId: "m2" }));
+      expect(builtWith).toHaveLength(2);
+      expect(builtWith[1]?.contextTreePath).toBe("/clones/def");
+
+      // The active chat keeps its ORIGINAL handler: a follow-up injects into
+      // it — no rebuild, no shutdown, no refresh on its admission.
+      await sm.dispatch(mockEntry({ id: 3, chatId: "c-active", messageId: "m3" }));
+      expect(handlers[0]?.inject).toHaveBeenCalled();
+      expect(handlers[0]?.shutdown).not.toHaveBeenCalled();
+      expect(builtWith).toHaveLength(2);
+    });
+
+    await sm.shutdown();
+  });
+
+  it("single-flight: concurrent admissions share one resolver call and both see the new binding", async () => {
+    const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
+    const gate = deferred<ContextTreeBindingResolution>();
+    const resolve = vi.fn(() => gate.promise);
+    const builtWith: HandlerConfig[] = [];
+    const sm = createSessionManager({
+      handlerConfig,
+      resolveContextTreeBinding: resolve,
+      handlerFactory: (cfg) => {
+        builtWith.push({ ...cfg });
+        return createMockHandler();
+      },
+    });
+
+    const d1 = sm.dispatch(mockEntry({ id: 1, chatId: "c-flight-1", messageId: "m1" }));
+    const d2 = sm.dispatch(mockEntry({ id: 2, chatId: "c-flight-2", messageId: "m2" }));
+    // The second admission joins the in-flight refresh instead of resolving again.
+    await vi.waitFor(() => expect(resolve).toHaveBeenCalledTimes(1));
+    expect(builtWith).toHaveLength(0);
+
+    gate.resolve(BOUND);
+    await Promise.all([d1, d2]);
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(builtWith).toHaveLength(2);
+    expect(builtWith[0]?.contextTreePath).toBe("/clones/abc");
+    expect(builtWith[1]?.contextTreePath).toBe("/clones/abc");
 
     await sm.shutdown();
   });

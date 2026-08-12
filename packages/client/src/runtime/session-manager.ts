@@ -36,7 +36,7 @@ import {
 import { findAttachmentFile, writeAttachmentFile } from "./attachment-store.js";
 import { type ContextTreeBindingResolution, resolveAgentContextTreeBinding } from "./bootstrap.js";
 import type { SessionConfig } from "./config.js";
-import { reresolveUnboundTree } from "./context-tree-rebind.js";
+import { refreshContextTreeBinding } from "./context-tree-rebind.js";
 import type { SelfFence } from "./doc-snapshots.js";
 import { clampRetryAttempt } from "./error-taxonomy.js";
 import type {
@@ -514,11 +514,10 @@ const REPLAY_FENCE_RECONCILE_INTERVAL_MS = 30_000;
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
 
 /**
- * Minimum spacing between lazy Context-Tree re-resolutions for a slot that is
- * currently tree-LESS. Caps the per-new-session HTTP probe for a
- * permanently-tree-less agent at once per minute, while still picking up a tree
- * configured later within this window. Tree-BOUND slots never reach this gate
- * (they exit on the cheap already-bound check).
+ * Minimum spacing between Context-Tree binding refreshes. Caps the
+ * per-admission HTTP probe at once per minute in every binding state, while
+ * still picking up a later bind, explicit unbind, or rebind within this
+ * window. Admissions inside the window reuse the last landed state.
  */
 const TREE_RERESOLVE_INTERVAL_MS = 60_000;
 
@@ -601,8 +600,14 @@ export class SessionManager {
   private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
   private readonly config: SessionManagerConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
-  /** Last lazy Context-Tree re-resolution attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
+  /** Last Context-Tree binding refresh attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
   private lastTreeResolveAttemptAt = 0;
+  /**
+   * In-flight Context-Tree binding refresh shared by concurrent admissions —
+   * see `ensureContextTreeBinding`. While set, every admission joins the same
+   * resolver call instead of starting its own.
+   */
+  private bindingRefreshFlight: Promise<void> | null = null;
   /**
    * Current trigger (messageId + senderId) per chat — the message that kicked
    * off the current or most-recent turn. The result-sink clears it at turn end.
@@ -880,15 +885,18 @@ export class SessionManager {
         // renders with a filename and an unavailable placeholder.
         await this.ensureImagesLocal(message);
 
-        // 4c. Lazily resolve a tree-LESS Context Tree binding before routing this
-        // message to a (possibly new) session. The binding is frozen at
-        // `AgentSlot.start()`, but the new-tree onboarding flow sets the org
-        // `context_tree` only afterwards — without this the fresh agent would
-        // never pick up its tree until a daemon restart. Done INSIDE the
-        // admission barrier so the `handlerConfig` patch lands before routing and
-        // a same-chat follow-up can't race a half-resolved binding, and only when
-        // no live session exists for this chat (a start / resume, never an inject
-        // into an active turn). No-op + no network once bound.
+        // 4c. Refresh the Context Tree binding before routing this message to a
+        // (possibly new) session. The binding is frozen at `AgentSlot.start()`,
+        // but the org `context_tree` setting can change afterwards — provisioned
+        // after slot start, explicitly unbound, or rebound to another repo —
+        // and without this the slot would keep its stale binding until a daemon
+        // restart. Done INSIDE the admission barrier so the `handlerConfig`
+        // patch (and any handler retirement it triggers) lands before routing
+        // and a same-chat follow-up can't race a half-resolved binding, and
+        // only when no live session exists for this chat (a start / resume,
+        // never an inject into an active turn). Rate-limited and single-flight;
+        // a refresh that CHANGES the binding also retires reusable stale
+        // handlers so the next route rebuilds them from the new config.
         if (!this.hasHealthyLiveHandler(chatId)) {
           await this.ensureContextTreeBinding();
         }
@@ -3026,50 +3034,130 @@ export class SessionManager {
   }
 
   /**
-   * Lazily resolve the agent's Context Tree binding when its slot came up
-   * tree-less. The binding is resolved once at `AgentSlot.start()` and frozen
-   * into `handlerConfig`; the new-tree onboarding flow sets the org
-   * `context_tree` only AFTER that, so a fresh agent would otherwise stay
-   * unbound until a daemon restart. Re-resolving at each new session is cheap
-   * once bound (`reresolveUnboundTree` short-circuits without a network call)
-   * and patches `handlerConfig` in place — so the handler built in
-   * `startNewSession`, and every later session on this slot, sees the tree,
-   * installs the First Tree skills, and writes the W1 workspace manifest.
+   * Refresh the agent's Context Tree binding when a session is admitted with
+   * no healthy live handler. The binding is resolved once at `AgentSlot.start()`
+   * and frozen into `handlerConfig`, but the org `context_tree` setting can
+   * change afterwards: the new-tree onboarding flow provisions the tree only
+   * AFTER the slot came up, and a later explicit unbind or rebind in the Web
+   * must take effect without a daemon restart. Re-resolving is rate-limited
+   * (`TREE_RERESOLVE_INTERVAL_MS`) and single-flight, and patches
+   * `handlerConfig` in place — so the handler built for this admission, and
+   * every later session on this slot, sees the current binding.
    *
-   * The full tri-state resolution is tracked in `handlerConfig`: an
-   * explicitly-unbound agent that later gets bound is picked up here, and a
-   * later explicit-unbind or unresolved observation updates the recorded
-   * status (which gates manifest retirement in the agent bootstrap).
+   * The full tri-state resolution is applied to `handlerConfig`:
+   *   - `bound` installs the (possibly changed) path/repo/branch;
+   *   - `explicitly-unbound` clears the usable coordinates so the next
+   *     projection renders the unbound briefing and the agent bootstrap
+   *     retires the stale workspace manifest;
+   *   - `unresolved` (invalid / fetch-failed) also clears the usable
+   *     coordinates — fail closed for the Tree: a stale path is never exposed
+   *     to provider/briefing — while the on-disk checkout and last-known
+   *     manifest are kept (bootstrap does nothing for unresolved) so ordinary
+   *     work continues.
+   * The on-disk `context-tree/` checkout is never touched.
+   *
+   * A refresh that CHANGES the recorded status or coordinates retires every
+   * reusable stale handler (see `retireStaleBindingHandlers`), so a suspended
+   * session's next resume rebuilds its handler from the new config instead of
+   * reusing its old snapshot.
    */
   private async ensureContextTreeBinding(): Promise<void> {
-    const cfg = this.config.handlerConfig;
-    // Already bound — cheapest exit (no clock read, no resolver, no network).
-    if (typeof cfg.contextTreePath === "string" && cfg.contextTreePath.length > 0) return;
-    // Tree-less: rate-limit re-resolution so a permanently-tree-less agent (the
-    // common case) doesn't fire an HTTP GET on EVERY new session for the
-    // slot's whole life. A tree configured later is still picked up within
-    // TREE_RERESOLVE_INTERVAL_MS on the next new session.
+    // Single-flight: a concurrent admission joins the in-flight refresh
+    // instead of starting a second resolver call, and lands AFTER the new
+    // state is applied — so it can never build its handler with the old
+    // binding while a refresh is in flight.
+    if (this.bindingRefreshFlight) {
+      await this.bindingRefreshFlight;
+      return;
+    }
     const now = Date.now();
     if (now - this.lastTreeResolveAttemptAt < TREE_RERESOLVE_INTERVAL_MS) return;
+    // Stamp the attempt BEFORE the flight starts: between the rate-limit check
+    // and the flight assignment there is no await, so a concurrent admission
+    // either joins this flight or reuses the landed state inside the interval.
     this.lastTreeResolveAttemptAt = now;
 
+    const flight = this.performContextTreeBindingRefresh();
+    this.bindingRefreshFlight = flight;
+    try {
+      await flight;
+    } finally {
+      if (this.bindingRefreshFlight === flight) this.bindingRefreshFlight = null;
+    }
+  }
+
+  /**
+   * Run one binding resolution and apply it to `handlerConfig`; see
+   * `ensureContextTreeBinding` for the tri-state contract. Never throws —
+   * `refreshContextTreeBinding` degrades a resolver failure to `unresolved`.
+   */
+  private async performContextTreeBindingRefresh(): Promise<void> {
+    const cfg = this.config.handlerConfig;
     const resolve =
       this.config.resolveContextTreeBinding ??
       (() =>
         resolveAgentContextTreeBinding(this.config.sdk, this.config.handlerConfig.workspaceRoot, (msg) =>
           this.config.log.info(msg),
         ));
-    const resolution = await reresolveUnboundTree(cfg.contextTreePath, resolve);
-    if (!resolution) return;
-    cfg.contextTreeBindingStatus = resolution.status;
-    if (resolution.status !== "bound") return;
-    cfg.contextTreePath = resolution.binding.path;
-    cfg.contextTreeRepoUrl = resolution.binding.repoUrl;
-    cfg.contextTreeBranch = resolution.binding.branch;
-    this.config.log.info(
-      { path: resolution.binding.path, repoUrl: resolution.binding.repoUrl },
-      "context tree binding resolved lazily (agent was unbound at slot start)",
-    );
+    const resolution = await refreshContextTreeBinding(resolve);
+
+    const prevPath = cfg.contextTreePath ?? null;
+    const prevRepoUrl = cfg.contextTreeRepoUrl ?? null;
+    const prevBranch = cfg.contextTreeBranch ?? null;
+    const prevStatus = cfg.contextTreeBindingStatus ?? null;
+
+    if (resolution.status === "bound") {
+      cfg.contextTreePath = resolution.binding.path;
+      cfg.contextTreeRepoUrl = resolution.binding.repoUrl;
+      cfg.contextTreeBranch = resolution.binding.branch;
+      cfg.contextTreeBindingStatus = "bound";
+    } else {
+      cfg.contextTreePath = null;
+      cfg.contextTreeRepoUrl = null;
+      cfg.contextTreeBranch = null;
+      cfg.contextTreeBindingStatus = resolution.status;
+    }
+
+    const changed =
+      prevPath !== (cfg.contextTreePath ?? null) ||
+      prevRepoUrl !== (cfg.contextTreeRepoUrl ?? null) ||
+      prevBranch !== (cfg.contextTreeBranch ?? null) ||
+      // A status flip only counts once a status was already recorded: the
+      // first refresh on a slot that started with NO recorded status merely
+      // persists what providers already derived from the (unchanged)
+      // coordinates, so rebuilding handlers for it would be pure churn.
+      (prevStatus !== null && prevStatus !== (cfg.contextTreeBindingStatus ?? null));
+    if (!changed) return;
+
+    if (resolution.status === "bound") {
+      this.config.log.info(
+        { path: resolution.binding.path, repoUrl: resolution.binding.repoUrl },
+        "context tree binding refreshed",
+      );
+    }
+    this.retireStaleBindingHandlers();
+  }
+
+  /**
+   * Mark every session handler that could be REUSED with a stale binding
+   * snapshot as retired, so its next route rebuilds the handler from the
+   * refreshed config through `handlerForRouteTransition` — the existing
+   * retirement path, which keeps teardown debt (`detachHandlerWithPendingTeardown`)
+   * and quarantine semantics intact. Never touches:
+   *   - a chat with a healthy live handler (active handlers stay frozen
+   *     mid-turn), or
+   *   - an entry with an in-flight route transition — the adoption fence owns
+   *     that handler, and retiring it would discard a live route.
+   * An entry already mid-suspend takes the retired branch at its suspend
+   * boundary (confirmed stop instead of `handler.suspend`), matching the
+   * existing retired-handler discipline.
+   */
+  private retireStaleBindingHandlers(): void {
+    for (const entry of this.sessions.values()) {
+      if (entry.status === "active" && entry.suspending === null) continue;
+      if (entry.routeTransition !== null) continue;
+      this.retiredHandlers.add(entry.handler);
+    }
   }
 
   private async startNewSession(

@@ -1,34 +1,25 @@
 import type { ContextTreeBindingResolution } from "./bootstrap.js";
 
 /**
- * Lazily re-resolve an agent's Context Tree binding when it started its slot
- * tree-LESS.
+ * Re-resolve an agent's Context Tree binding for a session admission.
  *
  * The binding is resolved once at `AgentSlot.start()` and frozen into the
- * handler config for the slot's lifetime. That's wrong for the new-tree
- * onboarding flow: the agent's slot comes up before the org's `context_tree`
- * setting exists (the kickoff step provisions it moments later), so the slot is
- * frozen tree-less and would never pick up the tree until a daemon restart.
- *
- * This decides whether a fresh re-resolution is warranted at session start:
- *   - already bound (`currentPath` is a non-empty string) → returns null and
- *     does NOT call `resolve`, so the steady-state path pays nothing;
- *   - unbound → calls `resolve` once and returns whatever it produced (the
- *     full tri-state resolution: a fresh binding, an explicit unbind, or an
- *     unresolved state when the org still has no tree / the server is
- *     unreachable).
+ * handler config for the slot's lifetime. That's wrong whenever the org
+ * `context_tree` setting changes after slot start: the new-tree onboarding
+ * flow provisions the tree moments after the slot came up, and a later
+ * explicit unbind or rebind in the Web must take effect without a daemon
+ * restart. The caller rate-limits (one refresh per interval) and single-flights
+ * these calls; this helper owns only the fail-closed contract:
  *
  * Never throws — a failed re-resolution degrades to the `unresolved` status
- * for this turn (the next new session retries). The caller owns applying the
- * returned resolution to its (mutable) handler config, including tracking the
- * status so an explicitly-unbound agent that later gets bound is picked up
- * and a later unbind transition updates the recorded status.
+ * for this turn (the next admission retries after the interval). The caller
+ * owns applying the returned resolution to its (mutable) handler config,
+ * including clearing stale coordinates so an unbound or unconfirmable binding
+ * is never exposed to provider/briefing from a previously-bound snapshot.
  */
-export async function reresolveUnboundTree(
-  currentPath: unknown,
+export async function refreshContextTreeBinding(
   resolve: () => Promise<ContextTreeBindingResolution>,
-): Promise<ContextTreeBindingResolution | null> {
-  if (typeof currentPath === "string" && currentPath.length > 0) return null;
+): Promise<ContextTreeBindingResolution> {
   try {
     return await resolve();
   } catch {
