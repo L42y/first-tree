@@ -21,7 +21,9 @@ export function literalModuleSpecifierText(node: ts.Expression | ts.LiteralTypeN
  * `import x = require("…")` (`ImportEqualsDeclaration`), and executable
  * CommonJS loader calls — `require("…")`, immediate
  * `createRequire(…)("…")`, namespace `module.createRequire(…)("…")`,
- * aliased binders, and simple binder propagation (`const load = req`).
+ * namespace-destructured aliases
+ * (`const { createRequire: makeRequire } = ns`), aliased binders, and
+ * simple binder propagation (`const load = req`).
  * Direct binder calls are classified; `req.resolve(…)` package lookups are
  * not treated as module-edge loads. Unsupported createRequire shapes /
  * non-literal / unclassifiable forms are recorded so the production scan
@@ -132,6 +134,9 @@ export function extractModuleReferences(source: string): {
     if (!parent) return false;
     // `import { createRequire }` / `import { createRequire as cr }`
     if (ts.isImportSpecifier(parent) && (parent.name === id || parent.propertyName === id)) return true;
+    // `const { createRequire: makeRequire } = ns` — local binding name and the
+    // source property token are not escapes.
+    if (ts.isBindingElement(parent) && (parent.name === id || parent.propertyName === id)) return true;
     // Binding site: `const req = …` / `load = …` — the name itself is not an escape.
     if (ts.isVariableDeclaration(parent) && parent.name === id) return true;
     if (
@@ -182,6 +187,66 @@ export function extractModuleReferences(source: string): {
     return false;
   }
 
+  function bindingElementSourceProp(el: ts.BindingElement): string | null {
+    if (el.propertyName) {
+      return ts.isIdentifier(el.propertyName) ? el.propertyName.text : null;
+    }
+    return ts.isIdentifier(el.name) ? el.name.text : null;
+  }
+
+  /**
+   * `const { createRequire: makeRequire } = ns` / `const { createRequire } = ns`
+   * from a tracked `import * as ns from "node:module"`. Any other destructure
+   * of `createRequire` (unknown receiver, nested pattern, non-identifier local)
+   * fails closed.
+   */
+  function recordDestructuredCreateRequire(el: ts.BindingElement, init: ts.Expression): void {
+    const sourceProp = bindingElementSourceProp(el);
+    if (sourceProp === "createRequire") {
+      if (!ts.isIdentifier(el.name)) {
+        hasUnresolvableModuleReference = true;
+        return;
+      }
+      if (ts.isIdentifier(init) && nodeModuleNamespaces.has(init.text)) {
+        createRequireNames.add(el.name.text);
+        return;
+      }
+      hasUnresolvableModuleReference = true;
+      return;
+    }
+    // Nested binding patterns that might hide createRequire — fail closed when
+    // the source property is non-identifier (computed) or the local renames
+    // createRequire through a nested object/array pattern.
+    if (ts.isObjectBindingPattern(el.name) || ts.isArrayBindingPattern(el.name)) {
+      const nestedText = el.name.getText(sourceFile);
+      if (/\bcreateRequire\b/.test(nestedText)) {
+        hasUnresolvableModuleReference = true;
+      }
+    } else if (
+      el.propertyName &&
+      !ts.isIdentifier(el.propertyName) &&
+      /\bcreateRequire\b/.test(el.getText(sourceFile))
+    ) {
+      hasUnresolvableModuleReference = true;
+    }
+  }
+
+  function recordFactoryOrBinderFromInit(name: string, init: ts.Expression): void {
+    if (isCreateRequireCall(init) || isRequireBinderAlias(init)) {
+      requireBinders.add(name);
+    } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
+      createRequireNames.add(name);
+    } else if (isNamespaceCreateRequireProp(init)) {
+      // Tracked namespace factory property alias: `const cr = ns.createRequire`
+      createRequireNames.add(name);
+    } else if (isCreateRequirePropertyAccess(init)) {
+      // Untracked receiver property alias (default import / dynamic import / unknown)
+      hasUnresolvableModuleReference = true;
+    } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
+      hasUnresolvableModuleReference = true;
+    }
+  }
+
   // Pass 1: collect namespaces, createRequire aliases, binders, and binder aliases.
   // Fixed-point so `const load = req` after `const req = createRequire(...)` propagates.
   function collectOnce(node: ts.Node): void {
@@ -200,40 +265,22 @@ export function extractModuleReferences(source: string): {
       }
     }
 
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-      const name = node.name.text;
+    if (ts.isVariableDeclaration(node) && node.initializer) {
       const init = node.initializer;
-      if (isCreateRequireCall(init) || isRequireBinderAlias(init)) {
-        requireBinders.add(name);
-      } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
-        createRequireNames.add(name);
-      } else if (isNamespaceCreateRequireProp(init)) {
-        // Tracked namespace factory property alias: `const cr = ns.createRequire`
-        createRequireNames.add(name);
-      } else if (isCreateRequirePropertyAccess(init)) {
-        // Untracked receiver property alias (default import / dynamic import / unknown)
-        hasUnresolvableModuleReference = true;
-      } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
-        hasUnresolvableModuleReference = true;
+      if (ts.isIdentifier(node.name)) {
+        recordFactoryOrBinderFromInit(node.name.text, init);
+      } else if (ts.isObjectBindingPattern(node.name)) {
+        for (const el of node.name.elements) {
+          if (ts.isOmittedExpression(el)) continue;
+          recordDestructuredCreateRequire(el, init);
+        }
       }
     } else if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       ts.isIdentifier(node.left)
     ) {
-      const name = node.left.text;
-      const init = node.right;
-      if (isCreateRequireCall(init) || isRequireBinderAlias(init)) {
-        requireBinders.add(name);
-      } else if (ts.isIdentifier(init) && createRequireNames.has(init.text)) {
-        createRequireNames.add(name);
-      } else if (isNamespaceCreateRequireProp(init)) {
-        createRequireNames.add(name);
-      } else if (isCreateRequirePropertyAccess(init)) {
-        hasUnresolvableModuleReference = true;
-      } else if (ts.isCallExpression(init) && classifyCreateRequireCallee(init.expression) === "unresolvable") {
-        hasUnresolvableModuleReference = true;
-      }
+      recordFactoryOrBinderFromInit(node.left.text, node.right);
     }
     ts.forEachChild(node, collectOnce);
   }

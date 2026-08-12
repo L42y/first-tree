@@ -337,6 +337,32 @@ describe("client directory production dependency direction", () => {
     ).toBe(true);
   });
 
+  it("negative fixture: namespace-destructured createRequire alias binder loads fail closed via production collector", () => {
+    const src = makeFixtureSrc();
+    const source = `import * as nodeModule from "node:module";
+const { createRequire: makeRequire } = nodeModule;
+const load = makeRequire(import.meta.url);
+export const Session = load("../runtime/session-manager.js");
+`;
+    writeFileSync(join(src, "providers", "destructure-cjs.ts"), source);
+
+    // Extractor itself must classify the binder load (not silently skip).
+    const refs = extractModuleReferences(source);
+    expect(refs.hasUnresolvableModuleReference).toBe(false);
+    expect(refs.literalSpecifiers).toContain("node:module");
+    expect(refs.literalSpecifiers).toContain("../runtime/session-manager.js");
+
+    const violations = collectDirectoryBoundaryViolations(src);
+    expect(
+      violations.some(
+        (v) =>
+          v.includes("providers/destructure-cjs.ts") &&
+          v.includes("runtime outside contracts/provider-support") &&
+          v.includes("resolved=runtime/session-manager.ts"),
+      ),
+    ).toBe(true);
+  });
+
   it("negative fixture: does not mutate the real packages/client production tree", () => {
     const before = walkProductionTs(clientSrc)
       .map((f) => relative(clientSrc, f).replaceAll("\\", "/"))

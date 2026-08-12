@@ -1941,6 +1941,15 @@ describe("runtime provider architecture guard", () => {
       "../../runtime/brand-new-owner.js",
     );
 
+    // Namespace-destructured createRequire alias (baixiaohang review fixture).
+    expectForbiddenRuntimeSpec(
+      `import * as nodeModule from "node:module";
+       const { createRequire: makeRequire } = nodeModule;
+       const load = makeRequire(import.meta.url);
+       load("../../runtime/brand-new-owner.js");`,
+      "../../runtime/brand-new-owner.js",
+    );
+
     // Simple binder propagation (`const load = req`) must still be classified.
     expectForbiddenRuntimeSpec(
       `import { createRequire } from "node:module";
