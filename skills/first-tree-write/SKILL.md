@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.2
+version: 0.16.3
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -69,6 +69,25 @@ runtime contract may classify a concrete artifact as a Tree-write task before
 this Skill loads; that standing classification selects this workflow but never
 bypasses its live write preflight. Authorization to publish a source PR/MR is
 not, by itself, a separate or transitive Tree write-intent rule.
+
+## Unbound or broken Tree binding
+
+A missing Context Tree removes only the operations that depend on it. Nothing
+in this skill may prompt the user to bind, create, or connect a Tree merely
+because one is absent.
+
+- **Explicitly unbound:** when the trusted managed briefing explicitly states
+  there is no bound Tree, no Tree write is possible and there is no write
+  task. Continue the underlying work from the source artifact and locally
+  available inputs without Tree operations. If the user explicitly asked for
+  a Tree write, state only that this Tree write cannot be completed because
+  no Tree is bound; do not expand the absence into bind/create guidance. An
+  explicit first-time Tree creation request routes to `first-tree-seed`, not
+  this skill.
+- **Declared but broken:** when a binding is declared by the briefing or
+  workspace manifest but is missing, malformed, or inconsistent, keep failing
+  closed for Tree operations — never guess a Tree. Report the binding gap;
+  the broken binding blocks only the Tree write, never unrelated work.
 
 ## Invocation Modes
 

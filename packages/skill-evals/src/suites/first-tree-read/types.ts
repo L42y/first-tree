@@ -2,7 +2,7 @@ import type { AgentProviderName } from "../../core/provider/types.js";
 import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
-export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree";
+export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree" | "unbound-managed";
 export type BriefingMode = "minimal" | "runtime-generated";
 export type ReadMode = "byo" | "managed";
 export type ManagedTransport = "ask" | "send";
@@ -38,6 +38,12 @@ export type FirstTreeReadEvalCase = {
   prompt: string;
   promptAlternates: readonly string[];
   readMode: ReadMode;
+  /**
+   * Managed workspace whose briefing explicitly states no bound Tree: the task
+   * must continue from local inputs with zero Tree CLI invocations and no Tree
+   * setup/binding wording, instead of triggering a read.
+   */
+  unboundContinuation?: boolean;
   workspaceKind: WorkspaceKind;
 };
 
@@ -100,6 +106,8 @@ export type EvalMetrics = {
   managedFinalTransportKind: ManagedTransport | null;
   /** The delivery this case's task contract requires, when it declares one. */
   managedTransportExpected: ManagedTransport | null;
+  treeCliInvocationCount: number;
+  treeSetupWordingObserved: boolean;
   legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;

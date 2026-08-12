@@ -200,6 +200,38 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
     readMode: "managed",
     workspaceKind: "context-tree",
   },
+  {
+    briefingMode: "runtime-generated",
+    description:
+      "Managed unbound workspace (runtime-generated briefing, no manifest) with a software task that continues from the local source repo.",
+    expectedFacts: ["Inbox delivery is deduplicated at the client boundary."],
+    expectedTrigger: false,
+    id: "first-tree-read-unbound-software-continues-periodic",
+    impactNote: { mode: "absent" },
+    managedTransport: "send",
+    prompt: "Read ./source-repo/README.md and answer: where is inbox delivery deduplicated?",
+    promptAlternates: ["According to ./source-repo/README.md, where does inbox deduplication happen?"],
+    readMode: "managed",
+    unboundContinuation: true,
+    workspaceKind: "unbound-managed",
+  },
+  {
+    briefingMode: "runtime-generated",
+    description:
+      "Managed unbound workspace (runtime-generated briefing, no manifest) with a pasted-content question answered without Tree operations.",
+    expectedFacts: ["Refresh tokens rotate on every use to limit replay."],
+    expectedTrigger: false,
+    id: "first-tree-read-unbound-pasted-content-continues-periodic",
+    impactNote: { mode: "absent" },
+    managedTransport: "send",
+    prompt: 'Summarize this pasted note in one sentence: "Refresh tokens rotate on every use to limit replay."',
+    promptAlternates: [
+      'In one sentence, what does this note say? "Refresh tokens rotate on every use to limit replay."',
+    ],
+    readMode: "managed",
+    unboundContinuation: true,
+    workspaceKind: "unbound-managed",
+  },
 ];
 
 export function findFirstTreeReadCase(id: string): FirstTreeReadEvalCase | null {

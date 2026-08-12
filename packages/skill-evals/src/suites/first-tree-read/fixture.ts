@@ -120,6 +120,16 @@ evaluations.
 `;
 }
 
+function unboundSourceReadmeMarkdown(): string {
+  return `# Source Repo
+
+Software source fixture for first-tree-read evals.
+
+Inbox delivery is deduplicated at the client boundary; the server only fans
+messages out.
+`;
+}
+
 function workspaceAgentsMarkdown(skillDescription: string, workspaceKind: WorkspaceKind): string {
   const standingContext =
     workspaceKind === "byo-context-tree"
@@ -158,13 +168,40 @@ function installFirstTreeReadSkill(repoRoot: string, workspacePath: string, work
 
 function runtimeGeneratedWorkspaceAgentsMarkdown(
   workspacePath: string,
-  contextTreePath: string,
+  contextTreePath: string | null,
   descriptions: ReadonlyMap<string, string>,
 ): string {
   const sourceRepoPath = join(workspacePath, "source-repo");
   const skillRows = RUNTIME_SKILL_NAMES.map(
     (skill) => `| \`${skill}\` | ${descriptions.get(skill) ?? "Use when this skill applies."} |`,
   ).join("\n");
+  const contextTreeSection =
+    contextTreePath === null
+      ? `# Context Tree (First Tree Managed)
+
+This briefing was generated without a bound Context Tree — a supported state,
+not a gap to fix. Ordinary tasks proceed from the user's messages, chat
+context, pasted content, and locally available inputs with no prompt to bind
+or create a tree; only a request whose result genuinely needs a tree
+read/write/audit/setup names that specific capability impact.`
+      : `# Context Tree (First Tree Managed)
+
+The current Context Tree checkout is \`${contextTreePath}\`.
+Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
+is \`main\`.
+
+## Context Tree Policy
+
+The tree records durable decisions, constraints, ownership, and cross-domain
+relationships; source repos record implementation detail. Default to normal
+tree content as current truth. Treat archive/supporting and member content as
+non-normal classes with narrower authority.
+
+Read task-scoped tree context before acting on software project questions:
+
+1. Read \`.agents/skills/first-tree-read/SKILL.md\`.
+2. Inspect \`first-tree tree tree --help\`.
+3. Use \`first-tree tree tree\` selectors before answering.`;
 
   return `<!-- ======================================================================
   first-tree:generated — this file is rebuilt by the First Tree runtime at
@@ -185,24 +222,7 @@ Your fixed working directory is \`${workspacePath}\`. The runtime marker
 
 - \`${sourceRepoPath}\` (fixture source repo)
 
-# Context Tree (First Tree Managed)
-
-The current Context Tree checkout is \`${contextTreePath}\`.
-Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
-is \`main\`.
-
-## Context Tree Policy
-
-The tree records durable decisions, constraints, ownership, and cross-domain
-relationships; source repos record implementation detail. Default to normal
-tree content as current truth. Treat archive/supporting and member content as
-non-normal classes with narrower authority.
-
-Read task-scoped tree context before acting on software project questions:
-
-1. Read \`.agents/skills/first-tree-read/SKILL.md\`.
-2. Inspect \`first-tree tree tree --help\`.
-3. Use \`first-tree tree tree\` selectors before answering.
+${contextTreeSection}
 
 # Skills (First Tree Managed)
 
@@ -224,7 +244,11 @@ function writeClaudeBriefingSymlink(workspacePath: string): void {
   symlinkSync("AGENTS.md", claudeMdPath);
 }
 
-function installRuntimeGeneratedBriefing(repoRoot: string, workspacePath: string, contextTreePath: string): void {
+function installRuntimeGeneratedBriefing(
+  repoRoot: string,
+  workspacePath: string,
+  contextTreePath: string | null,
+): void {
   const descriptions = new Map<string, string>();
   for (const skill of RUNTIME_SKILL_NAMES) {
     const skillMarkdown = installRepoSkill(repoRoot, workspacePath, skill);
@@ -512,11 +536,18 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
   reporter.fixtureSetupStarted(evalCase.workspaceKind);
 
   const contextTreePath =
-    evalCase.workspaceKind === "blank" ? null : writeContextTreeFixture(paths, evalCase.workspaceKind);
+    evalCase.workspaceKind === "blank" || evalCase.workspaceKind === "unbound-managed"
+      ? null
+      : writeContextTreeFixture(paths, evalCase.workspaceKind);
+  if (evalCase.workspaceKind === "unbound-managed") {
+    // A managed workspace with source repos but no bound Tree: the real
+    // runtime writes no `.first-tree/workspace.json` in this state, so the
+    // fixture writes no manifest either.
+    const sourceRepoPath = join(paths.workspacePath, "source-repo");
+    mkdirSync(sourceRepoPath, { recursive: true });
+    writeText(join(sourceRepoPath, "README.md"), unboundSourceReadmeMarkdown());
+  }
   if (evalCase.briefingMode === "runtime-generated") {
-    if (contextTreePath === null) {
-      throw new Error("runtime-generated first-tree-read fixture requires a context-tree workspace.");
-    }
     installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath);
   } else {
     installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath, evalCase.workspaceKind);

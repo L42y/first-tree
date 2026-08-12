@@ -63,9 +63,21 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toContain("failure does not invalidate the\n   MR");
   });
 
+  it("states the unbound or broken Tree binding degradation gate", () => {
+    expect(skill).toContain("## Unbound or broken Tree binding");
+    expect(skill).toContain("A missing Context Tree removes only the operations that depend on it.");
+    expect(skill).toMatch(/may prompt the user to bind, create, or connect a Tree\s+merely\s+because one is absent/u);
+    expect(skill).toMatch(/when the trusted managed briefing explicitly states\s+there is no bound Tree/u);
+    expect(skill).toMatch(/no Tree write is possible and there is no write\s+task/u);
+    expect(skill).toMatch(/state only that this Tree write cannot be completed because\s+no Tree is bound/u);
+    expect(skill).toContain("do not expand the absence into bind/create guidance");
+    expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
+    expect(skill).toContain("the broken binding blocks only the Tree write, never unrelated work");
+  });
+
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.2");
+    expect(version).toBe("0.16.3");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

@@ -98,7 +98,15 @@ evaluations.
 `;
 }
 
-function workspaceAgentsMarkdown(skillDescription: string): string {
+function workspaceAgentsMarkdown(
+  skillDescription: string,
+  treeState: FirstTreeWriteEvalCase["fixture"]["treeState"],
+): string {
+  const treeLine =
+    treeState === "unbound"
+      ? "This briefing was generated without a bound Context Tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree. Only an explicit Tree write request names that specific capability impact: state that the write cannot be completed because no Tree is bound, without bind/create guidance."
+      : "The Context Tree is at `./context-tree`.";
+
   return `# Eval Workspace Instructions
 
 Use installed skills only when the skill description applies to the user's
@@ -124,7 +132,7 @@ rewritten. Capture current truth and rationale, not history, PR references, or
 actionable future work. Normal tree content is canonical; archive/supporting
 and member content are non-normal classes with narrower authority.
 
-The Context Tree is at \`./context-tree\`. Source artifacts, when present, are
+${treeLine} Source artifacts, when present, are
 under \`./source-artifacts\`. Do not create pull requests or push to any remote
 inside this eval workspace.
 `;
@@ -179,9 +187,13 @@ No cross-domain decision was made.
 `;
 }
 
-function installFirstTreeWriteSkill(repoRoot: string, workspacePath: string): void {
+function installFirstTreeWriteSkill(
+  repoRoot: string,
+  workspacePath: string,
+  treeState: FirstTreeWriteEvalCase["fixture"]["treeState"],
+): void {
   const skillMarkdown = installRepoSkill(repoRoot, workspacePath, SKILL_NAME);
-  writeText(join(workspacePath, "AGENTS.md"), workspaceAgentsMarkdown(parseSkillDescription(skillMarkdown)));
+  writeText(join(workspacePath, "AGENTS.md"), workspaceAgentsMarkdown(parseSkillDescription(skillMarkdown), treeState));
 }
 
 function writeWorkspaceManifest(paths: RunPaths): void {
@@ -266,29 +278,35 @@ function initializeGitRepo(paths: RunPaths, contextTreePath: string): void {
   }
 }
 
-export function setupFixture(evalCase: FirstTreeWriteEvalCase, paths: RunPaths, reporter: EvalReporter): string {
+export function setupFixture(evalCase: FirstTreeWriteEvalCase, paths: RunPaths, reporter: EvalReporter): string | null {
+  const unbound = evalCase.fixture.treeState === "unbound";
+  const workspaceKind = unbound ? "unbound" : "context-tree";
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
     sourceArtifact: evalCase.fixture.sourceArtifact,
     treeState: evalCase.fixture.treeState,
     type: "fixture_setup_started",
-    workspaceKind: "context-tree",
+    workspaceKind,
   });
-  reporter.fixtureSetupStarted("context-tree");
+  reporter.fixtureSetupStarted(workspaceKind);
 
-  installFirstTreeWriteSkill(paths.repoRoot, paths.workspacePath);
-  writeWorkspaceManifest(paths);
+  installFirstTreeWriteSkill(paths.repoRoot, paths.workspacePath, evalCase.fixture.treeState);
+  // Match the real managed runtime: no bound Tree means no workspace manifest
+  // at all, never a `tree: null` placeholder.
+  if (!unbound) {
+    writeWorkspaceManifest(paths);
+  }
   writeSourceArtifacts(evalCase, paths);
   writeSourceRepoFixture(paths);
-  const contextTreePath = writeContextTreeFixture(paths);
+  const contextTreePath = unbound ? null : writeContextTreeFixture(paths);
 
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
     contextTreePath,
     type: "fixture_setup_finished",
-    workspaceKind: "context-tree",
+    workspaceKind,
   });
-  reporter.fixtureSetupFinished("context-tree", contextTreePath);
+  reporter.fixtureSetupFinished(workspaceKind, contextTreePath);
 
   return contextTreePath;
 }
@@ -307,11 +325,21 @@ function requiredTreeFiles(contextTreePath: string): readonly string[] {
 
 export function validateFixture(
   paths: RunPaths,
-  contextTreePath: string,
+  contextTreePath: string | null,
   caseId: string,
   verbose: boolean,
   reporter: EvalReporter,
 ): FixtureValidation {
+  if (contextTreePath === null) {
+    reporter.fixtureValidationSkipped();
+    return {
+      errors: [],
+      ok: true,
+      requiredFilesOk: true,
+      verifyResult: null,
+    };
+  }
+
   const errors: string[] = [];
   const missingFiles = requiredTreeFiles(contextTreePath).filter((file) => !existsSync(file));
   for (const missing of missingFiles) {

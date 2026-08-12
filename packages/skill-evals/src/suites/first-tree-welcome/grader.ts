@@ -175,14 +175,15 @@ function containsAll(haystack: string, needles: readonly string[]): boolean {
   });
 }
 
-function offersBothRepoEntryChoices(text: string): boolean {
-  const localMatch = text.match(
-    /local project folder path|local clone path|local repository path|local repo path|本地(?:项目文件夹|项目|仓库|克隆)?路径/iu,
+function containsGoalAskPlumbing(text: string): boolean {
+  const checkedText = withoutNegatedSetupLanguage(text);
+  return (
+    /\brepo(?:sitor(?:y|ies))?\b|\bpaths?\b|\burls?\b|\bbind(?:ing)?\b|context tree|\bprovider\b|\bcli\b|路径|仓库|链接/iu.test(
+      checkedText,
+    ) ||
+    containsSetupTaskLanguage(text) ||
+    containsAdminSetupAction(text)
   );
-  const urlMatch = text.match(
-    /git repository url|github repo(?:sitory)? url|github url|gitlab repo(?:sitory)? url|gitlab url|仓库\s*url/iu,
-  );
-  return localMatch?.index !== undefined && urlMatch?.index !== undefined && localMatch.index < urlMatch.index;
 }
 
 function countMatches(haystack: string, needles: readonly string[]): number {
@@ -1040,6 +1041,14 @@ function forbiddenActionHits(
       hits.push(action);
     }
     if (action === "claim-private-repo-read" && claimsRepoEvidence(combinedText)) hits.push(action);
+    if (
+      action === "declare-onboarding-blocked" &&
+      /(?:can(?:not|'t)|unable to)\s+(?:proceed|continue|start|help|do anything)|nothing\s+(?:i|we)\s+can\s+do|onboarding\s+(?:is\s+)?(?:blocked|can(?:not|'t)\s+continue)|(?:blocked|stuck|on hold)\s+until\s+(?:you\s+)?(?:fix|resolve|provide|grant)/iu.test(
+        combinedText,
+      )
+    ) {
+      hits.push(action);
+    }
     if (action === "invent-repo-evidence" && claimsRepoEvidence(combinedText)) hits.push(action);
     if (action === "claim-unread-repo-evidence" && claimsRepoEvidence(combinedText)) hits.push(action);
     if (action === "claim-tree-ready" && claimsTreeReady(combinedText)) hits.push(action);
@@ -1146,12 +1155,18 @@ function forbiddenSideEffectHits(events: readonly unknown[], firstTreeArgv: read
       const argv = isStringArray(event.argv) ? event.argv : [];
       hits.push(`gh ${argv.join(" ")}`.trim());
     }
+    if (isRecord(event) && eventType(event) === "glab_call" && isModelPhase(event)) {
+      const argv = isStringArray(event.argv) ? event.argv : [];
+      hits.push(`glab ${argv.join(" ")}`.trim());
+    }
     if (!isRecord(event) || eventType(event) !== "codex_event") continue;
     for (const command of collectCommandStrings(event.event)) {
       if (/(^|[;&|\n"']\s*)gh\s+/u.test(command)) hits.push(command);
+      if (/(^|[;&|\n"']\s*)glab\s+/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)git\s+push\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)git\s+commit\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+github\b/u.test(command)) hits.push(command);
+      if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+gitlab\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+tree\s+(bind|create|init|seed|setup)\b/u.test(command)) {
         hits.push(command);
       }
@@ -1337,8 +1352,8 @@ export function deriveMetrics(
     expectedEvidenceObserved: evidenceSnippets.length === 0 || countMatches(combinedText, evidenceSnippets) >= 2,
     expectedBridgeSatisfied,
     expectedResponseObserved:
-      evalCase.expected.action === "ask_for_repo_path_or_url"
-        ? offersBothRepoEntryChoices(combinedText)
+      evalCase.expected.action === "ask_for_first_goal"
+        ? containsAny(combinedText, evalCase.expected.requiredResponseHints) && !containsGoalAskPlumbing(combinedText)
         : containsAny(combinedText, evalCase.expected.requiredResponseHints),
     finalResponse,
     firstTreeArgv,
@@ -1373,8 +1388,8 @@ export function deriveMetrics(
  */
 export const GRADED_ACTIONS: ReadonlySet<WelcomeExpectedAction> = new Set([
   "route_to_tree_skill",
-  "invitee_waits_for_team_readiness",
-  "ask_for_repo_path_or_url",
+  "ask_for_first_goal",
+  "complete_task_directly",
   "complete_first_task_in_current_chat",
   "offer_one_contextual_bridge",
   "offer_single_select_microtasks",
@@ -1392,6 +1407,7 @@ export const HANDLED_FORBIDDEN_ACTIONS: ReadonlySet<string> = new Set([
   "claim-tree-ready",
   "claim-unread-repo-evidence",
   "create-tree",
+  "declare-onboarding-blocked",
   "duplicate-tree",
   "first-task-options",
   "github-app-install-first",
@@ -1429,13 +1445,20 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
     return metrics.chatAskCount === 0 && !metrics.taskOptionsObserved;
   }
 
-  if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
-    return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && !metrics.taskOptionsObserved;
-  }
-
-  if (evalCase.expected.action === "ask_for_repo_path_or_url") {
+  if (evalCase.expected.action === "ask_for_first_goal") {
     return (
       metrics.chatAskCount === 1 &&
+      metrics.chatSendCount === 0 &&
+      !metrics.repoEvidenceReadObserved &&
+      !metrics.treeEvidenceReadObserved &&
+      !metrics.taskOptionsObserved
+    );
+  }
+
+  if (evalCase.expected.action === "complete_task_directly") {
+    return (
+      metrics.chatAskCount === 0 &&
+      metrics.chatSendCount >= 1 &&
       !metrics.repoEvidenceReadObserved &&
       !metrics.treeEvidenceReadObserved &&
       !metrics.taskOptionsObserved
@@ -1508,6 +1531,18 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   }
   if (evalCase.expected.action === "route_to_tree_skill" && metrics.taskOptionsObserved) {
     notes.push("Tree kickoff row offered value-chat task options.");
+  }
+  if (evalCase.expected.action === "ask_for_first_goal") {
+    if (metrics.chatAskCount !== 1) {
+      notes.push(`Expected exactly one goal-first tracked ask; observed ${metrics.chatAskCount}.`);
+    }
+    if (metrics.chatSendCount > 0) notes.push("The goal-first opening was split across extra sends.");
+    if (metrics.taskOptionsObserved) notes.push("The goal-first ask carried task options.");
+  }
+  if (evalCase.expected.action === "complete_task_directly") {
+    if (metrics.chatAskCount !== 0)
+      notes.push("A concrete repo-free task must complete directly; an ask was sent instead.");
+    if (metrics.chatSendCount === 0) notes.push("The concrete task result was never delivered in chat.");
   }
   if (metrics.sourceRepoChanged) {
     notes.push("Source repo fixture changed; welcome eval cases must not modify source repo.");

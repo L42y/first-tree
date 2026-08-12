@@ -42,9 +42,12 @@ Two look-alikes that are NOT this launcher, and one that routes by shape:
 
 Make the first work loop immediate and reviewable:
 
-1. **Connect one real project** — use only the project entry the user supplied.
-2. **Show it is readable** — take a bounded look and return a two-sentence
-   project receipt, without pretending that receipt is product value.
+1. **Start from the user's goal** — deliver value from whatever input the user
+   gave: their messages, pasted content, attachments, a local folder, or none
+   at all. Connect code only when the goal genuinely needs it.
+2. **When code is readable, show it** — take a bounded look and return a
+   two-sentence project receipt, without pretending that receipt is product
+   value.
 3. **Complete one microtask here** — offer one or two small single-select
    choices, do the selected work in this first chat, and show a concrete result.
 4. **Bridge once** — after the result, offer only the one next step that follows
@@ -121,20 +124,28 @@ these examples are kept in sync by a test — do not paraphrase them loosely.
 
 ### Your first substantive reply
 
-- **No readable code yet** — no repo connected, no local path, no Git repository URL, and
-  no readable team context. Make exactly one minimal ask: request one project
-  entry point — prefer a local project folder path on this machine, or accept a
-  Git repository URL — without faking understanding. Recommended shape: "Share
-  the local project folder path on this machine; if it is not local, send the Git
-  repository URL instead. I'll read a small slice, then give you one or two
-  concrete ways to start." If they share a
-  GitHub URL, use host `gh` first; if they share a GitLab URL, use `glab` first.
-  This is project intake, not a value result. Do not scan the machine for other
-   directories, do not ask for GitHub App authorization first, do not offer a
-   task yet, and do not mention Context Tree
-   setup yet. This input is required to continue, so deliver the minimal request
-   with `first-tree chat ask <human> "<local-path-first request>"` and no option
-   menu; do not leave it only in console/final narration.
+- **No concrete task yet** — the opening is a plain greeting with no task and
+  no source input. Say briefly that you are ready to work, and make exactly one
+  tracked ask for the outcome the user wants first, delivered with
+  `first-tree chat ask <human> "<goal-first ask>"` and no option menu; do not
+  leave it only in console/final narration. The ask must NOT mention a repo,
+  path, URL, binding, Context Tree creation, provider, App, CLI install, or
+  asking an admin to fix configuration — it asks what the user wants to
+  accomplish, not for project plumbing. Recommended shape: "I'm ready to work.
+  What's the first outcome you'd like from me?"
+- **A concrete task is already visible** — the opening message or the first
+  visible continuation names a concrete task that does not depend on repo
+  access. Complete it directly in this chat from the user's messages, chat
+  context, and locally available inputs; never force a repo/code menu in front
+  of it.
+- **A concrete task needs existing code** — only when the requested task
+  genuinely depends on code you cannot see and no source input exists, ask for
+  the minimal input with one tracked `chat ask`: accept a plain directory on
+  this machine, pasted content, attachments, or a repository URL — never
+  require creating a git repository first, and do not scan the machine for
+  other directories. Read a shared repository URL with plain `git` (clone or
+  fetch) first; use the host CLI (`gh` for GitHub, `glab` for GitLab) only
+  when the task needs a forge/API action or authenticated access.
 - **Readable code available** — a repo is connected and you can read it, or a
   local path / URL was given and you can read it. (A repo that is connected but
   local credentials cannot read it is the "cannot read it" state below — report
@@ -235,8 +246,10 @@ never fall through silently.
 
 | State | What to do |
 | --- | --- |
-| No project yet (no repo/path/URL) | Ask for one local project folder path or a Git repository URL. For GitHub URLs try host `gh` / local credentials first; for GitLab URLs try `glab` / local credentials first; for another host use plain `git`. Do not ask for GitHub authorization first, and do not offer tree build (no code to draw it from). |
-| Repo/resource exists but local credentials cannot read it | **Diagnose why** (private repo needing access / `gh` or `glab` not authenticated / wrong path / network), then give the one specific next step for that cause — `gh auth login` or `glab auth login` if the matching CLI isn't authenticated; for a private repo, the narrowest access, an accessible URL, or a local project folder path; the corrected path if it's mistyped (see **Handling snags**). Do not claim private repo contents, fake understanding, or send a menu; don't just report the read failure and ask for a path/URL/credential all at once. |
+| No concrete task yet (plain greeting, no source input) | Say briefly that you are ready to work and make the one goal-first tracked ask for the outcome the user wants first — never a repo/path/URL/binding/setup ask. Do not offer tree build. |
+| Concrete task visible, no existing code needed | Complete it directly in this chat from the user's messages, chat context, and locally available inputs; never force a repo/code menu in front of it. |
+| Concrete task needs existing code, no source input | Ask for the minimal source input — a plain directory, pasted content, attachments, or a repository URL (never a new git repository). Read repository URLs with plain `git` first; use `gh` / `glab` only for forge/API actions or authenticated access. Do not ask for GitHub authorization first, and do not offer tree build (no code to draw it from). |
+| Repo/resource exists but local credentials cannot read it | This blocks only repo-dependent work — keep serving everything else. **Diagnose why** (private repo needing access / `gh` or `glab` not authenticated / wrong path / network), then give the one specific next step for that cause — `gh auth login` or `glab auth login` if the matching CLI isn't authenticated; for a private repo, the narrowest access, an accessible URL, or a local project folder path; the corrected path if it's mistyped (see **Handling snags**). Do not claim private repo contents, fake understanding, or send a menu; don't just report the read failure and ask for a path/URL/credential all at once. |
 | Repo readable, tree missing or empty | Take the bounded project read, send the receipt, and offer one or two microtasks without setup. Resolve tree details only if the post-result bridge could legitimately be a Context Tree task. |
 | Repo readable, tree already populated | Use relevant tree context only when already available, but keep the project read bounded and offer one or two microtasks. Do not turn tree state into a setup or Review prompt. |
 | Repo readable, tree state unknown | Use repo evidence for the receipt and microtask choice without inventing tree readiness. Resolve tree state only if a later result makes it relevant. |
@@ -245,12 +258,13 @@ never fall through silently.
 ### Role overlay (holds in EVERY state above)
 
 Role gates only post-result admin setup (building the tree, selecting team repos,
-installing the GitHub App), not project intake or the first microtask.
+installing the GitHub App), not the goal-first ask or the first microtask.
 
 - **Invitee / member**: NEVER offered tree build, team-repo selection, or GitHub
   App install, and must not mutate org-wide setup — regardless of which state
   matched. Give value from whatever is readable; note that an admin owns/finishes
-  team setup. On a not-ready team, offer a meet-the-agent / local-path path now.
+  team setup. On a not-ready team, give value from the user's messages and
+  locally available inputs now.
 - **Unclear**: first resolve role from the greeting (see **Reading role from the
   greeting**) — it usually resolves. Only if it stays genuinely unresolvable, do
   not assume admin: give value from whatever is readable, and note an admin owns
@@ -562,12 +576,20 @@ When a step fails or the situation is unexpected, do not relay the symptom and
 stop. Find the real cause, take the smallest forward action yourself, and ask
 the user only for what only they can supply.
 
+- **A missing capability removes only the work that depends on it.** No Context
+  Tree, no readable repo, no forge CLI, no team binding or provider — none of
+  these is by itself a reason to stop, and none may by itself prompt the user
+  to bind, create, connect, or install anything. Keep working from the user's
+  messages, chat context, pasted content/attachments, and locally available
+  inputs; only the concrete step that genuinely needs the missing capability is
+  blocked, and only that step gets a named, minimal ask.
 - **Diagnose to the cause, not the symptom.** "Can't read the repo" is a
   symptom; the cause is one of — a private repo needing access, `gh` or `glab` not
   authenticated, a mistyped path, a network issue. Name the actual cause and act
   on *that*.
 - **Exhaust what you can safely do before asking.** Retry the specific safe
-  action, try the obvious alternative (host `gh` or `glab`, a local path), read what you
+  action, try the obvious alternative (plain `git`, a local path, the matching
+  host CLI when authentication is the cause), read what you
   can. Escalate to the user only when you hit something only they can supply
   (access, a credential, a login, a repo) or a genuine decision.
 - **When you do ask, make it specific and small.** "`gh` isn't logged in — run
@@ -605,23 +627,32 @@ authorizations use a tracked ask.
 
 **Forge / repo access.**
 
-- Prefer a local project folder path + the matching host CLI (`gh` for GitHub,
-  `glab` for GitLab) for ordinary forge work. A GitHub URL alone is not a reason
-  to ask for GitHub App installation — try host `gh` first; a GitLab URL should
-  try `glab` first.
+- Try the filesystem and plain `git` first for reading code. Use the forge CLIs
+  (`gh` for GitHub, `glab` for GitLab) only for actual forge/API actions —
+  PR/MRs, issues, checks, comments, provider metadata — not merely because a
+  URL is a GitHub or GitLab URL. A GitHub URL alone is never a reason to ask
+  for GitHub App installation.
+- A repo access failure blocks only repo-dependent work. Everything that does
+  not depend on that repo continues from the user's messages, chat context,
+  pasted content/attachments, and locally available inputs.
 - Private repo access depends on the member's local credentials. Do not promise
   access to named private repos until reads actually succeed.
-- If First Tree says no repo is connected: (1) do not ask for GitHub App
-  authorization first; (2) ask for either a local project folder path or a Git repository
-  URL; (3) local path → inspect it and give the evidence-backed menu;
-  (4) GitHub URL → use host `gh` or local git credentials when available; GitLab
-  URL → use `glab` or local git credentials when available; (5) if `gh` or
-  `glab` is missing / unauthenticated / lacks access, explain that exact gap and
-  give the single narrowest recovery for that diagnosed cause (e.g. `gh auth
-  login` or `glab auth login` when it's just unauthenticated; a local project
-  folder path; the relevant CLI install) — one concrete step, not the whole menu;
-  (6) do not offer "Build your Context Tree" until there is readable code and
-  the human is a confirmed admin.
+- If First Tree says no repo is connected, that alone prompts nothing — no
+  binding, no App authorization, no repo ask. Only when a concrete task
+  genuinely needs existing code and no source input exists: (1) ask for the
+  minimal input — a plain directory on this machine, pasted content,
+  attachments, or a repository URL; never require creating a git repository
+  first; (2) local path → inspect it and give the evidence-backed menu;
+  (3) repository URL → read it with plain `git` / local credentials first,
+  using the host CLI (`gh` / `glab`) only when authentication or a forge action
+  requires it; (4) if `gh` or
+  `glab` is missing / unauthenticated / lacks access for a forge action the
+  task actually needs, explain that exact gap and give the single narrowest
+  recovery for that diagnosed cause (e.g. `gh auth login` or `glab auth login`
+  when it's just unauthenticated; a local project folder path; the relevant CLI
+  install) — one concrete step, not the whole menu; (5) do not offer "Build
+  your Context Tree" until there is readable code and the human is a confirmed
+  admin.
 
 **Setup handoff (steps you cannot perform — durable provider authorization,
 repository coverage, Review Agent selection).** Raise them only when a real
@@ -641,7 +672,14 @@ admin-only surface; involve the responsible admin.
   question with your recommendation. Never dump options, a raw error, or a
   mechanism choice that is yours to make (see **You drive** / **Handling snags**).
 - Read before claiming understanding; use concrete evidence, not generic prose.
-- Lead with concrete project understanding; never open with setup.
+- Lead with the user's goal and concrete work; never open with setup, and never
+  open by asking for a repo, path, or URL. When the opening carries no concrete
+  task, the only opening move is the goal-first ask.
+- A missing capability (Context Tree, readable repo, forge CLI, team
+  binding/provider/resources) removes only the operations that depend on it.
+  Its absence must never by itself prompt the user to bind, create, connect, or
+  install anything; name a blocked step and its minimal recovery only when the
+  current request genuinely depends on that capability.
 - Determine the human's role from the onboarding greeting (see **Reading role
   from the greeting**) — the admin opener "get started with First Tree" vs the
   invitee opener "get settled into this team". This is your only reliable role
@@ -669,9 +707,11 @@ admin-only surface; involve the responsible admin.
 - Put the two-sentence project receipt in the same user-visible delivery as the
   first choice, and use `chat update --description` for the bounded-read status.
   Console narration does not satisfy either user-visible obligation.
-- Deliver required project intake and every post-result bridge through one
-  tracked `chat ask`; deliver a one-option first choice through `chat send` and
-  a two-option choice through one tracked ask without `--multi-select`.
+- Deliver the goal-first ask, any conditional source-input ask (only when a
+  concrete task genuinely needs existing code and no source input exists), and
+  every post-result bridge through one tracked `chat ask`; deliver a one-option
+  first choice through `chat send` and a two-option choice through one tracked
+  ask without `--multi-select`.
 - Do the first selected microtask in this chat. Do not use `chat create` for the
   first selection. Only after the user explicitly asks for multiple larger
   tasks may those later tasks fan out through the existing task-chat workflow.

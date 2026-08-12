@@ -43,6 +43,7 @@ export function driftNote(
   metrics: EvalMetrics,
   expectedTrigger: boolean,
   readMode: ReadMode = "managed",
+  unboundContinuation = false,
 ): string | null {
   const notes: string[] = [];
   const nonZeroResults = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
@@ -121,8 +122,20 @@ export function driftNote(
     );
   }
 
-  if (!expectedTrigger && metrics.expectedFactHits.length > 0) {
+  if (!expectedTrigger && !unboundContinuation && metrics.expectedFactHits.length > 0) {
     notes.push(`Off-topic case surfaced Context Tree fact(s): ${metrics.expectedFactHits.join(" | ")}.`);
+  }
+
+  if (unboundContinuation) {
+    if (!metrics.expectedFactsObserved) {
+      notes.push("Unbound case did not continue the task from local inputs; expected answer facts were not surfaced.");
+    }
+    if (metrics.treeCliInvocationCount > 0) {
+      notes.push(`Unbound case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
+    }
+    if (metrics.treeSetupWordingObserved) {
+      notes.push("Unbound case response pushed Tree setup/binding wording.");
+    }
   }
 
   return notes.length > 0 ? notes.join(" ") : null;
@@ -134,10 +147,15 @@ export function buildGrading(
   expectedTrigger: boolean,
   passed: boolean,
   readMode: ReadMode = "managed",
+  unboundContinuation = false,
 ): SkillCaseGrading {
   const unexpectedReadUse =
     metrics.skillHit || metrics.firstTreeCalls > 0 || metrics.firstTreeCommandResults.length > 0;
-  const routingPass = expectedTrigger ? metrics.skillFileReadObserved : !unexpectedReadUse;
+  const routingPass = unboundContinuation
+    ? metrics.treeCliInvocationCount === 0
+    : expectedTrigger
+      ? metrics.skillFileReadObserved
+      : !unexpectedReadUse;
   const byoProcessPassed =
     readMode === "managed" ||
     (metrics.readRouteSucceeded &&
@@ -147,22 +165,30 @@ export function buildGrading(
       metrics.byoSnapshotDetached &&
       metrics.byoSnapshotExactHeadConsistent);
   const managedTransportPassed = readMode === "byo" || metrics.managedFinalTransportOk;
-  const processPass = expectedTrigger
+  const processPass = unboundContinuation
     ? metrics.fixtureValidationOk &&
       metrics.runnerExitCode === 0 &&
-      metrics.helpSucceeded &&
-      metrics.selectionSucceeded &&
+      metrics.treeCliInvocationCount === 0 &&
       metrics.modelFirstTreeCommandsOk &&
-      managedTransportPassed &&
-      byoProcessPassed
-    : metrics.fixtureValidationOk &&
-      metrics.runnerExitCode === 0 &&
-      metrics.firstTreeCalls === 0 &&
-      metrics.firstTreeCommandResults.length === 0 &&
-      metrics.modelFirstTreeCommandsOk;
-  const outcomePass = expectedTrigger
-    ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
-    : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
+      managedTransportPassed
+    : expectedTrigger
+      ? metrics.fixtureValidationOk &&
+        metrics.runnerExitCode === 0 &&
+        metrics.helpSucceeded &&
+        metrics.selectionSucceeded &&
+        metrics.modelFirstTreeCommandsOk &&
+        managedTransportPassed &&
+        byoProcessPassed
+      : metrics.fixtureValidationOk &&
+        metrics.runnerExitCode === 0 &&
+        metrics.firstTreeCalls === 0 &&
+        metrics.firstTreeCommandResults.length === 0 &&
+        metrics.modelFirstTreeCommandsOk;
+  const outcomePass = unboundContinuation
+    ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
+    : expectedTrigger
+      ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
+      : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
   const riskPass = metrics.modelFirstTreeCommandsOk && metrics.impactNoteMetadataFree;
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 

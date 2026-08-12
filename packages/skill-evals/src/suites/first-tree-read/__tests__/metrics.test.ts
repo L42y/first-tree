@@ -1065,3 +1065,68 @@ ${source}`),
     expect(withNote.impactNoteBehaviorOk).toBe(false);
   });
 });
+
+describe("first-tree-read unbound continuation", () => {
+  const UNBOUND_FACTS = ["Inbox delivery is deduplicated at the client boundary."] as const;
+
+  function unboundMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, UNBOUND_FACTS, { mode: "absent" }, "send");
+  }
+
+  it("passes when the task continues from local inputs with zero Tree CLI invocations", () => {
+    const result = unboundMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary; the server only fans messages out."),
+    ]);
+
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.managedFinalTransportOk).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(true);
+  });
+
+  it("fails when the model invokes a Tree CLI command", () => {
+    const result = unboundMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("fails when the response pushes Tree setup or binding", () => {
+    const result = unboundMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary. You can bind a Context Tree later."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("Tree setup/binding wording");
+  });
+
+  it("fails when the task does not continue from local inputs", () => {
+    const result = unboundMetrics([...managedMessage("I cannot answer without the team context.")]);
+
+    expect(result.expectedFactsObserved).toBe(false);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("does not treat the plain missing-binding statement as setup wording", () => {
+    const result = unboundMetrics([
+      ...managedMessage("No Tree is bound in this workspace. Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(casePassed(false, result, "managed", true)).toBe(true);
+  });
+
+  it("keeps the unbound branch off when the flag is not set", () => {
+    const result = unboundMetrics([...managedMessage("Inbox delivery is deduplicated at the client boundary.")]);
+
+    expect(casePassed(false, result, "managed")).toBe(false);
+  });
+});

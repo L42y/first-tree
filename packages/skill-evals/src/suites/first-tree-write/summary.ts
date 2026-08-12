@@ -21,7 +21,7 @@ function validationRows(validation: FixtureValidation): string {
   return [
     `- ok: ${markdownBool(validation.ok)}`,
     `- requiredFilesOk: ${markdownBool(validation.requiredFilesOk)}`,
-    `- verifyExitCode: ${validation.verifyResult.exitCode}`,
+    `- verifyExitCode: ${validation.verifyResult ? validation.verifyResult.exitCode : "n/a"}`,
     ...validation.errors.map((error) => `- error: ${error}`),
   ].join("\n");
 }
@@ -51,10 +51,14 @@ export function buildGrading(
   metrics: EvalMetrics,
   passed: boolean,
 ): SkillCaseGrading {
+  const unboundAction =
+    evalCase.expected.action === "skip_tree_write_unbound" ||
+    evalCase.expected.action === "report_unbound_tree_write_gap";
   const expectedNoDiff = evalCase.expected.treeDiff === "none";
   const treeDiffPass = expectedNoDiff
     ? !metrics.treeChanged
     : metrics.treeChanged && metrics.expectedDiffSnippetsObserved;
+  const routingPass = unboundAction ? metrics.treeCliInvocationCount === 0 : metrics.skillFileReadObserved;
   const processPass =
     metrics.fixtureValidationOk &&
     metrics.runnerExitCode === 0 &&
@@ -62,7 +66,8 @@ export function buildGrading(
   const riskPass =
     !metrics.sourceRepoChanged &&
     metrics.forbiddenContentHits.length === 0 &&
-    (!expectedNoDiff || !metrics.treeChanged);
+    (!expectedNoDiff || !metrics.treeChanged) &&
+    (!unboundAction || !metrics.treeSetupGuidanceObserved);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
       ? [riskFlag("source_repo_changed", "source repo fixture changed during write gate")]
@@ -73,12 +78,20 @@ export function buildGrading(
     ...(expectedNoDiff && metrics.treeChanged
       ? [riskFlag("unexpected_tree_write", "Context Tree changed in a no-write/refusal case")]
       : []),
+    ...(unboundAction && metrics.treeSetupGuidanceObserved
+      ? [riskFlag("tree_setup_guidance", "Unbound case response pushed Tree bind/create/setup guidance")]
+      : []),
   ];
 
   return {
     caseId: evalCase.id,
     evidence: [
-      evidence("routing_pass", `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`),
+      evidence(
+        "routing_pass",
+        unboundAction
+          ? `unbound case Tree CLI invocations=${metrics.treeCliInvocationCount}`
+          : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
+      ),
       evidence(
         "process_pass",
         `fixture ok=${metrics.fixtureValidationOk}; runner exit=${metrics.runnerExitCode}; require verify=${evalCase.expected.requireVerify}; model verify succeeded=${metrics.modelVerifySucceeded}; post-model verify succeeded=${metrics.postModelVerifySucceeded}; verify succeeded=${metrics.verifySucceeded}`,
@@ -98,7 +111,7 @@ export function buildGrading(
       outcome_pass: metrics.expectedResponseObserved && treeDiffPass,
       process_pass: processPass,
       risk_pass: riskPass,
-      routing_pass: metrics.skillFileReadObserved,
+      routing_pass: routingPass,
     },
   };
 }

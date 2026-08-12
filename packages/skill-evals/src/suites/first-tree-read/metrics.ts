@@ -60,6 +60,14 @@ const FACT_MATCHERS: readonly FactMatcher[] = [
     all: [/(billing changes?|计费变更)/iu, /(core release|核心版本|核心发布)/iu, /(stable monitoring|稳定监控)/iu],
     fact: "Billing changes must roll out after the core release reaches stable monitoring.",
   },
+  {
+    all: [/inbox|delivery/iu, /deduplicat/iu, /client[- ](boundary|side)/iu],
+    fact: "Inbox delivery is deduplicated at the client boundary.",
+  },
+  {
+    all: [/refresh tokens?/iu, /rotat/iu, /replay/iu],
+    fact: "Refresh tokens rotate on every use to limit replay.",
+  },
 ];
 
 /**
@@ -285,6 +293,11 @@ function isLegacyReadActivationArgv(argv: readonly string[]): boolean {
 function isTreeTreeArgv(argv: readonly string[]): boolean {
   const command = commandArgv(argv);
   return command[0] === "tree" && command[1] === "tree";
+}
+
+function isTreeOperationArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "tree" || command[0] === "context";
 }
 
 function isTreeSelectorArgv(argv: readonly string[]): boolean {
@@ -641,6 +654,14 @@ export function deriveMetrics(
     selectedExactCommit,
     visibleOutputKinds,
   });
+  const treeSetupWordingObserved = visibleOutputTexts.some((text) =>
+    /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}(?<!first-)\btree\b|(?<!first-)\btree\b[^.!?\n]{0,80}\b(?:binding|creation|setup)\b/iu.test(
+      text,
+    ),
+  );
+  const treeCliInvocationCount =
+    firstTreeArgv.filter(isTreeOperationArgv).length +
+    firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
 
   return {
     expectedFactHits: factHits,
@@ -671,12 +692,30 @@ export function deriveMetrics(
     selectionSucceeded,
     skillFileReadObserved,
     skillHit: skillFileReadObserved || firstTreeCalls > 0 || firstTreeCommandResults.length > 0,
+    treeCliInvocationCount,
+    treeSetupWordingObserved,
   };
 }
 
-export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readMode: ReadMode = "managed"): boolean {
+export function casePassed(
+  expectedTrigger: boolean,
+  metrics: EvalMetrics,
+  readMode: ReadMode = "managed",
+  unboundContinuation = false,
+): boolean {
   if (!metrics.fixtureValidationOk) return false;
   if (metrics.runnerExitCode !== 0) return false;
+
+  if (!expectedTrigger && unboundContinuation) {
+    return (
+      metrics.expectedFactsObserved &&
+      metrics.impactNoteBehaviorOk &&
+      metrics.managedFinalTransportOk &&
+      metrics.treeCliInvocationCount === 0 &&
+      metrics.modelFirstTreeCommandsOk &&
+      !metrics.treeSetupWordingObserved
+    );
+  }
 
   if (expectedTrigger) {
     const readModePassed =

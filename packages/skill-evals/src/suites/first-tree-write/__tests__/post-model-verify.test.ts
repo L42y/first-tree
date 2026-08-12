@@ -34,6 +34,7 @@ function setupVerifyFixture(caseId: string): {
   const reporter = createEvalReporter(caseId, false);
   createFirstTreeShim(paths);
   const contextTreePath = setupFixture(durableWriteCase(), paths, reporter);
+  if (contextTreePath === null) throw new Error("durable-source-writes fixture must create a Context Tree");
   return { contextTreePath, paths };
 }
 

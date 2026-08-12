@@ -172,15 +172,19 @@ never performs a real provider or First Tree external write.
 - no source artifact means no Context Tree diff;
 - durable source material can produce a minimal tree diff and must run
   `first-tree tree verify`;
-- implementation-only source material means no Context Tree diff.
+- implementation-only source material means no Context Tree diff;
+- an unbound workspace (no bound Context Tree, no workspace manifest) silently
+  skips the Tree write on an ordinary source task, and an explicit Tree write
+  request reports only the missing binding without bind/create guidance.
 
 `eval:gate -- --suite first-tree-welcome` runs the live tested-agent gate for
 the currently implemented `first-tree-welcome` gate rows:
 
 - tree kickoff chat routes to the tree setup lane instead of welcome first-task
   options;
-- no repo connected / intro chat asks for a local project folder path or Git repository URL
-  without requiring GitHub authorization first;
+- no repo connected / intro chat says it is ready to work and makes exactly one
+  goal-first tracked ask — no repo, path, URL, binding, auth, or install wording
+  and no task options;
 - readable repo + populated Context Tree uses existing working status, keeps the
   source read bounded, gives a two-sentence project receipt, and offers one or
   two single-select microtasks with at least one reviewable read-only option and
@@ -191,10 +195,12 @@ the currently implemented `first-tree-welcome` gate rows:
 
 `eval:periodic -- --suite first-tree-welcome` runs the broader live welcome
 matrix. It covers every concrete setup-state row from the current
-`first-tree-welcome` matrix, including invitee not-ready/ready states, selected
-repo authorization failure, local-readable repo with missing GitHub App,
-installed app with no readable project, readable repo with empty tree, readable
-repo with unknown tree, and qualified admin/invitee post-result bridges. The
+`first-tree-welcome` matrix, including invitee not-ready/ready states, a concrete
+repo-free first task completed directly in the chat, selected repo authorization
+failure (narrow recovery without claiming a repo read or declaring onboarding
+blocked), local-readable repo with missing GitHub App, installed app with no
+readable project, readable repo with empty tree, readable repo with unknown
+tree, and qualified admin/invitee post-result bridges. The
 welcome chat never auto-registers a Team repo; the Context Tree bridge is valid
 only for a confirmed admin after a result exposes a lasting cross-module
 decision and the tree is confirmed missing/empty. The selected first task must

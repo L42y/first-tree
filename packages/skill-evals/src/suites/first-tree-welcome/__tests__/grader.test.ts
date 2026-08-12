@@ -219,24 +219,24 @@ describe("first-tree-welcome grader", () => {
     ).toBe(false);
   });
 
-  it("passes row 3 when the model asks for a local project folder path or GitHub repo URL without evidence claims", () => {
+  it("passes row 3 when the model makes one clean goal-first ask without evidence claims", () => {
     expect(
       casePassed(
         findCase("first-tree-welcome-no-repo-intro"),
         baseMetrics({
           chatAskCount: 1,
-          finalResponse:
-            "Please send one local project folder path or GitHub repo URL so I can inspect the repo first.",
+          finalResponse: "I'm ready to work. What's the first outcome you'd like from me?",
         }),
       ),
     ).toBe(true);
   });
 
   it.each([
-    "Please send one local project folder path so I can inspect it first.",
-    "Please send one Git repository URL so I can inspect it first.",
-  ])("requires both no-repo entry choices instead of accepting one alone: %s", (response) => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-both-entry-choices-"));
+    "I'm ready to work. What's the first outcome you'd like from me? Send a local project folder path or GitHub repo URL to start.",
+    "I'm ready to work. What's the first outcome you'd like from me? If it involves code, paste a repository URL.",
+    "I'm ready to work. What's the first outcome you'd like from me? First, shall we bind a Context Tree?",
+  ])("rejects a goal-first ask that still asks for repo, path, URL, or tree setup: %s", (response) => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-goal-ask-plumbing-"));
     try {
       const evalCase = findCase("first-tree-welcome-no-repo-intro");
       const metrics = deriveMetrics(
@@ -255,16 +255,18 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
-  it("requires the no-repo ask to prefer a local project path before a remote URL", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-local-first-"));
+  it("passes row 3 when the goal-first ask is delivered as one tracked chat ask", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-goal-ask-"));
     try {
       const evalCase = findCase("first-tree-welcome-no-repo-intro");
       const metrics = deriveMetrics(
         [
           skillReadEvent(),
-          assistantMessageEvent(
-            "Send a Git repository URL, or provide a local project folder path if you happen to have one.",
-          ),
+          {
+            argv: ["chat", "ask", "baixiaohang", "I'm ready to work. What's the first outcome you'd like from me?"],
+            phase: "model",
+            type: "first_tree_call",
+          },
         ],
         evalCase,
         fixtureValidation(),
@@ -273,8 +275,12 @@ describe("first-tree-welcome grader", () => {
         null,
       );
 
-      expect(metrics.expectedResponseObserved).toBe(false);
-      expect(casePassed(evalCase, metrics)).toBe(false);
+      expect(metrics.chatAskCount).toBe(1);
+      expect(metrics.chatSendCount).toBe(0);
+      expect(metrics.taskOptionsObserved).toBe(false);
+      expect(metrics.expectedResponseObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
@@ -295,7 +301,7 @@ describe("first-tree-welcome grader", () => {
     ).toBe(false);
   });
 
-  it("does not treat repo-entry input options as first-task options", () => {
+  it("rejects repo-entry input options in the goal-first ask without misreading them as task options", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-row3-entry-options-"));
     try {
       const evalCase = findCase("first-tree-welcome-no-repo-intro");
@@ -329,7 +335,8 @@ describe("first-tree-welcome grader", () => {
       expect(metrics.taskOptionsObserved).toBe(false);
       expect(metrics.forbiddenActionHits).not.toContain("setup-as-first-task");
       expect(metrics.forbiddenSideEffectHits).toEqual([]);
-      expect(casePassed(evalCase, metrics)).toBe(true);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
@@ -487,16 +494,18 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
-  it("passes invitee-not-ready when admin setup is only a readiness guardrail", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-invitee-guardrail-"));
+  it("passes invitee-not-ready when the model makes one clean goal-first ask", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-invitee-goal-ask-"));
     try {
       const evalCase = findCase("first-tree-welcome-invitee-not-ready-periodic");
       const metrics = deriveMetrics(
         [
           skillReadEvent(),
-          assistantMessageEvent(
-            "An admin finishes team setup; for now send a local project folder path and I can help from that without selecting a repo.",
-          ),
+          {
+            argv: ["chat", "ask", "baixiaohang", "I'm ready to work. What's the first outcome you'd like from me?"],
+            phase: "model",
+            type: "first_tree_call",
+          },
         ],
         evalCase,
         fixtureValidation(),
@@ -506,6 +515,7 @@ describe("first-tree-welcome grader", () => {
       );
 
       expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(metrics.expectedResponseObserved).toBe(true);
       expect(casePassed(evalCase, metrics)).toBe(true);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
@@ -640,6 +650,89 @@ describe("first-tree-welcome grader", () => {
       expect(metrics.forbiddenActionHits).toEqual(
         expect.arrayContaining(["claim-private-repo-read", "invent-repo-evidence"]),
       );
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails auth-failure row when the model declares the whole onboarding unusable", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-auth-failure-blocked-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-repo-auth-fails-periodic");
+      const metrics = deriveMetrics(
+        [skillReadEvent(), assistantMessageEvent("I can't proceed with onboarding until you fix repository access.")],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenActionHits).toContain("declare-onboarding-blocked");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("passes the concrete-task row when the model completes the repo-free task directly", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-direct-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "Checkout recovery now retries expired sessions automatically. Support agents see a clear re-auth prompt instead of a dead end.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(0);
+      expect(metrics.chatSendCount).toBe(1);
+      expect(metrics.taskOptionsObserved).toBe(false);
+      expect(metrics.expectedResponseObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the concrete-task row when the model asks instead of completing the task", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-ask-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "ask", "baixiaohang", "What's the first outcome you'd like from me?"],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(1);
       expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
@@ -2474,7 +2567,8 @@ Type a different task if you prefer.`;
     [
       "first-tree-welcome-invitee-not-ready-periodic",
       {
-        finalResponse: "The admin needs to finish team readiness. You can send a local path to get value now.",
+        chatAskCount: 1,
+        finalResponse: "I'm ready to work. What's the first outcome you'd like from me?",
       },
     ],
     [
@@ -2521,7 +2615,15 @@ Type a different task if you prefer.`;
       "first-tree-welcome-app-installed-no-repo-selected-periodic",
       {
         chatAskCount: 1,
-        finalResponse: "Send a local project folder path first, or a Git repository URL if it is remote.",
+        finalResponse: "I'm ready to work. What's the first outcome you'd like from me?",
+      },
+    ],
+    [
+      "first-tree-welcome-concrete-task-no-repo-periodic",
+      {
+        chatSendCount: 1,
+        finalResponse:
+          "Checkout recovery now retries expired sessions automatically. Support agents see a clear re-auth prompt when a session lapses.",
       },
     ],
     [
@@ -2626,6 +2728,78 @@ Type a different task if you prefer.`;
         }),
       ),
     ).toBe(false);
+  });
+
+  it("passes the missing-App row when the model reads the local repo with plain git and no forge CLI", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-plain-git-read-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-admin-missing-github-app-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          commandExecutionEvent("git -C source-repo log --oneline -3"),
+          repoEvidenceReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "Reading a bounded project slice."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "I read the Acme Support Dashboard README and its expired session TODO. The checkout entry is the clearest starting point. Choose one, or type a different microtask.",
+              "--options",
+              JSON.stringify([
+                {
+                  description: "Read-only: trace the expired session flow and return a 5–8 step call chain.",
+                  label: "Trace session",
+                },
+                {
+                  description: "Read-only: return a concrete test-gap judgment with file evidence.",
+                  label: "Assess recovery tests",
+                },
+              ]),
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.repoEvidenceReadObserved).toBe(true);
+      expect(metrics.forbiddenSideEffectHits).toEqual([]);
+      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("flags a glab forge command as a forbidden side effect just like gh", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-glab-side-effect-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-readable-repo-populated-tree");
+      const metrics = deriveMetrics(
+        [skillReadEvent(), repoEvidenceReadEvent(), commandExecutionEvent("glab mr create --title test")],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.forbiddenSideEffectHits).toContain("glab mr create --title test");
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it("marks source and context tree changed when absent fixture paths are created", () => {

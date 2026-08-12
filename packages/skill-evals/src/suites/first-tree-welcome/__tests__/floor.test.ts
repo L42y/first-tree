@@ -30,7 +30,7 @@ describe("first-tree-welcome floor invariants", () => {
   it("implements periodic coverage for every concrete non-catch-all matrix row", () => {
     const periodicCases = cases.filter((evalCase) => evalCase.tier === "periodic");
 
-    expect(periodicCases).toHaveLength(13);
+    expect(periodicCases).toHaveLength(14);
     expect(periodicCases.every((evalCase) => evalCase.status === "implemented")).toBe(true);
     expect(periodicCases.some((evalCase) => hasTag(evalCase, "catch-all"))).toBe(false);
   });
@@ -108,9 +108,11 @@ describe("first-tree-welcome floor invariants", () => {
 
     expect(description).not.toContain("local project folder path");
     expect(skillMarkdown).toContain("Treat the opening message as the user's onboarding request.");
-    expect(skillMarkdown).toContain("local project folder path");
-    expect(skillMarkdown).toContain("Git repository URL");
-    expect(skillMarkdown).toContain('`first-tree chat ask <human> "<local-path-first request>"`');
+    expect(skillMarkdown).toContain('`first-tree chat ask <human> "<goal-first ask>"`');
+    expect(skillMarkdown).toContain("What's the first outcome you'd like from me?");
+    expect(skillMarkdown).toContain("open by asking for a repo, path, or URL");
+    expect(skillMarkdown).toContain("the only opening move is the goal-first ask");
+    expect(skillMarkdown).toContain("accept a plain directory on");
     expect(skillMarkdown).toContain("`gh auth login` or `glab auth login`");
     expect(skillMarkdown).not.toContain("First Tree sent it");
   });
@@ -152,6 +154,15 @@ describe("first-tree-welcome floor invariants", () => {
     expect(exampleReceipt).toHaveLength(2);
     expect(skillMarkdown).not.toContain("### L2 — Longer value work");
     expect(skillMarkdown).not.toContain("first choices as a multi-select ask");
+  });
+
+  it("keeps forge access split between plain git reads and narrowly blocked forge operations", () => {
+    expect(skillMarkdown).toContain("Try the filesystem and plain `git` first for reading code");
+    expect(skillMarkdown).toContain("only for actual forge/API actions");
+    expect(skillMarkdown).toMatch(/A GitHub URL alone is never a reason to ask\s+for GitHub App installation/u);
+    expect(skillMarkdown).toContain("A repo access failure blocks only repo-dependent work");
+    expect(skillMarkdown).toMatch(/explain that exact gap and give the single narrowest\s+recovery/u);
+    expect(skillMarkdown).toContain("If First Tree says no repo is connected, that alone prompts nothing");
   });
 
   it("keeps later fan-out separate from the first microtask", () => {

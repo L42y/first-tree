@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FIRST_TREE_READ_CASES } from "../cases.js";
+import { FIRST_TREE_READ_CASES, FIRST_TREE_READ_PERIODIC_CASES } from "../cases.js";
 import { FIRST_TREE_READ_SUITE } from "../eval-cases.js";
 
 const validateFloor = FIRST_TREE_READ_SUITE.validateFloor;
@@ -177,7 +177,37 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.8.1");
+    expect(skillVersion).toBe("0.8.2");
     expect(skill).toContain(`version: ${skillVersion}`);
+  });
+
+  it("states the unbound or broken Tree binding degradation gate", () => {
+    expect(skill).toContain("## Unbound or broken Tree binding");
+    expect(skill).toContain("A missing Context Tree removes only the operations that depend on it.");
+    expect(skill).toContain("never prompts the user to bind, create, or\nconnect a Tree merely because one is absent");
+    expect(skill).toMatch(/when the trusted managed briefing explicitly states\s+there is no bound Tree/u);
+    expect(skill).toContain("Run no Tree commands and offer no Tree\n  setup guidance");
+    expect(skill).toMatch(/state only\s+that this Tree read cannot be completed because no Tree is bound/u);
+    expect(skill).toContain("do not\n  expand the absence into bind/create guidance");
+    expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
+    expect(skill).toContain("the broken binding blocks only Tree reads, not unrelated work");
+  });
+
+  it("declares managed-unbound continuation periodic cases", () => {
+    const unbound = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unboundContinuation === true);
+
+    expect(unbound.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unbound-software-continues-periodic",
+      "first-tree-read-unbound-pasted-content-continues-periodic",
+    ]);
+    expect(
+      unbound.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unbound-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
   });
 });

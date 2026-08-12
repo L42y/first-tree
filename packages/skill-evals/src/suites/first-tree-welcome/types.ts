@@ -11,8 +11,8 @@ export type WelcomeTreeSetupChatState = "absent" | "exists" | "promised";
 
 export type WelcomeExpectedAction =
   | "route_to_tree_skill"
-  | "invitee_waits_for_team_readiness"
-  | "ask_for_repo_path_or_url"
+  | "ask_for_first_goal"
+  | "complete_task_directly"
   | "report_auth_failure_without_claiming_repo_read"
   | "offer_single_select_microtasks"
   | "complete_first_task_in_current_chat"

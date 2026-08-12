@@ -43,11 +43,16 @@ function processPass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
   if (evalCase.expected.action === "route_to_tree_skill") {
     return metrics.chatAskCount === 0;
   }
-  if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
-    return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
+  if (evalCase.expected.action === "ask_for_first_goal") {
+    return (
+      metrics.chatAskCount === 1 &&
+      metrics.chatSendCount === 0 &&
+      !metrics.repoEvidenceReadObserved &&
+      !metrics.treeEvidenceReadObserved
+    );
   }
-  if (evalCase.expected.action === "ask_for_repo_path_or_url") {
-    return metrics.chatAskCount === 1 && !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
+  if (evalCase.expected.action === "complete_task_directly") {
+    return metrics.chatAskCount === 0 && metrics.chatSendCount >= 1;
   }
   if (evalCase.expected.action === "report_auth_failure_without_claiming_repo_read") {
     return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved;
@@ -69,10 +74,10 @@ function outcomePass(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetrics): 
   if (evalCase.expected.action === "route_to_tree_skill") {
     return !metrics.taskOptionsObserved;
   }
-  if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
+  if (evalCase.expected.action === "ask_for_first_goal") {
     return !metrics.taskOptionsObserved;
   }
-  if (evalCase.expected.action === "ask_for_repo_path_or_url") {
+  if (evalCase.expected.action === "complete_task_directly") {
     return !metrics.taskOptionsObserved;
   }
   if (evalCase.expected.action === "report_auth_failure_without_claiming_repo_read") {

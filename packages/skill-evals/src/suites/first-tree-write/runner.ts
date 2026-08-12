@@ -42,17 +42,18 @@ export async function runFirstTreeWriteCase(
     { paths, reporter },
   );
   const runnerExitCode = runnerResult.exitCode;
-  const postModelVerifyResult = evalCase.expected.requireVerify
-    ? runFixtureVerify({
-        caseId: evalCase.id,
-        contextTreePath,
-        eventTypePrefix: "post_model_validation",
-        paths,
-        phase: "post_model_validation",
-        reporter,
-        verbose: options.verbose,
-      })
-    : null;
+  const postModelVerifyResult =
+    evalCase.expected.requireVerify && contextTreePath !== null
+      ? runFixtureVerify({
+          caseId: evalCase.id,
+          contextTreePath,
+          eventTypePrefix: "post_model_validation",
+          paths,
+          phase: "post_model_validation",
+          reporter,
+          verbose: options.verbose,
+        })
+      : null;
 
   const events = readEvents(paths.eventsPath);
   const metrics = deriveMetrics(

@@ -375,13 +375,21 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(briefing).not.toContain(`${AGENT_HOME}/.agents/skills/first-tree-context/SKILL.md`);
   });
 
-  it("emits the policy baseline and tree-less binding guidance", () => {
+  it("emits the policy baseline and tree-less degradation guidance", () => {
     const briefing = buildAgentBriefing(makeOpts({ contextTreePath: null }));
     expect(briefing).not.toContain("# Required Reading");
     const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
     expect(tree).toContain("## Context Tree Policy");
-    expect(tree).toContain("This briefing was generated without a bound tree");
-    expect(tree).toContain("before any tree read/write, re-check the workspace binding");
+    expect(tree).toContain("This briefing was generated without a bound tree — a supported state, not a gap to fix");
+    expect(tree).toContain("no prompt to bind or create a tree");
+    expect(tree).toContain(
+      "Re-check the workspace binding only if the user says a tree was created or bound this session",
+    );
+    expect(tree).toMatch(/ordinary tasks\s+do not route into `first-tree-read`/);
+    expect(tree).toMatch(/ordinary work\s+never routes into a Tree write/);
+    expect(tree).not.toContain("surface that gap");
+    expect(tree).not.toContain("surface the missing binding/setup gap");
+    expect(tree).not.toContain("before any tree read/write, re-check the workspace binding");
   });
 
   it("lists every installed First Tree skill in the family map", () => {
@@ -405,8 +413,11 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(treelessFamily).toContain("first-tree-file-bug");
     expect(treelessFamily).not.toContain("first-tree-gitlab");
     expect(treelessFamily).toContain("first-tree-qa");
-    expect(treelessFamily).toMatch(/\|\s*`first-tree-read`\s*\| read relevant Context Tree files before acting/);
+    expect(treelessFamily).toMatch(
+      /\|\s*`first-tree-read`\s*\| read relevant Context Tree files only for an explicit Tree read request/,
+    );
     expect(treelessFamily).toMatch(/\|\s*`first-tree-write`\s*\| reflect a concrete source artifact/);
+    expect(treelessFamily).toMatch(/ordinary code, repo,\s+and error signals never route into them/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-review`\s*\| a trusted provider-scoped Context Reviewer run/);
     expect(treelessFamily).toMatch(/\|\s*`context-tree-audit`\s*\| a human explicitly asks to audit/);
     expect(treelessFamily).toMatch(/without a binding, the audit fails closed/);
@@ -436,7 +447,13 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
   });
 
   it("interpolates the working directory and worktree paths", () => {
-    const briefing = buildAgentBriefing(makeOpts());
+    const briefing = buildAgentBriefing(
+      makeOpts({
+        sourceRepos: [
+          { absolutePath: `${AGENT_HOME}/source-repos/example`, url: "https://github.com/example/example" },
+        ],
+      }),
+    );
     expect(briefing).toContain(`Your fixed working directory is \`${AGENT_HOME}\`.`);
     expect(briefing).toContain("persistent state");
     expect(briefing).toContain("## Worktrees");
@@ -493,10 +510,40 @@ describe("buildAgentBriefing — Working in First Tree hard rules", () => {
     expect(briefing).not.toContain("rm -rf <legacy>");
   });
 
-  it("omits the Source Repositories block when no repos are declared", () => {
+  it("omits the Source Repositories and Worktrees blocks when no repos are declared", () => {
     const briefing = buildAgentBriefing(makeOpts({ sourceRepos: [] }));
     expect(briefing).not.toContain("## Source Repositories");
-    expect(briefing).toContain("## Worktrees");
+    expect(briefing).not.toContain("## Worktrees");
+    expect(briefing).not.toContain("git clone --bare");
+    expect(briefing).not.toContain("No worktrees are pre-created");
+  });
+
+  it("stays coherent with no source repos, no Context Tree, and no prompt content", () => {
+    const briefing = buildAgentBriefing(makeOpts({ payload: null, sourceRepos: [], contextTreePath: null }));
+
+    // Capability-dependent scaffolding is omitted entirely, not degraded to a
+    // setup prompt.
+    expect(briefing).not.toContain("## Source Repositories");
+    expect(briefing).not.toContain("## Worktrees");
+    expect(briefing).not.toContain("git clone --bare");
+    expect(briefing).not.toContain("declared for this agent");
+
+    // No proactive bind/create/install pushes: the missing tree is a supported
+    // state, and guidance appears only for capability-dependent requests.
+    expect(briefing).not.toContain("surface that gap");
+    expect(briefing).not.toContain("surface the missing binding/setup gap");
+    expect(briefing).not.toMatch(/ask (?:the user|a human) to (?:bind|create|install)/i);
+    const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
+    expect(tree).toContain("a supported state, not a gap to fix");
+    expect(tree).toMatch(/[Oo]nly when the user explicitly asks/);
+
+    // Still a coherent briefing.
+    expect(briefing).toContain("# Identity\n\nYou are Test Agent, an autonomous agent.");
+    expect(briefing).toContain("# Working in First Tree (First Tree Managed)");
+    expect(briefing).toContain("# Context Tree (First Tree Managed)");
+    expect(briefing).toContain("## Context Tree Policy");
+    expect(briefing).toContain("# Skills (First Tree Managed)");
+    expect(briefing.endsWith("\n")).toBe(true);
   });
 
   it("keeps the Communication matrix markers and rich-body safety rules", () => {
@@ -626,6 +673,11 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
 
     expect(briefing).toContain("try the host `gh` CLI first");
     expect(briefing).toContain("not by itself a reason to ask for First Tree GitHub App");
+    // Code/git reads degrade to the filesystem; only forge operations need `gh`.
+    expect(briefing).toContain("prefers the filesystem and plain `git`");
+    expect(briefing).toContain("a GitHub URL alone does not require the `gh` CLI");
+    expect(briefing).toContain("continue every step that does not depend on it");
+    expect(briefing).toContain("report only the blocked forge step");
     expect(briefing).not.toContain("final provider `PATH`");
     expect(briefing).toContain("gh auth status");
     expect(briefing).toContain("gh auth login");
@@ -677,6 +729,9 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     const gitlab = briefing.slice(briefing.indexOf("## GitLab Working Posture"), briefing.indexOf("## Asking Humans"));
 
     expect(gitlab).toContain("try the host `glab` CLI first");
+    expect(gitlab).toContain("a GitLab URL alone does not require the `glab` CLI");
+    expect(gitlab).toContain("continue every step that does not depend on it");
+    expect(gitlab).toContain("report only the blocked forge step");
     expect(gitlab).toContain("merge requests, issues, pipelines/jobs, repository metadata, comments");
     expect(gitlab).toContain("ordinary merge request / issue creation");
     expect(gitlab).toContain("GitLab.com");
@@ -891,7 +946,7 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).toContain(treePath);
   });
 
-  it("surfaces tree-less binding as a human/operator gap", () => {
+  it("treats a missing tree binding as a supported state with a scoped Seed exception", () => {
     const briefing = buildAgentBriefing(makeOpts({ contextTreePath: null }));
     const cli = briefing.slice(
       briefing.indexOf("## CLI Overview"),
@@ -903,14 +958,20 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(cli).toContain("only if the command actually fails");
     expect(cli).not.toContain("confirmed org admin");
     expect(tree).toContain("At briefing generation time this agent had no Context Tree bound");
-    expect(tree).toContain("Re-check the\nbinding if the user says a tree was created or bound during the session");
-    expect(tree).toMatch(/surface that\s+gap to a human/);
+    expect(tree).toContain("a supported\nstate, not a gap to fix");
+    expect(tree).toMatch(/Ordinary tasks continue without any prompt to bind or\s+create one/);
+    expect(tree).toContain(
+      "Re-check the binding only if the user says a tree was created or\nbound during this session",
+    );
+    expect(tree).toMatch(/[Oo]nly when the current request explicitly needs a\s+Tree read\/write\/audit result/);
     expect(tree).toContain("operator action");
     expect(tree).toContain("build / set up the Context Tree");
-    expect(tree).toContain("without pre-confirming admin");
-    expect(tree).toContain('asking "who runs the\nbind?"');
-    expect(tree).toContain("validates admin/auth and fails closed");
-    expect(tree).toContain("only after an actual command failure");
+    expect(tree).toMatch(/without\s+pre-confirming admin/);
+    expect(tree).toContain('asking "who runs the bind?"');
+    expect(tree).toMatch(/validates\s+admin\/auth and fails closed/);
+    expect(tree).toMatch(/only after an actual\s+command failure/);
+    expect(tree).not.toContain("surface that gap");
+    expect(tree).not.toContain("surface the missing binding/setup gap");
     expect(tree).not.toContain("confirmed org admin");
     expect(tree).not.toContain("first-tree-onboarding");
   });

@@ -142,6 +142,16 @@ function argvIsVerify(argv: readonly string[]): boolean {
   return argv[0] === "tree" && argv[1] === "verify";
 }
 
+function argvIsTreeCommand(argv: readonly string[]): boolean {
+  return argv[0] === "tree" || argv[0] === "context";
+}
+
+function containsTreeSetupGuidance(text: string): boolean {
+  return /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}\b(?:context\s+)?tree\b|\b(?:context\s+)?tree\b[^.!?\n]{0,60}\b(?:binding|creation|setup)\b/iu.test(
+    text,
+  );
+}
+
 function collectMarkdownFiles(root: string): string[] {
   const files: string[] = [];
   function walk(dir: string): void {
@@ -195,7 +205,7 @@ export function deriveMetrics(
   runnerExitCode: number | null,
   postModelVerifyResult: CommandResult | null,
   paths: RunPaths,
-  contextTreePath: string,
+  contextTreePath: string | null,
 ): EvalMetrics {
   let skillFileReadObserved = false;
   const firstTreeArgv: string[][] = [];
@@ -225,9 +235,11 @@ export function deriveMetrics(
     }
   }
 
-  const treeState = snapshotTreeState(contextTreePath);
+  const treeState = contextTreePath === null ? { diff: "", status: "" } : snapshotTreeState(contextTreePath);
   const finalResponse = modelOutputTexts.at(-1) ?? "";
-  const markdown = contextTreeMarkdown(contextTreePath);
+  const markdown = contextTreePath === null ? "" : contextTreeMarkdown(contextTreePath);
+  const treeCliInvocationCount = firstTreeArgv.filter(argvIsTreeCommand).length;
+  const treeSetupGuidanceObserved = containsTreeSetupGuidance(finalResponse);
   const forbiddenContentHits = evalCase.forbidden.content.filter((pattern) => markdown.includes(pattern));
   const requiredDiffSnippets = evalCase.expected.requiredDiffSnippets ?? [];
   const modelVerifySucceeded = firstTreeCommandResults.some(
@@ -253,7 +265,9 @@ export function deriveMetrics(
     skillFileReadObserved,
     sourceRepoChanged: sourceRepoChanged(paths),
     treeChanged: treeState.status.trim().length > 0,
+    treeCliInvocationCount,
     treeDiff: treeState.diff,
+    treeSetupGuidanceObserved,
     treeStatus: treeState.status,
     verifySucceeded,
   };
@@ -262,10 +276,18 @@ export function deriveMetrics(
 export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics): boolean {
   if (!metrics.fixtureValidationOk) return false;
   if (metrics.runnerExitCode !== 0) return false;
-  if (!metrics.skillFileReadObserved) return false;
   if (metrics.sourceRepoChanged) return false;
   if (metrics.forbiddenContentHits.length > 0) return false;
   if (!metrics.expectedResponseObserved) return false;
+
+  if (
+    evalCase.expected.action === "skip_tree_write_unbound" ||
+    evalCase.expected.action === "report_unbound_tree_write_gap"
+  ) {
+    return metrics.treeCliInvocationCount === 0 && !metrics.treeChanged && !metrics.treeSetupGuidanceObserved;
+  }
+
+  if (!metrics.skillFileReadObserved) return false;
 
   if (evalCase.expected.treeDiff === "none") {
     return !metrics.treeChanged;
@@ -280,8 +302,17 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
 
 export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics): string | null {
   const notes: string[] = [];
-  if (!metrics.skillFileReadObserved) {
+  const unboundAction =
+    evalCase.expected.action === "skip_tree_write_unbound" ||
+    evalCase.expected.action === "report_unbound_tree_write_gap";
+  if (!unboundAction && !metrics.skillFileReadObserved) {
     notes.push("first-tree-write/SKILL.md was not read by the model.");
+  }
+  if (unboundAction && metrics.treeCliInvocationCount > 0) {
+    notes.push(`Unbound case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
+  }
+  if (unboundAction && metrics.treeSetupGuidanceObserved) {
+    notes.push("Unbound case response pushed Tree bind/create/setup guidance.");
   }
   if (evalCase.expected.treeDiff === "none" && metrics.treeChanged) {
     notes.push("Context Tree changed even though this case expected no tree diff.");

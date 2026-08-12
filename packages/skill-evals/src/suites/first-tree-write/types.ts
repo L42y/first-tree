@@ -3,9 +3,14 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type SourceArtifactKind = "absent" | "durable-decision-note" | "implementation-only-diff";
-export type TreeState = "populated";
+export type TreeState = "populated" | "unbound";
 export type TreeDiffExpectation = "none" | "minimal";
-export type ExpectedAction = "refuse_without_source" | "write_minimal_tree_diff" | "refuse_implementation_only_source";
+export type ExpectedAction =
+  | "refuse_without_source"
+  | "write_minimal_tree_diff"
+  | "refuse_implementation_only_source"
+  | "skip_tree_write_unbound"
+  | "report_unbound_tree_write_gap";
 
 export type FirstTreeWriteFixture = {
   sourceArtifact: SourceArtifactKind;
@@ -53,7 +58,7 @@ export type FixtureValidation = {
   errors: readonly string[];
   ok: boolean;
   requiredFilesOk: boolean;
-  verifyResult: CommandResult;
+  verifyResult: CommandResult | null;
 };
 
 export type TreeStateSnapshot = {
@@ -79,7 +84,9 @@ export type EvalMetrics = {
   skillFileReadObserved: boolean;
   sourceRepoChanged: boolean;
   treeChanged: boolean;
+  treeCliInvocationCount: number;
   treeDiff: string;
+  treeSetupGuidanceObserved: boolean;
   treeStatus: string;
   verifySucceeded: boolean;
 };
