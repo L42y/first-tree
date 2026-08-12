@@ -10,8 +10,8 @@ import {
   kickoffOnboardingSchema,
   type OnboardingStep,
   onboardingEventSchema,
-  patchOnboardingSchema,
   type ProvisionFirstTeamAgentResult,
+  patchOnboardingSchema,
   provisionFirstTeamAgentSchema,
   updateMyProfileSchema,
 } from "@first-tree/shared";
