@@ -449,8 +449,14 @@ function AgentDetailPageView() {
       setChatStartError(null);
       setChatStartPending(true);
       try {
-        const repoSlug = campaignHandoff.repoSlug ?? normalizeGitHubRepoUrl(campaignHandoff.repoUrl)?.repoSlug;
-        if (!repoSlug) throw new Error("The saved repository is no longer valid");
+        const normalizedRepo = normalizeGitHubRepoUrl(campaignHandoff.repoUrl);
+        if (
+          !normalizedRepo ||
+          (campaignHandoff.repoSlug && campaignHandoff.repoSlug.toLowerCase() !== normalizedRepo.repoSlug.toLowerCase())
+        ) {
+          throw new Error("The saved repository is no longer valid");
+        }
+        const repoSlug = normalizedRepo.repoSlug;
         const created = await createMeTaskChat({
           mode: "task",
           topic: campaign.action.topic,

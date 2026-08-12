@@ -1,7 +1,7 @@
 import { PROVISION_FIRST_TEAM_AGENT_ERROR_CODES } from "@first-tree/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { connectDatabase } from "../db/connection.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
@@ -42,11 +42,15 @@ async function createTeamlessUser(app: TestApp, displayName = "Solo Owner"): Pro
 }
 
 const defaultTemplateIds = new WeakMap<TestApp, Promise<string>>();
+const publishedDefaultTemplateIds = new Set<string>();
 
 function defaultTemplateId(app: TestApp): Promise<string> {
   let pending = defaultTemplateIds.get(app);
   if (!pending) {
-    pending = publishTemplate(app, `default-${crypto.randomUUID().slice(0, 8)}`);
+    pending = publishTemplate(app, `default-${crypto.randomUUID().slice(0, 8)}`).then((templateId) => {
+      publishedDefaultTemplateIds.add(templateId);
+      return templateId;
+    });
     defaultTemplateIds.set(app, pending);
   }
   return pending;
@@ -127,6 +131,14 @@ async function publishTemplate(app: TestApp, slug: string): Promise<string> {
 
 describe("POST /me/team-agents — first Team Agent provisioning", () => {
   const getApp = useTestApp({ agentTemplatePublisherOrgId: PUBLISHER_ORG_ID });
+
+  afterAll(async () => {
+    const app = getApp();
+    for (const templateId of publishedDefaultTemplateIds) {
+      await app.db.delete(agentTemplates).where(eq(agentTemplates.id, templateId));
+    }
+    publishedDefaultTemplateIds.clear();
+  });
 
   it("creates the Team, Admin membership, human mirror and an unbound organization-visible Agent", async () => {
     const app = getApp();

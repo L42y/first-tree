@@ -49,7 +49,9 @@ export function OnboardingPage() {
   }
   if (leaveDecision.current === null) {
     const agentFirstCreator =
-      currentMembership?.onboardingSuppressedReason === "invitee_skip" && currentOrgHasPersonalAgent;
+      role === "admin" &&
+      currentMembership?.onboardingSuppressedReason === "invitee_skip" &&
+      currentOrgHasPersonalAgent;
     leaveDecision.current =
       agentFirstCreator ||
       shouldLeaveOnboarding({

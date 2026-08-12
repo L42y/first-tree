@@ -1804,4 +1804,18 @@ describe("Settings Setup overview", () => {
     expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
     expect(agent.action).toEqual({ label: "View", to: "/team" });
   });
+
+  it("keeps personal-Agent setup resumable for a Member who first used a Team Agent", async () => {
+    const invitee = facts({
+      role: "member",
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+    });
+
+    const agent = rowFor("agent", invitee);
+    expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
+    expect(agent.action).toEqual({ label: "Resume setup", to: "/onboarding", intent: "resume-onboarding" });
+  });
 });

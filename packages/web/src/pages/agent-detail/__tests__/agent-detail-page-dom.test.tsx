@@ -1519,6 +1519,50 @@ describe("AgentDetailPage", () => {
     await act(async () => root.unmount());
   });
 
+  it("rejects a stored campaign task whose repository URL and slug disagree", async () => {
+    const { PromptTab } = await import("../prompt-tab.js");
+    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "other/repository",
+    });
+
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Start chat");
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+
+    await waitForText(container, "Couldn't start this task");
+    expect(meChatMocks.createMeTaskChat).not.toHaveBeenCalled();
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("accepts case variants of the same stored GitHub repository", async () => {
+    const { PromptTab } = await import("../prompt-tab.js");
+    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/Acme/Backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+    });
+
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Start chat");
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+
+    await waitForCondition(() => meChatMocks.createMeTaskChat.mock.calls.length === 1, "Expected campaign task create");
+    expect(meChatMocks.createMeTaskChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        campaignAction: { campaign: "production-scan", repoSlug: "Acme/Backend" },
+      }),
+    );
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
+
+    await act(async () => root.unmount());
+  });
+
   it("binds unclaimed agents", async () => {
     const { RuntimeTab } = await import("../runtime-tab.js");
     agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({

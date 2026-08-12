@@ -146,6 +146,22 @@ describe("OnboardingPage", () => {
     expect(container.textContent).not.toContain("Create Team Step");
   });
 
+  it("keeps a Member's personal-Agent setup resumable after using a Team Agent", async () => {
+    authMock.value = {
+      ...authMock.value,
+      role: "member",
+      onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
+      currentOrgHasPersonalAgent: true,
+      currentMembership: { onboardingSuppressedReason: "invitee_skip" },
+    };
+    flowMock.activeStep = "start-chat";
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Start Chat Step");
+    expect(container.textContent).not.toContain("Workspace Home");
+  });
+
   it("keeps a user in the flow on a hard reload after create-agent (no completion stamp yet)", async () => {
     // A full page reload builds a fresh OnboardingPage whose leave-decision ref
     // starts null and recomputes from /me. Post-create-agent the server reports

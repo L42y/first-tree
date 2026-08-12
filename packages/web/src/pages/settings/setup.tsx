@@ -494,7 +494,8 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
   // journey continues on its Runtime surface; clearing the marker would route
   // the Admin back into the retired Team naming / duplicate-Agent flow. An
   // invitee who still has no personal Agent keeps the existing resumable path.
-  const agentFirstCreator = facts.onboardingSuppressedReason === "invitee_skip" && facts.hasPersonalAgent;
+  const agentFirstCreator =
+    facts.role === "admin" && facts.onboardingSuppressedReason === "invitee_skip" && facts.hasPersonalAgent;
   const resumeSetup =
     facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null && !agentFirstCreator;
 
