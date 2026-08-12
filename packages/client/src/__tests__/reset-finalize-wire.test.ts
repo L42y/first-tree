@@ -481,7 +481,7 @@ describe("Reset finalize handshake — wire level", () => {
     const { server, home, starts, setShutdownGate } = await bootWireHarness();
 
     // The whole Reset contract was negotiated on this socket as one version.
-    expect(server.registerCapabilities).toEqual({ wsSessionResetV1: true });
+    expect(server.registerCapabilities).toEqual({ runtimeReadinessV1: true, wsSessionResetV1: true });
 
     // ── Baseline turn: the chat has a live provider session ────────────────
     server.seed({ entryId: 1, messageId: "msg-baseline", content: "hello" });
@@ -754,7 +754,7 @@ describe("Reset finalize handshake — wire level", () => {
     // The client advertised no Reset capability at all — not even the legacy
     // apply-only flag, which an old server would have read as consent — so a
     // correctly-gated server would not even offer Reset here.
-    expect(server.registerCapabilities).toEqual({});
+    expect(server.registerCapabilities).toEqual({ runtimeReadinessV1: true });
 
     server.seed({ entryId: 1, messageId: "msg-skew-baseline", content: "hello" });
     server.deliver(1);

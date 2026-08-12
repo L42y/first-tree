@@ -238,6 +238,19 @@ export function extractLastUpdateAttempt(metadata: unknown): UpdateAttempt | nul
 }
 
 /**
+ * Whether the currently registered daemon explicitly implements readiness
+ * command v1. This is read from the DB copy so every Server replica uses the
+ * same registration authority. Missing, malformed, or false values fail
+ * closed; package versions are intentionally irrelevant.
+ */
+export function metadataSupportsRuntimeReadiness(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object") return false;
+  const wireCapabilities = (metadata as Record<string, unknown>).wireCapabilities;
+  if (!wireCapabilities || typeof wireCapabilities !== "object") return false;
+  return (wireCapabilities as Record<string, unknown>).runtimeReadinessV1 === true;
+}
+
+/**
  * Pull the capability snapshot out of a client row's `metadata` jsonb.
  * Returns `{}` (never `null` / `undefined`) so the web pill derivation
  * can treat the value as a stable map without a conditional access.

@@ -1482,7 +1482,7 @@ describe("Agent client WS edge protocol coverage", () => {
         clientId: seed.clientId,
         hostname: "edge-host",
         os: "linux",
-        wireCapabilities: { wsSessionResetV1: true },
+        wireCapabilities: { runtimeReadinessV1: true, wsSessionResetV1: true },
       }),
     );
     await waitForFrame(ws, (message) => (message as { type?: string }).type === "client:registered");
@@ -1493,6 +1493,8 @@ describe("Agent client WS edge protocol coverage", () => {
       // The capabilities advertised at register are visible on the live connection.
       expect(connectionManager.agentSupportsSessionResetV1(agent.uuid)).toBe(true);
       expect(connectionManager.getAgentLiveClientId(agent.uuid)).toBe(seed.clientId);
+      const registeredClient = await clientService.getClient(app.db, seed.clientId);
+      expect(clientService.metadataSupportsRuntimeReadiness(registeredClient?.metadata)).toBe(true);
 
       // A well-formed ack resolves the HTTP route's waiter with its payload.
       const waiter = connectionManager.waitForClientReply(seed.clientId, "550e8400-e29b-41d4-a716-446655440020");

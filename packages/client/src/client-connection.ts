@@ -1641,6 +1641,10 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           // fail closed before anything destructive is applied locally. Old
           // servers ignore the unknown v1 field.
           wireCapabilities: {
+            // Advertise support from the implementation itself. Version
+            // strings cannot distinguish exact-source builds from historical
+            // staging artifacts that used the same package version.
+            runtimeReadinessV1: true,
             ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
           },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),

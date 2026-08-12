@@ -194,8 +194,10 @@ describe("Reset finalize handshake frames", () => {
   it("reads a client without the composite Reset capability as unsupported", () => {
     const oldClient = clientWireCapabilitiesSchema.parse({});
     expect(oldClient.wsSessionResetV1).toBe(false);
+    expect(oldClient.runtimeReadinessV1).toBe(false);
 
-    const newClient = clientWireCapabilitiesSchema.parse({ wsSessionResetV1: true });
+    const newClient = clientWireCapabilitiesSchema.parse({ runtimeReadinessV1: true, wsSessionResetV1: true });
     expect(newClient.wsSessionResetV1).toBe(true);
+    expect(newClient.runtimeReadinessV1).toBe(true);
   });
 });

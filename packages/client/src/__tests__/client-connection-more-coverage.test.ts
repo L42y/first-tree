@@ -773,7 +773,9 @@ describe("ClientConnection — additional branch coverage", () => {
   });
 
   it("advertises no Reset capability at all to a server that never offered v1", async () => {
-    const connection = await makeConnection();
+    // The source checkout currently reports 0.5.20, but wire support is an
+    // implementation fact rather than a semver guess.
+    const connection = await makeConnection({ sdkVersion: "0.5.20" });
     // This harness emits `auth:ok` before `server:welcome` and advertises
     // nothing — an old server. The client must not promise a protocol that
     // server cannot complete, and must NOT fall back to the legacy apply-only
@@ -784,7 +786,8 @@ describe("ClientConnection — additional branch coverage", () => {
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
-    expect(registerFrame?.wireCapabilities).toEqual({});
+    expect(registerFrame?.sdkVersion).toBe("0.5.20");
+    expect(registerFrame?.wireCapabilities).toEqual({ runtimeReadinessV1: true });
     expect(connection.supportsSessionResetV1).toBe(false);
 
     const commands: unknown[] = [];
@@ -823,7 +826,7 @@ describe("ClientConnection — additional branch coverage", () => {
       .find((message) => message.type === "client:register");
     // Composite only: the legacy apply-only flag never rides along, so no
     // server can mistake this client for a pre-v1 one.
-    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionResetV1: true });
+    expect(registerFrame?.wireCapabilities).toEqual({ runtimeReadinessV1: true, wsSessionResetV1: true });
     expect(connection.supportsSessionResetV1).toBe(true);
 
     await bindAgent(connection, socket);
@@ -916,7 +919,7 @@ describe("ClientConnection — additional branch coverage", () => {
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
-    expect(registerFrame?.wireCapabilities).toEqual({});
+    expect(registerFrame?.wireCapabilities).toEqual({ runtimeReadinessV1: true });
     expect(connection.supportsSessionResetV1).toBe(false);
 
     priv(connection).clearTimers();

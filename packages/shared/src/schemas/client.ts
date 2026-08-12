@@ -61,6 +61,14 @@ export type Client = z.infer<typeof clientSchema>;
 export const clientWireCapabilitiesSchema = z
   .object({
     /**
+     * Version 1 of the on-demand runtime-readiness command. Unlike Reset,
+     * readiness is client-owned and does not require a server welcome flag:
+     * every build that can execute `runtime-readiness:check` advertises it on
+     * registration. Servers must fail closed when the flag is absent instead
+     * of inferring protocol support from a release version.
+     */
+    runtimeReadinessV1: z.boolean().default(false),
+    /**
      * Version 1 of the COMPOSITE Reset protocol (see `wsSessionResetV1` in
      * the server capabilities): apply-ack plus parked-fence release on the
      * exact terminate ref plus BOTH receipted terminal dispositions —

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import {
-  MIN_RUNTIME_READINESS_CLIENT_VERSION,
   PROVIDER_MODELS_LIST_TYPE,
   providerModelCatalogSchema,
   RUNTIME_AUTH_START_TYPE,
@@ -8,7 +7,6 @@ import {
   runtimeAuthStartRequestSchema,
   runtimeProviderSchema,
   runtimeReadinessStartRequestSchema,
-  supportsRuntimeReadinessClientVersion,
   updateClientCapabilitiesSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
@@ -120,9 +118,9 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
         "Runtime readiness could not start because this computer is not connected. Make sure the daemon is running, then retry.",
       );
     }
-    if (!supportsRuntimeReadinessClientVersion(client.sdkVersion)) {
+    if (!clientService.metadataSupportsRuntimeReadiness(client.metadata)) {
       throw new BadRequestError(
-        `Runtime readiness requires First Tree CLI ${MIN_RUNTIME_READINESS_CLIENT_VERSION} or newer. Upgrade this computer, then retry.`,
+        "Runtime readiness is unavailable because this computer's First Tree CLI does not support the readiness protocol. Upgrade this computer, then retry.",
       );
     }
 

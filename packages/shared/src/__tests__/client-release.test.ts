@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { supportsRuntimeReadinessClientVersion, supportsRuntimeSwitchClientVersion } from "../client-release.js";
+import { supportsRuntimeSwitchClientVersion } from "../client-release.js";
 
 describe("supportsRuntimeSwitchClientVersion", () => {
   it.each([
@@ -27,34 +27,5 @@ describe("supportsRuntimeSwitchClientVersion", () => {
     "invalid",
   ])("rejects unsupported release %s", (version) => {
     expect(supportsRuntimeSwitchClientVersion(version)).toBe(false);
-  });
-});
-
-describe("supportsRuntimeReadinessClientVersion", () => {
-  it.each([
-    "0.5.21",
-    "v0.5.21",
-    "0.5.22",
-    "0.5.21+build.1",
-    "0.5.21-staging.1.1",
-    "0.5.22-staging.1.1",
-  ])("accepts supported release %s", (version) => {
-    expect(supportsRuntimeReadinessClientVersion(version)).toBe(true);
-  });
-
-  it.each([
-    null,
-    "",
-    "0.5.19",
-    "0.5.20",
-    "0.5.20+build.1",
-    "0.14.8",
-    "0.5.020",
-    "0.5.20-staging.123.1",
-    "0.5.21-staging.0.1",
-    "0.5.20-beta.1",
-    "invalid",
-  ])("rejects unsupported release %s", (version) => {
-    expect(supportsRuntimeReadinessClientVersion(version)).toBe(false);
   });
 });

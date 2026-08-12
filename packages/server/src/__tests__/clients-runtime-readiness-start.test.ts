@@ -15,7 +15,12 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
     const admin = await createAdminContext(app, { username: `rr-${crypto.randomUUID().slice(0, 6)}` });
     await app.db
       .update(clients)
-      .set({ status: "connected", instanceId: app.config.instanceId, sdkVersion: "0.5.21" })
+      .set({
+        status: "connected",
+        instanceId: app.config.instanceId,
+        sdkVersion: "0.5.20",
+        metadata: { wireCapabilities: { runtimeReadinessV1: true } },
+      })
       .where(eq(clients.id, admin.clientId));
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
     setClientConnection(admin.clientId, ws as unknown as WebSocket);
@@ -47,7 +52,12 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
     const admin = await createAdminContext(app, { username: `rr-${crypto.randomUUID().slice(0, 6)}` });
     await app.db
       .update(clients)
-      .set({ status: "connected", instanceId: "replica-other", sdkVersion: "0.5.21" })
+      .set({
+        status: "connected",
+        instanceId: "replica-other",
+        sdkVersion: "0.5.20",
+        metadata: { wireCapabilities: { runtimeReadinessV1: true } },
+      })
       .where(eq(clients.id, admin.clientId));
     const notify = vi.spyOn(app.notifier, "notifyDaemonClientCommand").mockResolvedValue();
 
@@ -75,7 +85,12 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
     const admin = await createAdminContext(app, { username: `rr-old-${crypto.randomUUID().slice(0, 6)}` });
     await app.db
       .update(clients)
-      .set({ status: "connected", instanceId: app.config.instanceId, sdkVersion: "0.5.20" })
+      .set({
+        status: "connected",
+        instanceId: app.config.instanceId,
+        sdkVersion: "0.5.21-staging.1156.1",
+        metadata: { wireCapabilities: {} },
+      })
       .where(eq(clients.id, admin.clientId));
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
     setClientConnection(admin.clientId, ws as unknown as WebSocket);
@@ -89,11 +104,43 @@ describe("POST /clients/:clientId/runtime-readiness/start", () => {
 
       expect(res.statusCode).toBe(400);
       expect(res.json()).toMatchObject({
-        error: expect.stringContaining("First Tree CLI 0.5.21 or newer"),
+        error: expect.stringContaining("does not support the readiness protocol"),
       });
       expect(ws.send).not.toHaveBeenCalled();
     } finally {
       removeClientConnection(admin.clientId, ws as unknown as WebSocket);
+    }
+  });
+
+  it("fails closed before remote fan-out when registration omits the readiness capability", async () => {
+    const app = getApp();
+    const admin = await createAdminContext(app, { username: `rr-old-${crypto.randomUUID().slice(0, 6)}` });
+    await app.db
+      .update(clients)
+      .set({
+        status: "connected",
+        instanceId: "replica-old",
+        sdkVersion: "0.5.21-staging.1156.1",
+        metadata: { wireCapabilities: {} },
+      })
+      .where(eq(clients.id, admin.clientId));
+    const notify = vi.spyOn(app.notifier, "notifyDaemonClientCommand").mockResolvedValue();
+
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/clients/${admin.clientId}/runtime-readiness/start`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+        payload: { provider: "claude-code" },
+      });
+
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toMatchObject({
+        error: expect.stringContaining("does not support the readiness protocol"),
+      });
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      notify.mockRestore();
     }
   });
 
