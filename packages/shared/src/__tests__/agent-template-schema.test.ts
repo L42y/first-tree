@@ -128,6 +128,33 @@ describe("agentTemplatePayloadSchema", () => {
     expect(parsed.components).toHaveLength(3);
   });
 
+  it("accepts optional example tasks while keeping the public profile bounded", () => {
+    const withTwoTasks = {
+      ...VALID_PUBLIC_PROFILE,
+      exampleTasks: ["Summarize this discussion and propose next steps.", "Research an option and recommend a path."],
+    };
+    expect(agentTemplatePayloadSchema.parse(validPayloadWithPublic(withTwoTasks)).public.exampleTasks).toEqual(
+      withTwoTasks.exampleTasks,
+    );
+
+    const withThreeTasks = {
+      ...VALID_PUBLIC_PROFILE,
+      exampleTasks: [...withTwoTasks.exampleTasks, "Check this plan against our existing decisions."],
+    };
+    expect(agentTemplatePayloadSchema.safeParse(validPayloadWithPublic(withThreeTasks)).success).toBe(true);
+
+    for (const exampleTasks of [
+      ["Only one task."],
+      [...withThreeTasks.exampleTasks, "A fourth task."],
+      ["", "A valid task."],
+      ["x".repeat(301), "A valid task."],
+    ]) {
+      expect(
+        agentTemplatePayloadSchema.safeParse(validPayloadWithPublic({ ...VALID_PUBLIC_PROFILE, exampleTasks })).success,
+      ).toBe(false);
+    }
+  });
+
   it("requires schemaVersion 1", () => {
     expect(agentTemplatePayloadSchema.safeParse({ ...validPayload(), schemaVersion: 2 }).success).toBe(false);
   });
