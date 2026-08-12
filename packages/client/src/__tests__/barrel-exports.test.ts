@@ -41,7 +41,15 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
       exports?: Record<string, unknown>;
     };
     const exportPaths = Object.keys(pkg.exports ?? {}).sort();
-    expect(exportPaths).toEqual([".", "./cloud", "./observability", "./providers", "./runtime", "./runtime/contracts", "./runtime/provider-support"]);
+    expect(exportPaths).toEqual([
+      ".",
+      "./cloud",
+      "./observability",
+      "./providers",
+      "./runtime",
+      "./runtime/contracts",
+      "./runtime/provider-support",
+    ]);
     expect(exportPaths).not.toContain("./contracts");
     expect(exportPaths).not.toContain("./provider-support");
     expect(pkg.exports).not.toHaveProperty("./contracts");

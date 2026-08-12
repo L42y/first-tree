@@ -1797,7 +1797,10 @@ describe("runtime provider architecture guard", () => {
     const forbiddenOwners = ["runtime/handler.js", "runtime/runtime-login.js", "runtime/replay-fence.js"] as const;
 
     const productionProviderFiles = [
-      ...listFilesRecursive(join(clientSrc, "providers", "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+      ...listFilesRecursive(
+        join(clientSrc, "providers", "handlers"),
+        (p) => p.endsWith(".ts") && !p.includes("__tests__"),
+      ),
       ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
     ];
 
@@ -2107,7 +2110,10 @@ describe("runtime provider architecture guard", () => {
 
     function listProviderSideFiles(): string[] {
       return [
-        ...listFilesRecursive(join(clientSrc, "providers", "handlers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
+        ...listFilesRecursive(
+          join(clientSrc, "providers", "handlers"),
+          (p) => p.endsWith(".ts") && !p.includes("__tests__"),
+        ),
         ...listFilesRecursive(join(clientSrc, "providers"), (p) => p.endsWith(".ts") && !p.includes("__tests__")),
         ...TRANSITIONAL_PROVIDER_FAMILY_FILES.map((rel) => join(clientSrc, rel)),
       ];
