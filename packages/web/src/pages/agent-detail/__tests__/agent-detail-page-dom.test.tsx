@@ -1409,31 +1409,8 @@ describe("AgentDetailPage", () => {
       }),
     );
     expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
-    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalledOnce();
+    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
     await waitForText(container, "/?c=chat-campaign");
-
-    await act(async () => root.unmount());
-  });
-
-  it("keeps the idempotent campaign handoff retryable when the completion stamp fails", async () => {
-    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
-    authMock.value.markOnboardingCompleted.mockRejectedValueOnce(new Error("completion unavailable"));
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForText(container, "Couldn't start this task");
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalledWith(null);
 
     await act(async () => root.unmount());
   });

@@ -66,7 +66,7 @@ function AgentDetailPageView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
-  const { memberId, role, onboardingCompletedAt, currentMembership, markOnboardingCompleted } = useAuth();
+  const { memberId, role } = useAuth();
   // Narrow web viewports trade the local navigation rail for a section selector.
   const isNarrow = useWorkspaceViewport() === "narrow";
   const agentQuery = useQuery({
@@ -397,8 +397,6 @@ function AgentDetailPageView() {
     const campaign = campaignHandoff ? getCampaign(campaignHandoff.campaign) : null;
     const isCampaignTarget =
       campaignHandoff?.targetOrganizationId === agent.organizationId && campaignHandoff?.targetAgentId === agent.uuid;
-    const completesAgentFirstSetup =
-      !onboardingCompletedAt && currentMembership?.firstTeamAgentContinuation?.agentId === agent.uuid;
     if (campaignHandoff && campaign?.action && isCampaignTarget) {
       setChatStartError(null);
       setChatStartPending(true);
@@ -430,7 +428,6 @@ function AgentDetailPageView() {
             source: "web",
           },
         });
-        if (completesAgentFirstSetup) await markOnboardingCompleted();
         writeCampaignActionHandoffFlag(null);
         navigateAway(`/?c=${encodeURIComponent(created.chatId)}`);
       } catch {

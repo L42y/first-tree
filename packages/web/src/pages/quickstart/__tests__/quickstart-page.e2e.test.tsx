@@ -448,7 +448,7 @@ describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
     expect(meChatsApiMock.createMeTaskChat.mock.calls[0]?.[0]).toMatchObject({
       initialRecipientAgentIds: ["agent-first-1"],
     });
-    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalledOnce();
+    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
     expect(navigateMock).not.toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 

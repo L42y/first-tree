@@ -44,7 +44,6 @@ export function QuickstartPage() {
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
     currentMembership,
-    markOnboardingCompleted,
   } = useAuth();
   const { enabled: growthLandingPagesEnabled, settled } = useGrowthLandingPagesState();
   // The trial chat is selected with the normal workspace `?c=` param so
@@ -197,21 +196,13 @@ export function QuickstartPage() {
           source: "web",
         },
       });
-      if (exactAgentId && !onboardingCompletedAt) await markOnboardingCompleted();
       writeCampaignActionHandoffFlag(null);
       navigate(`/?c=${encodeURIComponent(created.chatId)}`, { replace: true });
     } catch (err) {
       actionStartedRef.current = false;
       setActionError(err instanceof Error ? err.message : "Couldn't start the campaign task. Please try again.");
     }
-  }, [
-    actionHandoff,
-    actionCampaign,
-    currentMembership?.firstTeamAgentContinuation?.agentId,
-    onboardingCompletedAt,
-    markOnboardingCompleted,
-    navigate,
-  ]);
+  }, [actionHandoff, actionCampaign, currentMembership?.firstTeamAgentContinuation?.agentId, navigate]);
 
   useEffect(() => {
     if (!actionHandoff || !actionCampaign || !settled || !growthLandingPagesEnabled || !meLoaded) return;
