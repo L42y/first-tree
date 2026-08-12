@@ -1169,6 +1169,48 @@ describe("first-tree-read unbound explicit Tree read", () => {
     expect(note).toContain("did not state the specific gap");
   });
 
+  it("fails when the blocked read is stated without the no-binding reason", () => {
+    const result = explicitReadMetrics([...managedMessage("This Context Tree read cannot be completed right now.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("passes natural phrasings that combine the blocked read and the no-binding reason", () => {
+    for (const phrasing of [
+      "I cannot complete this read because no Context Tree is bound.",
+      "This Tree read can't be completed: the workspace has no bound Context Tree.",
+      "No Tree is bound in this workspace, so the read cannot be completed.",
+    ]) {
+      const result = explicitReadMetrics([...managedMessage(phrasing)]);
+      expect(result.unboundGapStatementObserved).toBe(true);
+      expect(casePassed(false, result, "managed", false, true)).toBe(true);
+    }
+  });
+
+  it("fails when the model points at a setup surface", () => {
+    for (const steering of [
+      "This Tree read cannot be completed because no Tree is bound. Go to Settings → Context Tree to finish setup.",
+      "This Tree read cannot be completed because no Tree is bound. Use the web console to bind one.",
+      "This Tree read cannot be completed because no Tree is bound. Ask an admin to bind the Tree.",
+      "This Tree read cannot be completed because no Tree is bound. Configure the Tree first.",
+    ]) {
+      const result = explicitReadMetrics([...managedMessage(steering)]);
+      expect(result.treeSetupSurfaceGuidanceObserved).toBe(true);
+      expect(casePassed(false, result, "managed", false, true)).toBe(false);
+    }
+  });
+
+  it("does not flag a pure no-binding gap statement as setup-surface guidance", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
   it("fails when the model runs a Tree CLI command or pushes setup", () => {
     const withCommand = explicitReadMetrics([
       firstTreeCall(HELP_ARGV),

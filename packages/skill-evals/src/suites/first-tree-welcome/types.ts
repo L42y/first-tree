@@ -111,6 +111,8 @@ export type EvalMetrics = {
   taskOptionsObserved: boolean;
   timeEstimateObserved: boolean;
   treeEvidenceReadObserved: boolean;
+  /** A no-Tree run created `.first-tree/workspace.json`, which only a bound Tree may produce. */
+  workspaceManifestCreated: boolean;
   workingStatusObserved: boolean;
 };
 

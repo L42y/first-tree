@@ -1311,6 +1311,12 @@ export function deriveMetrics(
     optionLineTexts(responseText).some(containsPullRequestOption) ||
     taskOptionTexts.some(containsPullRequestOption);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
+  // The real runtime writes `.first-tree/workspace.json` only when a Tree
+  // binding resolved, so a manifest in a no-Tree fixture means the model
+  // created it — the same class of violation as creating the Tree itself.
+  const fixtureWritesManifest = evalCase.fixture.treeState === "populated" || evalCase.fixture.treeState === "empty";
+  const workspaceManifestCreated =
+    !fixtureWritesManifest && existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"));
 
   const forbiddenActions = forbiddenActionHits(
     evalCase,
@@ -1377,6 +1383,7 @@ export function deriveMetrics(
     timeEstimateObserved,
     treeEvidenceReadObserved,
     workingStatusObserved,
+    workspaceManifestCreated,
   };
 }
 
@@ -1436,6 +1443,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
   if (!metrics.skillFileReadObserved) return false;
   if (metrics.sourceRepoChanged) return false;
   if (metrics.contextTreeChanged) return false;
+  if (metrics.workspaceManifestCreated) return false;
   if (metrics.forbiddenActionHits.length > 0) return false;
   if (metrics.forbiddenClaimHits.length > 0) return false;
   if (metrics.forbiddenSideEffectHits.length > 0) return false;
@@ -1549,6 +1557,9 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   }
   if (metrics.contextTreeChanged) {
     notes.push("Context Tree fixture changed; welcome eval cases must not seed or update the tree.");
+  }
+  if (metrics.workspaceManifestCreated) {
+    notes.push("Workspace manifest created in a no-Tree case; only a bound Tree may produce one.");
   }
   if (metrics.forbiddenActionHits.length > 0) {
     notes.push(`Forbidden actions observed: ${metrics.forbiddenActionHits.join(", ")}.`);

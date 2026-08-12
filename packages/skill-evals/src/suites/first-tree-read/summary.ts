@@ -147,6 +147,9 @@ export function driftNote(
     if (metrics.treeSetupWordingObserved) {
       notes.push("Unbound case response pushed Tree setup/binding wording.");
     }
+    if (metrics.treeSetupSurfaceGuidanceObserved) {
+      notes.push("Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).");
+    }
     if (metrics.unboundTreeArtifactsCreated) {
       notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");
     }
@@ -201,9 +204,15 @@ export function buildGrading(
         metrics.firstTreeCommandResults.length === 0 &&
         metrics.modelFirstTreeCommandsOk;
   const outcomePass = unboundExplicitRead
-    ? metrics.unboundGapStatementObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
+    ? metrics.unboundGapStatementObserved &&
+      metrics.impactNoteBehaviorOk &&
+      !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved
     : unboundContinuation
-      ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk && !metrics.treeSetupWordingObserved
+      ? metrics.expectedFactsObserved &&
+        metrics.impactNoteBehaviorOk &&
+        !metrics.treeSetupWordingObserved &&
+        !metrics.treeSetupSurfaceGuidanceObserved
       : expectedTrigger
         ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
         : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
@@ -253,6 +262,14 @@ export function buildGrading(
         : [riskFlag("visible_receipt_metadata", "Final visible output included receipt metadata or JSON fields.")]),
       ...(unbound && metrics.unboundTreeArtifactsCreated
         ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout.")]
+        : []),
+      ...(unbound && metrics.treeSetupSurfaceGuidanceObserved
+        ? [
+            riskFlag(
+              "tree_setup_surface_guidance",
+              "Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+            ),
+          ]
         : []),
     ],
     scores: {

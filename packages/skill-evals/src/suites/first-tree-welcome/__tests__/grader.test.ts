@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,6 +54,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     taskOptionsObserved: false,
     timeEstimateObserved: false,
     treeEvidenceReadObserved: false,
+    workspaceManifestCreated: false,
     workingStatusObserved: false,
     ...overrides,
   };
@@ -2824,6 +2825,62 @@ Type a different task if you prefer.`;
 
       expect(metrics.sourceRepoChanged).toBe(true);
       expect(metrics.contextTreeChanged).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails a no-Tree case when the run creates a workspace manifest", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-manifest-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+
+      const metrics = deriveMetrics(
+        [
+          {
+            type: "fixture_setup_finished",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.workspaceManifestCreated).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+
+      const grading = buildGrading(evalCase, metrics, false);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("workspace_manifest_created");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not flag the manifest a populated-tree fixture writes at setup", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-manifest-ok-"));
+    try {
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+
+      const metrics = deriveMetrics(
+        [
+          {
+            type: "fixture_setup_finished",
+          },
+        ],
+        findCase("first-tree-welcome-readable-repo-populated-tree"),
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        join(tempRoot, "context-tree"),
+      );
+
+      expect(metrics.workspaceManifestCreated).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }

@@ -115,6 +115,8 @@ export type EvalMetrics = {
   managedTransportExpected: ManagedTransport | null;
   treeCliInvocationCount: number;
   treeSetupWordingObserved: boolean;
+  /** Visible output steers the user at a setup surface (Settings, web console, operator/admin, Tree configuration). */
+  treeSetupSurfaceGuidanceObserved: boolean;
   /** Visible output states the specific gap: this Tree read cannot complete because nothing is bound. */
   unboundGapStatementObserved: boolean;
   /** An unbound run created `.first-tree/workspace.json` or a `context-tree/` checkout. */

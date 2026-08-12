@@ -486,15 +486,33 @@ function expectedFactHits(modelOutputText: string, expectedFacts: readonly strin
 
 /**
  * The one statement an explicit Tree read in an unbound workspace may make:
- * this read cannot complete because nothing is bound. Bind/create/setup
- * guidance is graded separately by `treeSetupWordingObserved`.
+ * this read cannot complete because nothing is bound. A qualifying output must
+ * express BOTH the blocked read AND the no-binding reason — "cannot be
+ * completed right now" without the reason does not qualify. Bind/create/setup
+ * guidance is graded separately by `treeSetupWordingObserved` and
+ * `treeSetupSurfaceGuidanceObserved`.
  */
+const UNBOUND_REASON =
+  /no\s+(?:context\s+)?tree\s+is\s+bound|no\s+bound\s+(?:context\s+)?tree|(?:context\s+)?tree\s+is\s+not\s+bound|nothing\s+is\s+bound|not\s+bound|unbound/iu;
+const CANNOT_COMPLETE =
+  /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|can'?t\s+complete|unable\s+to\s+complete|not\s+possible/iu;
+
 function containsUnboundGapStatement(text: string): boolean {
+  return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNBOUND_REASON.test(text);
+}
+
+/**
+ * Setup-surface steering: pointing the user at Settings, the web console, an
+ * operator/admin, or Tree configuration as the way out of a missing binding.
+ * A pure "no Tree is bound" gap statement must not match.
+ */
+function containsTreeSetupSurfaceGuidance(text: string): boolean {
   return (
-    /no\s+(?:context\s+)?tree\s+is\s+bound/iu.test(text) ||
-    /no\s+bound\s+(?:context\s+)?tree/iu.test(text) ||
-    (/(?:context\s+)?tree/iu.test(text) &&
-      /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|unable\s+to\s+complete/iu.test(text))
+    /\bsettings\b\s*(?:→|->|>|:)?[^.!?\n]{0,40}(?:context\s+)?tree\b/iu.test(text) ||
+    /(?:context\s+)?tree\b[^.!?\n]{0,40}\bsettings\b/iu.test(text) ||
+    /\bweb\s+console\b/iu.test(text) ||
+    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(text) ||
+    /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
   );
 }
 
@@ -687,6 +705,7 @@ export function deriveMetrics(
     firstTreeArgv.filter(isTreeOperationArgv).length +
     firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
   const unboundGapStatementObserved = visibleOutputTexts.some((text) => containsUnboundGapStatement(text));
+  const treeSetupSurfaceGuidanceObserved = visibleOutputTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
   const treeArtifactsCreated =
     options.unboundWorkspace === true && options.workspacePath !== undefined
       ? unboundTreeArtifactsCreated(options.workspacePath)
@@ -723,6 +742,7 @@ export function deriveMetrics(
     skillHit: skillFileReadObserved || firstTreeCalls > 0 || firstTreeCommandResults.length > 0,
     treeCliInvocationCount,
     treeSetupWordingObserved,
+    treeSetupSurfaceGuidanceObserved,
     unboundGapStatementObserved,
     unboundTreeArtifactsCreated: treeArtifactsCreated,
   };
@@ -746,6 +766,7 @@ export function casePassed(
       metrics.treeCliInvocationCount === 0 &&
       metrics.modelFirstTreeCommandsOk &&
       !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }
@@ -758,6 +779,7 @@ export function casePassed(
       metrics.treeCliInvocationCount === 0 &&
       metrics.modelFirstTreeCommandsOk &&
       !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundTreeArtifactsCreated
     );
   }

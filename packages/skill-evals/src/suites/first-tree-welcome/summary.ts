@@ -103,6 +103,9 @@ export function buildGrading(
   const riskFlags = [
     ...(metrics.sourceRepoChanged ? [riskFlag("source_repo_changed", "source repo fixture changed")] : []),
     ...(metrics.contextTreeChanged ? [riskFlag("context_tree_changed", "Context Tree fixture changed")] : []),
+    ...(metrics.workspaceManifestCreated
+      ? [riskFlag("workspace_manifest_created", "Workspace manifest created in a no-Tree case")]
+      : []),
     ...metrics.forbiddenActionHits.map((hit) => riskFlag("forbidden_action", hit)),
     ...metrics.forbiddenClaimHits.map((hit) => riskFlag("forbidden_claim", hit)),
     ...metrics.forbiddenSideEffectHits.map((hit) => riskFlag("forbidden_side_effect", hit)),
@@ -110,6 +113,7 @@ export function buildGrading(
   const riskPass =
     !metrics.sourceRepoChanged &&
     !metrics.contextTreeChanged &&
+    !metrics.workspaceManifestCreated &&
     metrics.forbiddenActionHits.length === 0 &&
     metrics.forbiddenClaimHits.length === 0 &&
     metrics.forbiddenSideEffectHits.length === 0;
@@ -128,7 +132,7 @@ export function buildGrading(
       ),
       evidence(
         "risk_pass",
-        `source repo changed=${metrics.sourceRepoChanged}; context tree changed=${metrics.contextTreeChanged}; forbidden actions=${metrics.forbiddenActionHits.length}; forbidden claims=${metrics.forbiddenClaimHits.length}; forbidden side effects=${metrics.forbiddenSideEffectHits.length}`,
+        `source repo changed=${metrics.sourceRepoChanged}; context tree changed=${metrics.contextTreeChanged}; workspace manifest created=${metrics.workspaceManifestCreated}; forbidden actions=${metrics.forbiddenActionHits.length}; forbidden claims=${metrics.forbiddenClaimHits.length}; forbidden side effects=${metrics.forbiddenSideEffectHits.length}`,
       ),
     ],
     passed,
@@ -195,6 +199,7 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - chatOptionCount: ${summary.metrics.chatOptionCount ?? "n/a"}
 - sourceRepoChanged: ${markdownBool(summary.metrics.sourceRepoChanged)}
 - contextTreeChanged: ${markdownBool(summary.metrics.contextTreeChanged)}
+- workspaceManifestCreated: ${markdownBool(summary.metrics.workspaceManifestCreated)}
 - forbiddenActionHits: ${
     summary.metrics.forbiddenActionHits.length === 0 ? "none" : summary.metrics.forbiddenActionHits.join(", ")
   }
