@@ -121,6 +121,68 @@ function isGithubTaskEntityType(event: NormalizedScmEvent): boolean {
   return event.entity.type === "issue" || event.entity.type === "pull_request";
 }
 
+/**
+ * First-activation event for an ordinary-repo GitHub Task Agent Issue owner
+ * line.
+ *
+ * Real Issues on non-Context repositories stay dormant for automatic Task
+ * Agent routing until a non-self-output `issue_comment.created` arrives.
+ * Pull-request-shaped `issue_comment` payloads normalize to
+ * `entity.type === "pull_request"` and never match. Comment edits/deletes are
+ * not activation events. Bound Context Tree repositories do not use this gate.
+ */
+export function isGithubIssueProviderTaskActivationEvent(event: NormalizedScmEvent): boolean {
+  return event.entity.type === "issue" && event.eventType === "issue_comment" && event.action === "created";
+}
+
+/**
+ * Exact owner-line evidence for the repository task role: the manager-human /
+ * wake-agent pair already follows this entity. Assignee, mention, or
+ * same-human/different-agent rows are not owner evidence.
+ */
+export function hasExactGithubProviderTaskOwnerLine(
+  existingEntries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>>,
+  humanAgentId: string,
+  wakeAgentId: string,
+): boolean {
+  return existingEntries.some(
+    (entry) => entry.line.humanAgentId === humanAgentId && entry.line.wakeAgentId === wakeAgentId,
+  );
+}
+
+/** Repository-scoped automatic provider-task role selected for this event. */
+export type GithubProviderTaskRole = "github_task_agent" | "context_reviewer";
+
+export type GithubResolvedProviderTaskAgent = {
+  uuid: string;
+  managerHumanAgentId: string;
+  role: GithubProviderTaskRole;
+};
+
+/**
+ * Whether this event may mint or continue an automatic provider-task target.
+ *
+ * Pull requests keep the historical "every supported semantic event" rule for
+ * every repository role. Bound Context Tree Context Reviewer Issue events also
+ * keep that rule. Only ordinary-repo GitHub Task Agent Issue routing requires
+ * either an exact owner mapping or a qualifying first comment; non-activating
+ * Issue events skip quietly (no App task blocker) so assignee / mention /
+ * follow routes stay independent.
+ */
+export function isGithubProviderTaskEventEligible(
+  event: NormalizedScmEvent,
+  existingEntries: Array<Extract<ScmAudienceEntry, { kind: "existing_line" }>>,
+  taskAgent: GithubResolvedProviderTaskAgent,
+): boolean {
+  if (event.entity.type === "pull_request") return true;
+  if (event.entity.type !== "issue") return false;
+  if (taskAgent.role === "context_reviewer") return true;
+  return (
+    hasExactGithubProviderTaskOwnerLine(existingEntries, taskAgent.managerHumanAgentId, taskAgent.uuid) ||
+    isGithubIssueProviderTaskActivationEvent(event)
+  );
+}
+
 /** The immutable Issue / PR identity the App reply publisher is bound to. */
 function hasGithubTaskEntityIdentity(event: NormalizedScmEvent): boolean {
   const match = /#([1-9]\d*)$/u.exec(event.entity.key);
@@ -140,21 +202,28 @@ function hasGithubTaskEntityIdentity(event: NormalizedScmEvent): boolean {
 async function resolveGithubAppTaskAgent(
   db: Database,
   event: NormalizedScmEvent,
-): Promise<Awaited<ReturnType<typeof loadValidContextReviewerAgent>>> {
+): Promise<GithubResolvedProviderTaskAgent | null> {
   const runtime = await getOrgContextReviewRuntime(db, event.source.organizationId);
   const contextRepo =
     runtime.bindingState === "bound" &&
     runtime.provider === "github" &&
     runtime.providerMatchesRepository &&
     normalizeGithubRepo(runtime.repo) === normalizeGithubRepo(event.entity.projectKey);
+  const role: GithubProviderTaskRole = contextRepo ? "context_reviewer" : "github_task_agent";
   const agentUuid = contextRepo
     ? runtime.contextReviewer.agentUuid
     : await getTeamAgentUuid(db, event.source.organizationId);
   if (!agentUuid) return null;
-  return loadValidContextReviewerAgent(db, {
+  const agent = await loadValidContextReviewerAgent(db, {
     organizationId: event.source.organizationId,
     reviewerAgentUuid: agentUuid,
   });
+  if (!agent) return null;
+  return {
+    uuid: agent.uuid,
+    managerHumanAgentId: agent.managerHumanAgentId,
+    role,
+  };
 }
 
 /**
@@ -343,16 +412,20 @@ export async function resolveGithubAudience(
     }
   }
 
-  // Automatic event routing. Every normalizer-accepted Issue / pull request
-  // event is repository-scoped work for that repository's task role — no
-  // `@app-slug` text, assignee, or `author_association` is consulted, because
-  // an ordinary App bot isn't even selectable in GitHub's mention/assignee
-  // pickers. The three skip conditions below drop only the automatic task and
-  // never touch independent personnel targets or subscriptions.
+  // Automatic event routing. Pull-request semantic events remain
+  // repository-scoped work for every role. Bound Context Tree Issue events
+  // keep the same "every supported semantic event" rule for Context Reviewer.
+  // Ordinary-repo GitHub Task Agent Issue lines wait for a qualifying
+  // `issue_comment.created` (or an exact existing owner mapping) — no
+  // `@app-slug` text, assignee, or `author_association` is consulted. The
+  // skip conditions below drop only the automatic task and never touch
+  // independent personnel targets or subscriptions. Non-activating ordinary
+  // Issue events exit before permission / identity blockers so they do not
+  // surface an App task failure for work that was never eligible.
   const providerTaskTargets: ScmProviderTaskTarget<GithubProviderTaskContext>[] = [];
   if (options.appSlug?.trim() && !options.appSelfOutput && isGithubTaskEntityType(event)) {
     const taskAgent = await resolveGithubAppTaskAgent(db, event);
-    if (taskAgent) {
+    if (taskAgent && isGithubProviderTaskEventEligible(event, existingEntries, taskAgent)) {
       if (!hasGithubTaskEntityIdentity(event)) {
         appTaskBlocker = "GITHUB_TASK_REPLY_ENTITY_UNSUPPORTED";
       } else if (!isGithubTaskReplySupported(event.entity.type, options.appPermissions)) {

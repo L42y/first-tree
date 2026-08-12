@@ -1713,18 +1713,25 @@ describe("POST /webhooks/github-app", () => {
 
   it.each([
     {
-      label: "Issue",
-      eventType: "issues",
+      label: "Issue first comment",
+      eventType: "issue_comment",
       entityType: "issue",
       number: 12,
+      kind: "commented",
       payload: {
-        action: "opened",
+        action: "created",
         issue: {
           number: 12,
           title: "Automatic Issue handling",
           html_url: "https://github.com/owner/repo/issues/12",
           body: "Please investigate this issue.",
           assignees: [],
+          author_association: "CONTRIBUTOR",
+        },
+        comment: {
+          body: "Please investigate this issue.",
+          html_url: "https://github.com/owner/repo/issues/12#issuecomment-12",
+          user: { login: "external-contributor", type: "User" },
           author_association: "CONTRIBUTOR",
         },
       },
@@ -1734,6 +1741,7 @@ describe("POST /webhooks/github-app", () => {
       eventType: "pull_request",
       entityType: "pull_request",
       number: 13,
+      kind: "opened",
       payload: {
         action: "opened",
         pull_request: {
@@ -1781,7 +1789,7 @@ describe("POST /webhooks/github-app", () => {
     expect(message?.content).toMatchObject({
       type: "github_event",
       reason: "subscribed",
-      kind: "opened",
+      kind: scenario.kind,
       teamAgentTask: { agentUuid: teamAgent, runId: expect.any(String) },
     });
     expect(message?.content).not.toHaveProperty("mentionedUser");
@@ -1830,6 +1838,151 @@ describe("POST /webhooks/github-app", () => {
     ).toBe(true);
   });
 
+  it("does not create a Task Agent chat on issues.opened, but still creates an assignee line", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100050;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    const teamAgent = await configureTeamAgent(app, admin);
+    const assigneeDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `assignee-dlg-${randomUUID().slice(0, 6)}`,
+    });
+    const assigneeName = `assignee-${randomUUID().slice(0, 6)}`;
+    await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: assigneeName,
+      delegateMention: assigneeDelegate,
+      type: "human",
+    });
+
+    const opened = await postWebhook(app, "issues", {
+      action: "opened",
+      issue: {
+        number: 40,
+        title: "Deferred owner activation",
+        html_url: "https://github.com/owner/repo/issues/40",
+        body: "body",
+        assignees: [{ login: assigneeName, type: "User" }],
+        author_association: "NONE",
+      },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "external-contributor", type: "User" },
+      installation: { id: installationId },
+    });
+    expect(opened.statusCode).toBe(200);
+    expect(opened.json()).toMatchObject({ ok: true, delivered: 1, newChats: 1, failed: 0 });
+    expect(opened.json()).not.toHaveProperty("appTaskBlocker");
+
+    const mappingsAfterOpen = await app.db.select().from(githubEntityChatMappings);
+    expect(mappingsAfterOpen).toHaveLength(1);
+    expect(mappingsAfterOpen[0]).toMatchObject({
+      delegateAgentId: assigneeDelegate,
+      entityType: "issue",
+      entityKey: "owner/repo#40",
+    });
+    expect(mappingsAfterOpen.some((row) => row.delegateAgentId === teamAgent)).toBe(false);
+    const openedMessages = await app.db.select().from(messages);
+    expect(openedMessages).toHaveLength(1);
+    expect(openedMessages[0]?.metadata).not.toHaveProperty("teamAgentTask");
+
+    const firstComment = await postWebhook(app, "issue_comment", {
+      action: "created",
+      issue: {
+        number: 40,
+        title: "Deferred owner activation",
+        html_url: "https://github.com/owner/repo/issues/40",
+        author_association: "NONE",
+      },
+      comment: {
+        body: "First qualifying comment",
+        html_url: "https://github.com/owner/repo/issues/40#issuecomment-40",
+        user: { login: "external-contributor", type: "User" },
+        author_association: "NONE",
+      },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "external-contributor", type: "User" },
+      installation: { id: installationId },
+    });
+    expect(firstComment.statusCode).toBe(200);
+    expect(firstComment.json()).toMatchObject({ ok: true, failed: 0 });
+    expect(firstComment.json().delivered).toBeGreaterThanOrEqual(1);
+
+    const mappingsAfterComment = await app.db.select().from(githubEntityChatMappings);
+    expect(mappingsAfterComment.some((row) => row.delegateAgentId === teamAgent)).toBe(true);
+    expect(mappingsAfterComment.some((row) => row.delegateAgentId === assigneeDelegate)).toBe(true);
+    const taskChatId = mappingsAfterComment.find((row) => row.delegateAgentId === teamAgent)?.chatId ?? "";
+    const taskMessages = await app.db.select().from(messages).where(eq(messages.chatId, taskChatId));
+    expect(
+      taskMessages.some(
+        (row) =>
+          typeof row.metadata.teamAgentTask === "object" &&
+          row.metadata.teamAgentTask !== null &&
+          "agentUuid" in row.metadata.teamAgentTask &&
+          row.metadata.teamAgentTask.agentUuid === teamAgent,
+      ),
+    ).toBe(true);
+  });
+
+  it("still creates a Context Reviewer provider task on issues.opened in the bound Context Tree repo", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100051;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+    await configureTeamAgent(app, admin);
+    const reviewer = await configureContextReviewer(app, admin);
+
+    const response = await postWebhook(app, "issues", {
+      action: "opened",
+      issue: {
+        number: 77,
+        title: "Context Tree Issue stays automatic",
+        html_url: "https://github.com/owner/context-tree/issues/77",
+        body: "Please review",
+        assignees: [],
+        author_association: "NONE",
+      },
+      repository: { full_name: "owner/context-tree" },
+      sender: { login: "external-contributor", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, delivered: 1, newChats: 1, failed: 0 });
+    const [mapping] = await app.db.select().from(githubEntityChatMappings).limit(1);
+    expect(mapping).toMatchObject({
+      humanAgentId: admin.humanAgentUuid,
+      delegateAgentId: reviewer,
+      entityType: "issue",
+      entityKey: "owner/context-tree#77",
+    });
+    const [message] = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.chatId, mapping?.chatId ?? ""))
+      .limit(1);
+    expect(message?.content).toMatchObject({
+      type: "github_event",
+      reason: "subscribed",
+      kind: "opened",
+      teamAgentTask: { agentUuid: reviewer, runId: expect.any(String) },
+    });
+    expect(message?.metadata).toMatchObject({
+      mentions: [reviewer],
+      teamAgentTask: { agentUuid: reviewer, runId: expect.any(String) },
+      githubTaskRun: true,
+      githubTaskAgentUuid: reviewer,
+    });
+    const [entry] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${reviewer}`)))
+      .limit(1);
+    expect(entry?.notify).toBe(true);
+  });
+
   it("returns a stable permission blocker and creates no task run after an installation permission downgrade", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
@@ -1841,14 +1994,18 @@ describe("POST /webhooks/github-app", () => {
       .set({ permissions: { metadata: "read", issues: "read", pull_requests: "write" } })
       .where(eq(githubAppInstallations.installationId, installationId));
 
-    const response = await postWebhook(app, "issues", {
-      action: "opened",
+    const response = await postWebhook(app, "issue_comment", {
+      action: "created",
       issue: {
         number: 16,
         title: "Permission downgraded",
         html_url: "https://github.com/owner/repo/issues/16",
+        author_association: "CONTRIBUTOR",
+      },
+      comment: {
         body: "Please investigate",
-        assignees: [],
+        html_url: "https://github.com/owner/repo/issues/16#issuecomment-16",
+        user: { login: "authorized-member", type: "User" },
         author_association: "CONTRIBUTOR",
       },
       repository: { full_name: "owner/repo" },
@@ -2161,17 +2318,20 @@ describe("POST /webhooks/github-app", () => {
       boundVia: "human_declared",
     });
 
-    const response = await postWebhook(app, "issues", {
-      action: "assigned",
+    const response = await postWebhook(app, "issue_comment", {
+      action: "created",
       issue: {
         number: 14,
         title: "Existing mapping",
         html_url: "https://github.com/owner/repo/issues/14",
-        body: "",
-        assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
         author_association: "NONE",
       },
-      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      comment: {
+        body: "Activating comment",
+        html_url: "https://github.com/owner/repo/issues/14#issuecomment-14",
+        user: { login: "external", type: "User" },
+        author_association: "NONE",
+      },
       repository: { full_name: "owner/repo" },
       sender: { login: "external", type: "User" },
       installation: { id: installationId },
@@ -2199,7 +2359,7 @@ describe("POST /webhooks/github-app", () => {
     expect(message?.metadata).toMatchObject({
       teamAgentTask: { agentUuid: teamAgent },
     });
-    expect(message?.content).toMatchObject({ reason: "subscribed", kind: "assigned" });
+    expect(message?.content).toMatchObject({ reason: "subscribed", kind: "commented" });
     expect(message?.content).not.toHaveProperty("mentionedUser");
     expect(message?.metadata).not.toHaveProperty("mentionedUser");
     expect(message?.metadata.mentions).toEqual(expect.arrayContaining([teamAgent, otherDelegate]));
@@ -2271,17 +2431,20 @@ describe("POST /webhooks/github-app", () => {
       },
     ]);
 
-    const response = await postWebhook(app, "issues", {
-      action: "assigned",
+    const response = await postWebhook(app, "issue_comment", {
+      action: "created",
       issue: {
         number: 15,
         title: "Mixed App task and subscription",
         html_url: "https://github.com/owner/repo/issues/15",
-        body: "",
-        assignees: [{ login: "test-app-slug[bot]", type: "Bot" }],
         author_association: "NONE",
       },
-      assignee: { login: "test-app-slug[bot]", type: "Bot" },
+      comment: {
+        body: "Activating comment",
+        html_url: "https://github.com/owner/repo/issues/15#issuecomment-15",
+        user: { login: managerHuman.name, type: "User" },
+        author_association: "NONE",
+      },
       repository: { full_name: "owner/repo" },
       // Prune only the manager's historical line. The automatic task remains
       // eligible, as does the other human's explicit subscription.
@@ -2297,7 +2460,7 @@ describe("POST /webhooks/github-app", () => {
     expect(message?.metadata).toMatchObject({
       teamAgentTask: { agentUuid: teamAgent },
     });
-    expect(message?.content).toMatchObject({ reason: "subscribed", kind: "assigned" });
+    expect(message?.content).toMatchObject({ reason: "subscribed", kind: "commented" });
     expect(message?.content).not.toHaveProperty("mentionedUser");
     expect(message?.metadata.mentions).toEqual(expect.arrayContaining([teamAgent, subscribedDelegate]));
     expect(message?.metadata.mentions).toHaveLength(2);
