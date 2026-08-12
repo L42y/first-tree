@@ -22,6 +22,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
+    "agent-templates:publish": "pnpm --filter @first-tree/shared build && tsx scripts/publish-official-agent-templates.ts",
     "db:generate": "drizzle-kit generate && node ../../scripts/sync-migration-head.mjs",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"

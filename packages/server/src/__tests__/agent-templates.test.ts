@@ -95,6 +95,7 @@ function validPublicProfile() {
     userValue: "Start from a curated workflow.",
     instructionsSummary: "Guides review-ready delivery.",
     toolsAndSkillsSummary: "One review skill and one MCP server.",
+    exampleTasks: ["Review this pull request against our architecture.", "Turn this requirement into a delivery plan."],
   };
 }
 
@@ -429,6 +430,7 @@ describe("Agent Template catalog", () => {
       const found = body.templates.find((template) => template.slug === draft.slug);
       expect(found).toBeDefined();
       expect(found?.status).toBe("active");
+      expect(found?.public).toMatchObject({ exampleTasks: validPublicProfile().exampleTasks });
       const serialized = JSON.stringify(found);
       expect(found).not.toHaveProperty("components");
       expect(found).not.toHaveProperty("payload");
@@ -439,6 +441,9 @@ describe("Agent Template catalog", () => {
 
       const detail = await app.inject({ method: "GET", url: `${PUBLIC_URL}/${draft.slug}` });
       expect(detail.statusCode).toBe(200);
+      expect(detail.json<{ public: { exampleTasks: string[] } }>().public.exampleTasks).toEqual(
+        validPublicProfile().exampleTasks,
+      );
       expect(JSON.stringify(detail.json())).not.toContain(bundleId);
     });
 
