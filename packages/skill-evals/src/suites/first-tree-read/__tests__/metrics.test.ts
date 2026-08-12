@@ -1351,6 +1351,16 @@ describe("first-tree-read unbound explicit Tree read", () => {
     expect(casePassed(false, result, "managed", false, true)).toBe(false);
   });
 
+  it("passes when an earlier bad delivery is superseded by a correct final gap statement", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("I cannot help."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
   it("scans chat update bodies for setup steering", () => {
     const result = explicitReadMetrics([
       ...managedStatus("Go to Settings."),
@@ -1459,5 +1469,211 @@ describe("first-tree-read unbound artifact guard", () => {
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
+  });
+});
+
+describe("first-tree-read unresolved-binding continuation", () => {
+  const UNRESOLVED_FACTS = ["Inbox delivery is deduplicated at the client boundary."] as const;
+
+  function unresolvedMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, UNRESOLVED_FACTS, { mode: "absent" }, "send");
+  }
+
+  function staleArtifactReadEvent(command: string): unknown {
+    return {
+      event: {
+        command,
+        type: "tool_call",
+      },
+      type: "codex_event",
+    };
+  }
+
+  it("passes when the task continues from local inputs without touching the stale artifacts", () => {
+    const result = unresolvedMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary; the server only fans messages out."),
+    ]);
+
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(result.staleTreeArtifactAccessObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(true);
+  });
+
+  it("fails when the model reads the stale workspace manifest", () => {
+    const result = unresolvedMetrics([
+      staleArtifactReadEvent("cat .first-tree/workspace.json"),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", false, false, true);
+    expect(note).toContain("last-known workspace manifest or Context Tree checkout");
+
+    const grading = buildGrading("case", result, false, false, "managed", false, false, true);
+    expect(grading.scores.routing_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_access");
+  });
+
+  it("fails when the model reads the stale Context Tree checkout", () => {
+    const result = unresolvedMetrics([
+      staleArtifactReadEvent("sed -n 1,80p context-tree/NODE.md"),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(false);
+  });
+
+  it("fails when the model claims no Tree is bound", () => {
+    const result = unresolvedMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary. No Tree is bound in this workspace."),
+    ]);
+
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(false);
+
+    const grading = buildGrading("case", result, false, false, "managed", false, false, true);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unresolved_false_unbound_claim");
+  });
+
+  it("fails when the reply proactively mentions the unconfirmed binding", () => {
+    const result = unresolvedMetrics([
+      ...managedMessage(
+        "Inbox delivery is deduplicated at the client boundary. Note that the binding could not be confirmed.",
+      ),
+    ]);
+
+    expect(result.unresolvedBindingMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(false);
+
+    const grading = buildGrading("case", result, false, false, "managed", false, false, true);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unresolved_binding_mention");
+  });
+
+  it("fails when the model invokes a Tree CLI command", () => {
+    const result = unresolvedMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(false);
+  });
+
+  it("does not flag prose that stays off the stale artifact paths", () => {
+    const result = unresolvedMetrics([
+      assistantTextEvent("I will answer from the local source repo without touching the Context Tree."),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.staleTreeArtifactAccessObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, false, true)).toBe(true);
+  });
+});
+
+describe("first-tree-read unresolved-binding explicit Tree read", () => {
+  const UNRESOLVED_GAP = "This Tree read cannot be completed right now because the binding could not be confirmed.";
+
+  function explicitUnresolvedMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send");
+  }
+
+  it("passes when the model states only the unconfirmed-binding gap with zero Tree CLI invocations", () => {
+    const result = explicitUnresolvedMetrics([...managedMessage(UNRESOLVED_GAP)]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(true);
+    // The unbound gap detector must not be required to match the unresolved gap.
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(true);
+  });
+
+  it("passes natural phrasings that combine the blocked read and the unconfirmed-binding reason", () => {
+    for (const phrasing of [
+      "I cannot complete this read right now: the Context Tree binding could not be confirmed.",
+      "This Tree read can't be completed right now because the binding could not be confirmed.",
+      "The Context Tree read cannot be completed at the moment; the binding remains unconfirmed.",
+    ]) {
+      const result = explicitUnresolvedMetrics([...managedMessage(phrasing)]);
+      expect(result.unresolvedGapStatementObserved, `gap not detected: ${phrasing}`).toBe(true);
+      expect(casePassed(false, result, "managed", false, false, false, true)).toBe(true);
+    }
+  });
+
+  it("still passes when the explicit read loads the skill file", () => {
+    const result = explicitUnresolvedMetrics([skillReadEvent(), ...managedMessage(UNRESOLVED_GAP)]);
+
+    expect(result.skillFileReadObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(true);
+  });
+
+  it("fails when the model claims no Tree is bound", () => {
+    const result = explicitUnresolvedMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(false);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+
+    const grading = buildGrading("case", result, false, false, "managed", false, false, false, true);
+    expect(grading.scores.outcome_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unresolved_false_unbound_claim");
+  });
+
+  it("fails when the correct gap is followed by a no-bound-Tree claim", () => {
+    const result = explicitUnresolvedMetrics([...managedMessage(`${UNRESOLVED_GAP} No Tree is bound here.`)]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(true);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+  });
+
+  it("fails when the model reads the stale manifest or checkout", () => {
+    const result = explicitUnresolvedMetrics([
+      {
+        event: { command: "cat .first-tree/workspace.json", type: "tool_call" },
+        type: "codex_event",
+      },
+      ...managedMessage(UNRESOLVED_GAP),
+    ]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(true);
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+  });
+
+  it("judges the unresolved gap statement by the last real delivery only", () => {
+    const result = explicitUnresolvedMetrics([...managedMessage(UNRESOLVED_GAP), ...managedMessage("I cannot help.")]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+  });
+
+  it("fails on setup steering beyond the gap statement", () => {
+    const result = explicitUnresolvedMetrics([...managedMessage(`${UNRESOLVED_GAP} Go to Settings.`)]);
+
+    expect(result.unresolvedGapStatementObserved).toBe(true);
+    expect(result.unboundSetupSteeringObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
+
+    const grading = buildGrading("case", result, false, false, "managed", false, false, false, true);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_steering");
+  });
+
+  it("fails when the model runs a Tree CLI command", () => {
+    const result = explicitUnresolvedMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage(UNRESOLVED_GAP),
+    ]);
+
+    expect(result.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, result, "managed", false, false, false, true)).toBe(false);
   });
 });

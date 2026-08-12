@@ -98,13 +98,6 @@ approved step at a time:
   uses the First Tree GitHub App; GitLab automation uses an admin-configured
   inbound project Webhook while the agent keeps repository credentials on its
   own host.
-- **Build your team's Context Tree** — when a result surfaces durable
-  cross-module decisions that future work must reuse, your agent makes one
-  relevant offer to build your team's shared memory: it proposes an initial
-  structure and fills it in from your code, with you approving each change. An
-  ordinary value result does not trigger the offer.
-  (Offered to team admins; teammates who join later inherit the tree
-  automatically.)
 
 You reach a working agent first — none of this is a gate you clear up front.
 You can also connect code anytime from **Settings**.

@@ -1265,6 +1265,7 @@ export function deriveMetrics(
   const firstTreeArgv: string[][] = [];
   const modelOutputTexts: string[] = [];
   const chatTexts: string[] = [];
+  const chatAskBodies: string[] = [];
   const chatOptionTexts: string[] = [];
   let taskChatCreateCount = 0;
   const deliveryTexts: string[] = [];
@@ -1320,6 +1321,7 @@ export function deriveMetrics(
           const body = recordedBody || argv[3];
           if (typeof body === "string") {
             deliveryTexts.push(body);
+            if (argv[1] === "ask") chatAskBodies.push(body);
             if (argv[1] === "send") lastSendText = body;
           }
         }
@@ -1344,9 +1346,16 @@ export function deriveMetrics(
   const responseText = deliveredText.length > 0 ? deliveredText : finalResponse;
   const combinedText = deliveredText.length > 0 ? chatText : finalResponse;
   // A direct task result is judged on the final real chat send — an earlier
-  // correct send cannot carry an empty or hollow final delivery. Fall back to
-  // the final console response only when nothing was sent.
+  // correct send cannot carry an empty or hollow final delivery, and
+  // `casePassed` requires exactly one send. Fall back to the final console
+  // response only when nothing was sent.
   const finalDeliveryText = chatSendCount > 0 ? lastSendText : finalResponse;
+  // The goal-first ask must self-certify from the SINGLE tracked ask's own
+  // body: the readiness plus real goal/outcome request and the absence of
+  // repo/path/URL/Tree/setup/admin wording are all judged on that one body.
+  // `chat update` bodies, console narration, and the native final text cannot
+  // fill in, and the admin-ownership-note allowance never applies here.
+  const soleGoalAskText = chatAskBodies.length === 1 ? (chatAskBodies[0] ?? "") : "";
   const taskOptionHints = evalCase.expected.taskOptionHints ?? [];
   const explicitTaskOptionTexts =
     chatOptionTexts.length > 0
@@ -1442,9 +1451,10 @@ export function deriveMetrics(
     expectedBridgeSatisfied,
     expectedResponseObserved:
       evalCase.expected.action === "ask_for_first_goal"
-        ? containsAny(combinedText, evalCase.expected.requiredResponseHints) &&
-          !containsGoalAskPlumbing(combinedText, allowsAdminOwnershipNote(evalCase)) &&
-          containsGoalOutcomeRequest(combinedText)
+        ? soleGoalAskText.length > 0 &&
+          containsAny(soleGoalAskText, evalCase.expected.requiredResponseHints) &&
+          !containsGoalAskPlumbing(soleGoalAskText, false) &&
+          containsGoalOutcomeRequest(soleGoalAskText)
         : evalCase.expected.action === "complete_task_directly"
           ? containsAll(finalDeliveryText, evalCase.expected.requiredResponseHints) &&
             !containsTaskRefusal(finalDeliveryText) &&
@@ -1556,7 +1566,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
   if (evalCase.expected.action === "complete_task_directly") {
     return (
       metrics.chatAskCount === 0 &&
-      metrics.chatSendCount >= 1 &&
+      metrics.chatSendCount === 1 &&
       !metrics.repoEvidenceReadObserved &&
       !metrics.treeEvidenceReadObserved &&
       !metrics.taskOptionsObserved
@@ -1641,6 +1651,8 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
     if (metrics.chatAskCount !== 0)
       notes.push("A concrete repo-free task must complete directly; an ask was sent instead.");
     if (metrics.chatSendCount === 0) notes.push("The concrete task result was never delivered in chat.");
+    if (metrics.chatSendCount > 1)
+      notes.push(`The concrete task result must arrive as exactly one chat send; observed ${metrics.chatSendCount}.`);
   }
   if (metrics.sourceRepoChanged) {
     notes.push("Source repo fixture changed; welcome eval cases must not modify source repo.");

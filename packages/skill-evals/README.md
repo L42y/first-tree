@@ -143,7 +143,16 @@ with zero `first-tree tree`/`context` invocations and zero bind/create/setup
 wording; an explicit Context Tree read reports only that this read cannot be
 completed because nothing is bound, with no manifest/Tree creation and no
 setup actions, while malformed or declared-but-broken bindings keep their
-fail-closed Tree-operation coverage.
+fail-closed Tree-operation coverage. The managed-unresolved rows
+(`first-tree-read-unresolved-software-continues-periodic`,
+`first-tree-read-unresolved-pasted-content-continues-periodic`, and
+`first-tree-read-unresolved-explicit-read-reports-gap-periodic`) render the
+could-not-confirm briefing while the last-known `.first-tree/workspace.json`
+manifest and `context-tree/` checkout deliberately remain on disk: ordinary
+tasks continue with zero Tree CLI invocations and zero reads or references of
+those stale artifacts, and an explicit Context Tree read reports only that
+this read cannot be completed right now because the binding could not be
+confirmed — claiming that no Tree is bound fails the case.
 
 `eval:gate -- --suite context-tree-review` runs the repair-first Context Tree
 pull request review gate. A task-local bare Git origin permits only an
@@ -189,6 +198,13 @@ never performs a real provider or First Tree external write.
   task — the source result continues with zero Tree commands and no
   manifest/Tree creation — and an explicit Tree write request reports only
   the missing binding without bind/create guidance or any Tree mutation.
+- an unresolved-binding workspace (briefing states the binding could not be
+  confirmed; last-known manifest, source repo, and Tree checkout remain on
+  disk) silently skips the Tree write on an ordinary source task with zero
+  Tree commands and zero reads or references of the stale manifest/checkout,
+  and an explicit Tree write request reports only that this write cannot be
+  completed right now because the binding could not be confirmed — claiming
+  that no Tree is bound fails the case.
 
 `eval:gate -- --suite first-tree-welcome` runs the live tested-agent gate for
 the currently implemented `first-tree-welcome` gate rows:

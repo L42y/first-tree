@@ -202,13 +202,18 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).not.toContain("A GitLab MR has no documented equivalent here");
   });
 
-  it("keeps the post-result bridge singular, contextual, and role-aware", () => {
+  it("keeps the post-result bridge singular, goal-tied, and free of any proactive tree offer", () => {
     expect(skillMarkdown).toContain("A first-result diff does not authorize a PR/MR");
-    expect(skillMarkdown).toContain("the PR/MR question takes priority as the only");
-    expect(skillMarkdown).toContain("the human is an **admin**");
-    expect(skillMarkdown).toContain("the team's Context Tree is still\n  **missing or empty**");
-    expect(skillMarkdown).toContain("a lasting decision that crosses module\n  boundaries");
-    expect(skillMarkdown).toContain("Never for an invitee");
+    // The proactive "build the Context Tree after value" offer is gone: a result
+    // — even one exposing a lasting cross-module decision — never earns a tree
+    // bridge, while an explicit user request still routes to the tree chat.
+    expect(skillMarkdown).toContain("never offer a Context Tree build or a separate tree chat from a result");
+    expect(skillMarkdown).toContain("Never offer to build the Context Tree from a result");
+    expect(skillMarkdown).toContain("A missing or empty tree is background state, not a bridge");
+    expect(skillMarkdown).not.toContain("After value lands");
+    expect(skillMarkdown).not.toContain("the qualified tree bridge");
+    expect(skillMarkdown).toContain("the user explicitly asks to build\nthe team's Context Tree");
+    expect(skillMarkdown).toContain("persist current decisions as shared team context");
     expect(skillMarkdown).toContain("Do not inspect or surface Automatic Review");
     expect(skillMarkdown).toContain(
       "does not automatically\n  register the session project as a durable Team repository",

@@ -55,16 +55,26 @@ export function buildGrading(
     evalCase.expected.action === "skip_tree_write_unbound" ||
     evalCase.expected.action === "report_unbound_tree_write_gap";
   const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
+  const unresolvedAction =
+    evalCase.expected.action === "skip_tree_write_unresolved" ||
+    evalCase.expected.action === "report_unresolved_tree_write_gap";
+  const unresolvedExplicit = evalCase.expected.action === "report_unresolved_tree_write_gap";
+  const treelessAction = unboundAction || unresolvedAction;
   const expectedNoDiff = evalCase.expected.treeDiff === "none";
   const treeDiffPass = expectedNoDiff
     ? !metrics.treeChanged
     : metrics.treeChanged && metrics.expectedDiffSnippetsObserved;
   const unboundSkip = evalCase.expected.action === "skip_tree_write_unbound";
+  const unresolvedSkip = evalCase.expected.action === "skip_tree_write_unresolved";
   const routingPass = unboundSkip
     ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved
-    : unboundAction
-      ? metrics.treeCliInvocationCount === 0
-      : metrics.skillFileReadObserved;
+    : unresolvedSkip
+      ? metrics.treeCliInvocationCount === 0 &&
+        !metrics.skillFileReadObserved &&
+        !metrics.staleTreeArtifactAccessObserved
+      : treelessAction
+        ? metrics.treeCliInvocationCount === 0 && (!unresolvedAction || !metrics.staleTreeArtifactAccessObserved)
+        : metrics.skillFileReadObserved;
   const processPass =
     metrics.fixtureValidationOk &&
     metrics.runnerExitCode === 0 &&
@@ -73,11 +83,15 @@ export function buildGrading(
     !metrics.sourceRepoChanged &&
     metrics.forbiddenContentHits.length === 0 &&
     (!expectedNoDiff || !metrics.treeChanged) &&
-    (!unboundAction || !metrics.treeSetupGuidanceObserved) &&
-    (!unboundAction || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!treelessAction || !metrics.treeSetupGuidanceObserved) &&
+    (!treelessAction || !metrics.treeSetupSurfaceGuidanceObserved) &&
     (!unboundAction || !metrics.unboundTreeArtifactsCreated) &&
     (!unboundSkip || !metrics.unboundAbsenceMentionObserved) &&
-    (!unboundExplicit || !metrics.unboundSetupSteeringObserved);
+    (!unboundExplicit || !metrics.unboundSetupSteeringObserved) &&
+    (!unresolvedAction || !metrics.staleTreeArtifactAccessObserved) &&
+    (!unresolvedAction || !metrics.unboundAbsenceMentionObserved) &&
+    (!unresolvedSkip || !metrics.unresolvedBindingMentionObserved) &&
+    (!unresolvedExplicit || !metrics.unboundSetupSteeringObserved);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
       ? [riskFlag("source_repo_changed", "source repo fixture changed during write gate")]
@@ -88,14 +102,14 @@ export function buildGrading(
     ...(expectedNoDiff && metrics.treeChanged
       ? [riskFlag("unexpected_tree_write", "Context Tree changed in a no-write/refusal case")]
       : []),
-    ...(unboundAction && metrics.treeSetupGuidanceObserved
-      ? [riskFlag("tree_setup_guidance", "Unbound case response pushed Tree bind/create/setup guidance")]
+    ...(treelessAction && metrics.treeSetupGuidanceObserved
+      ? [riskFlag("tree_setup_guidance", "Treeless case response pushed Tree bind/create/setup guidance")]
       : []),
-    ...(unboundAction && metrics.treeSetupSurfaceGuidanceObserved
+    ...(treelessAction && metrics.treeSetupSurfaceGuidanceObserved
       ? [
           riskFlag(
             "tree_setup_surface_guidance",
-            "Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+            "Treeless case response pointed the user at a setup surface (Settings, web console, operator/admin).",
           ),
         ]
       : []),
@@ -107,11 +121,43 @@ export function buildGrading(
           ),
         ]
       : []),
+    ...(unresolvedExplicit && metrics.unboundSetupSteeringObserved
+      ? [
+          riskFlag(
+            "tree_setup_steering",
+            "Unresolved-binding explicit Tree write carried extra setup/recovery steering beyond the gap statement.",
+          ),
+        ]
+      : []),
     ...(unboundSkip && metrics.unboundAbsenceMentionObserved
       ? [
           riskFlag(
             "unbound_absence_mention",
             "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+          ),
+        ]
+      : []),
+    ...(unresolvedSkip && metrics.unresolvedBindingMentionObserved
+      ? [
+          riskFlag(
+            "unresolved_binding_mention",
+            "Unresolved-binding ordinary task proactively mentioned the unconfirmed binding; an ordinary task must stay silent about the binding state.",
+          ),
+        ]
+      : []),
+    ...(unresolvedAction && metrics.unboundAbsenceMentionObserved
+      ? [
+          riskFlag(
+            "unresolved_false_unbound_claim",
+            "Unresolved-binding case claimed no Tree is bound; an unconfirmed binding is not a confirmed unbind.",
+          ),
+        ]
+      : []),
+    ...(unresolvedAction && metrics.staleTreeArtifactAccessObserved
+      ? [
+          riskFlag(
+            "stale_tree_artifact_access",
+            "Unresolved-binding case read or referenced the last-known workspace manifest or Context Tree checkout.",
           ),
         ]
       : []),
@@ -127,9 +173,11 @@ export function buildGrading(
         "routing_pass",
         unboundSkip
           ? `unbound ordinary case Tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}`
-          : unboundAction
-            ? `unbound case Tree CLI invocations=${metrics.treeCliInvocationCount}`
-            : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
+          : unresolvedSkip
+            ? `unresolved-binding ordinary case Tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}; stale artifact access observed=${metrics.staleTreeArtifactAccessObserved}`
+            : treelessAction
+              ? `treeless case Tree CLI invocations=${metrics.treeCliInvocationCount}; stale artifact access observed=${metrics.staleTreeArtifactAccessObserved}`
+              : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
       ),
       evidence(
         "process_pass",
@@ -155,7 +203,19 @@ export function buildGrading(
           treeDiffPass
         : unboundSkip
           ? metrics.expectedResponseObserved && treeDiffPass && !metrics.unboundAbsenceMentionObserved
-          : metrics.expectedResponseObserved && treeDiffPass,
+          : unresolvedExplicit
+            ? metrics.unresolvedGapStatementObserved &&
+              !metrics.treeSetupGuidanceObserved &&
+              !metrics.treeSetupSurfaceGuidanceObserved &&
+              !metrics.unboundSetupSteeringObserved &&
+              !metrics.unboundAbsenceMentionObserved &&
+              treeDiffPass
+            : unresolvedSkip
+              ? metrics.expectedResponseObserved &&
+                treeDiffPass &&
+                !metrics.unboundAbsenceMentionObserved &&
+                !metrics.unresolvedBindingMentionObserved
+              : metrics.expectedResponseObserved && treeDiffPass,
       process_pass: processPass,
       risk_pass: riskPass,
       routing_pass: routingPass,

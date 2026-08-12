@@ -79,6 +79,26 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toMatch(/materialize\s+it\s+per\s+Tree\s+Location\s+before\s+drafting\s+and\s+continue/u);
   });
 
+  it("states the unresolved-binding gate without trusting last-known artifacts", () => {
+    expect(skill).toContain("**Unresolved binding:**");
+    expect(skill).toMatch(/when the trusted managed briefing states the Tree\s+binding could not be confirmed/u);
+    expect(skill).toMatch(
+      /no Tree write is possible this session and\s+ordinary work continues exactly as in the explicitly-unbound case/u,
+    );
+    expect(skill).toMatch(
+      /`.first-tree\/workspace\.json` manifest or `context-tree\/`\s+checkout may still be on disk/u,
+    );
+    expect(skill).toMatch(
+      /never read, trust,\s+or recover from them, because this session never confirmed that binding/u,
+    );
+    expect(skill).toMatch(
+      /state only that this Tree write cannot\s+be completed right now because the binding could not be confirmed/u,
+    );
+    expect(skill).toMatch(
+      /never\s+claim that no Tree is bound \(that is the explicitly-unbound state\) and\s+never guess a Tree/u,
+    );
+  });
+
   it("keeps the source gate filesystem-first with forge CLIs scoped to forge steps", () => {
     expect(skill).toMatch(/read local code,\s+history, and existing files from the filesystem and plain `git` first/u);
     expect(skill).toMatch(/only for forge reads the filesystem cannot\s+answer/u);
@@ -88,7 +108,7 @@ describe("first-tree-write App review handoff floor", () => {
 
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.4");
+    expect(version).toBe("0.16.5");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

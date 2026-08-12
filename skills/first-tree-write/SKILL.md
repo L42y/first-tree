@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.4
+version: 0.16.5
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -88,6 +88,17 @@ because one is absent.
   no Tree is bound; do not expand the absence into bind/create guidance. An
   explicit first-time Tree creation request routes to `first-tree-seed`, not
   this skill.
+- **Unresolved binding:** when the trusted managed briefing states the Tree
+  binding could not be confirmed, no Tree write is possible this session and
+  ordinary work continues exactly as in the explicitly-unbound case. A
+  last-known `.first-tree/workspace.json` manifest or `context-tree/`
+  checkout may still be on disk from an earlier session — never read, trust,
+  or recover from them, because this session never confirmed that binding.
+  Run no Tree commands and offer no Tree setup guidance. If the user
+  explicitly asked for a Tree write, state only that this Tree write cannot
+  be completed right now because the binding could not be confirmed; never
+  claim that no Tree is bound (that is the explicitly-unbound state) and
+  never guess a Tree.
 - **Declared but broken:** "broken" means the binding metadata, resolved
   path, or upstream identity is malformed or inconsistent — in that case
   keep failing closed for Tree operations — never guess a Tree. Report

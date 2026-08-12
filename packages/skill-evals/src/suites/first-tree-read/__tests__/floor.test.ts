@@ -177,7 +177,7 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.8.3");
+    expect(skillVersion).toBe("0.8.4");
     expect(skill).toContain(`version: ${skillVersion}`);
   });
 
@@ -195,6 +195,24 @@ describe("first-tree-read floor contract", () => {
       /fully\s+declared\s+binding\s+whose\s+local\s+checkout\s+simply\s+does\s+not\s+exist\s+yet\s+is\s+not\s+broken/u,
     );
     expect(skill).toContain("materialize it per Tree Location (step 2B)");
+  });
+
+  it("states the unresolved-binding gate without trusting last-known artifacts", () => {
+    expect(skill).toContain("**Unresolved binding:**");
+    expect(skill).toMatch(/when the trusted managed briefing states the Tree\s+binding could not be confirmed/u);
+    expect(skill).toMatch(/continue\s+exactly as in the explicitly-unbound case/u);
+    expect(skill).toMatch(
+      /`.first-tree\/workspace\.json` manifest or `context-tree\/`\s+checkout may still\s+be on disk/u,
+    );
+    expect(skill).toMatch(
+      /never read, trust, or recover from\s+them, because this session never confirmed that binding/u,
+    );
+    expect(skill).toMatch(
+      /state only that this Tree read cannot be completed right now\s+because the binding could not be confirmed/u,
+    );
+    expect(skill).toMatch(
+      /never claim that no Tree is\s+bound \(that is the explicitly-unbound state\) and never guess a Tree/u,
+    );
   });
 
   it("declares managed-unbound continuation periodic cases", () => {
@@ -225,6 +243,43 @@ describe("first-tree-read floor contract", () => {
       explicitRead.every(
         (evalCase) =>
           evalCase.workspaceKind === "unbound-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.expectedFacts.length === 0 &&
+          evalCase.impactNote.mode === "absent" &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+  });
+
+  it("declares managed-unresolved continuation periodic cases", () => {
+    const unresolved = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unresolvedContinuation === true);
+
+    expect(unresolved.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unresolved-software-continues-periodic",
+      "first-tree-read-unresolved-pasted-content-continues-periodic",
+    ]);
+    expect(
+      unresolved.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unresolved-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+  });
+
+  it("declares a managed-unresolved explicit Tree read periodic case", () => {
+    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unresolvedExplicitRead === true);
+
+    expect(explicitRead.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unresolved-explicit-read-reports-gap-periodic",
+    ]);
+    expect(
+      explicitRead.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unresolved-managed" &&
           evalCase.briefingMode === "runtime-generated" &&
           evalCase.expectedTrigger === false &&
           evalCase.expectedFacts.length === 0 &&

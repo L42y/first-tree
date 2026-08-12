@@ -166,9 +166,12 @@ function installFirstTreeReadSkill(repoRoot: string, workspacePath: string, work
   );
 }
 
+type BriefingTreeState = "bound" | "explicitly-unbound" | "unresolved";
+
 function runtimeGeneratedWorkspaceAgentsMarkdown(
   workspacePath: string,
   contextTreePath: string | null,
+  briefingTreeState: BriefingTreeState,
   descriptions: ReadonlyMap<string, string>,
 ): string {
   const sourceRepoPath = join(workspacePath, "source-repo");
@@ -176,7 +179,7 @@ function runtimeGeneratedWorkspaceAgentsMarkdown(
     (skill) => `| \`${skill}\` | ${descriptions.get(skill) ?? "Use when this skill applies."} |`,
   ).join("\n");
   const contextTreeSection =
-    contextTreePath === null
+    briefingTreeState === "explicitly-unbound"
       ? `# Context Tree (First Tree Managed)
 
 This briefing was generated without a bound Context Tree — a supported state,
@@ -184,9 +187,21 @@ not a gap to fix. Ordinary tasks proceed from the user's messages, chat
 context, pasted content, and locally available inputs with no prompt to bind
 or create a tree; only a request whose result genuinely needs a tree
 read/write/audit/setup names that specific capability impact.`
-      : `# Context Tree (First Tree Managed)
+      : briefingTreeState === "unresolved"
+        ? `# Context Tree (First Tree Managed)
 
-The current Context Tree checkout is \`${contextTreePath}\`.
+The Context Tree binding could not be confirmed when this briefing was
+generated — the server was unreachable or returned an invalid binding. This
+is not a confirmed unbind: never claim that no Context Tree is bound, and do
+not push binding or setup. Ordinary tasks proceed from the user's messages,
+chat context, pasted content, and locally available inputs; only a request
+whose result genuinely needs a tree read/write/audit states that this
+specific Tree operation cannot be completed right now because the Tree is
+unavailable — its binding could not be confirmed. The runtime re-resolves
+the binding at a later session start.`
+        : `# Context Tree (First Tree Managed)
+
+The current Context Tree checkout is \`${contextTreePath ?? ""}\`.
 Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
 is \`main\`.
 
@@ -248,6 +263,7 @@ function installRuntimeGeneratedBriefing(
   repoRoot: string,
   workspacePath: string,
   contextTreePath: string | null,
+  briefingTreeState: BriefingTreeState,
 ): void {
   const descriptions = new Map<string, string>();
   for (const skill of RUNTIME_SKILL_NAMES) {
@@ -260,7 +276,7 @@ function installRuntimeGeneratedBriefing(
     `${JSON.stringify(
       {
         agentId: "first-tree-read-eval-agent",
-        contextTreePath,
+        contextTreePath: briefingTreeState === "bound" ? contextTreePath : null,
         delegateMention: null,
         displayName: "First Tree Read Eval Agent",
         metadata: {},
@@ -274,7 +290,7 @@ function installRuntimeGeneratedBriefing(
   );
   writeText(
     join(workspacePath, "AGENTS.md"),
-    runtimeGeneratedWorkspaceAgentsMarkdown(workspacePath, contextTreePath, descriptions),
+    runtimeGeneratedWorkspaceAgentsMarkdown(workspacePath, contextTreePath, briefingTreeState, descriptions),
   );
   writeClaudeBriefingSymlink(workspacePath);
 }
@@ -454,7 +470,7 @@ function navigationParentPaths(nodes: readonly DomainNode[]): readonly string[] 
 }
 
 function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind): string {
-  const managedWorkspace = workspaceKind === "context-tree";
+  const managedWorkspace = workspaceKind === "context-tree" || workspaceKind === "unresolved-managed";
   const contextTreePath = managedWorkspace
     ? join(paths.workspacePath, "context-tree")
     : join(paths.runRoot, "byo-context-tree-source");
@@ -547,8 +563,22 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
     mkdirSync(sourceRepoPath, { recursive: true });
     writeText(join(sourceRepoPath, "README.md"), unboundSourceReadmeMarkdown());
   }
+  if (evalCase.workspaceKind === "unresolved-managed") {
+    // The managed fixture wrote a placeholder source README; the ordinary
+    // continuation task's answer lives in this local file instead.
+    writeText(join(paths.workspacePath, "source-repo", "README.md"), unboundSourceReadmeMarkdown());
+  }
   if (evalCase.briefingMode === "runtime-generated") {
-    installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath);
+    // An unresolved binding keeps the last-known manifest and Tree checkout
+    // on disk, but the briefing must not confirm them: the model must ignore
+    // those stale artifacts entirely.
+    const briefingTreeState: BriefingTreeState =
+      evalCase.workspaceKind === "unbound-managed"
+        ? "explicitly-unbound"
+        : evalCase.workspaceKind === "unresolved-managed"
+          ? "unresolved"
+          : "bound";
+    installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath, briefingTreeState);
   } else {
     installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath, evalCase.workspaceKind);
   }

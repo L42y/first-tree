@@ -224,6 +224,32 @@ describe("retireWorkspaceManifest", () => {
     });
   });
 
+  it("stays idempotent across a full unbind/rebind/unbind cycle", () => {
+    ensureWorkspaceManifest(ws, ["app"]);
+    retireWorkspaceManifest(ws);
+    expect(existsSync(manifestPath())).toBe(false);
+    expect(existsSync(retiredPath())).toBe(true);
+
+    // Rebind writes a fresh active manifest; the second unbind must replace
+    // the archive without relying on rename-overwrites-target semantics.
+    ensureWorkspaceManifest(ws, ["web"]);
+    retireWorkspaceManifest(ws);
+    expect(existsSync(manifestPath())).toBe(false);
+    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["web"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+
+    // A third retirement with no active manifest is a no-op.
+    expect(() => retireWorkspaceManifest(ws)).not.toThrow();
+    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["web"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
   it("is an idempotent no-op when no manifest exists", () => {
     expect(() => retireWorkspaceManifest(ws)).not.toThrow();
     expect(existsSync(retiredPath())).toBe(false);

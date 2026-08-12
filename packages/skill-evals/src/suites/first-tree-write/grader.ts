@@ -147,9 +147,18 @@ function argvIsTreeCommand(argv: readonly string[]): boolean {
 }
 
 function containsTreeSetupGuidance(text: string): boolean {
-  return /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}\b(?:context\s+)?tree\b|\b(?:context\s+)?tree\b[^.!?\n]{0,60}\b(?:binding|creation|setup)\b/iu.test(
-    text,
-  );
+  // Sentence splitting mirrors the detector's own `[^.!?\n]` windows. An
+  // unconfirmed-binding sentence is the unresolved-binding gap report —
+  // "the binding could not be confirmed" names a state, not setup guidance —
+  // so it must not trip the Tree…binding alternative.
+  return text
+    .split(/[.!?\n]+/u)
+    .filter((sentence) => !UNRESOLVED_REASON.test(sentence))
+    .some((sentence) =>
+      /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}\b(?:context\s+)?tree\b|\b(?:context\s+)?tree\b[^.!?\n]{0,60}\b(?:binding|creation|setup)\b/iu.test(
+        sentence,
+      ),
+    );
 }
 
 /**
@@ -166,6 +175,53 @@ const CANNOT_COMPLETE =
 
 function containsUnboundGapStatement(text: string): boolean {
   return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNBOUND_REASON.test(text);
+}
+
+/**
+ * The one statement an explicit Tree write in an unresolved-binding workspace
+ * may make: this write cannot complete right now because the binding could
+ * not be confirmed. A qualifying output must express BOTH the blocked write
+ * AND the unconfirmed-binding reason — and must not claim that no Tree is
+ * bound, which `containsUnboundAbsenceMention` catches separately.
+ */
+const UNRESOLVED_REASON =
+  /binding\s+could\s+not\s+be\s+confirmed|could\s+not\s+confirm\s+the\s+(?:(?:context\s+)?tree\s+)?binding|(?:tree\s+)?binding\s+(?:was|is|remains)\s+(?:currently\s+)?unconfirmed|unconfirmed\s+(?:context\s+)?tree\s+binding/iu;
+
+function containsUnresolvedGapStatement(text: string): boolean {
+  return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNRESOLVED_REASON.test(text);
+}
+
+/**
+ * Proactive unconfirmed-binding mention. An ordinary unresolved-binding task
+ * must stay silent about the binding state; only the explicit Tree-write
+ * branch may state it, as part of the required gap statement.
+ */
+function containsUnresolvedBindingMention(text: string): boolean {
+  return UNRESOLVED_REASON.test(text);
+}
+
+/**
+ * Stale-artifact access: with an unresolved binding the last-known
+ * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
+ * on disk, but this session never confirmed them, so any tool-phase read or
+ * reference of those paths fails the case. Model prose alone does not match:
+ * the event must look like a tool/command interaction, mirroring the skill
+ * file read detector.
+ */
+const STALE_TREE_ARTIFACT_PATH = /\.first-tree\/workspace\.json|context-tree\//iu;
+
+function containsStaleTreeArtifactAccess(event: unknown): boolean {
+  if (!isRecord(event)) return false;
+  if (eventType(event) !== "codex_event") return false;
+
+  const nestedEvent = event.event;
+  if (!findStringValue(nestedEvent, (value) => STALE_TREE_ARTIFACT_PATH.test(value))) {
+    return false;
+  }
+
+  const serialized = JSON.stringify(nestedEvent) ?? "";
+  if (serialized.includes("Available Skills")) return false;
+  return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
 }
 
 /**
@@ -279,6 +335,7 @@ export function deriveMetrics(
   contextTreePath: string | null,
 ): EvalMetrics {
   let skillFileReadObserved = false;
+  let staleTreeArtifactAccessObserved = false;
   const firstTreeArgv: string[][] = [];
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const modelOutputTexts: string[] = [];
@@ -286,6 +343,9 @@ export function deriveMetrics(
   for (const event of events) {
     if (containsSkillFileRead(event)) {
       skillFileReadObserved = true;
+    }
+    if (containsStaleTreeArtifactAccess(event)) {
+      staleTreeArtifactAccessObserved = true;
     }
 
     modelOutputTexts.push(...collectModelOutputText(event));
@@ -315,6 +375,8 @@ export function deriveMetrics(
   const unboundAbsenceMentionObserved = containsUnboundAbsenceMention(finalResponse);
   const unboundGapStatementObserved = containsUnboundGapStatement(finalResponse);
   const unboundSetupSteeringObserved = containsUnboundSetupSteering(finalResponse);
+  const unresolvedGapStatementObserved = containsUnresolvedGapStatement(finalResponse);
+  const unresolvedBindingMentionObserved = containsUnresolvedBindingMention(finalResponse);
   const forbiddenContentHits = evalCase.forbidden.content.filter((pattern) => markdown.includes(pattern));
   const requiredDiffSnippets = evalCase.expected.requiredDiffSnippets ?? [];
   const modelVerifySucceeded = firstTreeCommandResults.some(
@@ -339,6 +401,7 @@ export function deriveMetrics(
     runnerExitCode,
     skillFileReadObserved,
     sourceRepoChanged: sourceRepoChanged(paths),
+    staleTreeArtifactAccessObserved,
     treeChanged: treeState.status.trim().length > 0,
     treeCliInvocationCount,
     treeDiff: treeState.diff,
@@ -349,6 +412,8 @@ export function deriveMetrics(
     unboundGapStatementObserved,
     unboundSetupSteeringObserved,
     unboundTreeArtifactsCreated: contextTreePath === null ? unboundTreeArtifactsCreated(paths) : false,
+    unresolvedBindingMentionObserved,
+    unresolvedGapStatementObserved,
     verifySucceeded,
   };
 }
@@ -374,6 +439,23 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
     );
   }
 
+  if (evalCase.expected.action === "report_unresolved_tree_write_gap") {
+    // The explicit unresolved-binding write is graded on the anchored
+    // unconfirmed-binding gap statement. Claiming "no Tree is bound"
+    // (unboundAbsenceMentionObserved) fails: the unconfirmed binding is not a
+    // confirmed unbind. The stale manifest/checkout must stay untouched.
+    return (
+      metrics.unresolvedGapStatementObserved &&
+      metrics.treeCliInvocationCount === 0 &&
+      !metrics.treeChanged &&
+      !metrics.treeSetupGuidanceObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved &&
+      !metrics.unboundAbsenceMentionObserved &&
+      !metrics.staleTreeArtifactAccessObserved
+    );
+  }
+
   if (!metrics.expectedResponseObserved) return false;
 
   if (evalCase.expected.action === "skip_tree_write_unbound") {
@@ -385,6 +467,19 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.unboundTreeArtifactsCreated
+    );
+  }
+
+  if (evalCase.expected.action === "skip_tree_write_unresolved") {
+    return (
+      metrics.treeCliInvocationCount === 0 &&
+      !metrics.skillFileReadObserved &&
+      !metrics.treeChanged &&
+      !metrics.treeSetupGuidanceObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundAbsenceMentionObserved &&
+      !metrics.unresolvedBindingMentionObserved &&
+      !metrics.staleTreeArtifactAccessObserved
     );
   }
 
@@ -407,7 +502,12 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
     evalCase.expected.action === "skip_tree_write_unbound" ||
     evalCase.expected.action === "report_unbound_tree_write_gap";
   const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
-  if (!unboundAction && !metrics.skillFileReadObserved) {
+  const unresolvedAction =
+    evalCase.expected.action === "skip_tree_write_unresolved" ||
+    evalCase.expected.action === "report_unresolved_tree_write_gap";
+  const unresolvedExplicit = evalCase.expected.action === "report_unresolved_tree_write_gap";
+  const treelessAction = unboundAction || unresolvedAction;
+  if (!treelessAction && !metrics.skillFileReadObserved) {
     notes.push("first-tree-write/SKILL.md was not read by the model.");
   }
   if (evalCase.expected.action === "skip_tree_write_unbound" && metrics.skillFileReadObserved) {
@@ -415,18 +515,36 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
       "Unbound ordinary task read first-tree-write/SKILL.md; an ordinary task must not route into the Tree write skill.",
     );
   }
-  if (unboundAction && metrics.treeCliInvocationCount > 0) {
-    notes.push(`Unbound case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
+  if (evalCase.expected.action === "skip_tree_write_unresolved" && metrics.skillFileReadObserved) {
+    notes.push(
+      "Unresolved-binding ordinary task read first-tree-write/SKILL.md; an ordinary task must not route into the Tree write skill.",
+    );
   }
-  if (unboundAction && metrics.treeSetupGuidanceObserved) {
-    notes.push("Unbound case response pushed Tree bind/create/setup guidance.");
+  if (treelessAction && metrics.treeCliInvocationCount > 0) {
+    notes.push(`Treeless case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
   }
-  if (unboundAction && metrics.treeSetupSurfaceGuidanceObserved) {
-    notes.push("Unbound case response pointed the user at a setup surface (Settings, web console, operator/admin).");
+  if (treelessAction && metrics.treeSetupGuidanceObserved) {
+    notes.push("Treeless case response pushed Tree bind/create/setup guidance.");
+  }
+  if (treelessAction && metrics.treeSetupSurfaceGuidanceObserved) {
+    notes.push("Treeless case response pointed the user at a setup surface (Settings, web console, operator/admin).");
   }
   if (evalCase.expected.action === "skip_tree_write_unbound" && metrics.unboundAbsenceMentionObserved) {
     notes.push(
       "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+    );
+  }
+  if (evalCase.expected.action === "skip_tree_write_unresolved" && metrics.unresolvedBindingMentionObserved) {
+    notes.push(
+      "Unresolved-binding ordinary task proactively mentioned the unconfirmed binding; an ordinary task must stay silent about the binding state.",
+    );
+  }
+  if (unresolvedAction && metrics.unboundAbsenceMentionObserved) {
+    notes.push("Unresolved-binding case claimed no Tree is bound; an unconfirmed binding is not a confirmed unbind.");
+  }
+  if (unresolvedAction && metrics.staleTreeArtifactAccessObserved) {
+    notes.push(
+      "Unresolved-binding case read or referenced the last-known workspace manifest or Context Tree checkout; this session never confirmed that binding.",
     );
   }
   if (unboundExplicit && !metrics.unboundGapStatementObserved) {
@@ -436,6 +554,16 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   }
   if (unboundExplicit && metrics.unboundSetupSteeringObserved) {
     notes.push("Unbound explicit Tree write carried extra setup/recovery steering beyond the gap statement.");
+  }
+  if (unresolvedExplicit && !metrics.unresolvedGapStatementObserved) {
+    notes.push(
+      "Unresolved-binding explicit Tree write did not state the specific gap: this write cannot be completed right now because the binding could not be confirmed.",
+    );
+  }
+  if (unresolvedExplicit && metrics.unboundSetupSteeringObserved) {
+    notes.push(
+      "Unresolved-binding explicit Tree write carried extra setup/recovery steering beyond the gap statement.",
+    );
   }
   if (unboundAction && metrics.unboundTreeArtifactsCreated) {
     notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");

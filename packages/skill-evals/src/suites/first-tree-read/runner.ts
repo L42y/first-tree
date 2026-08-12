@@ -57,6 +57,8 @@ export async function runFirstTreeReadCase(
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
     evalCase.unboundExplicitRead ?? false,
+    evalCase.unresolvedContinuation ?? false,
+    evalCase.unresolvedExplicitRead ?? false,
   );
   const grading = buildGrading(
     evalCase.id,
@@ -66,6 +68,8 @@ export async function runFirstTreeReadCase(
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
     evalCase.unboundExplicitRead ?? false,
+    evalCase.unresolvedContinuation ?? false,
+    evalCase.unresolvedExplicitRead ?? false,
   );
   const observability = deriveRunObservability(events);
 
@@ -77,6 +81,8 @@ export async function runFirstTreeReadCase(
       evalCase.readMode,
       evalCase.unboundContinuation ?? false,
       evalCase.unboundExplicitRead ?? false,
+      evalCase.unresolvedContinuation ?? false,
+      evalCase.unresolvedExplicitRead ?? false,
     ),
     expectedTrigger: evalCase.expectedTrigger,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,

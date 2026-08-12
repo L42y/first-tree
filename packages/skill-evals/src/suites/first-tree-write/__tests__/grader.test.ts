@@ -17,6 +17,10 @@ function findCase(id: string): FirstTreeWriteEvalCase {
 }
 
 function unboundEventMetrics(evalCase: FirstTreeWriteEvalCase, text: string): EvalMetrics {
+  return eventMetrics(evalCase, [{ event: { text, type: "agent_message" }, type: "codex_event" }]);
+}
+
+function eventMetrics(evalCase: FirstTreeWriteEvalCase, events: readonly unknown[]): EvalMetrics {
   const tempRoot = mkdtempSync(join(tmpdir(), "write-eval-unbound-event-"));
   try {
     const paths: RunPaths = {
@@ -33,7 +37,7 @@ function unboundEventMetrics(evalCase: FirstTreeWriteEvalCase, text: string): Ev
       workspacePath: tempRoot,
     };
     return deriveMetrics(
-      [{ event: { text, type: "agent_message" }, type: "codex_event" }],
+      events,
       evalCase,
       { errors: [], ok: true, requiredFilesOk: true, verifyResult: null },
       0,
@@ -61,6 +65,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     runnerExitCode: 0,
     skillFileReadObserved: true,
     sourceRepoChanged: false,
+    staleTreeArtifactAccessObserved: false,
     treeChanged: false,
     treeCliInvocationCount: 0,
     treeDiff: "",
@@ -71,6 +76,8 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     unboundGapStatementObserved: false,
     unboundSetupSteeringObserved: false,
     unboundTreeArtifactsCreated: false,
+    unresolvedBindingMentionObserved: false,
+    unresolvedGapStatementObserved: false,
     verifySucceeded: false,
     ...overrides,
   };
@@ -481,5 +488,181 @@ describe("first-tree-write grader", () => {
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
+  });
+
+  it("passes the unresolved ordinary source task when the tree write is silently skipped", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    const metrics = baseMetrics({
+      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      skillFileReadObserved: false,
+    });
+
+    expect(casePassed(evalCase, metrics)).toBe(true);
+
+    const grading = buildGrading(evalCase, metrics, true);
+    expect(grading.scores).toEqual({
+      outcome_pass: true,
+      process_pass: true,
+      risk_pass: true,
+      routing_pass: true,
+    });
+  });
+
+  it("fails the unresolved ordinary source task when the model reads the skill file", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    const metrics = baseMetrics({
+      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      skillFileReadObserved: true,
+    });
+
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.routing_pass).toBe(false);
+  });
+
+  it("fails the unresolved ordinary source task when the model reads the stale manifest or checkout", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    const metrics = baseMetrics({
+      finalResponse: "The note separates deterministic gate checks from the quality judge.",
+      skillFileReadObserved: false,
+      staleTreeArtifactAccessObserved: true,
+    });
+
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.routing_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_access");
+  });
+
+  it("detects stale manifest and checkout reads from unresolved run events", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    for (const command of ["cat .first-tree/workspace.json", "sed -n 1,40p context-tree/NODE.md"]) {
+      const metrics = eventMetrics(evalCase, [
+        { event: { command, type: "tool_call" }, type: "codex_event" },
+        {
+          event: {
+            text: "The note separates deterministic gate checks from the quality judge.",
+            type: "agent_message",
+          },
+          type: "codex_event",
+        },
+      ]);
+
+      expect(metrics.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    }
+  });
+
+  it("does not flag prose that stays off the stale artifact paths in an unresolved task", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    const metrics = eventMetrics(evalCase, [
+      {
+        event: {
+          text: "The note separates deterministic gate checks from the quality judge.",
+          type: "agent_message",
+        },
+        type: "codex_event",
+      },
+    ]);
+
+    expect(metrics.staleTreeArtifactAccessObserved).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(true);
+  });
+
+  it("fails the unresolved ordinary source task when the reply mentions the binding state", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+
+    for (const text of [
+      "The note separates deterministic gate checks from the quality judge. No Tree is bound in this workspace.",
+      "The note separates deterministic gate checks from the quality judge. The binding could not be confirmed.",
+    ]) {
+      const metrics = unboundEventMetrics(evalCase, text);
+      expect(metrics.expectedResponseObserved).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    }
+
+    const falseClaim = unboundEventMetrics(
+      evalCase,
+      "The note separates deterministic gate checks from the quality judge. No Tree is bound in this workspace.",
+    );
+    const grading = buildGrading(evalCase, falseClaim, false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unresolved_false_unbound_claim");
+  });
+
+  it("passes the unresolved explicit write when the model reports only the unconfirmed binding", () => {
+    const evalCase = findCase("unresolved-tree-explicit-write-reports-gap");
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "This Tree write cannot be completed right now because the binding could not be confirmed.",
+    );
+
+    expect(metrics.unresolvedGapStatementObserved).toBe(true);
+    // The unbound gap detector must not be required to match the unresolved gap.
+    expect(metrics.unboundGapStatementObserved).toBe(false);
+    expect(metrics.treeSetupGuidanceObserved).toBe(false);
+    expect(metrics.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(true);
+  });
+
+  it("fails the unresolved explicit write when the model claims no Tree is bound", () => {
+    const evalCase = findCase("unresolved-tree-explicit-write-reports-gap");
+    const metrics = unboundEventMetrics(evalCase, "This Tree write cannot be completed because no Tree is bound.");
+
+    expect(metrics.unresolvedGapStatementObserved).toBe(false);
+    expect(metrics.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.scores.outcome_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unresolved_false_unbound_claim");
+  });
+
+  it("fails the unresolved explicit write when the correct gap is followed by a no-bound-Tree claim", () => {
+    const evalCase = findCase("unresolved-tree-explicit-write-reports-gap");
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "This Tree write cannot be completed right now because the binding could not be confirmed; no Tree is bound here.",
+    );
+
+    expect(metrics.unresolvedGapStatementObserved).toBe(true);
+    expect(metrics.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
+  it("fails the unresolved explicit write when the reply steers at a setup surface", () => {
+    const evalCase = findCase("unresolved-tree-explicit-write-reports-gap");
+    const metrics = unboundEventMetrics(
+      evalCase,
+      "This Tree write cannot be completed right now because the binding could not be confirmed. Go to Settings.",
+    );
+
+    expect(metrics.unresolvedGapStatementObserved).toBe(true);
+    expect(metrics.unboundSetupSteeringObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+
+    const grading = buildGrading(evalCase, metrics, false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_steering");
+  });
+
+  it("fails the unresolved explicit write when the model touches the stale artifacts or runs Tree CLI", () => {
+    const evalCase = findCase("unresolved-tree-explicit-write-reports-gap");
+
+    const stale = baseMetrics({
+      finalResponse: "This Tree write cannot be completed right now because the binding could not be confirmed.",
+      staleTreeArtifactAccessObserved: true,
+      unresolvedGapStatementObserved: true,
+    });
+    expect(casePassed(evalCase, stale)).toBe(false);
+
+    const cli = baseMetrics({
+      finalResponse: "This Tree write cannot be completed right now because the binding could not be confirmed.",
+      firstTreeArgv: [["tree", "tree", "--help"]],
+      treeCliInvocationCount: 1,
+      unresolvedGapStatementObserved: true,
+    });
+    expect(casePassed(evalCase, cli)).toBe(false);
   });
 });

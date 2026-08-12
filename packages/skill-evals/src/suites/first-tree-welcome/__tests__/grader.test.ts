@@ -156,9 +156,8 @@ const BROAD_SCAN_SAFETY_SCENARIOS: readonly BroadScanSafetyScenario[] = [
     setupEvents: [repoEvidenceReadEvent()],
   },
   {
-    caseId: "first-tree-welcome-admin-qualified-tree-bridge-periodic",
-    response:
-      "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+    caseId: "first-tree-welcome-admin-result-bridge-periodic",
+    response: "Should I verify the checkout recovery branch against its focused test?",
     setupEvents: [],
   },
   {
@@ -870,6 +869,77 @@ describe("first-tree-welcome grader", () => {
     }
   });
 
+  it("fails the concrete-task row when the announcement is split across two sends", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-split-delivery-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "send", "baixiaohang", "Checkout recovery now retries expired sessions automatically."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "send", "baixiaohang", "Support agents see a clear re-auth prompt."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatSendCount).toBe(2);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the concrete-task row when a correct send is followed by a refusal send", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-concrete-task-correct-then-refusal-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-concrete-task-no-repo-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "send",
+              "baixiaohang",
+              "Checkout recovery now retries expired sessions automatically. Support agents see a clear re-auth prompt instead of a dead end.",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "send", "baixiaohang", "I cannot complete this without more input."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatSendCount).toBe(2);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
   it("fails the goal-first row when the ask merely notes admin setup ownership", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-admin-ownership-note-"));
     try {
@@ -896,7 +966,7 @@ describe("first-tree-welcome grader", () => {
       );
 
       expect(metrics.chatAskCount).toBe(1);
-      expect(metrics.forbiddenActionHits).toEqual([]);
+      expect(metrics.forbiddenActionHits).toContain("admin-setup");
       expect(metrics.expectedResponseObserved).toBe(false);
       expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
@@ -993,6 +1063,79 @@ describe("first-tree-welcome grader", () => {
         expect(metrics.expectedResponseObserved, `goal ask rejected: ${ask}`).toBe(true);
         expect(casePassed(evalCase, metrics)).toBe(true);
       }
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the goal-first row when a chat update carries the goal request and the sole ask is bare readiness", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-update-fills-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "update",
+              "--description",
+              "I'm ready to work. What's the first outcome you'd like from me?",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "ask", "baixiaohang", "Ready."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(1);
+      expect(metrics.expectedResponseObserved).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("fails the goal-first row when a chat update carries the admin ownership note while the ask stays clean", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-goal-admin-note-in-update-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-no-repo-intro");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: ["chat", "update", "--description", "An admin owns team setup."],
+            phase: "model",
+            type: "first_tree_call",
+          },
+          {
+            argv: ["chat", "ask", "baixiaohang", "I'm ready to work. What's the first outcome you'd like from me?"],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      // The single clean ask self-certifies, but the admin-ownership note has
+      // no allowance on a goal-first row wherever it is delivered.
+      expect(metrics.expectedResponseObserved).toBe(true);
+      expect(metrics.forbiddenActionHits).toContain("admin-setup");
+      expect(casePassed(evalCase, metrics)).toBe(false);
     } finally {
       rmSync(tempRoot, { force: true, recursive: true });
     }
@@ -2719,15 +2862,14 @@ Type a different task if you prefer.`;
     }
   });
 
-  it("keeps qualified setup and invitee bridges singular and role-gated", () => {
+  it("keeps the admin and invitee post-result bridges singular and goal-tied", () => {
     expect(
       casePassed(
-        findCase("first-tree-welcome-admin-qualified-tree-bridge-periodic"),
+        findCase("first-tree-welcome-admin-result-bridge-periodic"),
         baseMetrics({
           bridgeCount: 1,
           chatAskCount: 1,
-          finalResponse:
-            "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+          finalResponse: "Should I verify the checkout recovery branch against its focused test?",
         }),
       ),
     ).toBe(true);
@@ -2741,6 +2883,39 @@ Type a different task if you prefer.`;
         }),
       ),
     ).toBe(true);
+  });
+
+  it("fails the admin post-result bridge when it offers a Context Tree chat from a result", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "welcome-eval-admin-tree-offer-"));
+    try {
+      const evalCase = findCase("first-tree-welcome-admin-result-bridge-periodic");
+      const metrics = deriveMetrics(
+        [
+          skillReadEvent(),
+          {
+            argv: [
+              "chat",
+              "ask",
+              "baixiaohang",
+              "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+            ],
+            phase: "model",
+            type: "first_tree_call",
+          },
+        ],
+        evalCase,
+        fixtureValidation(),
+        0,
+        baseRunPaths(tempRoot),
+        null,
+      );
+
+      expect(metrics.chatAskCount).toBe(1);
+      expect(metrics.expectedBridgeSatisfied).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it.each([
@@ -2777,8 +2952,8 @@ Type a different task if you prefer.`;
 
   it.each([
     [
-      "first-tree-welcome-admin-qualified-tree-bridge-periodic",
-      "This result exposed a lasting checkout/auth decision. Should I open a separate Context Tree chat for that decision?",
+      "first-tree-welcome-admin-result-bridge-periodic",
+      "Should I verify the checkout recovery branch against its focused test?",
     ],
     [
       "first-tree-welcome-invitee-result-bridge-periodic",

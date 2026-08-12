@@ -105,7 +105,9 @@ function workspaceAgentsMarkdown(
   const treeLine =
     treeState === "unbound"
       ? "This briefing was generated without a bound Context Tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree. Only an explicit Tree write request names that specific capability impact: state that the write cannot be completed because no Tree is bound, without bind/create guidance."
-      : "The Context Tree is at `./context-tree`.";
+      : treeState === "unresolved"
+        ? "The Context Tree binding could not be confirmed when this briefing was generated — the server was unreachable or returned an invalid binding. This is not a confirmed unbind. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree. Only an explicit Tree write request names that specific capability impact: state that the write cannot be completed right now because the binding could not be confirmed, without claiming that no Tree is bound and without bind/create guidance."
+        : "The Context Tree is at `./context-tree`.";
 
   return `# Eval Workspace Instructions
 
@@ -280,7 +282,7 @@ function initializeGitRepo(paths: RunPaths, contextTreePath: string): void {
 
 export function setupFixture(evalCase: FirstTreeWriteEvalCase, paths: RunPaths, reporter: EvalReporter): string | null {
   const unbound = evalCase.fixture.treeState === "unbound";
-  const workspaceKind = unbound ? "unbound" : "context-tree";
+  const workspaceKind = evalCase.fixture.treeState === "populated" ? "context-tree" : evalCase.fixture.treeState;
   appendEvent(paths.eventsPath, {
     caseId: evalCase.id,
     sourceArtifact: evalCase.fixture.sourceArtifact,
@@ -292,7 +294,9 @@ export function setupFixture(evalCase: FirstTreeWriteEvalCase, paths: RunPaths, 
 
   installFirstTreeWriteSkill(paths.repoRoot, paths.workspacePath, evalCase.fixture.treeState);
   // Match the real managed runtime: no bound Tree means no workspace manifest
-  // and no declared source repo at all, never a `tree: null` placeholder.
+  // and no declared source repo at all, never a `tree: null` placeholder. An
+  // unresolved binding instead keeps the last-known manifest, source repo, and
+  // Tree checkout on disk — the model must not trust them.
   if (!unbound) {
     writeWorkspaceManifest(paths);
     writeSourceRepoFixture(paths);

@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -56,6 +56,27 @@ describe("first-tree-write fixture shape", { timeout: 20_000 }, () => {
       // The ordinary task input is still present.
       expect(existsSync(join(paths.workspacePath, "source-artifacts", "durable-decision-note.md"))).toBe(true);
       expect(existsSync(join(paths.workspacePath, "AGENTS.md"))).toBe(true);
+    } finally {
+      rmSync(paths.runRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("unresolved cases keep the stale manifest, source repo, and Tree checkout with an unconfirmed-binding briefing", () => {
+    const { contextTreePath, paths } = runFixture("unresolved-tree-skips-write");
+    try {
+      // The unresolved state keeps the last-known artifacts on disk; the
+      // briefing must still refuse to confirm the binding.
+      expect(contextTreePath).not.toBeNull();
+      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(true);
+      expect(existsSync(join(paths.workspacePath, "source-repo", "README.md"))).toBe(true);
+      expect(existsSync(join(paths.workspacePath, "context-tree", "NODE.md"))).toBe(true);
+      expect(existsSync(join(paths.workspacePath, "source-artifacts", "durable-decision-note.md"))).toBe(true);
+
+      const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
+      expect(briefing).toContain("The Context Tree binding could not be confirmed");
+      expect(briefing).toContain("not a confirmed unbind");
+      expect(briefing).not.toContain("generated without a bound Context Tree");
+      expect(briefing).not.toContain("The Context Tree is at `./context-tree`.");
     } finally {
       rmSync(paths.runRoot, { force: true, recursive: true });
     }

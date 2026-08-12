@@ -18,7 +18,7 @@
 // pool — that link is tolerated (reads through it keep working) until the agent
 // replaces it with a real clone per its briefing; the runtime never deletes it.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SOURCE_REPOS_DIRNAME,
@@ -45,10 +45,15 @@ export const RETIRED_WORKSPACE_MANIFEST_FILENAME = `${WORKSPACE_MANIFEST_FILENAM
 
 /**
  * Retire `<workspace>/.first-tree/workspace.json` by renaming it to
- * `workspace.json.retired`, overwriting any prior retired file. Idempotent
+ * `workspace.json.retired`, replacing any prior retired file. Idempotent
  * no-op when no manifest exists. Never touches `<workspace>/context-tree/` —
  * without a manifest that checkout is inert residue the agent may still hold
  * local state in.
+ *
+ * A prior archive is removed before the rename: POSIX `rename` overwrites an
+ * existing target, but Windows does not — without the removal a repeated
+ * unbind/rebind cycle would fail there and leave the ACTIVE manifest in
+ * place. The archive is derived state, so dropping the older copy is safe.
  *
  * Called only on an EXPLICIT unbind (the server returned `repo: null`). An
  * unresolved binding (fetch failure / invalid payload) must keep the
@@ -63,7 +68,9 @@ export function retireWorkspaceManifest(workspace: string, log?: (msg: string) =
     const stateDir = join(workspace, WORKSPACE_STATE_DIRNAME);
     const manifestPath = join(stateDir, WORKSPACE_MANIFEST_FILENAME);
     if (!existsSync(manifestPath)) return;
-    renameSync(manifestPath, join(stateDir, RETIRED_WORKSPACE_MANIFEST_FILENAME));
+    const retiredPath = join(stateDir, RETIRED_WORKSPACE_MANIFEST_FILENAME);
+    rmSync(retiredPath, { force: true });
+    renameSync(manifestPath, retiredPath);
   } catch (err) {
     log?.(`workspace manifest retirement failed: ${err instanceof Error ? err.message : String(err)}`);
   }

@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.8.3
+version: 0.8.4
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -56,6 +56,16 @@ connect a Tree merely because one is absent.
   that this Tree read cannot be completed because no Tree is bound; do not
   expand the absence into bind/create guidance. An explicit first-time Tree
   creation request routes to `first-tree-seed`, not this skill.
+- **Unresolved binding:** when the trusted managed briefing states the Tree
+  binding could not be confirmed, ordinary tasks exit this skill and continue
+  exactly as in the explicitly-unbound case. A last-known
+  `.first-tree/workspace.json` manifest or `context-tree/` checkout may still
+  be on disk from an earlier session — never read, trust, or recover from
+  them, because this session never confirmed that binding. Run no Tree
+  commands and offer no Tree setup guidance. If the user explicitly asked for
+  a Tree read, state only that this Tree read cannot be completed right now
+  because the binding could not be confirmed; never claim that no Tree is
+  bound (that is the explicitly-unbound state) and never guess a Tree.
 - **Declared but broken:** "broken" means the binding metadata, resolved
   path, or upstream identity is malformed or inconsistent — in that case
   keep failing closed for Tree operations — never guess a Tree. Report
