@@ -83,21 +83,28 @@ the normal write gate after any confirmation reply.
   guess when names or identities are ambiguous.
 - Treat member mapping as routing information, not permission to change Context
   Tree ownership.
+- Keep every confirmation for this meeting in the originating task chat. Never
+  use `chat create` to open a confirmation chat for an individual member or to
+  split the meeting's confirmations across chats.
 - Request confirmation only for a claim that is AI-only, ambiguous, disputed,
   weakly attributed, changes ownership or durable responsibility, or is
   otherwise not settled by the source. Do not repeat confirmation for a clear
   human-confirmed minute or explicit decision record, except that an ownership
   or durable responsibility change still requires confirmation from the
   affected human.
-- Send the relevant member a concise claim-level question. Use the runtime's
-  tracked question mechanism when that claim's Tree write depends on the
-  answer, then incorporate any correction into the source bundle.
+- Send each relevant member a concise claim-level question in that same chat.
+  Use a separate, individually addressed tracked question for every human whose
+  answer a claim's Tree write depends on; the questions may remain outstanding
+  independently in the shared timeline. Incorporate each correction into the
+  source bundle.
 - An unanswered, disputed, or unresolved claim blocks only itself. Keep it out
   of normal Tree content and continue with independently settled durable
   candidates.
-- If the environment cannot contact a needed member, report the unresolved
-  claim and prepared confirmation prompt. Stop before the Tree write only when
-  no independently settled durable candidate remains.
+- A needed human must already participate in the originating task chat. If the
+  environment cannot address them there, report the unresolved claim and
+  prepared confirmation prompt; do not create another chat as a fallback. Stop
+  before the Tree write only when no independently settled durable candidate
+  remains.
 
 ## Sync durable context
 
