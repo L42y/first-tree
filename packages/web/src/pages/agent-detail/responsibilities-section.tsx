@@ -141,7 +141,7 @@ export function ResponsibilitiesSection({
             </DialogDescription>
           </DialogHeader>
           {feedback ? (
-            <p className="text-body" style={{ color: "var(--state-error)" }} role="alert">
+            <p className="text-body text-destructive" role="alert">
               {feedback}
             </p>
           ) : null}

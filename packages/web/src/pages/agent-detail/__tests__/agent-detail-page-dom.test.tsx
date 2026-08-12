@@ -748,6 +748,30 @@ describe("AgentDetailPage", () => {
     await act(async () => cached.root.unmount());
   });
 
+  it("revalidates cached responsibilities when Profile mounts", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+    let resolveRefresh!: (value: AgentResourcesOutput) => void;
+    agentResourceMocks.getAgentResources.mockReturnValueOnce(
+      new Promise<AgentResourcesOutput>((resolve) => {
+        resolveRefresh = resolve;
+      }),
+    );
+    const cached = await renderDom("/agents/agent-1/profile", <ProfileTab />, (queryClient) => {
+      queryClient.setQueryData(
+        ["agent-resources", "agent-1"],
+        agentResources({ templateIds: [adoptedTemplate().id], adoptedTemplates: [adoptedTemplate()] }),
+      );
+    });
+    await waitForText(cached.container, "PR Engineer");
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledTimes(1);
+    await act(async () => resolveRefresh(agentResources({ templateIds: [], adoptedTemplates: [] })));
+    await waitForCondition(
+      () => !cached.container.textContent?.includes("Responsibilities"),
+      "Expected mount revalidation to remove stale responsibilities",
+    );
+    await act(async () => cached.root.unmount());
+  });
+
   it("redirects the retired deep link to Profile", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
     const view = await renderDom("/agents/agent-1/responsibilities", <ProfileTab />);

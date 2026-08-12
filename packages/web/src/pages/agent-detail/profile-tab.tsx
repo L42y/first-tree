@@ -15,7 +15,6 @@ export function ProfileTab() {
   const [editOpen, setEditOpen] = useState(false);
   const resources = useAgentResources(ctx.uuid, {
     enabled: !!ctx.uuid && !ctx.isHuman,
-    refetchOnMount: false,
   });
   // Identity + Appearance share one Edit entry (PR2 §Profile). Both the Identity
   // section's Edit button and the avatar open the same unified dialog.
