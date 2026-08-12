@@ -173,6 +173,8 @@ describe("formatInboundContent", () => {
       '[From: Feishu · type=integration · externalUser={"displayName":"张三","openId":"ou_human","userId":"u_human"}]',
     );
     expect(out).toContain("<feishu-message-reference>");
+    expect(out).toContain("ordinary external-channel work, not a First Tree onboarding chat");
+    expect(out).toContain("Do not load first-tree-welcome");
     expect(out).toContain("`first-tree feishu intent`");
     expect(out).toContain("`first-tree feishu credential-env`");
     expect(out).toContain("Do not use an existing global Bot");

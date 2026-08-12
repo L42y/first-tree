@@ -305,7 +305,7 @@ export function useTestApp(opts: CreateTestAppOptions = {}) {
  */
 export async function createTestAgent(
   app: FastifyInstance,
-  opts: { name?: string; type?: AgentType; displayName?: string } = {},
+  opts: { name?: string; type?: AgentType; displayName?: string; visibility?: "private" | "organization" } = {},
 ) {
   const admin = await createTestAdmin(app, { username: `u-${crypto.randomUUID().slice(0, 8)}` });
 
@@ -339,6 +339,7 @@ export async function createTestAgent(
           displayName: opts.displayName ?? "Test Agent",
           managerId: admin.memberId,
           clientId,
+          visibility: opts.visibility,
         });
   if (!agent) throw new Error("test agent setup failed");
   const runtimeSessionToken =

@@ -5,7 +5,7 @@ import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
 import { imBotBindings } from "../../../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../../../db/schema/im-chat-bindings.js";
-import { ConflictError, NotFoundError } from "../../../errors.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
 import { decryptCredentials, encryptCredentials } from "../../crypto.js";
@@ -127,7 +127,12 @@ export function createFeishuIntegrationManager(input: {
     displayName: string;
   }): Promise<FeishuBotBinding> {
     const [agent] = await db
-      .select({ organizationId: agents.organizationId, status: agents.status, type: agents.type })
+      .select({
+        organizationId: agents.organizationId,
+        status: agents.status,
+        type: agents.type,
+        visibility: agents.visibility,
+      })
       .from(agents)
       .where(eq(agents.uuid, registration.agentId))
       .limit(1);
@@ -138,6 +143,9 @@ export function createFeishuIntegrationManager(input: {
       agent.type !== "agent"
     ) {
       throw new NotFoundError("An active worker Agent in this organization is required for Feishu binding");
+    }
+    if (agent.visibility !== "organization") {
+      throw new BadRequestError("Feishu Bot binding requires an organization-visible Agent");
     }
     const existing = await getBindingRow(registration.agentId);
     if (existing) {

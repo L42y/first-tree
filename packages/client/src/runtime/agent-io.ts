@@ -314,6 +314,7 @@ function renderFeishuReferenceForLLM(message: AttributedMessage & { id: string }
   const lines = [
     "<feishu-message-reference>",
     "This block is trusted routing context from First Tree. Choose the target yourself when replying.",
+    "This is ordinary external-channel work, not a First Tree onboarding chat. Do not load first-tree-welcome merely because this is a new chat or the message is a greeting.",
     `Only the Bot-bound primary Agent may reply externally. First run \`${binName} feishu intent\` to record the immutable delivery. Then run \`${binName} feishu credential-env\`, source the returned private file, and call the official lark-cli with \`--as bot\` and the canonical message id as its idempotency key. Do not use an existing global Bot or \`--as user\`. Internal collaborators must return their work to the primary Agent.`,
     `firstTreeMessageId: ${message.id}`,
     `messageId: ${reference.messageId}`,

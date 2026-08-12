@@ -74,9 +74,24 @@ describe("official Feishu QR registration", () => {
     sdkMocks.disconnect.mockResolvedValue(undefined);
   });
 
+  it("rejects Bot registration for a private Agent", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Private Agent", visibility: "private" });
+
+    await expect(
+      app.feishuIntegration.startRegistration({
+        agentId: a.agent.uuid,
+        organizationId: a.organizationId,
+        displayName: "Private Agent · First Tree",
+      }),
+    ).rejects.toThrow("Feishu Bot binding requires an organization-visible Agent");
+    expect(sdkMocks.registerApp).not.toHaveBeenCalled();
+    expect(await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid))).toEqual([]);
+  });
+
   it("uses registerApp, encrypts the returned secret, and activates the connected Bot", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     await app.db
       .insert(serverInstances)
       .values({ instanceId: "test-instance", lastHeartbeat: new Date() })
@@ -143,7 +158,7 @@ describe("official Feishu QR registration", () => {
 
   it("lets a second replica take over an expired lease with a higher fencing epoch", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const bindingId = `binding-${crypto.randomUUID()}`;
     const encryptionKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     await app.db.insert(imBotBindings).values({
@@ -188,7 +203,7 @@ describe("official Feishu QR registration", () => {
 
   it("does not let a late registration success revive a revoked binding", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     sdkMocks.registerApp.mockImplementationOnce(
       async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
@@ -220,7 +235,7 @@ describe("official Feishu QR registration", () => {
 
   it("settles a registration revoked before QR even when the provider ignores abort", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     sdkMocks.registerApp.mockImplementationOnce(async () => completion.promise);
 
@@ -246,7 +261,7 @@ describe("official Feishu QR registration", () => {
 
   it("settles a registration stopped before QR even when the provider ignores abort", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     const stoppedSdk = {
       ...feishuSdk,
@@ -281,7 +296,7 @@ describe("official Feishu QR registration", () => {
 
   it("does not let a late registration failure overwrite a revoked binding", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     sdkMocks.registerApp.mockImplementationOnce(
       async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
@@ -305,7 +320,7 @@ describe("official Feishu QR registration", () => {
 
   it("hides a live registration URL from an org-visible non-manager", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     sdkMocks.registerApp.mockImplementationOnce(
       async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
@@ -341,7 +356,7 @@ describe("official Feishu QR registration", () => {
 
   it("aborts a QR registration timeout and ignores late provider callbacks", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     let providerSignal: AbortSignal | undefined;
     const timeoutSdk = {
@@ -377,7 +392,7 @@ describe("official Feishu QR registration", () => {
 
   it("rejects a QR callback that arrives after timeout while the provider stays pending", async () => {
     const app = getApp();
-    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
     const completion = deferred<{ client_id: string; client_secret: string }>();
     let onQRCodeReady: ((value: { url: string; expireIn: number }) => void) | undefined;
     const timeoutSdk = {

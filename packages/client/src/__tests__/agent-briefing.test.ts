@@ -400,6 +400,7 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
       "# Skills (First Tree Managed)",
     );
     expect(treelessFamily).toContain("first-tree-welcome");
+    expect(treelessFamily).toContain("never an external-channel or `type=integration` message such as Feishu");
     expect(treelessFamily).toContain("first-tree-seed");
     expect(treelessFamily).toContain("first-tree-file-bug");
     expect(treelessFamily).not.toContain("first-tree-gitlab");

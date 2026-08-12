@@ -2,8 +2,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setCliBinding } from "@first-tree/client";
-import { afterEach, describe, expect, it } from "vitest";
-import { writeCredentialEnvironment } from "../commands/feishu/credential-env.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { requestTenantAccessToken, writeCredentialEnvironment } from "../commands/feishu/credential-env.js";
 import { credentialEnvironmentHint, describeFile } from "../commands/feishu/intent.js";
 
 const cleanup: string[] = [];
@@ -14,18 +14,58 @@ afterEach(async () => {
 
 describe("Feishu agentic CLI helpers", () => {
   it("writes Bot credentials to a private file without returning the secret", async () => {
-    const path = await writeCredentialEnvironment({
-      appId: "cli_app",
-      appSecret: "secret-with-'quote",
-      bindingId: "binding-1",
-    });
+    const path = await writeCredentialEnvironment(
+      {
+        appId: "cli_app",
+        appSecret: "secret-with-'quote",
+        bindingId: "binding-1",
+      },
+      "tenant-token",
+    );
     cleanup.push(dirname(path));
     const content = await readFile(path, "utf8");
     expect(content).toContain("LARKSUITE_CLI_APP_ID");
     expect(content).toContain("LARKSUITE_CLI_APP_SECRET");
     expect(content).toContain("LARKSUITE_CLI_CONFIG_DIR");
     expect(content).toContain("LARKSUITE_CLI_BRAND");
+    expect(content).toContain("LARKSUITE_CLI_TENANT_ACCESS_TOKEN");
+    expect(content).toContain("tenant-token");
     if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
+  it("exchanges the bound Bot App credential for a tenant token", async () => {
+    const request = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 0, tenant_access_token: "tenant-token", expire: 7200 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    await expect(
+      requestTenantAccessToken({ appId: "cli_app", appSecret: "bot-secret", bindingId: "binding-1" }, request),
+    ).resolves.toBe("tenant-token");
+    expect(request).toHaveBeenCalledWith(
+      "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ app_id: "cli_app", app_secret: "bot-secret" }),
+      }),
+    );
+  });
+
+  it("rejects an invalid tenant token response", async () => {
+    const request = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ code: 10003, msg: "invalid app credential" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    await expect(
+      requestTenantAccessToken({ appId: "cli_app", appSecret: "bad-secret", bindingId: "binding-1" }, request),
+    ).rejects.toThrow("Feishu tenant token exchange failed: invalid app credential");
   });
 
   it("identifies media by bytes rather than by mutable path", async () => {
