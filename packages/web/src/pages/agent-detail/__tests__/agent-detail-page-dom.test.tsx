@@ -702,6 +702,7 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Identity");
     expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
+    expect(view.container.textContent).not.toContain("Some profile details couldn’t be loaded.");
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
     expect(templateMocks.listAgentTemplates).not.toHaveBeenCalled();
     await act(async () => view.root.unmount());
@@ -726,15 +727,47 @@ describe("AgentDetailPage", () => {
     await act(async () => view.root.unmount());
   });
 
-  it("hides the section on an initial resources error but preserves cached non-empty provenance on refetch failure", async () => {
+  it("keeps the Profile quiet during the initial resources load", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
-    agentResourceMocks.getAgentResources.mockRejectedValueOnce(new Error("resources down"));
+    let resolveResources!: (value: AgentResourcesOutput) => void;
+    agentResourceMocks.getAgentResources.mockReturnValueOnce(
+      new Promise<AgentResourcesOutput>((resolve) => {
+        resolveResources = resolve;
+      }),
+    );
+
+    const loading = await renderDom("/agents/agent-1/profile", <ProfileTab />);
+    await waitForText(loading.container, "Identity");
+    expect(loading.container.textContent).not.toContain("Responsibilities");
+    expect(loading.container.textContent).not.toContain("Some profile details couldn’t be loaded.");
+
+    await act(async () => resolveResources(agentResources({ templateIds: [], adoptedTemplates: [] })));
+    await flush();
+    expect(loading.container.textContent).not.toContain("Responsibilities");
+    await act(async () => loading.root.unmount());
+  });
+
+  it("retries an initial resources error without speculating about responsibilities", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
+    agentResourceMocks.getAgentResources
+      .mockRejectedValueOnce(new Error("resources down"))
+      .mockResolvedValueOnce(agentResources({ templateIds: [], adoptedTemplates: [] }));
     const failed = await renderDom("/agents/agent-1/profile", <ProfileTab />);
-    await waitForText(failed.container, "Identity");
+    await waitForText(failed.container, "Some profile details couldn’t be loaded.");
     expect(failed.container.textContent).not.toContain("Responsibilities");
     expect(failed.container.textContent).not.toContain("resources down");
+    await click(exactButtonByText(failed.container, "Retry"));
+    await waitForCondition(
+      () => !failed.container.textContent?.includes("Some profile details couldn’t be loaded."),
+      "Expected the Profile warning to clear after retry",
+    );
+    expect(failed.container.textContent).not.toContain("Responsibilities");
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledTimes(2);
     await act(async () => failed.root.unmount());
+  });
 
+  it("preserves cached non-empty provenance on a background refetch failure", async () => {
+    const { ProfileTab } = await import("../profile-tab.js");
     agentResourceMocks.getAgentResources.mockResolvedValueOnce(
       agentResources({ templateIds: [adoptedTemplate().id], adoptedTemplates: [adoptedTemplate()] }),
     );
@@ -745,6 +778,7 @@ describe("AgentDetailPage", () => {
       await cached.queryClient.invalidateQueries({ queryKey: ["agent-resources", "agent-1"] });
     });
     expect(cached.container.textContent).toContain("PR Engineer");
+    expect(cached.container.textContent).not.toContain("Some profile details couldn’t be loaded.");
     await act(async () => cached.root.unmount());
   });
 

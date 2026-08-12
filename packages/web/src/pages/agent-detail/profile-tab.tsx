@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Button } from "../../components/ui/button.js";
 import { AppearanceSection } from "./appearance-section.js";
 import { useAgentResources } from "./capability-section.js";
 import { DangerZone } from "./danger-zone.js";
@@ -34,6 +35,21 @@ export function ProfileTab() {
         description={null}
         aside={<AppearanceSection agent={ctx.agent} canEdit={ctx.canManageAgent} onEdit={onEdit} variant="inline" />}
       />
+      {!ctx.isHuman && !resources.data && resources.isError ? (
+        <div className="flex flex-wrap items-center gap-2 py-3" role="alert">
+          <p className="m-0 text-body text-destructive">Some profile details couldn’t be loaded.</p>
+          <Button
+            type="button"
+            className="min-h-11"
+            size="xs"
+            variant="outline"
+            disabled={resources.reloading}
+            onClick={() => void resources.reload()}
+          >
+            {resources.reloading ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      ) : null}
       {!ctx.isHuman && resources.data && resources.data.templateIds.length > 0 ? (
         <ResponsibilitiesSection
           agentUuid={ctx.uuid}
