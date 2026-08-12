@@ -170,7 +170,7 @@ export type {
 } from "./runtime/child-process-registry.js";
 export { CHILD_CATEGORIES, getChildProcessRegistry } from "./runtime/child-process-registry.js";
 export type { CliBinding } from "./runtime/cli-binding.js";
-export { setCliBinding } from "./runtime/cli-binding.js";
+export { getCliBinding, setCliBinding } from "./runtime/cli-binding.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
 export { Deduplicator } from "./runtime/deduplicator.js";

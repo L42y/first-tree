@@ -374,4 +374,41 @@ describe("official Feishu QR registration", () => {
     const [stored] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
     expect(stored).toMatchObject({ status: "error", appId: null, appSecretCipher: null });
   });
+
+  it("rejects a QR callback that arrives after timeout while the provider stays pending", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const completion = deferred<{ client_id: string; client_secret: string }>();
+    let onQRCodeReady: ((value: { url: string; expireIn: number }) => void) | undefined;
+    const timeoutSdk = {
+      ...feishuSdk,
+      registerApp: vi.fn(
+        async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
+          onQRCodeReady = options.onQRCodeReady;
+          return completion.promise;
+        },
+      ),
+    } as FeishuSdkDependencies;
+    const manager = createFeishuIntegrationManager({
+      db: app.db,
+      notifier: app.notifier,
+      encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      instanceId: "registration-late-qr-test",
+      sdk: timeoutSdk,
+      timings: { registrationQrTimeoutMs: 10 },
+    });
+
+    await expect(
+      manager.startRegistration({
+        agentId: a.agent.uuid,
+        organizationId: a.organizationId,
+        displayName: "Agent A · First Tree",
+      }),
+    ).rejects.toThrow("Timed out waiting for Feishu registration QR code");
+    onQRCodeReady?.({ url: "https://open.feishu.cn/register?code=too-late", expireIn: 120 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const [stored] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+    expect(stored).toMatchObject({ status: "error", registrationExpiresAt: null });
+  });
 });

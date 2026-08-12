@@ -1,9 +1,10 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setCliBinding } from "@first-tree/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { writeCredentialEnvironment } from "../commands/feishu/credential-env.js";
-import { describeFile } from "../commands/feishu/intent.js";
+import { credentialEnvironmentHint, describeFile } from "../commands/feishu/intent.js";
 
 const cleanup: string[] = [];
 
@@ -39,5 +40,14 @@ describe("Feishu agentic CLI helpers", () => {
     expect(first.filename).toBe("report.pdf");
     expect(first.sha256).not.toBe(second.sha256);
     expect(first.size).not.toBe(second.size);
+  });
+
+  it.each([
+    ["prod", "first-tree", "first-tree"],
+    ["staging", "first-tree-staging", "first-tree-staging"],
+    ["dev", "first-tree-dev", null],
+  ])("uses the %s channel CLI name in the credential hint", (_channel, binName, packageName) => {
+    setCliBinding({ binName, packageName });
+    expect(credentialEnvironmentHint()).toContain(`\`${binName} feishu credential-env\``);
   });
 });

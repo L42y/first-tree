@@ -67,7 +67,10 @@ export function createFeishuIntegrationManager(input: {
     createClient: (options) => new Client(options),
   };
   const channels = new Map<string, ConnectedChannel>();
-  const registrations = new Map<string, { controller: AbortController; cancel: (error: Error) => void }>();
+  const registrations = new Map<
+    string,
+    { controller: AbortController; terminal: boolean; cancel: (error: Error) => void }
+  >();
   const senderNames = createFeishuSenderNameResolver();
   let timer: ReturnType<typeof setInterval> | null = null;
   let initialTimer: ReturnType<typeof setTimeout> | null = null;
@@ -154,13 +157,17 @@ export function createFeishuIntegrationManager(input: {
       resolveQr = resolve;
       rejectQr = reject;
     });
-    registrations.set(id, {
+    const registrationEntry = {
       controller,
+      terminal: false,
       cancel: (error) => {
+        if (registrationEntry.terminal) return;
+        registrationEntry.terminal = true;
         controller.abort();
         rejectQr(error);
       },
-    });
+    };
+    registrations.set(id, registrationEntry);
     // A provider can complete registration immediately after emitting the QR
     // callback. Hold that transition until the initiating request has read the
     // persisted QR state, otherwise the fast completion can clear the URL
@@ -171,12 +178,11 @@ export function createFeishuIntegrationManager(input: {
     });
     const qrTimeout = setTimeout(() => {
       const error = new Error("Timed out waiting for Feishu registration QR code");
-      controller.abort();
       // Local request completion must not depend on the row transition. A
       // concurrent revoke can legitimately make the conditional UPDATE a
       // no-op while the provider ignores AbortSignal forever.
-      rejectQr(error);
-      void transitionRegistrationToError(id, error, true).catch(() => undefined);
+      registrationEntry.cancel(error);
+      void transitionRegistrationToError(id, error, false).catch(() => undefined);
     }, registrationQrTimeoutMs);
 
     void sdk
@@ -194,6 +200,10 @@ export function createFeishuIntegrationManager(input: {
           events: { items: { tenant: ["im.message.receive_v1"] } },
         },
         onQRCodeReady: ({ url, expireIn }) => {
+          if (registrationEntry.terminal) {
+            rejectQr(new Error("Feishu registration is no longer active"));
+            return;
+          }
           const expiresAt = new Date(Date.now() + expireIn * 1000);
           void db
             .update(imBotBindings)

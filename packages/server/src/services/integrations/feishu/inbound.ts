@@ -7,7 +7,6 @@ import {
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { and, eq, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
-import { chatMembership } from "../../../db/schema/chat-membership.js";
 import { chats } from "../../../db/schema/chats.js";
 import type { imBotBindings } from "../../../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../../../db/schema/im-chat-bindings.js";
@@ -15,7 +14,7 @@ import { messages } from "../../../db/schema/messages.js";
 import { processedEvents } from "../../../db/schema/processed-events.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
-import { recomputeChatWatchers } from "../../chat/membership/participants.js";
+import { addChatParticipants } from "../../chat/membership/participants.js";
 import { sendMessage } from "../../chat/message.js";
 import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
@@ -227,19 +226,7 @@ async function resolveOrCreateChatBinding(db: Database, binding: Binding, input:
         .returning();
       if (!chat) throw new Error("Feishu chat creation returned no row");
 
-      await tx.insert(chatMembership).values({
-        chatId,
-        agentId: binding.agentId,
-        role: "owner",
-        accessMode: "speaker",
-        mode: "mention_only",
-        source: "feishu",
-      });
-      // Web workspace visibility is driven by the manager's derived watcher
-      // row, not by the fallback supervisor access check. Raw Feishu chat
-      // creation therefore has to close the same speaker -> watcher invariant
-      // as ordinary participant writers.
-      await recomputeChatWatchers(tx, chatId);
+      await addChatParticipants(tx, chatId, [{ agentId: binding.agentId, role: "owner" }], { source: "feishu" });
 
       const [created] = await tx
         .insert(imChatBindings)

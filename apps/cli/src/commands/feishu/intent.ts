@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
+import { getCliBinding } from "@first-tree/client";
 import type { FeishuOutboundMediaIdentity } from "@first-tree/shared";
 import type { Command } from "commander";
 import { fail, success } from "../../cli/output.js";
@@ -63,14 +64,19 @@ export function registerFeishuIntentCommand(feishu: Command): void {
         });
         success({
           ...result,
-          hint:
-            "Now call the official lark-cli directly with --as bot and use idempotencyKey as its idempotency UUID. " +
-            "Run `first-tree feishu credential-env` first when Bot environment variables are not loaded.",
+          hint: credentialEnvironmentHint(),
         });
       } catch (error) {
         handleSdkError(error);
       }
     });
+}
+
+export function credentialEnvironmentHint(): string {
+  return (
+    "Now call the official lark-cli directly with --as bot and use idempotencyKey as its idempotency UUID. " +
+    `Run \`${getCliBinding().binName} feishu credential-env\` first when Bot environment variables are not loaded.`
+  );
 }
 
 function validateOptions(options: IntentOptions): void {

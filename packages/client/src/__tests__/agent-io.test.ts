@@ -173,8 +173,8 @@ describe("formatInboundContent", () => {
       '[From: Feishu · type=integration · externalUser={"displayName":"张三","openId":"ou_human","userId":"u_human"}]',
     );
     expect(out).toContain("<feishu-message-reference>");
-    expect(out).toContain("First Tree CLI's `feishu intent` command");
-    expect(out).toContain("run `feishu credential-env`");
+    expect(out).toContain("`first-tree feishu intent`");
+    expect(out).toContain("`first-tree feishu credential-env`");
     expect(out).toContain("Do not use an existing global Bot");
     expect(out).toContain("Internal collaborators must return their work to the primary Agent");
     expect(out).toContain("firstTreeMessageId: ft-message-1");
@@ -182,6 +182,13 @@ describe("formatInboundContent", () => {
     expect(out).toContain("threadId: omt_thread");
     expect(out).toContain("rootId: om_root");
     expect(out).toContain("Please inspect this thread.");
+
+    for (const binName of ["first-tree-staging", "first-tree-dev"]) {
+      setCliBinding({ binName, packageName: binName === "first-tree-dev" ? null : binName });
+      const channelOut = await formatInboundContent(msg, cache);
+      expect(channelOut).toContain(`\`${binName} feishu intent\``);
+      expect(channelOut).toContain(`\`${binName} feishu credential-env\``);
+    }
   });
 
   it("adds the trusted Ask agent reply contract without changing the visible question", async () => {
