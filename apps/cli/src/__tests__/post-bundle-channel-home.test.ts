@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -31,28 +31,72 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
  * is a cached no-op.
  */
 const DIST = resolve(__dirname, "../../dist/cli/index.mjs");
+const DIST_ROOT = resolve(__dirname, "../../dist");
 const REPO_ROOT = resolve(__dirname, "../../../..");
-// Also bear-witness that the private client-runtime dist is present — the
-// bundle imports it at runtime (workspace symlink → packages/client-runtime),
-// and a missing `packages/client-runtime/dist/index.mjs` triggers
-// `ERR_MODULE_NOT_FOUND` from inside the spawned dist. CI's test job
-// historically didn't run `pnpm build` before tests, so on a cold
-// runner this file may be missing even though apps/cli/dist exists
-// (e.g. from a previous local build cached in the worktree).
-const CLIENT_DIST = resolve(REPO_ROOT, "packages/client-runtime/dist/index.mjs");
+// Private client packages are build-time workspace inputs that tsdown must
+// resolve (via each package's `dist` export) and inline into the public CLI
+// artifact. They must NOT remain as runtime imports in `apps/cli/dist/**`.
+// Cold CI runners historically skip a pre-test `pnpm build`, so ensure the
+// private package dist outputs exist before asserting the inlined CLI artifact.
+const PRIVATE_CLIENT_DIST_ENTRIES = [
+  "packages/cloud-client/dist/index.mjs",
+  "packages/client-runtime/dist/index.mjs",
+  "packages/client-providers/dist/index.mjs",
+] as const;
+const PRIVATE_CLIENT_DIST = PRIVATE_CLIENT_DIST_ENTRIES.map((rel) => resolve(REPO_ROOT, rel));
+const PRIVATE_CLIENT_SPECIFIER_RE =
+  /(?:from|import)\s*\(?\s*["']@first-tree\/(?:cloud-client|client-runtime|client-providers)(?:\/[^"']*)?["']/;
+
+function listDistModules(root: string): string[] {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (entry.endsWith(".mjs") || entry.endsWith(".js") || entry.endsWith(".cjs")) {
+        out.push(full);
+      }
+    }
+  };
+  walk(root);
+  return out;
+}
+
+function assertPrivateClientPackagesInlined(): void {
+  if (!existsSync(DIST_ROOT)) {
+    throw new Error(`CLI dist root missing: ${DIST_ROOT}`);
+  }
+  const hits: string[] = [];
+  for (const file of listDistModules(DIST_ROOT)) {
+    const text = readFileSync(file, "utf8");
+    if (PRIVATE_CLIENT_SPECIFIER_RE.test(text)) {
+      hits.push(relative(DIST_ROOT, file));
+    }
+  }
+  expect(
+    hits,
+    `apps/cli/dist must inline private client packages; unresolved workspace specifiers remain in: ${hits.join(", ")}`,
+  ).toEqual([]);
+}
 
 function ensureDistBuilt(): void {
-  if (existsSync(DIST) && existsSync(CLIENT_DIST)) return;
+  if (existsSync(DIST) && PRIVATE_CLIENT_DIST.every((path) => existsSync(path))) {
+    assertPrivateClientPackagesInlined();
+    return;
+  }
   // Full monorepo build via the root `pnpm build` script (= `turbo run
   // build`). Turbo respects per-task `dependsOn` so packages build in
-  // topological order — `@first-tree/shared` → client packages →
+  // topological order — `@first-tree/shared` → private client packages →
   // `first-tree-dev` — and caches keep warm runs sub-second.
   //
   // **cwd: REPO_ROOT is load-bearing**. Without it, `pnpm build` runs
-  // apps/cli/package.json's `build` script (which only invokes tsdown
-  // for apps/cli) instead of the root's `turbo run build`, leaving
-  // workspace deps like `packages/client-runtime/dist/` unbuilt. The bundle
-  // then ERR_MODULE_NOT_FOUNDs on internal client packages at spawn time.
+  // apps/cli/package.json's `build` script (CLI-only tsdown) instead of the
+  // root's `turbo run build`, leaving private package `dist/` inputs
+  // unbuilt so the public CLI cannot resolve/inline them.
   const build = spawnSync("pnpm", ["build"], {
     cwd: REPO_ROOT,
     encoding: "utf-8",
@@ -65,11 +109,14 @@ function ensureDistBuilt(): void {
   if (!existsSync(DIST)) {
     throw new Error(`build succeeded but ${DIST} still missing`);
   }
-  if (!existsSync(CLIENT_DIST)) {
-    throw new Error(
-      `build succeeded but ${CLIENT_DIST} still missing — root pnpm build may have skipped workspace deps`,
-    );
+  for (const path of PRIVATE_CLIENT_DIST) {
+    if (!existsSync(path)) {
+      throw new Error(
+        `build succeeded but ${path} still missing — root pnpm build may have skipped private client packages`,
+      );
+    }
   }
+  assertPrivateClientPackagesInlined();
 }
 
 type HomeInfo = {
@@ -125,6 +172,10 @@ describe("post-bundle channel-home isolation", () => {
 
   afterEach(() => {
     rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it("inlines private client packages so apps/cli/dist has no unresolved workspace specifiers", () => {
+    assertPrivateClientPackagesInlined();
   });
 
   it("dist binary resolves home to channel default (~/.first-tree-dev for dev channel)", () => {
