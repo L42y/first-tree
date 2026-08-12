@@ -1,4 +1,4 @@
-import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
+import { chatMetadataSchema, type ListMeChatsResponse, type MeChatRow } from "@first-tree/shared";
 import { type InfiniteData, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
@@ -245,6 +245,8 @@ export function ChatByIdView({
   });
 
   const isWatching = chatDetail?.viewerMembershipKind === "watching";
+  const parsedMetadata = chatDetail ? chatMetadataSchema.safeParse(chatDetail.metadata) : null;
+  const isFeishu = parsedMetadata?.success === true && parsedMetadata.data.source === "feishu";
 
   if (chatDetailError) {
     return <ChatUnavailableState onClearChat={onClearChat} />;
@@ -266,7 +268,7 @@ export function ChatByIdView({
     );
   }
 
-  if (isWatching) {
+  if (isWatching || isFeishu) {
     return (
       <ChatView
         agentId={primaryAgent}
@@ -280,11 +282,19 @@ export function ChatByIdView({
         isTrial={isTrial}
         titleFallback={chatDetail?.title ?? null}
         presentation={presentation}
-        joinAction={{
-          onJoin: () => joinMut.mutate(),
-          joining: joinMut.isPending,
-          error: joinMut.isError ? (joinMut.error instanceof Error ? joinMut.error.message : "Failed to join") : null,
-        }}
+        joinAction={
+          isFeishu
+            ? undefined
+            : {
+                onJoin: () => joinMut.mutate(),
+                joining: joinMut.isPending,
+                error: joinMut.isError
+                  ? joinMut.error instanceof Error
+                    ? joinMut.error.message
+                    : "Failed to join"
+                  : null,
+              }
+        }
         narrow={narrow}
         onShowConversations={onShowConversations}
       />

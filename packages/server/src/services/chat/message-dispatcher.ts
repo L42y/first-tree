@@ -22,8 +22,10 @@ type DbLike = Pick<PostgresJsDatabase<Record<string, never>>, "select">;
  * NOT NULL); we still normalise defensively below in case an older replica
  * lags or a test fixture seeds an unbounded row.
  */
-type RawMessageRow = Omit<Message, "source" | "configVersion" | "recipientMode"> & {
+type RawMessageRow = Omit<Message, "source" | "senderKind" | "senderProvider" | "configVersion" | "recipientMode"> & {
   source: string | null;
+  senderKind?: Message["senderKind"];
+  senderProvider?: Message["senderProvider"];
 };
 
 function normaliseSource(source: string | null): Message["source"] {
@@ -92,6 +94,8 @@ export async function buildClientMessagePayload(
     id: message.id,
     chatId: message.chatId,
     senderId: message.senderId,
+    senderKind: message.senderKind ?? "member",
+    senderProvider: message.senderProvider ?? null,
     format: message.format,
     content: message.content,
     metadata: message.metadata,
@@ -137,6 +141,8 @@ export async function buildClientMessagePayloadsForInbox(
     id: m.id,
     chatId: m.chatId,
     senderId: m.senderId,
+    senderKind: m.senderKind ?? "member",
+    senderProvider: m.senderProvider ?? null,
     format: m.format,
     content: m.content,
     metadata: m.metadata,

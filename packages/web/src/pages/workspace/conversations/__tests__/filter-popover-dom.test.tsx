@@ -120,7 +120,7 @@ function StatefulFilter({
   onResetAll: () => void;
   initialParticipants?: string[];
 }) {
-  const [origin, setOrigin] = useState<ChatSource[]>(["github", "gitlab", "agent"]);
+  const [origin, setOrigin] = useState<ChatSource[]>(["github", "gitlab", "agent", "feishu"]);
   const [engagement, setEngagement] = useState<ChatEngagementView>("archived");
   const [participants, setParticipants] = useState<string[]>(initialParticipants);
   return (
@@ -204,6 +204,7 @@ describe("FilterPopover", () => {
     expect(checkboxByLabel("GitHub").checked).toBe(true);
     expect(checkboxByLabel("GitLab").checked).toBe(true);
     expect(checkboxByLabel("Agent").checked).toBe(true);
+    expect(checkboxByLabel("Feishu").checked).toBe(true);
     expect(checkboxByLabel("Human").checked).toBe(false);
 
     // Status is EXCLUSIVE — picking Active sets engagement to exactly "active".
@@ -221,10 +222,12 @@ describe("FilterPopover", () => {
 
     // Narrow again by unchecking down toward a single source.
     await click(checkboxByLabel("Human"));
-    expect(onOriginChange).toHaveBeenLastCalledWith(["github", "gitlab", "agent"]);
+    expect(onOriginChange).toHaveBeenLastCalledWith(["github", "gitlab", "agent", "feishu"]);
     await click(checkboxByLabel("Agent"));
-    expect(onOriginChange).toHaveBeenLastCalledWith(["github", "gitlab"]);
+    expect(onOriginChange).toHaveBeenLastCalledWith(["github", "gitlab", "feishu"]);
     await click(checkboxByLabel("GitLab"));
+    expect(onOriginChange).toHaveBeenLastCalledWith(["github", "feishu"]);
+    await click(checkboxByLabel("Feishu"));
     expect(onOriginChange).toHaveBeenLastCalledWith(["github"]);
 
     // The last checked source CANNOT be removed — no zero-source state.

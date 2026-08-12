@@ -755,6 +755,18 @@ describe("probeCapabilities (aggregator)", () => {
     expect(okProbe).toHaveBeenCalledTimes(7);
   });
 
+  it("publishes the machine-level lark-cli capability alongside runtime providers", async () => {
+    const okProbe = vi.fn().mockResolvedValue(fakeEntry("ok"));
+    const externalToolProbe = vi.fn().mockReturnValue({ ...fakeEntry("ok"), runtimeSource: "path" });
+    const probes = recordByRuntimeProvider(RUNTIME_PROVIDER_IDS.map((provider) => [provider, okProbe] as const));
+
+    const { probeCapabilities } = await import("../providers/capabilities/index.js");
+    const caps = await probeCapabilities({ probes, externalToolProbe });
+
+    expect(externalToolProbe).toHaveBeenCalledWith("lark-cli");
+    expect(caps["lark-cli"]).toMatchObject({ state: "ok", available: true, runtimeSource: "path" });
+  });
+
   it("converts enabled-provider probe rejections into error capability entries", async () => {
     const probes = {
       "claude-code": vi.fn().mockRejectedValue(new Error("claude probe failed")),

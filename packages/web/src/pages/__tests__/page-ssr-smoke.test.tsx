@@ -332,6 +332,8 @@ function message(overrides: Partial<Message> & { id: string; senderId: string; c
     id: overrides.id,
     chatId: overrides.chatId ?? "chat-1",
     senderId: overrides.senderId,
+    senderKind: overrides.senderKind ?? "member",
+    senderProvider: overrides.senderProvider ?? null,
     format: overrides.format ?? "text",
     content: overrides.content ?? "Please review `docs/plan.md` and @nova for rollout risks.",
     metadata: overrides.metadata ?? {},

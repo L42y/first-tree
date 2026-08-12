@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentSkills,
   CreateAgent,
+  FeishuBotBinding,
   NewChatDefaultCandidatesRequest,
   NewChatDefaultCandidatesResponse,
   SwitchAgentRuntime,
@@ -180,6 +181,25 @@ export function suspendAgent(uuid: string): Promise<Agent> {
 
 export function reactivateAgent(uuid: string): Promise<Agent> {
   return api.post<Agent>(`/agents/${encodeURIComponent(uuid)}/reactivate`, {});
+}
+
+export function getAgentFeishuBinding(uuid: string): Promise<{ binding: FeishuBotBinding | null }> {
+  return api.get(`/agents/${encodeURIComponent(uuid)}/feishu-binding`);
+}
+
+export function startAgentFeishuRegistration(
+  uuid: string,
+  displayName: string,
+): Promise<{ binding: FeishuBotBinding }> {
+  return api.post(`/agents/${encodeURIComponent(uuid)}/feishu-binding/registrations`, { displayName });
+}
+
+export function revokeAgentFeishuBinding(uuid: string): Promise<void> {
+  return api.delete(`/agents/${encodeURIComponent(uuid)}/feishu-binding`);
+}
+
+export function createAgentFeishuSetupChat(uuid: string): Promise<{ chatId: string }> {
+  return api.post(`/agents/${encodeURIComponent(uuid)}/feishu-binding/setup-chat`, { requestInstall: true });
 }
 
 // -- Test Connection --

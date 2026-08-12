@@ -666,6 +666,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             {
               id: "request-for-human",
               senderId: "agent-2",
+              senderKind: "member",
+              senderProvider: null,
               format: "request",
               content: "Which layout should ship?",
               metadata: {
@@ -735,6 +737,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             ...imageIds.map((attachmentId, index) => ({
               id: `preceding-${index}`,
               senderId: "agent-2",
+              senderKind: "member" as const,
+              senderProvider: null,
               format: "request" as const,
               content: `Decision ${index}`,
               metadata: {
@@ -754,6 +758,8 @@ describe("SessionManager additional delivery token and payload coverage", () => 
             {
               id: "newer-non-request-image",
               senderId: "agent-2",
+              senderKind: "member",
+              senderProvider: null,
               format: "text",
               content: "An unrelated image",
               metadata: {

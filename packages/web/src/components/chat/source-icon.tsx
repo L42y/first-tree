@@ -37,6 +37,7 @@ const SOURCE_ICON_MAP: Record<ChatSource, LucideIcon> = {
   github: Github,
   gitlab: Gitlab,
   agent: Sparkles,
+  feishu: MessageCircle,
 };
 
 const GITHUB_ENTITY_ICON_MAP: Record<GithubEntityType, LucideIcon> = {
@@ -51,6 +52,7 @@ const SOURCE_LABEL_MAP: Record<ChatSource, string> = {
   github: "GitHub",
   gitlab: "GitLab",
   agent: "Agent-created task",
+  feishu: "Feishu",
 };
 
 const GITHUB_ENTITY_LABEL_MAP: Record<GithubEntityType, string> = {

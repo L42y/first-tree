@@ -7,6 +7,8 @@ function msg(id: string, createdAt: string): MessageWithDelivery {
     id,
     chatId: "chat-1",
     senderId: "user-1",
+    senderKind: "member",
+    senderProvider: null,
     format: "text",
     content: { text: id },
     metadata: {},

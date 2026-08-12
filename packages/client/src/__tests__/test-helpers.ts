@@ -80,6 +80,8 @@ export function mockEntry(
       id: messageId,
       chatId,
       senderId: opts.senderId ?? "sender-1",
+      senderKind: "member",
+      senderProvider: null,
       format: "text",
       content: opts.content ?? "hello",
       metadata: opts.metadata ?? {},

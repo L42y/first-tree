@@ -13,6 +13,7 @@ import {
   FIRST_CHAT_ORIENTATION_CHAT_STATES,
   FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY,
   FIRST_CHAT_ORIENTATION_METADATA_KEY,
+  feishuMessageMetadataSchema,
   imageBatchRefContentSchema,
   imageRefContentSchema,
   MAX_BATCH_ATTACHMENTS,
@@ -95,6 +96,7 @@ function stripUntrustedMetadataKeys(
   const shouldStripFirstChatOrientationContinuation = FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY in meta;
   const shouldStripFirstChatOrientation =
     !options.allowFirstChatOrientation && FIRST_CHAT_ORIENTATION_METADATA_KEY in meta;
+  const shouldStripFeishu = !options.allowFeishuMetadata && "feishu" in meta;
   if (
     !shouldStripSystemSender &&
     !shouldStripAddressedAgentIds &&
@@ -102,7 +104,8 @@ function stripUntrustedMetadataKeys(
     !shouldStripCliBodyOrigin &&
     !shouldStripEditedAt &&
     !shouldStripFirstChatOrientationContinuation &&
-    !shouldStripFirstChatOrientation
+    !shouldStripFirstChatOrientation &&
+    !shouldStripFeishu
   ) {
     return meta;
   }
@@ -114,6 +117,7 @@ function stripUntrustedMetadataKeys(
         key !== CLI_BODY_ORIGIN_METADATA_KEY &&
         key !== "editedAt" &&
         key !== FIRST_CHAT_ORIENTATION_CONTINUATION_METADATA_KEY &&
+        (options.allowFeishuMetadata || key !== "feishu") &&
         (options.allowFirstChatOrientation || key !== FIRST_CHAT_ORIENTATION_METADATA_KEY) &&
         (options.allowSystemSender || key !== "systemSender"),
     ),
@@ -423,6 +427,16 @@ export type DeferredSendMessagePostCommitEffects = {
 };
 
 export type SendMessageOptions = {
+  /** Trusted caller-provided UUIDv7, used when external delivery metadata must derive its idempotency key before insert. */
+  messageId?: string;
+  /** Trusted Feishu ingress identity. Never exposed through an HTTP request body. */
+  integrationSender?: {
+    kind: "integration";
+    provider: "feishu";
+    organizationId: string;
+  };
+  /** Allow the trusted integration/CLI bridge to persist server-authored `metadata.feishu`. */
+  allowFeishuMetadata?: boolean;
   /**
    * Trusted internal delivery mode that persists an explicitly addressed
    * message as replayable context without waking any recipient. The ordinary
@@ -605,11 +619,21 @@ export function preflightMessageSendIntent(input: {
   // `effectiveContent`, not `data.content`: the receipt is derived from the
   // body that actually gets persisted, so a double-encoded send cannot store a
   // note the reader sees while the Server parsed a JSON string around it.
-  const incomingMeta = applyContextDecisionTrustBoundary(
+  let incomingMeta = applyContextDecisionTrustBoundary(
     stripUntrustedMetadataKeys(rawIncomingMeta, options),
     senderType,
     effectiveContent,
   );
+  if (options.allowFeishuMetadata && "feishu" in incomingMeta) {
+    const parsedFeishu = feishuMessageMetadataSchema.safeParse(incomingMeta.feishu);
+    if (!parsedFeishu.success) throw new BadRequestError("Malformed trusted Feishu message metadata");
+    if (Boolean(options.integrationSender) !== (parsedFeishu.data.direction === "inbound")) {
+      throw new BadRequestError(
+        "Feishu integration senders are inbound-only; outbound intents require a member sender",
+      );
+    }
+    incomingMeta = { ...incomingMeta, feishu: parsedFeishu.data };
+  }
   validateDocumentContext(incomingMeta);
   const parsedResolution = requestResolutionSchema.safeParse(incomingMeta.resolves);
   if (incomingMeta.resolves !== undefined && !parsedResolution.success) {
@@ -885,7 +909,7 @@ async function sendMessageInner(
     //    v2: `chat_membership.mode` is **not** SELECTed — fan-out no longer
     //    reads it. Likewise `chats.type` is locked to 'group' since
     //    first-tree-context PR #465 and no longer drives any decision here.
-    const [participants, [senderRow], [chatRowSnapshot]] = await Promise.all([
+    const [participants, [storedSenderRow], [chatRowSnapshot]] = await Promise.all([
       tx
         .select({
           agentId: chatMembership.agentId,
@@ -903,10 +927,27 @@ async function sendMessageInner(
         .from(agents)
         .where(eq(agents.uuid, senderId))
         .limit(1),
-      tx.select({ metadata: chats.metadata }).from(chats).where(eq(chats.id, chatId)).limit(1),
+      tx
+        .select({ metadata: chats.metadata, organizationId: chats.organizationId })
+        .from(chats)
+        .where(eq(chats.id, chatId))
+        .limit(1),
     ]);
+    const senderRow =
+      storedSenderRow ??
+      (options.integrationSender
+        ? {
+            inboxId: "",
+            organizationId: options.integrationSender.organizationId,
+            type: "integration",
+          }
+        : undefined);
     if (!senderRow) {
       throw new NotFoundError(`Sender agent "${senderId}" not found`);
+    }
+    if (!chatRowSnapshot) throw new NotFoundError(`Chat "${chatId}" not found`);
+    if (chatRowSnapshot.organizationId !== senderRow.organizationId) {
+      throw new ForbiddenError("Message sender and chat belong to different organizations");
     }
     const prepared = preflightMessageSendIntent({
       chatId,
@@ -1109,13 +1150,15 @@ async function sendMessageInner(
     // mismatch was caught when the web client's "new messages" divider
     // relied on lex ordering to find newer-than-anchor messages and
     // silently dropped some (PR #286, rev 8).
-    const messageId = uuidv7();
+    const messageId = options.messageId ?? uuidv7();
     const [msg] = await tx
       .insert(messages)
       .values({
         id: messageId,
         chatId,
         senderId,
+        senderKind: options.integrationSender?.kind ?? "member",
+        senderProvider: options.integrationSender?.provider ?? null,
         format: data.format,
         content: outboundContent,
         metadata: metadataToStore,
@@ -1454,6 +1497,9 @@ export async function editMessage(
     if (!msg) throw new NotFoundError(`Message "${messageId}" not found`);
     if (msg.chatId !== chatId) throw new NotFoundError(`Message "${messageId}" not found in this chat`);
     if (msg.senderId !== senderId) throw new ForbiddenError("Only the sender can edit a message");
+    if (feishuMessageMetadataSchema.safeParse(msg.metadata.feishu).success) {
+      throw new ForbiddenError("Feishu message history cannot be edited");
+    }
     const protectedContextReviewKey = Object.keys(msg.metadata).find(
       (key) => key === "contextTreeReviewer" || key.startsWith("contextReview"),
     );

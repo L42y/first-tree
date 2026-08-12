@@ -237,6 +237,8 @@ function sentMessageResponse() {
     id: "msg-runtime-notice",
     chatId: "chat-app-server-extra",
     senderId: AGENT_ID,
+    senderKind: "member" as const,
+    senderProvider: null,
     format: "text",
     content: "notice",
     metadata: {},

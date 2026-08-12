@@ -4985,6 +4985,8 @@ export class SessionManager {
       id: msg.id,
       chatId: entry.chatId ?? msg.chatId,
       senderId: msg.senderId,
+      senderKind: msg.senderKind,
+      senderProvider: msg.senderProvider,
       format: msg.format,
       content: msg.content as string | Record<string, unknown>,
       metadata: msg.metadata,

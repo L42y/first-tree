@@ -3,6 +3,7 @@ import type { UserScope } from "./scope/types.js";
 import type { ConfigService } from "./services/agents/config.js";
 import type { ResourcesService } from "./services/agents/resources/catalog.js";
 import type { AttachmentBlobStore } from "./services/attachment-blob-store.js";
+import type { FeishuIntegrationManager } from "./services/integrations/feishu/manager.js";
 import type { Notifier } from "./services/notifier.js";
 
 export type AgentIdentity = {
@@ -21,6 +22,7 @@ declare module "fastify" {
     notifier: Notifier;
     configService: ConfigService;
     resourcesService: ResourcesService;
+    feishuIntegration: FeishuIntegrationManager;
     /**
      * Command-package version advertised via the `server:welcome` WS frame.
      * Exposed as a getter so the npm-registry poller can refresh the value

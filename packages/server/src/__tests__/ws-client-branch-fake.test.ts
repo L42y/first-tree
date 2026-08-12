@@ -132,6 +132,8 @@ function messageRow(overrides: Partial<ClientMessage> = {}): ClientMessage {
     id: "msg_1",
     chatId: "chat_1",
     senderId: "agent_1",
+    senderKind: "member",
+    senderProvider: null,
     format: "text",
     content: "hello",
     metadata: {},
