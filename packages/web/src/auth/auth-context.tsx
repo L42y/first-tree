@@ -71,6 +71,18 @@ type AuthContextValue = {
    * membership returned by `/me`.
    */
   currentMembership: MeMembership | null;
+  /**
+   * `true` only once an AUTHORITATIVE `/me` has confirmed the caller belongs to
+   * no Team — the ordinary state after a solo sign-in, which no longer
+   * provisions one. Everything org-scoped is unavailable here: `withOrg` throws
+   * without a selected org, so this is the signal that routes the user to the
+   * Team-less entry instead of mounting the workspace.
+   *
+   * Deliberately gated on `meAuthoritative`, not `meLoaded`: a `/me` transport
+   * failure also leaves `memberships` empty, and treating that as "no Team"
+   * would eject a member with Teams out of their workspace.
+   */
+  hasNoTeam: boolean;
   organizationId: string | null;
   memberId: string | null;
   role: string | null;
@@ -688,6 +700,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         memberships,
         currentMembership,
+        hasNoTeam: meAuthoritative && memberships.length === 0,
         organizationId: currentMembership?.organizationId ?? null,
         memberId: currentMembership?.id ?? null,
         role: currentMembership?.role ?? null,

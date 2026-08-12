@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TemplateUseIntent } from "../template-use-intent.js";
+import { firstTeamAgentName, TemplateUseIntent } from "../template-use-intent.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -34,8 +34,14 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: "2026-07-01T00:00:00.000Z" as string | null,
     organizationId: "org-1" as string | null,
     memberships: [] as MeMembership[],
+    hasNoTeam: false,
     selectOrganization: vi.fn(async (_orgId: string) => undefined),
+    refreshMe: vi.fn(async () => undefined),
   },
+}));
+
+const teamAgentsMocks = vi.hoisted(() => ({
+  provisionFirstTeamAgent: vi.fn(),
 }));
 
 vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
@@ -57,6 +63,7 @@ vi.mock("../../../analytics.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../analytics.js")>()),
   ...analyticsMocks,
 }));
+vi.mock("../../../api/team-agents.js", () => teamAgentsMocks);
 vi.mock("../../../auth/auth-context.js", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: () => authMock.value,
@@ -187,6 +194,8 @@ describe("TemplateUseIntent", () => {
     authMock.value.onboardingCompletedAt = NOW;
     authMock.value.organizationId = "org-1";
     authMock.value.memberships = [membership("m-1", "org-1", "Acme Team")];
+    authMock.value.hasNoTeam = false;
+    authMock.value.refreshMe = vi.fn(async () => undefined);
     // Default: the switch lands on the exact target with a fresh memberships
     // array (the real post-switch /me) — matching selectOrganization's
     // client-side semantics.
@@ -544,5 +553,153 @@ describe("TemplateUseIntent", () => {
     await click(buttonByText("Continue"));
     await rerender();
     expect(dialogOpenCount()).toBeGreaterThan(0);
+  });
+});
+
+describe("TemplateUseIntent — Team-less caller", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    dialogMock.props.length = 0;
+    authMock.value.meLoaded = true;
+    // The state a solo sign-in now leaves behind: authenticated, no Team.
+    authMock.value.hasNoTeam = true;
+    authMock.value.organizationId = null;
+    authMock.value.memberships = [];
+    authMock.value.onboardingStep = "connect";
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    authMock.value.onboardingDismissedAt = null;
+    authMock.value.refreshMe = vi.fn(async () => undefined);
+    authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
+      authMock.value.organizationId = orgId;
+      authMock.value.hasNoTeam = false;
+    });
+    teamAgentsMocks.provisionFirstTeamAgent.mockResolvedValue({
+      organizationId: "org-new",
+      memberId: "member-new",
+      teamCreated: true,
+      agentCreated: true,
+      agent: {
+        uuid: "agent-new",
+        name: "pr-engineer",
+        displayName: "PR Engineer",
+        visibility: "organization",
+        clientId: null,
+      },
+    });
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = null;
+    container = null;
+    document.body.innerHTML = "";
+  });
+
+  it("offers a single confirm instead of an empty Team chooser", async () => {
+    await renderIntent();
+
+    expect(document.body.textContent).toContain("Create Team Agent");
+    // No Team to pick between, and no per-org onboarding handoff to write —
+    // there is no org to key one to.
+    expect(document.body.querySelectorAll('input[type="radio"]')).toHaveLength(0);
+    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("onboarding-stub");
+  });
+
+  it("provisions the Team and Agent together, then activates the new Team", async () => {
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+
+    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledWith({
+      name: "pr-engineer",
+      displayName: "PR Engineer",
+      templateIds: [TEMPLATE.id],
+    });
+    // The destination is org-scoped, so the just-created Team is activated
+    // before navigating away from this public page.
+    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
+    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+  });
+
+  it("surfaces a recoverable error and re-reads /me when provisioning fails", async () => {
+    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(new Error("boom"));
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+
+    expect(document.body.textContent).toContain("Nothing was created");
+    expect(authMock.value.refreshMe).toHaveBeenCalled();
+    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
+    expect(navigateMock).not.toHaveBeenCalled();
+
+    // Retry works from the same screen.
+    await click(buttonByText("Create Team Agent"));
+    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(2);
+    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+  });
+
+  it("does not claim nothing was created when only activating the new Team failed", async () => {
+    authMock.value.selectOrganization = vi.fn(async () => {
+      throw new Error("post-switch /me failed");
+    });
+    // The provision succeeded, so a real /me re-read now reports the Team the
+    // server created — the caller is no longer Team-less.
+    authMock.value.refreshMe = vi.fn(async () => {
+      authMock.value.hasNoTeam = false;
+      authMock.value.memberships = [membership("m-new", "org-new", "New Team")];
+      authMock.value.organizationId = "org-new";
+    });
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+    await rerender();
+
+    // The Agent exists. Telling the user otherwise would send them off to
+    // create a second one.
+    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("was created");
+    expect(document.body.textContent).not.toContain("Nothing was created");
+    expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores a second click while the first provision is in flight", async () => {
+    let release = (): void => undefined;
+    teamAgentsMocks.provisionFirstTeamAgent.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              organizationId: "org-new",
+              memberId: "member-new",
+              teamCreated: true,
+              agentCreated: true,
+              agent: {
+                uuid: "agent-new",
+                name: "pr-engineer",
+                displayName: "PR Engineer",
+                visibility: "organization",
+                clientId: null,
+              },
+            });
+        }),
+    );
+    await renderIntent();
+    await click(buttonByText("Create Team Agent"));
+    // The button flipped to its in-flight label and a second click is a no-op.
+    await click(buttonByText("Creating…"));
+
+    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      release();
+    });
+    await flush();
+    expect(navigateMock).toHaveBeenCalledWith("/?c=draft&with=agent-new");
+  });
+});
+
+describe("firstTeamAgentName", () => {
+  it("uses the Template slug and yields to the server for reserved names", () => {
+    expect(firstTeamAgentName("pr-engineer")).toBe("pr-engineer");
+    expect(firstTeamAgentName("agent")).toBeUndefined();
+    expect(firstTeamAgentName("a".repeat(80))).toHaveLength(64);
   });
 });

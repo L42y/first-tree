@@ -1,14 +1,31 @@
-import type { AgentTemplatePublicTemplate, MeMembership } from "@first-tree/shared";
+import {
+  AGENT_NAME_MAX_LENGTH,
+  type AgentTemplatePublicTemplate,
+  isReservedAgentName,
+  type MeMembership,
+} from "@first-tree/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate } from "react-router";
 import { trackEvent } from "../../analytics.js";
+import { provisionFirstTeamAgent } from "../../api/team-agents.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { NewAgentDialog } from "../../components/new-agent-dialog.js";
 import { Button } from "../../components/ui/button.js";
 import { OptionCard } from "../../components/ui/option-card.js";
 import { writeOnboardingTemplateIntent } from "../../utils/onboarding-flags.js";
 import { shouldEnterOnboarding } from "../onboarding/steps.js";
+
+/**
+ * Agent slug for the first Team Agent, derived from the Template the user
+ * picked. PR2 asks for no name: the Team is brand new, so the derived slug
+ * cannot collide, and the Agent stays @-mentionable from the moment it exists.
+ * Reserved slugs fall back to letting the server name the row.
+ */
+export function firstTeamAgentName(templateSlug: string): string | undefined {
+  const candidate = templateSlug.slice(0, AGENT_NAME_MAX_LENGTH);
+  return isReservedAgentName(candidate) ? undefined : candidate;
+}
 
 /**
  * Signed-in resolution of the canonical Template intent (`/templates/:slug?use=1`).
@@ -51,7 +68,9 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     onboardingCompletedAt,
     organizationId,
     memberships,
+    hasNoTeam,
     selectOrganization,
+    refreshMe,
   } = useAuth();
 
   const needsOnboarding = shouldEnterOnboarding({
@@ -101,6 +120,11 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   const [selectedOrgId, setSelectedOrgId] = useState<string | null>(organizationId);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  // First-provision flight, for the Team-less caller. Set synchronously on
+  // click so a double-click cannot fire two provisions; the server converges
+  // them anyway, but the second would still churn a request and a cache clear.
+  const [provisioning, setProvisioning] = useState(false);
+  const [provisionError, setProvisionError] = useState<string | null>(null);
 
   // Confirmation judgement — only after the switch promise resolved AND a
   // FRESH /me membership snapshot landed. `selectOrganization` resolves only
@@ -147,6 +171,92 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       );
     }
     return <Navigate to="/onboarding" replace />;
+  }
+
+  /**
+   * The Team-less path: one confirm creates the Team and the Agent together.
+   * There is no Team to choose between and none to name — the server derives
+   * the Team, makes the caller its Admin, and adopts this Template, all or
+   * nothing. A failure leaves the account exactly as it was, so retrying is
+   * safe; a retry that races a success converges on the same Agent.
+   */
+  async function handleProvisionFirst(): Promise<void> {
+    if (provisioning) return;
+    setProvisionError(null);
+    setProvisioning(true);
+
+    let result: Awaited<ReturnType<typeof provisionFirstTeamAgent>>;
+    try {
+      result = await provisionFirstTeamAgent({
+        name: firstTeamAgentName(template.slug),
+        displayName: template.name,
+        templateIds: [template.id],
+      });
+    } catch {
+      setProvisioning(false);
+      // `/me` is the authority on what actually landed. Re-read it so a
+      // partially-observed failure cannot leave this page insisting the user
+      // has no Team while the server already gave them one.
+      await refreshMe();
+      setProvisionError("We couldn't create your team agent. Nothing was created — try again.");
+      return;
+    }
+
+    trackEvent("agent_create_draft_open", { template_count: 1 });
+    // The Agent EXISTS from here on. Activating the new Team is a separate,
+    // retryable step, so its failure must not be reported as "nothing was
+    // created" — that would send the user to create a second Agent.
+    try {
+      await selectOrganization(result.organizationId);
+    } catch {
+      setProvisioning(false);
+      await refreshMe();
+      setProvisionError("Your team agent was created, but we couldn't open its team. Reload to continue.");
+      return;
+    }
+    navigate(`/?c=draft&with=${encodeURIComponent(result.agent.uuid)}`);
+  }
+
+  // Stay on this screen for the whole flight, after a success, and while an
+  // error is showing. Provisioning gives the caller a Team, so `hasNoTeam`
+  // flips false the moment /me re-reads — without this the user would be
+  // dropped into the Team chooser, either for one frame before `navigate`
+  // lands or, worse, with the failure message silently discarded.
+  if (hasNoTeam || provisioning || provisionError) {
+    return (
+      <div className="landing-marketing min-h-screen overflow-y-auto bg-background text-foreground">
+        <header className="px-4 py-3">
+          <Link
+            to={`/templates/${template.slug}`}
+            className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            ← {template.name}
+          </Link>
+        </header>
+
+        <main className="mx-auto w-full max-w-md px-4 pb-16 pt-8">
+          <h1 className="text-headline">Start with {template.name}</h1>
+          <p className="text-body text-fg-2" style={{ marginTop: "var(--sp-2)" }}>
+            {template.public.userValue}
+          </p>
+          <p className="text-body text-fg-2" style={{ marginTop: "var(--sp-2)" }}>
+            Creating this agent also creates your team, with you as its admin. You can pick where it runs afterwards.
+          </p>
+
+          {provisionError && (
+            <p className="text-caption text-destructive" role="alert" style={{ marginTop: "var(--sp-2)" }}>
+              {provisionError}
+            </p>
+          )}
+
+          <div className="mt-6">
+            <Button variant="cta" onClick={() => void handleProvisionFirst()} disabled={provisioning}>
+              {provisioning ? "Creating…" : "Create Team Agent"}
+            </Button>
+          </div>
+        </main>
+      </div>
+    );
   }
 
   async function handleConfirm(): Promise<void> {
