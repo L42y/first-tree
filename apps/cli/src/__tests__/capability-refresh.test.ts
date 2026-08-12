@@ -38,6 +38,7 @@ const allOk = (): ClientCapabilities => ({
   cursor: ok(),
   grok: ok(),
   "kimi-code": ok(),
+  "lark-cli": ok(),
   opencode: ok(),
   pi: ok(),
 });
@@ -49,6 +50,7 @@ const codexMissing = (): ClientCapabilities => ({
   cursor: ok(),
   grok: ok(),
   "kimi-code": ok(),
+  "lark-cli": ok(),
   opencode: ok(),
   pi: ok(),
 });
@@ -80,6 +82,7 @@ const codexPendingSnapshot = (): ClientCapabilities => ({
   cursor: ok(),
   grok: ok(),
   "kimi-code": ok(),
+  "lark-cli": ok(),
   opencode: ok(),
   pi: ok(),
 });
@@ -92,6 +95,7 @@ const codexUnauthSnapshot = (): ClientCapabilities => ({
   cursor: ok(),
   grok: ok(),
   "kimi-code": ok(),
+  "lark-cli": ok(),
   opencode: ok(),
   pi: ok(),
 });
