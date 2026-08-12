@@ -125,7 +125,6 @@ vi.mock("../../analytics.js", () => analyticsMocks);
 
 const authMock = vi.hoisted(() => {
   const memberships: MeMembership[] = [];
-  const currentMembership: MeMembership | null = null;
   const nullableString = (value: string | null): string | null => value;
   const onboardingStep = (value: "connect" | "create_agent" | "completed" | null) => value;
   return {
@@ -134,7 +133,7 @@ const authMock = vi.hoisted(() => {
       meLoaded: true,
       user: { id: "user-self", username: "gandy", displayName: "Gandy", avatarUrl: null },
       memberships,
-      currentMembership,
+      currentMembership: null as MeMembership | null,
       organizationId: nullableString("org-1"),
       memberId: nullableString("member-self"),
       role: nullableString("admin"),
@@ -646,6 +645,8 @@ beforeEach(() => {
     memberId: "member-self",
     agentId: "human-agent-self",
     organizationId: "org-1",
+    currentMembership: null,
+    onboardingCompletedAt: "2026-05-01T00:00:00.000Z",
     user: { id: "user-self", username: "gandy", displayName: "Gandy", avatarUrl: null },
   };
   activityMocks.listClients.mockResolvedValue(CLIENTS.filter((client) => client.userId === "user-self"));
@@ -959,6 +960,10 @@ describe("web DOM interaction coverage", () => {
     const { NewChatDraft } = await import("../workspace/conversations/new-chat-draft.js");
     const cacheKey = "first-tree:new-chat-default-agent:user-self:org-1";
     const onCreated = vi.fn();
+    authMock.value.onboardingCompletedAt = null;
+    authMock.value.currentMembership = {
+      firstTeamAgentContinuation: { agentId: "agent-1", status: "active" },
+    } as unknown as MeMembership;
     const first = await renderDom(<NewChatDraft onCreated={onCreated} onShowConversations={() => undefined} />);
     await waitForText("Nova", first.container);
     expect(agentApiMocks.getNewChatDefaultCandidates).toHaveBeenLastCalledWith({ cachedAgentId: null });
@@ -981,11 +986,13 @@ describe("web DOM interaction coverage", () => {
     });
     expect(chatApiMocks.sendChatMessage).not.toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalledWith("chat-created");
+    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalledOnce();
     expect(window.localStorage.getItem(cacheKey)).toBe("agent-1");
     await unmountRoot(first.root);
 
     meChatMocks.createMeTaskChat.mockClear();
     chatApiMocks.sendChatMessage.mockClear();
+    authMock.value.markOnboardingCompleted.mockClear();
     const second = await renderDom(<NewChatDraft onCreated={() => undefined} />);
     await waitForText("Nova", second.container);
     expect(agentApiMocks.getNewChatDefaultCandidates).toHaveBeenLastCalledWith({ cachedAgentId: "agent-1" });
@@ -1017,6 +1024,7 @@ describe("web DOM interaction coverage", () => {
       },
     });
     expect(chatApiMocks.sendChatMessage).not.toHaveBeenCalled();
+    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
     await unmountRoot(second.root);
 
     meChatMocks.createMeTaskChat.mockClear();

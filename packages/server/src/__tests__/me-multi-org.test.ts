@@ -2,6 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { connectDatabase } from "../db/connection.js";
+import { agents } from "../db/schema/agents.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -10,7 +11,7 @@ import { createAgent } from "../services/agents/identity.js";
 import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
 import { createMember, deleteMember } from "../services/team/member.js";
-import { leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
+import { ensureMembership, leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
@@ -280,6 +281,10 @@ describe("Multi-org self-service", () => {
       headers: { authorization: `Bearer ${admin.accessToken}` },
       payload: { displayName: "Second" },
     });
+    await app.db
+      .update(agents)
+      .set({ metadata: { firstTeamAgentContinuation: { agentId: "transferred-first-agent" } } })
+      .where(eq(agents.uuid, admin.humanAgentUuid));
 
     const leaveRes = await app.inject({
       method: "POST",
@@ -303,6 +308,19 @@ describe("Multi-org self-service", () => {
     const meBody = me.json<{ memberships: Array<{ organizationId: string }> }>();
     expect(meBody.memberships.length).toBe(1);
     expect(meBody.memberships[0]?.organizationId).not.toBe(admin.organizationId);
+
+    await ensureMembership(app.db, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      role: "member",
+      displayName: "Ignored stale label",
+      username: admin.username,
+    });
+    const [restoredMirror] = await app.db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid));
+    expect(restoredMirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
   });
 
   it("POST /me/memberships/:memberId/leave hides memberships owned by another user", async () => {

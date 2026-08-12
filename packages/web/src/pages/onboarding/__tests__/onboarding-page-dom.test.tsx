@@ -154,6 +154,24 @@ describe("OnboardingPage", () => {
     expect(container.textContent).not.toContain("Create Team Step");
   });
 
+  it("does not keep a completed Agent-first creator in setup", async () => {
+    authMock.value = {
+      ...authMock.value,
+      onboardingStep: "completed",
+      onboardingCompletedAt: "2026-08-12T01:00:00.000Z",
+      currentOrgHasPersonalAgent: true,
+      currentMembership: {
+        onboardingSuppressedReason: "completed",
+        firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+      },
+    };
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Workspace Home");
+    expect(container.textContent).not.toContain("Agent Runtime");
+  });
+
   it("keeps a promoted invitee resumable when no creator continuation exists", async () => {
     authMock.value = {
       ...authMock.value,

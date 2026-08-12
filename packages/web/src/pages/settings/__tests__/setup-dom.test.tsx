@@ -1807,6 +1807,18 @@ describe("Settings Setup overview", () => {
     expect(agent.action).toEqual({ label: "Resume setup", to: "/agents/agent-first-1/runtime" });
   });
 
+  it("retires the Agent-first setup action after onboarding completes", async () => {
+    const completed = facts({
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "completed",
+      onboardingCompletedAt: "2026-08-12T01:00:00.000Z",
+      firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+    });
+
+    expect(rowFor("agent", completed).action).toEqual({ label: "View", to: "/team" });
+  });
+
   it("does not misclassify a promoted invitee as an Agent-first creator", async () => {
     const invitee = facts({
       role: "admin",

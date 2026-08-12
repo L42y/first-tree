@@ -25,6 +25,7 @@ const authMock = vi.hoisted(() => ({
     currentMembership: null as {
       firstTeamAgentContinuation?: { agentId: string; status: "active" | "suspended" | "deleted" } | null;
     } | null,
+    markOnboardingCompleted: vi.fn(async () => undefined),
   },
 }));
 const growthLandingMock = vi.hoisted(() => ({
@@ -105,6 +106,7 @@ beforeEach(() => {
     onboardingCompletedAt: null,
     currentOrgHasPersonalAgent: false,
     currentMembership: null,
+    markOnboardingCompleted: vi.fn(async () => undefined),
   };
   growthLandingMock.value = { enabled: true, settled: true };
   landingCampaignMock.startLandingCampaign.mockResolvedValue({
@@ -446,6 +448,7 @@ describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
     expect(meChatsApiMock.createMeTaskChat.mock.calls[0]?.[0]).toMatchObject({
       initialRecipientAgentIds: ["agent-first-1"],
     });
+    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalledOnce();
     expect(navigateMock).not.toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 

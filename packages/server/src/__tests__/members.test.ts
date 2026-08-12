@@ -328,6 +328,10 @@ describe("Members API", () => {
         role: "member",
       });
       const created = createRes.json<{ id: string; agentId: string }>();
+      await app.db
+        .update(agentsTable)
+        .set({ metadata: { firstTeamAgentContinuation: { agentId: "transferred-first-agent" } } })
+        .where(eq(agentsTable.uuid, created.agentId));
       await req("DELETE", `/api/v1/members/${created.id}`);
 
       const restoreRes = await req("POST", "/api/v1/members", {
@@ -350,13 +354,19 @@ describe("Members API", () => {
       expect(row).toEqual({ status: "active", role: "admin" });
 
       const [mirror] = await app.db
-        .select({ status: agentsTable.status, displayName: agentsTable.displayName, name: agentsTable.name })
+        .select({
+          status: agentsTable.status,
+          displayName: agentsTable.displayName,
+          name: agentsTable.name,
+          metadata: agentsTable.metadata,
+        })
         .from(agentsTable)
         .where(eq(agentsTable.uuid, created.agentId))
         .limit(1);
       expect(mirror?.status).toBe("active");
       expect(mirror?.displayName).toBe("Restored");
       expect(mirror?.name).not.toBeNull();
+      expect(mirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
     });
 
     it("repairs pre-existing corrupted human mirrors for active and inactive memberships", async () => {

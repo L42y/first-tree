@@ -80,6 +80,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     onboardingCompletedAt,
     organizationId,
     memberships,
+    currentMembership,
     hasNoTeam,
     selectOrganization,
     refreshMe,
@@ -92,6 +93,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     onboardingSuppressedAt: onboardingDismissedAt,
     onboardingCompletedAt,
   });
+  const replacingDeletedFirstAgent = currentMembership?.firstTeamAgentContinuation?.status === "deleted";
 
   // Team switch in-flight phase. Established SYNCHRONOUSLY on click — a real
   // `selectOrganization` writes the target selected-org before `/me` confirms
@@ -119,7 +121,7 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   const [handoffWritten, setHandoffWritten] = useState(false);
   useEffect(() => {
     if (teamSwitch) return; // confirmation in flight: no generic handoff
-    if (!needsOnboarding || !organizationId || organizationId !== mountOrgRef.current) {
+    if (!needsOnboarding || replacingDeletedFirstAgent || !organizationId || organizationId !== mountOrgRef.current) {
       handoffWrittenForRef.current = null;
       return;
     }
@@ -170,13 +172,13 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     }
     // Exact Team confirmed. If THIS Team still needs onboarding, hand off
     // explicitly for it — do not open the creation dialog.
-    if (needsOnboarding) {
+    if (needsOnboarding && !replacingDeletedFirstAgent) {
       writeOnboardingTemplateIntent(target, template.slug);
       setHandoffTarget(target);
       return;
     }
     setDialogOpen(true);
-  }, [teamSwitch, organizationId, memberships, needsOnboarding, template.slug]);
+  }, [teamSwitch, organizationId, memberships, needsOnboarding, replacingDeletedFirstAgent, template.slug]);
 
   // Explicit confirmed onboarding destination (post-confirmation only).
   if (handoffTarget) {
@@ -186,7 +188,13 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
   // Generic onboarding destination — initial landing on a Team that still
   // needs onboarding. Never while a confirmation is in flight, and never for
   // a Team other than the one this page mounted with.
-  if (!teamSwitch && needsOnboarding && organizationId && organizationId === mountOrgRef.current) {
+  if (
+    !teamSwitch &&
+    needsOnboarding &&
+    !replacingDeletedFirstAgent &&
+    organizationId &&
+    organizationId === mountOrgRef.current
+  ) {
     if (!handoffWritten) {
       return (
         <div className="landing-marketing flex min-h-screen items-center justify-center bg-background text-body text-fg-2">
@@ -237,6 +245,14 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
     }
 
     trackEvent("agent_template_create_success", { template_count: 1 });
+    const campaignHandoff = readCampaignActionHandoffFlag();
+    if (campaignHandoff) {
+      writeCampaignActionHandoffFlag({
+        ...campaignHandoff,
+        targetOrganizationId: result.organizationId,
+        targetAgentId: result.agent.uuid,
+      });
+    }
     // The Agent EXISTS from here on. Activating the new Team is a separate,
     // retryable step, so its failure must not be reported as "nothing was
     // created" — that would send the user to create a second Agent.
@@ -249,14 +265,6 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
       return;
     }
     firstProvisionRequestIdRef.current = null;
-    const campaignHandoff = readCampaignActionHandoffFlag();
-    if (campaignHandoff) {
-      writeCampaignActionHandoffFlag({
-        ...campaignHandoff,
-        targetOrganizationId: result.organizationId,
-        targetAgentId: result.agent.uuid,
-      });
-    }
     // The first Agent exists but is deliberately unbound. Continue at the
     // existing Runtime surface for that exact Agent; the campaign handoff (if
     // present) remains in sessionStorage until a real task chat consumes it.
@@ -410,6 +418,18 @@ export function TemplateUseIntent({ template }: { template: AgentTemplatePublicT
           queryClient.invalidateQueries({ queryKey: ["agents"] });
           queryClient.invalidateQueries({ queryKey: ["activity"] });
           trackEvent("agent_create_draft_open", { template_count: templateCount });
+          if (replacingDeletedFirstAgent && organizationId) {
+            const campaignHandoff = readCampaignActionHandoffFlag();
+            if (campaignHandoff) {
+              writeCampaignActionHandoffFlag({
+                ...campaignHandoff,
+                targetOrganizationId: organizationId,
+                targetAgentId: agent.uuid,
+              });
+            }
+            navigate(`/agents/${encodeURIComponent(agent.uuid)}/runtime`);
+            return;
+          }
           navigate(`/?c=draft&with=${encodeURIComponent(agent.uuid)}`);
         }}
       />

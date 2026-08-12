@@ -13,6 +13,7 @@ import { resources } from "../db/schema/resources.js";
 import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
 import { signTokensForUser } from "../services/auth/tokens.js";
+import { createMember } from "../services/team/member.js";
 import { createPersonalTeam } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, INVALID_BCRYPT_PLACEHOLDER, useTestApp } from "./helpers.js";
@@ -213,6 +214,42 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       ],
     });
 
+    const successor = await createMember(app.db, body.organizationId, {
+      username: `successor-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Successor Admin",
+      role: "admin",
+    });
+    await app.db.update(members).set({ role: "member" }).where(eq(members.id, body.memberId));
+    const downgradedManager = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+    });
+    expect(downgradedManager.json()).toMatchObject({
+      memberships: [
+        {
+          role: "member",
+          firstTeamAgentContinuation: { agentId: body.agent.uuid, status: "active" },
+        },
+      ],
+    });
+
+    await app.db.update(members).set({ role: "admin" }).where(eq(members.id, body.memberId));
+    await app.db.update(agents).set({ managerId: successor.id }).where(eq(agents.uuid, body.agent.uuid));
+    const transferredWhileAdmin = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+    });
+    expect(transferredWhileAdmin.json()).toMatchObject({
+      memberships: [
+        {
+          role: "admin",
+          firstTeamAgentContinuation: { agentId: body.agent.uuid, status: "active" },
+        },
+      ],
+    });
+
     await app.db.update(members).set({ role: "member" }).where(eq(members.id, body.memberId));
     await app.db.update(agents).set({ status: "deleted", name: null }).where(eq(agents.uuid, body.agent.uuid));
     const changedLifecycle = await app.inject({
@@ -224,9 +261,78 @@ describe("POST /me/team-agents — first Team Agent provisioning", () => {
       memberships: [
         {
           role: "member",
-          firstTeamAgentContinuation: { agentId: body.agent.uuid, status: "deleted" },
+          firstTeamAgentContinuation: null,
         },
       ],
+    });
+  });
+
+  it("retires a completed continuation", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Completed Owner");
+    const created = await provision(app, user, { name: "first-responsibility" });
+    expect(created.statusCode).toBe(201);
+    const first = created.json<{ organizationId: string; memberId: string; agent: { uuid: string } }>();
+
+    const completed = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/onboarding-completed",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+      payload: { organizationId: first.organizationId },
+    });
+    expect(completed.statusCode).toBe(200);
+    const completedMe = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${user.accessToken}` },
+    });
+    expect(completedMe.json()).toMatchObject({
+      memberships: [
+        { id: first.memberId, onboardingCompletedAt: expect.any(String), firstTeamAgentContinuation: null },
+      ],
+    });
+
+    const [membership] = await app.db.select().from(members).where(eq(members.id, first.memberId));
+    const [mirror] = await app.db
+      .select()
+      .from(agents)
+      .where(eq(agents.uuid, membership?.agentId ?? ""));
+    expect(mirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
+  });
+
+  it("retargets a deleted continuation to a self-created replacement", async () => {
+    const app = getApp();
+    const user = await createTeamlessUser(app, "Replacement Owner");
+    const created = await provision(app, user, { name: "first-responsibility" });
+    expect(created.statusCode).toBe(201);
+    const first = created.json<{ organizationId: string; memberId: string; agent: { uuid: string } }>();
+
+    await app.db.update(agents).set({ status: "deleted", name: null }).where(eq(agents.uuid, first.agent.uuid));
+    const [beforeReplacementMembership] = await app.db.select().from(members).where(eq(members.id, first.memberId));
+    const [beforeReplacementMirror] = await app.db
+      .select()
+      .from(agents)
+      .where(eq(agents.uuid, beforeReplacementMembership?.agentId ?? ""));
+    expect(beforeReplacementMirror?.metadata).toMatchObject({
+      firstTeamAgentContinuation: { agentId: first.agent.uuid },
+    });
+
+    const replacement = await app.inject({
+      method: "POST",
+      url: `/api/v1/orgs/${first.organizationId}/agents`,
+      headers: { authorization: `Bearer ${user.accessToken}` },
+      payload: { type: "agent", name: "replacement-responsibility", displayName: "Replacement Responsibility" },
+    });
+    expect(replacement.statusCode).toBe(201);
+    const replacementAgent = replacement.json<{ uuid: string }>();
+
+    const [membership] = await app.db.select().from(members).where(eq(members.id, first.memberId));
+    const [mirror] = await app.db
+      .select()
+      .from(agents)
+      .where(eq(agents.uuid, membership?.agentId ?? ""));
+    expect(mirror?.metadata).toMatchObject({
+      firstTeamAgentContinuation: { agentId: replacementAgent.uuid },
     });
   });
 

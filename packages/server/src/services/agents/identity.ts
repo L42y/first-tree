@@ -14,7 +14,9 @@ import {
   AGENT_VISIBILITY,
   DEFAULT_RUNTIME_PROVIDER,
   defaultRuntimeConfigPayload,
+  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
   findReservedAgentMetadataKey,
+  getFirstTeamAgentContinuation,
   isReservedAgentName,
   RESERVED_AGENT_METADATA_KEYS,
   runtimeProviderSchema,
@@ -321,6 +323,8 @@ export async function createAgent(
     templatePublisherOrgId?: string;
     templateActorMemberId?: string;
     templateActorHumanAgentId?: string;
+    /** Retarget a deleted first-Agent continuation during an explicit self-create. */
+    retargetDeletedFirstTeamContinuation?: boolean;
   } = {},
 ) {
   const uuid = options.uuid ?? uuidv7();
@@ -542,6 +546,35 @@ export async function createAgent(
           options.templateActorMemberId,
           options.templateActorHumanAgentId,
         );
+      }
+
+      if (options.retargetDeletedFirstTeamContinuation && options.templateActorHumanAgentId) {
+        const [human] = await tx
+          .select({ metadata: agents.metadata })
+          .from(agents)
+          .where(eq(agents.uuid, options.templateActorHumanAgentId))
+          .limit(1);
+        const continuation = getFirstTeamAgentContinuation(human?.metadata);
+        if (continuation) {
+          const [previous] = await tx
+            .select({ organizationId: agents.organizationId, status: agents.status })
+            .from(agents)
+            .where(eq(agents.uuid, continuation.agentId))
+            .limit(1);
+          if (previous?.organizationId === orgId && previous.status === AGENT_STATUSES.DELETED) {
+            await tx
+              .update(agents)
+              .set({
+                metadata: sql`jsonb_set(
+                  ${agents.metadata},
+                  ARRAY[${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}]::text[],
+                  ${JSON.stringify({ agentId: row.uuid })}::jsonb,
+                  true
+                )`,
+              })
+              .where(eq(agents.uuid, options.templateActorHumanAgentId));
+          }
+        }
       }
 
       // First-agent → delegate adoption. When a member creates their FIRST

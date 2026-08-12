@@ -38,6 +38,7 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: "2026-07-01T00:00:00.000Z" as string | null,
     organizationId: "org-1" as string | null,
     memberships: [] as MeMembership[],
+    currentMembership: null as MeMembership | null,
     hasNoTeam: false,
     selectOrganization: vi.fn(async (_orgId: string) => undefined),
     refreshMe: vi.fn(async () => undefined),
@@ -569,6 +570,7 @@ describe("TemplateUseIntent — Team-less caller", () => {
     authMock.value.hasNoTeam = true;
     authMock.value.organizationId = null;
     authMock.value.memberships = [];
+    authMock.value.currentMembership = null;
     authMock.value.onboardingStep = "connect";
     authMock.value.currentOrgHasPersonalAgent = false;
     authMock.value.onboardingCompletedAt = null;
@@ -712,6 +714,12 @@ describe("TemplateUseIntent — Team-less caller", () => {
   });
 
   it("does not claim nothing was created when only activating the new Team failed", async () => {
+    flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+    });
     authMock.value.selectOrganization = vi.fn(async () => {
       throw new Error("post-switch /me failed");
     });
@@ -732,6 +740,81 @@ describe("TemplateUseIntent — Team-less caller", () => {
     expect(document.body.textContent).toContain("was created");
     expect(document.body.textContent).not.toContain("Nothing was created");
     expect(navigateMock).not.toHaveBeenCalled();
+    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+      targetOrganizationId: "org-new",
+      targetAgentId: "agent-new",
+    });
+  });
+
+  it("opens the existing-Team create dialog for a deleted first-Agent continuation", async () => {
+    authMock.value.hasNoTeam = false;
+    authMock.value.organizationId = "org-1";
+    authMock.value.memberships = [
+      membership("member-1", "org-1", "Recovery Team", {
+        hasPersonalAgent: false,
+        onboardingCompletedAt: null,
+        onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+        onboardingSuppressedReason: "invitee_skip",
+        firstTeamAgentContinuation: { agentId: "agent-deleted", status: "deleted" },
+      }),
+    ];
+    authMock.value.currentMembership = authMock.value.memberships[0] ?? null;
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    authMock.value.onboardingDismissedAt = "2026-08-12T00:00:00.000Z";
+    authMock.value.selectOrganization = vi.fn(async () => {
+      authMock.value.memberships = [...authMock.value.memberships];
+    });
+
+    await renderIntent();
+    await click(buttonByText("Continue"));
+    await rerender();
+
+    expect(document.body.textContent).toContain("new-agent-dialog-stub");
+    expect(document.body.textContent).not.toContain("onboarding-stub");
+  });
+
+  it("retargets a deleted continuation and campaign handoff to its replacement Agent", async () => {
+    flagsMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+      targetOrganizationId: "org-1",
+      targetAgentId: "agent-deleted",
+    });
+    authMock.value.hasNoTeam = false;
+    authMock.value.organizationId = "org-1";
+    authMock.value.memberships = [
+      membership("member-1", "org-1", "Recovery Team", {
+        hasPersonalAgent: false,
+        onboardingCompletedAt: null,
+        onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+        onboardingSuppressedReason: "invitee_skip",
+        firstTeamAgentContinuation: { agentId: "agent-deleted", status: "deleted" },
+      }),
+    ];
+    authMock.value.currentMembership = authMock.value.memberships[0] ?? null;
+    authMock.value.currentOrgHasPersonalAgent = false;
+    authMock.value.onboardingCompletedAt = null;
+    authMock.value.onboardingDismissedAt = "2026-08-12T00:00:00.000Z";
+    authMock.value.selectOrganization = vi.fn(async () => {
+      authMock.value.memberships = [...authMock.value.memberships];
+    });
+
+    await renderIntent();
+    await click(buttonByText("Continue"));
+    await rerender();
+    await act(async () => dialogMock.latestOnCreated?.({ uuid: "agent-replacement" }, "codex", 1));
+
+    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(
+      expect.objectContaining({ targetOrganizationId: "org-1", targetAgentId: "agent-replacement" }),
+    );
+    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-replacement/runtime");
   });
 
   it("ignores a second click while the first provision is in flight", async () => {

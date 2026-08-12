@@ -99,7 +99,15 @@ export function NewChatDraft({
   initialParticipantIds?: string[];
 }) {
   const queryClient = useQueryClient();
-  const { agentId: myAgentId, memberId: myMemberId, organizationId, user } = useAuth();
+  const {
+    agentId: myAgentId,
+    memberId: myMemberId,
+    organizationId,
+    user,
+    onboardingCompletedAt,
+    currentMembership,
+    markOnboardingCompleted,
+  } = useAuth();
   const agentIdentity = useAgentIdentityMap();
 
   // Browser-local unsent-draft cache for this compose context (user + org +
@@ -452,6 +460,19 @@ export function NewChatDraft({
     });
   }, [bodyMentions]);
 
+  const completeAgentFirstSetupAfterTask = async (recipientAgentIds: string[]): Promise<void> => {
+    const continuationAgentId = currentMembership?.firstTeamAgentContinuation?.agentId;
+    if (onboardingCompletedAt || !continuationAgentId || !recipientAgentIds.includes(continuationAgentId)) return;
+    // The task already exists at this point. A transient completion-stamp
+    // failure must not turn a successful send into a duplicate-task retry;
+    // the still-visible continuation will retry on a later task.
+    try {
+      await markOnboardingCompleted();
+    } catch {
+      // Best-effort terminal stamp; task creation remains authoritative.
+    }
+  };
+
   const createMut = useMutation({
     mutationFn: async ({
       participantIds,
@@ -521,6 +542,7 @@ export function NewChatDraft({
             source: "web",
           },
         });
+        await completeAgentFirstSetupAfterTask(mentions);
         return {
           chatId: created.chatId,
           cacheableStarterAgentId: await resolveCacheableStarterAgentId(participantIds, knownAgentRows),
@@ -540,6 +562,7 @@ export function NewChatDraft({
           source: "web",
         },
       });
+      await completeAgentFirstSetupAfterTask(mentions);
       return {
         chatId: created.chatId,
         cacheableStarterAgentId: await resolveCacheableStarterAgentId(participantIds, knownAgentRows),

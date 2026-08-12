@@ -61,6 +61,11 @@ const authMock = vi.hoisted(() => ({
     memberId: "member-self",
     role: "admin",
     organizationId: "org-1",
+    onboardingCompletedAt: null as string | null,
+    currentMembership: {
+      firstTeamAgentContinuation: null as { agentId: string; status: "active" | "suspended" | "deleted" } | null,
+    },
+    markOnboardingCompleted: vi.fn(async () => undefined),
   },
 }));
 
@@ -462,7 +467,14 @@ beforeEach(() => {
   installBrowserStubs();
   document.body.innerHTML = "";
   vi.clearAllMocks();
-  authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
+  authMock.value = {
+    memberId: "member-self",
+    role: "admin",
+    organizationId: "org-1",
+    onboardingCompletedAt: null,
+    currentMembership: { firstTeamAgentContinuation: null },
+    markOnboardingCompleted: vi.fn(async () => undefined),
+  };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
   providerModelMocks.getProviderModels.mockResolvedValue(null);
   meChatMocks.createMeTaskChat.mockResolvedValue({ chatId: "chat-campaign" });
@@ -691,7 +703,7 @@ describe("AgentDetailPage", () => {
 
   it("shows adopted responsibilities read-only in Profile for a non-editor", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
-    authMock.value = { memberId: "member-other", role: "member", organizationId: "org-1" };
+    authMock.value = { ...authMock.value, memberId: "member-other", role: "member", organizationId: "org-1" };
     agentMocks.getAgent.mockResolvedValue(agent({ managerId: "member-owner" }));
     agentResourceMocks.getAgentResources.mockResolvedValue(
       agentResources({
@@ -1355,7 +1367,21 @@ describe("AgentDetailPage", () => {
     await act(async () => root.unmount());
   });
 
+  it("does not complete the exact Agent-first continuation until a real task exists", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
+    const { PromptTab } = await import("../prompt-tab.js");
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Custom instructions");
+
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+    await waitForText(container, "/?c=draft&with=agent-1");
+
+    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("starts the stored campaign task with this exact Agent from the header", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
     const { PromptTab } = await import("../prompt-tab.js");
     onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
       campaign: "production-scan",
@@ -1383,7 +1409,32 @@ describe("AgentDetailPage", () => {
       }),
     );
     expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
+    expect(authMock.value.markOnboardingCompleted).toHaveBeenCalledOnce();
     await waitForText(container, "/?c=chat-campaign");
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps a created campaign task authoritative when the completion stamp fails", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
+    authMock.value.markOnboardingCompleted.mockRejectedValueOnce(new Error("completion unavailable"));
+    const { PromptTab } = await import("../prompt-tab.js");
+    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
+      campaign: "production-scan",
+      repoUrl: "https://github.com/acme/backend",
+      reportKey: null,
+      repoSlug: "acme/backend",
+      targetOrganizationId: "org-1",
+      targetAgentId: "agent-1",
+    });
+
+    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
+    await waitForText(container, "Start chat");
+    await click(container.querySelector('button[aria-label="Start chat"]'));
+
+    await waitForText(container, "/?c=chat-campaign");
+    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
+    expect(container.textContent).not.toContain("Couldn't start this task");
 
     await act(async () => root.unmount());
   });

@@ -6,6 +6,7 @@ import {
   contextSessionCandidateIssueResponseSchema,
   contextSessionCandidateValidateRequestSchema,
   createOrgFromMeSchema,
+  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
   getFirstTeamAgentContinuation,
   joinByInvitationSchema,
   kickoffOnboardingSchema,
@@ -17,7 +18,7 @@ import {
   updateMyProfileSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
-import { and, asc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { agents } from "../db/schema/agents.js";
@@ -281,7 +282,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     const continuationAgentRows =
       continuationAgentIds.length > 0
         ? await app.db
-            .select({ uuid: agents.uuid, organizationId: agents.organizationId, status: agents.status })
+            .select({
+              uuid: agents.uuid,
+              organizationId: agents.organizationId,
+              managerId: agents.managerId,
+              status: agents.status,
+            })
             .from(agents)
             .where(inArray(agents.uuid, continuationAgentIds))
         : [];
@@ -308,7 +314,9 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         const continuation = continuationByMirrorId.get(mb.agentId);
         const continuationAgent = continuation ? continuationAgentById.get(continuation.agentId) : undefined;
         const firstTeamAgentContinuation =
+          !mb.onboardingCompletedAt &&
           continuationAgent?.organizationId === mb.organizationId &&
+          (mb.role === "admin" || continuationAgent.managerId === mb.memberId) &&
           (continuationAgent.status === "active" ||
             continuationAgent.status === "suspended" ||
             continuationAgent.status === "deleted")
@@ -416,15 +424,25 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     const body = completeOnboardingSchema.parse(request.body ?? {});
     const memberId = await resolveOnboardingMembershipId(app, userId, body.organizationId);
     const now = new Date();
-    const result = await app.db
-      .update(members)
-      .set({
-        onboardingCompletedAt: now,
-        onboardingSuppressedAt: now,
-        onboardingSuppressedReason: "completed",
-      })
-      .where(and(eq(members.id, memberId), isNull(members.onboardingCompletedAt)))
-      .returning({ id: members.id });
+    const result = await app.db.transaction(async (tx) => {
+      const updated = await tx
+        .update(members)
+        .set({
+          onboardingCompletedAt: now,
+          onboardingSuppressedAt: now,
+          onboardingSuppressedReason: "completed",
+        })
+        .where(and(eq(members.id, memberId), isNull(members.onboardingCompletedAt)))
+        .returning({ agentId: members.agentId });
+      const completed = updated[0];
+      if (completed) {
+        await tx
+          .update(agents)
+          .set({ metadata: sql`${agents.metadata} - ${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}` })
+          .where(eq(agents.uuid, completed.agentId));
+      }
+      return updated;
+    });
     if (result.length > 0) {
       app.log.info({ event: "onboarding.completed", userId }, "onboarding funnel: setup completed");
     }

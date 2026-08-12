@@ -47,7 +47,7 @@ export function OnboardingPage() {
   if (!meLoaded) {
     return <div className="min-h-screen bg-background" />;
   }
-  const firstTeamContinuation = currentMembership?.firstTeamAgentContinuation;
+  const firstTeamContinuation = onboardingCompletedAt ? null : currentMembership?.firstTeamAgentContinuation;
   if (firstTeamContinuation) {
     const destination =
       firstTeamContinuation.status === "deleted"

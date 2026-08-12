@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { AGENT_STATUSES, AGENT_TYPES } from "@first-tree/shared";
+import { AGENT_STATUSES, AGENT_TYPES, FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Database } from "../../db/connection.js";
@@ -311,26 +311,25 @@ async function reactivateMembershipRows(
     .from(agents)
     .where(eq(agents.uuid, existing.agentId))
     .limit(1);
+  const restoredMirror = {
+    status: AGENT_STATUSES.ACTIVE,
+    clientId: null,
+    updatedAt: new Date(),
+    ...(options.resetOnboarding
+      ? { metadata: sql`${agents.metadata} - ${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}` }
+      : {}),
+  };
   if (mirror?.name === null) {
     const restoredName = await resolveRestoredAgentName(db, existing, options.username);
     await db
       .update(agents)
       .set({
-        status: AGENT_STATUSES.ACTIVE,
+        ...restoredMirror,
         name: restoredName,
-        clientId: null,
-        updatedAt: new Date(),
       })
       .where(eq(agents.uuid, existing.agentId));
   } else {
-    await db
-      .update(agents)
-      .set({
-        status: AGENT_STATUSES.ACTIVE,
-        clientId: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(agents.uuid, existing.agentId));
+    await db.update(agents).set(restoredMirror).where(eq(agents.uuid, existing.agentId));
   }
 
   await recomputeWatcherChats(db, watcherChatIds);

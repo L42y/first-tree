@@ -493,7 +493,7 @@ function combineContextTreeAndReviewStatus(
 export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
   const isAdmin = facts.role === "admin";
   const reliesOnTeamAgent = facts.hasUsableAgent && !facts.hasPersonalAgent;
-  const agentFirstContinuation = facts.firstTeamAgentContinuation;
+  const agentFirstContinuation = facts.onboardingCompletedAt ? null : facts.firstTeamAgentContinuation;
   const agentFirstRuntimePath =
     agentFirstContinuation && agentFirstContinuation.status !== "deleted"
       ? `/agents/${encodeURIComponent(agentFirstContinuation.agentId)}/runtime`
