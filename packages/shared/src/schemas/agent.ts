@@ -104,19 +104,25 @@ export function isReservedAgentName(name: string): boolean {
   return RESERVED_AGENT_NAMES_SET.has(name);
 }
 
+/**
+ * The user-supplied agent slug, shared by every create surface so the portal,
+ * the Admin API, and the first-Team-Agent provisioning route reject exactly
+ * the same names.
+ */
+export const agentNameSchema = z
+  .string()
+  .min(1)
+  .max(AGENT_NAME_MAX_LENGTH)
+  .regex(
+    AGENT_NAME_REGEX,
+    "Must start with a letter or digit and contain only lowercase letters, digits, hyphens (-), and underscores (_). Max 64 chars.",
+  )
+  .refine((n) => !isReservedAgentName(n), {
+    message: "That agent name is reserved — pick a different one.",
+  });
+
 export const createAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .regex(
-      AGENT_NAME_REGEX,
-      "Must start with a letter or digit and contain only lowercase letters, digits, hyphens (-), and underscores (_). Max 64 chars.",
-    )
-    .refine((n) => !isReservedAgentName(n), {
-      message: "That agent name is reserved — pick a different one.",
-    })
-    .optional(),
+  name: agentNameSchema.optional(),
   type: agentTypeSchema,
   /**
    * Post-Phase 2 the DB enforces `NOT NULL`; the service layer defaults

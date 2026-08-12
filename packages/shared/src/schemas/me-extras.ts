@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { agentNameSchema } from "./agent.js";
+import { agentTemplateIdsSchema } from "./agent-template.js";
 import { landingCampaignActionContextSchema } from "./landing-campaign.js";
 
 /**
@@ -194,3 +196,44 @@ export const meMembershipSchema = z.object({
   onboardingCompletedAt: z.string().nullable(),
 });
 export type MeMembership = z.infer<typeof meMembershipSchema>;
+
+/**
+ * Body of `POST /me/team-agents` — the user-scoped provisioning call a signed-in
+ * user makes when they confirm their first Team Agent. It is user-scoped (Class
+ * A) rather than org-scoped because the starting state has no organization at
+ * all: browsing and signing in no longer mint an empty Team, so the Team is
+ * created or resolved by this call.
+ *
+ * `organizationId` names an existing Team explicitly. Omit it to use the
+ * caller's current Team semantics: the default active membership when the user
+ * already belongs somewhere, otherwise a Team created by this call. It is the
+ * only way a multi-Team user targets a non-default Team, and it can never
+ * create a second Team — an unknown or non-member id is rejected.
+ */
+export const provisionFirstTeamAgentSchema = z.object({
+  organizationId: z.string().min(1).max(100).optional(),
+  name: agentNameSchema.optional(),
+  displayName: z.string().min(1).max(200).optional(),
+  templateIds: agentTemplateIdsSchema.optional(),
+});
+export type ProvisionFirstTeamAgent = z.infer<typeof provisionFirstTeamAgentSchema>;
+
+/**
+ * Result of `POST /me/team-agents`. `teamCreated` / `agentCreated` are false on
+ * a converged retry: the call is idempotent, so a repeat resolves the same
+ * first Team and first Agent instead of minting a second one.
+ */
+export const provisionFirstTeamAgentResultSchema = z.object({
+  organizationId: z.string(),
+  memberId: z.string(),
+  teamCreated: z.boolean(),
+  agentCreated: z.boolean(),
+  agent: z.object({
+    uuid: z.string(),
+    name: z.string().nullable(),
+    displayName: z.string(),
+    visibility: z.enum(["private", "organization"]),
+    clientId: z.string().nullable(),
+  }),
+});
+export type ProvisionFirstTeamAgentResult = z.infer<typeof provisionFirstTeamAgentResultSchema>;
