@@ -263,7 +263,7 @@ function applyStyle(text: string, value: unknown): string {
   if (styles.has("italic")) result = `*${result}*`;
   if (styles.has("underline")) result = `<u>${result}</u>`;
   if (styles.has("lineThrough") || styles.has("strikethrough")) result = `~~${result}~~`;
-  if (styles.has("codeInline") || styles.has("code")) result = `\`${result.replace(/`/g, "\\`")}\``;
+  if (styles.has("codeInline") || styles.has("code")) result = `\`${result.replace(/([\\`])/g, "\\$1")}\``;
   return result;
 }
 
@@ -343,12 +343,11 @@ function escapeInline(value: string): string {
 }
 
 function escapeCardMarkdown(value: string): string {
-  return escapeInline(
-    value
-      .replace(/<at\b[^>]*>.*?<\/at>/gi, "[提及]")
-      .replace(/<[^>]+>/g, "")
-      .trim(),
-  );
+  // Card Markdown is untrusted content, not HTML. Escape it as one inert
+  // Markdown string instead of repeatedly stripping tag-shaped substrings:
+  // chained removals can turn nested input such as <scr<script>ipt> into a
+  // newly active <script> sequence.
+  return escapeInline(value.trim());
 }
 
 function formatDuration(milliseconds: number): string {

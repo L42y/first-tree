@@ -28,6 +28,7 @@ describe("Feishu content normalization", () => {
               { tag: "text", text: "important", style: ["bold", "italic"] },
               { tag: "a", text: " docs", href: "https://example.com/a(b)" },
             ],
+            [{ tag: "text", text: "path\\`tick", style: ["codeInline"] }],
             [{ tag: "code_block", language: "ts<script>", text: "const x = `safe`;" }],
             [
               { tag: "img", image_key: "img_post" },
@@ -42,6 +43,10 @@ describe("Feishu content normalization", () => {
     expect(result.content).toContain("**发布 \\<提醒\\>**");
     expect(result.content).toContain("***important***");
     expect(result.content).toContain("[ docs](https://example.com/a%28b%29)");
+    const inlineCode = result.content.split("\n").find((line) => line.startsWith("`path"));
+    expect(inlineCode).toMatch(/^`path/);
+    expect(inlineCode).toMatch(/tick`$/);
+    expect(inlineCode?.match(/\\/g)?.length).toBeGreaterThan(1);
     expect(result.content).toContain("```tsscript");
     expect(result.resources).toEqual([
       { type: "image", fileKey: "img_post", origin: "post" },
@@ -68,12 +73,14 @@ describe("Feishu content normalization", () => {
       messageType: "interactive",
       rawContent: JSON.stringify({
         elements: [
-          { tag: "lark_md", content: "<at id=all>everyone</at> **run**" },
+          { tag: "lark_md", content: "<at id=all>everyone</at> <scr<script>ipt>alert(1)</script> **run**" },
           { tag: "img", img_key: "card_img" },
         ],
       }),
     });
-    expect(card.content).toContain("\\[提及\\]");
+    expect(card.content).toContain("\\<at id=all\\>everyone\\</at\\>");
+    expect(card.content).not.toContain("<script>");
+    expect(card.content).toContain("\\<scr\\<script\\>ipt\\>");
     expect(card.content).toContain("\\*\\*run\\*\\*");
     expect(card.resources[0]).toMatchObject({ fileKey: "card_img", origin: "interactive" });
 
