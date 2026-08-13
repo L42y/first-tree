@@ -17,6 +17,7 @@ const AGENT: ReadAgent = {
 function read(overrides: Partial<OpenTagAgentRead> = {}): OpenTagAgentRead {
   return {
     organizationId: ORG,
+    meAuthoritative: true,
     memberId: MEMBER,
     role: "member",
     agentUuid: "0198b2c4-1f6a-7c31-9a02-4d5e6f708192",
@@ -33,8 +34,14 @@ describe("classifyOpenTagAgent", () => {
     expect(classifyOpenTagAgent(read({ agentUuid: null, agent: null }))).toEqual({ state: "none" });
   });
 
-  it("reports no Agent before the Team is known, so no Team-scoped judgement is made", () => {
-    expect(classifyOpenTagAgent(read({ organizationId: null }))).toEqual({ state: "loading" });
+  it("refuses every Team-scoped judgement until `/me` is authoritative", () => {
+    // `meLoaded` also flips after a `/me` transport failure, so a guessed Team
+    // must not unlock creation or Agent classification.
+    expect(classifyOpenTagAgent(read({ meAuthoritative: false }))).toEqual({ state: "team-unreadable" });
+    expect(classifyOpenTagAgent(read({ organizationId: null }))).toEqual({ state: "team-unreadable" });
+    expect(classifyOpenTagAgent(read({ agentUuid: null, agent: null, meAuthoritative: false }))).toEqual({
+      state: "team-unreadable",
+    });
   });
 
   it("stays loading while the authoritative read is in flight", () => {
@@ -69,6 +76,13 @@ describe("classifyOpenTagAgent", () => {
       state: "unavailable",
     });
     expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "deleted" } }))).toEqual({
+      state: "unavailable",
+    });
+    // Suspended too: the first bind refuses it and a bound one cannot work.
+    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "suspended" } }))).toEqual({
+      state: "unavailable",
+    });
+    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "suspended", clientId: "client-1" } }))).toEqual({
       state: "unavailable",
     });
   });
@@ -124,6 +138,7 @@ describe("resolveOpenTagStep", () => {
   it("holds the step until the authoritative read settles", () => {
     expect(resolveOpenTagStep({ state: "loading" })).toBeNull();
     expect(resolveOpenTagStep({ state: "unreadable" })).toBeNull();
+    expect(resolveOpenTagStep({ state: "team-unreadable" })).toBeNull();
   });
 
   it("sets up the Runtime for an unbound Agent and skips it for a bound one", () => {

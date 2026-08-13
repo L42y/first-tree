@@ -1,7 +1,7 @@
-import { opentagEntryPath } from "@first-tree/shared";
+import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactElement, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { type ReactElement, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { createAgent, getAgent, startAgentFeishuRegistration, updateAgent } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
@@ -34,9 +34,18 @@ import { StepSetUpRuntime } from "./steps/step-set-up-runtime.js";
 export function OpenTagPage(): ReactElement | null {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
-  const { organizationId, memberId, role, user, refreshMe } = useAuth();
-  const agentUuid = searchParams.get("agent");
+  const location = useLocation();
+  const { organizationId, memberId, role, user, meAuthoritative, refreshMe } = useAuth();
+
+  // One parser for the browser route and the OAuth `next`, so a URL this app
+  // would never build is not a URL this page will act on. Anything else is
+  // replaced with the bare entry rather than driving a read that can only
+  // fail.
+  const target = parseOpenTagEntryPath(`${location.pathname}${location.search}`);
+  const agentUuid = target?.agentUuid ?? null;
+  useEffect(() => {
+    if (!target) navigate(opentagEntryPath(), { replace: true });
+  }, [target, navigate]);
 
   const agentQuery = useQuery({
     queryKey: ["agent", agentUuid],
@@ -49,6 +58,10 @@ export function OpenTagPage(): ReactElement | null {
 
   const facts = classifyOpenTagAgent({
     organizationId,
+    // `meLoaded` also flips after an initial `/me` transport failure, which
+    // would leave this page offering Team-scoped creation against a guessed
+    // Team. Only an authoritative snapshot may unlock it.
+    meAuthoritative,
     agentUuid,
     memberId,
     role,
@@ -118,13 +131,22 @@ export function OpenTagPage(): ReactElement | null {
   const computer = useComputerConnection(step === "set-up-runtime", { requireExplicitSelectionWhenMultiple: true });
 
   const bind = useMutation({
-    mutationFn: (clientId: string) => updateAgent(agentUuid ?? "", { clientId }),
+    // The Agent was created before its Computer was known, so it still carries
+    // the service default provider. Commit the provider this Computer actually
+    // reports as ready in the same call: without it a Computer that runs
+    // anything else is a dead end no retry can clear.
+    mutationFn: ({ clientId, runtimeProvider }: { clientId: string; runtimeProvider: RuntimeProvider }) =>
+      updateAgent(agentUuid ?? "", { clientId, runtimeProvider }),
     onSuccess: async (updated) => {
       // The bind response is the authoritative Agent, so the step advances off
       // the server's answer rather than an optimistic local flag.
       queryClient.setQueryData(["agent", updated.uuid], updated);
       await queryClient.invalidateQueries({ queryKey: ["agents"] });
       await queryClient.invalidateQueries({ queryKey: ["agent-client-status", updated.uuid] });
+      // The account-level onboarding step turns on a connected Computer, so a
+      // snapshot taken before this bind would still send the member to
+      // `/onboarding` from the workspace root.
+      await refreshMe();
     },
   });
 
@@ -137,18 +159,32 @@ export function OpenTagPage(): ReactElement | null {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: feishuBindingQueryKey(agentUuid ?? "") }),
   });
 
-  if (!step && facts.state !== "unreadable") return null;
+  if (!step && facts.state !== "unreadable" && facts.state !== "team-unreadable") return null;
   // A transient read failure keeps the Agent in the URL — dropping it would
   // restart the flow and leave a second Agent behind — and it is shown inside
   // the step it belongs to, so the guided path never vanishes under the member.
-  const shellStep: OpenTagActiveStepId = step ?? "set-up-runtime";
+  // A fault renders inside the step it belongs to. Without an authoritative
+  // Team nothing has been created yet, so that one belongs at the beginning.
+  const shellStep: OpenTagActiveStepId =
+    step ?? (facts.state === "team-unreadable" ? "choose-agent" : "set-up-runtime");
 
   const completedSteps = OPENTAG_STEPS.slice(0, OPENTAG_STEPS.indexOf(shellStep));
   const handoff = agent ? { agentDisplayName: agent.displayName, responsibility: chosenTemplateName } : null;
 
   return (
     <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
-      {facts.state === "unreadable" && <OpenTagRecoverableError onRetry={() => void agentQuery.refetch()} />}
+      {facts.state === "unreadable" && (
+        <OpenTagRecoverableError
+          message="We couldn't load your Agent. Nothing was lost — it and its setup are still there."
+          onRetry={() => void agentQuery.refetch()}
+        />
+      )}
+      {facts.state === "team-unreadable" && (
+        <OpenTagRecoverableError
+          message="We couldn't load your team. Nothing has been created yet."
+          onRetry={() => void refreshMe()}
+        />
+      )}
       {step === "choose-agent" && (
         <>
           {facts.state === "unavailable" && <WrongAgentNotice />}
@@ -164,7 +200,12 @@ export function OpenTagPage(): ReactElement | null {
               recoverableAgent
                 ? {
                     displayName: recoverableAgent.displayName,
-                    onContinue: () => navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true }),
+                    onContinue: () => {
+                      // The recovered Agent already exists, so the readiness
+                      // snapshot taken before this flow started is stale.
+                      void refreshMe();
+                      navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true });
+                    },
                   }
                 : null
             }
@@ -176,7 +217,7 @@ export function OpenTagPage(): ReactElement | null {
           computer={computer}
           pending={bind.isPending}
           error={bind.error instanceof Error ? bind.error.message : null}
-          onUseComputer={(clientId) => bind.mutate(clientId)}
+          onUseComputer={(clientId, runtimeProvider) => bind.mutate({ clientId, runtimeProvider })}
         />
       )}
       {step === "connect-feishu" && agent && agentUuid && (
@@ -216,11 +257,11 @@ function WrongAgentNotice(): ReactElement {
   );
 }
 
-function OpenTagRecoverableError({ onRetry }: { onRetry: () => void }): ReactElement {
+function OpenTagRecoverableError({ message, onRetry }: { message: string; onRetry: () => void }): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
       <FlowHint tone="error" role="alert">
-        We couldn't load your Agent. Nothing was lost — it and its setup are still there.
+        {message}
       </FlowHint>
       <div className="flex">
         <Button type="button" onClick={onRetry}>

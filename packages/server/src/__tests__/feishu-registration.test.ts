@@ -12,6 +12,15 @@ const sdkMocks = (() => {
   const handlers = new Map<string, (payload: unknown) => unknown>();
   const disconnect = vi.fn().mockResolvedValue(undefined);
   const connect = vi.fn().mockResolvedValue(undefined);
+  const request = vi.fn().mockResolvedValue({
+    code: 0,
+    msg: "ok",
+    bot: {
+      app_name: "Agent A · First Tree",
+      avatar_url: "https://example.com/agent-a.png",
+      open_id: "ou_created_bot",
+    },
+  });
   const channel = {
     botIdentity: { openId: "ou_created_bot" },
     on: vi.fn((name: string, handler: (payload: unknown) => unknown) => {
@@ -26,12 +35,14 @@ const sdkMocks = (() => {
     channel,
     connect,
     disconnect,
+    request,
     registerApp: vi.fn(async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
       options.onQRCodeReady({ url: "https://open.feishu.cn/register?code=test", expireIn: 120 });
       return { client_id: "cli_created", client_secret: "secret-created-by-feishu" };
     }),
-    createLarkChannel: vi.fn(() => channel),
-    createClient: vi.fn(() => ({
+    createLarkChannel: vi.fn((_options: Parameters<FeishuSdkDependencies["createLarkChannel"]>[0]) => channel),
+    createClient: vi.fn((_options: Parameters<FeishuSdkDependencies["createClient"]>[0]) => ({
+      request,
       im: {
         v1: {
           chatMembers: { get: vi.fn() },
@@ -119,12 +130,14 @@ describe("official Feishu QR registration", () => {
       if (row?.status === "error") {
         throw new Error(`registration failed: ${row.lastErrorCode ?? "unknown"} ${row.lastErrorMessage ?? ""}`);
       }
-      return row?.status === "active";
+      return row?.status === "active" && row.botName === "Agent A · First Tree";
     });
     const [stored] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
     expect(stored).toMatchObject({
       appId: "cli_created",
       botOpenId: "ou_created_bot",
+      botName: "Agent A · First Tree",
+      botAvatarUrl: "https://example.com/agent-a.png",
       status: "active",
       connectionStatus: "connected",
       registrationStateCipher: null,
@@ -140,6 +153,22 @@ describe("official Feishu QR registration", () => {
       }),
     );
     expect(sdkMocks.connect).toHaveBeenCalledTimes(1);
+    expect(sdkMocks.request).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "GET", url: "/open-apis/bot/v3/info", signal: expect.any(AbortSignal) }),
+    );
+    const clientOptions = sdkMocks.createClient.mock.calls[0]?.[0];
+    const channelOptions = sdkMocks.createLarkChannel.mock.calls[0]?.[0];
+    expect(channelOptions?.logger).toBe(clientOptions?.logger);
+    const consoleSpies = [
+      vi.spyOn(console, "error").mockImplementation(() => undefined),
+      vi.spyOn(console, "warn").mockImplementation(() => undefined),
+      vi.spyOn(console, "log").mockImplementation(() => undefined),
+    ];
+    const sensitiveError = Object.assign(new Error('Bearer tenant-secret {"app_secret":"bot-secret"}'), {
+      config: { headers: { Authorization: "Bearer tenant-secret" }, data: { app_secret: "bot-secret" } },
+    });
+    await channelOptions?.logger?.error(sensitiveError);
+    expect(consoleSpies.flatMap((spy) => spy.mock.calls).join(" ")).not.toMatch(/tenant-secret|bot-secret/);
 
     await app.db
       .update(imBotBindings)
@@ -154,6 +183,75 @@ describe("official Feishu QR registration", () => {
       .from(imBotBindings)
       .where(eq(imBotBindings.id, stored?.id ?? "missing"));
     expect(afterStaleEvent?.lastEventAt).toBeNull();
+  });
+
+  it("keeps the Bot connected when profile metadata cannot be loaded", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    sdkMocks.request.mockRejectedValueOnce(new Error("Feishu Bot info unavailable"));
+
+    await app.feishuIntegration.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      return row?.status === "active";
+    });
+
+    const [stored] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+    expect(stored).toMatchObject({
+      status: "active",
+      connectionStatus: "connected",
+      botName: null,
+      botAvatarUrl: null,
+    });
+  });
+
+  it("activates and maintains the connection while Bot profile enrichment is pending", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    sdkMocks.request.mockImplementationOnce(() => new Promise(() => undefined));
+    const manager = createFeishuIntegrationManager({
+      db: app.db,
+      notifier: app.notifier,
+      encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      instanceId: "profile-timeout-test",
+      sdk: feishuSdk,
+      timings: {
+        initialClaimDelayMs: 1,
+        claimIntervalMs: 5,
+        leaseMs: 500,
+        botProfileTimeoutMs: 80,
+      },
+    });
+    manager.start();
+    try {
+      await manager.startRegistration({
+        agentId: a.agent.uuid,
+        organizationId: a.organizationId,
+        displayName: "Agent A · First Tree",
+      });
+      await waitFor(async () => {
+        const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+        return row?.status === "active" && row.connectionStatus === "connected";
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const [maintained] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      expect(maintained).toMatchObject({
+        status: "active",
+        connectionStatus: "connected",
+        connectionOwnerInstanceId: "profile-timeout-test",
+        botName: null,
+      });
+      expect(sdkMocks.createLarkChannel).toHaveBeenCalledTimes(1);
+      expect(sdkMocks.disconnect).not.toHaveBeenCalled();
+    } finally {
+      await new Promise((resolve) => setTimeout(resolve, 70));
+      await manager.stop();
+    }
   });
 
   it("lets a second replica take over an expired lease with a higher fencing epoch", async () => {

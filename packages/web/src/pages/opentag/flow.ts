@@ -30,6 +30,8 @@ export type OpenTagActiveStepId = Exclude<OpenTagStepId, "use-in-feishu">;
 export type OpenTagAgentRead = {
   /** Currently selected Team. Null until `/me` resolves it. */
   organizationId: string | null;
+  /** Whether `/me` has been read successfully this session. */
+  meAuthoritative: boolean;
   /** The caller's membership in that Team, and its role. */
   memberId: string | null;
   role: string | null;
@@ -53,6 +55,8 @@ export type OpenTagAgentFacts =
   | { state: "unavailable" }
   /** The read failed for a reason that says nothing about the Agent. */
   | { state: "unreadable" }
+  /** `/me` never produced an authoritative Team, so nothing Team-scoped is safe. */
+  | { state: "team-unreadable" }
   | { state: "resolved"; bound: boolean };
 
 /**
@@ -65,10 +69,12 @@ export type OpenTagAgentFacts =
  * restart the flow and leave the member with a second Agent.
  */
 export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts {
+  // Everything here is Team-scoped — creating the Agent as much as judging the
+  // one in the URL — so nothing may proceed on a guessed Team. `RequireAuth`
+  // only waits for `meLoaded`, which also flips after a `/me` transport
+  // failure, so that is the state this has to catch and offer a retry for.
+  if (!read.meAuthoritative || !read.organizationId) return { state: "team-unreadable" };
   if (!read.agentUuid) return { state: "none" };
-  // Team-scoped judgement needs the Team. Until `/me` resolves it, an Agent
-  // from "another Team" cannot be told apart from the member's own.
-  if (!read.organizationId) return { state: "loading" };
   if (read.loading) return { state: "loading" };
   // Judge the failure before any cached row: a client that already read this
   // Agent keeps serving the old copy after a delete, and continuing on it
@@ -82,7 +88,10 @@ export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts 
   if (!read.agent) return { state: "loading" };
   if (read.agent.organizationId !== read.organizationId) return { state: "unavailable" };
   if (read.agent.type === "human") return { state: "unavailable" };
-  if (read.agent.status === "deleted") return { state: "unavailable" };
+  // Every non-active lifecycle, not just deleted: the first bind refuses a
+  // suspended Agent outright, and a suspended bound Agent cannot receive work,
+  // so advancing either one only produces a step that cannot complete.
+  if (read.agent.status !== "active") return { state: "unavailable" };
   // Readable is not the same as usable here. An organization-visible Agent
   // owned by a teammate passes the read, but every write this flow makes —
   // the Client bind, the Feishu registration — needs manage authority, so
@@ -104,6 +113,7 @@ export function resolveOpenTagStep(facts: OpenTagAgentFacts): OpenTagActiveStepI
       return "choose-agent";
     case "loading":
     case "unreadable":
+    case "team-unreadable":
       return null;
     case "resolved":
       return facts.bound ? "connect-feishu" : "set-up-runtime";

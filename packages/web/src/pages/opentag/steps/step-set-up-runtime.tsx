@@ -1,3 +1,4 @@
+import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { ArrowRight } from "lucide-react";
 import type { ReactElement } from "react";
 import { ConnectedComputerSelect, ConnectedComputerSummary } from "../../../components/connected-computer-select.js";
@@ -26,12 +27,18 @@ export function StepSetUpRuntime({
   error,
 }: {
   computer: ComputerConnection;
-  onUseComputer: (clientId: string) => void;
+  onUseComputer: (clientId: string, runtimeProvider: RuntimeProvider) => void;
   pending: boolean;
   error: string | null;
 }): ReactElement {
   const { connectedClients, selectedClientId, setSelectedClientId, cliCommand, tokenError, retry } = computer;
   const single = connectedClients.length === 1 ? connectedClients[0] : null;
+  // The Agent was created before any Computer was known, so the provider is
+  // decided here — by the shared catalog preference over what this Computer
+  // reports, not by a picker. Nothing to bind to means nothing to offer.
+  const runtime = computer.selectedRuntime;
+  const runtimeReady = !!runtime && computer.okRuntimes.includes(runtime);
+  const noRuntime = computer.capabilitiesLoaded && computer.okRuntimes.length === 0;
 
   if (connectedClients.length === 0) {
     return (
@@ -86,9 +93,20 @@ export function StepSetUpRuntime({
             id="opentag-runtime-computer"
           />
         )}
-        <p className="text-caption" style={{ margin: 0, color: "var(--fg-3)" }}>
-          This Agent stays on the computer you choose. Your other computers are not affected.
-        </p>
+        {noRuntime ? (
+          <FlowHint role="status">
+            No coding agent is installed on this computer yet. Install one, then this step picks it up.
+          </FlowHint>
+        ) : runtimeReady && runtime ? (
+          <p className="text-caption" style={{ margin: 0, color: "var(--fg-3)" }}>
+            It will run with {runtimeProviderLabel(runtime)}. This Agent stays on the computer you choose, and your
+            other computers are not affected.
+          </p>
+        ) : (
+          <p className="text-caption" role="status" style={{ margin: 0, color: "var(--fg-3)" }}>
+            Checking what this computer can run…
+          </p>
+        )}
       </div>
 
       {error && (
@@ -101,10 +119,10 @@ export function StepSetUpRuntime({
         <Button
           type="button"
           variant="cta"
-          disabled={!selectedClientId || pending}
+          disabled={!selectedClientId || !runtimeReady || pending}
           onClick={() => {
-            if (!selectedClientId || pending) return;
-            onUseComputer(selectedClientId);
+            if (!selectedClientId || !runtime || !runtimeReady || pending) return;
+            onUseComputer(selectedClientId, runtime);
           }}
         >
           <span>{pending ? "Setting up…" : single ? "Use this computer" : "Use selected computer"}</span>

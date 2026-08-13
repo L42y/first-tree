@@ -983,6 +983,21 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
     }
   }
 
+  // `runtimeProvider` rides the one-shot first bind and nothing else. Moving a
+  // bound agent's provider is a claimed, two-phase route change that has to
+  // drain sessions and revoke the old proof, which is the managed switch
+  // flow's job — a bare PATCH would leave the old runtime authorized.
+  if (data.runtimeProvider !== undefined) {
+    if (data.clientId === undefined || data.clientId === null) {
+      throw new BadRequestError("runtimeProvider can only be set together with a first bind.");
+    }
+    if (agent.clientId !== null) {
+      throw new BadRequestError(
+        "runtimeProvider cannot be changed through PATCH once bound — use the managed runtime switch flow instead.",
+      );
+    }
+  }
+
   const updates: Partial<typeof agents.$inferInsert> = { updatedAt: new Date() };
   if (data.type !== undefined) {
     throw new BadRequestError("Agent type is immutable");
@@ -1078,14 +1093,15 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
         type: agent.type,
       });
       if (resolvedClientId !== null) {
-        // `agents.runtime_provider` is a text column (typed `string`); narrow it
-        // back to the RuntimeProvider union before the capability check.
-        await ensureClientSupportsRuntimeProvider(
-          tx,
-          resolvedClientId,
-          runtimeProviderSchema.parse(agent.runtimeProvider),
-        );
+        // A first bind may carry the provider it is binding to. Validate what
+        // will actually be stored, not the pre-bind default, so the same gate
+        // covers both the caller's choice and the untouched column.
+        // `agents.runtime_provider` is a text column (typed `string`); narrow
+        // it back to the RuntimeProvider union before the capability check.
+        const boundProvider = data.runtimeProvider ?? runtimeProviderSchema.parse(agent.runtimeProvider);
+        await ensureClientSupportsRuntimeProvider(tx, resolvedClientId, boundProvider);
         updates.clientId = resolvedClientId;
+        if (data.runtimeProvider !== undefined) updates.runtimeProvider = data.runtimeProvider;
       }
     }
 

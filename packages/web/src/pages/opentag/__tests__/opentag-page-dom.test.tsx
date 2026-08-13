@@ -18,14 +18,17 @@ const TEMPLATE_ID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708100";
 const ORG = "org-1";
 const MEMBER = "member-1";
 
+const refreshMe = vi.hoisted(() => vi.fn(async () => undefined));
+
 const authMock = vi.hoisted(() => ({
   value: {
     organizationId: null as string | null,
+    meAuthoritative: true,
     memberId: null as string | null,
     role: null as string | null,
     user: { username: "ada" },
     logout: () => undefined,
-    refreshMe: async () => undefined,
+    refreshMe,
   },
 }));
 vi.mock("../../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
@@ -87,6 +90,8 @@ function feishuBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBind
     id: "binding-1",
     agentId: AGENT_UUID,
     appId: null,
+    botName: null,
+    botAvatarUrl: null,
     botOpenId: null,
     tenantKey: null,
     status: "provisioning",
@@ -180,12 +185,14 @@ async function click(node: HTMLElement): Promise<void> {
 beforeEach(() => {
   authMock.value = {
     organizationId: ORG,
+    meAuthoritative: true,
     memberId: MEMBER,
     role: "admin",
     user: { username: "ada" },
     logout: () => undefined,
-    refreshMe: async () => undefined,
+    refreshMe,
   };
+  refreshMe.mockClear();
   computerMock.value = computerConnection();
   api.getAgent.mockReset();
   api.createAgent.mockReset();
@@ -293,6 +300,29 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe("/opentag");
   });
 
+  it("replaces a malformed Agent target with the bare entry instead of retrying forever", async () => {
+    // Only the canonical URL this app builds is acted on: `?agent=not-a-uuid`
+    // would otherwise drive a read that can only fail.
+    const container = await renderAt("/opentag?agent=not-a-uuid");
+
+    expect(lastLocation).toBe("/opentag");
+    expect(api.getAgent).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Team Assistant");
+  });
+
+  it("offers a team retry instead of creating against a guessed Team", async () => {
+    // `meLoaded` flips after a `/me` transport failure too, so an
+    // unauthoritative snapshot must not unlock Team-scoped creation.
+    authMock.value = { ...authMock.value, meAuthoritative: false };
+    const container = await renderAt("/opentag");
+
+    expect(container.textContent).toContain("couldn't load your team");
+    expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Confirm Agent"))).toBe(false);
+    expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Review Agent"))).toBe(false);
+    // The guided path stays visible while it recovers.
+    expect(container.querySelector("nav[aria-label='Guided handoff']")).not.toBeNull();
+  });
+
   it("keeps the guided path visible while an Agent read is failing", async () => {
     api.getAgent.mockRejectedValue(new ApiError(500, "boom"));
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
@@ -300,6 +330,16 @@ describe("OpenTag entry — choosing the Agent", () => {
     // The fault replaces the step's content; the rail does not disappear.
     expect(container.querySelector("nav[aria-label='Guided handoff']")).not.toBeNull();
     expect(container.textContent).toContain("Add to Feishu");
+  });
+
+  it("recovers to the Agent choice for a suspended Agent rather than a step it cannot finish", async () => {
+    // The first bind refuses a suspended Agent, so advancing to Runtime would
+    // guarantee a rejection the member cannot act on here.
+    api.getAgent.mockResolvedValue(agentRow({ status: "suspended" }));
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("isn't available in this team anymore");
+    expect(container.textContent).not.toContain("Waiting for your computer to connect");
   });
 
   it("recovers to the Agent choice when the Agent in the URL is gone", async () => {
@@ -351,6 +391,9 @@ describe("OpenTag entry — setting up the Runtime", () => {
       connectedClients: [client("client-1", "Studio Mac")],
       selectedClientId: "client-1",
       connectedClient: client("client-1", "Studio Mac"),
+      capabilitiesLoaded: true,
+      okRuntimes: ["codex"],
+      selectedRuntime: "codex",
     });
     api.updateAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
 
@@ -359,9 +402,12 @@ describe("OpenTag entry — setting up the Runtime", () => {
 
     await click(button(container, "Use this computer"));
 
-    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-1" });
+    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-1", runtimeProvider: "codex" });
     // The authoritative bind response advances the flow.
     expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+    // A connected Computer changes account-level readiness, so the stale
+    // snapshot must not survive to bounce the member into `/onboarding`.
+    expect(refreshMe).toHaveBeenCalled();
   });
 
   it("requires an explicit choice between several Computers, then binds the chosen one", async () => {
@@ -381,13 +427,32 @@ describe("OpenTag entry — setting up the Runtime", () => {
       connectedClients: [client("client-1", "Studio Mac"), client("client-2", "MacBook Pro")],
       selectedClientId: "client-2",
       connectedClient: client("client-2", "MacBook Pro"),
+      capabilitiesLoaded: true,
+      okRuntimes: ["codex"],
+      selectedRuntime: "codex",
     });
     api.updateAgent.mockResolvedValue(agentRow({ clientId: "client-2" }));
     const chosen = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await click(button(chosen, "Use selected computer"));
 
-    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-2" });
+    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-2", runtimeProvider: "codex" });
     expect(chosen.textContent).toContain("Feishu Bot for Ada assistant");
+  });
+
+  it("does not offer a bind a Computer with no coding agent would reject", async () => {
+    computerMock.value = computerConnection({
+      connectedClients: [client("client-1", "Studio Mac")],
+      selectedClientId: "client-1",
+      connectedClient: client("client-1", "Studio Mac"),
+      capabilitiesLoaded: true,
+      okRuntimes: [],
+      selectedRuntime: null,
+    });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    expect(container.textContent).toContain("No coding agent is installed on this computer yet");
+    expect(button(container, "Use this computer").disabled).toBe(true);
+    expect(api.updateAgent).not.toHaveBeenCalled();
   });
 
   it("keeps a failed bind on this step and retryable", async () => {
@@ -395,6 +460,9 @@ describe("OpenTag entry — setting up the Runtime", () => {
       connectedClients: [client("client-1", "Studio Mac")],
       selectedClientId: "client-1",
       connectedClient: client("client-1", "Studio Mac"),
+      capabilitiesLoaded: true,
+      okRuntimes: ["codex"],
+      selectedRuntime: "codex",
     });
     api.updateAgent.mockRejectedValue(new ApiError(400, 'Client "client-1" does not have runtime provider'));
 
