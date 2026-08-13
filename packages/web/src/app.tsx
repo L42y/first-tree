@@ -108,6 +108,14 @@ const OnboardingPreviewPage = import.meta.env.DEV
   ? lazy(() => import("./pages/onboarding-preview.js").then((module) => ({ default: module.OnboardingPreviewPage })))
   : null;
 
+const OpenTagOnboardingPreviewPage = import.meta.env.DEV
+  ? lazy(() =>
+      import("./pages/opentag-onboarding-preview.js").then((module) => ({
+        default: module.OpenTagOnboardingPreviewPage,
+      })),
+    )
+  : null;
+
 const OnboardingOrientationPreviewPage = import.meta.env.DEV
   ? lazy(() =>
       import("./pages/onboarding-orientation-preview.js").then((module) => ({
@@ -408,6 +416,16 @@ export function App() {
                   element={
                     <Suspense fallback={null}>
                       <OnboardingPreviewPage />
+                    </Suspense>
+                  }
+                />
+              ) : null}
+              {OpenTagOnboardingPreviewPage ? (
+                <Route
+                  path="/preview/opentag-onboarding"
+                  element={
+                    <Suspense fallback={null}>
+                      <OpenTagOnboardingPreviewPage />
                     </Suspense>
                   }
                 />
