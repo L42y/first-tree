@@ -10,16 +10,18 @@ surfaces: [server, web, client]
 ## Goal
 
 Confirm that one member can go from an unauthenticated `/opentag` link to a
-Feishu Bot connected to exactly one Agent, and that every interruption on the
-way leaves either nothing or that same Agent — never a second one.
+Feishu Bot connected to exactly one Agent and on to real first use in Feishu,
+and that every interruption on the way leaves either nothing or that same
+Agent — never a second one.
 
 The deterministic pieces (URL parsing, eligibility classification, step
 selection) belong to product tests. This case owns what only a live run can
 answer: that the atomic create really writes the Agent, its Computer, its
 runtime and its durable config together on a real Computer; that a real
-provider mix does not dead-end; and that a failed readiness read cannot walk
-the member into creating another Agent through the workspace and onboarding
-gates.
+provider mix does not dead-end; that a failed readiness read cannot walk the
+member into creating another Agent through the workspace and onboarding gates;
+and that the membership is stamped complete only by a Feishu Task genuinely
+belonging to this Agent, which no mocked read can establish.
 
 ## Preconditions
 
@@ -30,10 +32,19 @@ gates.
 - A real connected Computer. At least one pass must use a Computer whose ready
   runtime is **not** the service default — a Codex-only machine is the useful
   shape, because the historical defect was an Agent stuck on `claude-code`.
-- Fresh browser state, and a way to fault-inject `/me` (devtools request
-  blocking is enough). Never reuse a developer's session or localhost login.
-- Direct database read access for the Agent, its runtime config and the Feishu
-  binding. UI text alone does not establish what was written.
+- Fresh browser state, and a way to fault-inject `/me`, the chat reads and the
+  completion request independently (devtools request blocking is enough). Never
+  reuse a developer's session or localhost login.
+- Direct database read access for the Agent, its runtime config, the Feishu
+  binding, the Task chat's metadata and the membership onboarding columns. UI
+  text alone does not establish what was written.
+- A disposable Feishu tenant with a real person able to message the Bot, since
+  only real ingress creates the Task this journey ends on. Reuse the tenant
+  hygiene rules in [feishu-agent-channel](feishu-agent-channel.md); never use a
+  customer conversation.
+- For the cross-Agent leg, a second disposable Agent in the same Team bound to
+  its **own** Bot. One Agent binds at most one Bot, so the second Bot is what
+  makes the two Tasks distinguishable at all.
 
 ## Operate
 

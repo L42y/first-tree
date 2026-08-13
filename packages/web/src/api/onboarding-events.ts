@@ -91,12 +91,13 @@ export async function reportOnboardingEvent(
 }
 
 /**
- * Stamp the terminal-state `onboarding_completed_at` column. Called when
- * the user walks Step 3 to success (admin Continue, invitee Confirm /
- * Continue), and by the `/opentag` entry once that Agent has a real Feishu
- * Task — a terminal state reached by using the Agent, not by pressing
- * anything. Once stamped, first-run onboarding no longer auto-opens; the
- * permanent Settings → Getting Started overview remains available.
+ * Stamp the terminal-state `onboarding_completed_at` column. Reached from the
+ * `/opentag` entry once that Agent has a real Feishu Task — a terminal state
+ * arrived at by using the Agent, not by pressing anything, which is why it
+ * needs its own request. The standalone journey stamps inside
+ * `postOnboardingStartChat` instead. Once stamped, first-run onboarding no
+ * longer auto-opens; the permanent Settings → Getting Started overview remains
+ * available.
  *
  * Distinct from `dismissOnboarding()`, which only hides the stepper UI
  * and stays reversible. Idempotent on the server (only writes when the
