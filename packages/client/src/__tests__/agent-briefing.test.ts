@@ -732,6 +732,11 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     expect(briefing).toContain("a GitHub URL alone does not require the `gh` CLI");
     expect(briefing).toContain("continue every step that does not depend on it");
     expect(briefing).toContain("report only the blocked forge step");
+    // A blocked forge operation never auto-reroutes to other remote channels.
+    expect(briefing).toContain("Never work around a blocked forge operation");
+    expect(briefing).toContain("browser/Web search, page scraping, raw HTTP/`curl`");
+    expect(briefing).toContain("anonymous REST/GraphQL calls, MCP/connectors, or another provider API");
+    expect(briefing).toContain("input the user pastes or attaches");
     expect(briefing).not.toContain("final provider `PATH`");
     expect(briefing).toContain("gh auth status");
     expect(briefing).toContain("gh auth login");
@@ -786,6 +791,10 @@ describe("buildAgentBriefing — asking humans, GitHub, and CLI overview", () =>
     expect(gitlab).toContain("a GitLab URL alone does not require the `glab` CLI");
     expect(gitlab).toContain("continue every step that does not depend on it");
     expect(gitlab).toContain("report only the blocked forge step");
+    // Symmetric with GitHub: no fallback to other remote channels.
+    expect(gitlab).toContain("Never work around a blocked forge operation");
+    expect(gitlab).toContain("anonymous REST/GraphQL calls, MCP/connectors, or another provider API");
+    expect(gitlab).toContain("input the user pastes or attaches");
     expect(gitlab).toContain("merge requests, issues, pipelines/jobs, repository metadata, comments");
     expect(gitlab).toContain("ordinary merge request / issue creation");
     expect(gitlab).toContain("GitLab.com");
