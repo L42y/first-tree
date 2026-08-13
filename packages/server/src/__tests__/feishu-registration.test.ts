@@ -255,7 +255,7 @@ describe("official Feishu QR registration", () => {
     expect(messageHandler).toBeTypeOf("function");
     await messageHandler?.(receivedMessage("acknowledge"));
 
-    await vi.waitFor(() => expect(sdkMocks.addReaction).toHaveBeenCalledWith("om_acknowledge", "THUMBSUP"));
+    await vi.waitFor(() => expect(sdkMocks.addReaction).toHaveBeenCalledWith("om_acknowledge", "Get"));
     expect(await app.db.select().from(messages)).toHaveLength(1);
     await app.feishuIntegration.revoke(a.agent.uuid);
   });

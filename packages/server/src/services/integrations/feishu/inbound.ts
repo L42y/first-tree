@@ -25,7 +25,7 @@ import { safeFeishuErrorContext } from "./safe-error.js";
 import { externalAuthorIdentity, type FeishuChatMembersReader, type FeishuSenderNameResolver } from "./sender-name.js";
 
 const log = createLogger("feishu-inbound");
-const ACKNOWLEDGEMENT_EMOJI = "THUMBSUP";
+const ACKNOWLEDGEMENT_EMOJI = "Get";
 
 type Binding = typeof imBotBindings.$inferSelect;
 

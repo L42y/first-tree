@@ -110,7 +110,7 @@ describe("Feishu inbound pipeline", () => {
     expect(deps.downloadResource).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => {
       expect(deps.addReaction).toHaveBeenCalledOnce();
-      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "THUMBSUP" });
+      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "Get" });
     });
 
     const stored = await app.db.select().from(messages);
