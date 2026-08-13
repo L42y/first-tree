@@ -2,7 +2,7 @@ import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { createAgent, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
+import { createAgent, createAgentFeishuSetupChat, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
@@ -13,6 +13,8 @@ import { FlowHint } from "../onboarding/flow-ui.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
+  FEISHU_TOOLS_SLOW_MS,
+  isFeishuHandoffUsable,
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,
@@ -243,6 +245,86 @@ export function OpenTagPage(): ReactElement | null {
   // the key: a re-registered Bot asks the question again rather than serving
   // the previous Bot's answer.
   const binding = feishuQuery.data?.binding ?? null;
+
+  // Committing to Feishu is what licenses this, and the binding is the durable
+  // proof of it: nothing is prepared for a member who has not asked for a Bot,
+  // and a reload does not have to remember a click because the Bot itself
+  // remembers. The call is create-or-reuse server-side, so firing it again on
+  // every load, tab, and retry converges on one Task rather than a pile.
+  const prepareTools = useMutation({
+    mutationFn: (args: { retry: boolean }) => createAgentFeishuSetupChat(agentUuid ?? "", args),
+  });
+  const prepareToolsMutate = prepareTools.mutate;
+  // Ownership, not readability, licenses this. An admin may legitimately open a
+  // teammate's Agent here, but their visit is not that member's setup: starting
+  // work on somebody else's Computer just by looking at a page is a side effect
+  // nobody asked for. The same rule already governs the reads and the stamp
+  // below.
+  //
+  // There also has to be a Computer to prepare. `offline` means none is bound
+  // at all, so the Task would be keyed to no machine and reach nobody — the
+  // step says so instead, and the fix for it lives on the Agent's own page.
+  const preparesTools =
+    feishuReady && ownsUrlAgent && !!binding && (binding.cli.state === "missing" || binding.cli.state === "unknown");
+  // Asked once per Agent and Computer, not once per page. The Task the server
+  // creates is keyed to that exact pair, so an Agent that moves machine while
+  // this page is open needs the check on the new one — and a mutation flag that
+  // only remembers "we asked something, once" would leave that member waiting
+  // for work nobody requested.
+  const toolsIdentity = binding ? `${agentUuid ?? ""}:${binding.cli.clientId ?? "unbound"}` : null;
+  const [askedToolsFor, setAskedToolsFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preparesTools || !toolsIdentity || prepareTools.isPending) return;
+    if (askedToolsFor === toolsIdentity) return;
+    setAskedToolsFor(toolsIdentity);
+    prepareToolsMutate({ retry: false });
+  }, [preparesTools, toolsIdentity, askedToolsFor, prepareTools.isPending, prepareToolsMutate]);
+
+  // The clock starts when the member commits to Feishu, not when the automatic
+  // request goes out. Both halves can strand somebody — a Bot that is never
+  // confirmed as surely as a Computer that never finishes — and a Computer that
+  // was already ready sends no request at all, so timing the request would
+  // leave exactly those members with no way out.
+  //
+  // The threshold is a presentation change, not a deadline, so it is armed once
+  // and never disarmed: the Task keeps running either way, and a wait that has
+  // already been long does not become short again.
+  const committedToFeishu = feishuReady && !!binding;
+  const [stepStartedAt, setStepStartedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (!committedToFeishu) return;
+    setStepStartedAt((started) => started ?? Date.now());
+  }, [committedToFeishu]);
+  const [stepSlow, setStepSlow] = useState(false);
+  useEffect(() => {
+    if (stepStartedAt === null || stepSlow) return;
+    const remaining = FEISHU_TOOLS_SLOW_MS - (Date.now() - stepStartedAt);
+    if (remaining <= 0) {
+      setStepSlow(true);
+      return;
+    }
+    const timer = setTimeout(() => setStepSlow(true), remaining);
+    return () => clearTimeout(timer);
+  }, [stepStartedAt, stepSlow]);
+
+  // What the step offers, as plain facts rather than a second state machine.
+  // A failure belongs to the Agent and Computer it was asked for: once either
+  // moves on, the old machine's failed request says nothing about the new one,
+  // and a Computer that arrives already prepared never asks again.
+  const setupFailed = prepareTools.isError && askedToolsFor === toolsIdentity;
+  const botFailed = !!binding && (binding.status === "error" || binding.connectionStatus === "error");
+  const hasComputer = !!binding && binding.cli.state !== "offline";
+  const toolsReady = binding?.cli.state === "ready";
+  // A finished handoff has nothing to recover from, however it got there. Short
+  // of that, a failed request, a failed Bot and a missing Computer are all
+  // established rather than suspected, so none of them waits for the clock.
+  const showRecovery =
+    !!binding && !isFeishuHandoffUsable(binding) && (setupFailed || botFailed || !hasComputer || stepSlow);
+  // Retrying is scoped to the half it retries. A Bot that failed can put the
+  // way out on screen, but it is no reason to ask the Agent to prepare a
+  // Computer that is already getting on with it.
+  const canRetryTools = hasComputer && !toolsReady && (setupFailed || stepSlow);
+
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
   // Ownership, not readability, is what licenses the stamp below.
   //
@@ -267,10 +349,17 @@ export function OpenTagPage(): ReactElement | null {
     () => createOpenTagFirstUseScan(agentUuid ?? "", botBindingId ?? ""),
     [agentUuid, botBindingId],
   );
+  // Both halves of the handoff gate the search itself, not its answer. An Agent
+  // whose Computer cannot call Feishu would receive a first message it can
+  // never reply to, and finding that Task would stamp onboarding complete on a
+  // handoff that does not work. Gating the read rather than masking its result
+  // also means a Task already found stays found: the conversation is a durable
+  // fact, and a later capability blip should not walk the member back through a
+  // step they finished.
   const firstUseQuery = useQuery({
     queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
     queryFn: ({ signal }) => scanFirstUse(signal),
-    enabled: feishuReady && ownsUrlAgent && !!botBindingId,
+    enabled: feishuReady && ownsUrlAgent && !!botBindingId && isFeishuHandoffUsable(binding),
     // A failed read must stay "we don't know", never "not used yet" — and never
     // a blank frame. The poll below is the retry.
     retry: false,
@@ -296,13 +385,27 @@ export function OpenTagPage(): ReactElement | null {
     // feeds it: this is the line that changes durable state, and it should not
     // depend on a caller upstream having kept a cached answer honest.
     if (!ownsUrlAgent) return;
+    // The handoff is re-checked at the write for the same reason. The scan that
+    // produced this Task ran against an earlier read, and a capability that has
+    // since gone means the Agent cannot answer the very Task about to finish
+    // its setup. Holding here costs a member nothing — the poll behind this
+    // keeps the answer current — while stamping would be wrong for good.
+    if (!isFeishuHandoffUsable(binding)) return;
     // Once per landed Task: a failure holds until the member retries, so a
     // failing endpoint is not hammered by the first-use poll behind it.
     if (!firstUseChatId || completePending || completeSettled || completeFailed) return;
     completeMutate();
-  }, [ownsUrlAgent, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
+  }, [ownsUrlAgent, binding, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
 
-  const step = resolveOpenTagStep(facts, firstUse);
+  // The Task is a durable fact, but it only carries the member forward while
+  // the Agent can actually work it. A capability that goes before setup is
+  // stamped would otherwise strand them on the destination step — the Task is
+  // there, the stamp will not land, and the recovery lives on the step behind
+  // them. Once the stamp is in, that step is finished for good and a later blip
+  // must not walk them back through it.
+  const advancingFirstUse: OpenTagFirstUse =
+    isFeishuHandoffUsable(binding) || completeSettled ? firstUse : { state: "unknown" };
+  const step = resolveOpenTagStep(facts, advancingFirstUse);
 
   // The draft only describes the pre-creation choices, so an Agent in the URL
   // always supersedes it — including an Agent that turns out to be unusable,
@@ -403,7 +506,6 @@ export function OpenTagPage(): ReactElement | null {
       )}
       {feishuReady && step === "connect-feishu" && agent && agentUuid && (
         <StepConnectFeishu
-          agentDisplayName={agent.displayName}
           agentUuid={agentUuid}
           binding={binding}
           loading={feishuQuery.isPending}
@@ -414,6 +516,17 @@ export function OpenTagPage(): ReactElement | null {
           starting={startFeishu.isPending}
           error={startFeishu.error instanceof Error ? startFeishu.error.message : null}
           onConnect={() => startFeishu.mutate()}
+          setupFailed={setupFailed}
+          recovery={showRecovery}
+          canRetryTools={canRetryTools}
+          retrying={prepareTools.isPending}
+          // The same idempotent request the automatic path makes: when it never
+          // landed this starts the Task, and when it did the Agent is already
+          // working on the one Task this retry converges on.
+          onRetryTools={() => {
+            prepareToolsMutate({ retry: true });
+            void feishuQuery.refetch();
+          }}
         />
       )}
       {step === "use-in-feishu" && agent && firstUseChatId && (

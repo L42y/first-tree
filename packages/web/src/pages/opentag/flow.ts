@@ -1,4 +1,4 @@
-import type { Agent } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { canManageAgentDetail } from "../agent-detail/access.js";
 
 /**
@@ -124,6 +124,29 @@ export type OpenTagFirstUse =
   | { state: "absent" }
   /** Established: this Agent's Feishu Task exists, and this is its chat. */
   | { state: "present"; chatId: string };
+
+/**
+ * How long this step is allowed to look ordinary.
+ *
+ * Both halves usually land well inside it, so a longer wait is the first honest
+ * signal that watching the page may not be enough. It is a presentation
+ * threshold only: nothing is cancelled, the Task keeps running, and the member
+ * is offered a way forward rather than an error.
+ */
+export const FEISHU_TOOLS_SLOW_MS = 90_000;
+
+/**
+ * Whether this Agent can actually carry Feishu work right now.
+ *
+ * Both halves have to hold at once. A reachable Bot with no CLI receives
+ * messages the Agent cannot answer, and finishing onboarding on that would
+ * declare a handoff that does not work; a ready CLI with no Bot has nothing to
+ * answer. Only the pair is the thing the member was promised.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  if (!binding) return false;
+  return binding.status === "active" && binding.connectionStatus === "connected" && binding.cli.state === "ready";
+}
 
 /**
  * Where an Agent in the URL puts the member, or `null` while the facts have not

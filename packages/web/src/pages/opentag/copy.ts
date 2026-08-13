@@ -36,9 +36,12 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
     why: "Give your Agent one place to work.",
     lead: "Choose a connected Computer for this Agent. It stays on that Computer, and your other Computers are untouched.",
   },
+  // Purely descriptive, because it is the one heading this step has. Directing
+  // an action here would keep asking for a confirmation that may already be
+  // done — or, when the Bot has failed, one the member cannot give at all.
   "connect-feishu": {
-    why: "Add one Bot for this Agent.",
-    lead: "First Tree prepares a dedicated Feishu Bot. You confirm it in Feishu — your Agent and its Computer stay set up while you do.",
+    why: "Connect your Agent to Feishu.",
+    lead: "This needs two things: a Feishu Bot, and the Feishu tools on your Agent's Computer.",
   },
   // Says only what the Task itself establishes. The shell renders this heading
   // for the whole step, including while the completion stamp is still in flight
@@ -49,3 +52,16 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
     lead: "Keep the conversation in Feishu — its work and history are here.",
   },
 };
+
+/** Member-facing strings for the two things Step 3 is waiting on. */
+export const OPENTAG_FEISHU_READINESS_COPY = {
+  botLabel: "Feishu Bot",
+  toolsLabel: "Agent tools",
+  recoveryTitle: "You are not stuck here.",
+  recoveryLead: "Try the automatic setup again, or finish later and repair it from this Agent's settings.",
+  // When there is nothing left for the automatic setup to do, leaving is the
+  // only honest offer.
+  recoveryLeadFinishOnly: "Finish later and pick this up from this Agent's settings whenever you're ready.",
+  tryAgain: "Try again",
+  finishLater: "Finish later",
+} as const;
