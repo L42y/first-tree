@@ -26,6 +26,7 @@ type UseAdminWsOptions = {
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 30_000;
 const ADMISSION_TIMEOUT_MS = 10_000;
+const ADMISSION_TIMEOUT_CLOSE_CODE = 4013;
 
 // Module-level singleton connection shared across all hook instances.
 type QC = ReturnType<typeof useQueryClient>;
@@ -35,6 +36,7 @@ let ws: WebSocket | null = null;
 let closing = false;
 let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let cancelCurrentAdmissionTimer: (() => void) | null = null;
 const subscribers = new Set<Subscriber>();
 let latestQc: QC | null = null;
 let refCount = 0;
@@ -370,18 +372,21 @@ function connect() {
   let membershipChangeSignaled = false;
   let admissionConfirmed = false;
   let admissionTimer: ReturnType<typeof setTimeout> | null = null;
-  const clearAdmissionTimer = () => {
+  const clearAdmissionTimer = (): void => {
     if (admissionTimer) {
       clearTimeout(admissionTimer);
       admissionTimer = null;
     }
+    if (cancelCurrentAdmissionTimer === clearAdmissionTimer) cancelCurrentAdmissionTimer = null;
   };
   ws = socket;
+  cancelCurrentAdmissionTimer = clearAdmissionTimer;
 
   socket.onopen = () => {
     admissionTimer = setTimeout(() => {
       admissionTimer = null;
-      if (socket === ws && !admissionConfirmed) socket.close(1013, "admission timeout");
+      if (cancelCurrentAdmissionTimer === clearAdmissionTimer) cancelCurrentAdmissionTimer = null;
+      if (socket === ws && !admissionConfirmed) socket.close(ADMISSION_TIMEOUT_CLOSE_CODE, "admission timeout");
     }, ADMISSION_TIMEOUT_MS);
   };
   socket.onmessage = (ev) => {
@@ -466,6 +471,7 @@ function scheduleReconnect() {
 function teardown() {
   closing = true;
   window.removeEventListener(ADMIN_WS_ORG_CHANGED_EVENT, reconnectForOrgChange);
+  cancelCurrentAdmissionTimer?.();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
@@ -501,6 +507,7 @@ function reconnectForOrgChange(): void {
     reconnectTimer = null;
   }
   reconnectAttempt = 0;
+  cancelCurrentAdmissionTimer?.();
   const previous = ws;
   // Detach before closing so the stale socket's onclose (`socket !== ws`)
   // no-ops instead of scheduling a backoff reconnect to the previous org.
