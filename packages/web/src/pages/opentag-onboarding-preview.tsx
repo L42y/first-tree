@@ -378,7 +378,7 @@ function StepContent({
       return (
         <ComputerStep
           key={state}
-          state={state as ComputerPreviewState}
+          state={parseComputerState(state)}
           mobile={viewport === "mobile"}
           onAdvance={() => onAdvance("feishu")}
           onStateChange={onStateChange}
@@ -848,6 +848,10 @@ function parseStep(value: string | null): PreviewStep {
 
 function parseState(step: PreviewStep, value: string | null): PreviewState {
   return STATE_OPTIONS[step].find((state) => state.value === value)?.value ?? DEFAULT_STATE[step];
+}
+
+function parseComputerState(value: PreviewState): ComputerPreviewState {
+  return STATE_OPTIONS.computer.find((state) => state.value === value)?.value ?? "no-computer";
 }
 
 function parseViewport(value: string | null): PreviewViewport {
