@@ -11,8 +11,8 @@ import type { FirstTreeHubSDK } from "../../../cloud/sdk.js";
 import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
 import type { AgentHandler } from "../../../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
-import { SessionRuntime } from "../../../runtime/session-runtime.js";
 import { SessionRegistry } from "../../../runtime/session-registry.js";
+import { SessionRuntime } from "../../../runtime/session-runtime.js";
 import { createPiHandler, freshStartPiSessionId, type PiRetrySleep } from "../index.js";
 
 function mockAckEntry() {
@@ -995,9 +995,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     );
     await started;
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
 
     expect(ackEntry).toHaveBeenCalledWith(97);
@@ -1063,9 +1063,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
 
     expect(suspendCalls.some((call) => call.opts?.settleProviderEntered === true)).toBe(true);
@@ -1218,9 +1218,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -1284,9 +1284,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -1368,9 +1368,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
@@ -1459,9 +1459,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
     expect(ackEntry.mock.calls.filter((call) => call[0] === 121)).toHaveLength(0);
@@ -1609,9 +1609,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
 
     const suspendPromise = sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
-      chatId,
-    )?.suspending;
+    const suspending = (
+      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
+    ).projection.sessions.get(chatId)?.suspending;
     releaseRefresh?.();
     await Promise.all([suspendPromise, suspending ?? Promise.resolve(), injectPromise]);
 

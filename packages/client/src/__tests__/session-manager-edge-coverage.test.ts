@@ -21,8 +21,8 @@ import type {
 } from "../runtime/handler.js";
 import type { DeliveryDecision, DeliveryRouteOwnership, DeliveryWork } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
-import { SessionRuntime } from "../runtime/session-runtime.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -351,7 +351,11 @@ describe("SessionRuntime edge coverage", () => {
     i.projection.sessions.set("chat-pending", makeSessionRecord("chat-pending"));
     i.projection.evictedMappings.set("chat-evicted-active", { claudeSessionId: "evicted-active", lastActivity: 1 });
     i.projection.evictedMappings.set("chat-evicted-archived", { claudeSessionId: "evicted-archived", lastActivity: 2 });
-    i.slotScheduler.pendingQueue.push({ chatId: "chat-pending", message: makeMessage("chat-pending"), deliveryKind: "fresh" });
+    i.slotScheduler.pendingQueue.push({
+      chatId: "chat-pending",
+      message: makeMessage("chat-pending"),
+      deliveryKind: "fresh",
+    });
 
     const activeSet = new Set(["chat-active", "chat-evicted-active"]);
 
@@ -540,7 +544,10 @@ describe("SessionRuntime edge coverage", () => {
       expect.anything(),
     );
 
-    internals(sm).projection.evictedMappings.set("chat-extra", { claudeSessionId: "evicted-extra", lastActivity: 2_000 });
+    internals(sm).projection.evictedMappings.set("chat-extra", {
+      claudeSessionId: "evicted-extra",
+      lastActivity: 2_000,
+    });
     internals(sm).projection.persistRegistry();
     await sm.shutdown();
 
@@ -634,7 +641,10 @@ describe("SessionRuntime edge coverage", () => {
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-active" }));
     expect(activeHandler.start).toHaveBeenCalled();
     onStateChange.mockClear();
-    internals(sm).projection.evictedMappings.set("chat-extra", { claudeSessionId: "extra-session", lastActivity: 2_000 });
+    internals(sm).projection.evictedMappings.set("chat-extra", {
+      claudeSessionId: "extra-session",
+      lastActivity: 2_000,
+    });
     internals(sm).projection.persistRegistry();
 
     await sm.shutdown("runtime switched by server", {
@@ -1060,7 +1070,10 @@ describe("SessionRuntime edge coverage", () => {
     });
 
     await internals(sm).slotScheduler.runRetry("missing-chat");
-    internals(sm).projection.sessions.set("chat-active", makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }));
+    internals(sm).projection.sessions.set(
+      "chat-active",
+      makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }),
+    );
     await internals(sm).slotScheduler.runRetry("chat-active");
 
     const queued = makeSessionRecord("chat-retry-queue", {
@@ -6933,7 +6946,10 @@ describe("SessionRuntime edge coverage", () => {
       handlers: [resumeFails],
       onStateChange: (_chatId, state) => states.push(state),
     });
-    internals(sm).projection.evictedMappings.set("chat-evicted-fail", { claudeSessionId: "evicted-session", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-evicted-fail", {
+      claudeSessionId: "evicted-session",
+      lastActivity: 1,
+    });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-evicted-fail" }));
 
@@ -6983,7 +6999,11 @@ describe("SessionRuntime edge coverage", () => {
   it("covers drainPendingQueue return and edge branches", async () => {
     const sm = makeRuntime({ concurrency: 1, handlers: [handler()] });
 
-    internals(sm).slotScheduler.pendingQueue.push({ chatId: "chat-held", message: makeMessage("chat-held"), deliveryKind: "fresh" });
+    internals(sm).slotScheduler.pendingQueue.push({
+      chatId: "chat-held",
+      message: makeMessage("chat-held"),
+      deliveryKind: "fresh",
+    });
     internals(sm).slotScheduler.activeCount = 1;
     internals(sm).slotScheduler.drainPendingQueue();
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-held")).toBe(true);
@@ -7473,7 +7493,10 @@ describe("SessionRuntime edge coverage", () => {
   it("drains active and control pending queue branches, including asynchronous requeue failures", async () => {
     const activeManager = makeRuntime();
     const activeInternals = internals(activeManager);
-    activeInternals.projection.sessions.set("chat-active-drain", makeSessionRecord("chat-active-drain", { status: "active" }));
+    activeInternals.projection.sessions.set(
+      "chat-active-drain",
+      makeSessionRecord("chat-active-drain", { status: "active" }),
+    );
     activeInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-drain",
       message: null,
@@ -7512,7 +7535,9 @@ describe("SessionRuntime edge coverage", () => {
 
     activeInboxInternals.slotScheduler.drainPendingQueue();
     await vi.waitFor(() => expect(activeInboxInternals.routeMessage).toHaveBeenCalledTimes(1));
-    expect(activeInboxInternals.slotScheduler.pendingQueue.some((item) => item.chatId === "chat-active-inbox-drain")).toBe(false);
+    expect(
+      activeInboxInternals.slotScheduler.pendingQueue.some((item) => item.chatId === "chat-active-inbox-drain"),
+    ).toBe(false);
     await activeInboxManager.shutdown();
 
     const controlManager = makeRuntime();
