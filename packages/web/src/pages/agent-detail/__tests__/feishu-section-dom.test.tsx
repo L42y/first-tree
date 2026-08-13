@@ -207,7 +207,7 @@ describe("Feishu Agent Detail section", () => {
     const active = await renderSection();
     expect(active.textContent).toContain("Not detected");
     await click(buttonByText(active, "Ask Agent to install"));
-    expect(apiMocks.createAgentFeishuSetupChat).toHaveBeenCalledWith("agent-a");
+    expect(apiMocks.createAgentFeishuSetupChat).toHaveBeenCalledWith("agent-a", { retry: true });
     expect(navigateAway).toHaveBeenCalledWith("/?c=setup-chat");
   });
 

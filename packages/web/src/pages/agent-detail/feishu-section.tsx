@@ -58,7 +58,10 @@ export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
     onSuccess: refresh,
   });
   const setup = useMutation({
-    mutationFn: () => createAgentFeishuSetupChat(ctx.uuid),
+    // Pressing this is the member asking, not a surface ensuring: the Agent may
+    // have finished with the original request long ago, so a repair that only
+    // reused the Task would send them into a conversation where nothing happens.
+    mutationFn: () => createAgentFeishuSetupChat(ctx.uuid, { retry: true }),
     onSuccess: ({ chatId }) => ctx.navigateAway(`/?c=${encodeURIComponent(chatId)}`),
   });
   const error = start.error ?? revoke.error ?? setup.error ?? query.error;

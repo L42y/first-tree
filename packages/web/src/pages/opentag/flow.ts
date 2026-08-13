@@ -1,4 +1,4 @@
-import type { Agent } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { canManageAgentDetail } from "../agent-detail/access.js";
 
 /**
@@ -126,16 +126,40 @@ export type OpenTagFirstUse =
   | { state: "present"; chatId: string };
 
 /**
+ * How long this step is allowed to look ordinary.
+ *
+ * Both halves usually land well inside it, so a longer wait is the first honest
+ * signal that watching the page may not be enough. It is a presentation
+ * threshold only: nothing is cancelled, the Task keeps running, and the member
+ * is offered a way forward rather than an error.
+ */
+export const FEISHU_TOOLS_SLOW_MS = 90_000;
+
+/**
+ * Whether this Agent can actually carry Feishu work right now.
+ *
+ * Both halves have to hold at once. A reachable Bot with no CLI receives
+ * messages the Agent cannot answer, and finishing onboarding on that would
+ * declare a handoff that does not work; a ready CLI with no Bot has nothing to
+ * answer. Only the pair is the thing the member was promised.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  if (!binding) return false;
+  return binding.status === "active" && binding.connectionStatus === "connected" && binding.cli.state === "ready";
+}
+
+/**
  * Where an Agent in the URL puts the member, or `null` while the facts have not
  * settled. An existing Agent is past both setup choices, so it lands on Feishu;
  * anything unusable starts over from the Agent choice, where nothing has been
  * created yet.
  *
- * Genuine bot reachability moves the member to the first-use step. It does not
- * complete onboarding: that step remains a read-only wait until the exact bot
+ * A genuinely usable handoff moves the member to the first-use step. Bot
+ * reachability alone is not enough: the Agent must also have the Feishu tools
+ * ready on its Computer. First use remains a read-only wait until the exact Bot
  * binding has produced a real Feishu Task.
  */
-export function resolveOpenTagStep(facts: OpenTagAgentFacts, botReachable: boolean): OpenTagStepId | null {
+export function resolveOpenTagStep(facts: OpenTagAgentFacts, handoffUsable: boolean): OpenTagStepId | null {
   switch (facts.state) {
     case "none":
     case "unavailable":
@@ -145,6 +169,6 @@ export function resolveOpenTagStep(facts: OpenTagAgentFacts, botReachable: boole
     case "team-unreadable":
       return null;
     case "resolved":
-      return botReachable ? "use-in-feishu" : "connect-feishu";
+      return handoffUsable ? "use-in-feishu" : "connect-feishu";
   }
 }

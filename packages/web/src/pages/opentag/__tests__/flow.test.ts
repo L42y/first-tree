@@ -1,6 +1,7 @@
+import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
-import { classifyOpenTagAgent, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
+import { classifyOpenTagAgent, isFeishuHandoffUsable, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
 
 const ORG = "org-1";
 
@@ -151,13 +152,13 @@ describe("resolveOpenTagStep", () => {
     expect(resolveOpenTagStep({ state: "team-unreadable" }, false)).toBeNull();
   });
 
-  it("keeps an existing Agent on bot setup until genuine reachability", () => {
+  it("keeps an existing Agent on setup until the Feishu handoff is usable", () => {
     // Both setup choices already happened at creation, so there is nothing
     // between an existing Agent and its bot, but provisioning is still Step 3.
     expect(resolveOpenTagStep({ state: "resolved" }, false)).toBe("connect-feishu");
   });
 
-  it("enters the real-first-use step only when the bot is genuinely reachable", () => {
+  it("enters the real-first-use step only when both bot and tools are ready", () => {
     expect(resolveOpenTagStep({ state: "resolved" }, true)).toBe("use-in-feishu");
   });
 
@@ -183,5 +184,48 @@ describe("why the readiness refresh has to be authoritative", () => {
     };
     expect(shouldEnterOnboarding(stale)).toBe(true);
     expect(shouldEnterOnboarding({ ...stale, currentOrgHasPersonalAgent: true })).toBe(false);
+  });
+});
+
+describe("when the Feishu handoff is genuinely usable", () => {
+  const usable: FeishuBotBinding = {
+    id: "binding-1",
+    agentId: "agent-1",
+    appId: "cli_1",
+    botOpenId: null,
+    botName: null,
+    botAvatarUrl: null,
+    tenantKey: null,
+    status: "active",
+    connectionStatus: "connected",
+    grantedScopes: [],
+    registrationUrl: null,
+    registrationExpiresAt: null,
+    lastConnectedAt: null,
+    lastEventAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
+  };
+
+  it("needs both halves at once", () => {
+    expect(isFeishuHandoffUsable(usable)).toBe(true);
+    expect(isFeishuHandoffUsable(null)).toBe(false);
+  });
+
+  it("refuses a reachable Bot the Agent could not answer", () => {
+    // Messages would arrive and go unanswered, and the Task they create would
+    // otherwise finish onboarding on a handoff that does not work.
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "missing", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "unknown", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+  });
+
+  it("refuses a ready Computer with no reachable Bot", () => {
+    expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
+    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(false);
   });
 });

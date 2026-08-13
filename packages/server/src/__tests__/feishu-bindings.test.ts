@@ -1,10 +1,15 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
+import { agents } from "../db/schema/agents.js";
+import { clients } from "../db/schema/clients.js";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../db/schema/im-chat-bindings.js";
+import { inboxEntries } from "../db/schema/inbox-entries.js";
+import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
-import { createTestAgent, useTestApp } from "./helpers.js";
+import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 describe("Feishu binding lifecycle", () => {
   const getApp = useTestApp();
@@ -125,5 +130,141 @@ describe("Feishu binding lifecycle", () => {
     const [persisted] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.id, binding.id));
     expect(persisted?.connectionOwnerInstanceId).toBe(ownerInstanceId);
     expect(persisted?.connectionLeaseExpiresAt?.getTime()).toBe(leaseExpiresAt.getTime());
+  });
+});
+
+describe("Feishu CLI setup Task", () => {
+  const getApp = useTestApp();
+
+  async function requestSetupChat(app: FastifyInstance, accessToken: string, agentUuid: string, retry = false) {
+    return app.inject({
+      method: "POST",
+      url: `/api/v1/agents/${agentUuid}/feishu-binding/setup-chat`,
+      headers: { authorization: `Bearer ${accessToken}` },
+      payload: { requestInstall: true, retry },
+    });
+  }
+
+  /** Backdate every message so a retry is not declined by the burst cooldown. */
+  async function agePriorRequests(app: FastifyInstance, chatId: string) {
+    await app.db
+      .update(messages)
+      .set({ createdAt: new Date(Date.now() - 10 * 60 * 1_000) })
+      .where(eq(messages.chatId, chatId));
+  }
+
+  it("returns one Task however many times the same member asks for it", async () => {
+    // The automatic OpenTag preparation, a reload, a retry, and a second tab
+    // all hit this endpoint for the same Agent on the same Computer. Each one
+    // opening its own Task would bury the member's workspace in identical
+    // conversations about a machine check they never asked for.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+
+    const first = await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    const second = await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    const third = await requestSetupChat(app, a.accessToken, a.agent.uuid);
+
+    expect(first.statusCode).toBe(201);
+    const chatId = first.json<{ chatId: string }>().chatId;
+    expect(second.json<{ chatId: string }>().chatId).toBe(chatId);
+    expect(third.json<{ chatId: string }>().chatId).toBe(chatId);
+
+    // The reuse is a real reuse, not three chats sharing a response shape.
+    const opening = await app.db.select().from(messages).where(eq(messages.chatId, chatId));
+    expect(opening).toHaveLength(1);
+  });
+
+  it("opens a new Task when the Agent moves to another Computer", async () => {
+    // The capability the Task establishes is a fact about one machine, so a
+    // move genuinely needs a new check there. Reusing the old Computer's Task
+    // would answer a question about a machine the Agent no longer runs on.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const firstChatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+
+    const movedClientId = `cli-${crypto.randomUUID().slice(0, 8)}`;
+    await app.db.insert(clients).values({
+      id: movedClientId,
+      userId: a.userId,
+      organizationId: a.organizationId,
+      status: "connected",
+    });
+    await app.db.update(agents).set({ clientId: movedClientId }).where(eq(agents.uuid, a.agent.uuid));
+
+    const moved = await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    expect(moved.json<{ chatId: string }>().chatId).not.toBe(firstChatId);
+
+    // Moving back converges on the original Task rather than a third one: the
+    // key describes the machine, not the order the member visited them in.
+    await app.db.update(agents).set({ clientId: a.clientId }).where(eq(agents.uuid, a.agent.uuid));
+    const back = await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    expect(back.json<{ chatId: string }>().chatId).toBe(firstChatId);
+  });
+
+  it("asks the Agent again on an explicit retry, in the Task it already has", async () => {
+    // Reuse is not the same as doing nothing. Once the Agent has taken the
+    // original request, re-arming it wakes nobody — so a retry that only
+    // returned the same chat id would report work that never restarted.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    const retried = await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+
+    expect(retried.json<{ chatId: string }>().chatId).toBe(chatId);
+    const asked = await app.db.select().from(messages).where(eq(messages.chatId, chatId));
+    expect(asked).toHaveLength(2);
+    // The Agent is woken for the new ask, not merely told the Task exists.
+    const delivered = await app.db
+      .select()
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true)));
+    expect(delivered).toHaveLength(2);
+  });
+
+  it("does not ask again for the loads, reloads and tabs that only ensure the Task", async () => {
+    // Ensuring runs on every visit. If that woke the Agent, a background
+    // mechanism would become a stream of interruptions about one machine check.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid);
+
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(1);
+  });
+
+  it("collapses a burst of retries into one request at the Agent", async () => {
+    // Two tabs sitting on the recovery state, or one impatient double click,
+    // are one intent — not three identical asks.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(2);
+  });
+
+  it("keeps one administrator out of another's private setup Task", async () => {
+    // The Task is a private conversation between one human and one Agent. Two
+    // admins may both manage the same Agent, and joining the second one to the
+    // first one's chat would hand them a private history they were never in.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const other = await createTestAdmin(app, { username: `admin-${crypto.randomUUID().slice(0, 8)}` });
+
+    const mine = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    const theirs = await requestSetupChat(app, other.accessToken, a.agent.uuid);
+
+    expect(theirs.statusCode).toBe(201);
+    expect(theirs.json<{ chatId: string }>().chatId).not.toBe(mine);
   });
 });
