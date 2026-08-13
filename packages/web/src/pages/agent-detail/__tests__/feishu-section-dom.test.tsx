@@ -33,7 +33,12 @@ const roots: Root[] = [];
 function context(overrides: Partial<AgentDetailContext> = {}): AgentDetailContext {
   return {
     uuid: "agent-a",
-    agent: { uuid: "agent-a", displayName: "Agent A", type: "agent" } as AgentDetailContext["agent"],
+    agent: {
+      uuid: "agent-a",
+      displayName: "Agent A",
+      type: "agent",
+      visibility: "organization",
+    } as AgentDetailContext["agent"],
     isHuman: false,
     canManageAgent: true,
     navigateAway: vi.fn(),
@@ -47,6 +52,8 @@ function binding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
     agentId: "agent-a",
     appId: "cli_app",
     botOpenId: "ou_bot",
+    botName: null,
+    botAvatarUrl: null,
     tenantKey: "tenant-a",
     status: "active",
     connectionStatus: "connected",
@@ -69,7 +76,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderSection(): Promise<HTMLElement> {
+async function renderSection(props: { onOpenProfileEdit?: () => void } = {}): Promise<HTMLElement> {
   const { FeishuSection } = await import("../feishu-section.js");
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -81,7 +88,7 @@ async function renderSection(): Promise<HTMLElement> {
   await act(async () =>
     root.render(
       <QueryClientProvider client={queryClient}>
-        <FeishuSection />
+        <FeishuSection {...props} />
       </QueryClientProvider>,
     ),
   );
@@ -126,6 +133,57 @@ describe("Feishu Agent Detail section", () => {
     expect(container.textContent).toContain("No Feishu Bot is connected");
     await click(buttonByText(container, "Connect Bot"));
     expect(apiMocks.startAgentFeishuRegistration).toHaveBeenCalledWith("agent-a", "Agent A · First Tree");
+  });
+
+  it("explains the visibility requirement before a private Agent can connect", async () => {
+    const onOpenProfileEdit = vi.fn();
+    const privateContext = context();
+    contextMock.value = context({
+      agent: {
+        ...privateContext.agent,
+        visibility: "private",
+      } as AgentDetailContext["agent"],
+    });
+    const container = await renderSection({ onOpenProfileEdit });
+
+    expect(container.textContent).toContain("Organization visibility is required");
+    expect(container.textContent).not.toContain("One Bot and Feishu chat map");
+    expect(buttonByText(container, "Connect Bot")?.disabled).toBe(true);
+    await click(buttonByText(container, "Change visibility"));
+    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
+  });
+
+  it("shows the Feishu Bot identity with App ID as supporting detail", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({
+        botName: "Agent A · First Tree",
+        botAvatarUrl: "https://example.com/bot.png",
+      }),
+    });
+    const container = await renderSection();
+
+    expect(container.textContent).toContain("Agent A · First Tree");
+    expect(container.textContent).toContain("App ID: cli_app");
+    expect(container.querySelector('img[src="https://example.com/bot.png"]')).not.toBeNull();
+  });
+
+  it("blocks Retry and explains visibility for a private Agent with an errored binding", async () => {
+    const onOpenProfileEdit = vi.fn();
+    const privateContext = context();
+    contextMock.value = context({
+      agent: { ...privateContext.agent, visibility: "private" } as AgentDetailContext["agent"],
+    });
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ status: "error", connectionStatus: "error", lastErrorMessage: "Registration failed" }),
+    });
+    const container = await renderSection({ onOpenProfileEdit });
+
+    expect(container.textContent).toContain("Organization visibility is required");
+    expect(buttonByText(container, "Retry")?.disabled).toBe(true);
+    await click(buttonByText(container, "Change visibility"));
+    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
   });
 
   it("renders registration QR state and sends missing-CLI setup to a visible chat", async () => {
