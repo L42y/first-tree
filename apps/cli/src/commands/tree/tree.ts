@@ -455,8 +455,9 @@ type ValidatedBindingIdentity = {
  * Public GitHub/GitLab.com keep their well-known web origin, so nested
  * GitLab.com HTTPS ↔ SSH/scp stays equivalent. Self-managed hosts omit
  * connection origin, so HTTPS↔HTTPS compares the complete origin (port
- * included), SSH↔SSH uses canonical identity, and mixed HTTPS↔SSH fails
- * closed rather than guessing a Team connection origin.
+ * included), mixed HTTPS↔SSH fails closed, and SSH↔SSH additionally
+ * requires the same effective SSH endpoint port (scp / unstated `ssh://`
+ * port means 22) rather than matching on canonical host/path alone.
  */
 function sameDeclaredRemote(actual: string, expected: string): boolean {
   const actualRaw = actual.trim();
@@ -492,11 +493,44 @@ function sameDeclaredRemote(actual: string, expected: string): boolean {
       gitlabInstanceOrigin: "https://gitlab.com",
     });
   }
-  return sameContextTreeRepository({
-    left: actualParsed.data,
-    right: expectedParsed.data,
-    provider: "gitlab",
-  });
+  if (
+    !sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "gitlab",
+    })
+  ) {
+    return false;
+  }
+  return sameSelfManagedSshEndpoint(actualParsed.data, expectedParsed.data);
+}
+
+/**
+ * When no Team GitLab connection origin is available, two SSH/scp spellings
+ * are the same executable endpoint only if their effective SSH ports match.
+ * scp-like and `ssh://` without a port are port 22. HTTPS pairs are left to
+ * the shared matcher (both ports null).
+ */
+function sameSelfManagedSshEndpoint(left: string, right: string): boolean {
+  const leftPort = sshEndpointPort(left);
+  const rightPort = sshEndpointPort(right);
+  if (leftPort === null && rightPort === null) return true;
+  if (leftPort === null || rightPort === null) return false;
+  return leftPort === rightPort;
+}
+
+function sshEndpointPort(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed.includes("://")) return 22;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "ssh:") return null;
+    if (url.port === "") return 22;
+    const port = Number(url.port);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
