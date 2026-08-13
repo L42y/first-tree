@@ -1,3 +1,4 @@
+import { FEISHU_REQUIRED_SCOPES } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
@@ -36,8 +37,8 @@ const sdkMocks = (() => {
     connect,
     disconnect,
     request,
-    registerApp: vi.fn(async (options: { onQRCodeReady: (value: { url: string; expireIn: number }) => void }) => {
-      options.onQRCodeReady({ url: "https://open.feishu.cn/register?code=test", expireIn: 120 });
+    registerApp: vi.fn(async (options: Parameters<FeishuSdkDependencies["registerApp"]>[0]) => {
+      options.onQRCodeReady?.({ url: "https://open.feishu.cn/register?code=test", expireIn: 120 });
       return { client_id: "cli_created", client_secret: "secret-created-by-feishu" };
     }),
     createLarkChannel: vi.fn((_options: Parameters<FeishuSdkDependencies["createLarkChannel"]>[0]) => channel),
@@ -85,6 +86,76 @@ describe("official Feishu QR registration", () => {
     sdkMocks.disconnect.mockResolvedValue(undefined);
   });
 
+  it("keeps the explicit tenant scope contract exact and duplicate-free", () => {
+    expect(FEISHU_REQUIRED_SCOPES).toMatchInlineSnapshot(`
+      [
+        "im:message",
+        "im:message:send_as_bot",
+        "im:message.group_at_msg:readonly",
+        "im:message.p2p_msg:readonly",
+        "im:chat.members:read",
+        "im:chat:readonly",
+        "im:message:readonly",
+        "im:message.reactions:read",
+        "docx:document:create",
+        "docx:document:readonly",
+        "docx:document:write_only",
+        "docs:document.media:upload",
+        "docs:document.media:download",
+        "docs:permission.member:create",
+        "docs:permission.member:retrieve",
+        "docs:permission.member:update",
+        "docs:permission.member:delete",
+        "drive:drive.metadata:readonly",
+        "drive:file:upload",
+        "drive:file:download",
+        "space:folder:create",
+        "wiki:wiki",
+        "sheets:spreadsheet:create",
+        "sheets:spreadsheet:read",
+        "sheets:spreadsheet:write_only",
+        "sheets:spreadsheet.meta:read",
+        "base:app:create",
+        "base:app:read",
+        "base:app:update",
+        "base:table:create",
+        "base:table:read",
+        "base:table:update",
+        "base:table:delete",
+        "base:field:create",
+        "base:field:read",
+        "base:field:update",
+        "base:field:delete",
+        "base:record:create",
+        "base:record:read",
+        "base:record:retrieve",
+        "base:record:update",
+        "base:record:delete",
+        "base:view:read",
+        "base:view:write_only",
+        "calendar:calendar:create",
+        "calendar:calendar:read",
+        "calendar:calendar:update",
+        "calendar:calendar:delete",
+        "calendar:calendar.event:create",
+        "calendar:calendar.event:read",
+        "calendar:calendar.event:update",
+        "calendar:calendar.event:delete",
+        "calendar:calendar.event:reply",
+        "calendar:calendar.free_busy:read",
+        "task:task:read",
+        "task:task:write",
+        "task:tasklist:read",
+        "task:tasklist:write",
+        "task:comment:read",
+        "task:comment:write",
+        "task:attachment:read",
+        "task:attachment:write",
+      ]
+    `);
+    expect(new Set(FEISHU_REQUIRED_SCOPES).size).toBe(FEISHU_REQUIRED_SCOPES.length);
+  });
+
   it("rejects Bot registration for a private Agent", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { displayName: "Private Agent", visibility: "private" });
@@ -119,11 +190,15 @@ describe("official Feishu QR registration", () => {
         source: "first-tree",
         createOnly: true,
         appPreset: expect.objectContaining({ name: "Agent A · First Tree" }),
-        addons: expect.objectContaining({
+        addons: {
+          preset: true,
+          scopes: { tenant: [...FEISHU_REQUIRED_SCOPES] },
           events: { items: { tenant: ["im.message.receive_v1"] } },
-        }),
+        },
       }),
     );
+    const registrationOptions = sdkMocks.registerApp.mock.calls[0]?.[0];
+    expect(registrationOptions?.addons?.scopes).not.toHaveProperty("user");
 
     await waitFor(async () => {
       const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
@@ -140,6 +215,7 @@ describe("official Feishu QR registration", () => {
       botAvatarUrl: "https://example.com/agent-a.png",
       status: "active",
       connectionStatus: "connected",
+      grantedScopes: [...FEISHU_REQUIRED_SCOPES],
       registrationStateCipher: null,
     });
     expect(stored?.appSecretCipher).not.toBe("secret-created-by-feishu");

@@ -233,7 +233,7 @@ export function createFeishuIntegrationManager(input: {
           desc: "由 First Tree Agent 提供服务",
         },
         addons: {
-          preset: false,
+          preset: true,
           scopes: { tenant: [...FEISHU_REQUIRED_SCOPES] },
           events: { items: { tenant: ["im.message.receive_v1"] } },
         },

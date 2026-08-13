@@ -21,14 +21,22 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
   must be launchable on that machine. Keep Agent B unbound from this Bot.
 - Use the official QR registration flow from Agent A's detail page. Retain only redacted binding/connection state;
   never capture the App Secret, access tokens, raw event payloads, attachment bytes, or private member lists.
+- Confirm the QR consent keeps the `PersonalAgent` preset and explicitly requests only tenant scopes for messaging,
+  documents/Drive/Wiki, Sheets, Base, Calendar and Tasks. No user-identity scope may be requested or injected.
 - Prepare a private chat and a group containing the Bot. Prepare messages with text, post formatting, an image, a small
   file, more than ten resources, and one resource that is unavailable or exceeds 10 MiB.
+- Prepare disposable documents, spreadsheets, Base apps, calendars and tasks owned by or shared with the Bot. Record
+  every created provider resource so it can be deleted during reset.
 
 ## Operate And Observe
 
 - Start registration, observe QR ready, complete/deny/expire separate attempts, and cancel one attempt. Confirm the UI
   serializes polling, ignores stale generations, and converges to the persisted binding state. With two Server replicas,
-  confirm only the lease owner holds the Channel connection and that lease loss fences the old connection.
+  confirm only the lease owner holds the Channel connection and that lease loss fences the old connection. Confirm the
+  stored granted-scope list equals the explicit tenant-scope bundle and does not claim implicit preset permissions.
+- From Agent A's isolated official `lark-cli` environment, create, read, update and delete one disposable document,
+  spreadsheet, Base app/record, calendar/event and task/comment or attachment. Confirm every operation uses the Bot/App
+  identity rather than a user token and cannot access an unshared user-owned resource.
 - In private chat, send a normal human message without `@`. Confirm one canonical message is created with typed Feishu
   Integration sender, external-author snapshot and exact message/thread/root/parent reference, and that Agent A is
   notified once. Redeliver the same event/message id and confirm no duplicate message or wake occurs.
@@ -53,11 +61,14 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
   read, pin and archive state must continue to work.
 - Revoke the binding and confirm credentials are cleared, the Channel disconnects, chat bindings detach, and later
   ingress/resource/CLI operations fail closed without deleting historical canonical messages or attachments.
+- Delete every disposable Feishu document, spreadsheet, Base app, calendar, event, task and attachment created by the
+  run, then verify no provider-side test resource remains.
 
 ## Expected Result
 
-`PASS`: all real provider, runtime, canonical history, attachment, authorization, idempotency and Web read-only branches
-above are observed on the exact target with no cross-Bot, cross-Agent or duplicate delivery.
+`PASS`: all real provider, permission, runtime, canonical history, attachment, authorization, idempotency and Web
+read-only branches above are observed on the exact target with no user scope, cross-Bot, cross-Agent or duplicate
+delivery, and all disposable provider resources are removed.
 
 `FAIL`: a reproducible product defect creates/wakes on an unmentioned group message, attributes an external human as a
 First Tree member, loses a triggered message when one resource fails, exposes A's Bot credential to B, bypasses canonical
