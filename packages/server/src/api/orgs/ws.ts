@@ -20,31 +20,6 @@ import type { Notifier } from "../../services/notifier.js";
 
 const log = createLogger("OrgWs");
 
-function adminWsRouteOptions(secret: Uint8Array) {
-  return {
-    websocket: true,
-    config: {
-      rateLimit: {
-        max: 60,
-        timeWindow: "1 minute",
-        keyGenerator: async (request: FastifyRequest): Promise<string> => {
-          const token = (request.query as Record<string, string | undefined>).token;
-          if (token) {
-            try {
-              const { payload } = await jwtVerify(token, secret);
-              if (payload.type === "access" && typeof payload.sub === "string") return `user:${payload.sub}`;
-            } catch {
-              // Invalid and expired credentials remain in the unauthenticated
-              // client-IP bucket so hostile handshakes are still capped.
-            }
-          }
-          return `ip:${request.ip}`;
-        },
-      },
-    },
-  } as const;
-}
-
 /**
  * Class B — `/api/v1/orgs/:orgId/ws`. Real-time admin push channel.
  * Org is taken from the path; JWT only needs `sub`. Membership in the
@@ -342,101 +317,126 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string): (app: Fastif
   }
 
   return async (app: FastifyInstance): Promise<void> => {
-    app.get<{ Params: { orgId: string } }>("/", adminWsRouteOptions(secret), async (socket, request) => {
-      const ua = request.headers["user-agent"];
-      startWsConnectionSpan(socket, {
-        remoteIp: request.ip,
-        userAgent: typeof ua === "string" ? ua.slice(0, 200) : undefined,
-      });
+    app.get<{ Params: { orgId: string } }>(
+      "/",
+      {
+        websocket: true,
+        config: {
+          rateLimit: {
+            max: 60,
+            timeWindow: "1 minute",
+            keyGenerator: async (request: FastifyRequest): Promise<string> => {
+              const token = (request.query as Record<string, string | undefined>).token;
+              if (token) {
+                try {
+                  const { payload } = await jwtVerify(token, secret);
+                  if (payload.type === "access" && typeof payload.sub === "string") return `user:${payload.sub}`;
+                } catch {
+                  // Invalid and expired credentials remain in the unauthenticated
+                  // client-IP bucket so hostile handshakes are still capped.
+                }
+              }
+              return `ip:${request.ip}`;
+            },
+          },
+        },
+      },
+      async (socket, request) => {
+        const ua = request.headers["user-agent"];
+        startWsConnectionSpan(socket, {
+          remoteIp: request.ip,
+          userAgent: typeof ua === "string" ? ua.slice(0, 200) : undefined,
+        });
 
-      const orgIdFromPath = (request.params as { orgId?: string }).orgId;
-      const token = (request.query as Record<string, string>).token;
-      if (!token || !orgIdFromPath) {
-        socket.send(JSON.stringify({ type: "error", message: "Missing token or org" }));
-        socket.close(4001, "Missing token");
-        endWsConnectionSpan(socket, 4001);
-        return;
-      }
-
-      let userId: string;
-      try {
-        const { payload } = await jwtVerify(token, secret);
-        if (payload.type !== "access" || typeof payload.sub !== "string") {
-          socket.send(JSON.stringify({ type: "error", message: "Invalid token type" }));
-          socket.close(4001, "Invalid token");
+        const orgIdFromPath = (request.params as { orgId?: string }).orgId;
+        const token = (request.query as Record<string, string>).token;
+        if (!token || !orgIdFromPath) {
+          socket.send(JSON.stringify({ type: "error", message: "Missing token or org" }));
+          socket.close(4001, "Missing token");
           endWsConnectionSpan(socket, 4001);
           return;
         }
-        userId = payload.sub;
-      } catch {
-        socket.send(JSON.stringify({ type: "error", message: "Invalid or expired token" }));
-        socket.close(4001, "Auth failed");
-        endWsConnectionSpan(socket, 4001);
-        return;
-      }
 
-      const organizationId = orgIdFromPath;
-      let memberRow: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
-      try {
-        memberRow = await loadLiveMembershipAuthorization(app.db, userId, organizationId);
-      } catch (err) {
-        log.warn({ err, organizationId, userId }, "admin WS handshake authorization failed");
-        closeAuthorizationUnavailable(socket);
-        endWsConnectionSpan(socket, 1013);
-        return;
-      }
-      if (!memberRow) {
-        socket.send(JSON.stringify({ type: "error", message: "Not an active member of this organization" }));
-        socket.close(4403, "Not a member");
-        endWsConnectionSpan(socket, 4403);
-        return;
-      }
-      const memberId = memberRow.id;
+        let userId: string;
+        try {
+          const { payload } = await jwtVerify(token, secret);
+          if (payload.type !== "access" || typeof payload.sub !== "string") {
+            socket.send(JSON.stringify({ type: "error", message: "Invalid token type" }));
+            socket.close(4001, "Invalid token");
+            endWsConnectionSpan(socket, 4001);
+            return;
+          }
+          userId = payload.sub;
+        } catch {
+          socket.send(JSON.stringify({ type: "error", message: "Invalid or expired token" }));
+          socket.close(4001, "Auth failed");
+          endWsConnectionSpan(socket, 4001);
+          return;
+        }
 
-      setWsConnectionAttrs(socket, { organizationId, memberId });
-      rememberDb(app.db);
-      const provisionalMeta: SocketMeta = {
-        organizationId,
-        memberId,
-        humanAgentId: memberRow.agentId,
-        visibleAgentIds: new Set(),
-        admitted: false,
-      };
-      adminSockets.set(socket, provisionalMeta);
-      socket.on("close", (code) => {
-        adminSockets.delete(socket);
-        endWsConnectionSpan(socket, code);
-      });
+        const organizationId = orgIdFromPath;
+        let memberRow: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
+        try {
+          memberRow = await loadLiveMembershipAuthorization(app.db, userId, organizationId);
+        } catch (err) {
+          log.warn({ err, organizationId, userId }, "admin WS handshake authorization failed");
+          closeAuthorizationUnavailable(socket);
+          endWsConnectionSpan(socket, 1013);
+          return;
+        }
+        if (!memberRow) {
+          socket.send(JSON.stringify({ type: "error", message: "Not an active member of this organization" }));
+          socket.close(4403, "Not a member");
+          endWsConnectionSpan(socket, 4403);
+          return;
+        }
+        const memberId = memberRow.id;
 
-      let visibleAgentIds: Set<string>;
-      let humanAgentId: string;
-      let finalAuthorization: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
-      try {
-        visibleAgentIds = await loadVisibleAgentIds(app.db, organizationId, memberId);
-        const [humanAgentRow] = await app.db
-          .select({ uuid: agents.uuid })
-          .from(agents)
-          .where(eq(agents.uuid, memberRow.agentId))
-          .limit(1);
-        humanAgentId = humanAgentRow?.uuid ?? memberRow.agentId;
-        finalAuthorization = await loadLiveMembershipAuthorization(app.db, userId, organizationId, memberId);
-      } catch (err) {
-        log.warn({ err, organizationId, userId }, "admin WS handshake preparation failed");
-        closeAuthorizationUnavailable(socket);
-        return;
-      }
+        setWsConnectionAttrs(socket, { organizationId, memberId });
+        rememberDb(app.db);
+        const provisionalMeta: SocketMeta = {
+          organizationId,
+          memberId,
+          humanAgentId: memberRow.agentId,
+          visibleAgentIds: new Set(),
+          admitted: false,
+        };
+        adminSockets.set(socket, provisionalMeta);
+        socket.on("close", (code) => {
+          adminSockets.delete(socket);
+          endWsConnectionSpan(socket, code);
+        });
 
-      // The membership-change notifier can evict this provisional socket while
-      // preparation awaits. Never resurrect it after that causal fence.
-      if (adminSockets.get(socket) !== provisionalMeta) return;
-      if (!finalAuthorization) {
-        evictMembershipSocket(socket, provisionalMeta);
-        return;
-      }
-      provisionalMeta.humanAgentId = humanAgentId;
-      provisionalMeta.visibleAgentIds = visibleAgentIds;
-      provisionalMeta.admitted = true;
-      socket.send(JSON.stringify({ type: "admin:connected" }));
-    });
+        let visibleAgentIds: Set<string>;
+        let humanAgentId: string;
+        let finalAuthorization: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
+        try {
+          visibleAgentIds = await loadVisibleAgentIds(app.db, organizationId, memberId);
+          const [humanAgentRow] = await app.db
+            .select({ uuid: agents.uuid })
+            .from(agents)
+            .where(eq(agents.uuid, memberRow.agentId))
+            .limit(1);
+          humanAgentId = humanAgentRow?.uuid ?? memberRow.agentId;
+          finalAuthorization = await loadLiveMembershipAuthorization(app.db, userId, organizationId, memberId);
+        } catch (err) {
+          log.warn({ err, organizationId, userId }, "admin WS handshake preparation failed");
+          closeAuthorizationUnavailable(socket);
+          return;
+        }
+
+        // The membership-change notifier can evict this provisional socket while
+        // preparation awaits. Never resurrect it after that causal fence.
+        if (adminSockets.get(socket) !== provisionalMeta) return;
+        if (!finalAuthorization) {
+          evictMembershipSocket(socket, provisionalMeta);
+          return;
+        }
+        provisionalMeta.humanAgentId = humanAgentId;
+        provisionalMeta.visibleAgentIds = visibleAgentIds;
+        provisionalMeta.admitted = true;
+        socket.send(JSON.stringify({ type: "admin:connected" }));
+      },
+    );
   };
 }
