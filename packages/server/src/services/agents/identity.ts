@@ -14,9 +14,7 @@ import {
   AGENT_VISIBILITY,
   DEFAULT_RUNTIME_PROVIDER,
   defaultRuntimeConfigPayload,
-  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
   findReservedAgentMetadataKey,
-  getFirstTeamAgentContinuation,
   isReservedAgentName,
   RESERVED_AGENT_METADATA_KEYS,
   runtimeProviderSchema,
@@ -69,7 +67,7 @@ export type NewChatDefaultCandidateAgent = {
 export function assertUserAgentMetadataHasNoReservedKeys(metadata: Record<string, unknown> | undefined): void {
   const key = findReservedAgentMetadataKey(metadata);
   if (!key) return;
-  throw new BadRequestError(`metadata.${key} is reserved for First Tree internal state`);
+  throw new BadRequestError(`metadata.${key} is reserved for First Tree internal runtime state`);
 }
 
 export function stripReservedAgentMetadata(metadata: unknown): Record<string, unknown> {
@@ -81,12 +79,11 @@ export function stripReservedAgentMetadata(metadata: unknown): Record<string, un
   return publicMetadata;
 }
 
-// Callers provide public metadata; internal state is copied from the existing row.
+// Callers provide public metadata; internal runtime state is copied from the existing row.
 export function agentMetadataUpdateExpressionPreservingRuntimeState(metadata: Record<string, unknown>) {
   return sql`${JSON.stringify(metadata)}::jsonb || jsonb_strip_nulls(jsonb_build_object(
     'runtimeSwitch', ${agents.metadata}->'runtimeSwitch',
-    'runtimeSession', ${agents.metadata}->'runtimeSession',
-    'firstTeamAgentContinuation', ${agents.metadata}->'firstTeamAgentContinuation'
+    'runtimeSession', ${agents.metadata}->'runtimeSession'
   ))`;
 }
 
@@ -314,20 +311,13 @@ export async function createAgent(
   options: {
     force?: boolean;
     adoptAsDelegateIfFirst?: boolean;
-    /**
-     * Internal-only stable identity for an idempotent create boundary. Public
-     * Agent routes never accept a caller-selected UUID.
-     */
-    uuid?: string;
     attachmentBlobStore?: AttachmentBlobStore;
     templatePublisherOrgId?: string;
     templateActorMemberId?: string;
     templateActorHumanAgentId?: string;
-    /** Retarget this human's deleted first-Agent continuation to the newly created Agent. */
-    retargetFirstTeamContinuationForHumanAgentId?: string;
   } = {},
 ) {
-  const uuid = options.uuid ?? uuidv7();
+  const uuid = uuidv7();
   const name = data.name ?? null;
   const runtimeProvider: RuntimeProvider = data.runtimeProvider ?? DEFAULT_RUNTIME_PROVIDER;
   assertUserAgentMetadataHasNoReservedKeys(data.metadata);
@@ -546,35 +536,6 @@ export async function createAgent(
           options.templateActorMemberId,
           options.templateActorHumanAgentId,
         );
-      }
-
-      if (options.retargetFirstTeamContinuationForHumanAgentId) {
-        const [human] = await tx
-          .select({ metadata: agents.metadata })
-          .from(agents)
-          .where(eq(agents.uuid, options.retargetFirstTeamContinuationForHumanAgentId))
-          .limit(1);
-        const continuation = getFirstTeamAgentContinuation(human?.metadata);
-        if (continuation) {
-          const [previous] = await tx
-            .select({ organizationId: agents.organizationId, status: agents.status })
-            .from(agents)
-            .where(eq(agents.uuid, continuation.agentId))
-            .limit(1);
-          if (previous?.organizationId === orgId && previous.status === AGENT_STATUSES.DELETED) {
-            await tx
-              .update(agents)
-              .set({
-                metadata: sql`jsonb_set(
-                  ${agents.metadata},
-                  ARRAY[${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}]::text[],
-                  ${JSON.stringify({ agentId: row.uuid })}::jsonb,
-                  true
-                )`,
-              })
-              .where(eq(agents.uuid, options.retargetFirstTeamContinuationForHumanAgentId));
-          }
-        }
       }
 
       // First-agent → delegate adoption. When a member creates their FIRST

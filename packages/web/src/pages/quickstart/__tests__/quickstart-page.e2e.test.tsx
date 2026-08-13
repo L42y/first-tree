@@ -15,17 +15,12 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const authMock = vi.hoisted(() => ({
   value: {
     organizationId: "org-1" as string | null,
-    hasNoTeam: false,
     refreshMe: vi.fn(async () => undefined),
     meLoaded: true,
     onboardingStep: "connect" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: null as string | null,
     currentOrgHasPersonalAgent: false,
-    currentMembership: null as {
-      firstTeamAgentContinuation?: { agentId: string; status: "active" | "suspended" | "deleted" } | null;
-    } | null,
-    markOnboardingCompleted: vi.fn(async () => undefined),
   },
 }));
 const growthLandingMock = vi.hoisted(() => ({
@@ -98,15 +93,12 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "sessionStorage", { configurable: true, value: window.sessionStorage });
   authMock.value = {
     organizationId: "org-1",
-    hasNoTeam: false,
     refreshMe: vi.fn(async () => undefined),
     meLoaded: true,
     onboardingStep: "connect",
     onboardingDismissedAt: null,
     onboardingCompletedAt: null,
     currentOrgHasPersonalAgent: false,
-    currentMembership: null,
-    markOnboardingCompleted: vi.fn(async () => undefined),
   };
   growthLandingMock.value = { enabled: true, settled: true };
   landingCampaignMock.startLandingCampaign.mockResolvedValue({
@@ -190,43 +182,6 @@ describe("QuickstartPage — landing campaign trial flow", () => {
     });
     expect(readCampaignIntent()).toBeNull();
     expect(navigateMock).toHaveBeenCalledWith("/quickstart?c=chat-1", { replace: true });
-  });
-
-  it("starts a Team-less trial without an organization selector, refreshes /me, and opens its chat", async () => {
-    authMock.value = { ...authMock.value, organizationId: null, hasNoTeam: true };
-    seedIntent("production-scan");
-    await renderPage();
-
-    expect(landingCampaignMock.startLandingCampaign).toHaveBeenCalledWith({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-    });
-    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
-    expect(navigateMock).toHaveBeenCalledWith("/quickstart?c=chat-1", { replace: true });
-  });
-
-  it("re-reads /me when a Team-less start fails after the provisioning boundary", async () => {
-    authMock.value = {
-      ...authMock.value,
-      organizationId: null,
-      hasNoTeam: true,
-      refreshMe: vi.fn(async () => {
-        // The server transaction committed before a later quota/bootstrap
-        // failure, so the authoritative account is no longer Team-less.
-        authMock.value.organizationId = "org-created";
-        authMock.value.hasNoTeam = false;
-      }),
-    };
-    landingCampaignMock.startLandingCampaign.mockRejectedValueOnce(new Error("trial quota exceeded"));
-    seedIntent("production-scan");
-
-    const container = await renderPage();
-
-    expect(container.textContent).toContain("trial quota exceeded");
-    expect(authMock.value.refreshMe).toHaveBeenCalledTimes(1);
-    expect(authMock.value.hasNoTeam).toBe(false);
-    expect(readCampaignIntent()).not.toBeNull();
-    expect(navigateMock).not.toHaveBeenCalled();
   });
 
   it("renders the workspace shell for an existing trial chat and does not restart the trial", async () => {
@@ -326,20 +281,14 @@ describe("QuickstartPage — landing campaign trial flow", () => {
 });
 
 describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
-  it("Team-less user: stores the handoff and routes to first-Agent Template selection", async () => {
-    authMock.value = {
-      ...authMock.value,
-      organizationId: null,
-      hasNoTeam: true,
-      onboardingStep: "connect",
-      currentOrgHasPersonalAgent: false,
-    };
+  it("un-onboarded user: stores the handoff, routes to /onboarding, never starts a trial", async () => {
+    authMock.value = { ...authMock.value, onboardingStep: "connect", currentOrgHasPersonalAgent: false };
     await renderPage([
       "/quickstart?campaign=production-scan&repo=https%3A%2F%2Fgithub.com%2Facme%2Fbackend&action=fix&report=acme-backend-20260101-abcdef",
     ]);
 
     expect(landingCampaignMock.startLandingCampaign).not.toHaveBeenCalled();
-    expect(navigateMock).toHaveBeenCalledWith("/templates", { replace: true });
+    expect(navigateMock).toHaveBeenCalledWith("/onboarding", { replace: true });
     expect(window.sessionStorage.getItem("onboarding:campaignActionHandoff")).toBe(
       JSON.stringify({
         campaign: "production-scan",
@@ -425,31 +374,6 @@ describe("QuickstartPage — production-scan fix handoff (action=fix)", () => {
         repoSlug: "acme/backend",
       }),
     );
-  });
-
-  it("Agent-first creator reopens the action on the exact Agent instead of legacy onboarding", async () => {
-    authMock.value = {
-      ...authMock.value,
-      onboardingDismissedAt: "2026-08-12T00:00:00.000Z",
-      currentOrgHasPersonalAgent: true,
-      currentMembership: {
-        firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
-      },
-    };
-    agentsApiMock.getNewChatDefaultCandidates.mockResolvedValueOnce({
-      agent: { uuid: "agent-first-1", displayName: "First Agent" },
-    });
-
-    await renderPage([
-      "/quickstart?campaign=production-scan&repo=https%3A%2F%2Fgithub.com%2Facme%2Fbackend&action=fix&report=acme-backend-20260101-abcdef",
-    ]);
-
-    expect(agentsApiMock.getNewChatDefaultCandidates).toHaveBeenCalledWith({ cachedAgentId: "agent-first-1" });
-    expect(meChatsApiMock.createMeTaskChat.mock.calls[0]?.[0]).toMatchObject({
-      initialRecipientAgentIds: ["agent-first-1"],
-    });
-    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
-    expect(navigateMock).not.toHaveBeenCalledWith("/onboarding", { replace: true });
   });
 
   it("a stale trial intent cannot hijack a fix link into a trial", async () => {

@@ -6,16 +6,12 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../../../api/client.js";
-import type { StoredCampaignActionHandoff } from "../../../utils/onboarding-flags.js";
-import { firstTeamAgentName, TemplateUseIntent } from "../template-use-intent.js";
+import { TemplateUseIntent } from "../template-use-intent.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const flagsMocks = vi.hoisted(() => ({
   writeOnboardingTemplateIntent: vi.fn(),
-  readCampaignActionHandoffFlag: vi.fn((): StoredCampaignActionHandoff | null => null),
-  writeCampaignActionHandoffFlag: vi.fn(),
 }));
 
 const dialogMock = vi.hoisted(() => ({
@@ -38,15 +34,8 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: "2026-07-01T00:00:00.000Z" as string | null,
     organizationId: "org-1" as string | null,
     memberships: [] as MeMembership[],
-    currentMembership: null as MeMembership | null,
-    hasNoTeam: false,
     selectOrganization: vi.fn(async (_orgId: string) => undefined),
-    refreshMe: vi.fn(async () => undefined),
   },
-}));
-
-const teamAgentsMocks = vi.hoisted(() => ({
-  provisionFirstTeamAgent: vi.fn(),
 }));
 
 vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
@@ -68,7 +57,6 @@ vi.mock("../../../analytics.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../analytics.js")>()),
   ...analyticsMocks,
 }));
-vi.mock("../../../api/team-agents.js", () => teamAgentsMocks);
 vi.mock("../../../auth/auth-context.js", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: () => authMock.value,
@@ -199,8 +187,6 @@ describe("TemplateUseIntent", () => {
     authMock.value.onboardingCompletedAt = NOW;
     authMock.value.organizationId = "org-1";
     authMock.value.memberships = [membership("m-1", "org-1", "Acme Team")];
-    authMock.value.hasNoTeam = false;
-    authMock.value.refreshMe = vi.fn(async () => undefined);
     // Default: the switch lands on the exact target with a fresh memberships
     // array (the real post-switch /me) — matching selectOrganization's
     // client-side semantics.
@@ -558,304 +544,5 @@ describe("TemplateUseIntent", () => {
     await click(buttonByText("Continue"));
     await rerender();
     expect(dialogOpenCount()).toBeGreaterThan(0);
-  });
-});
-
-describe("TemplateUseIntent — Team-less caller", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    dialogMock.props.length = 0;
-    authMock.value.meLoaded = true;
-    // The state a solo sign-in now leaves behind: authenticated, no Team.
-    authMock.value.hasNoTeam = true;
-    authMock.value.organizationId = null;
-    authMock.value.memberships = [];
-    authMock.value.currentMembership = null;
-    authMock.value.onboardingStep = "connect";
-    authMock.value.currentOrgHasPersonalAgent = false;
-    authMock.value.onboardingCompletedAt = null;
-    authMock.value.onboardingDismissedAt = null;
-    authMock.value.refreshMe = vi.fn(async () => undefined);
-    authMock.value.selectOrganization = vi.fn(async (orgId: string) => {
-      authMock.value.organizationId = orgId;
-      authMock.value.hasNoTeam = false;
-    });
-    teamAgentsMocks.provisionFirstTeamAgent.mockResolvedValue({
-      organizationId: "org-new",
-      memberId: "member-new",
-      teamCreated: true,
-      agentCreated: true,
-      agent: {
-        uuid: "agent-new",
-        name: "pr-engineer",
-        displayName: "PR Engineer",
-        visibility: "organization",
-        clientId: null,
-      },
-    });
-  });
-
-  afterEach(() => {
-    act(() => root?.unmount());
-    root = null;
-    container = null;
-    document.body.innerHTML = "";
-  });
-
-  it("offers a single confirm instead of an empty Team chooser", async () => {
-    await renderIntent();
-
-    expect(document.body.textContent).toContain("Create Team Agent");
-    // No Team to pick between, and no per-org onboarding handoff to write —
-    // there is no org to key one to.
-    expect(document.body.querySelectorAll('input[type="radio"]')).toHaveLength(0);
-    expect(flagsMocks.writeOnboardingTemplateIntent).not.toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("onboarding-stub");
-  });
-
-  it("provisions the Team and Agent together, then activates the new Team", async () => {
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-
-    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledWith({
-      requestId: expect.stringMatching(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
-      name: "pr-engineer",
-      displayName: "PR Engineer",
-      templateIds: [TEMPLATE.id],
-    });
-    // The destination is org-scoped, so the just-created Team is activated
-    // before navigating away from this public page.
-    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
-    expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_template_create_success", { template_count: 1 });
-    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
-  });
-
-  it("binds the stored campaign action to the new Team and Agent before continuing", async () => {
-    flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-    });
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-
-    expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
-    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
-    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-new",
-      targetAgentId: "agent-new",
-    });
-  });
-
-  it("surfaces a recoverable error and re-reads /me when provisioning fails", async () => {
-    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(new Error("boom"));
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-
-    expect(document.body.textContent).toContain("Nothing was created");
-    expect(authMock.value.refreshMe).toHaveBeenCalled();
-    expect(authMock.value.selectOrganization).not.toHaveBeenCalled();
-    expect(navigateMock).not.toHaveBeenCalled();
-
-    // Retry works from the same screen.
-    await click(buttonByText("Create Team Agent"));
-    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(2);
-    expect(teamAgentsMocks.provisionFirstTeamAgent.mock.calls[0]?.[0].requestId).toBe(
-      teamAgentsMocks.provisionFirstTeamAgent.mock.calls[1]?.[0].requestId,
-    );
-    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
-  });
-
-  it("reconciles a different-request conflict into the existing-Team Template path", async () => {
-    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(
-      new ApiError(409, "A different request won", undefined, "first_team_agent_request_conflict"),
-    );
-    authMock.value.refreshMe = vi.fn(async () => {
-      authMock.value.hasNoTeam = false;
-      authMock.value.memberships = [membership("m-winner", "org-winner", "Winner Team")];
-      authMock.value.organizationId = "org-winner";
-      authMock.value.onboardingStep = "completed";
-      authMock.value.currentOrgHasPersonalAgent = true;
-      authMock.value.onboardingCompletedAt = NOW;
-    });
-
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-    await rerender();
-
-    expect(authMock.value.refreshMe).toHaveBeenCalled();
-    expect(document.body.textContent).not.toContain("Nothing was created");
-    expect(document.body.textContent).not.toContain("Create Team Agent");
-    expect(document.body.textContent).toContain("Winner Team");
-    const winner = document.body.querySelector<HTMLInputElement>('input[type="radio"]');
-    expect(winner).not.toBeNull();
-    expect(winner?.checked).toBe(true);
-    expect(buttonByText("Continue").disabled).toBe(false);
-  });
-
-  it("keeps an atomic Agent name conflict on the ordinary retry path", async () => {
-    teamAgentsMocks.provisionFirstTeamAgent.mockRejectedValueOnce(
-      new ApiError(409, "Agent name already exists", undefined, "agent_name_conflict"),
-    );
-
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-    await rerender();
-
-    expect(authMock.value.refreshMe).toHaveBeenCalled();
-    expect(document.body.textContent).toContain("Nothing was created");
-    expect(document.body.textContent).not.toContain("Another request created your team first");
-    expect(buttonByText("Create Team Agent")).not.toBeNull();
-  });
-
-  it("does not claim nothing was created when only activating the new Team failed", async () => {
-    flagsMocks.readCampaignActionHandoffFlag.mockReturnValueOnce({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-    });
-    authMock.value.selectOrganization = vi.fn(async () => {
-      throw new Error("post-switch /me failed");
-    });
-    // The provision succeeded, so a real /me re-read now reports the Team the
-    // server created — the caller is no longer Team-less.
-    authMock.value.refreshMe = vi.fn(async () => {
-      authMock.value.hasNoTeam = false;
-      authMock.value.memberships = [membership("m-new", "org-new", "New Team")];
-      authMock.value.organizationId = "org-new";
-    });
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-    await rerender();
-
-    // The Agent exists. Telling the user otherwise would send them off to
-    // create a second one.
-    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).toContain("was created");
-    expect(document.body.textContent).not.toContain("Nothing was created");
-    expect(navigateMock).not.toHaveBeenCalled();
-    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-new",
-      targetAgentId: "agent-new",
-    });
-  });
-
-  it("opens the existing-Team create dialog for a deleted first-Agent continuation", async () => {
-    authMock.value.hasNoTeam = false;
-    authMock.value.organizationId = "org-1";
-    authMock.value.memberships = [
-      membership("member-1", "org-1", "Recovery Team", {
-        hasPersonalAgent: false,
-        onboardingCompletedAt: null,
-        onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
-        onboardingSuppressedReason: "invitee_skip",
-        firstTeamAgentContinuation: { agentId: "agent-deleted", status: "deleted" },
-      }),
-    ];
-    authMock.value.currentMembership = authMock.value.memberships[0] ?? null;
-    authMock.value.currentOrgHasPersonalAgent = false;
-    authMock.value.onboardingCompletedAt = null;
-    authMock.value.onboardingDismissedAt = "2026-08-12T00:00:00.000Z";
-    authMock.value.selectOrganization = vi.fn(async () => {
-      authMock.value.memberships = [...authMock.value.memberships];
-    });
-
-    await renderIntent();
-    await click(buttonByText("Continue"));
-    await rerender();
-
-    expect(document.body.textContent).toContain("new-agent-dialog-stub");
-    expect(document.body.textContent).not.toContain("onboarding-stub");
-  });
-
-  it("retargets a deleted continuation and campaign handoff to its replacement Agent", async () => {
-    flagsMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-deleted",
-    });
-    authMock.value.hasNoTeam = false;
-    authMock.value.organizationId = "org-1";
-    authMock.value.memberships = [
-      membership("member-1", "org-1", "Recovery Team", {
-        hasPersonalAgent: false,
-        onboardingCompletedAt: null,
-        onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
-        onboardingSuppressedReason: "invitee_skip",
-        firstTeamAgentContinuation: { agentId: "agent-deleted", status: "deleted" },
-      }),
-    ];
-    authMock.value.currentMembership = authMock.value.memberships[0] ?? null;
-    authMock.value.currentOrgHasPersonalAgent = false;
-    authMock.value.onboardingCompletedAt = null;
-    authMock.value.onboardingDismissedAt = "2026-08-12T00:00:00.000Z";
-    authMock.value.selectOrganization = vi.fn(async () => {
-      authMock.value.memberships = [...authMock.value.memberships];
-    });
-
-    await renderIntent();
-    await click(buttonByText("Continue"));
-    await rerender();
-    await act(async () => dialogMock.latestOnCreated?.({ uuid: "agent-replacement" }, "codex", 1));
-
-    expect(flagsMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(
-      expect.objectContaining({ targetOrganizationId: "org-1", targetAgentId: "agent-replacement" }),
-    );
-    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-replacement/runtime");
-  });
-
-  it("ignores a second click while the first provision is in flight", async () => {
-    let release = (): void => undefined;
-    teamAgentsMocks.provisionFirstTeamAgent.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          release = () =>
-            resolve({
-              organizationId: "org-new",
-              memberId: "member-new",
-              teamCreated: true,
-              agentCreated: true,
-              agent: {
-                uuid: "agent-new",
-                name: "pr-engineer",
-                displayName: "PR Engineer",
-                visibility: "organization",
-                clientId: null,
-              },
-            });
-        }),
-    );
-    await renderIntent();
-    await click(buttonByText("Create Team Agent"));
-    // The button flipped to its in-flight label and a second click is a no-op.
-    await click(buttonByText("Creating…"));
-
-    expect(teamAgentsMocks.provisionFirstTeamAgent).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      release();
-    });
-    await flush();
-    expect(navigateMock).toHaveBeenCalledWith("/agents/agent-new/runtime");
-  });
-});
-
-describe("firstTeamAgentName", () => {
-  it("uses the Template slug and yields to the server for reserved names", () => {
-    expect(firstTeamAgentName("pr-engineer")).toBe("pr-engineer");
-    expect(firstTeamAgentName("agent")).toBeUndefined();
-    expect(firstTeamAgentName("a".repeat(80))).toHaveLength(64);
   });
 });

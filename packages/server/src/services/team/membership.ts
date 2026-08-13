@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { AGENT_STATUSES, AGENT_TYPES, FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY } from "@first-tree/shared";
+import { AGENT_STATUSES, AGENT_TYPES } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Database } from "../../db/connection.js";
@@ -315,9 +315,6 @@ async function reactivateMembershipRows(
     status: AGENT_STATUSES.ACTIVE,
     clientId: null,
     updatedAt: new Date(),
-    ...(options.resetOnboarding
-      ? { metadata: sql`${agents.metadata} - ${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}` }
-      : {}),
   };
   if (mirror?.name === null) {
     const restoredName = await resolveRestoredAgentName(db, existing, options.username);
@@ -593,16 +590,6 @@ export async function repairMembershipHumanMirrors(db: Database): Promise<Member
   return { activeMirrorsRepaired, inactiveMirrorsRepaired };
 }
 
-/**
- * Auto-generated display label for a user's first Team. Onboarding never asks
- * for a Team name — the label reads as a collective space from day one so a
- * later teammate invite doesn't surface something that looks like a private
- * sandbox, and it stays editable in Settings.
- */
-export function personalTeamDisplayName(displayName: string): string {
-  return `${displayName.slice(0, 193)}'s team`;
-}
-
 type CreatePersonalTeamInput = {
   userId: string;
   /** Final unique username, used as the seed for the team slug and human agent name. */
@@ -620,9 +607,11 @@ type CreatePersonalTeamInput = {
  *   - First try: `${username}` (lowercased, sanitized)
  *   - On collision: append a 4-char hex disambiguator
  *
- * The caller derives the default display name from the user. It reads as a
- * collective space from day one so a later teammate invite does not surface
- * something that looks like a private sandbox; users can rename it in Settings.
+ * Default team display name is `${displayName}'s team` (set by the caller — see
+ * first-tree-context:agent-hub/onboarding.md (was §5.5 in source design)). Reads as "this is a collective
+ * space" from day one so a later teammate-invite doesn't surface a label
+ * that looks like a private sandbox. Users can rename via Step 1 of the
+ * onboarding flow or Settings.
  */
 export async function createPersonalTeam(db: Database, input: CreatePersonalTeamInput) {
   const baseSlug = sanitizeOrgSlug(input.username);
@@ -787,13 +776,14 @@ export async function leaveOrganization(db: Database, memberId: string) {
 /**
  * Self-service "create another team" (operator clicks "Create team" in the
  * org switcher). Caller must already have an active membership and becomes the
- * new team's admin. The prerequisite check and new Team graph share the user
- * identity transaction so concurrent membership lifecycle writes cannot turn
- * this into a first-Team creation path.
+ * new team's admin. Sign-in is what mints a user's first Team, so the
+ * prerequisite check and the new Team graph share the user identity
+ * transaction: a concurrent leave or removal cannot turn this into a
+ * first-Team creation path behind a stale roster read.
  *
  * The user only ever names the team's `displayName`; the slug is derived
  * server-side and disambiguated by `insertOrgWithSlugRetry`, exactly like the
- * first Team created at an explicit Agent start. That matters because the slug is globally
+ * personal team minted at sign-in. That matters because the slug is globally
  * unique and is not a per-tenant name: letting a client send it made every
  * team whose display name carries no ASCII alphanumerics collapse onto the
  * same `"team"` fallback slug, so the first such team anywhere blocked every
@@ -815,7 +805,7 @@ export async function selfCreateOrganization(
         .where(and(eq(members.userId, data.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)))
         .limit(1);
       if (!activeMembership) {
-        throw new ConflictError("Create your first Team by starting an Agent");
+        throw new ConflictError("An active Team membership is required to create another Team");
       }
 
       const orgId = uuidv7();

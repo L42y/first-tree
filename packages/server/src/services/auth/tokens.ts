@@ -157,7 +157,6 @@ export async function refreshAccessToken(
   refreshToken: string,
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
-  options: { allowTeamless?: boolean } = {},
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const secret = new TextEncoder().encode(jwtSecretKey);
 
@@ -201,13 +200,21 @@ export async function refreshAccessToken(
     });
   }
 
-  if (!options.allowTeamless) {
-    const [membership] = await db
-      .select({ id: members.id })
-      .from(members)
-      .where(and(eq(members.userId, user.id), eq(members.status, "active")))
-      .limit(1);
-    if (!membership) throw new UnauthorizedError("No organization membership found");
+  // Confirm the user still has at least one active membership; otherwise
+  // refreshing would yield a token that lets them call /me but every
+  // org-scoped route would 403. Surface the "you've been removed" state
+  // at refresh time so the client redirects to login cleanly.
+  const [anyMember] = await db
+    .select({ id: members.id })
+    .from(members)
+    .where(and(eq(members.userId, user.id), eq(members.status, "active")))
+    .limit(1);
+
+  if (!anyMember) {
+    throw new UnauthorizedError("No active membership", {
+      "auth.refresh.reason": "no_active_membership",
+      "auth.refresh.user_id": payload.sub,
+    });
   }
 
   return signTokensForUser(jwtSecretKey, user.id, expiries);

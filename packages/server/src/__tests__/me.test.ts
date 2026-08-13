@@ -32,8 +32,6 @@ describe("GET /api/v1/me", () => {
     expect(body.defaultOrganizationId).toBe(body.memberships[0]?.organizationId);
   });
 
-  // Zero memberships is now an ordinary signed-in state, not an edge case:
-  // solo sign-in provisions no Team until the user confirms their first Agent.
   it("returns an empty membership list and null default org for users without memberships", async () => {
     const app = getApp();
     const userId = uuidv7();
@@ -59,10 +57,6 @@ describe("GET /api/v1/me", () => {
       user: { id: userId },
       defaultOrganizationId: null,
       memberships: [],
-      // Onboarding inference is user-level, so it still answers without a Team
-      // instead of failing the whole payload.
-      onboarding: { step: "connect", dismissedAt: null, completedAt: null },
-      inviteUrl: null,
     });
   });
 
@@ -73,5 +67,24 @@ describe("GET /api/v1/me", () => {
       url: "/api/v1/me",
     });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+describe("first Team provisioning surface", () => {
+  const getApp = useTestApp();
+
+  /**
+   * Sign-in owns the personal Team, so nothing creates a Team together with a
+   * first Agent; Agent creation is Team-scoped (`POST /orgs/:orgId/agents`) for
+   * every caller. Routing resolves before auth, so this is a tripwire against
+   * re-registering that exact path — not a claim about behavior. What the
+   * invariant itself rests on is asserted in `oauth-bootstrap.test.ts`.
+   */
+  it("does not route the retired user-scoped first-Team Agent path", async () => {
+    const app = getApp();
+
+    const res = await app.inject({ method: "POST", url: "/api/v1/me/team-agents" });
+
+    expect(res.statusCode).toBe(404);
   });
 });

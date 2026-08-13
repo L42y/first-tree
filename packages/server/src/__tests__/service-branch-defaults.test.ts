@@ -164,9 +164,6 @@ describe("service branch defaults", () => {
     expect(stripReservedAgentMetadata(null)).toEqual({});
     expect(stripReservedAgentMetadata(["runtime"])).toEqual({});
     expect(stripReservedAgentMetadata({ runtimeSwitch: { claimId: "c1" }, public: true })).toEqual({ public: true });
-    expect(stripReservedAgentMetadata({ firstTeamAgentContinuation: { agentId: "a1" }, public: true })).toEqual({
-      public: true,
-    });
     expect(() => assertUserAgentMetadataHasNoReservedKeys({ runtimeSession: {} })).toThrow(BadRequestError);
 
     expect(agentAvatarImageUrl("agent_1", null)).toBeNull();

@@ -162,7 +162,6 @@ async function completeGoogleSignIn(
       allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
       ip: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
-      agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
     });
   } catch (error) {
     if (error instanceof OAuthBootstrapError)
@@ -185,8 +184,6 @@ async function completeGoogleSignIn(
     );
   }
   const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
-  // A gated Agent-first solo sign-in has no Team yet, so `org` is omitted
-  // rather than sent empty. The default flow returns its personal Team.
   const fragment = new URLSearchParams({
     access: tokens.accessToken,
     refresh: tokens.refreshToken,
@@ -194,7 +191,7 @@ async function completeGoogleSignIn(
     joinPath: bootstrap.joinPath,
     accountCreated: account.created ? "1" : "0",
     callbackIntent: "sign-in",
-    ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
+    org: bootstrap.organizationId,
     ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
   }).toString();
   app.log.info(

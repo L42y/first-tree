@@ -96,9 +96,7 @@ function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
       hasUsableAgent: true,
       hasPersonalAgent: false,
       onboardingSuppressedAt: "2026-07-23T00:00:00.000Z",
-      onboardingSuppressedReason: "finish_later",
       onboardingCompletedAt: null,
-      firstTeamAgentContinuation: null,
       workspaceWillEnterOnboarding: false,
       computers: {
         state: "ready",
@@ -116,9 +114,7 @@ function previewFacts(role: PreviewRole, state: PreviewState): SetupFacts {
     hasUsableAgent: true,
     hasPersonalAgent: true,
     onboardingSuppressedAt: "2026-07-23T00:00:00.000Z",
-    onboardingSuppressedReason: "completed",
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
-    firstTeamAgentContinuation: null,
     workspaceWillEnterOnboarding: false,
     computers: {
       state: "ready",

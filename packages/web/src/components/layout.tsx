@@ -45,20 +45,15 @@ export function Layout() {
   // chrome" — brand + one conversion CTA + user menu — with none of the normal
   // workspace escape hatches (nav tabs, team switcher, command palette, rail).
   const isTrial = isLandingTrialSurface(location.pathname);
-  const commandPaletteEnabled = !isTrial && !!organizationId;
 
   // ⌘K / Ctrl+K to open the Jump-to palette from anywhere. Listens at
   // window-level so the shortcut survives inside textareas / editable
   // surfaces; that mirrors how Linear / GitHub / Slack treat their global
   // command palette and matches the existing "Jump to…" affordance, which
   // is the only top-bar control reachable without a click. Disabled on the
-  // trial surface — the palette is an escape hatch there. It also stays
-  // disabled before a Team is selected because its roster is org-scoped.
+  // trial surface — the palette is an escape hatch there.
   useEffect(() => {
-    if (!commandPaletteEnabled) {
-      setPaletteOpen(false);
-      return;
-    }
+    if (isTrial) return;
     function onKeyDown(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
@@ -70,7 +65,7 @@ export function Layout() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [commandPaletteEnabled]);
+  }, [isTrial]);
 
   // The workspace shell (`WorkspaceBody`) needs the bare, full-height outlet so
   // its `flex flex-1` three-pane layout fills the viewport. `/` is the gated
@@ -104,7 +99,7 @@ export function Layout() {
   // must not be. The chip is rendered in two places below: the full pill in the
   // right controls, and a compact icon-only fallback when the brand is dropped.
   const newVersionAvailable = useNewVersionAvailable();
-  const showJumpButton = viewport !== "narrow" && commandPaletteEnabled;
+  const showJumpButton = viewport !== "narrow";
   const showJumpLabel = viewport === "xl";
   const dropBrand = viewport === "narrow";
   const showThemeToggle = viewport !== "narrow";
@@ -429,9 +424,8 @@ export function Layout() {
       {/* One intentional veil over the content while an org switch runs. */}
       <TeamSwitchOverlay />
 
-      {/* Org roster is unavailable before Team selection; trial hides every
-          workspace escape hatch regardless of membership. */}
-      {commandPaletteEnabled && <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />}
+      {/* No command palette on the trial surface (it's an escape hatch). */}
+      {!isTrial && <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />}
 
       {/* Main content */}
       {isWorkspace ? (

@@ -196,31 +196,6 @@ describe("server config", () => {
     expect(enabledConfig.growth.landingCampaignMaxTrialsPerUserPer24Hours).toBe(7);
   });
 
-  it("keeps Agent-first onboarding disabled until the full channel lifecycle is enabled", async () => {
-    const defaultConfigDir = makeTempConfigDir();
-    stubRequiredProductionConfig();
-
-    const defaultConfig = await initConfig({
-      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
-      role: "server",
-      configDir: defaultConfigDir,
-    });
-
-    expect(defaultConfig.opentag.agentFirstOnboardingEnabled).toBe(false);
-
-    resetConfig();
-    const enabledConfigDir = makeTempConfigDir();
-    vi.stubEnv("FIRST_TREE_OPENTAG_AGENT_FIRST_ONBOARDING_ENABLED", "true");
-
-    const enabledConfig = await initConfig({
-      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
-      role: "server",
-      configDir: enabledConfigDir,
-    });
-
-    expect(enabledConfig.opentag.agentFirstOnboardingEnabled).toBe(true);
-  });
-
   it("resolves landing campaign official service ids only when configured", async () => {
     const defaultConfigDir = makeTempConfigDir();
     stubRequiredProductionConfig();

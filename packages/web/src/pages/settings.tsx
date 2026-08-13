@@ -133,7 +133,6 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
   // those galleries supply the path whose heading/nav state they are showing;
   // production always follows the actual router location.
   const pathname = activePathname ?? routePathname;
-  const visibleItems = organizationId === null ? [ACCOUNT_ITEM] : ITEMS;
   // Wait for `/me` to resolve so team-aware Settings content does not flicker
   // during a fresh page load.
   if (!meLoaded) {
@@ -153,10 +152,7 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
     // canonical route.
     const visibleNarrowGroups = NARROW_GROUPS.map((group) => ({
       ...group,
-      items: group.items.filter(
-        (item) =>
-          (organizationId !== null || item === ACCOUNT_ITEM) && (item !== SETUP_ITEM || onboardingCompletedAt === null),
-      ),
+      items: group.items.filter((item) => item !== SETUP_ITEM || onboardingCompletedAt === null),
     })).filter((group) => group.items.length > 0);
 
     return (
@@ -220,7 +216,7 @@ export function SettingsLayout({ activePathname, children }: { activePathname?: 
         }}
       >
         <nav className="flex flex-col" style={{ gap: "var(--sp-0_5)" }}>
-          {visibleItems.map((item) => (
+          {ITEMS.map((item) => (
             <SidebarLink
               key={item.to}
               to={item.to}
