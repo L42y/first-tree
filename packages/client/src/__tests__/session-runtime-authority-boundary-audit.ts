@@ -1039,6 +1039,12 @@ function isPrimitiveLike(type: ts.Type): boolean {
   return false;
 }
 
+function typeIncludesUndefined(type: ts.Type): boolean {
+  if (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) return true;
+  if (type.isUnion()) return type.types.some(typeIncludesUndefined);
+  return false;
+}
+
 function typeHasName(type: ts.Type, checker: ts.TypeChecker, names: Set<string>): boolean {
   const found = new Set<string>();
   collectTypeNames(type, checker, new Set(), found);
@@ -1211,7 +1217,21 @@ class ClassProvenanceAnalysis {
       }
       const explicit = actual[index];
       if (explicit) {
-        this.bindParameterName(param.name, this.exprProvenance(explicit, caller), map);
+        const explicitProv = this.exprProvenance(explicit, caller);
+        // JS evaluates the initializer when the actual value is undefined, not
+        // merely when the argument node is absent. A type that cannot be
+        // undefined must not take the initializer path.
+        if (!param.initializer || !this.expressionMayBeUndefined(explicit)) {
+          this.bindParameterName(param.name, explicitProv, map);
+          continue;
+        }
+        this.paramTaintStack.push(map);
+        try {
+          const initProv = this.exprProvenance(param.initializer, callee);
+          this.bindParameterName(param.name, mergeProvenance([explicitProv, initProv]), map);
+        } finally {
+          this.paramTaintStack.pop();
+        }
         continue;
       }
       if (!param.initializer) continue;
@@ -1223,6 +1243,14 @@ class ClassProvenanceAnalysis {
       }
     }
     return map;
+  }
+
+  private expressionMayBeUndefined(expr: ts.Expression): boolean {
+    const current = unwrap(expr);
+    if (current.kind === ts.SyntaxKind.UndefinedKeyword) return true;
+    if (ts.isIdentifier(current) && current.text === "undefined") return true;
+    if (ts.isVoidExpression(current)) return true;
+    return typeIncludesUndefined(this.checker.getTypeAtLocation(expr));
   }
 
   private bindParameterName(name: ts.BindingName, provenance: Provenance, map: Map<ts.Symbol, Provenance>): void {
@@ -1381,6 +1409,9 @@ class ClassProvenanceAnalysis {
         const bound = this.capabilityFromReceiver(callee.expression.name.text, callee.expression.expression, owner);
         if (bound) return bound;
       }
+      if (method === "at" && this.isArrayLikeReceiver(callee.expression)) {
+        return this.arrayElementSelectionProvenance(callee.expression, call, owner);
+      }
       if (DETACH_METHODS.has(method)) {
         const receiver = this.exprProvenance(callee.expression, owner);
         if (method === "map" || method === "flatMap") {
@@ -1473,6 +1504,21 @@ class ClassProvenanceAnalysis {
     return recv;
   }
 
+  private isArrayLikeReceiver(expr: ts.Expression): boolean {
+    return typeHasName(this.checker.getTypeAtLocation(expr), this.checker, new Set(["Array", "ReadonlyArray"]));
+  }
+
+  private arrayElementSelectionProvenance(
+    recvExpr: ts.Expression,
+    resultNode: ts.Node,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    if (isPrimitiveLike(this.checker.getTypeAtLocation(resultNode))) return FRESH_PROVENANCE;
+    const recv = this.exprProvenance(recvExpr, owner);
+    if (recv.taints.length > 0) return { taints: recv.taints, freshContainer: false };
+    return FRESH_PROVENANCE;
+  }
+
   private memberProvenance(
     node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
     owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
@@ -1502,9 +1548,8 @@ class ClassProvenanceAnalysis {
           return { taints: [...recv.taints, { kind: "ledger", name: "<dynamic>" }], freshContainer: false };
         }
       }
-      if (typeHasName(this.checker.getTypeAtLocation(recvExpr), this.checker, new Set(["Array", "ReadonlyArray"]))) {
-        if (recv.taints.length > 0) return { taints: recv.taints, freshContainer: false };
-        return FRESH_PROVENANCE;
+      if (this.isArrayLikeReceiver(recvExpr)) {
+        return this.arrayElementSelectionProvenance(recvExpr, node, owner);
       }
       if (recv.taints.some((taint) => taint.kind === "ledger")) {
         return this.containerMethodProvenance(recvExpr, "get", owner);

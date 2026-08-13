@@ -979,7 +979,7 @@ describe("SessionRuntime authority boundary", () => {
       expect(violations, kinds(violations).join("\n")).toEqual([]);
     });
 
-    it("catches default-alias and rest parameter writer forwarding", () => {
+    it("catches omitted-default, explicit-undefined, rest-index, and rest Array.at writer forwarding", () => {
       const files = {
         "host.ts": `
           type SessionEntry = { chatId: string };
@@ -997,6 +997,15 @@ describe("SessionRuntime authority boundary", () => {
             }
             qaLeakRest(): () => PendingMessage | undefined {
               return this.qaRest(() => this.pendingQueue.pop());
+            }
+            qaLeakExplicitUndefined(): () => PendingMessage | undefined {
+              return this.qaDefaultAlias(() => this.pendingQueue.pop(), undefined);
+            }
+            private qaRestAt<T>(...values: T[]): T {
+              return values.at(0)!;
+            }
+            qaLeakRestAt(): () => PendingMessage | undefined {
+              return this.qaRestAt(() => this.pendingQueue.pop());
             }
           }
           export class SessionRuntime {
@@ -1027,24 +1036,46 @@ describe("SessionRuntime authority boundary", () => {
         ),
         kinds(violations).join("\n"),
       ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakExplicitUndefined" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRestAt" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
     });
 
-    it("passes default/rest forwarding of read-only, detached, accumulator, and primitive values", () => {
+    it("passes default/rest override, undefined-fresh, Array.at detached, and primitive forwarding", () => {
       const files = {
         "host.ts": `
           type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
           export class SlotSchedulerAuthority {
-            private pendingQueue: Array<{ chatId: string }> = [];
+            private pendingQueue: PendingMessage[] = [];
             private qaDefaultAlias<T>(value: T, selected: T = value): T {
               return selected;
             }
             private qaRest<T>(...values: T[]): T {
               return values[0]!;
             }
+            private qaRestAt<T>(...values: T[]): T {
+              return values.at(0)!;
+            }
             observeDefault(): () => number {
               return this.qaDefaultAlias(() => this.pendingQueue.length);
             }
-            copyRest(): () => Array<{ chatId: string }> {
+            copyRest(): () => PendingMessage[] {
               return this.qaRest(() => [...this.pendingQueue]);
             }
             accumulateDefault(): () => string[] {
@@ -1056,6 +1087,21 @@ describe("SessionRuntime authority boundary", () => {
             }
             freshRest(): number {
               return this.qaRest(this.pendingQueue.length);
+            }
+            overrideDefault(): () => PendingMessage | undefined {
+              return this.qaDefaultAlias(() => this.pendingQueue.pop(), () => undefined);
+            }
+            undefinedDefaultFresh(): () => number {
+              return this.qaDefaultAlias(() => this.pendingQueue.length, undefined);
+            }
+            copyRestAt(): () => PendingMessage[] {
+              return this.qaRestAt(() => [...this.pendingQueue]);
+            }
+            freshRestAt(): number {
+              return this.qaRestAt(this.pendingQueue.length);
+            }
+            detachedAt(): number | undefined {
+              return [this.pendingQueue.length].at(0);
             }
           }
           export class SessionRuntime {
@@ -1227,6 +1273,15 @@ describe("SessionRuntime authority boundary", () => {
   qaLeakRest(): () => PendingMessage | undefined {
     return this.qaRest(() => this.pendingQueue.pop());
   }
+  qaLeakExplicitUndefined(): () => PendingMessage | undefined {
+    return this.qaDefaultAlias(() => this.pendingQueue.pop(), undefined);
+  }
+  private qaRestAt<T>(...values: T[]): T {
+    return values.at(0)!;
+  }
+  qaLeakRestAt(): () => PendingMessage | undefined {
+    return this.qaRestAt(() => this.pendingQueue.pop());
+  }
   qaObserveDefaultAlias(): () => number {
     return this.qaDefaultAlias(() => this.pendingQueue.length);
   }
@@ -1235,6 +1290,21 @@ describe("SessionRuntime authority boundary", () => {
   }
   qaFreshRest(): number {
     return this.qaRest(this.pendingQueue.length);
+  }
+  qaOverrideDefault(): () => PendingMessage | undefined {
+    return this.qaDefaultAlias(() => this.pendingQueue.pop(), () => undefined);
+  }
+  qaUndefinedDefaultFresh(): () => number {
+    return this.qaDefaultAlias(() => this.pendingQueue.length, undefined);
+  }
+  qaCopyRestAt(): () => PendingMessage[] {
+    return this.qaRestAt(() => [...this.pendingQueue]);
+  }
+  qaFreshRestAt(): number {
+    return this.qaRestAt(this.pendingQueue.length);
+  }
+  qaDetachedAt(): number | undefined {
+    return [this.pendingQueue.length].at(0);
   }
 }
 `,
@@ -1366,7 +1436,12 @@ describe("SessionRuntime authority boundary", () => {
             hit.member === "qaFreshThroughIdentity" ||
             hit.member === "qaObserveDefaultAlias" ||
             hit.member === "qaCopyRest" ||
-            hit.member === "qaFreshRest",
+            hit.member === "qaFreshRest" ||
+            hit.member === "qaOverrideDefault" ||
+            hit.member === "qaUndefinedDefaultFresh" ||
+            hit.member === "qaCopyRestAt" ||
+            hit.member === "qaFreshRestAt" ||
+            hit.member === "qaDetachedAt",
         ),
         kinds(violations).join("\n"),
       ).toBe(false);
@@ -1384,6 +1459,24 @@ describe("SessionRuntime authority boundary", () => {
           (hit) =>
             hit.kind === "ledger-write-capability-escape" &&
             hit.member === "qaLeakRest" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakExplicitUndefined" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRestAt" &&
             /pendingQueue/.test(hit.detail),
         ),
         kinds(violations).join("\n"),
