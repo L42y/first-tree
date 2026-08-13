@@ -52,16 +52,16 @@ const STEP_META: Record<
   focus: {
     number: 1,
     group: "Create Agent",
-    railTitle: "Focus & name",
-    railDetail: "Choose a starting focus",
-    title: "Choose a starting focus",
-    lead: "Choose the kind of work you want to delegate. We'll use the matching Template as this Agent's starting setup.",
+    railTitle: "Shape your Agent",
+    railDetail: "Focus & name",
+    title: "What should your Agent do?",
+    lead: "Choose the kind of work you want to delegate. We'll use the matching Template as its starting setup, and you can refine it later.",
   },
   computer: {
     number: 2,
     group: "Create Agent",
-    railTitle: "Computer",
-    railDetail: "Install & connect",
+    railTitle: "Set up its Runtime",
+    railDetail: "Computer & Coding Agent",
     title: "Connect your first Computer",
     lead: "Install the OpenTag client on the Computer where this Agent will run.",
   },
@@ -88,19 +88,19 @@ const FOCUS_OPTIONS = [
     slug: "team-assistant",
     name: "Team Assistant",
     tagline: "For team questions, decisions, and follow-through.",
-    example: "Summarize this discussion and turn it into clear owners and next steps.",
+    example: "Summarize today's decisions for the wider team",
+  },
+  {
+    slug: "software-engineer",
+    name: "Software Engineer",
+    tagline: "For debugging, code review, and implementation planning.",
+    example: "Turn the requirements from this discussion into an implementation plan.",
   },
   {
     slug: "researcher",
     name: "Researcher",
     tagline: "For evidence gathering, comparison, and decision support.",
     example: "Research this market and identify the main competitors and differentiators.",
-  },
-  {
-    slug: "software-engineer",
-    name: "Software Engineer",
-    tagline: "For diagnosis, review, and delivery planning.",
-    example: "Turn the requirements from this discussion into an implementation plan.",
   },
 ] as const;
 
@@ -346,12 +346,7 @@ function FocusAndNameStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: (
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
       <fieldset className="flex flex-col" style={{ gap: "var(--sp-3)", margin: 0, padding: 0, border: 0 }}>
-        <legend
-          className="text-label font-semibold uppercase"
-          style={{ marginBottom: "var(--sp-1)", color: "var(--fg-2)" }}
-        >
-          Work focus
-        </legend>
+        <legend className="sr-only">Work focus</legend>
         {FOCUS_OPTIONS.map((option) => (
           <OptionCard
             key={option.slug}
@@ -400,7 +395,7 @@ function FocusAndNameStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: (
           disabled={!name.trim()}
           onClick={onAdvance}
         >
-          Continue to Computer <ArrowRight className="h-4 w-4" />
+          Set up its Runtime <ArrowRight className="h-4 w-4" />
         </Button>
       </div>
     </div>
