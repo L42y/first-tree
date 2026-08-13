@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { FIRST_TREE_READ_CASES } from "../cases.js";
+import { FIRST_TREE_READ_CASES, FIRST_TREE_READ_PERIODIC_CASES } from "../cases.js";
 import { FIRST_TREE_READ_SUITE } from "../eval-cases.js";
 
 const validateFloor = FIRST_TREE_READ_SUITE.validateFloor;
@@ -177,7 +177,98 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.8.1");
+    expect(skillVersion).toBe("0.8.5");
     expect(skill).toContain(`version: ${skillVersion}`);
+  });
+
+  it("states the unbound or broken Tree binding degradation gate", () => {
+    expect(skill).toContain("## Unbound or broken Tree binding");
+    expect(skill).toContain("A missing Context Tree removes only the operations that depend on it.");
+    expect(skill).toContain("never prompts the user to bind, create, or\nconnect a Tree merely because one is absent");
+    expect(skill).toMatch(/when the trusted managed briefing explicitly states\s+there is no bound Tree/u);
+    expect(skill).toContain("Run no Tree commands and offer no Tree\n  setup guidance");
+    expect(skill).toMatch(/state only that this Tree read cannot be completed because no\s+Tree is bound/u);
+    expect(skill).toContain("do not expand the absence into bind/create guidance");
+    expect(skill).toMatch(
+      /A leftover\s+`.first-tree\/workspace\.json` manifest or\s+`context-tree\/` checkout from a previously bound session may still be on\s+disk/u,
+    );
+    expect(skill).toMatch(
+      /it is inert residue, and this gate precedes any disk discovery:\s+never read, trust, or recover from it/u,
+    );
+    expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
+    expect(skill).toContain("the broken binding blocks only Tree reads, not unrelated work");
+    expect(skill).toMatch(
+      /fully\s+declared\s+binding\s+whose\s+local\s+checkout\s+simply\s+does\s+not\s+exist\s+yet\s+is\s+not\s+broken/u,
+    );
+    expect(skill).toContain("materialize it per Tree Location (step 2B)");
+  });
+
+  it("drops the removed unresolved-binding gate", () => {
+    expect(skill).not.toContain("**Unresolved binding:**");
+    expect(skill).not.toContain("could not be confirmed");
+  });
+
+  it("declares managed-unbound continuation periodic cases", () => {
+    const unbound = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.unboundContinuation === true && evalCase.workspaceKind === "unbound-managed",
+    );
+
+    expect(unbound.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unbound-software-continues-periodic",
+      "first-tree-read-unbound-pasted-content-continues-periodic",
+    ]);
+    expect(
+      unbound.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unbound-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+  });
+
+  it("declares a managed-unbound explicit Tree read periodic case", () => {
+    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.unboundExplicitRead === true && evalCase.workspaceKind === "unbound-managed",
+    );
+
+    expect(explicitRead.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-unbound-explicit-read-reports-gap-periodic",
+    ]);
+    expect(
+      explicitRead.every(
+        (evalCase) =>
+          evalCase.workspaceKind === "unbound-managed" &&
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.expectedFacts.length === 0 &&
+          evalCase.impactNote.mode === "absent" &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+  });
+
+  it("declares explicitly-unbound stale-checkout periodic cases", () => {
+    const staleCheckout = FIRST_TREE_READ_PERIODIC_CASES.filter(
+      (evalCase) => evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout",
+    );
+
+    expect(staleCheckout.map((evalCase) => evalCase.id)).toEqual([
+      "first-tree-read-stale-checkout-software-continues-periodic",
+      "first-tree-read-stale-checkout-explicit-read-reports-gap-periodic",
+    ]);
+    expect(
+      staleCheckout.every(
+        (evalCase) =>
+          evalCase.briefingMode === "runtime-generated" &&
+          evalCase.expectedTrigger === false &&
+          evalCase.impactNote.mode === "absent" &&
+          evalCase.managedTransport === "send",
+      ),
+    ).toBe(true);
+    expect(staleCheckout[0]?.unboundContinuation).toBe(true);
+    expect(staleCheckout[1]?.unboundExplicitRead).toBe(true);
+    expect(staleCheckout[1]?.expectedFacts.length).toBe(0);
   });
 });

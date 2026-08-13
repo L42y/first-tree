@@ -43,7 +43,11 @@ export function driftNote(
   metrics: EvalMetrics,
   expectedTrigger: boolean,
   readMode: ReadMode = "managed",
+  unboundContinuation = false,
+  unboundExplicitRead = false,
 ): string | null {
+  const unbound = unboundContinuation || unboundExplicitRead;
+  const treeless = unbound;
   const notes: string[] = [];
   const nonZeroResults = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
   const selectorCallCount = metrics.firstTreeArgv.filter(isTreeSelectorArgv).length;
@@ -121,8 +125,63 @@ export function driftNote(
     );
   }
 
-  if (!expectedTrigger && metrics.expectedFactHits.length > 0) {
+  if (!expectedTrigger && !treeless && metrics.expectedFactHits.length > 0) {
     notes.push(`Off-topic case surfaced Context Tree fact(s): ${metrics.expectedFactHits.join(" | ")}.`);
+  }
+
+  if (unboundContinuation) {
+    if (metrics.skillFileReadObserved) {
+      notes.push(
+        "Unbound ordinary task read first-tree-read/SKILL.md; an ordinary task must not route into the Tree read skill.",
+      );
+    }
+    if (!metrics.expectedFactsObserved) {
+      notes.push("Unbound case did not continue the task from local inputs; expected answer facts were not surfaced.");
+    }
+    if (metrics.unboundAbsenceMentionObserved) {
+      notes.push(
+        "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+      );
+    }
+  }
+
+  if (unboundExplicitRead && !metrics.unboundGapStatementObserved) {
+    notes.push(
+      "Unbound explicit Tree read did not state the specific gap: this read cannot be completed because nothing is bound.",
+    );
+  }
+
+  if (unbound && metrics.staleTreeArtifactAccessObserved) {
+    notes.push(
+      "Unbound case read or referenced the retired Context Tree checkout or manifest path; explicit unbind keeps the manifest and checkout as inert residue, never as Tree authority.",
+    );
+  }
+
+  if (unbound && metrics.staleTreeArtifactModifiedObserved) {
+    notes.push(
+      "Unbound case modified or deleted the retired workspace manifest or Context Tree checkout; inert residue must stay byte-identical.",
+    );
+  }
+
+  if (treeless) {
+    if (metrics.treeCliInvocationCount > 0) {
+      notes.push(`Treeless case invoked ${metrics.treeCliInvocationCount} Tree CLI command(s); expected zero.`);
+    }
+    if (metrics.treeSetupWordingObserved) {
+      notes.push("Treeless case response pushed Tree setup/binding wording.");
+    }
+    if (metrics.treeSetupSurfaceGuidanceObserved) {
+      notes.push("Treeless case response pointed the user at a setup surface (Settings, web console, operator/admin).");
+    }
+    if (unbound && metrics.unboundTreeArtifactsCreated) {
+      notes.push("Unbound case created a workspace manifest or Context Tree checkout; expected neither.");
+    }
+  }
+
+  if (unboundExplicitRead && metrics.unboundSetupSteeringObserved) {
+    notes.push(
+      "Explicit Tree read without a confirmed binding carried extra setup/recovery steering beyond the gap statement.",
+    );
   }
 
   return notes.length > 0 ? notes.join(" ") : null;
@@ -134,10 +193,22 @@ export function buildGrading(
   expectedTrigger: boolean,
   passed: boolean,
   readMode: ReadMode = "managed",
+  unboundContinuation = false,
+  unboundExplicitRead = false,
 ): SkillCaseGrading {
+  const unbound = unboundContinuation || unboundExplicitRead;
+  const treeless = unbound;
   const unexpectedReadUse =
     metrics.skillHit || metrics.firstTreeCalls > 0 || metrics.firstTreeCommandResults.length > 0;
-  const routingPass = expectedTrigger ? metrics.skillFileReadObserved : !unexpectedReadUse;
+  const routingPass = unboundExplicitRead
+    ? metrics.treeCliInvocationCount === 0 && !metrics.staleTreeArtifactAccessObserved
+    : unboundContinuation
+      ? metrics.treeCliInvocationCount === 0 &&
+        !metrics.skillFileReadObserved &&
+        !metrics.staleTreeArtifactAccessObserved
+      : expectedTrigger
+        ? metrics.skillFileReadObserved
+        : !unexpectedReadUse;
   const byoProcessPassed =
     readMode === "managed" ||
     (metrics.readRouteSucceeded &&
@@ -147,23 +218,49 @@ export function buildGrading(
       metrics.byoSnapshotDetached &&
       metrics.byoSnapshotExactHeadConsistent);
   const managedTransportPassed = readMode === "byo" || metrics.managedFinalTransportOk;
-  const processPass = expectedTrigger
+  const processPass = treeless
     ? metrics.fixtureValidationOk &&
       metrics.runnerExitCode === 0 &&
-      metrics.helpSucceeded &&
-      metrics.selectionSucceeded &&
+      metrics.treeCliInvocationCount === 0 &&
       metrics.modelFirstTreeCommandsOk &&
-      managedTransportPassed &&
-      byoProcessPassed
-    : metrics.fixtureValidationOk &&
-      metrics.runnerExitCode === 0 &&
-      metrics.firstTreeCalls === 0 &&
-      metrics.firstTreeCommandResults.length === 0 &&
-      metrics.modelFirstTreeCommandsOk;
-  const outcomePass = expectedTrigger
-    ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
-    : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
-  const riskPass = metrics.modelFirstTreeCommandsOk && metrics.impactNoteMetadataFree;
+      managedTransportPassed
+    : expectedTrigger
+      ? metrics.fixtureValidationOk &&
+        metrics.runnerExitCode === 0 &&
+        metrics.helpSucceeded &&
+        metrics.selectionSucceeded &&
+        metrics.modelFirstTreeCommandsOk &&
+        managedTransportPassed &&
+        byoProcessPassed
+      : metrics.fixtureValidationOk &&
+        metrics.runnerExitCode === 0 &&
+        metrics.firstTreeCalls === 0 &&
+        metrics.firstTreeCommandResults.length === 0 &&
+        metrics.modelFirstTreeCommandsOk;
+  const outcomePass = unboundExplicitRead
+    ? metrics.unboundGapStatementObserved &&
+      metrics.impactNoteBehaviorOk &&
+      !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved
+    : unboundContinuation
+      ? metrics.expectedFactsObserved &&
+        metrics.impactNoteBehaviorOk &&
+        !metrics.treeSetupWordingObserved &&
+        !metrics.treeSetupSurfaceGuidanceObserved &&
+        !metrics.unboundAbsenceMentionObserved
+      : expectedTrigger
+        ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
+        : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
+  const riskPass =
+    metrics.modelFirstTreeCommandsOk &&
+    metrics.impactNoteMetadataFree &&
+    (!unbound || !metrics.unboundTreeArtifactsCreated) &&
+    (!treeless || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!unboundContinuation || !metrics.unboundAbsenceMentionObserved) &&
+    (!unboundExplicitRead || !metrics.unboundSetupSteeringObserved) &&
+    (!treeless || !metrics.staleTreeArtifactAccessObserved) &&
+    (!unbound || !metrics.staleTreeArtifactModifiedObserved);
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
   return {
@@ -173,7 +270,9 @@ export function buildGrading(
         "routing_pass",
         expectedTrigger
           ? `trigger case skill file read observed=${metrics.skillFileReadObserved}`
-          : `non-trigger case unexpected skill/tree usage observed=${unexpectedReadUse}`,
+          : treeless
+            ? `treeless case tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}; stale artifact access observed=${metrics.staleTreeArtifactAccessObserved}`
+            : `non-trigger case unexpected skill/tree usage observed=${unexpectedReadUse}`,
       ),
       evidence(
         "process_pass",
@@ -204,6 +303,49 @@ export function buildGrading(
       ...(metrics.impactNoteMetadataFree
         ? []
         : [riskFlag("visible_receipt_metadata", "Final visible output included receipt metadata or JSON fields.")]),
+      ...(unbound && metrics.unboundTreeArtifactsCreated
+        ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout.")]
+        : []),
+      ...(treeless && metrics.treeSetupSurfaceGuidanceObserved
+        ? [
+            riskFlag(
+              "tree_setup_surface_guidance",
+              "Treeless case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+            ),
+          ]
+        : []),
+      ...(unboundContinuation && metrics.unboundAbsenceMentionObserved
+        ? [
+            riskFlag(
+              "unbound_absence_mention",
+              "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+            ),
+          ]
+        : []),
+      ...(unboundExplicitRead && metrics.unboundSetupSteeringObserved
+        ? [
+            riskFlag(
+              "tree_setup_steering",
+              "Unbound explicit Tree read carried extra setup/recovery steering beyond the gap statement.",
+            ),
+          ]
+        : []),
+      ...(unbound && metrics.staleTreeArtifactAccessObserved
+        ? [
+            riskFlag(
+              "stale_tree_artifact_access",
+              "Unbound case read or referenced the retired Context Tree checkout or manifest path; it is inert residue, never Tree authority.",
+            ),
+          ]
+        : []),
+      ...(unbound && metrics.staleTreeArtifactModifiedObserved
+        ? [
+            riskFlag(
+              "stale_tree_artifact_modified",
+              "Unbound case modified or deleted the retired workspace manifest or Context Tree checkout; inert residue must stay byte-identical.",
+            ),
+          ]
+        : []),
     ],
     scores: {
       outcome_pass: outcomePass,

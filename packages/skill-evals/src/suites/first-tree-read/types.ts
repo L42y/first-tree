@@ -2,7 +2,24 @@ import type { AgentProviderName } from "../../core/provider/types.js";
 import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
-export type WorkspaceKind = "blank" | "byo-context-tree" | "context-tree";
+export type WorkspaceKind =
+  | "blank"
+  | "byo-context-tree"
+  | "context-tree"
+  | "explicitly-unbound-with-stale-checkout"
+  | "unbound-managed";
+
+/**
+ * Pre-run record of the Tree artifacts a treeless run must leave alone: the
+ * workspace manifest content (null = absent) and a content fingerprint of the
+ * `context-tree/` checkout (null = absent). A post-run comparison flags only
+ * NEWLY created artifacts or MODIFIED pre-existing stale artifacts, so a clean
+ * checkout left by a retired binding is a legal baseline, never a violation.
+ */
+export type TreeArtifactBaseline = {
+  checkoutFingerprint: string | null;
+  manifestContent: string | null;
+};
 export type BriefingMode = "minimal" | "runtime-generated";
 export type ReadMode = "byo" | "managed";
 export type ManagedTransport = "ask" | "send";
@@ -38,6 +55,19 @@ export type FirstTreeReadEvalCase = {
   prompt: string;
   promptAlternates: readonly string[];
   readMode: ReadMode;
+  /**
+   * Managed workspace whose briefing explicitly states no bound Tree: the task
+   * must continue from local inputs with zero Tree CLI invocations and no Tree
+   * setup/binding wording, instead of triggering a read.
+   */
+  unboundContinuation?: boolean;
+  /**
+   * Managed unbound workspace where the user explicitly asks for a Context Tree
+   * read: the agent must state only that this read cannot be completed because
+   * nothing is bound, with zero Tree CLI invocations, no manifest/Tree
+   * creation, and no bind/create/setup/install guidance.
+   */
+  unboundExplicitRead?: boolean;
   workspaceKind: WorkspaceKind;
 };
 
@@ -100,6 +130,22 @@ export type EvalMetrics = {
   managedFinalTransportKind: ManagedTransport | null;
   /** The delivery this case's task contract requires, when it declares one. */
   managedTransportExpected: ManagedTransport | null;
+  treeCliInvocationCount: number;
+  treeSetupWordingObserved: boolean;
+  /** Visible output steers the user at a setup surface (Settings, web console, operator/admin, Tree configuration). */
+  treeSetupSurfaceGuidanceObserved: boolean;
+  /** Delivered output proactively mentioned the Tree's absence; only the explicit Tree-read branch may state it. */
+  unboundAbsenceMentionObserved: boolean;
+  /** Visible output states the specific gap: this Tree read cannot complete because nothing is bound. */
+  unboundGapStatementObserved: boolean;
+  /** Delivered output for an explicit Tree read carried any setup/recovery steering. */
+  unboundSetupSteeringObserved: boolean;
+  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale baseline. */
+  unboundTreeArtifactsCreated: boolean;
+  /** The run read or referenced the stale `.first-tree/workspace.json` manifest or `context-tree/` checkout. */
+  staleTreeArtifactAccessObserved: boolean;
+  /** An unbound run modified or deleted the stale manifest or Tree checkout; inert residue must stay byte-identical. */
+  staleTreeArtifactModifiedObserved: boolean;
   legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;

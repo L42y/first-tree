@@ -4,8 +4,17 @@ import {
   parseContextImpactNotes,
   parseExactContextSourceLink,
 } from "@first-tree/shared";
+
 import { findStringValue, isRecord, isStringArray } from "../../core/events.js";
-import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport, ReadMode } from "./types.js";
+import { treeArtifactBaselineViolation } from "./fixture.js";
+import type {
+  EvalMetrics,
+  FixtureValidation,
+  ImpactNoteExpectation,
+  ManagedTransport,
+  ReadMode,
+  TreeArtifactBaseline,
+} from "./types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const TEXT_KEYS = ["content", "message", "output_text", "text"];
@@ -59,6 +68,14 @@ const FACT_MATCHERS: readonly FactMatcher[] = [
   {
     all: [/(billing changes?|计费变更)/iu, /(core release|核心版本|核心发布)/iu, /(stable monitoring|稳定监控)/iu],
     fact: "Billing changes must roll out after the core release reaches stable monitoring.",
+  },
+  {
+    all: [/inbox|delivery/iu, /deduplicat/iu, /client[- ](boundary|side)/iu],
+    fact: "Inbox delivery is deduplicated at the client boundary.",
+  },
+  {
+    all: [/refresh tokens?/iu, /rotat/iu, /replay/iu],
+    fact: "Refresh tokens rotate on every use to limit replay.",
   },
 ];
 
@@ -287,6 +304,11 @@ function isTreeTreeArgv(argv: readonly string[]): boolean {
   return command[0] === "tree" && command[1] === "tree";
 }
 
+function isTreeOperationArgv(argv: readonly string[]): boolean {
+  const command = commandArgv(argv);
+  return command[0] === "tree" || command[0] === "context";
+}
+
 function isTreeSelectorArgv(argv: readonly string[]): boolean {
   return isTreeTreeArgv(argv) && !isHelpArgv(argv);
 }
@@ -468,6 +490,144 @@ function expectedFactHits(modelOutputText: string, expectedFacts: readonly strin
   return hits;
 }
 
+/**
+ * The one statement an explicit Tree read in an unbound workspace may make:
+ * this read cannot complete because nothing is bound. A qualifying output must
+ * express BOTH the blocked read AND the no-binding reason anchored to the
+ * Tree — "cannot be completed right now" without the reason, or a reason
+ * about something else ("the source repository is not bound"), does not
+ * qualify. Bind/create/setup guidance is graded separately by
+ * `treeSetupWordingObserved` and `treeSetupSurfaceGuidanceObserved`.
+ */
+const UNBOUND_REASON =
+  /no\s+(?:context\s+)?tree\s+is\s+bound|no\s+bound\s+(?:context\s+)?tree|(?:context\s+)?tree\s+is\s+not\s+bound|no\s+(?:context\s+)?tree\s+binding|without\s+a\s+bound\s+(?:context\s+)?tree/iu;
+const CANNOT_COMPLETE =
+  /cannot\s+be\s+completed|can'?t\s+be\s+completed|cannot\s+complete|can'?t\s+complete|unable\s+to\s+complete|not\s+possible/iu;
+
+function containsUnboundGapStatement(text: string): boolean {
+  return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNBOUND_REASON.test(text);
+}
+
+/**
+ * Proactive missing-binding mention. An ordinary unbound task must stay
+ * silent about the Tree's absence; only the explicit Tree-read branch may
+ * state it, as part of the required gap statement.
+ */
+function containsUnboundAbsenceMention(text: string): boolean {
+  return UNBOUND_REASON.test(text);
+}
+
+/**
+ * Stale-artifact access: an explicitly unbound workspace can still carry the
+ * leftover `.first-tree/workspace.json` manifest and `context-tree/` checkout
+ * as inert residue, so any tool-phase read or reference of those paths fails
+ * the case. Command and cwd/workdir strings are extracted from the event
+ * structure and judged separately: a cwd does
+ * POSIX and Windows path matching, while a command matches only the manifest
+ * path, an explicit slash-descendant form (`context-tree/NODE.md`), or the
+ * bare checkout name in a known path-taking position (`cd context-tree`,
+ * `git -C context-tree status`, `ls context-tree`). Query tokens such as
+ * `rg context-tree README.md`, `rg -n 'context-tree' README.md`,
+ * `git log --grep=context-tree`, or `find . -name context-tree` are not path
+ * accesses and never match.
+ */
+const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree[/\\]workspace\.json/iu;
+const STALE_TREE_ARTIFACT_DESCENDANT = /context-tree[/\\]/iu;
+const STALE_TREE_ARTIFACT_PATH_VERB =
+  /(?:^|[\s;&|(])(?:cd|ls|ll|cat|sed|less|more|head|tail|stat|tree|open|code|pushd)(?:\s+-[A-Za-z-]+)*\s+context-tree(?:$|[\s;&|)])/iu;
+const STALE_TREE_ARTIFACT_GIT_C = /\bgit\s+(?:-[A-Za-z]+\s+)*-C\s+context-tree(?:$|[\s;&|)])/iu;
+
+function commandAccessesStaleArtifact(command: string): boolean {
+  return (
+    STALE_TREE_ARTIFACT_MANIFEST.test(command) ||
+    STALE_TREE_ARTIFACT_DESCENDANT.test(command) ||
+    STALE_TREE_ARTIFACT_PATH_VERB.test(command) ||
+    STALE_TREE_ARTIFACT_GIT_C.test(command)
+  );
+}
+
+function cwdAccessesStaleArtifact(cwd: string): boolean {
+  return /(?:^|[/\\])context-tree(?:[/\\]|$)/u.test(cwd);
+}
+
+function collectCommandAndCwdStrings(value: unknown, commands: string[], cwds: string[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectCommandAndCwdStrings(item, commands, cwds);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      if (/^(?:cwd|workdir|worktree|currentDir|current_dir)$/u.test(key)) cwds.push(item);
+      else if (/^(?:command|cmd)$/u.test(key)) commands.push(item);
+      continue;
+    }
+    if ((key === "argv" || key === "args") && isStringArray(item)) {
+      commands.push(item.join(" "));
+      continue;
+    }
+    collectCommandAndCwdStrings(item, commands, cwds);
+  }
+}
+
+function containsStaleTreeArtifactAccess(event: unknown): boolean {
+  if (!isRecord(event)) return false;
+  if (eventType(event) !== "codex_event") return false;
+
+  const nestedEvent = event.event;
+  const serialized = JSON.stringify(nestedEvent) ?? "";
+  if (serialized.includes("Available Skills")) return false;
+
+  const commands: string[] = [];
+  const cwds: string[] = [];
+  collectCommandAndCwdStrings(nestedEvent, commands, cwds);
+  if (cwds.some((cwd) => cwdAccessesStaleArtifact(cwd))) return true;
+  if (commands.some((command) => commandAccessesStaleArtifact(command))) return true;
+  // Fallback for command strings nested under free-form keys: only the strict
+  // path forms count — never a bare positional or query token.
+  return findStringValue(nestedEvent, (value) => commandAccessesStaleArtifact(value));
+}
+
+/**
+ * Setup-surface steering: pointing the user at Settings, the web console, an
+ * operator/admin, or Tree configuration as the way out of a missing binding.
+ * A pure "no Tree is bound" gap statement must not match, and ordinary
+ * business prose ("use the web console to export the report", "ask your admin
+ * for billing access") must not match either: the web-console and
+ * operator/admin alternatives fire only when Tree/binding/setup wording
+ * appears nearby.
+ */
+function containsTreeSetupSurfaceGuidance(text: string): boolean {
+  return (
+    /\bsettings\b\s*(?:→|->|>|:)?[^.!?\n]{0,40}(?:context\s+)?tree\b/iu.test(text) ||
+    /(?:context\s+)?tree\b[^.!?\n]{0,40}\bsettings\b/iu.test(text) ||
+    /\bweb\s+console\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(text) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bweb\s+console\b/iu.test(text) ||
+    /\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b[^.!?\n]{0,60}(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b/iu.test(
+      text,
+    ) ||
+    /(?:(?:context\s+)?tree|bind(?:ing)?|set\s*up|setup)\b[^.!?\n]{0,60}\bask\s+(?:an?|your)\s+(?:operator|admin|administrator)\b/iu.test(
+      text,
+    ) ||
+    /\bconfigure\s+(?:the\s+)?(?:context\s+)?tree\b/iu.test(text)
+  );
+}
+
+/**
+ * Strict setup/recovery steering check for the explicit Tree-read branch: the
+ * delivered answer may contain only the gap statement, so ANY setup-surface
+ * mention — Settings, the web console, an operator/admin, configuration, or
+ * setup/install wording — fails, even when split across separate deliveries.
+ * The ordinary unbound continuation branch intentionally does NOT use this
+ * detector, so business prose mentioning an admin or settings stays safe.
+ */
+const UNBOUND_SETUP_STEERING =
+  /\bsettings\b|\bweb\s+console\b|\boperators?\b|\badmin(?:istrator)?s?\b|\bconfigur(?:e|ation|ing)\b|\bset\s*up\b|\bsetup\b|\binstall(?:ing|ation)?\b/iu;
+
+function containsUnboundSetupSteering(text: string): boolean {
+  return UNBOUND_SETUP_STEERING.test(text);
+}
+
 export function deriveMetrics(
   events: readonly unknown[],
   fixtureValidation: FixtureValidation,
@@ -475,6 +635,11 @@ export function deriveMetrics(
   expectedFacts: readonly string[],
   impactNoteExpectation: ImpactNoteExpectation = { mode: "absent" },
   managedTransportExpectation: ManagedTransport | null = null,
+  options: {
+    artifactBaseline?: TreeArtifactBaseline | null;
+    unboundWorkspace?: boolean;
+    workspacePath?: string;
+  } = {},
 ): EvalMetrics {
   let firstTreeCalls = 0;
   let helpCalls = 0;
@@ -482,6 +647,7 @@ export function deriveMetrics(
   let readActivationCalls = 0;
   let readRouteCalls = 0;
   let skillFileReadObserved = false;
+  let staleTreeArtifactAccessObserved = false;
   const authoringCalls: Array<{
     argv: string[];
     body: string;
@@ -500,6 +666,9 @@ export function deriveMetrics(
   for (const event of events) {
     if (containsSkillFileRead(event)) {
       skillFileReadObserved = true;
+    }
+    if (containsStaleTreeArtifactAccess(event)) {
+      staleTreeArtifactAccessObserved = true;
     }
 
     modelOutputTexts.push(...uniqueStrings(collectModelOutputText(event)));
@@ -641,6 +810,44 @@ export function deriveMetrics(
     selectedExactCommit,
     visibleOutputKinds,
   });
+  const artifactViolation =
+    options.artifactBaseline != null && options.workspacePath !== undefined
+      ? treeArtifactBaselineViolation(options.artifactBaseline, options.workspacePath)
+      : { created: false, modified: false };
+  // The guard is a PRE/POST comparison against the fixture-setup baseline: a
+  // retired stale checkout left on disk is legal residue, but anything newly
+  // created — or a stale artifact the run modified — is a violation.
+  const unboundTreeArtifactsCreatedValue =
+    options.unboundWorkspace === true ? artifactViolation.created || artifactViolation.modified : false;
+  const staleTreeArtifactModifiedObserved = options.unboundWorkspace === true ? artifactViolation.modified : false;
+  const treeCliInvocationCount =
+    firstTreeArgv.filter(isTreeOperationArgv).length +
+    firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
+  // Negative signals scan every genuinely teammate-visible delivery —
+  // successful chat send/ask bodies plus successful chat update (current-state)
+  // bodies — never console narration. Console output is the fallback only when
+  // the run produced no such deliveries at all.
+  const teammateDeliveredTexts = [...authoredOutputTexts, ...successfulProgressCalls.map((call) => call.body)];
+  const negativeScanTexts = teammateDeliveredTexts.length > 0 ? teammateDeliveredTexts : modelOutputTexts;
+  const treeSetupWordingObserved = negativeScanTexts.some((text) =>
+    text
+      // Sentence splitting mirrors the detector's own `[^.!?\n]` windows.
+      .split(/[.!?\n]+/u)
+      .some((sentence) =>
+        /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}(?<!first-)\btree\b|(?<!first-)\btree\b[^.!?\n]{0,80}\b(?:binding|creation|setup)\b/iu.test(
+          sentence,
+        ),
+      ),
+  );
+  const treeSetupSurfaceGuidanceObserved = negativeScanTexts.some((text) => containsTreeSetupSurfaceGuidance(text));
+  const unboundSetupSteeringObserved = containsUnboundSetupSteering(negativeScanTexts.join("\n"));
+  const unboundAbsenceMentionObserved = negativeScanTexts.some((text) => containsUnboundAbsenceMention(text));
+  // The positive gap signal is judged by the LAST real delivery only: an
+  // earlier correct gap statement cannot cover a final delivery that drops it.
+  // Native final output is the fallback only when no chat authoring exists.
+  const finalDeliveredText =
+    authoringCalls.length > 0 ? (successfulAuthoringCalls.at(-1)?.body ?? "") : (modelOutputTexts.at(-1) ?? "");
+  const unboundGapStatementObserved = containsUnboundGapStatement(finalDeliveredText);
 
   return {
     expectedFactHits: factHits,
@@ -671,12 +878,60 @@ export function deriveMetrics(
     selectionSucceeded,
     skillFileReadObserved,
     skillHit: skillFileReadObserved || firstTreeCalls > 0 || firstTreeCommandResults.length > 0,
+    staleTreeArtifactAccessObserved,
+    staleTreeArtifactModifiedObserved,
+    treeCliInvocationCount,
+    treeSetupWordingObserved,
+    treeSetupSurfaceGuidanceObserved,
+    unboundAbsenceMentionObserved,
+    unboundGapStatementObserved,
+    unboundSetupSteeringObserved,
+    unboundTreeArtifactsCreated: unboundTreeArtifactsCreatedValue,
   };
 }
 
-export function casePassed(expectedTrigger: boolean, metrics: EvalMetrics, readMode: ReadMode = "managed"): boolean {
+export function casePassed(
+  expectedTrigger: boolean,
+  metrics: EvalMetrics,
+  readMode: ReadMode = "managed",
+  unboundContinuation = false,
+  unboundExplicitRead = false,
+): boolean {
   if (!metrics.fixtureValidationOk) return false;
   if (metrics.runnerExitCode !== 0) return false;
+
+  if (!expectedTrigger && unboundExplicitRead) {
+    return (
+      metrics.unboundGapStatementObserved &&
+      metrics.impactNoteBehaviorOk &&
+      metrics.managedFinalTransportOk &&
+      metrics.treeCliInvocationCount === 0 &&
+      metrics.modelFirstTreeCommandsOk &&
+      !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundSetupSteeringObserved &&
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
+    );
+  }
+
+  if (!expectedTrigger && unboundContinuation) {
+    return (
+      metrics.expectedFactsObserved &&
+      metrics.impactNoteBehaviorOk &&
+      metrics.managedFinalTransportOk &&
+      metrics.treeCliInvocationCount === 0 &&
+      !metrics.skillFileReadObserved &&
+      metrics.modelFirstTreeCommandsOk &&
+      !metrics.treeSetupWordingObserved &&
+      !metrics.treeSetupSurfaceGuidanceObserved &&
+      !metrics.unboundAbsenceMentionObserved &&
+      !metrics.unboundTreeArtifactsCreated &&
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
+    );
+  }
 
   if (expectedTrigger) {
     const readModePassed =

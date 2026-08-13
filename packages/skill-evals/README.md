@@ -132,7 +132,27 @@ runtime-generated `AGENTS.md`/`CLAUDE.md` pair, installs the default First
 Tree skill family, binds a deterministic Context Tree fixture, and then runs
 the same read trigger oracle. This covers the generated-briefing and
 skill-topology boundary only; real Cloud chat delivery, GitHub webhooks, and
-live First Tree runtime E2E remain outside skill evals.
+live First Tree runtime E2E remain outside skill evals. The same periodic run
+also covers the managed-unbound rows
+(`first-tree-read-unbound-software-continues-periodic`,
+`first-tree-read-unbound-pasted-content-continues-periodic`, and
+`first-tree-read-unbound-explicit-read-reports-gap-periodic`): a
+runtime-generated briefing that explicitly states no bound Tree, no workspace
+manifest, and no Tree checkout. The original task must continue to a result
+with zero `first-tree tree`/`context` invocations and zero bind/create/setup
+wording; an explicit Context Tree read reports only that this read cannot be
+completed because nothing is bound, with no manifest/Tree creation and no
+setup actions, while malformed or declared-but-broken bindings keep their
+fail-closed Tree-operation coverage. The managed explicitly-unbound
+stale-residue rows
+(`first-tree-read-stale-checkout-software-continues-periodic` and
+`first-tree-read-stale-checkout-explicit-read-reports-gap-periodic`) render
+the same explicitly-unbound briefing while the stale
+`.first-tree/workspace.json` manifest and `context-tree/` checkout remain on
+disk as inert residue: ordinary tasks continue with zero Tree CLI invocations
+and zero reads or references of those artifacts, a model-modified or deleted
+stale artifact fails the case, and an explicit Context Tree read still
+reports only that this read cannot be completed because nothing is bound.
 
 `eval:gate -- --suite context-tree-review` runs the repair-first Context Tree
 pull request review gate. A task-local bare Git origin permits only an
@@ -172,15 +192,26 @@ never performs a real provider or First Tree external write.
 - no source artifact means no Context Tree diff;
 - durable source material can produce a minimal tree diff and must run
   `first-tree tree verify`;
-- implementation-only source material means no Context Tree diff.
+- implementation-only source material means no Context Tree diff;
+- an unbound workspace (no bound Context Tree, no workspace manifest, no
+  declared source repo) silently skips the Tree write on an ordinary source
+  task — the source result continues with zero Tree commands and no
+  manifest/Tree creation — and an explicit Tree write request reports only
+  the missing binding without bind/create guidance or any Tree mutation.
+- an explicitly-unbound workspace with stale residue (the same
+  explicitly-unbound briefing, but a stale `.first-tree/workspace.json`
+  manifest and retired `context-tree/` checkout remain on disk as inert
+  residue) behaves exactly like the unbound workspace and additionally fails
+  if the run reads, references, modifies, or deletes the residue.
 
 `eval:gate -- --suite first-tree-welcome` runs the live tested-agent gate for
 the currently implemented `first-tree-welcome` gate rows:
 
 - tree kickoff chat routes to the tree setup lane instead of welcome first-task
   options;
-- no repo connected / intro chat asks for a local project folder path or Git repository URL
-  without requiring GitHub authorization first;
+- no repo connected / intro chat says it is ready to work and makes exactly one
+  goal-first tracked ask — no repo, path, URL, binding, auth, or install wording
+  and no task options;
 - readable repo + populated Context Tree uses existing working status, keeps the
   source read bounded, gives a two-sentence project receipt, and offers one or
   two single-select microtasks with at least one reviewable read-only option and
@@ -189,12 +220,21 @@ the currently implemented `first-tree-welcome` gate rows:
 - a selected first microtask completes in the current chat with a reviewable
   result and exactly one directly related bridge.
 
+The welcome floor also pins the forge-access contract deterministically:
+ordinary tasks are unaffected when `gh`/`glab` are absent, local and public
+repositories are read through the filesystem and plain `git` (a forge URL
+alone never requires the CLI), and only an explicit forge operation — PR/MR,
+issue, checks, comments, provider metadata — degrades to a narrowly blocked
+step with the single narrowest recovery while independent work continues.
+
 `eval:periodic -- --suite first-tree-welcome` runs the broader live welcome
 matrix. It covers every concrete setup-state row from the current
-`first-tree-welcome` matrix, including invitee not-ready/ready states, selected
-repo authorization failure, local-readable repo with missing GitHub App,
-installed app with no readable project, readable repo with empty tree, readable
-repo with unknown tree, and qualified admin/invitee post-result bridges. The
+`first-tree-welcome` matrix, including invitee not-ready/ready states, a concrete
+repo-free first task completed directly in the chat, selected repo authorization
+failure (narrow recovery without claiming a repo read or declaring onboarding
+blocked), local-readable repo with missing GitHub App, installed app with no
+readable project, readable repo with empty tree, readable repo with unknown
+tree, and qualified admin/invitee post-result bridges. The
 welcome chat never auto-registers a Team repo; the Context Tree bridge is valid
 only for a confirmed admin after a result exposes a lasting cross-module
 decision and the tree is confirmed missing/empty. The selected first task must

@@ -63,9 +63,49 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toContain("failure does not invalidate the\n   MR");
   });
 
+  it("states the unbound or broken Tree binding degradation gate", () => {
+    expect(skill).toContain("## Unbound or broken Tree binding");
+    expect(skill).toContain("A missing Context Tree removes only the operations that depend on it.");
+    expect(skill).toMatch(/may prompt the user to bind, create, or connect a Tree\s+merely\s+because one is absent/u);
+    expect(skill).toMatch(/when the trusted managed briefing explicitly states\s+there is no bound Tree/u);
+    expect(skill).toMatch(/no Tree write is possible and there is no write\s+task/u);
+    expect(skill).toMatch(/state only that this\s+Tree write cannot be completed because\s+no Tree is bound/u);
+    expect(skill).toMatch(/do not expand the\s+absence into bind\/create guidance/u);
+    expect(skill).toMatch(
+      /A leftover\s+`.first-tree\/workspace\.json` manifest or `context-tree\/`\s+checkout from a\s+previously bound session may still be on disk/u,
+    );
+    expect(skill).toMatch(/it is inert residue, and\s+this gate precedes any disk discovery/u);
+    expect(skill).toMatch(/never read, trust, or recover from\s+it/u);
+    expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
+    expect(skill).toContain("the broken binding blocks only the Tree write, never unrelated work");
+    expect(skill).toMatch(
+      /fully\s+declared\s+binding\s+whose\s+local\s+checkout\s+simply\s+does\s+not\s+exist\s+yet\s+is\s+not\s+broken/u,
+    );
+    expect(skill).toMatch(/materialize\s+it\s+per\s+Tree\s+Location\s+before\s+drafting\s+and\s+continue/u);
+  });
+
+  it("drops the removed unresolved-binding gate", () => {
+    expect(skill).not.toContain("**Unresolved binding:**");
+    expect(skill).not.toContain("could not be confirmed");
+  });
+
+  it("keeps the source gate filesystem-first with forge CLIs scoped to forge steps", () => {
+    expect(skill).toMatch(/read local code,\s+history, and existing files from the filesystem and plain `git` first/u);
+    expect(skill).toMatch(/only for forge reads the filesystem cannot\s+answer/u);
+    expect(skill).toMatch(/missing or unauthenticated CLI blocks only that forge step/u);
+    expect(skill).toMatch(/source\s+reading and local drafting continue without it/u);
+  });
+
+  it("evaluates the binding gate before the Source Gate", () => {
+    expect(skill).toMatch(/Evaluate this gate before the Source Gate below/u);
+    expect(skill).toMatch(/the Source Gate's stop-and-ask for a source artifact never applies/u);
+    // The binding gate section must physically precede the Source Gate.
+    expect(skill.indexOf("## Unbound or broken Tree binding")).toBeLessThan(skill.indexOf("## Source Gate"));
+  });
+
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.2");
+    expect(version).toBe("0.16.7");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });
