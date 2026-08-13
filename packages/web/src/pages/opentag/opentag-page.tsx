@@ -310,7 +310,12 @@ export function OpenTagPage(): ReactElement | null {
 
   const feishuStep = resolveOpenTagFeishuStep({
     binding,
-    callFailed: prepareTools.isError,
+    // A failure belongs to the Agent and Computer it was asked for. Once either
+    // moves on, the old machine's failed request says nothing about the new one
+    // — and a Computer that arrives already prepared never asks again, so the
+    // stale failure would otherwise offer a way out of an ordinary Bot wait
+    // that has barely started.
+    callFailed: prepareTools.isError && askedToolsFor === toolsIdentity,
     slow: stepSlow,
   });
 

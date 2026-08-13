@@ -1498,3 +1498,49 @@ describe("OpenTag entry — the Agent's Feishu tools across a change of Computer
     }
   });
 });
+
+describe("OpenTag entry — a failed request belongs to the Computer it was asked for", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("does not carry the old Computer's failure into a machine that arrives ready", async () => {
+    // The new Computer needs no request at all, so nothing ever clears the old
+    // one's error. Left attributed, it would offer a way out of an ordinary Bot
+    // wait that has barely started — and call it "taking longer" on the first
+    // frame the member sees it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
+      });
+      api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
+
+      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+      await flush();
+      expect(container.textContent).toContain("You are not stuck here.");
+
+      // Moved to a Computer that already has the tools; the Bot is not confirmed.
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: feishuBinding({
+          registrationUrl: "https://f.test/c",
+          cli: { state: "ready", version: "1.4.0", clientId: "client-2" },
+        }),
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(11_000);
+      });
+      await flush();
+
+      // An ordinary wait on the member's own confirmation, and nothing more.
+      expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain("Scan with Feishu");
+      expect(container.textContent).not.toContain("You are not stuck here.");
+      expect(container.textContent).not.toContain("taking longer");
+      expect(container.textContent).toContain("Connect your Agent to Feishu.");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
