@@ -1,4 +1,4 @@
-import { githubExternalProfile } from "@first-tree/shared";
+import { githubExternalProfile, googleExternalProfile } from "@first-tree/shared";
 import bcrypt from "bcrypt";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import { users } from "../db/schema/users.js";
 import { requireAgent } from "../middleware/require-identity.js";
 import { requireUser } from "../scope/require-user.js";
 import {
+  findOrCreateGithubAccount,
   findOrCreateUserFromExternalAccount,
   findOrCreateUserFromGithub,
   getStoredGithubAccessToken,
@@ -17,11 +18,12 @@ import {
   isUsableLegacyPasswordHash,
   LastIdentityError,
   linkExternalIdentity,
+  refreshGithubInstallIdentity,
   unlinkExternalIdentity,
 } from "../services/auth/identity.js";
 import { encryptValue } from "../services/crypto.js";
 import { uuidv7 } from "../uuid.js";
-import { useTestApp } from "./helpers.js";
+import { createTestAdmin, useTestApp } from "./helpers.js";
 
 const ENCRYPTION_KEY = "0".repeat(64);
 
@@ -101,6 +103,150 @@ describe("auth identity extra coverage", () => {
       .where(eq(authIdentities.userId, created.userId));
     await expect(getStoredGithubAccessToken(app.db, created.userId, ENCRYPTION_KEY)).resolves.toBeNull();
     await expect(getStoredGithubAccessToken(app.db, "missing-user", ENCRYPTION_KEY)).resolves.toBeNull();
+  });
+
+  it("keeps GitHub, Google, and OIDC identity snapshots immutable while their account is suspended", async () => {
+    const app = getApp();
+    const suffix = crypto.randomUUID();
+    const github = await findOrCreateGithubAccount(
+      app.db,
+      {
+        githubId: `gh-suspended-${suffix}`,
+        login: "github-before",
+        email: "github-before@example.com",
+        displayName: "GitHub Before",
+        avatarUrl: "https://avatars.example/before.png",
+      },
+      { encryptedAccessToken: "encrypted-github-before" },
+    );
+    const google = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({
+        sub: `google-suspended-${suffix}`,
+        name: "Google Before",
+        email: "google-before@example.com",
+        emailVerified: true,
+        picture: "https://avatars.example/google-before.png",
+      }),
+    );
+    const oidcSubject = JSON.stringify(["https://issuer.example", `oidc-suspended-${suffix}`]);
+    const oidc = await findOrCreateUserFromExternalAccount(app.db, {
+      provider: "oidc",
+      subject: oidcSubject,
+      usernameCandidates: ["oidc-before"],
+      displayName: "OIDC Before",
+      email: "oidc-before@example.com",
+      avatarUrl: "https://avatars.example/oidc-before.png",
+      metadata: { issuer: "https://issuer.example", sub: `oidc-suspended-${suffix}`, marker: "before" },
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, github.userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, google.userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, oidc.userId));
+    const before = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.provider, "github"));
+    const githubBefore = before.find((identity) => identity.userId === github.userId);
+    const [googleBefore] = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, google.userId));
+    const [oidcBefore] = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, oidc.userId));
+
+    await findOrCreateGithubAccount(
+      app.db,
+      {
+        githubId: `gh-suspended-${suffix}`,
+        login: "github-after",
+        email: "github-after@example.com",
+        displayName: "GitHub After",
+        avatarUrl: "https://avatars.example/after.png",
+      },
+      { encryptedAccessToken: "encrypted-github-after", encryptedRefreshToken: "encrypted-refresh-after" },
+    );
+    await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({
+        sub: `google-suspended-${suffix}`,
+        name: "Google After",
+        email: "google-after@example.com",
+        emailVerified: true,
+        picture: "https://avatars.example/google-after.png",
+      }),
+    );
+    await findOrCreateUserFromExternalAccount(app.db, {
+      provider: "oidc",
+      subject: oidcSubject,
+      usernameCandidates: ["oidc-after"],
+      displayName: "OIDC After",
+      email: "oidc-after@example.com",
+      avatarUrl: "https://avatars.example/oidc-after.png",
+      metadata: { issuer: "https://issuer.example", sub: `oidc-suspended-${suffix}`, marker: "after" },
+    });
+
+    const after = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities);
+    expect(after.find((identity) => identity.userId === github.userId)).toEqual(githubBefore);
+    expect(after.find((identity) => identity.userId === google.userId)).toEqual(googleBefore);
+    expect(after.find((identity) => identity.userId === oidc.userId)).toEqual(oidcBefore);
+  });
+
+  it("rejects a suspended GitHub installation refresh without mutating its stored credential snapshot", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `install-suspended-${crypto.randomUUID().slice(0, 8)}` });
+    await linkExternalIdentity(
+      app.db,
+      admin.userId,
+      githubExternalProfile({
+        id: "github-install-suspended",
+        login: "install-before",
+        email: "install-before@example.com",
+        metadata: { accessToken: "encrypted-install-before" },
+      }),
+    );
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, admin.userId));
+    const [before] = await app.db.select().from(authIdentities).where(eq(authIdentities.userId, admin.userId));
+
+    const result = await refreshGithubInstallIdentity(app.db, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      profile: {
+        githubId: "github-install-suspended",
+        login: "install-after",
+        email: "install-after@example.com",
+        displayName: "Install After",
+        avatarUrl: "https://avatars.example/install-after.png",
+      },
+      tokens: { encryptedAccessToken: "encrypted-install-after", encryptedRefreshToken: "refresh-after" },
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: "not-admin" });
+    const [after] = await app.db.select().from(authIdentities).where(eq(authIdentities.userId, admin.userId));
+    expect(after).toEqual(before);
   });
 
   it("falls back to a uuid-based username suffix after repeated unique violations", async () => {

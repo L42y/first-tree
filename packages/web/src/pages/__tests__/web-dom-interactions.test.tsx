@@ -1500,6 +1500,22 @@ describe("web DOM interaction coverage", () => {
 
     Object.defineProperty(window, "location", {
       configurable: true,
+      value: { ...window.location, hash: "#error=account-inactive", pathname: "/auth/complete" },
+    });
+    const inactive = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await waitForText("account is suspended", inactive.container);
+    await unmountRoot(inactive.root);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, hash: "#error=membership-restore-required", pathname: "/auth/complete" },
+    });
+    const restoreRequired = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await waitForText("administrator to restore it", restoreRequired.container);
+    await unmountRoot(restoreRequired.root);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
       value: {
         ...window.location,
         hash: "#error=install-not-verified&next=/settings/integrations/github&expectedGithubLogin=linked-user&callbackIntent=install",

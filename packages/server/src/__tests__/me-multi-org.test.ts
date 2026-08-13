@@ -1,7 +1,9 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
-import { connectDatabase } from "../db/connection.js";
+import { connectDatabase, type Database, sslOptions } from "../db/connection.js";
+import { agents } from "../db/schema/agents.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -10,9 +12,33 @@ import { createAgent } from "../services/agents/identity.js";
 import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
 import { createMember, deleteMember } from "../services/team/member.js";
-import { leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
+import {
+  leaveOrganization,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  selfCreateOrganization,
+} from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
+import { DEFAULT_ORG_ID } from "./setup.js";
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type FROM pg_stat_activity
+      WHERE datname = current_database() AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
+}
 
 /**
  * Attach `userId` to a freshly-created org with the requested role, mirroring
@@ -49,12 +75,17 @@ async function attachOrg(
 async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
   app: FastifyInstance,
   subject: { userId: string; username: string },
-  deactivate: () => Promise<unknown>,
+  deactivate: (db: Database) => Promise<unknown>,
   teamDisplayName: string,
 ) {
   const databaseUrl = process.env.DATABASE_URL ?? "";
   if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
   const blockerDb = connectDatabase(databaseUrl);
+  const deactivationApplicationName = `loss_first_${crypto.randomUUID().slice(0, 8)}`;
+  const creationApplicationName = `creation_second_${crypto.randomUUID().slice(0, 8)}`;
+  const deactivationDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, deactivationApplicationName));
+  const creationDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, creationApplicationName));
+  const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
   let releaseUserLock: () => void = () => undefined;
   let announceUserLock: () => void = () => undefined;
   const userLockReleased = new Promise<void>((resolve) => {
@@ -71,17 +102,10 @@ async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
 
   try {
     await userLockHeld;
-    let deactivationSettled = false;
-    const deactivation = deactivate().finally(() => {
-      deactivationSettled = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    // Leave/removal must wait on the same stable user lock used by
-    // additional-Team authorization. Without it, the stale precheck can
-    // commit a third first-Team boundary after this membership loss finishes.
-    expect(deactivationSettled).toBe(false);
+    const deactivation = deactivate(deactivationDb);
+    await waitForPostgresLockWait(observer, deactivationApplicationName);
 
-    const creation = selfCreateOrganization(app.db, {
+    const creation = selfCreateOrganization(creationDb, {
       userId: subject.userId,
       username: subject.username,
       displayName: teamDisplayName,
@@ -89,7 +113,7 @@ async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
       (value) => ({ status: "fulfilled" as const, value }),
       (error: unknown) => ({ status: "rejected" as const, error }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitForPostgresLockWait(observer, creationApplicationName);
     releaseUserLock();
     await holder;
     await deactivation;
@@ -98,7 +122,7 @@ async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
     expect(outcome.status).toBe("rejected");
     if (outcome.status === "rejected") {
       expect(outcome.error).toMatchObject({
-        message: expect.stringContaining("An active Team membership is required"),
+        message: expect.stringContaining("Team creation authority changed"),
       });
     }
     expect(
@@ -111,6 +135,67 @@ async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
     releaseUserLock();
     await holder.catch(() => undefined);
     await blockerDb.end();
+    await deactivationDb.end();
+    await creationDb.end();
+    await observer.end();
+  }
+}
+
+async function expectAdditionalTeamCreationWinsBeforeMembershipLoss(
+  app: FastifyInstance,
+  subject: { userId: string; username: string },
+  deactivate: (db: Database) => Promise<unknown>,
+  teamDisplayName: string,
+) {
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+  const blockerDb = connectDatabase(databaseUrl);
+  const creationApplicationName = `creation_first_${crypto.randomUUID().slice(0, 8)}`;
+  const deactivationApplicationName = `loss_second_${crypto.randomUUID().slice(0, 8)}`;
+  const creationDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, creationApplicationName));
+  const deactivationDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, deactivationApplicationName));
+  const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+  let releaseUserLock: () => void = () => undefined;
+  let announceUserLock: () => void = () => undefined;
+  const userLockReleased = new Promise<void>((resolve) => {
+    releaseUserLock = resolve;
+  });
+  const userLockHeld = new Promise<void>((resolve) => {
+    announceUserLock = resolve;
+  });
+  const holder = blockerDb.transaction(async (tx) => {
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, subject.userId)).for("no key update").limit(1);
+    announceUserLock();
+    await userLockReleased;
+  });
+
+  try {
+    await userLockHeld;
+    const creation = selfCreateOrganization(creationDb, {
+      userId: subject.userId,
+      username: subject.username,
+      displayName: teamDisplayName,
+    });
+    await waitForPostgresLockWait(observer, creationApplicationName);
+
+    const deactivation = deactivate(deactivationDb);
+    await waitForPostgresLockWait(observer, deactivationApplicationName);
+    releaseUserLock();
+    await holder;
+    const [created] = await Promise.all([creation, deactivation]);
+
+    const activeMemberships = await app.db
+      .select({ organizationId: members.organizationId })
+      .from(members)
+      .where(and(eq(members.userId, subject.userId), eq(members.status, "active")));
+    expect(activeMemberships).toEqual([{ organizationId: created.organizationId }]);
+  } finally {
+    releaseUserLock();
+    await holder.catch(() => undefined);
+    await blockerDb.end();
+    await creationDb.end();
+    await deactivationDb.end();
+    await observer.end();
   }
 }
 
@@ -199,7 +284,7 @@ describe("Multi-org self-service", () => {
         userId: admin.userId,
         username: admin.username,
       },
-      () => leaveOrganization(app.db, admin.memberId),
+      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
       "Concurrent Leave Escape Team",
     );
   });
@@ -217,9 +302,132 @@ describe("Multi-org self-service", () => {
     await expectAdditionalTeamCreationRejectedAfterMembershipLoss(
       app,
       { userId: target.userId, username },
-      () => deleteMember(app.db, target.id, host.organizationId),
+      (db) => deleteMember(db, target.id, host.organizationId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
       "Concurrent Removal Escape Team",
     );
+  });
+
+  it("lets an additional-Team creation that holds the user fence commit before final leave", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `org-create-first-${crypto.randomUUID().slice(0, 8)}` });
+    await expectAdditionalTeamCreationWinsBeforeMembershipLoss(
+      app,
+      { userId: admin.userId, username: admin.username },
+      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      "Creation Wins Before Leave",
+    );
+  });
+
+  it("allows a newly-started additional-Team request after final-loss repair", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `org-after-repair-${crypto.randomUUID().slice(0, 8)}` });
+    await leaveOrganization(app.db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM);
+
+    await expect(
+      selfCreateOrganization(app.db, {
+        userId: admin.userId,
+        username: admin.username,
+        displayName: "Fresh Request After Repair",
+      }),
+    ).resolves.toMatchObject({ displayName: "Fresh Request After Repair" });
+
+    const activeMemberships = await app.db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, admin.userId), eq(members.status, "active")));
+    expect(activeMemberships).toHaveLength(2);
+  });
+
+  it("serializes simultaneous losses of a multi-Team user's final two memberships into one repair", async () => {
+    const app = getApp();
+    const account = await createTestAdmin(app, { username: `multi-final-${crypto.randomUUID().slice(0, 8)}` });
+    const second = await selfCreateOrganization(app.db, {
+      userId: account.userId,
+      username: account.username,
+      displayName: "Multi Final Side Team",
+    });
+
+    await Promise.all([
+      leaveOrganization(app.db, account.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      leaveOrganization(app.db, second.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+    ]);
+
+    const membershipRows = await app.db
+      .select({ id: members.id, status: members.status })
+      .from(members)
+      .where(eq(members.userId, account.userId));
+    expect(membershipRows).toEqual(
+      expect.arrayContaining([
+        { id: account.memberId, status: "left" },
+        { id: second.memberId, status: "left" },
+      ]),
+    );
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(1);
+  });
+
+  it("repairs an admin-removed final membership without reusing the removed identity", async () => {
+    const app = getApp();
+    const host = await createTestAdmin(app, { username: `remove-host-${crypto.randomUUID().slice(0, 8)}` });
+    const target = await createMember(app.db, host.organizationId, {
+      username: `remove-final-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Removed Final Member",
+      role: "member",
+    });
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/orgs/${host.organizationId}/members/${target.id}`,
+      headers: { authorization: `Bearer ${host.accessToken}` },
+    });
+    expect(removed.statusCode).toBe(204);
+
+    const membershipRows = await app.db
+      .select({
+        id: members.id,
+        agentId: members.agentId,
+        organizationId: members.organizationId,
+        status: members.status,
+      })
+      .from(members)
+      .where(eq(members.userId, target.userId));
+    expect(membershipRows).toContainEqual({
+      id: target.id,
+      agentId: target.agentId,
+      organizationId: host.organizationId,
+      status: "removed",
+    });
+    const activeMemberships = membershipRows.filter((membership) => membership.status === "active");
+    expect(activeMemberships).toHaveLength(1);
+    expect(activeMemberships[0]?.organizationId).not.toBe(host.organizationId);
+    expect(activeMemberships[0]?.agentId).not.toBe(target.agentId);
+  });
+
+  it("retries a concurrent final admin removal without creating a second repair Team", async () => {
+    const app = getApp();
+    const host = await createTestAdmin(app, { username: `remove-retry-host-${crypto.randomUUID().slice(0, 8)}` });
+    const target = await createMember(app.db, host.organizationId, {
+      username: `remove-retry-target-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Removal Retry Target",
+      role: "member",
+    });
+    const remove = () =>
+      app.inject({
+        method: "DELETE",
+        url: `/api/v1/orgs/${host.organizationId}/members/${target.id}`,
+        headers: { authorization: `Bearer ${host.accessToken}` },
+      });
+
+    const results = await Promise.all([remove(), remove()]);
+
+    expect(results.map((result) => result.statusCode)).toEqual([204, 204]);
+    const membershipRows = await app.db
+      .select({ id: members.id, status: members.status })
+      .from(members)
+      .where(eq(members.userId, target.userId));
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(1);
+    expect(membershipRows.filter((membership) => membership.id === target.id)).toEqual([
+      { id: target.id, status: "removed" },
+    ]);
   });
 
   it("POST /me/organizations disambiguates display names that derive the same slug", async () => {
@@ -307,6 +515,51 @@ describe("Multi-org self-service", () => {
     expect(meBody.memberships[0]?.organizationId).not.toBe(admin.organizationId);
   });
 
+  it("repairs a final self-leave with exactly one personal Team across retries", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, {
+      username: `final-leave-${crypto.randomUUID().slice(0, 8)}`,
+    });
+    const leave = () =>
+      app.inject({
+        method: "POST",
+        url: `/api/v1/me/memberships/${admin.memberId}/leave`,
+        headers: { authorization: `Bearer ${admin.accessToken}` },
+      });
+
+    const retryResults = await Promise.all([leave(), leave()]);
+    expect(retryResults.map((result) => result.statusCode)).toEqual([204, 204]);
+
+    const membershipRows = await app.db
+      .select({ id: members.id, organizationId: members.organizationId, status: members.status })
+      .from(members)
+      .where(eq(members.userId, admin.userId));
+    expect(membershipRows).toContainEqual({
+      id: admin.memberId,
+      organizationId: admin.organizationId,
+      status: "left",
+    });
+    const activeMemberships = membershipRows.filter((membership) => membership.status === "active");
+    expect(activeMemberships).toHaveLength(1);
+    expect(activeMemberships[0]?.organizationId).not.toBe(admin.organizationId);
+
+    const [personalTeam] = await app.db
+      .select({ displayName: organizations.displayName })
+      .from(organizations)
+      .where(eq(organizations.id, activeMemberships[0]?.organizationId ?? ""));
+    expect(personalTeam?.displayName).toBe("Test Admin's team");
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${admin.accessToken}` },
+    });
+    expect(me.statusCode).toBe(200);
+    expect(me.json<{ memberships: Array<{ organizationId: string }> }>().memberships).toEqual([
+      expect.objectContaining({ organizationId: activeMemberships[0]?.organizationId }),
+    ]);
+  });
+
   it("POST /me/memberships/:memberId/leave hides memberships owned by another user", async () => {
     const app = getApp();
     const owner = await createTestAdmin(app);
@@ -375,6 +628,164 @@ describe("Multi-org self-service", () => {
       .where(eq(invitationRedemptions.invitationId, invitation.id));
     expect(redemptions).toHaveLength(1);
     expect(redemptions[0]).toMatchObject({ userId: invitee.userId, userAgent: "me-multi-org-test" });
+  });
+
+  it("keeps physical Team and account lifecycle routes unsupported and side-effect free", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, {
+      username: `unsupported-lifecycle-${crypto.randomUUID().slice(0, 8)}`,
+    });
+    const authorization = { authorization: `Bearer ${admin.accessToken}` };
+
+    for (const request of [
+      { method: "DELETE", url: `/api/v1/orgs/${admin.organizationId}` },
+      { method: "POST", url: `/api/v1/orgs/${admin.organizationId}/reactivate` },
+      { method: "DELETE", url: "/api/v1/me/account" },
+      { method: "POST", url: "/api/v1/me/account/reactivate" },
+    ] as const) {
+      const response = await app.inject({ ...request, headers: authorization });
+      expect(response.statusCode).toBe(404);
+    }
+
+    const [organization] = await app.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.id, admin.organizationId));
+    const [account] = await app.db.select({ status: users.status }).from(users).where(eq(users.id, admin.userId));
+    const [membership] = await app.db
+      .select({ status: members.status, agentId: members.agentId })
+      .from(members)
+      .where(eq(members.id, admin.memberId));
+    const [mirror] = await app.db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid));
+
+    expect(organization).toEqual({ id: admin.organizationId });
+    expect(account).toEqual({ status: "active" });
+    expect(membership).toEqual({ status: "active", agentId: admin.humanAgentUuid });
+    expect(mirror).toEqual({ status: "active" });
+  });
+});
+
+describe("Invitation-only final-membership boundary", () => {
+  const getApp = useTestApp({ allowedOrganizationId: DEFAULT_ORG_ID });
+
+  it("rejects a valid invitation for a Team outside the deployment gate without side effects", async () => {
+    const app = getApp();
+    const invitee = await createTestAdmin(app, { username: `invite-gate-${crypto.randomUUID().slice(0, 8)}` });
+    const inviter = await createTestAdmin(app, { username: `invite-side-${crypto.randomUUID().slice(0, 8)}` });
+    const sideOrg = await attachOrg(app, inviter.userId, "admin");
+    const invitation = await rotateInvitation(app.db, sideOrg.orgId, inviter.userId);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/organizations/join",
+      headers: { authorization: `Bearer ${invitee.accessToken}` },
+      payload: { token: invitation.token },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "invite-not-allowed" });
+    expect(
+      await app.db
+        .select()
+        .from(members)
+        .where(and(eq(members.userId, invitee.userId), eq(members.organizationId, sideOrg.orgId))),
+    ).toHaveLength(0);
+    expect(
+      await app.db
+        .select()
+        .from(invitationRedemptions)
+        .where(
+          and(eq(invitationRedemptions.userId, invitee.userId), eq(invitationRedemptions.invitationId, invitation.id)),
+        ),
+    ).toHaveLength(0);
+  });
+
+  it("does not create a personal Team and rejects workspace state after final self-leave", async () => {
+    const app = getApp();
+    const member = await createTestAdmin(app, { username: `invite-final-${crypto.randomUUID().slice(0, 8)}` });
+
+    const leave = await app.inject({
+      method: "POST",
+      url: `/api/v1/me/memberships/${member.memberId}/leave`,
+      headers: { authorization: `Bearer ${member.accessToken}` },
+    });
+    expect(leave.statusCode).toBe(204);
+
+    const activeMemberships = await app.db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, member.userId), eq(members.status, "active")));
+    expect(activeMemberships).toEqual([]);
+    const personalTeams = await app.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.displayName, "Test Admin's team"));
+    expect(personalTeams).toEqual([]);
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${member.accessToken}` },
+    });
+    expect(me.statusCode).toBe(403);
+    expect(me.json()).toMatchObject({ code: "invite-required" });
+
+    const refresh = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/refresh",
+      payload: { refreshToken: member.refreshToken },
+    });
+    expect(refresh.statusCode).toBe(401);
+    expect(refresh.json()).toMatchObject({ code: "invite-required" });
+
+    const oldTeam = await app.inject({
+      method: "GET",
+      url: `/api/v1/orgs/${member.organizationId}/members`,
+      headers: { authorization: `Bearer ${member.accessToken}` },
+    });
+    expect(oldTeam.statusCode).toBe(403);
+  });
+
+  it("keeps an admin-removed final member at the invitation boundary with a suspended historical mirror", async () => {
+    const app = getApp();
+    const host = await createTestAdmin(app, { username: `invite-host-${crypto.randomUUID().slice(0, 8)}` });
+    const target = await createMember(app.db, host.organizationId, {
+      username: `invite-removed-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Invite Removed Target",
+      role: "member",
+    });
+    const targetTokens = await signTokensForUser(app.config.secrets.jwtSecret, target.userId, app.config.auth);
+
+    const remove = () =>
+      app.inject({
+        method: "DELETE",
+        url: `/api/v1/orgs/${host.organizationId}/members/${target.id}`,
+        headers: { authorization: `Bearer ${host.accessToken}` },
+      });
+    const removed = await Promise.all([remove(), remove()]);
+    expect(removed.map((result) => result.statusCode)).toEqual([204, 204]);
+
+    const activeMemberships = await app.db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, target.userId), eq(members.status, "active")));
+    expect(activeMemberships).toEqual([]);
+    const [historicalMirror] = await app.db
+      .select({ status: agents.status, displayName: agents.displayName })
+      .from(agents)
+      .where(eq(agents.uuid, target.agentId));
+    expect(historicalMirror).toMatchObject({ status: "suspended", displayName: "Invite Removed Target" });
+
+    const me = await app.inject({
+      method: "GET",
+      url: "/api/v1/me",
+      headers: { authorization: `Bearer ${targetTokens.accessToken}` },
+    });
+    expect(me.statusCode).toBe(403);
+    expect(me.json()).toMatchObject({ code: "invite-required" });
   });
 });
 

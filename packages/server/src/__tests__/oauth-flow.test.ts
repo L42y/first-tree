@@ -7,7 +7,9 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
+import { users } from "../db/schema/users.js";
 import * as githubAppInstallations from "../services/scm/github/app-installations.js";
+import { deactivateMembership, MEMBER_STATUSES, MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 function oauthStateCookie(app: FastifyInstance, nonce: string): string {
@@ -216,7 +218,7 @@ describe("GitHub OAuth onboarding flow", () => {
     });
 
     expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: "Invitation not found or no longer valid" });
+    expect(res.json()).toEqual({ error: "Invitation not found or no longer valid", code: "invite-invalid" });
   });
 
   it("still sends first-time solo signup with ordinary protected next to onboarding entry", async () => {
@@ -506,6 +508,66 @@ describe("GitHub OAuth invite-only single-org entry gate", () => {
     // A plain returning sign-in is NOT pinned: the SPA keeps the user's
     // own last-used org selection rather than activating the callback org.
     expect(params.get("orgPinned")).toBeNull();
+  });
+
+  it("returns an explicit inactive-account boundary instead of minting a suspended OAuth session", async () => {
+    const app = getApp();
+    await ensureOrg(app, allowedOrganizationId, "allowed-entry-gate");
+    const invite = await rotateInviteForOrg(app, allowedOrganizationId);
+    await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1205&login=suspendedgate&next=/invite/${invite.token}`,
+    });
+    const userId = await findGithubUserId(app, "1205");
+    const [identityBeforeSuspendedSignIn] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, userId));
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1205&login=suspendedgate-after&email=after@example.com&next=/invite/${invite.token}`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "account-inactive" });
+    expect(response.headers.location).toBeUndefined();
+    const [identityAfterSuspendedSignIn] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, userId));
+    expect(identityAfterSuspendedSignIn).toEqual(identityBeforeSuspendedSignIn);
+  });
+
+  it("returns the shared admin-restore boundary for a removed OAuth invite without redeeming it again", async () => {
+    const app = getApp();
+    await ensureOrg(app, allowedOrganizationId, "allowed-entry-gate");
+    const invite = await rotateInviteForOrg(app, allowedOrganizationId);
+    await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1206&login=removedgate&next=/invite/${invite.token}`,
+    });
+    const userId = await findGithubUserId(app, "1206");
+    const [stableMember] = await app.db.select().from(members).where(eq(members.userId, userId));
+    if (!stableMember) throw new Error("Expected invited membership");
+    await deactivateMembership(
+      app.db,
+      stableMember.id,
+      MEMBER_STATUSES.REMOVED,
+      MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1206&login=removedgate&next=/invite/${invite.token}`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "membership-restore-required" });
+    expect(
+      await app.db.select().from(invitationRedemptions).where(eq(invitationRedemptions.invitationId, invite.id)),
+    ).toHaveLength(1);
   });
 });
 

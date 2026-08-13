@@ -16,6 +16,7 @@ type CapturedHandlers = {
   chatMessage?: (payload: { chatId: string; messageId: string }) => void;
   chatUpdated?: (payload: { chatId: string }) => void;
   meChatsChanged?: (payload: { humanAgentId: string; organizationId: string }) => void;
+  membershipChanged?: (payload: { memberId: string; organizationId: string }) => void;
 };
 
 function makeNotifier(handlers: CapturedHandlers): Notifier {
@@ -38,6 +39,9 @@ function makeNotifier(handlers: CapturedHandlers): Notifier {
     onMeChatsChanged: (handler: NonNullable<CapturedHandlers["meChatsChanged"]>) => {
       handlers.meChatsChanged = handler;
     },
+    onMembershipChanged: (handler: NonNullable<CapturedHandlers["membershipChanged"]>) => {
+      handlers.membershipChanged = handler;
+    },
     onConfigChange: vi.fn(),
     onRuntimeStateChange: vi.fn(),
     onChatAudience: vi.fn(),
@@ -57,6 +61,7 @@ function makeNotifier(handlers: CapturedHandlers): Notifier {
     notifyChatAudience: vi.fn(),
     notifyChatUpdated: vi.fn(),
     notifyMeChatsChanged: vi.fn(),
+    notifyMembershipChanged: vi.fn(),
     notifyAgentRouteChange: vi.fn(),
     notifyDaemonClientCommand: vi.fn(),
     notifyDaemonClientCommandResult: vi.fn(),
@@ -66,10 +71,11 @@ function makeNotifier(handlers: CapturedHandlers): Notifier {
   } as unknown as Notifier;
 }
 
-function makeSelectBuilder(rows: unknown[]) {
-  const resolveRows = () => Promise.resolve(rows);
+function makeSelectBuilder(rows: unknown[], error?: Error) {
+  const resolveRows = () => (error ? Promise.reject(error) : Promise.resolve(rows));
   return {
     from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
     where: vi.fn().mockReturnThis(),
     limit: vi.fn(resolveRows),
     // biome-ignore lint/suspicious/noThenProperty: Drizzle query builders are awaitable thenables.
@@ -78,23 +84,65 @@ function makeSelectBuilder(rows: unknown[]) {
   };
 }
 
+function makeDeferredSelectBuilder(rows: Promise<unknown[]>) {
+  return {
+    from: vi.fn().mockReturnThis(),
+    innerJoin: vi.fn().mockReturnThis(),
+    where: vi.fn().mockReturnThis(),
+    limit: vi.fn(() => rows),
+    // biome-ignore lint/suspicious/noThenProperty: Drizzle query builders are awaitable thenables.
+    then: (resolve: (value: unknown[]) => void, reject?: (reason: unknown) => void) => rows.then(resolve, reject),
+  };
+}
+
 function makeDb(options: {
   memberRows?: unknown[];
   visibleRows?: unknown[];
   humanRows?: unknown[];
   audienceRows?: unknown[][];
+  finalMemberRows?: unknown[];
+  liveMembershipError?: Error;
+  handshakeMembershipError?: Error;
+  visibleAgentError?: Error;
+  visibleRowsPromise?: Promise<unknown[]>;
+  onVisibleSelect?: () => void;
 }) {
-  const memberRows = options.memberRows ?? [{ id: "member-1", role: "admin", agentId: "human-1" }];
+  const memberRows = options.memberRows ?? [
+    { id: "member-1", organizationId: "org-1", role: "admin", agentId: "human-1" },
+  ];
   const visibleRows = options.visibleRows ?? [{ id: "visible-agent" }];
   const humanRows = options.humanRows ?? [{ uuid: "human-1" }];
-  const selectRows = [memberRows, visibleRows, humanRows];
-  let selectIndex = 0;
+  let authorizationSelects = 0;
   const execute = vi.fn();
   for (const rows of options.audienceRows ?? []) execute.mockResolvedValueOnce(rows);
   execute.mockResolvedValue([]);
   return {
     execute,
-    select: vi.fn(() => makeSelectBuilder(selectRows[selectIndex++ % selectRows.length] ?? [])),
+    select: vi.fn((projection?: Record<string, unknown>) => {
+      const keys = new Set(Object.keys(projection ?? {}));
+      if (keys.has("role") && options.handshakeMembershipError) {
+        return makeSelectBuilder([], options.handshakeMembershipError);
+      }
+      if (keys.has("organizationId") && !keys.has("role") && options.liveMembershipError) {
+        return makeSelectBuilder([], options.liveMembershipError);
+      }
+      if (keys.size === 1 && keys.has("id") && options.visibleAgentError) {
+        return makeSelectBuilder([], options.visibleAgentError);
+      }
+      if (keys.size === 1 && keys.has("id") && options.visibleRowsPromise) {
+        options.onVisibleSelect?.();
+        return makeDeferredSelectBuilder(options.visibleRowsPromise);
+      }
+      if (keys.has("role")) {
+        authorizationSelects += 1;
+        return makeSelectBuilder(
+          authorizationSelects > 1 && options.finalMemberRows !== undefined ? options.finalMemberRows : memberRows,
+        );
+      }
+      if (keys.has("organizationId")) return makeSelectBuilder(memberRows);
+      if (keys.has("uuid")) return makeSelectBuilder(humanRows);
+      return makeSelectBuilder(visibleRows);
+    }),
   } as unknown as Database;
 }
 
@@ -289,14 +337,123 @@ describe("Admin WS route edge paths", () => {
 
     // The acting user's own pin in their org → delivered to `own` only.
     handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-1" });
+    await waitForAsyncDispatch();
     // A DIFFERENT user's pin in the same org → delivered to nobody. This is the
     // privacy boundary: pin state is private and must never reach another member.
     handlers.meChatsChanged?.({ humanAgentId: "human-2", organizationId: "org-1" });
+    await waitForAsyncDispatch();
     // The same user, a different org → delivered to nobody here (org-scoped).
     handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-3" });
+    await waitForAsyncDispatch();
 
     expect(sentPayloads(own.send).map((payload) => payload.type)).toEqual(["admin:connected", "me-chats:changed"]);
     // The other-org socket (same user) never sees org-1's pin.
     expect(sentPayloads(otherOrg.send).map((payload) => payload.type)).toEqual(["admin:connected"]);
+  });
+
+  it("closes affected sockets with 1013 when live authorization cannot be revalidated", async () => {
+    const handlers: CapturedHandlers = {};
+    const db = makeDb({ liveMembershipError: new Error("authorization database unavailable") });
+    const { app, getRoute } = makeApp(db);
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+    const socket = makeSocket();
+    await getRoute()(socket.socket, request(await signToken({ sub: "user-1", type: "access" })));
+
+    handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-1" });
+    await waitForAsyncDispatch();
+
+    expect(socket.close).toHaveBeenCalledWith(1013, "Authorization unavailable");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).toEqual(["admin:connected"]);
+  });
+
+  it("closes with 1013 when handshake authorization cannot reach the database", async () => {
+    const handlers: CapturedHandlers = {};
+    const db = makeDb({ handshakeMembershipError: new Error("handshake authorization unavailable") });
+    const { app, getRoute } = makeApp(db);
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+    const socket = makeSocket();
+
+    await expect(
+      getRoute()(socket.socket, request(await signToken({ sub: "user-1", type: "access" }))),
+    ).resolves.toBeUndefined();
+
+    expect(socket.close).toHaveBeenCalledWith(1013, "Authorization unavailable");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).not.toContain("admin:connected");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).not.toContain("membership:changed");
+  });
+
+  it("closes with 1013 when handshake preparation cannot reach the database", async () => {
+    const handlers: CapturedHandlers = {};
+    const db = makeDb({ visibleAgentError: new Error("handshake preparation unavailable") });
+    const { app, getRoute } = makeApp(db);
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+    const socket = makeSocket();
+
+    await expect(
+      getRoute()(socket.socket, request(await signToken({ sub: "user-1", type: "access" }))),
+    ).resolves.toBeUndefined();
+
+    expect(socket.close).toHaveBeenCalledWith(1013, "Authorization unavailable");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).not.toContain("admin:connected");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).not.toContain("membership:changed");
+  });
+
+  it("does not admit a membership removed while handshake preparation is in flight", async () => {
+    let releaseVisibility: (rows: unknown[]) => void = () => undefined;
+    const visibleRowsPromise = new Promise<unknown[]>((resolve) => {
+      releaseVisibility = resolve;
+    });
+    let announceVisibility: () => void = () => undefined;
+    const visibilityStarted = new Promise<void>((resolve) => {
+      announceVisibility = resolve;
+    });
+    const handlers: CapturedHandlers = {};
+    const db = makeDb({ visibleRowsPromise, onVisibleSelect: announceVisibility });
+    const { app, getRoute } = makeApp(db);
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+    const socket = makeSocket();
+
+    const handshake = getRoute()(socket.socket, request(await signToken({ sub: "user-1", type: "access" })));
+    await visibilityStarted;
+    handlers.membershipChanged?.({ memberId: "member-1", organizationId: "org-1" });
+    releaseVisibility([{ id: "visible-agent" }]);
+    await handshake;
+
+    expect(socket.close).toHaveBeenCalledWith(4403, "Membership changed");
+    expect(sentPayloads(socket.send).map((payload) => payload.type)).not.toContain("admin:connected");
+  });
+
+  it("rejects final handshake admission from the database when the membership notifier was missed", async () => {
+    let releaseVisibility: (rows: unknown[]) => void = () => undefined;
+    const visibleRowsPromise = new Promise<unknown[]>((resolve) => {
+      releaseVisibility = resolve;
+    });
+    let announceVisibility: () => void = () => undefined;
+    const visibilityStarted = new Promise<void>((resolve) => {
+      announceVisibility = resolve;
+    });
+    const handlers: CapturedHandlers = {};
+    const db = makeDb({
+      visibleRowsPromise,
+      onVisibleSelect: announceVisibility,
+      // Initial authorization sees the active row; the final authoritative
+      // read observes the committed removal. No notifier is delivered.
+      finalMemberRows: [],
+    });
+    const { app, getRoute } = makeApp(db);
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+    const socket = makeSocket();
+
+    const handshake = getRoute()(socket.socket, request(await signToken({ sub: "user-1", type: "access" })));
+    await visibilityStarted;
+    releaseVisibility([{ id: "visible-agent" }]);
+    await handshake;
+    handlers.meChatsChanged?.({ humanAgentId: "human-1", organizationId: "org-1" });
+    await waitForAsyncDispatch();
+
+    expect(socket.close).toHaveBeenCalledWith(4403, "Membership changed");
+    const frameTypes = sentPayloads(socket.send).map((payload) => payload.type);
+    expect(frameTypes).not.toContain("admin:connected");
+    expect(frameTypes).not.toContain("me-chats:changed");
   });
 });

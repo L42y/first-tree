@@ -4,12 +4,13 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { connectCodes } from "../db/schema/connect-codes.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
 import { createTestAdmin, createTestApp, useTestApp } from "./helpers.js";
+import { DEFAULT_ORG_ID } from "./setup.js";
 
 const execFileAsync = promisify(execFile);
 async function writeExecutable(path: string, contents: string): Promise<void> {
@@ -517,7 +518,7 @@ describe("POST /me/connect-tokens bootstrap command", () => {
       expect(res.json<{ error: string }>().error).toMatch(/suspended/);
     });
 
-    it("rejects a short connect code when all memberships were removed after mint", async () => {
+    it("repairs a short connect code exchange when all memberships were removed after mint", async () => {
       const app = getApp();
       const admin = await createTestAdmin(app);
       const minted = await app.inject({
@@ -534,8 +535,46 @@ describe("POST /me/connect-tokens bootstrap command", () => {
         payload: { token: body.token },
       });
 
-      expect(res.statusCode).toBe(401);
-      expect(res.json<{ error: string }>().error).toMatch(/No active membership/);
+      expect(res.statusCode).toBe(200);
+      expect(res.json<{ accessToken: string; refreshToken: string }>()).toMatchObject({
+        accessToken: expect.any(String),
+        refreshToken: expect.any(String),
+      });
+      const activeMemberships = await app.db
+        .select({ id: members.id })
+        .from(members)
+        .where(and(eq(members.userId, admin.userId), eq(members.status, "active")));
+      expect(activeMemberships).toHaveLength(1);
+    });
+
+    it("does not repair a short connect code exchange in invitation-only mode", async () => {
+      const app = await createTestApp({ allowedOrganizationId: DEFAULT_ORG_ID });
+      try {
+        const admin = await createTestAdmin(app);
+        const minted = await app.inject({
+          method: "POST",
+          url: "/api/v1/me/connect-tokens",
+          headers: { authorization: `Bearer ${admin.accessToken}` },
+        });
+        const body = minted.json<{ token: string }>();
+        await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, admin.userId));
+
+        const res = await app.inject({
+          method: "POST",
+          url: "/api/v1/auth/connect-token",
+          payload: { token: body.token },
+        });
+
+        expect(res.statusCode).toBe(401);
+        expect(res.json()).toMatchObject({ code: "invite-required" });
+        const activeMemberships = await app.db
+          .select({ id: members.id })
+          .from(members)
+          .where(and(eq(members.userId, admin.userId), eq(members.status, "active")));
+        expect(activeMemberships).toEqual([]);
+      } finally {
+        await app.close();
+      }
     });
   });
 });

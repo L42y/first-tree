@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { chatAgentStatusQueryKey } from "../api/agent-status.js";
 import {
+  ADMIN_WS_MEMBERSHIP_CHANGED_EVENT,
   ADMIN_WS_ORG_CHANGED_EVENT,
   getApiSelectedOrganizationId,
   getStoredTokens,
@@ -324,6 +325,31 @@ function broadcast(msg: WsMessage) {
   }
 }
 
+function catchUpAfterReconnect(): void {
+  // Catch up only after the server has admitted this socket against live
+  // account + membership authority. Transport `open` happens before that
+  // asynchronous check and therefore cannot reset backoff or refresh caches.
+  if (latestQc) {
+    latestQc.invalidateQueries({ queryKey: ["activity"] });
+    latestQc.invalidateQueries({ queryKey: ["sessions"] });
+    latestQc.invalidateQueries({ queryKey: ["me", "chats"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-agent-status"] });
+    latestQc.invalidateQueries({ queryKey: ["session"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-right-sidebar", "session"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-right-sidebar", "cron-jobs"] });
+    latestQc.invalidateQueries({ queryKey: ["session-events"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-session-events"] });
+    latestQc.invalidateQueries({ queryKey: ["agent-sessions"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-messages"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-open-requests"] });
+    latestQc.invalidateQueries({ queryKey: ["need-you"] });
+    latestQc.invalidateQueries({ queryKey: ["request-thread"] });
+    latestQc.invalidateQueries({ queryKey: ["chat-detail"] });
+  }
+  // Synthetic sentinel for subscriber side effects (for example markRead).
+  broadcast({ type: "ws:reconnect" });
+}
+
 function connect() {
   const tokens = getStoredTokens();
   if (!tokens?.accessToken) return;
@@ -340,78 +366,28 @@ function connect() {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${protocol}//${window.location.host}/api/v1/orgs/${encodeURIComponent(orgId)}/ws/?token=${tokens.accessToken}`;
   const socket = new WebSocket(wsUrl);
+  let membershipChangeSignaled = false;
+  let admissionConfirmed = false;
   ws = socket;
 
   socket.onmessage = (ev) => {
     if (socket !== ws) return;
     try {
       const msg = JSON.parse(ev.data as string) as WsMessage;
+      if (msg.type === "admin:connected" && !admissionConfirmed) {
+        admissionConfirmed = true;
+        const isReconnect = reconnectAttempt > 0;
+        reconnectAttempt = 0;
+        if (isReconnect) catchUpAfterReconnect();
+      }
+      if (msg.type === "membership:changed") {
+        membershipChangeSignaled = true;
+        window.dispatchEvent(new CustomEvent(ADMIN_WS_MEMBERSHIP_CHANGED_EVENT, { detail: msg }));
+      }
       broadcast(msg);
     } catch {
       // ignore malformed
     }
-  };
-  socket.onopen = () => {
-    if (socket !== ws) return;
-    // Capture before reset — drives the `ws:reconnect` sentinel below so we
-    // only fire it for genuine reconnects, not the first handshake of a
-    // fresh mount (where subscribers' own mount-effects already cover the
-    // catch-up work).
-    const isReconnect = reconnectAttempt > 0;
-    reconnectAttempt = 0;
-    // Catch up on every (re)open — including initial connect after a
-    // sleep / network partition. Without this, push-only consumers would
-    // miss any frame that fired while the WS was down: the next inbound
-    // push would invalidate, but until then the local cache is stale.
-    // Invalidating broadly keeps every push-driven query (sessions, chat
-    // list, chat detail) in sync on reconnect.
-    if (latestQc) {
-      latestQc.invalidateQueries({ queryKey: ["activity"] });
-      latestQc.invalidateQueries({ queryKey: ["sessions"] });
-      latestQc.invalidateQueries({ queryKey: ["me", "chats"] });
-      latestQc.invalidateQueries({ queryKey: ["chat-agent-status"] });
-      // Catch-up parity with the steady-state `session:state` /
-      // `session:event` branches: these prefixes back panels that used to
-      // self-poll, so reconnect must refresh them too.
-      latestQc.invalidateQueries({ queryKey: ["session"] });
-      latestQc.invalidateQueries({ queryKey: ["chat-right-sidebar", "session"] });
-      // Schedule facts can move via `chat:updated` / `chat:message` frames
-      // that fired during the WS gap; catch the sidebar list up too.
-      latestQc.invalidateQueries({ queryKey: ["chat-right-sidebar", "cron-jobs"] });
-      latestQc.invalidateQueries({ queryKey: ["session-events"] });
-      latestQc.invalidateQueries({ queryKey: ["chat-session-events"] });
-      latestQc.invalidateQueries({ queryKey: ["agent-sessions"] });
-      // `["chat-messages"]` used to recover from a WS gap via the 5s
-      // refetchInterval in ChatView; now that the poll is gone, reconnect
-      // must explicitly catch up the open chat's message timeline.
-      latestQc.invalidateQueries({ queryKey: ["chat-messages"] });
-      // Same reasoning for the window-independent open-requests source that
-      // backs the blocking takeover — catch it up after a WS gap too.
-      latestQc.invalidateQueries({ queryKey: ["chat-open-requests"] });
-      // Need you and its clarification threads are also push-driven. Refresh
-      // both projections after a gap so counts and late agent replies cannot
-      // remain stale until another message happens to arrive.
-      latestQc.invalidateQueries({ queryKey: ["need-you"] });
-      latestQc.invalidateQueries({ queryKey: ["request-thread"] });
-      // The chat-first workspace reads `viewerMembershipKind` (and other
-      // viewer-scoped fields) off `["chat-detail", chatId]`. Without this,
-      // a frame that fired while the WS was down (e.g. the caller was
-      // added to / removed from a chat) wouldn't refresh the open chat's
-      // membership view until the next push or a manual refresh. Prefix
-      // invalidate so every cached chat-detail row catches up.
-      latestQc.invalidateQueries({ queryKey: ["chat-detail"] });
-    }
-    // Synthetic sentinel — lets subscribers (e.g. chat-by-id's markRead)
-    // re-run side effects that depend on data freshness after a WS gap.
-    // The query-cache invalidations above cover anything that re-derives
-    // off React-Query state, but `chat:message` frames the WS missed
-    // during the gap can leave the open chat's unread badge stale.
-    // Subscribers identify this frame by its `ws:reconnect` type — it's
-    // not a server-emitted shape and won't collide with any wire frame.
-    // Routed through `broadcast` so the parent try/catch contains
-    // subscriber errors. Gated on `isReconnect` so mount-time effects
-    // aren't double-fired on the very first handshake.
-    if (isReconnect) broadcast({ type: "ws:reconnect" });
   };
   socket.onclose = (ev) => {
     // Only the current (latest) socket's close triggers reconnect.
@@ -420,6 +396,19 @@ function connect() {
     if (socket !== ws) return;
     ws = null;
     if (closing || refCount === 0) return;
+    if (ev.code === 4403) {
+      // Membership revocation is a terminal condition for this Team socket.
+      // AuthProvider reconciles /me and selects a remaining/repaired Team or
+      // enters the invitation boundary; reconnecting this org would loop.
+      if (!membershipChangeSignaled) {
+        window.dispatchEvent(
+          new CustomEvent(ADMIN_WS_MEMBERSHIP_CHANGED_EVENT, {
+            detail: { type: "membership:changed", organizationId: orgId },
+          }),
+        );
+      }
+      return;
+    }
     // 4001 = server-side auth rejection (see ws-admin.ts close paths). The
     // most common cause is an expired access token: the WS hook reads from
     // `localStorage` but never round-trips through the HTTP refresh
@@ -430,7 +419,11 @@ function connect() {
       refreshAccessToken().then((fresh) => {
         if (closing || refCount === 0) return;
         if (fresh) {
-          reconnectAttempt = 0;
+          // A refreshed token makes another handshake possible, but it does
+          // not prove live membership admission. Preserve any outstanding
+          // retry attempt so only `admin:connected` resets backoff and emits
+          // the catch-up sentinel for a real push gap. On an initial 4001 the
+          // counter is already zero, so refresh remains a non-reconnect.
           connect();
         } else {
           // Refresh failed — fall through to standard backoff. The HTTP path
@@ -461,6 +454,10 @@ function teardown() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  // A later first subscriber starts a fresh connection lifecycle. Do not let
+  // pre-admission failures from an unmounted workspace turn that initial
+  // admission into a synthetic reconnect catch-up.
+  reconnectAttempt = 0;
   meChatsInvalidator.dispose();
   needYouInvalidator.dispose();
   activityInvalidator.dispose();

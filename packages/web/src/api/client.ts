@@ -36,6 +36,7 @@ export function getApiSelectedOrganizationId(): string | null {
  * the existing `auth:logout` signal.
  */
 export const ADMIN_WS_ORG_CHANGED_EVENT = "admin-ws:org-changed";
+export const ADMIN_WS_MEMBERSHIP_CHANGED_EVENT = "admin-ws:membership-changed";
 
 /**
  * Prefix an org-scoped path with `/orgs/<currentOrgId>/`. Use this on every

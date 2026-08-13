@@ -37,6 +37,7 @@ const DEFAULT_AUTH = {
   isAuthenticated: true,
   meLoaded: true,
   meAuthoritative: true,
+  meBoundary: null,
   user: { id: "preview-human", displayName: "Gandy", username: "gandy2025", avatarUrl: null },
   memberships: [],
   currentMembership: null,

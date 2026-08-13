@@ -40,7 +40,12 @@ import {
 import { applyGitlabPersonnelEvidence, normalizeGitlabWebhook } from "../services/scm/gitlab/webhook.js";
 import { putOrgSetting } from "../services/settings/organization.js";
 import { deleteMember } from "../services/team/member.js";
-import { deactivateMembership, MEMBER_STATUSES, reactivateMembership } from "../services/team/membership.js";
+import {
+  deactivateMembership,
+  MEMBER_STATUSES,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  reactivateMembership,
+} from "../services/team/membership.js";
 import { createTestAdmin, seedClient, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
@@ -676,7 +681,12 @@ describe("GitLab Stage 3 personnel routing", () => {
     const app = getApp();
     const setup = await setupTarget(app);
     await createTestAdmin(app, { username: `gitlab-fallback-${randomUUID().slice(0, 8)}` });
-    await deactivateMembership(app.db, setup.admin.memberId, MEMBER_STATUSES.LEFT);
+    await deactivateMembership(
+      app.db,
+      setup.admin.memberId,
+      MEMBER_STATUSES.LEFT,
+      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+    );
     const [leftLink] = await app.db.select().from(gitlabIdentityLinks).where(eq(gitlabIdentityLinks.id, setup.link.id));
     expect(leftLink).toMatchObject({ state: "suspended" });
 
@@ -752,7 +762,12 @@ describe("GitLab Stage 3 personnel routing", () => {
     expect(beforeLeave.find((row) => row.delegateAgentId === setup.delegate.uuid)?.active).toBe(false);
 
     await createTestAdmin(app, { username: `gitlab-reconfirm-fallback-${randomUUID().slice(0, 8)}` });
-    await deactivateMembership(app.db, setup.admin.memberId, MEMBER_STATUSES.LEFT);
+    await deactivateMembership(
+      app.db,
+      setup.admin.memberId,
+      MEMBER_STATUSES.LEFT,
+      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+    );
     expect((await app.db.select().from(gitlabEntityChatMappings).where(mappingScope)).every((row) => !row.active)).toBe(
       true,
     );
@@ -801,7 +816,12 @@ describe("GitLab Stage 3 personnel routing", () => {
     await createTestAdmin(app, {
       username: `gitlab-removing-admin-${randomUUID().slice(0, 8)}`,
     });
-    await deleteMember(app.db, setup.admin.memberId, setup.admin.organizationId);
+    await deleteMember(
+      app.db,
+      setup.admin.memberId,
+      setup.admin.organizationId,
+      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+    );
     const [link] = await app.db.select().from(gitlabIdentityLinks).where(eq(gitlabIdentityLinks.id, setup.link.id));
     expect(link).toMatchObject({ state: "suspended" });
   });

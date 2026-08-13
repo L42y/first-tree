@@ -14,7 +14,11 @@ import {
   linkExternalIdentity,
   unlinkExternalIdentity,
 } from "../../services/auth/identity.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import {
+  completeExternalAccountBootstrap,
+  OAuthBootstrapError,
+  oauthBootstrapBoundary,
+} from "../../services/auth/oauth/bootstrap.js";
 import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from "../../services/auth/oauth/google.js";
 import {
   STATE_NONCE_COOKIE_NAME,
@@ -22,7 +26,8 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "../../services/auth/oauth/state.js";
-import { signTokensForUser } from "../../services/auth/tokens.js";
+import { signTokensForActiveUser } from "../../services/auth/tokens.js";
+import { membershipRecoveryPolicy } from "../../services/team/membership.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
@@ -183,7 +188,26 @@ async function completeGoogleSignIn(
       "onboarding funnel: team auto-created at OAuth bootstrap",
     );
   }
-  const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
+  let tokens: Awaited<ReturnType<typeof signTokensForActiveUser>>;
+  try {
+    tokens = await signTokensForActiveUser(
+      app.db,
+      account.userId,
+      app.config.secrets.jwtSecret,
+      app.config.auth,
+      "auth.oauth",
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+    );
+  } catch (error) {
+    const boundary = oauthBootstrapBoundary(error);
+    if (boundary) {
+      return redirectError(reply, boundary.code, next, {
+        callbackIntent: "sign-in",
+        accountCreated: account.created,
+      });
+    }
+    throw error;
+  }
   const fragment = new URLSearchParams({
     access: tokens.accessToken,
     refresh: tokens.refreshToken,

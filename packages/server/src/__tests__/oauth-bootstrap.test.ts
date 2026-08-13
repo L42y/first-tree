@@ -1,16 +1,25 @@
 import { googleExternalProfile } from "@first-tree/shared";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { describe, expect, it } from "vitest";
 import { connectDatabase, sslOptions } from "../db/connection.js";
 import { agents } from "../db/schema/agents.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
+import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
+import { users } from "../db/schema/users.js";
 import { findOrCreateUserFromExternalAccount } from "../services/auth/identity.js";
-import { completeExternalAccountBootstrap, shouldPreserveSoloSignupNext } from "../services/auth/oauth/bootstrap.js";
+import {
+  completeExternalAccountBootstrap,
+  OAuthBootstrapError,
+  shouldPreserveSoloSignupNext,
+} from "../services/auth/oauth/bootstrap.js";
+import { rotateInvitation } from "../services/team/invitation.js";
+import { deactivateMembership, MEMBER_STATUSES, MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { useTestApp } from "./helpers.js";
+import { DEFAULT_ORG_ID } from "./setup.js";
 
 function databaseUrlWithApplicationName(url: string, applicationName: string): string {
   const parsed = new URL(url);
@@ -103,6 +112,185 @@ describe("provider-neutral OAuth bootstrap", () => {
     });
 
     expect(result).toMatchObject({ joinPath: "solo", next: "/", teamCreated: true });
+  });
+
+  it("repairs a returning external account whose final membership was lost", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: `google-returning-repair-${crypto.randomUUID()}`, name: "Returning Repair" }),
+    );
+    const first = await completeExternalAccountBootstrap(app.db, account, {
+      next: "/",
+      allowedOrganizationId: null,
+      ip: null,
+      userAgent: null,
+    });
+    const [original] = await app.db
+      .select()
+      .from(members)
+      .where(and(eq(members.userId, account.userId), eq(members.organizationId, first.organizationId)));
+    if (!original) throw new Error("Expected bootstrap membership");
+    await deactivateMembership(
+      app.db,
+      original.id,
+      MEMBER_STATUSES.REMOVED,
+      MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+    );
+
+    const repaired = await completeExternalAccountBootstrap(
+      app.db,
+      { ...account, created: false },
+      {
+        next: "/settings",
+        allowedOrganizationId: null,
+        ip: null,
+        userAgent: null,
+      },
+    );
+
+    expect(repaired).toMatchObject({ joinPath: "solo", next: "/", teamCreated: true });
+    expect(repaired.organizationId).not.toBe(first.organizationId);
+    const membershipRows = await app.db.select().from(members).where(eq(members.userId, account.userId));
+    expect(membershipRows.filter((membership) => membership.status === MEMBER_STATUSES.ACTIVE)).toHaveLength(1);
+    expect(membershipRows.find((membership) => membership.id === original.id)?.status).toBe(MEMBER_STATUSES.REMOVED);
+    const mirrorRows = await app.db.select().from(agents).where(eq(agents.uuid, original.agentId));
+    expect(mirrorRows[0]).toMatchObject({ status: "suspended", displayName: "Returning Repair" });
+  });
+
+  it("keeps a returning zero-membership account at the invitation boundary", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: `google-returning-invite-${crypto.randomUUID()}`, name: "Returning Invite" }),
+    );
+
+    await expect(
+      completeExternalAccountBootstrap(
+        app.db,
+        { ...account, created: false },
+        {
+          next: "/settings",
+          allowedOrganizationId: DEFAULT_ORG_ID,
+          ip: null,
+          userAgent: null,
+        },
+      ),
+    ).rejects.toEqual(new OAuthBootstrapError("invite-required"));
+    const membershipRows = await app.db.select().from(members).where(eq(members.userId, account.userId));
+    expect(membershipRows).toHaveLength(0);
+  });
+
+  it("rejects a suspended account before invitation redemption or Team repair", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: `google-suspended-${crypto.randomUUID()}`, name: "Suspended Account" }),
+    );
+    const invitation = await rotateInvitation(app.db, DEFAULT_ORG_ID, account.userId);
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, account.userId));
+
+    await expect(
+      completeExternalAccountBootstrap(
+        app.db,
+        { ...account, created: false },
+        {
+          next: `/invite/${invitation.token}`,
+          allowedOrganizationId: DEFAULT_ORG_ID,
+          ip: null,
+          userAgent: null,
+        },
+      ),
+    ).rejects.toEqual(new OAuthBootstrapError("account-inactive"));
+
+    expect(await app.db.select().from(members).where(eq(members.userId, account.userId))).toHaveLength(0);
+    expect(
+      await app.db.select().from(invitationRedemptions).where(eq(invitationRedemptions.userId, account.userId)),
+    ).toHaveLength(0);
+  });
+
+  it("requires admin restore for a removed membership without consuming a fresh invite", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: `google-removed-${crypto.randomUUID()}`, name: "Removed Account" }),
+    );
+    const invitation = await rotateInvitation(app.db, DEFAULT_ORG_ID, account.userId);
+    const joined = await completeExternalAccountBootstrap(app.db, account, {
+      next: `/invite/${invitation.token}`,
+      allowedOrganizationId: DEFAULT_ORG_ID,
+      ip: null,
+      userAgent: null,
+    });
+    const [stableMember] = await app.db.select().from(members).where(eq(members.userId, account.userId));
+    if (!stableMember) throw new Error("Expected invited membership");
+    await deactivateMembership(
+      app.db,
+      stableMember.id,
+      MEMBER_STATUSES.REMOVED,
+      MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+    );
+
+    await expect(
+      completeExternalAccountBootstrap(
+        app.db,
+        { ...account, created: false },
+        {
+          next: `/invite/${invitation.token}`,
+          allowedOrganizationId: DEFAULT_ORG_ID,
+          ip: null,
+          userAgent: null,
+        },
+      ),
+    ).rejects.toEqual(new OAuthBootstrapError("membership-restore-required"));
+
+    const [after] = await app.db.select().from(members).where(eq(members.id, stableMember.id));
+    expect(after).toMatchObject({
+      id: stableMember.id,
+      agentId: stableMember.agentId,
+      status: MEMBER_STATUSES.REMOVED,
+    });
+    expect(joined.organizationId).toBe(DEFAULT_ORG_ID);
+    expect(
+      await app.db.select().from(invitationRedemptions).where(eq(invitationRedemptions.userId, account.userId)),
+    ).toHaveLength(1);
+  });
+
+  it("lets a self-left invitee rejoin with the stable membership and mirror identity", async () => {
+    const app = getApp();
+    const account = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({ sub: `google-left-${crypto.randomUUID()}`, name: "Self Left Account" }),
+    );
+    const invitation = await rotateInvitation(app.db, DEFAULT_ORG_ID, account.userId);
+    await completeExternalAccountBootstrap(app.db, account, {
+      next: `/invite/${invitation.token}`,
+      allowedOrganizationId: DEFAULT_ORG_ID,
+      ip: null,
+      userAgent: null,
+    });
+    const [stableMember] = await app.db.select().from(members).where(eq(members.userId, account.userId));
+    if (!stableMember) throw new Error("Expected invited membership");
+    await deactivateMembership(
+      app.db,
+      stableMember.id,
+      MEMBER_STATUSES.LEFT,
+      MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+    );
+
+    const rejoined = await completeExternalAccountBootstrap(
+      app.db,
+      { ...account, created: false },
+      {
+        next: `/invite/${invitation.token}`,
+        allowedOrganizationId: DEFAULT_ORG_ID,
+        ip: null,
+        userAgent: null,
+      },
+    );
+    const [after] = await app.db.select().from(members).where(eq(members.id, stableMember.id));
+    expect(rejoined.joinPath).toBe("invite");
+    expect(after).toMatchObject({ id: stableMember.id, agentId: stableMember.agentId, status: MEMBER_STATUSES.ACTIVE });
   });
 
   it("preserves a strict Agent Template intent across solo signup", async () => {

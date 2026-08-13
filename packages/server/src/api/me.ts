@@ -21,7 +21,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { ForbiddenError, NotFoundError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
 import { requireUser } from "../scope/require-user.js";
 import {
   listAgentsManagedByUser,
@@ -65,6 +65,9 @@ import {
   ensureMembership,
   leaveOrganization,
   listActiveMemberships,
+  lockMembershipLifecycleUser,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  membershipRecoveryPolicy,
   selfCreateOrganization,
 } from "../services/team/membership.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
@@ -203,6 +206,17 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       .limit(1);
 
     const memberships = await listActiveMemberships(app.db, userId);
+    if (memberships.length === 0) {
+      const recoveryPolicy = membershipRecoveryPolicy(app.config.access?.allowedOrganizationId);
+      throw new ForbiddenError("An active Team membership is required", {
+        code:
+          recoveryPolicy === MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED
+            ? "invite-required"
+            : "membership-repair-required",
+        "auth.me.reason": "no_active_membership",
+        "auth.me.user_id": userId,
+      });
+    }
     const defaultMembership = pickDefaultMembership(
       memberships.map((m) => ({ id: m.memberId, createdAt: m.createdAt })),
     );
@@ -269,7 +283,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
 
     const onboardingStep = await inferOnboardingStep(app, userId);
 
-    return {
+    const response = {
       user: user ?? null,
       defaultOrganizationId: defaultOrgId,
       memberships: memberships.map((mb) => ({
@@ -303,6 +317,27 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         docs: app.config.docs.enabled,
       },
     };
+    const snapshotMemberIds = memberships.map((membership) => membership.memberId).sort();
+    await app.db.transaction(async (tx) => {
+      // Linearize the response snapshot with every supported leave/remove/
+      // repair transition. If anything changed while the later projections
+      // were built, fail closed and let the client retry instead of returning
+      // a Team whose membership is already revoked.
+      await lockMembershipLifecycleUser(tx, userId);
+      const current = await tx
+        .select({ id: members.id })
+        .from(members)
+        .where(and(eq(members.userId, userId), eq(members.status, "active")))
+        .orderBy(asc(members.id));
+      const currentMemberIds = current.map((membership) => membership.id);
+      if (
+        currentMemberIds.length !== snapshotMemberIds.length ||
+        currentMemberIds.some((memberId, index) => memberId !== snapshotMemberIds[index])
+      ) {
+        throw new ConflictError("Team membership changed while loading /me; retry", { code: "membership-changed" });
+      }
+    });
+    return response;
   });
 
   /**
@@ -730,6 +765,10 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     if (!inv) {
       return reply.status(404).send({ error: "Invitation not found or no longer valid" });
     }
+    const allowedOrganizationId = app.config.access?.allowedOrganizationId;
+    if (allowedOrganizationId && inv.organizationId !== allowedOrganizationId) {
+      throw new ForbiddenError("Invitation is not allowed on this server", { code: "invite-not-allowed" });
+    }
 
     const [u] = await app.db
       .select({ username: users.username, displayName: users.displayName })
@@ -770,7 +809,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     if (!row || row.userId !== userId) {
       throw new NotFoundError(`Membership "${request.params.memberId}" not found`);
     }
-    await leaveOrganization(app.db, row.id);
+    await leaveOrganization(
+      app.db,
+      row.id,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+      app.notifier,
+    );
     return reply.status(204).send();
   });
 
