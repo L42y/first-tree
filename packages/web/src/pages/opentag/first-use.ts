@@ -20,13 +20,20 @@ import type { OpenTagFirstUse } from "./flow.js";
  * would let a neighbour's first use finish this member's setup.
  */
 
+/** Candidates requested per page. */
+export const FIRST_USE_PAGE_SIZE = 50;
+
 /**
- * How many of this Agent's Feishu chats are examined per read. An Agent has one
- * Bot, so its own Tasks are the overwhelming majority of this set and the first
- * page is already generous; the bound keeps a long-lived Agent from turning a
- * poll into an unbounded fan-out.
+ * How many pages a single read will walk before giving up.
+ *
+ * The conversation list is ordered by recent activity, so a Task the member is
+ * using right now sorts to the top and the first page answers the live wait.
+ * The pages exist for the other case: revisiting the entry long after first
+ * use, once other Feishu conversations have become more active. Reaching this
+ * bound means the candidate set was never exhausted, which is reported as
+ * `unknown` rather than `absent` — see {@link readOpenTagFirstUse}.
  */
-export const FIRST_USE_SCAN_LIMIT = 20;
+export const FIRST_USE_MAX_PAGES = 10;
 
 /**
  * How often the page re-asks while the member is over in Feishu sending that
@@ -45,24 +52,38 @@ export function isFeishuTaskForBinding(metadata: unknown, botBindingId: string):
  * Resolve first use, or throw. A thrown read is reported as {@link OpenTagFirstUse}
  * `unknown` by the caller rather than being flattened into `absent` here, so a
  * failing API can never be mistaken for a member who has not started yet.
+ *
+ * `absent` is only ever returned once the candidate list has been walked to its
+ * end. A page that stops early proves nothing: the list is ordered by recent
+ * activity, not by relevance, so an unexamined page can still hold the Task.
+ * Answering `absent` from a partial page would strand a member who really did
+ * use their Agent — and strand them permanently, because every poll would
+ * re-read the same first page and reach the same wrong conclusion.
  */
 export async function readOpenTagFirstUse(agentUuid: string, botBindingId: string): Promise<OpenTagFirstUse> {
-  const candidates = await listMeChats({
-    origin: ["feishu"],
-    with: [agentUuid],
-    // Archiving the Task does not un-use the Agent, so the terminal state has
-    // to survive it. (Deleted rows are outside every view and stay excluded.)
-    engagement: "all",
-    limit: FIRST_USE_SCAN_LIMIT,
-  });
-  // `rows` is the complete additive stream — a pinned Task also appears here —
-  // so the priority projection does not have to be scanned separately.
-  for (const row of candidates.rows) {
-    // The conversation list does not carry chat metadata, so ownership is
-    // confirmed one candidate at a time. In practice this is the Agent's own
-    // Task on the first iteration.
-    const chat = await getChat(row.chatId);
-    if (isFeishuTaskForBinding(chat.metadata, botBindingId)) return { state: "present", chatId: row.chatId };
+  let cursor: string | undefined;
+  for (let page = 0; page < FIRST_USE_MAX_PAGES; page++) {
+    const candidates = await listMeChats({
+      origin: ["feishu"],
+      with: [agentUuid],
+      // Archiving the Task does not un-use the Agent, so the terminal state has
+      // to survive it. (Deleted rows are outside every view and stay excluded.)
+      engagement: "all",
+      limit: FIRST_USE_PAGE_SIZE,
+      ...(cursor ? { cursor } : {}),
+    });
+    // `rows` is the complete additive stream — a pinned Task also appears here —
+    // so the priority projection does not have to be scanned separately.
+    for (const row of candidates.rows) {
+      // The conversation list does not carry chat metadata, so ownership is
+      // confirmed one candidate at a time. This Agent owns one Bot, so in
+      // practice its own Task is the first and only candidate.
+      const chat = await getChat(row.chatId);
+      if (isFeishuTaskForBinding(chat.metadata, botBindingId)) return { state: "present", chatId: row.chatId };
+    }
+    if (!candidates.nextCursor) return { state: "absent" };
+    cursor = candidates.nextCursor;
   }
-  return { state: "absent" };
+  // Pages remained unread, so this Agent's Task may still be among them.
+  return { state: "unknown" };
 }

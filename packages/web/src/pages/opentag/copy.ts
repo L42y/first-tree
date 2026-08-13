@@ -40,8 +40,12 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
     why: "Add one Bot for this Agent.",
     lead: "First Tree prepares a dedicated Feishu Bot. You confirm it in Feishu — your Agent and its Computer stay set up while you do.",
   },
+  // Says only what the Task itself establishes. The shell renders this heading
+  // for the whole step, including while the completion stamp is still in flight
+  // or has failed — so anything here that declared setup finished would sit
+  // directly above copy saying it could not be finished.
   "use-in-feishu": {
     why: "Your Agent is working in Feishu.",
-    lead: "Setup is done. Keep the conversation in Feishu; its work and history are here.",
+    lead: "Keep the conversation in Feishu — its work and history are here.",
   },
 };

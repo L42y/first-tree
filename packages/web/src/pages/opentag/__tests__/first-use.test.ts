@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FIRST_USE_SCAN_LIMIT, isFeishuTaskForBinding, readOpenTagFirstUse } from "../first-use.js";
+import { FIRST_USE_MAX_PAGES, FIRST_USE_PAGE_SIZE, isFeishuTaskForBinding, readOpenTagFirstUse } from "../first-use.js";
 
 const AGENT_UUID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708192";
 const BINDING = "binding-1";
@@ -11,8 +11,8 @@ const chats = vi.hoisted(() => ({ getChat: vi.fn() }));
 vi.mock("../../../api/chats.js", () => chats);
 
 /** Only the fields this read consumes; the real rows carry far more. */
-function page(chatIds: string[]) {
-  return { priorityRows: { pinned: [] }, rows: chatIds.map((chatId) => ({ chatId })), nextCursor: null };
+function page(chatIds: string[], nextCursor: string | null = null) {
+  return { priorityRows: { pinned: [] }, rows: chatIds.map((chatId) => ({ chatId })), nextCursor };
 }
 
 function feishuChat(botBindingId: string, externalChatId = "oc_1") {
@@ -54,9 +54,37 @@ describe("readOpenTagFirstUse", () => {
       origin: ["feishu"],
       with: [AGENT_UUID],
       engagement: "all",
-      limit: FIRST_USE_SCAN_LIMIT,
+      limit: FIRST_USE_PAGE_SIZE,
     });
     expect(chats.getChat).not.toHaveBeenCalled();
+  });
+
+  it("follows the cursor to a Task that is no longer recently active", async () => {
+    // The conversation list is ordered by activity, not relevance. A member who
+    // used their Agent a while ago, and has since collaborated in busier Feishu
+    // conversations, has their own Task pushed off the first page — and every
+    // poll would re-read that same page and reach the same wrong conclusion.
+    meChats.listMeChats
+      .mockResolvedValueOnce(page(["chat-busy"], "cursor-1"))
+      .mockResolvedValueOnce(page(["chat-mine"]));
+    chats.getChat.mockImplementation(async (chatId: string) =>
+      chatId === "chat-mine" ? feishuChat(BINDING) : feishuChat("binding-2"),
+    );
+
+    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "present", chatId: "chat-mine" });
+    expect(meChats.listMeChats).toHaveBeenCalledTimes(2);
+    expect(meChats.listMeChats.mock.calls[1]?.[0]).toMatchObject({ cursor: "cursor-1" });
+  });
+
+  it("does not call a partially read list an absence", async () => {
+    // Reporting `absent` here would strand a member who really did use their
+    // Agent. `unknown` keeps the poll going instead of concluding from a page
+    // that was never finished.
+    meChats.listMeChats.mockResolvedValue(page(["chat-other"], "cursor-forever"));
+    chats.getChat.mockResolvedValue(feishuChat("binding-2"));
+
+    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "unknown" });
+    expect(meChats.listMeChats).toHaveBeenCalledTimes(FIRST_USE_MAX_PAGES);
   });
 
   it("reports the Task chat once this Agent's Bot has one", async () => {

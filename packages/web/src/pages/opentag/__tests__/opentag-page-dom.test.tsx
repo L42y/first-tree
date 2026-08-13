@@ -927,6 +927,32 @@ describe("OpenTag entry — real first use in Feishu", () => {
     expect(container.textContent).toContain("The Bot is connected.");
   });
 
+  it("never stamps this member for a teammate's Agent, however visible its task is", async () => {
+    // An admin may continue a teammate's Agent here. If that admin also manages
+    // some other Agent the primary invited into its Feishu task, the ordinary
+    // watcher projection hands them a membership in that very task — so the
+    // list returns it and the Bot binding matches exactly. Everything about the
+    // Agent checks out; what does not is whose onboarding this is. The stamp is
+    // per-membership, and this membership does not own the setup.
+    authMock.value = { ...authMock.value, role: "admin", currentOrgHasPersonalAgent: false };
+    api.getAgent.mockResolvedValue({ ...agentRow(), managerId: "member-2" });
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    // The question is not even asked — the read that feeds the write is gated
+    // on the same fact.
+    expect(meChats.listMeChats).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("has its first task from Feishu");
+    // The Bot step itself stays available: continuing a teammate's Agent is
+    // legitimate, it just is not this member's onboarding to finish.
+    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+  });
+
   it("does not complete onboarding when the task read fails", async () => {
     api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
     meChats.listMeChats.mockRejectedValue(new ApiError(500, "boom"));

@@ -237,10 +237,24 @@ export function OpenTagPage(): ReactElement | null {
   // the previous Bot's answer.
   const binding = feishuQuery.data?.binding ?? null;
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
+  // Ownership, not readability, is what licenses the stamp below.
+  //
+  // The Bot binding proves which Agent the Task belongs to. It says nothing
+  // about which member's onboarding is being finished, and the two genuinely
+  // come apart: an admin may continue a teammate's Agent here, and if that
+  // admin manages some other Agent the primary invited into its Task, the
+  // ordinary watcher projection hands them a membership in that very Task. The
+  // read would then succeed, the binding would match exactly, and the stamp
+  // would land on the admin's membership because a teammate used a teammate's
+  // Agent. Completion means this member owns the setup, so the question is not
+  // asked at all unless they do.
+  //
+  // The member id is in the key for the same reason: a cached answer belongs to
+  // whoever it was read for.
   const firstUseQuery = useQuery({
-    queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId],
+    queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
     queryFn: () => readOpenTagFirstUse(agentUuid ?? "", botBindingId ?? ""),
-    enabled: feishuReady && !!botBindingId,
+    enabled: feishuReady && ownsUrlAgent && !!botBindingId,
     // A failed read must stay "we don't know", never "not used yet" — and never
     // a blank frame. The poll below is the retry.
     retry: false,
@@ -262,11 +276,15 @@ export function OpenTagPage(): ReactElement | null {
   const completeMutate = complete.mutate;
   const completeReset = complete.reset;
   useEffect(() => {
+    // Ownership is re-checked at the write itself, not only at the read that
+    // feeds it: this is the line that changes durable state, and it should not
+    // depend on a caller upstream having kept a cached answer honest.
+    if (!ownsUrlAgent) return;
     // Once per landed Task: a failure holds until the member retries, so a
     // failing endpoint is not hammered by the first-use poll behind it.
     if (!firstUseChatId || completePending || completeSettled || completeFailed) return;
     completeMutate();
-  }, [firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
+  }, [ownsUrlAgent, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
 
   const step = resolveOpenTagStep(facts, firstUse);
 
