@@ -1,5 +1,7 @@
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import type { Agent } from "@first-tree/shared";
 import { canManageAgentDetail } from "../agent-detail/access.js";
+
+export { isFeishuHandoffUsable } from "../../features/feishu/binding-view.js";
 
 /**
  * Pure step logic for the standalone `/opentag` entry.
@@ -134,19 +136,6 @@ export type OpenTagFirstUse =
  * is offered a way forward rather than an error.
  */
 export const FEISHU_TOOLS_SLOW_MS = 90_000;
-
-/**
- * Whether this Agent can actually carry Feishu work right now.
- *
- * Both halves have to hold at once. A reachable Bot with no CLI receives
- * messages the Agent cannot answer, and finishing onboarding on that would
- * declare a handoff that does not work; a ready CLI with no Bot has nothing to
- * answer. Only the pair is the thing the member was promised.
- */
-export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
-  if (!binding) return false;
-  return binding.status === "active" && binding.connectionStatus === "connected" && binding.cli.state === "ready";
-}
 
 /**
  * Where an Agent in the URL puts the member, or `null` while the facts have not
