@@ -212,6 +212,7 @@ describe("official Feishu QR registration", () => {
       .from(imBotBindings)
       .where(eq(imBotBindings.id, stored?.id ?? "missing"));
     expect(afterStaleEvent?.lastEventAt).toBeNull();
+    await app.feishuIntegration.revoke(a.agent.uuid);
   });
 
   it("keeps the Bot connected when profile metadata cannot be loaded", async () => {
@@ -236,6 +237,7 @@ describe("official Feishu QR registration", () => {
       botName: null,
       botAvatarUrl: null,
     });
+    await app.feishuIntegration.revoke(a.agent.uuid);
   });
 
   it("uses the owned Bot channel to acknowledge an admitted message", async () => {
@@ -288,6 +290,11 @@ describe("official Feishu QR registration", () => {
   it("maintains the provisioning lease while connection and Bot profile enrichment are pending", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    // This test drives its own manager with accelerated lease timings. Pause
+    // the app-owned manager so its background cleanup cannot satisfy the
+    // shared disconnect spy or compete for the test binding.
+    await app.feishuIntegration.stop();
+    vi.clearAllMocks();
     const connectStarted = deferred<void>();
     const connectCompletion = deferred<void>();
     sdkMocks.connect.mockImplementationOnce(() => {
@@ -355,7 +362,12 @@ describe("official Feishu QR registration", () => {
     } finally {
       connectCompletion.resolve();
       await new Promise((resolve) => setTimeout(resolve, 70));
-      await manager.stop();
+      try {
+        await manager.stop();
+        if (await manager.getBinding(a.agent.uuid)) await manager.revoke(a.agent.uuid);
+      } finally {
+        app.feishuIntegration.start();
+      }
     }
   });
 
