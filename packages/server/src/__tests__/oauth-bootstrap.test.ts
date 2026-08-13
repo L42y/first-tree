@@ -454,4 +454,20 @@ describe("shouldPreserveSoloSignupNext", () => {
     expect(shouldPreserveSoloSignupNext("/")).toBe(false);
     expect(shouldPreserveSoloSignupNext("/templates")).toBe(false);
   });
+
+  it("preserves only the strict OpenTag entry URL", () => {
+    // A first-time OpenTag visitor must come back to OpenTag, not the
+    // workspace root, once solo signup has created their personal Team.
+    expect(shouldPreserveSoloSignupNext("/opentag")).toBe(true);
+    expect(shouldPreserveSoloSignupNext("/opentag?agent=0198b2c4-1f6a-7c31-9a02-4d5e6f708192")).toBe(true);
+    // Non-canonical spellings of the same destination.
+    expect(shouldPreserveSoloSignupNext("/opentag/")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/opentag?")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/opentag#step")).toBe(false);
+    // Unknown or malformed parameters.
+    expect(shouldPreserveSoloSignupNext("/opentag?agent=not-a-uuid")).toBe(false);
+    expect(shouldPreserveSoloSignupNext("/opentag?step=runtime")).toBe(false);
+    // Neighbouring paths.
+    expect(shouldPreserveSoloSignupNext("/opentagged")).toBe(false);
+  });
 });

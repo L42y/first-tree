@@ -63,6 +63,7 @@ const DEFAULT_AUTH = {
   adoptTokens: async () => undefined,
   selectOrganization: async () => undefined,
   refreshMe: async () => undefined,
+  refreshMeStrict: async () => undefined,
   logout: () => undefined,
 } as AuthValue;
 

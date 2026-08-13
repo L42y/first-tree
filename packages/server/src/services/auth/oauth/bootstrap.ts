@@ -1,4 +1,4 @@
-import { isKnownLandingCampaignSlug, parseAgentTemplateIntentPath } from "@first-tree/shared";
+import { isKnownLandingCampaignSlug, parseAgentTemplateIntentPath, parseOpenTagEntryPath } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { members } from "../../../db/schema/members.js";
@@ -154,6 +154,10 @@ export function shouldPreserveSoloSignupNext(next: string): boolean {
   // pathname, schema slug, sole `use=1` query, no fragment) so this never
   // widens into a general deep-link preservation.
   if (parseAgentTemplateIntentPath(next) !== null) return true;
+  // The OpenTag entry survives on the same terms: solo signup creates the
+  // personal Team, then the member continues in OpenTag rather than being
+  // dropped at the workspace root with no idea where their entry went.
+  if (parseOpenTagEntryPath(next) !== null) return true;
   const parsed = new URL(next, "http://first-tree.local");
   return parsed.pathname === "/quickstart" && isKnownLandingCampaignSlug(parsed.searchParams.get("campaign"));
 }
