@@ -1,3 +1,4 @@
+import { OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
@@ -31,6 +32,7 @@ import { MobileWorkPage } from "./pages/mobile/work.js";
 import { OAuthCompletePage } from "./pages/oauth-complete.js";
 import { GithubConnectedPage } from "./pages/onboarding/github-connected.js";
 import { OnboardingPage } from "./pages/onboarding/onboarding-page.js";
+import { OpenTagPage } from "./pages/opentag/opentag-page.js";
 import { QuickstartPage } from "./pages/quickstart/quickstart-page.js";
 import { SettingsAccountPage } from "./pages/settings/account.js";
 import { SettingsComputersPage } from "./pages/settings/computers.js";
@@ -476,6 +478,12 @@ export function App() {
                     chrome. The workspace root redirects incomplete users
                     here; this route redirects back once setup is complete. */}
                 <Route path="/onboarding" element={<OnboardingPage />} />
+                {/* OpenTag entry — its own full-screen guided handoff, outside
+                    the workspace chrome and outside the `/onboarding` gate.
+                    A logged-out visit takes the ordinary deep-link route
+                    (/login -> OAuth with `next`), and the server preserves
+                    this exact destination through solo signup. */}
+                <Route path={OPENTAG_ENTRY_PATH} element={<OpenTagPage />} />
                 <Route element={<MobileExperienceGate />}>
                   <Route path="m" element={<Navigate to="/m/chat" replace />} />
                   <Route path="m/chat" element={<MobileWorkPage />} />

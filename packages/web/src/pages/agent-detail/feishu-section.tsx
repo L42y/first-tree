@@ -1,36 +1,28 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, MessageSquare, QrCode, Unplug } from "lucide-react";
-import { QRCodeSVG } from "qrcode.react";
+import { MessageSquare, QrCode, Unplug } from "lucide-react";
 import {
   createAgentFeishuSetupChat,
-  getAgentFeishuBinding,
   revokeAgentFeishuBinding,
   startAgentFeishuRegistration,
 } from "../../api/agents.js";
 import { Button } from "../../components/ui/button.js";
 import { DenseBadge } from "../../components/ui/dense-badge.js";
 import { Section } from "../../components/ui/section.js";
+import {
+  FeishuRegistrationQr,
+  feishuBindingLabel,
+  feishuBindingQueryKey,
+  feishuBindingQueryOptions,
+} from "../../features/feishu/binding-view.js";
 import { ConfigRow } from "./flat-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
-
-function bindingLabel(status: string, connectionStatus: string): string {
-  if (status === "active" && connectionStatus === "connected") return "Connected";
-  if (status === "provisioning") return "Waiting for confirmation";
-  if (status === "error") return "Needs attention";
-  return status;
-}
 
 export function FeishuSection() {
   const ctx = useAgentDetailContext();
   const queryClient = useQueryClient();
-  const query = useQuery({
-    queryKey: ["agent-feishu-binding", ctx.uuid],
-    queryFn: () => getAgentFeishuBinding(ctx.uuid),
-    enabled: !ctx.isHuman,
-    refetchInterval: (state) => (state.state.data?.binding?.status === "provisioning" ? 2_000 : 10_000),
-  });
+  const query = useQuery({ ...feishuBindingQueryOptions(ctx.uuid), enabled: !ctx.isHuman });
   const binding = query.data?.binding ?? null;
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-feishu-binding", ctx.uuid] });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: feishuBindingQueryKey(ctx.uuid) });
   const start = useMutation({
     mutationFn: () => startAgentFeishuRegistration(ctx.uuid, `${ctx.agent.displayName} · First Tree`),
     onSuccess: refresh,
@@ -70,7 +62,7 @@ export function FeishuSection() {
             description={binding.lastErrorMessage ?? undefined}
             meta={
               <DenseBadge tone={binding.status === "error" ? "error" : binding.status === "active" ? "accent" : "warn"}>
-                {bindingLabel(binding.status, binding.connectionStatus)}
+                {feishuBindingLabel(binding.status, binding.connectionStatus)}
               </DenseBadge>
             }
             action={
@@ -97,22 +89,7 @@ export function FeishuSection() {
             }
           />
           {ctx.canManageAgent && binding.registrationUrl && binding.status === "provisioning" && (
-            <div className="flex flex-col items-center gap-3" style={{ padding: "var(--sp-4) 0" }}>
-              <QRCodeSVG
-                value={binding.registrationUrl}
-                size={184}
-                marginSize={2}
-                title="Feishu Bot registration QR code"
-              />
-              <div className="text-label text-center" style={{ color: "var(--fg-3)" }}>
-                Scan with Feishu and confirm creating the Bot. This page updates automatically.
-              </div>
-              <Button size="xs" variant="outline" asChild>
-                <a href={binding.registrationUrl} target="_blank" rel="noreferrer">
-                  Open confirmation page <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              </Button>
-            </div>
+            <FeishuRegistrationQr registrationUrl={binding.registrationUrl} />
           )}
           {binding.status === "active" && (
             <ConfigRow

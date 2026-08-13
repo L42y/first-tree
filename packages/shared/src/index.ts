@@ -76,6 +76,13 @@ export {
   segmentMentions,
   stripCode,
 } from "./mentions.js";
+// -- Authenticated OpenTag entry URL (browser route + OAuth `next`) --
+export {
+  OPENTAG_ENTRY_PATH,
+  type OpenTagEntryTarget,
+  opentagEntryPath,
+  parseOpenTagEntryPath,
+} from "./opentag-entry.js";
 // -- OAuth-callback open-redirect guard --
 export { DEFAULT_SAFE_REDIRECT, safeRedirectPath } from "./safe-redirect.js";
 export {
