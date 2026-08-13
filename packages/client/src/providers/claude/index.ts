@@ -31,7 +31,6 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts
 import type {
   AgentConfigCache,
   ChatContext,
-  ContextTreeBindingStatus,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
   ProviderFailureClassification,
@@ -1628,9 +1627,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
 
   /**
    * Probe whether the Claude Code SDK can resume the given session at the
@@ -1688,7 +1684,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
-      contextTreeBindingStatus,
       teamSkills: reconciledTeamSkills,
     });
   }
@@ -1719,7 +1714,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           path: contextTreePath,
           repoUrl: contextTreeRepoUrl,
           branch: contextTreeBranch,
-          status: contextTreeBindingStatus,
         },
       });
       // Per agent-session-cwd-redesign: cwd is per-agent, shared by every
@@ -1855,7 +1849,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           path: contextTreePath,
           repoUrl: contextTreeRepoUrl,
           branch: contextTreeBranch,
-          status: contextTreeBindingStatus,
         },
       });
       cwd = prepared.workspace;

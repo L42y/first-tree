@@ -3,7 +3,7 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type SourceArtifactKind = "absent" | "durable-decision-note" | "implementation-only-diff";
-export type TreeState = "populated" | "unbound" | "explicitly-unbound-with-stale-checkout" | "unresolved";
+export type TreeState = "populated" | "unbound" | "explicitly-unbound-with-stale-checkout";
 export type TreeDiffExpectation = "none" | "minimal";
 
 /**
@@ -22,9 +22,7 @@ export type ExpectedAction =
   | "write_minimal_tree_diff"
   | "refuse_implementation_only_source"
   | "skip_tree_write_unbound"
-  | "report_unbound_tree_write_gap"
-  | "skip_tree_write_unresolved"
-  | "report_unresolved_tree_write_gap";
+  | "report_unbound_tree_write_gap";
 
 export type FirstTreeWriteFixture = {
   sourceArtifact: SourceArtifactKind;
@@ -111,11 +109,11 @@ export type EvalMetrics = {
   unboundAbsenceMentionObserved: boolean;
   unboundGapStatementObserved: boolean;
   unboundSetupSteeringObserved: boolean;
-  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale checkout baseline. */
+  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale baseline. */
   unboundTreeArtifactsCreated: boolean;
   /** The run read or referenced the stale `.first-tree/workspace.json` manifest or `context-tree/` checkout. */
   staleTreeArtifactAccessObserved: boolean;
-  /** An unresolved-binding run modified or deleted the stale manifest or Tree checkout; stale artifacts must stay byte-identical. */
+  /** An unbound run modified or deleted the stale manifest or Tree checkout; inert residue must stay byte-identical. */
   staleTreeArtifactModifiedObserved: boolean;
   /**
    * Ordinary-skip response contract: the final response fully carries the
@@ -123,10 +121,6 @@ export type EvalMetrics = {
    * prompt's three-bullet shape, and contains no refusal or input ask.
    */
   ordinarySummaryShapeObserved: boolean;
-  /** Final response states the unresolved gap: this write cannot complete right now because the binding could not be confirmed. */
-  unresolvedGapStatementObserved: boolean;
-  /** Final response mentioned the unconfirmed binding outside the explicit unresolved Tree-write gap statement. */
-  unresolvedBindingMentionObserved: boolean;
   verifySucceeded: boolean;
 };
 

@@ -177,7 +177,7 @@ describe("first-tree-read floor contract", () => {
   });
 
   it("keeps version metadata aligned", () => {
-    expect(skillVersion).toBe("0.8.4");
+    expect(skillVersion).toBe("0.8.5");
     expect(skill).toContain(`version: ${skillVersion}`);
   });
 
@@ -187,8 +187,14 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("never prompts the user to bind, create, or\nconnect a Tree merely because one is absent");
     expect(skill).toMatch(/when the trusted managed briefing explicitly states\s+there is no bound Tree/u);
     expect(skill).toContain("Run no Tree commands and offer no Tree\n  setup guidance");
-    expect(skill).toMatch(/state only\s+that this Tree read cannot be completed because no Tree is bound/u);
-    expect(skill).toContain("do not\n  expand the absence into bind/create guidance");
+    expect(skill).toMatch(/state only that this Tree read cannot be completed because no\s+Tree is bound/u);
+    expect(skill).toContain("do not expand the absence into bind/create guidance");
+    expect(skill).toMatch(
+      /A leftover\s+`.first-tree\/workspace\.json` manifest or\s+`context-tree\/` checkout from a previously bound session may still be on\s+disk/u,
+    );
+    expect(skill).toMatch(
+      /it is inert residue, and this gate precedes any disk discovery:\s+never read, trust, or recover from it/u,
+    );
     expect(skill).toMatch(/keep failing\s+closed for Tree operations — never guess a Tree/u);
     expect(skill).toContain("the broken binding blocks only Tree reads, not unrelated work");
     expect(skill).toMatch(
@@ -197,22 +203,9 @@ describe("first-tree-read floor contract", () => {
     expect(skill).toContain("materialize it per Tree Location (step 2B)");
   });
 
-  it("states the unresolved-binding gate without trusting last-known artifacts", () => {
-    expect(skill).toContain("**Unresolved binding:**");
-    expect(skill).toMatch(/when the trusted managed briefing states the Tree\s+binding could not be confirmed/u);
-    expect(skill).toMatch(/continue\s+exactly as in the explicitly-unbound case/u);
-    expect(skill).toMatch(
-      /`.first-tree\/workspace\.json` manifest or `context-tree\/`\s+checkout may still\s+be on disk/u,
-    );
-    expect(skill).toMatch(
-      /never read, trust, or recover from\s+them, because this session never confirmed that binding/u,
-    );
-    expect(skill).toMatch(
-      /state only that this Tree read cannot be completed right now\s+because the binding could not be confirmed/u,
-    );
-    expect(skill).toMatch(
-      /never claim that no Tree is\s+bound \(that is the explicitly-unbound state\) and never guess a Tree/u,
-    );
+  it("drops the removed unresolved-binding gate", () => {
+    expect(skill).not.toContain("**Unresolved binding:**");
+    expect(skill).not.toContain("could not be confirmed");
   });
 
   it("declares managed-unbound continuation periodic cases", () => {
@@ -277,42 +270,5 @@ describe("first-tree-read floor contract", () => {
     expect(staleCheckout[0]?.unboundContinuation).toBe(true);
     expect(staleCheckout[1]?.unboundExplicitRead).toBe(true);
     expect(staleCheckout[1]?.expectedFacts.length).toBe(0);
-  });
-
-  it("declares managed-unresolved continuation periodic cases", () => {
-    const unresolved = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unresolvedContinuation === true);
-
-    expect(unresolved.map((evalCase) => evalCase.id)).toEqual([
-      "first-tree-read-unresolved-software-continues-periodic",
-      "first-tree-read-unresolved-pasted-content-continues-periodic",
-    ]);
-    expect(
-      unresolved.every(
-        (evalCase) =>
-          evalCase.workspaceKind === "unresolved-managed" &&
-          evalCase.briefingMode === "runtime-generated" &&
-          evalCase.expectedTrigger === false &&
-          evalCase.managedTransport === "send",
-      ),
-    ).toBe(true);
-  });
-
-  it("declares a managed-unresolved explicit Tree read periodic case", () => {
-    const explicitRead = FIRST_TREE_READ_PERIODIC_CASES.filter((evalCase) => evalCase.unresolvedExplicitRead === true);
-
-    expect(explicitRead.map((evalCase) => evalCase.id)).toEqual([
-      "first-tree-read-unresolved-explicit-read-reports-gap-periodic",
-    ]);
-    expect(
-      explicitRead.every(
-        (evalCase) =>
-          evalCase.workspaceKind === "unresolved-managed" &&
-          evalCase.briefingMode === "runtime-generated" &&
-          evalCase.expectedTrigger === false &&
-          evalCase.expectedFacts.length === 0 &&
-          evalCase.impactNote.mode === "absent" &&
-          evalCase.managedTransport === "send",
-      ),
-    ).toBe(true);
   });
 });

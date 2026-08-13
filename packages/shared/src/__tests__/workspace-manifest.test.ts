@@ -49,33 +49,6 @@ describe("workspaceManifestSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts a manifest with sources omitted (source set unknown/unresolved)", () => {
-    const parsed = workspaceManifestSchema.parse({ tree: "context-tree", sourcesRoot: SOURCE_REPOS_DIRNAME });
-    expect(parsed.sources).toBeUndefined();
-    expect(parsed.sourcesRoot).toBe("source-repos");
-  });
-
-  it("distinguishes resolved-empty ([]) from unresolved (key absent)", () => {
-    const resolvedEmpty = workspaceManifestSchema.parse({
-      tree: "context-tree",
-      sources: [],
-      sourcesRoot: SOURCE_REPOS_DIRNAME,
-    });
-    const unresolved = workspaceManifestSchema.parse({ tree: "context-tree", sourcesRoot: SOURCE_REPOS_DIRNAME });
-    expect(resolvedEmpty.sources).toEqual([]);
-    expect(unresolved.sources).toBeUndefined();
-  });
-
-  it("rejects duplicate sources when sources is present", () => {
-    expect(workspaceManifestSchema.safeParse({ tree: "t", sources: ["api", "api"] }).success).toBe(false);
-  });
-
-  it("does not trip the flat-layout tree∉sources refine when sources is absent", () => {
-    // Flat layout (no sourcesRoot) with an unresolved source set: there is no
-    // declared source list to collide with the tree, so this must parse.
-    expect(workspaceManifestSchema.safeParse({ tree: "context-tree" }).success).toBe(true);
-  });
-
   it("SOURCE_REPOS_DIRNAME is the reserved source-repos directory name", () => {
     expect(SOURCE_REPOS_DIRNAME).toBe("source-repos");
   });

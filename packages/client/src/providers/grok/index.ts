@@ -21,7 +21,6 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
-  ContextTreeBindingStatus,
   ContextTreeGitWriteTracker,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
@@ -177,9 +176,6 @@ export const createGrokHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   const platform = (config.grokPlatform as NodeJS.Platform | undefined) ?? process.platform;
   const processSupervisor =
     (config.providerProcessSupervisor as ProviderProcessSupervisor | undefined) ??
@@ -286,7 +282,6 @@ export const createGrokHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
-      contextTreeBindingStatus,
       teamSkills: reconciledTeamSkills,
     });
   }
@@ -1043,7 +1038,6 @@ export const createGrokHandler: HandlerFactory = (config) => {
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
-        status: contextTreeBindingStatus,
       },
     });
     const workspaceCwd = prepared.workspace;

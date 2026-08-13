@@ -13,7 +13,7 @@ import type { CommandContext, SubcommandModule } from "../types.js";
 import { classifyContextContent } from "./content-class.js";
 import type { NodeMetadata } from "./context-document.js";
 import { readNodeMetadata } from "./context-document.js";
-import { asString, findGitRoot, runCommand } from "./shared.js";
+import { asString, findGitRoot, normalizeRemoteForMatch, readGitRemoteUrl, runCommand } from "./shared.js";
 
 export type ContextTreeNode = {
   kind: "directory" | "file";
@@ -67,6 +67,14 @@ type ParsedTreeTreeOptions = {
    * wants a stable snapshot within a task.
    */
   pull: boolean;
+  /**
+   * Declared Context Tree binding identity (canonical origin URL and branch)
+   * from the trusted briefing. When either is set, an existing checkout that
+   * does not match is treated as declared-broken and the command fails closed
+   * before any read or pull.
+   */
+  expectRemote?: string;
+  expectBranch?: string;
 };
 
 type ResolvedTreeTarget = {
@@ -78,12 +86,17 @@ const NODE_FILE = "NODE.md";
 const LEAF_FILE_EXCLUDES = new Set([NODE_FILE]);
 const TREE_TREE_INVALID_LEVEL = "TREE_TREE_INVALID_LEVEL";
 const TREE_TREE_INVALID_PATH = "TREE_TREE_INVALID_PATH";
+const TREE_TREE_BINDING_MISMATCH = "TREE_TREE_BINDING_MISMATCH";
 const TREE_TREE_FAILED = "TREE_TREE_FAILED";
 const MAINLINE_BRANCHES = new Set(["main", "master", "origin/main"]);
 
 class TreeTreeCommandError extends Error {
   constructor(
-    public readonly code: typeof TREE_TREE_INVALID_LEVEL | typeof TREE_TREE_INVALID_PATH | typeof TREE_TREE_FAILED,
+    public readonly code:
+      | typeof TREE_TREE_INVALID_LEVEL
+      | typeof TREE_TREE_INVALID_PATH
+      | typeof TREE_TREE_BINDING_MISMATCH
+      | typeof TREE_TREE_FAILED,
     message: string,
   ) {
     super(message);
@@ -418,7 +431,46 @@ function parseTreeTreeOptions(options: Record<string, unknown>, args: string[]):
     // Commander maps `--no-pull` to `options.pull === false`; the flag is
     // absent (undefined) by default, which we treat as pull-enabled.
     pull: options.pull !== false,
+    expectRemote: asString(options.expectRemote),
+    expectBranch: asString(options.expectBranch),
   };
+}
+
+/**
+ * Fail-closed binding guard for an existing checkout. The Tree always lands
+ * at `<agentHome>/context-tree`, so a same-path checkout left by a previous
+ * binding is indistinguishable by location alone: before any content or
+ * hierarchy read (and before the refresh pull), verify the checkout's
+ * canonical origin and current branch against the declared binding. A
+ * mismatch is declared-broken: never read, never delete, never repoint.
+ */
+function assertCheckoutMatchesDeclaredBinding(
+  repoRoot: string,
+  expectRemote: string | undefined,
+  expectBranch: string | undefined,
+): void {
+  if (expectRemote === undefined && expectBranch === undefined) return;
+
+  const mismatches: string[] = [];
+  if (expectRemote !== undefined) {
+    const actualRemote = readGitRemoteUrl(repoRoot);
+    if (actualRemote === undefined || normalizeRemoteForMatch(actualRemote) !== normalizeRemoteForMatch(expectRemote)) {
+      mismatches.push("origin");
+    }
+  }
+  if (expectBranch !== undefined) {
+    const currentBranch = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).trim();
+    if (currentBranch !== expectBranch) {
+      mismatches.push("branch");
+    }
+  }
+
+  if (mismatches.length > 0) {
+    throw new TreeTreeCommandError(
+      TREE_TREE_BINDING_MISMATCH,
+      `Existing checkout does not match the declared Context Tree binding (${mismatches.join(" and ")} mismatch). Treating it as declared-broken: no tree content was read and nothing was modified; do not read, delete, or repoint this checkout.`,
+    );
+  }
 }
 
 /**
@@ -661,6 +713,14 @@ function configureTreeTreeCommand(command: Command): void {
     .option(
       "--no-pull",
       "skip the automatic `git pull --ff-only` refresh and read the local checkout as-is (offline / stable-snapshot use)",
+    )
+    .option(
+      "--expect-remote <url>",
+      "declared Context Tree origin from the trusted briefing; an existing checkout with a different origin fails closed as declared-broken",
+    )
+    .option(
+      "--expect-branch <branch>",
+      "declared Context Tree branch from the trusted briefing; an existing checkout on a different branch fails closed as declared-broken",
     );
 }
 
@@ -669,6 +729,13 @@ export function runTreeTreeCommand(context: CommandContext): void {
     const options = context.command.opts<Record<string, unknown>>();
     const parsedOptions = parseTreeTreeOptions(options, context.command.args);
     const resolvedTarget = resolveTreeTarget(process.cwd(), parsedOptions.path);
+    // Binding guard before any read or refresh: a same-path checkout that does
+    // not match the declared binding is declared-broken — fail closed.
+    assertCheckoutMatchesDeclaredBinding(
+      resolvedTarget.repoRoot,
+      parsedOptions.expectRemote,
+      parsedOptions.expectBranch,
+    );
     const readSnapshot = readContextTreeReadSnapshotIdentity(resolvedTarget.repoRoot);
     // Refresh the tree before reading it (hard freshness guarantee), unless
     // the caller opted out with --no-pull. An activated BYO task snapshot is

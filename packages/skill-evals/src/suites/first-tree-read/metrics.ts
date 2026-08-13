@@ -518,34 +518,11 @@ function containsUnboundAbsenceMention(text: string): boolean {
 }
 
 /**
- * The one statement an explicit Tree read in an unresolved-binding workspace
- * may make: this read cannot complete right now because the binding could not
- * be confirmed. A qualifying output must express BOTH the blocked read AND
- * the unconfirmed-binding reason — and must not claim that no Tree is bound,
- * which `containsUnboundAbsenceMention` catches separately.
- */
-const UNRESOLVED_REASON =
-  /binding\s+could\s+not\s+be\s+confirmed|could\s+not\s+confirm\s+the\s+(?:(?:context\s+)?tree\s+)?binding|(?:tree\s+)?binding\s+(?:was|is|remains)\s+(?:currently\s+)?unconfirmed|unconfirmed\s+(?:context\s+)?tree\s+binding/iu;
-
-function containsUnresolvedGapStatement(text: string): boolean {
-  return /(?:context\s+)?tree/iu.test(text) && CANNOT_COMPLETE.test(text) && UNRESOLVED_REASON.test(text);
-}
-
-/**
- * Proactive unconfirmed-binding mention. An ordinary unresolved-binding task
- * must stay silent about the binding state; only the explicit Tree-read
- * branch may state it, as part of the required gap statement.
- */
-function containsUnresolvedBindingMention(text: string): boolean {
-  return UNRESOLVED_REASON.test(text);
-}
-
-/**
- * Stale-artifact access: with an unresolved binding the last-known
- * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
- * on disk, but this session never confirmed them, so any tool-phase read or
- * reference of those paths fails the case. Command and cwd/workdir strings
- * are extracted from the event structure and judged separately: a cwd does
+ * Stale-artifact access: an explicitly unbound workspace can still carry the
+ * leftover `.first-tree/workspace.json` manifest and `context-tree/` checkout
+ * as inert residue, so any tool-phase read or reference of those paths fails
+ * the case. Command and cwd/workdir strings are extracted from the event
+ * structure and judged separately: a cwd does
  * POSIX and Windows path matching, while a command matches only the manifest
  * path, an explicit slash-descendant form (`context-tree/NODE.md`), or the
  * bare checkout name in a known path-taking position (`cd context-tree`,
@@ -661,7 +638,6 @@ export function deriveMetrics(
   options: {
     artifactBaseline?: TreeArtifactBaseline | null;
     unboundWorkspace?: boolean;
-    unresolvedWorkspace?: boolean;
     workspacePath?: string;
   } = {},
 ): EvalMetrics {
@@ -843,7 +819,7 @@ export function deriveMetrics(
   // created — or a stale artifact the run modified — is a violation.
   const unboundTreeArtifactsCreatedValue =
     options.unboundWorkspace === true ? artifactViolation.created || artifactViolation.modified : false;
-  const staleTreeArtifactModifiedObserved = options.unresolvedWorkspace === true ? artifactViolation.modified : false;
+  const staleTreeArtifactModifiedObserved = options.unboundWorkspace === true ? artifactViolation.modified : false;
   const treeCliInvocationCount =
     firstTreeArgv.filter(isTreeOperationArgv).length +
     firstTreeCommandResults.filter((result) => isTreeOperationArgv(result.argv)).length;
@@ -855,12 +831,8 @@ export function deriveMetrics(
   const negativeScanTexts = teammateDeliveredTexts.length > 0 ? teammateDeliveredTexts : modelOutputTexts;
   const treeSetupWordingObserved = negativeScanTexts.some((text) =>
     text
-      // Sentence splitting mirrors the detector's own `[^.!?\n]` windows. An
-      // unconfirmed-binding sentence is the unresolved-binding gap report —
-      // "the binding could not be confirmed" names a state, not setup wording —
-      // so it must not trip the Tree…binding alternative.
+      // Sentence splitting mirrors the detector's own `[^.!?\n]` windows.
       .split(/[.!?\n]+/u)
-      .filter((sentence) => !UNRESOLVED_REASON.test(sentence))
       .some((sentence) =>
         /\b(?:bind|create|connect|set\s*up|install|register)\b[^.!?\n]{0,60}(?<!first-)\btree\b|(?<!first-)\btree\b[^.!?\n]{0,80}\b(?:binding|creation|setup)\b/iu.test(
           sentence,
@@ -876,11 +848,6 @@ export function deriveMetrics(
   const finalDeliveredText =
     authoringCalls.length > 0 ? (successfulAuthoringCalls.at(-1)?.body ?? "") : (modelOutputTexts.at(-1) ?? "");
   const unboundGapStatementObserved = containsUnboundGapStatement(finalDeliveredText);
-  // The unresolved gap follows the same last-delivery semantics: only the
-  // last successful ask/send body (native final fallback only with no chat
-  // authoring) can carry it.
-  const unresolvedGapStatementObserved = containsUnresolvedGapStatement(finalDeliveredText);
-  const unresolvedBindingMentionObserved = negativeScanTexts.some((text) => containsUnresolvedBindingMention(text));
 
   return {
     expectedFactHits: factHits,
@@ -920,8 +887,6 @@ export function deriveMetrics(
     unboundGapStatementObserved,
     unboundSetupSteeringObserved,
     unboundTreeArtifactsCreated: unboundTreeArtifactsCreatedValue,
-    unresolvedBindingMentionObserved,
-    unresolvedGapStatementObserved,
   };
 }
 
@@ -931,46 +896,9 @@ export function casePassed(
   readMode: ReadMode = "managed",
   unboundContinuation = false,
   unboundExplicitRead = false,
-  unresolvedContinuation = false,
-  unresolvedExplicitRead = false,
 ): boolean {
   if (!metrics.fixtureValidationOk) return false;
   if (metrics.runnerExitCode !== 0) return false;
-
-  if (!expectedTrigger && unresolvedExplicitRead) {
-    // Claiming "no Tree is bound" (unboundAbsenceMentionObserved) fails here:
-    // the unconfirmed binding is not a confirmed unbind.
-    return (
-      metrics.unresolvedGapStatementObserved &&
-      metrics.impactNoteBehaviorOk &&
-      metrics.managedFinalTransportOk &&
-      metrics.treeCliInvocationCount === 0 &&
-      metrics.modelFirstTreeCommandsOk &&
-      !metrics.treeSetupWordingObserved &&
-      !metrics.treeSetupSurfaceGuidanceObserved &&
-      !metrics.unboundSetupSteeringObserved &&
-      !metrics.unboundAbsenceMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved &&
-      !metrics.staleTreeArtifactModifiedObserved
-    );
-  }
-
-  if (!expectedTrigger && unresolvedContinuation) {
-    return (
-      metrics.expectedFactsObserved &&
-      metrics.impactNoteBehaviorOk &&
-      metrics.managedFinalTransportOk &&
-      metrics.treeCliInvocationCount === 0 &&
-      !metrics.skillFileReadObserved &&
-      metrics.modelFirstTreeCommandsOk &&
-      !metrics.treeSetupWordingObserved &&
-      !metrics.treeSetupSurfaceGuidanceObserved &&
-      !metrics.unboundAbsenceMentionObserved &&
-      !metrics.unresolvedBindingMentionObserved &&
-      !metrics.staleTreeArtifactAccessObserved &&
-      !metrics.staleTreeArtifactModifiedObserved
-    );
-  }
 
   if (!expectedTrigger && unboundExplicitRead) {
     return (
@@ -983,7 +911,8 @@ export function casePassed(
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundTreeArtifactsCreated &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 
@@ -999,7 +928,8 @@ export function casePassed(
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.unboundTreeArtifactsCreated &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.staleTreeArtifactModifiedObserved
     );
   }
 

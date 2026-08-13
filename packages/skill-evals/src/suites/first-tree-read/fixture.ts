@@ -167,7 +167,7 @@ function installFirstTreeReadSkill(repoRoot: string, workspacePath: string, work
   );
 }
 
-type BriefingTreeState = "bound" | "explicitly-unbound" | "unresolved";
+type BriefingTreeState = "bound" | "explicitly-unbound";
 
 function runtimeGeneratedWorkspaceAgentsMarkdown(
   workspacePath: string,
@@ -188,19 +188,7 @@ not a gap to fix. Ordinary tasks proceed from the user's messages, chat
 context, pasted content, and locally available inputs with no prompt to bind
 or create a tree; only a request whose result genuinely needs a tree
 read/write/audit/setup names that specific capability impact.`
-      : briefingTreeState === "unresolved"
-        ? `# Context Tree (First Tree Managed)
-
-The Context Tree binding could not be confirmed when this briefing was
-generated — the server was unreachable or returned an invalid binding. This
-is not a confirmed unbind: never claim that no Context Tree is bound, and do
-not push binding or setup. Ordinary tasks proceed from the user's messages,
-chat context, pasted content, and locally available inputs; only a request
-whose result genuinely needs a tree read/write/audit states that this
-specific Tree operation cannot be completed right now because the Tree is
-unavailable — its binding could not be confirmed. The runtime re-resolves
-the binding at a later session start.`
-        : `# Context Tree (First Tree Managed)
+      : `# Context Tree (First Tree Managed)
 
 The current Context Tree checkout is \`${contextTreePath ?? ""}\`.
 Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
@@ -471,9 +459,9 @@ function navigationParentPaths(nodes: readonly DomainNode[]): readonly string[] 
 }
 
 function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind): string {
-  const managedWorkspace = workspaceKind === "context-tree" || workspaceKind === "unresolved-managed";
-  // A previous binding was explicitly retired: the manifest is gone, but the
-  // clean Tree checkout stays on disk as inert residue.
+  const managedWorkspace = workspaceKind === "context-tree";
+  // A previous binding was explicitly retired: nothing deletes the on-disk
+  // manifest or the clean Tree checkout, so both stay behind as inert residue.
   const staleCheckout = workspaceKind === "explicitly-unbound-with-stale-checkout";
   const contextTreePath =
     managedWorkspace || staleCheckout
@@ -483,7 +471,7 @@ function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind):
   mkdirSync(contextTreePath, { recursive: true });
   mkdirSync(sourceRepoPath, { recursive: true });
 
-  if (managedWorkspace) {
+  if (managedWorkspace || staleCheckout) {
     writeText(
       join(paths.workspacePath, ".first-tree", "workspace.json"),
       `${JSON.stringify({ sources: ["source-repo"], tree: "context-tree" }, null, 2)}\n`,
@@ -566,31 +554,22 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
     evalCase.workspaceKind === "unbound-managed" ||
     evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
   ) {
-    // A managed workspace with source repos but no bound Tree: the real
-    // runtime writes no `.first-tree/workspace.json` in this state, so the
-    // fixture writes no manifest either. The stale-checkout variant
-    // additionally keeps the retired checkout that explicit unbind leaves
-    // behind; the briefing must still say explicitly unbound.
+    // A managed workspace with source repos but no bound Tree. For the plain
+    // unbound variant the real runtime writes no `.first-tree/workspace.json`,
+    // so the fixture writes no manifest either. The stale-checkout variant
+    // keeps the stale manifest and retired checkout that explicit unbind
+    // leaves behind as inert residue; the briefing must still say explicitly
+    // unbound.
     const sourceRepoPath = join(paths.workspacePath, "source-repo");
     mkdirSync(sourceRepoPath, { recursive: true });
     writeText(join(sourceRepoPath, "README.md"), unboundSourceReadmeMarkdown());
   }
-  if (evalCase.workspaceKind === "unresolved-managed") {
-    // The managed fixture wrote a placeholder source README; the ordinary
-    // continuation task's answer lives in this local file instead.
-    writeText(join(paths.workspacePath, "source-repo", "README.md"), unboundSourceReadmeMarkdown());
-  }
   if (evalCase.briefingMode === "runtime-generated") {
-    // An unresolved binding keeps the last-known manifest and Tree checkout
-    // on disk, but the briefing must not confirm them: the model must ignore
-    // those stale artifacts entirely.
     const briefingTreeState: BriefingTreeState =
       evalCase.workspaceKind === "unbound-managed" ||
       evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
         ? "explicitly-unbound"
-        : evalCase.workspaceKind === "unresolved-managed"
-          ? "unresolved"
-          : "bound";
+        : "bound";
     installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath, briefingTreeState);
   } else {
     installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath, evalCase.workspaceKind);

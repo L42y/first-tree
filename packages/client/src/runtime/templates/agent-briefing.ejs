@@ -329,7 +329,7 @@ detail stays in source systems; the tree carries the durable *what* and
 *why* a future agent must respect. Each domain is a directory; each node
 is Markdown with frontmatter such as `owners` and `soft_links`.
 
-<% if (contextTree.bound) { %>The policy below is the always-present baseline. For task-scoped file selection and operational read workflow, load `first-tree-read`. For source-backed tree edits, load `first-tree-write`.<% } else if (contextTree.status === "explicitly-unbound") { %>The policy below is the always-present baseline for judging what belongs in a Context Tree. This briefing was generated without a bound tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree; only a request whose result genuinely needs a tree read/write/audit/setup names that specific capability impact. Re-check the workspace binding only if the user says a tree was created or bound this session; an explicit build/set-up request loads `first-tree-seed`.<% } else { %>The policy below is the always-present baseline for judging what belongs in a Context Tree. The Context Tree binding could not be confirmed when this briefing was generated — the server was unreachable or returned an invalid binding — so this briefing does not claim whether a tree is bound. Ordinary tasks proceed from the user's messages, chat context, and local inputs; only a request whose result genuinely needs a tree read/write/audit reports that the Tree is currently unavailable because the binding could not be confirmed. The runtime re-resolves the binding at a later session start.<% } %>
+<% if (contextTree.bound) { %>The policy below is the always-present baseline. For task-scoped file selection and operational read workflow, load `first-tree-read`. For source-backed tree edits, load `first-tree-write`.<% } else { %>The policy below is the always-present baseline for judging what belongs in a Context Tree. This briefing was generated without a bound tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree; only a request whose result genuinely needs a tree read/write/audit/setup names that specific capability impact. Re-check the workspace binding only if the user says a tree was created or bound this session; an explicit build/set-up request loads `first-tree-seed`.<% } %>
 
 <%- contextTreePolicy %><% if (contextTree.bound) { %>
 
@@ -360,7 +360,7 @@ you read manually, refresh first per Tree Location.
 
 Default to normal content as current truth. Apply the Content Classes policy
 above when archive/supporting or member content appears; label non-normal facts
-separately and do not promote them to canonical decisions.<% } else if (contextTree.status === "explicitly-unbound") { %>
+separately and do not promote them to canonical decisions.<% } else { %>
 
 ## Reading the Tree
 
@@ -371,18 +371,7 @@ says a tree was created or bound during this session; if a tree is now bound,
 load `first-tree-read`. Only when the user explicitly asks for a Tree read
 result and no binding exists does the missing binding block that step: state
 the impact without pushing the user to bind or create one. An explicit
-build/set-up request loads `first-tree-seed`.<% } else { %>
-
-## Reading the Tree
-
-The Context Tree binding could not be confirmed when this briefing was
-generated, and ordinary tasks do not route into `first-tree-read` — code,
-repo, path, and error signals are not tree-read triggers here. Only when the
-user explicitly asks for a Tree read result does the unconfirmed binding
-matter: state only that the Tree is currently unavailable because the binding
-could not be confirmed, without claiming that no Tree is bound and without
-bind/create guidance. The runtime re-resolves the binding at a later session
-start; once it is confirmed bound, load `first-tree-read`.<% } %><% if (contextTree.bound) { %>
+build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.bound) { %>
 
 ## Writing the Tree
 
@@ -391,7 +380,7 @@ start; once it is confirmed bound, load `first-tree-read`.<% } %><% if (contextT
 Before editing, read the target/parent/soft-linked nodes the skill identifies;
 after editing, run `<%- contextTree.verifyCommand %>`.
 Do not put PR/MR numbers, commit history, diffs, or implementation details in
-tree node prose.<% } else if (contextTree.status === "explicitly-unbound") { %>
+tree node prose.<% } else { %>
 
 ## Writing the Tree
 
@@ -401,17 +390,7 @@ user says a tree was created or bound during this session; if a tree is now
 bound, load `first-tree-write`. Only when the user explicitly asks for a
 source artifact to be reflected into the Context Tree does the missing
 binding block that step: state the impact and do not attempt the edit. An
-explicit build/set-up request loads `first-tree-seed`.<% } else { %>
-
-## Writing the Tree
-
-The Context Tree binding could not be confirmed when this briefing was
-generated, so ordinary work never routes into a Tree write. Only when the
-user explicitly asks for a source artifact to be reflected into the Context
-Tree does the unconfirmed binding block that step: state that the Tree is
-currently unavailable because the binding could not be confirmed, and do not
-attempt the edit. Once the binding is confirmed bound, load
-`first-tree-write`.<% } %><% if (contextTree.bound) { %>
+explicit build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.bound) { %>
 
 ## Tree Location (agent-managed clone)
 
@@ -431,10 +410,14 @@ Upstream: `<%- contextTree.upstreamUrl %>` (branch `<%- contextTree.branch %>`).
   symlink itself (`<%- contextTree.removeSymlinkCommand %>` — this deletes only the link,
   never its target), then clone as above.
 - **Refresh** → `<%- contextTree.pullCommand %>` before manual
-  reads. On network/credential failure, use the local copy and report it.
+  reads. On network/credential failure, use the local copy and report it.<% if (contextTree.upstreamUrl) { %>
+- **An existing checkout you did not clone this session** → before reading it,
+  verify its identity with `<%- bin %> tree tree --expect-remote <%- contextTree.upstreamUrl %> --expect-branch <%- contextTree.branch %>`.
+  A mismatch is declared-broken: never read, never delete, never repoint —
+  it blocks only Tree operations while unrelated work continues.<% } %>
 - **Read-only**: never edit this clone in place. Tree writes branch a
   worktree off it (`<%- contextTree.addWorktreeCommand %>`) and go through
-  a PR/MR.<% } else if (contextTree.status === "explicitly-unbound") { %>
+  a PR/MR.<% } else { %>
 
 ## Tree Location
 
@@ -450,19 +433,7 @@ The one exception is an explicit
 create + bind is the sanctioned path — run its `tree init` directly without
 pre-confirming admin or asking "who runs the bind?". The command validates
 admin/auth and fails closed; surface the exact gap only after an actual
-command failure.<% } else { %>
-
-## Tree Location
-
-The Context Tree binding could not be confirmed at briefing generation time —
-the server was unreachable or returned an invalid binding. This is not a
-confirmed unbind: never claim that no Context Tree is bound, and do not push
-binding or setup. Ordinary tasks continue without the Tree. Only when the
-current request explicitly needs a Tree read/write/audit result does the
-unconfirmed binding matter: state only that this specific Tree operation
-cannot be completed right now because the Tree is unavailable — its binding
-could not be confirmed. The runtime re-resolves the binding at a later
-session start.<% } %>
+command failure.<% } %>
 
 # Skills (First Tree Managed)<% if (resourceSkillRows.length > 0) { %>
 
@@ -489,17 +460,11 @@ harness skills (`tdoc`, `review`, `simplify`, `update-config`, …).
 
 ## First Tree Family
 
-<% if (contextTree.status === "explicitly-unbound") { %>These skills install in every workspace and route from their `description`.
+These skills install in every workspace and route from their `description`.
 `first-tree-read` and `first-tree-write` apply only when the user explicitly
 asks for a Context Tree read or write with a bound tree — ordinary code, repo,
 and error signals never route into them. An explicit build/set-up request loads
-`first-tree-seed`; Review and Audit keep their fail-closed boundaries below.<% } else { %>These skills install in every workspace and route from their `description`.
-The Context Tree binding could not be confirmed when this briefing was
-generated, so `first-tree-read` and `first-tree-write` stay dormant for
-ordinary code, repo, and error signals; an explicit Tree read/write/audit
-request reports only that the Tree is currently unavailable because the
-binding could not be confirmed — it never claims that no Tree is bound.
-Review and Audit keep their fail-closed boundaries below.<% } %>
+`first-tree-seed`; Review and Audit keep their fail-closed boundaries below.
 
 | Skill | Load when |
 |---|---|

@@ -34,7 +34,6 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
-  ContextTreeBindingStatus,
   ContextTreeGitWriteTracker,
   ProviderAttemptSettlement,
 } from "../../runtime/provider-support/index.js";
@@ -249,9 +248,6 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   const harnessFactory = (config.kimiHarnessFactory as KimiHarnessFactory | undefined) ?? createKimiHarness;
   const kaosFactory = (config.kimiKaosFactory as KimiKaosFactory | undefined) ?? (() => LocalKaos.create());
   const maxRetries = maxProviderTurnRetryAttempts();
@@ -875,7 +871,6 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
-        status: contextTreeBindingStatus,
       },
     });
     const workspaceCwd = prepared.workspace;

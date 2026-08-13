@@ -24,7 +24,6 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
-  ContextTreeBindingStatus,
   ContextTreeGitWriteTracker,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
@@ -526,9 +525,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   const spawnFn = (config.cursorSpawnFn as SpawnFn | undefined) ?? spawn;
   const enableMcpServer = (config.cursorMcpEnableFn as CursorMcpEnableFn | undefined) ?? enableCursorMcpServer;
   const resolveBinary =
@@ -708,7 +704,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
-      contextTreeBindingStatus,
       teamSkills: reconciledTeamSkills,
     });
   }
@@ -1630,7 +1625,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
-        status: contextTreeBindingStatus,
       },
     });
     const workspaceCwd = prepared.workspace;

@@ -18,7 +18,7 @@
 // pool — that link is tolerated (reads through it keep working) until the agent
 // replaces it with a real clone per its briefing; the runtime never deletes it.
 
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   SOURCE_REPOS_DIRNAME,
@@ -36,60 +36,8 @@ import {
 export const CONTEXT_TREE_DIRNAME = "context-tree";
 
 /**
- * Base name for retired manifests: when the server affirmatively reports the
- * agent's Context Tree binding as removed, the runtime-generated manifest is
- * renamed to `<base>.<epoch-ms>`. Retired rather than hard-deleted per repo
- * convention, so an operator can inspect what the workspace last declared.
- */
-export const RETIRED_WORKSPACE_MANIFEST_FILENAME = `${WORKSPACE_MANIFEST_FILENAME}.retired`;
-
-/**
- * Archive name for one retirement, probed to be collision-free:
- * `workspace.json.retired.<epoch-ms>`, with a `.N` suffix when that name is
- * already taken (a same-millisecond unbind→rebind→unbind would otherwise
- * overwrite the old archive on POSIX and fail outright on Windows, leaving
- * the active manifest behind). Deleting a fixed archive before the rename
- * would lose the previous recoverable copy when the rename itself fails, and
- * rename-overwrites-target semantics are POSIX-only.
- */
-function retiredManifestArchiveName(stateDir: string): string {
-  const base = `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.${Date.now()}`;
-  if (!existsSync(join(stateDir, base))) return base;
-  for (let suffix = 1; ; suffix += 1) {
-    const candidate = `${base}.${suffix}`;
-    if (!existsSync(join(stateDir, candidate))) return candidate;
-  }
-}
-
-/**
- * Retire `<workspace>/.first-tree/workspace.json` by renaming it to a unique
- * `workspace.json.retired.<epoch-ms>` archive. Idempotent no-op when no
- * manifest exists. Never touches `<workspace>/context-tree/` — without a
- * manifest that checkout is inert residue the agent may still hold local
- * state in.
- *
- * Called only on an EXPLICIT unbind (the server returned `repo: null`). An
- * unresolved binding (fetch failure / invalid payload) must keep the
- * last-known-good manifest, so callers must never route that state here.
- *
- * Same never-throws-out contract as {@link ensureWorkspaceManifest}: the
- * agent home is shared across concurrent sessions and a retirement failure
- * must not fail the session it runs in.
- */
-export function retireWorkspaceManifest(workspace: string, log?: (msg: string) => void): void {
-  try {
-    const stateDir = join(workspace, WORKSPACE_STATE_DIRNAME);
-    const manifestPath = join(stateDir, WORKSPACE_MANIFEST_FILENAME);
-    if (!existsSync(manifestPath)) return;
-    renameSync(manifestPath, join(stateDir, retiredManifestArchiveName(stateDir)));
-  } catch (err) {
-    log?.(`workspace manifest retirement failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-/**
  * Ensure `<workspace>/.first-tree/workspace.json` records
- * `{ tree, sources?, sourcesRoot }`.
+ * `{ tree, sources, sourcesRoot }`.
  *
  * A best-effort, idempotent, **never-throws-out** session-bootstrap step. The
  * agent home is shared across the agent's concurrent sessions, so the write
@@ -113,21 +61,17 @@ export function retireWorkspaceManifest(workspace: string, log?: (msg: string) =
  * not as an invalid workspace.
  *
  * @param sourceNames immediate-subdir names of the bound source repos (the
- *   agent's resolved `gitRepos` localPaths), or `null` when the source set is
- *   unresolved (config/cache miss). `null` never publishes unknown as
- *   resolved: the `sources` key is omitted entirely — an existing manifest's
- *   list is NOT a substitute authority (that comes from the resolved
- *   AgentConfigCache payload, not from disk). Once the source set resolves
- *   again the manifest refills via the normal overwrite path.
+ *   agent's resolved `gitRepos` localPaths). Pass the resolved set only — never
+ *   call this with an unresolved/empty-as-unknown source set.
  */
 export function ensureWorkspaceManifest(
   workspace: string,
-  sourceNames: readonly string[] | null,
+  sourceNames: readonly string[],
   log?: (msg: string) => void,
 ): void {
   // Drop names that can't be immediate-subdir manifest entries (nested
   // `localPath`). Better than failing the whole manifest write.
-  const usable = sourceNames?.filter((name) => {
+  const usable = [...sourceNames].filter((name) => {
     if (isImmediateSubdirName(name)) return true;
     log?.(`workspace manifest: dropping source "${name}" — not an immediate subdirectory name`);
     return false;
@@ -138,7 +82,7 @@ export function ensureWorkspaceManifest(
   try {
     const manifest = workspaceManifestSchema.parse({
       tree: CONTEXT_TREE_DIRNAME,
-      ...(usable !== undefined ? { sources: usable } : {}),
+      sources: usable,
       sourcesRoot: SOURCE_REPOS_DIRNAME,
     });
     serialized = `${JSON.stringify(manifest, null, 2)}\n`;

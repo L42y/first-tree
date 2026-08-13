@@ -29,11 +29,10 @@ export async function runFirstTreeReadCase(
   const contextTreePath = setupFixture(evalCase, paths, reporter);
   const unboundWorkspace =
     evalCase.workspaceKind === "unbound-managed" || evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout";
-  const unresolvedWorkspace = evalCase.workspaceKind === "unresolved-managed";
   // Record the pre-run artifact baseline so the guard can tell a retired
-  // stale checkout (legal residue) from anything the run created or modified.
-  const artifactBaseline =
-    unboundWorkspace || unresolvedWorkspace ? snapshotTreeArtifactBaseline(paths.workspacePath) : null;
+  // stale manifest/checkout (legal residue) from anything the run created or
+  // modified.
+  const artifactBaseline = unboundWorkspace ? snapshotTreeArtifactBaseline(paths.workspacePath) : null;
   const fixtureValidation = validateFixture(paths, contextTreePath, evalCase.id, options.verbose, reporter);
   const runnerResult = await runAgentProvider(
     {
@@ -56,7 +55,7 @@ export async function runFirstTreeReadCase(
     evalCase.expectedFacts,
     evalCase.impactNote,
     evalCase.managedTransport,
-    { artifactBaseline, unboundWorkspace, unresolvedWorkspace, workspacePath: paths.workspacePath },
+    { artifactBaseline, unboundWorkspace, workspacePath: paths.workspacePath },
   );
   const passed = casePassed(
     evalCase.expectedTrigger,
@@ -64,8 +63,6 @@ export async function runFirstTreeReadCase(
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
     evalCase.unboundExplicitRead ?? false,
-    evalCase.unresolvedContinuation ?? false,
-    evalCase.unresolvedExplicitRead ?? false,
   );
   const grading = buildGrading(
     evalCase.id,
@@ -75,8 +72,6 @@ export async function runFirstTreeReadCase(
     evalCase.readMode,
     evalCase.unboundContinuation ?? false,
     evalCase.unboundExplicitRead ?? false,
-    evalCase.unresolvedContinuation ?? false,
-    evalCase.unresolvedExplicitRead ?? false,
   );
   const observability = deriveRunObservability(events);
 
@@ -88,8 +83,6 @@ export async function runFirstTreeReadCase(
       evalCase.readMode,
       evalCase.unboundContinuation ?? false,
       evalCase.unboundExplicitRead ?? false,
-      evalCase.unresolvedContinuation ?? false,
-      evalCase.unresolvedExplicitRead ?? false,
     ),
     expectedTrigger: evalCase.expectedTrigger,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,

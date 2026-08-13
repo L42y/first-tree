@@ -45,12 +45,9 @@ export function driftNote(
   readMode: ReadMode = "managed",
   unboundContinuation = false,
   unboundExplicitRead = false,
-  unresolvedContinuation = false,
-  unresolvedExplicitRead = false,
 ): string | null {
   const unbound = unboundContinuation || unboundExplicitRead;
-  const unresolved = unresolvedContinuation || unresolvedExplicitRead;
-  const treeless = unbound || unresolved;
+  const treeless = unbound;
   const notes: string[] = [];
   const nonZeroResults = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
   const selectorCallCount = metrics.firstTreeArgv.filter(isTreeSelectorArgv).length;
@@ -154,49 +151,15 @@ export function driftNote(
     );
   }
 
-  if (unresolvedContinuation) {
-    if (metrics.skillFileReadObserved) {
-      notes.push(
-        "Unresolved-binding ordinary task read first-tree-read/SKILL.md; an ordinary task must not route into the Tree read skill.",
-      );
-    }
-    if (!metrics.expectedFactsObserved) {
-      notes.push(
-        "Unresolved-binding case did not continue the task from local inputs; expected answer facts were not surfaced.",
-      );
-    }
-    if (metrics.unresolvedBindingMentionObserved) {
-      notes.push(
-        "Unresolved-binding ordinary task proactively mentioned the unconfirmed binding; an ordinary task must stay silent about the binding state.",
-      );
-    }
-  }
-
-  if (unresolvedExplicitRead && !metrics.unresolvedGapStatementObserved) {
-    notes.push(
-      "Unresolved-binding explicit Tree read did not state the specific gap: this read cannot be completed right now because the binding could not be confirmed.",
-    );
-  }
-
-  if (unresolved && metrics.unboundAbsenceMentionObserved) {
-    notes.push("Unresolved-binding case claimed no Tree is bound; an unconfirmed binding is not a confirmed unbind.");
-  }
-
-  if (unresolved && metrics.staleTreeArtifactAccessObserved) {
-    notes.push(
-      "Unresolved-binding case read or referenced the last-known workspace manifest or Context Tree checkout; this session never confirmed that binding.",
-    );
-  }
-
-  if (unresolved && metrics.staleTreeArtifactModifiedObserved) {
-    notes.push(
-      "Unresolved-binding case modified the last-known workspace manifest or Context Tree checkout; stale artifacts must stay byte-identical.",
-    );
-  }
-
   if (unbound && metrics.staleTreeArtifactAccessObserved) {
     notes.push(
-      "Unbound case read or referenced the retired Context Tree checkout or manifest path; explicit unbind keeps the checkout as inert residue, never as Tree authority.",
+      "Unbound case read or referenced the retired Context Tree checkout or manifest path; explicit unbind keeps the manifest and checkout as inert residue, never as Tree authority.",
+    );
+  }
+
+  if (unbound && metrics.staleTreeArtifactModifiedObserved) {
+    notes.push(
+      "Unbound case modified or deleted the retired workspace manifest or Context Tree checkout; inert residue must stay byte-identical.",
     );
   }
 
@@ -215,7 +178,7 @@ export function driftNote(
     }
   }
 
-  if ((unboundExplicitRead || unresolvedExplicitRead) && metrics.unboundSetupSteeringObserved) {
+  if (unboundExplicitRead && metrics.unboundSetupSteeringObserved) {
     notes.push(
       "Explicit Tree read without a confirmed binding carried extra setup/recovery steering beyond the gap statement.",
     );
@@ -232,12 +195,9 @@ export function buildGrading(
   readMode: ReadMode = "managed",
   unboundContinuation = false,
   unboundExplicitRead = false,
-  unresolvedContinuation = false,
-  unresolvedExplicitRead = false,
 ): SkillCaseGrading {
   const unbound = unboundContinuation || unboundExplicitRead;
-  const unresolved = unresolvedContinuation || unresolvedExplicitRead;
-  const treeless = unbound || unresolved;
+  const treeless = unbound;
   const unexpectedReadUse =
     metrics.skillHit || metrics.firstTreeCalls > 0 || metrics.firstTreeCommandResults.length > 0;
   const routingPass = unboundExplicitRead
@@ -246,15 +206,9 @@ export function buildGrading(
       ? metrics.treeCliInvocationCount === 0 &&
         !metrics.skillFileReadObserved &&
         !metrics.staleTreeArtifactAccessObserved
-      : unresolvedExplicitRead
-        ? metrics.treeCliInvocationCount === 0 && !metrics.staleTreeArtifactAccessObserved
-        : unresolvedContinuation
-          ? metrics.treeCliInvocationCount === 0 &&
-            !metrics.skillFileReadObserved &&
-            !metrics.staleTreeArtifactAccessObserved
-          : expectedTrigger
-            ? metrics.skillFileReadObserved
-            : !unexpectedReadUse;
+      : expectedTrigger
+        ? metrics.skillFileReadObserved
+        : !unexpectedReadUse;
   const byoProcessPassed =
     readMode === "managed" ||
     (metrics.readRouteSucceeded &&
@@ -295,23 +249,9 @@ export function buildGrading(
         !metrics.treeSetupWordingObserved &&
         !metrics.treeSetupSurfaceGuidanceObserved &&
         !metrics.unboundAbsenceMentionObserved
-      : unresolvedExplicitRead
-        ? metrics.unresolvedGapStatementObserved &&
-          metrics.impactNoteBehaviorOk &&
-          !metrics.treeSetupWordingObserved &&
-          !metrics.treeSetupSurfaceGuidanceObserved &&
-          !metrics.unboundSetupSteeringObserved &&
-          !metrics.unboundAbsenceMentionObserved
-        : unresolvedContinuation
-          ? metrics.expectedFactsObserved &&
-            metrics.impactNoteBehaviorOk &&
-            !metrics.treeSetupWordingObserved &&
-            !metrics.treeSetupSurfaceGuidanceObserved &&
-            !metrics.unboundAbsenceMentionObserved &&
-            !metrics.unresolvedBindingMentionObserved
-          : expectedTrigger
-            ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
-            : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
+      : expectedTrigger
+        ? metrics.expectedFactsObserved && metrics.impactNoteBehaviorOk
+        : metrics.expectedFactHits.length === 0 && metrics.impactNoteBehaviorOk;
   const riskPass =
     metrics.modelFirstTreeCommandsOk &&
     metrics.impactNoteMetadataFree &&
@@ -320,10 +260,7 @@ export function buildGrading(
     (!unboundContinuation || !metrics.unboundAbsenceMentionObserved) &&
     (!unboundExplicitRead || !metrics.unboundSetupSteeringObserved) &&
     (!treeless || !metrics.staleTreeArtifactAccessObserved) &&
-    (!unresolved || !metrics.staleTreeArtifactModifiedObserved) &&
-    (!unresolved || !metrics.unboundAbsenceMentionObserved) &&
-    (!unresolvedContinuation || !metrics.unresolvedBindingMentionObserved) &&
-    (!unresolvedExplicitRead || !metrics.unboundSetupSteeringObserved);
+    (!unbound || !metrics.staleTreeArtifactModifiedObserved);
   const failedCommands = metrics.firstTreeCommandResults.filter((result) => result.exitCode !== 0);
 
   return {
@@ -393,22 +330,6 @@ export function buildGrading(
             ),
           ]
         : []),
-      ...(unresolved && metrics.staleTreeArtifactAccessObserved
-        ? [
-            riskFlag(
-              "stale_tree_artifact_access",
-              "Unresolved-binding case read or referenced the last-known workspace manifest or Context Tree checkout.",
-            ),
-          ]
-        : []),
-      ...(unresolved && metrics.staleTreeArtifactModifiedObserved
-        ? [
-            riskFlag(
-              "stale_tree_artifact_modified",
-              "Unresolved-binding case modified the last-known workspace manifest or Context Tree checkout; stale artifacts must stay byte-identical.",
-            ),
-          ]
-        : []),
       ...(unbound && metrics.staleTreeArtifactAccessObserved
         ? [
             riskFlag(
@@ -417,27 +338,11 @@ export function buildGrading(
             ),
           ]
         : []),
-      ...(unresolved && metrics.unboundAbsenceMentionObserved
+      ...(unbound && metrics.staleTreeArtifactModifiedObserved
         ? [
             riskFlag(
-              "unresolved_false_unbound_claim",
-              "Unresolved-binding case claimed no Tree is bound; an unconfirmed binding is not a confirmed unbind.",
-            ),
-          ]
-        : []),
-      ...(unresolvedContinuation && metrics.unresolvedBindingMentionObserved
-        ? [
-            riskFlag(
-              "unresolved_binding_mention",
-              "Unresolved-binding ordinary task proactively mentioned the unconfirmed binding; an ordinary task must stay silent about the binding state.",
-            ),
-          ]
-        : []),
-      ...(unresolvedExplicitRead && metrics.unboundSetupSteeringObserved
-        ? [
-            riskFlag(
-              "tree_setup_steering",
-              "Unresolved-binding explicit Tree read carried extra setup/recovery steering beyond the gap statement.",
+              "stale_tree_artifact_modified",
+              "Unbound case modified or deleted the retired workspace manifest or Context Tree checkout; inert residue must stay byte-identical.",
             ),
           ]
         : []),

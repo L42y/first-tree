@@ -1,26 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ContextTreeBindingStatus } from "./bootstrap.js";
 import { bootstrapWorkspace, deepEqualIdentity, IDENTITY_JSON_REL, writeAgentBriefing } from "./bootstrap.js";
 import type { SessionContext } from "./handler.js";
 import { INIT_COMPLETE_SENTINEL_REL } from "./workspace.js";
-import { ensureWorkspaceManifest, retireWorkspaceManifest } from "./workspace-manifest.js";
+import { ensureWorkspaceManifest } from "./workspace-manifest.js";
 import { applyPendingMigrations } from "./workspace-migrations.js";
 
 export type AgentBootstrapParams = {
   workspace: string;
   sessionCtx: SessionContext;
   contextTreePath: string | null;
-  /**
-   * Tri-state binding status from `resolveAgentContextTreeBinding`. Only
-   * `"explicitly-unbound"` retires a stale runtime-generated manifest (the
-   * server affirmatively removed the binding); `"unresolved"` keeps any
-   * existing manifest as last-known-good. Optional for legacy callers: when
-   * omitted it is derived from `contextTreePath` (path ⇒ `bound`, no path ⇒
-   * `unresolved`), which never retires — matching the pre-tri-state
-   * behaviour. Production callers always pass the resolved status.
-   */
-  contextTreeBindingStatus?: ContextTreeBindingStatus;
   /**
    * Pre-rendered shared briefing. Built by {@link buildAgentBriefing}
    * and written to `<workspace>/AGENTS.md` on every start/resume (CLAUDE.md is
@@ -34,9 +23,8 @@ export type AgentBootstrapParams = {
    * Authoritative source-repo `localPath` set from the live, resolved agent
    * config payload (`currentSourceRepoNamesFromPayload`). `null` when the
    * caller could not resolve a payload (cache miss, default-payload
-   * fallback). Threaded into the workspace-manifest write as a possibly-null
-   * source set (the manifest omits `sources` rather than claiming zero) and
-   * into `applyPendingMigrations` so config-dependent migrations can defer
+   * fallback). Gates the workspace-manifest write and is threaded into
+   * `applyPendingMigrations` so config-dependent migrations can defer
    * instead of acting on an empty fallback.
    */
   currentSourceRepoNames: ReadonlySet<string> | null;
@@ -98,7 +86,6 @@ function ensureStableIdentity(workspace: string, sessionCtx: SessionContext, con
  */
 export function ensureAgentBootstrap(params: AgentBootstrapParams): void {
   const { workspace, sessionCtx, contextTreePath, briefing, currentSourceRepoNames } = params;
-  const bindingStatus = params.contextTreeBindingStatus ?? (contextTreePath !== null ? "bound" : "unresolved");
 
   // One-shot workspace migrations: sweep legacy directory-structure residue
   // (UUID-named per-chat snapshots, the legacy `WHITEPAPER.md` symlink) the
@@ -118,29 +105,11 @@ export function ensureAgentBootstrap(params: AgentBootstrapParams): void {
   // agent-managed — the agent clones it on first use per its briefing
   // protocol; the manifest may legitimately name a not-yet-materialised
   // tree. Runs every session (cheap + idempotent) so the manifest tracks
-  // source-repo changes. Gated only on a resolved TREE binding: the manifest
-  // keeps tree binding and source-set authority independent — a null source
-  // set (cache miss) omits the `sources` key instead of falsely claiming
-  // zero sources, borrowing a stale on-disk list, or skipping the write and
-  // leaving the bound tree undiscoverable. `first-tree-seed`'s
-  // self-check treats an empty-or-absent `manifest.sources` as valid
-  // (skills/first-tree-seed, "Resolve readable sources"), so a sources-less
-  // manifest does not trip it.
-  //
-  // An explicit unbind (`repo: null` from the server) instead RETIRES a stale
-  // manifest left by a previously bound session, restoring the "unbound = no
-  // manifest" contract. An unresolved binding (fetch failure / invalid
-  // payload) keeps the last-known-good manifest untouched. This gate sits
-  // before the sentinel fast-path check, so one retirement point covers both
-  // paths.
-  if (bindingStatus === "explicitly-unbound") {
-    retireWorkspaceManifest(workspace, sessionCtx.log);
-  } else if (contextTreePath !== null) {
-    ensureWorkspaceManifest(
-      workspace,
-      currentSourceRepoNames === null ? null : [...currentSourceRepoNames],
-      sessionCtx.log,
-    );
+  // source-repo changes. Gated on BOTH a resolved tree binding and a resolved
+  // source set — a null source set (cache miss) would write a manifest that
+  // falsely claims zero sources, which `first-tree-seed`'s self-check reads.
+  if (contextTreePath !== null && currentSourceRepoNames !== null) {
+    ensureWorkspaceManifest(workspace, [...currentSourceRepoNames], sessionCtx.log);
   }
 
   const sentinelPresent = existsSync(join(workspace, INIT_COMPLETE_SENTINEL_REL));

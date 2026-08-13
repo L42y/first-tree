@@ -14,11 +14,7 @@ import type {
   SessionMessage,
 } from "../../../runtime/contracts.js";
 import { noopDeliveryToken, requireDeliveryToken } from "../../../runtime/contracts.js";
-import type {
-  AgentConfigCache,
-  ChatContext,
-  ContextTreeBindingStatus,
-} from "../../../runtime/provider-support/index.js";
+import type { AgentConfigCache, ChatContext } from "../../../runtime/provider-support/index.js";
 import {
   createContextTreeGitWriteTracker,
   prepareManagedSession,
@@ -144,9 +140,6 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   // Identifies this client process; scopes tmux session ownership so the orphan
   // sweep and session names never collide with another live client / QA slot
   // on the shared tmux server. Empty string is tolerated (falls back to a
@@ -663,7 +656,6 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               path: contextTreePath,
               repoUrl: contextTreeRepoUrl,
               branch: contextTreeBranch,
-              status: contextTreeBindingStatus,
             },
           });
           cwd = prepared.workspace;
@@ -724,7 +716,6 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
               path: contextTreePath,
               repoUrl: contextTreeRepoUrl,
               branch: contextTreeBranch,
-              status: contextTreeBindingStatus,
             },
           });
           cwd = prepared.workspace;

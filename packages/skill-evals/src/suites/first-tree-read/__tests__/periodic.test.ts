@@ -19,9 +19,6 @@ describe("first-tree-read periodic cases", () => {
       "first-tree-read-unbound-explicit-read-reports-gap-periodic",
       "first-tree-read-stale-checkout-software-continues-periodic",
       "first-tree-read-stale-checkout-explicit-read-reports-gap-periodic",
-      "first-tree-read-unresolved-software-continues-periodic",
-      "first-tree-read-unresolved-pasted-content-continues-periodic",
-      "first-tree-read-unresolved-explicit-read-reports-gap-periodic",
     ]);
     expect(FIRST_TREE_READ_PERIODIC_CASES[0]?.briefingMode).toBe("runtime-generated");
     expect(FIRST_TREE_READ_PERIODIC_CASES[0]?.workspaceKind).toBe("context-tree");
@@ -120,7 +117,7 @@ describe("first-tree-read periodic cases", () => {
     }
   });
 
-  it("builds the stale-checkout briefing without a manifest but with the retired Tree checkout present", () => {
+  it("builds the stale-checkout briefing with the stale manifest and retired Tree checkout present", () => {
     const evalCase = findFirstTreeReadPeriodicCase("first-tree-read-stale-checkout-software-continues-periodic");
     if (evalCase === null) throw new Error("missing stale-checkout read periodic case");
 
@@ -134,56 +131,17 @@ describe("first-tree-read periodic cases", () => {
     try {
       const contextTreePath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
 
-      // Explicit unbind retires the manifest but keeps the clean checkout as
-      // inert residue; the briefing must still say explicitly unbound.
+      // Explicit unbind deletes nothing: the stale manifest and the retired
+      // checkout stay on disk as inert residue; the briefing must still say
+      // explicitly unbound.
       expect(contextTreePath).not.toBeNull();
-      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(false);
+      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(true);
       expect(existsSync(join(paths.workspacePath, "context-tree", "NODE.md"))).toBe(true);
 
       const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
       expect(briefing).toContain("generated without a bound Context Tree — a supported state");
       expect(briefing).not.toContain("binding repository");
       expect(briefing).not.toContain("could not be confirmed");
-
-      const identity = JSON.parse(
-        readFileSync(join(paths.workspacePath, ".first-tree-workspace", "identity.json"), "utf8"),
-      ) as { contextTreePath: unknown };
-      expect(identity.contextTreePath).toBeNull();
-
-      expect(readFileSync(join(paths.workspacePath, "source-repo", "README.md"), "utf8")).toContain(
-        "Inbox delivery is deduplicated at the client boundary",
-      );
-    } finally {
-      rmSync(paths.runRoot, { force: true, recursive: true });
-    }
-  });
-
-  it("builds the unresolved-binding briefing with the stale manifest and Tree checkout present", () => {
-    const evalCase = findFirstTreeReadPeriodicCase("first-tree-read-unresolved-software-continues-periodic");
-    if (evalCase === null) throw new Error("missing unresolved read periodic case");
-
-    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-    const paths = createRunPaths({
-      caseId: "read-unresolved-briefing-fixture-test",
-      packageRoot,
-      startedAt: new Date().toISOString(),
-    });
-
-    try {
-      const contextTreePath = setupFixture(evalCase, paths, createEvalReporter(evalCase.id, false));
-
-      // The unresolved state keeps the last-known manifest and Tree checkout
-      // on disk; the briefing must still refuse to confirm the binding.
-      expect(contextTreePath).not.toBeNull();
-      expect(existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"))).toBe(true);
-      expect(existsSync(join(paths.workspacePath, "context-tree", "NODE.md"))).toBe(true);
-
-      const briefing = readFileSync(join(paths.workspacePath, "AGENTS.md"), "utf8");
-      expect(briefing).toContain("The Context Tree binding could not be confirmed when this briefing was");
-      expect(briefing).toContain("never claim that no Context Tree is bound");
-      expect(briefing).not.toContain("generated without a bound Context Tree");
-      expect(briefing).not.toContain("binding repository");
-      expect(briefing).not.toContain("first-tree tree tree");
 
       const identity = JSON.parse(
         readFileSync(join(paths.workspacePath, ".first-tree-workspace", "identity.json"), "utf8"),

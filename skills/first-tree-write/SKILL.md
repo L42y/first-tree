@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.6
+version: 0.16.7
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -31,22 +31,14 @@ because one is absent.
 - **Explicitly unbound:** when the trusted managed briefing explicitly states
   there is no bound Tree, no Tree write is possible and there is no write
   task. Continue the underlying work from the source artifact and locally
-  available inputs without Tree operations. If the user explicitly asked for
-  a Tree write, state only that this Tree write cannot be completed because
-  no Tree is bound; do not expand the absence into bind/create guidance. An
-  explicit first-time Tree creation request routes to `first-tree-seed`, not
-  this skill.
-- **Unresolved binding:** when the trusted managed briefing states the Tree
-  binding could not be confirmed, no Tree write is possible this session and
-  ordinary work continues exactly as in the explicitly-unbound case. A
-  last-known `.first-tree/workspace.json` manifest or `context-tree/`
-  checkout may still be on disk from an earlier session — never read, trust,
-  or recover from them, because this session never confirmed that binding.
-  Run no Tree commands and offer no Tree setup guidance. If the user
-  explicitly asked for a Tree write, state only that this Tree write cannot
-  be completed right now because the binding could not be confirmed; never
-  claim that no Tree is bound (that is the explicitly-unbound state) and
-  never guess a Tree.
+  available inputs without Tree operations. A leftover
+  `.first-tree/workspace.json` manifest or `context-tree/` checkout from a
+  previously bound session may still be on disk — it is inert residue, and
+  this gate precedes any disk discovery: never read, trust, or recover from
+  it. If the user explicitly asked for a Tree write, state only that this
+  Tree write cannot be completed because no Tree is bound; do not expand the
+  absence into bind/create guidance. An explicit first-time Tree creation
+  request routes to `first-tree-seed`, not this skill.
 - **Declared but broken:** "broken" means the binding metadata, resolved
   path, or upstream identity is malformed or inconsistent — in that case
   keep failing closed for Tree operations — never guess a Tree. Report

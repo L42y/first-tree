@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import { findAttachmentFile } from "../runtime/attachment-store.js";
-import type { ContextTreeBindingResolution } from "../runtime/bootstrap.js";
+import type { ContextTreeBinding } from "../runtime/bootstrap.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -82,7 +82,7 @@ function createSessionManager(opts: {
   handler?: AgentHandler;
   handlerConfig?: HandlerConfig;
   handlerFactory?: HandlerFactory;
-  resolveContextTreeBinding?: () => Promise<ContextTreeBindingResolution>;
+  resolveContextTreeBinding?: () => Promise<ContextTreeBinding | null>;
   ackEntry?: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
   agentConfigCache?: AgentConfigCache;
@@ -104,7 +104,7 @@ function createSessionManager(opts: {
     subprocessProbe: opts.subprocessProbe,
     handlerFactory: opts.handlerFactory ?? (() => handler),
     handlerConfig: opts.handlerConfig ?? { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
-    resolveContextTreeBinding: opts.resolveContextTreeBinding ?? (async () => ({ status: "explicitly-unbound" })),
+    resolveContextTreeBinding: opts.resolveContextTreeBinding ?? (async () => null),
     agentIdentity: {
       agentId: "agent-1",
       inboxId: "inbox-agent-1",

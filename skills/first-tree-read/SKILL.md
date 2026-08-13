@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.8.4
+version: 0.8.5
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -52,20 +52,14 @@ connect a Tree merely because one is absent.
 - **Explicitly unbound:** when the trusted managed briefing explicitly states
   there is no bound Tree, exit this skill for ordinary tasks and continue the
   task without Context Tree content. Run no Tree commands and offer no Tree
-  setup guidance. If the user explicitly asked for a Tree read, state only
-  that this Tree read cannot be completed because no Tree is bound; do not
-  expand the absence into bind/create guidance. An explicit first-time Tree
-  creation request routes to `first-tree-seed`, not this skill.
-- **Unresolved binding:** when the trusted managed briefing states the Tree
-  binding could not be confirmed, ordinary tasks exit this skill and continue
-  exactly as in the explicitly-unbound case. A last-known
-  `.first-tree/workspace.json` manifest or `context-tree/` checkout may still
-  be on disk from an earlier session — never read, trust, or recover from
-  them, because this session never confirmed that binding. Run no Tree
-  commands and offer no Tree setup guidance. If the user explicitly asked for
-  a Tree read, state only that this Tree read cannot be completed right now
-  because the binding could not be confirmed; never claim that no Tree is
-  bound (that is the explicitly-unbound state) and never guess a Tree.
+  setup guidance. A leftover `.first-tree/workspace.json` manifest or
+  `context-tree/` checkout from a previously bound session may still be on
+  disk — it is inert residue, and this gate precedes any disk discovery:
+  never read, trust, or recover from it. If the user explicitly asked for a
+  Tree read, state only that this Tree read cannot be completed because no
+  Tree is bound; do not expand the absence into bind/create guidance. An
+  explicit first-time Tree creation request routes to `first-tree-seed`, not
+  this skill.
 - **Declared but broken:** "broken" means the binding metadata, resolved
   path, or upstream identity is malformed or inconsistent — in that case
   keep failing closed for Tree operations — never guess a Tree. Report
@@ -186,6 +180,15 @@ path (the briefing carries the upstream URL, branch, and a ready
 `git clone` command). Once the directory exists, continue below. (If the
 path exists as a **symlink**, treat it as the legacy shared-pool layout —
 remove only the symlink, then clone per the briefing.)
+
+If the resolved path **already exists as a checkout you did not clone this
+session**, verify its identity before any content read — the Tree always
+lands at the same path, so a leftover checkout from a previous binding is
+indistinguishable by location alone. Run `tree tree` with the briefing's
+declared identity (`--expect-remote <upstream> --expect-branch <branch>`).
+A mismatch is declared-broken: never read, never delete, never repoint —
+stop the Tree read, report the binding gap, and continue any task work that
+does not depend on Tree content.
 
 You do **not** need a separate `git pull` step before reading: the
 `<firstTreeInvocation> tree tree` command in step 2 runs `git pull --ff-only` on the

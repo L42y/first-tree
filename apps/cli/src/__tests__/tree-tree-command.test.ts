@@ -354,6 +354,51 @@ describe("tree tree command action", () => {
     });
   });
 
+  it("fails closed on a same-path checkout whose origin and branch do not match the declared binding", () => {
+    // A real checkout at the canonical <workspace>/context-tree path, cloned
+    // from origin A on main, while the briefing declares origin B / branch
+    // "release": the guard must fire before any content read or pull.
+    const seed = makeTreeFixture();
+    const base = makeTempDir("ft-tree-binding-guard-");
+    const originA = join(base, "origin-a.git");
+    const originB = join(base, "origin-b.git");
+    const checkout = join(base, "context-tree");
+    execFileSync("git", ["init", "--bare", "-b", "main", originA], { stdio: "ignore" });
+    execFileSync("git", ["init", "--bare", "-b", "main", originB], { stdio: "ignore" });
+    git(seed, "remote", "add", "origin", originA);
+    git(seed, "push", "-u", "origin", "main");
+    execFileSync("git", ["clone", originA, checkout], { stdio: "ignore" });
+
+    const headBefore = git(checkout, "rev-parse", "HEAD");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null): never => {
+      throw new ProcessExit(typeof code === "number" ? code : 0);
+    });
+    process.chdir(checkout);
+
+    expect(() =>
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: originB, expectBranch: "release" }))),
+    ).toThrow(ProcessExit);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    // Zero content reads: no snapshot output.
+    expect(readMockOutput(stdout)).toBe("");
+    const errorPayload = JSON.parse(readMockOutput(stderr));
+    expect(errorPayload.ok).toBe(false);
+    expect(errorPayload.error.code).toBe("TREE_TREE_BINDING_MISMATCH");
+    expect(errorPayload.error.message).toContain("origin and branch mismatch");
+    // Zero modifications: no pull, no writes — HEAD and worktree untouched.
+    expect(git(checkout, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(git(checkout, "status", "--porcelain")).toBe("");
+
+    // Control: the matching declared identity reads normally (human-mode
+    // output goes to stderr in this harness).
+    runTreeTreeCommand(context(commandWithOptions({ expectRemote: originA, expectBranch: "main" }, ["docs"])));
+    expect(process.exitCode).toBeUndefined();
+    expect(readMockOutput(stderr)).toContain("docs/");
+  });
+
   it("prints the selected subtree with repo-root ancestor context in human mode", () => {
     const root = makeTreeFixture();
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);

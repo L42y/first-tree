@@ -33,7 +33,6 @@ import type {
   AgentConfigCache,
   ChatContext,
   ContextTreeAttribution,
-  ContextTreeBindingStatus,
   ContextTreeGitWriteTracker,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
@@ -511,9 +510,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
 
   let cwd: string | null = null;
   let codex: Codex | null = null;
@@ -618,7 +614,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
-      contextTreeBindingStatus,
       teamSkills: reconciledTeamSkills,
     });
   }
@@ -1555,7 +1550,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           path: contextTreePath,
           repoUrl: contextTreeRepoUrl,
           branch: contextTreeBranch,
-          status: contextTreeBindingStatus,
         },
       });
       cwd = prepared.workspace;
@@ -1643,7 +1637,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
           path: contextTreePath,
           repoUrl: contextTreeRepoUrl,
           branch: contextTreeBranch,
-          status: contextTreeBindingStatus,
         },
       });
       cwd = prepared.workspace;

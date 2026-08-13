@@ -34,12 +34,9 @@ describe("bootstrap edge coverage", () => {
     await expect(
       resolveAgentContextTreeBinding(defaultBranchSdk, "/workspace", (msg) => logs.push(msg)),
     ).resolves.toEqual({
-      status: "bound",
-      binding: {
-        path: join("/workspace", "context-tree"),
-        repoUrl: "git@github.com:acme/context-tree.git",
-        branch: "main",
-      },
+      path: join("/workspace", "context-tree"),
+      repoUrl: "git@github.com:acme/context-tree.git",
+      branch: "main",
     });
 
     const missingBranchSdk = {
@@ -48,12 +45,9 @@ describe("bootstrap edge coverage", () => {
     await expect(
       resolveAgentContextTreeBinding(missingBranchSdk, "/workspace", (msg) => logs.push(msg)),
     ).resolves.toEqual({
-      status: "bound",
-      binding: {
-        path: join("/workspace", "context-tree"),
-        repoUrl: "ssh://git@github.com/acme/context-tree.git",
-        branch: "main",
-      },
+      path: join("/workspace", "context-tree"),
+      repoUrl: "ssh://git@github.com/acme/context-tree.git",
+      branch: "main",
     });
 
     const namedBranchSdk = {
@@ -65,18 +59,15 @@ describe("bootstrap edge coverage", () => {
     await expect(
       resolveAgentContextTreeBinding(namedBranchSdk, "/workspace", (msg) => logs.push(msg)),
     ).resolves.toEqual({
-      status: "bound",
-      binding: {
-        path: join("/workspace", "context-tree"),
-        repoUrl: "https://github.com/acme/context-tree.git",
-        branch: "release/2026-07",
-      },
+      path: join("/workspace", "context-tree"),
+      repoUrl: "https://github.com/acme/context-tree.git",
+      branch: "release/2026-07",
     });
 
     expect(logs).toEqual([]);
   });
 
-  it("distinguishes explicit unbind from unresolved bindings without logging raw values", async () => {
+  it("skips unconfigured, invalid, and unreachable context tree bindings without logging raw values", async () => {
     const logs: string[] = [];
 
     const unconfiguredSdk = {
@@ -84,7 +75,7 @@ describe("bootstrap edge coverage", () => {
     } as unknown as FirstTreeHubSDK;
     await expect(
       resolveAgentContextTreeBinding(unconfiguredSdk, "/workspace", (msg) => logs.push(msg)),
-    ).resolves.toEqual({ status: "explicitly-unbound" });
+    ).resolves.toBeNull();
 
     const invalidRepo = "http://private.example.invalid/secret-tree.git";
     const invalidRepoSdk = {
@@ -92,7 +83,7 @@ describe("bootstrap edge coverage", () => {
     } as unknown as FirstTreeHubSDK;
     await expect(
       resolveAgentContextTreeBinding(invalidRepoSdk, "/workspace", (msg) => logs.push(msg)),
-    ).resolves.toEqual({ status: "unresolved" });
+    ).resolves.toBeNull();
 
     const invalidBranch = "private..branch";
     const invalidBranchSdk = {
@@ -103,16 +94,14 @@ describe("bootstrap edge coverage", () => {
     } as unknown as FirstTreeHubSDK;
     await expect(
       resolveAgentContextTreeBinding(invalidBranchSdk, "/workspace", (msg) => logs.push(msg)),
-    ).resolves.toEqual({ status: "unresolved" });
+    ).resolves.toBeNull();
 
     const failingSdk = {
       getAgentContextTreeConfig: vi.fn(async () => {
         throw new Error(`server returned ${invalidRepo} on ${invalidBranch}`);
       }),
     } as unknown as FirstTreeHubSDK;
-    await expect(resolveAgentContextTreeBinding(failingSdk, "/workspace", (msg) => logs.push(msg))).resolves.toEqual({
-      status: "unresolved",
-    });
+    await expect(resolveAgentContextTreeBinding(failingSdk, "/workspace", (msg) => logs.push(msg))).resolves.toBeNull();
 
     expect(logs).toEqual([
       "Context Tree binding skipped: not configured on server",
@@ -122,33 +111,6 @@ describe("bootstrap edge coverage", () => {
     ]);
     expect(logs.join("\n")).not.toContain(invalidRepo);
     expect(logs.join("\n")).not.toContain(invalidBranch);
-  });
-
-  it("treats only an explicit repo:null as an unbind — undefined or missing repo is unresolved", async () => {
-    const logs: string[] = [];
-
-    // `repo: undefined` is not an affirmative unbind: the payload fails the
-    // schema parse and degrades to `unresolved`, so it can never trigger
-    // manifest retirement.
-    const undefinedRepoSdk = {
-      getAgentContextTreeConfig: vi.fn(async () => ({ repo: undefined, branch: "main" })),
-    } as unknown as FirstTreeHubSDK;
-    await expect(
-      resolveAgentContextTreeBinding(undefinedRepoSdk, "/workspace", (msg) => logs.push(msg)),
-    ).resolves.toEqual({ status: "unresolved" });
-
-    // A missing repo key is equally invalid, not an unbind.
-    const missingRepoSdk = {
-      getAgentContextTreeConfig: vi.fn(async () => ({ branch: "main" })),
-    } as unknown as FirstTreeHubSDK;
-    await expect(
-      resolveAgentContextTreeBinding(missingRepoSdk, "/workspace", (msg) => logs.push(msg)),
-    ).resolves.toEqual({ status: "unresolved" });
-
-    expect(logs).toEqual([
-      "Context Tree binding skipped: server returned an invalid binding",
-      "Context Tree binding skipped: server returned an invalid binding",
-    ]);
   });
 
   it("merges legacy runtime directories recursively without overwriting newer target files", () => {

@@ -328,10 +328,10 @@ export class AgentSlot {
       const workspaceRoot = join(defaultDataDir(), "workspaces", this.config.name);
       // Pure config resolution — no git. The agent itself materialises and
       // refreshes the clone per the protocol injected into its briefing.
-      const contextTreeResolution = await resolveAgentContextTreeBinding(sdk, workspaceRoot, (msg) =>
+      const contextTreeBinding = await resolveAgentContextTreeBinding(sdk, workspaceRoot, (msg) =>
         this.logger.info(msg),
       );
-      if (contextTreeResolution.status !== "bound") {
+      if (!contextTreeBinding) {
         this.logger.info(
           "context tree not configured or binding unresolved — agent will start without organizational context",
         );
@@ -367,12 +367,9 @@ export class AgentSlot {
         handlerConfig: {
           workspaceRoot,
           agentName: this.config.name,
-          contextTreePath: contextTreeResolution.status === "bound" ? contextTreeResolution.binding.path : undefined,
-          contextTreeRepoUrl:
-            contextTreeResolution.status === "bound" ? contextTreeResolution.binding.repoUrl : undefined,
-          contextTreeBranch:
-            contextTreeResolution.status === "bound" ? contextTreeResolution.binding.branch : undefined,
-          contextTreeBindingStatus: contextTreeResolution.status,
+          contextTreePath: contextTreeBinding?.path,
+          contextTreeRepoUrl: contextTreeBinding?.repoUrl,
+          contextTreeBranch: contextTreeBinding?.branch,
           runtimeProvider: runtimeProvider.data,
           // Identifies the owning client process. The claude-code-tui handler
           // uses it to scope tmux session ownership (orphan sweep / names) so

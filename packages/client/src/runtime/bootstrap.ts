@@ -38,29 +38,6 @@ export type ContextTreeBinding = {
 };
 
 /**
- * Tri-state outcome of resolving the agent's Context Tree binding. The three
- * states must NOT collapse into one "no binding" value, because they license
- * different lifecycle behaviour downstream:
- *
- * - `bound` — the server returned a valid binding; the workspace manifest
- *   declares the tree.
- * - `explicitly-unbound` — the server affirmatively reported `repo: null`
- *   (the binding was intentionally removed). A stale runtime-generated
- *   manifest from a previously bound session is retired so the next start
- *   truly has no declaration.
- * - `unresolved` — the server could not be reached or returned an invalid
- *   binding. Last-known-good state is kept: an existing manifest stays, and
- *   the briefing must not claim "no Context Tree is bound" (that would
- *   masquerade a transient/invalid state as an explicit unbind).
- */
-export type ContextTreeBindingResolution =
-  | { status: "bound"; binding: ContextTreeBinding }
-  | { status: "explicitly-unbound" }
-  | { status: "unresolved" };
-
-export type ContextTreeBindingStatus = ContextTreeBindingResolution["status"];
-
-/**
  * Resolve the Context Tree binding for the authenticated runtime agent —
  * pure configuration resolution, no filesystem or git side effects.
  *
@@ -74,45 +51,40 @@ export type ContextTreeBindingStatus = ContextTreeBindingResolution["status"];
  * pool keeps working for reads until the agent replaces it per its
  * briefing protocol).
  *
- * Returns a {@link ContextTreeBindingResolution} tri-state: `bound` for a
- * valid binding, `explicitly-unbound` when the server affirmatively reports
- * no tree (`repo: null`), and `unresolved` when the fetch fails or the
- * payload is invalid (graceful degradation — the agent starts tree-less but
- * keeps last-known-good state).
+ * Returns `null` when no tree is configured or the server is unreachable
+ * (graceful degradation — the agent starts tree-less).
  */
 export async function resolveAgentContextTreeBinding(
   sdk: FirstTreeHubSDK,
   workspaceRoot: string,
   log: (msg: string) => void,
-): Promise<ContextTreeBindingResolution> {
+): Promise<ContextTreeBinding | null> {
   try {
     const config: unknown = await sdk.getAgentContextTreeConfig();
-    // Only an explicit `repo: null` is an affirmative unbind. A `repo:
-    // undefined` / missing-key / otherwise-invalid payload is NOT: it falls
-    // through to the schema parse below and degrades to `unresolved`, so a
-    // malformed response can never trigger manifest retirement.
-    if (typeof config === "object" && config !== null && "repo" in config && config.repo === null) {
+    if (
+      typeof config === "object" &&
+      config !== null &&
+      "repo" in config &&
+      (config.repo === null || config.repo === undefined)
+    ) {
       log("Context Tree binding skipped: not configured on server");
-      return { status: "explicitly-unbound" };
+      return null;
     }
 
     const binding = contextTreeActiveBindingSchema.safeParse(config);
     if (!binding.success) {
       log("Context Tree binding skipped: server returned an invalid binding");
-      return { status: "unresolved" };
+      return null;
     }
 
     return {
-      status: "bound",
-      binding: {
-        path: join(workspaceRoot, CONTEXT_TREE_DIRNAME),
-        repoUrl: binding.data.repo,
-        branch: binding.data.branch,
-      },
+      path: join(workspaceRoot, CONTEXT_TREE_DIRNAME),
+      repoUrl: binding.data.repo,
+      branch: binding.data.branch,
     };
   } catch {
     log("Context Tree binding skipped: failed to fetch config from server");
-    return { status: "unresolved" };
+    return null;
   }
 }
 

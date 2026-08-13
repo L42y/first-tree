@@ -250,7 +250,7 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
   {
     briefingMode: "runtime-generated",
     description:
-      "Managed explicitly-unbound workspace (runtime-generated briefing, no manifest, retired Tree checkout left on disk) with a software task that continues from the local source repo without reading or modifying the residue.",
+      "Managed explicitly-unbound workspace (runtime-generated briefing, stale manifest and retired Tree checkout left on disk as inert residue) with a software task that continues from the local source repo without reading or modifying the residue.",
     expectedFacts: ["Inbox delivery is deduplicated at the client boundary."],
     expectedTrigger: false,
     id: "first-tree-read-stale-checkout-software-continues-periodic",
@@ -265,7 +265,7 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
   {
     briefingMode: "runtime-generated",
     description:
-      "Managed explicitly-unbound workspace (runtime-generated briefing, no manifest, retired Tree checkout left on disk) with an explicit Context Tree read request that reports only the specific gap without reading or modifying the residue.",
+      "Managed explicitly-unbound workspace (runtime-generated briefing, stale manifest and retired Tree checkout left on disk as inert residue) with an explicit Context Tree read request that reports only the specific gap without reading or modifying the residue.",
     expectedFacts: [],
     expectedTrigger: false,
     id: "first-tree-read-stale-checkout-explicit-read-reports-gap-periodic",
@@ -276,53 +276,6 @@ export const FIRST_TREE_READ_PERIODIC_CASES: readonly FirstTreeReadEvalCase[] = 
     readMode: "managed",
     unboundExplicitRead: true,
     workspaceKind: "explicitly-unbound-with-stale-checkout",
-  },
-  {
-    briefingMode: "runtime-generated",
-    description:
-      "Managed unresolved-binding workspace (runtime-generated briefing, last-known manifest and Tree checkout present) with a software task that continues from the local source repo without touching the stale artifacts.",
-    expectedFacts: ["Inbox delivery is deduplicated at the client boundary."],
-    expectedTrigger: false,
-    id: "first-tree-read-unresolved-software-continues-periodic",
-    impactNote: { mode: "absent" },
-    managedTransport: "send",
-    prompt: "Read ./source-repo/README.md and answer: where is inbox delivery deduplicated?",
-    promptAlternates: ["According to ./source-repo/README.md, where does inbox deduplication happen?"],
-    readMode: "managed",
-    unresolvedContinuation: true,
-    workspaceKind: "unresolved-managed",
-  },
-  {
-    briefingMode: "runtime-generated",
-    description:
-      "Managed unresolved-binding workspace (runtime-generated briefing, last-known manifest and Tree checkout present) with a pasted-content question answered without Tree operations.",
-    expectedFacts: ["Refresh tokens rotate on every use to limit replay."],
-    expectedTrigger: false,
-    id: "first-tree-read-unresolved-pasted-content-continues-periodic",
-    impactNote: { mode: "absent" },
-    managedTransport: "send",
-    prompt: 'Summarize this pasted note in one sentence: "Refresh tokens rotate on every use to limit replay."',
-    promptAlternates: [
-      'In one sentence, what does this note say? "Refresh tokens rotate on every use to limit replay."',
-    ],
-    readMode: "managed",
-    unresolvedContinuation: true,
-    workspaceKind: "unresolved-managed",
-  },
-  {
-    briefingMode: "runtime-generated",
-    description:
-      "Managed unresolved-binding workspace (runtime-generated briefing, last-known manifest and Tree checkout present) with an explicit Context Tree read request that reports only the unconfirmed-binding gap.",
-    expectedFacts: [],
-    expectedTrigger: false,
-    id: "first-tree-read-unresolved-explicit-read-reports-gap-periodic",
-    impactNote: { mode: "absent" },
-    managedTransport: "send",
-    prompt: "Read this workspace's Context Tree and tell me what it records about JWT route scopes.",
-    promptAlternates: ["Use the Context Tree: what does it record about JWT route scopes?"],
-    readMode: "managed",
-    unresolvedExplicitRead: true,
-    workspaceKind: "unresolved-managed",
   },
 ];
 

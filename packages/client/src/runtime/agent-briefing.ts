@@ -7,7 +7,7 @@ import {
   type PromptSection,
 } from "@first-tree/shared";
 import type * as ejs from "ejs";
-import type { ContextTreeBindingStatus, PredeclaredSourceRepo } from "./bootstrap.js";
+import type { PredeclaredSourceRepo } from "./bootstrap.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity } from "./handler.js";
 
@@ -75,12 +75,6 @@ type SourceRepositoryRow = Readonly<{
 
 type ContextTreeRenderModel = Readonly<{
   bound: boolean;
-  /**
-   * Tri-state binding status. The tree-less template sections render ONLY for
-   * `explicitly-unbound`; `unresolved` (fetch failure / invalid binding) gets
-   * its own wording that never claims "no Context Tree is bound".
-   */
-  status: ContextTreeBindingStatus;
   path: string | null;
   upstreamUrl: string | null;
   branch: string;
@@ -138,15 +132,6 @@ export type BuildAgentBriefingOptions = {
   /** Upstream coordinates used by the agent-managed Context Tree clone. */
   contextTreeRepoUrl?: string | null;
   contextTreeBranch?: string | null;
-  /**
-   * Tri-state binding status from `resolveAgentContextTreeBinding`. Optional
-   * for legacy callers: when omitted it is derived from `contextTreePath`
-   * (path ⇒ `bound`, no path ⇒ `explicitly-unbound`), matching the
-   * pre-tri-state briefing output. Production callers always pass the
-   * resolved status so an `unresolved` state renders its own wording instead
-   * of claiming "no Context Tree is bound".
-   */
-  contextTreeBindingStatus?: ContextTreeBindingStatus;
 };
 
 /** Build the unified agent-level briefing materialized as `AGENTS.md`. */
@@ -203,7 +188,6 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
       opts.contextTreePath,
       opts.contextTreeRepoUrl ?? null,
       opts.contextTreeBranch ?? null,
-      opts.contextTreeBindingStatus ?? (opts.contextTreePath !== null ? "bound" : "explicitly-unbound"),
     ),
     contextTreePolicy: readCanonicalContextTreePolicy(),
     contextTreeWriteRouting: readCanonicalContextTreeWriteRouting(),
@@ -228,17 +212,11 @@ function buildContextTreeRenderModel(
   path: string | null,
   upstreamUrl: string | null,
   configuredBranch: string | null,
-  status: ContextTreeBindingStatus,
 ): ContextTreeRenderModel {
   const branch = configuredBranch ?? "main";
-  // The status is authoritative over the coordinates: a non-bound status with
-  // a stale non-null path must NOT masquerade as bound (the template renders
-  // the bound sections off `bound`), and a bound status without a path
-  // degrades to `unresolved` rather than claiming an explicit unbind.
-  if (path === null || status !== "bound") {
+  if (path === null) {
     return {
       bound: false,
-      status: status === "bound" ? "unresolved" : status,
       path: null,
       upstreamUrl: null,
       branch,
@@ -254,7 +232,6 @@ function buildContextTreeRenderModel(
   const quotedPath = shellQuote(path);
   return {
     bound: true,
-    status: "bound",
     path,
     upstreamUrl,
     branch,

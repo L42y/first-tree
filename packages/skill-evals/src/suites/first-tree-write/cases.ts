@@ -180,54 +180,6 @@ export const FIRST_TREE_WRITE_GATE_CASES: readonly FirstTreeWriteEvalCase[] = [
   {
     briefingMode: "minimal",
     expected: {
-      action: "skip_tree_write_unresolved",
-      requireVerify: false,
-      responseHints: ["deterministic", "quality", "judge"],
-      treeDiff: "none",
-    },
-    fixture: {
-      sourceArtifact: "durable-decision-note",
-      treeState: "unresolved",
-    },
-    forbidden: {
-      content: [],
-      sideEffects: ["tree_write", "tree_pr"],
-    },
-    id: "unresolved-tree-skips-write",
-    prompt: "Summarize `source-artifacts/durable-decision-note.md` in three bullets.",
-    provider: "codex",
-    skill: "first-tree-write",
-    status: "implemented",
-    tags: ["unbound-tree", "unresolved-tree"],
-    tier: "gate",
-  },
-  {
-    briefingMode: "minimal",
-    expected: {
-      action: "report_unresolved_tree_write_gap",
-      requireVerify: false,
-      responseHints: ["binding could not be confirmed", "could not confirm", "cannot be completed"],
-      treeDiff: "none",
-    },
-    fixture: {
-      sourceArtifact: "durable-decision-note",
-      treeState: "unresolved",
-    },
-    forbidden: {
-      content: [],
-      sideEffects: ["tree_write", "tree_pr"],
-    },
-    id: "unresolved-tree-explicit-write-reports-gap",
-    prompt: "Use first-tree-write to reflect `source-artifacts/durable-decision-note.md` into the Context Tree.",
-    provider: "codex",
-    skill: "first-tree-write",
-    status: "implemented",
-    tags: ["unbound-tree", "unresolved-tree", "source-boundary"],
-    tier: "gate",
-  },
-  {
-    briefingMode: "minimal",
-    expected: {
       action: "report_unbound_tree_write_gap",
       requireVerify: false,
       responseHints: ["no tree is bound", "no bound tree", "cannot be completed"],
@@ -249,30 +201,6 @@ export const FIRST_TREE_WRITE_GATE_CASES: readonly FirstTreeWriteEvalCase[] = [
     tags: ["unbound-tree", "source-boundary"],
     tier: "gate",
   },
-  {
-    briefingMode: "minimal",
-    expected: {
-      action: "report_unresolved_tree_write_gap",
-      requireVerify: false,
-      responseHints: ["binding could not be confirmed", "could not confirm", "cannot be completed"],
-      treeDiff: "none",
-    },
-    fixture: {
-      sourceArtifact: "absent",
-      treeState: "unresolved",
-    },
-    forbidden: {
-      content: [],
-      sideEffects: ["tree_write", "tree_pr"],
-    },
-    id: "unresolved-no-source-explicit-write-reports-gap",
-    prompt: "Use first-tree-write to update the Context Tree with the team's latest architecture decision.",
-    provider: "codex",
-    skill: "first-tree-write",
-    status: "implemented",
-    tags: ["unbound-tree", "unresolved-tree", "source-boundary"],
-    tier: "gate",
-  },
 ];
 
 export const FIRST_TREE_WRITE_EVAL_CASES: readonly SkillEvalCase[] = [
@@ -284,7 +212,7 @@ export const FIRST_TREE_WRITE_EVAL_CASES: readonly SkillEvalCase[] = [
     },
     fixture: {
       sourceArtifacts: ["absent", "durable-decision-note", "implementation-only-diff"],
-      treeStates: ["populated", "unbound", "explicitly-unbound-with-stale-checkout", "unresolved"],
+      treeStates: ["populated", "unbound", "explicitly-unbound-with-stale-checkout"],
     },
     id: FLOOR_CASE_ID,
     skill: "first-tree-write",
@@ -326,7 +254,7 @@ export const FIRST_TREE_WRITE_SUITE: SkillEvalSuiteDefinition = {
       },
       {
         caseIds: FIRST_TREE_WRITE_GATE_CASES.map((evalCase) => evalCase.id),
-        description: "Implemented source-boundary, tree-diff, unbound, and unresolved-binding live gate cases.",
+        description: "Implemented source-boundary, tree-diff, and unbound (incl. stale-residue) live gate cases.",
         status: "implemented",
         tier: "gate",
       },

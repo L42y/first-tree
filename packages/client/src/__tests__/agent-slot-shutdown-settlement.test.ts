@@ -199,7 +199,7 @@ describe("AgentSlot/SessionManager shutdown settlement authority", () => {
           inFlight,
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
+      resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",
@@ -333,7 +333,7 @@ describe("AgentSlot/SessionManager shutdown settlement authority", () => {
           inFlight,
         }),
       handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
-      resolveContextTreeBinding: async () => ({ status: "explicitly-unbound" as const }),
+      resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-agent-1",

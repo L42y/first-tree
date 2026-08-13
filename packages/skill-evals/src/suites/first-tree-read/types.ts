@@ -7,8 +7,7 @@ export type WorkspaceKind =
   | "byo-context-tree"
   | "context-tree"
   | "explicitly-unbound-with-stale-checkout"
-  | "unbound-managed"
-  | "unresolved-managed";
+  | "unbound-managed";
 
 /**
  * Pre-run record of the Tree artifacts a treeless run must leave alone: the
@@ -69,21 +68,6 @@ export type FirstTreeReadEvalCase = {
    * creation, and no bind/create/setup/install guidance.
    */
   unboundExplicitRead?: boolean;
-  /**
-   * Managed workspace whose briefing states the binding could not be confirmed
-   * while the last-known manifest and Tree checkout remain on disk: the task
-   * must continue from local inputs with zero Tree CLI invocations, no skill
-   * routing, and zero reads of the stale manifest or checkout.
-   */
-  unresolvedContinuation?: boolean;
-  /**
-   * Managed unresolved-binding workspace where the user explicitly asks for a
-   * Context Tree read: the agent must state only that this read cannot be
-   * completed right now because the binding could not be confirmed — never
-   * claiming that no Tree is bound — with zero Tree CLI invocations, zero
-   * stale-manifest/checkout reads, and no setup steering.
-   */
-  unresolvedExplicitRead?: boolean;
   workspaceKind: WorkspaceKind;
 };
 
@@ -156,16 +140,12 @@ export type EvalMetrics = {
   unboundGapStatementObserved: boolean;
   /** Delivered output for an explicit Tree read carried any setup/recovery steering. */
   unboundSetupSteeringObserved: boolean;
-  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale checkout baseline. */
+  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale baseline. */
   unboundTreeArtifactsCreated: boolean;
   /** The run read or referenced the stale `.first-tree/workspace.json` manifest or `context-tree/` checkout. */
   staleTreeArtifactAccessObserved: boolean;
-  /** An unresolved-binding run modified or deleted the stale manifest or Tree checkout; stale artifacts must stay byte-identical. */
+  /** An unbound run modified or deleted the stale manifest or Tree checkout; inert residue must stay byte-identical. */
   staleTreeArtifactModifiedObserved: boolean;
-  /** Delivered output states the unresolved gap: this read cannot complete right now because the binding could not be confirmed. */
-  unresolvedGapStatementObserved: boolean;
-  /** Delivered output mentioned the unconfirmed binding outside the explicit unresolved Tree-read gap statement. */
-  unresolvedBindingMentionObserved: boolean;
   legacyReadActivationCalls: number;
   modelFirstTreeCommandsOk: boolean;
   readActivationCalls: number;

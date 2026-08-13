@@ -22,7 +22,6 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../../runtime/contra
 import type {
   AgentConfigCache,
   ContextTreeAttribution,
-  ContextTreeBindingStatus,
   ContextTreeGitWriteTracker,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
@@ -199,9 +198,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
   const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
   const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
-  const contextTreeBindingStatus =
-    (config.contextTreeBindingStatus as ContextTreeBindingStatus | undefined) ??
-    (contextTreePath !== null ? "bound" : "explicitly-unbound");
   const clientFactory = readClientFactory(config.codexAppServerClientFactory) ?? defaultClientFactory;
   const resolveRuntimeBinary =
     readRuntimeBinaryResolver(config.codexRuntimeBinaryResolver) ?? resolveCodexRuntimeBinary;
@@ -389,7 +385,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       contextTreePath,
       contextTreeRepoUrl,
       contextTreeBranch,
-      contextTreeBindingStatus,
       teamSkills: reconciledTeamSkills,
     });
   }
@@ -444,7 +439,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         path: contextTreePath,
         repoUrl: contextTreeRepoUrl,
         branch: contextTreeBranch,
-        status: contextTreeBindingStatus,
       },
       beforeBriefing: async ({ workspace }) => {
         env = buildEnv(sessionCtx);

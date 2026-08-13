@@ -19,7 +19,6 @@ export const FIRST_TREE_READ_EVAL_CASES: readonly SkillEvalCase[] = [
         "context-tree",
         "explicitly-unbound-with-stale-checkout",
         "unbound-managed",
-        "unresolved-managed",
       ],
     },
     id: FLOOR_CASE_ID,
@@ -97,10 +96,10 @@ function validateFirstTreeReadFloor(cases: readonly SkillEvalCase[]): readonly s
     !fixture.workspaceKinds.includes("context-tree") ||
     !fixture.workspaceKinds.includes("byo-context-tree") ||
     !fixture.workspaceKinds.includes("unbound-managed") ||
-    !fixture.workspaceKinds.includes("unresolved-managed")
+    !fixture.workspaceKinds.includes("explicitly-unbound-with-stale-checkout")
   ) {
     errors.push(
-      `${FLOOR_CASE_ID}: fixture must include managed, BYO, unbound-managed, and unresolved-managed workspace kinds.`,
+      `${FLOOR_CASE_ID}: fixture must include managed, BYO, unbound-managed, and explicitly-unbound-with-stale-checkout workspace kinds.`,
     );
   }
 
@@ -127,7 +126,7 @@ export const FIRST_TREE_READ_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: FIRST_TREE_READ_PERIODIC_CASES.map((evalCase) => evalCase.id),
         description:
-          "Run the read trigger against a runtime-generated briefing fixture, plus managed-unbound and unresolved-binding continuation and explicit-read gap cases, without live First Tree Cloud E2E.",
+          "Run the read trigger against a runtime-generated briefing fixture, plus managed-unbound and explicitly-unbound stale-residue continuation and explicit-read gap cases, without live First Tree Cloud E2E.",
         status: "implemented",
         tier: "periodic",
       },

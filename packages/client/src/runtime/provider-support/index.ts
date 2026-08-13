@@ -86,7 +86,6 @@ export type {
   AgentBootstrapParams,
   BuildAgentBriefingOptions,
   ChatContext,
-  ContextTreeBindingStatus,
   ContextTreeCoordinates,
   PreparedManagedSession,
   PrepareManagedSessionParams,

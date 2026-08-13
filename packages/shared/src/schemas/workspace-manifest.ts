@@ -17,11 +17,6 @@ import { z } from "zod";
  *   - `sources` entries are subdirectory names with the same constraints.
  *     Duplicates are rejected. They live under `sourcesRoot` (see below):
  *     each bound source clone is `<workspace>/<sourcesRoot>/<sources[i]>`.
- *     `sources` is OMITTABLE so the tree binding and the source-set authority
- *     stay independently expressible: an absent key means "source set
- *     unknown/unresolved" (never publish unknown as resolved-empty), an
- *     explicit `[]` means resolved-empty, and a non-empty array means
- *     resolved. Consumers must handle absence (e.g. `manifest.sources ?? []`).
  *   - `sourcesRoot` is the immediate subdirectory that contains the bound
  *     source clones (the runtime writes `"source-repos"`). It is optional for
  *     back-compat: a manifest written before the source-repos layer omits it,
@@ -52,21 +47,17 @@ const subdirectoryNameSchema = z
 export const workspaceManifestSchema = z
   .object({
     tree: subdirectoryNameSchema,
-    sources: z
-      .array(subdirectoryNameSchema)
-      .refine((values) => new Set(values).size === values.length, {
-        message: "sources must not contain duplicate entries",
-      })
-      .optional(),
+    sources: z.array(subdirectoryNameSchema).refine((values) => new Set(values).size === values.length, {
+      message: "sources must not contain duplicate entries",
+    }),
     sourcesRoot: subdirectoryNameSchema.optional(),
   })
   // tree∉sources only matters in the LEGACY FLAT layout, where tree and sources
   // share the workspace-root namespace. With `sourcesRoot` present they live in
   // different namespaces — `tree` at `<ws>/<tree>`, a source at
   // `<ws>/<sourcesRoot>/<name>` — so a source may legitimately share the tree's
-  // name (e.g. a repo literally named `context-tree`) without colliding. An
-  // absent `sources` (unknown/unresolved source set) never trips this rule.
-  .refine((manifest) => manifest.sourcesRoot !== undefined || !(manifest.sources ?? []).includes(manifest.tree), {
+  // name (e.g. a repo literally named `context-tree`) without colliding.
+  .refine((manifest) => manifest.sourcesRoot !== undefined || !manifest.sources.includes(manifest.tree), {
     message: "tree subdirectory must not also appear in sources (flat layout, no sourcesRoot)",
     path: ["sources"],
   })

@@ -30,7 +30,6 @@ type SessionRecord = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
-  bindingEpoch: number;
   status: SessionState;
   activeSlotHeld: boolean;
   lastActivity: number;
@@ -304,7 +303,6 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     chatId,
     claudeSessionId: `session-${chatId}`,
     handler: handler(),
-    bindingEpoch: 0,
     status,
     activeSlotHeld: status === "active",
     lastActivity: Date.now(),
