@@ -54,8 +54,10 @@ export type OpenTagFirstUseScan = (signal?: AbortSignal) => Promise<OpenTagFirst
  * the list again but pay for only the conversations they have not seen before,
  * instead of re-reading hundreds of the same chats every five seconds.
  *
- * The cache is per member and per Agent by construction: the caller builds one
- * of these per (member, Agent, Bot) and throws it away when any of them change.
+ * The cache is per (Agent, Bot) and deliberately not per member: which chat
+ * carries which Bot binding is the same answer whoever asks. Who may act on
+ * that answer is a separate question, settled by the caller's ownership gate
+ * before this scan is ever run.
  */
 export function createOpenTagFirstUseScan(agentUuid: string, botBindingId: string): OpenTagFirstUseScan {
   const ruledOut = new Set<string>();
