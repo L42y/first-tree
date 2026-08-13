@@ -1,6 +1,13 @@
+import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
-import { classifyOpenTagAgent, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
+import {
+  classifyOpenTagAgent,
+  isFeishuHandoffUsable,
+  type OpenTagAgentRead,
+  resolveOpenTagStep,
+  resolveOpenTagToolsPrep,
+} from "../flow.js";
 
 const ORG = "org-1";
 
@@ -194,5 +201,88 @@ describe("why the readiness refresh has to be authoritative", () => {
     };
     expect(shouldEnterOnboarding(stale)).toBe(true);
     expect(shouldEnterOnboarding({ ...stale, currentOrgHasPersonalAgent: true })).toBe(false);
+  });
+});
+
+describe("what the Agent's own tool preparation is doing", () => {
+  const preparing = { cliState: "missing" as const, callFailed: false, slow: false };
+
+  it("prepares nothing for a member who has not chosen Feishu", () => {
+    // No Bot means no commitment, and a machine check nobody asked for is
+    // exactly the install concept this flow exists to keep off the member.
+    expect(resolveOpenTagToolsPrep({ cliState: null, callFailed: false, slow: false })).toEqual({ state: "idle" });
+    expect(resolveOpenTagToolsPrep({ cliState: null, callFailed: true, slow: true })).toEqual({ state: "idle" });
+  });
+
+  it("asks nothing of the member while the wait is ordinary", () => {
+    expect(resolveOpenTagToolsPrep(preparing)).toEqual({ state: "preparing" });
+    expect(resolveOpenTagToolsPrep({ ...preparing, cliState: "unknown" })).toEqual({ state: "preparing" });
+  });
+
+  it("offers a way forward once waiting has stopped being reasonable", () => {
+    expect(resolveOpenTagToolsPrep({ ...preparing, slow: true })).toEqual({ state: "recoverable", reason: "slow" });
+    expect(resolveOpenTagToolsPrep({ ...preparing, callFailed: true })).toEqual({
+      state: "recoverable",
+      reason: "failed",
+    });
+  });
+
+  it("says the request failed rather than that it is taking a while", () => {
+    // A request that never landed is established, not suspected: the member is
+    // not waiting for anything, and a timeout that measures nothing would tell
+    // them to keep waiting for work that was never started.
+    expect(resolveOpenTagToolsPrep({ ...preparing, callFailed: true, slow: true })).toEqual({
+      state: "recoverable",
+      reason: "failed",
+    });
+  });
+
+  it("reports the capability, not the history that produced it", () => {
+    // The Agent may well have failed once and recovered on its own. What the
+    // member needs is whether their Agent can work in Feishu now.
+    expect(resolveOpenTagToolsPrep({ cliState: "ready", callFailed: true, slow: true })).toEqual({ state: "ready" });
+  });
+});
+
+describe("when the Feishu handoff is genuinely usable", () => {
+  const usable: FeishuBotBinding = {
+    id: "binding-1",
+    agentId: "agent-1",
+    appId: "cli_1",
+    botOpenId: null,
+    botName: null,
+    botAvatarUrl: null,
+    tenantKey: null,
+    status: "active",
+    connectionStatus: "connected",
+    grantedScopes: [],
+    registrationUrl: null,
+    registrationExpiresAt: null,
+    lastConnectedAt: null,
+    lastEventAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
+  };
+
+  it("needs both halves at once", () => {
+    expect(isFeishuHandoffUsable(usable)).toBe(true);
+    expect(isFeishuHandoffUsable(null)).toBe(false);
+  });
+
+  it("refuses a reachable Bot the Agent could not answer", () => {
+    // Messages would arrive and go unanswered, and the Task they create would
+    // otherwise finish onboarding on a handoff that does not work.
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "missing", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "unknown", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+  });
+
+  it("refuses a ready Computer with no reachable Bot", () => {
+    expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
+    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(false);
   });
 });

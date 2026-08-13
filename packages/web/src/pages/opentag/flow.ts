@@ -1,4 +1,4 @@
-import type { Agent } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { canManageAgentDetail } from "../agent-detail/access.js";
 
 /**
@@ -124,6 +124,78 @@ export type OpenTagFirstUse =
   | { state: "absent" }
   /** Established: this Agent's Feishu Task exists, and this is its chat. */
   | { state: "present"; chatId: string };
+
+/**
+ * How long the Agent's own tool preparation is allowed to look ordinary.
+ *
+ * Preparing the official Feishu CLI on the member's Computer usually lands well
+ * inside this, so a longer wait is the first honest signal that watching the
+ * page may not be enough. It is a presentation threshold only: nothing is
+ * cancelled, the Task keeps running, and the member is offered a retry and a
+ * way out rather than an error.
+ */
+export const FEISHU_TOOLS_SLOW_MS = 90_000;
+
+/**
+ * What the second half of the Feishu handoff — the Agent's own tools — is
+ * doing, as far as the member needs to know.
+ *
+ * Installing the official CLI is a system mechanism, not a step: the member
+ * chose Feishu, and everything after that is the Agent preparing its own
+ * Computer. So the normal states carry no action at all, and an action appears
+ * only once waiting has stopped being a reasonable thing to ask of them.
+ */
+export type OpenTagToolsPrep =
+  /** The member has not committed to Feishu yet, so nothing is being prepared. */
+  | { state: "idle" }
+  /** The Agent is preparing its tools and the member has nothing to do. */
+  | { state: "preparing" }
+  /** The Agent can call Feishu from this Computer. */
+  | { state: "ready" }
+  /** Waiting is no longer enough: offer a retry and a way out. */
+  | { state: "recoverable"; reason: "slow" | "failed" };
+
+/**
+ * Turn the binding read plus the automatic request's own history into that
+ * state.
+ *
+ * `failed` outranks the timer because it is established rather than merely
+ * suspected: the request that was supposed to start the work did not, so the
+ * member is not waiting for anything and should be told immediately instead of
+ * at the end of a timeout that measures nothing.
+ *
+ * A ready CLI outranks both. The preparation may well have failed once and
+ * succeeded on the Agent's own retry, or the tools may have been present all
+ * along — either way the capability is a fact about the machine now, not a
+ * verdict on how it got there.
+ */
+export function resolveOpenTagToolsPrep(input: {
+  /** The exact Agent's reported CLI capability, or null while it has no Bot. */
+  cliState: FeishuBotBinding["cli"]["state"] | null;
+  /** The automatic preparation request failed and has not since succeeded. */
+  callFailed: boolean;
+  /** Preparation has been running for at least `FEISHU_TOOLS_SLOW_MS`. */
+  slow: boolean;
+}): OpenTagToolsPrep {
+  if (input.cliState === null) return { state: "idle" };
+  if (input.cliState === "ready") return { state: "ready" };
+  if (input.callFailed) return { state: "recoverable", reason: "failed" };
+  if (input.slow) return { state: "recoverable", reason: "slow" };
+  return { state: "preparing" };
+}
+
+/**
+ * Whether this Agent can actually carry Feishu work right now.
+ *
+ * Both halves have to hold at once. A reachable Bot with no CLI receives
+ * messages the Agent cannot answer, and finishing onboarding on that would
+ * declare a handoff that does not work; a ready CLI with no Bot has nothing to
+ * answer. Only the pair is the thing the member was promised.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  if (!binding) return false;
+  return binding.status === "active" && binding.connectionStatus === "connected" && binding.cli.state === "ready";
+}
 
 /**
  * Where an Agent in the URL puts the member, or `null` while the facts have not

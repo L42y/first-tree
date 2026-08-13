@@ -35,16 +35,24 @@ export function OpenTagShell({
   activeStep,
   completedSteps,
   handoff,
+  heading,
   children,
 }: {
   activeStep: OpenTagStepId;
   completedSteps: readonly OpenTagStepId[];
   handoff: OpenTagHandoff | null;
+  /**
+   * Replaces the step's standing heading when the step itself has become a
+   * different question — currently only the Feishu step, once the Bot half is
+   * settled and the wait is longer than usual. The rail, the position, and the
+   * step identity are unaffected: this is the same step saying where it is.
+   */
+  heading?: { why: string; lead: string };
   children: ReactNode;
 }): ReactElement {
   const { logout } = useAuth();
   const activeIndex = OPENTAG_STEPS.indexOf(activeStep);
-  const stepCopy = OPENTAG_STEP_COPY[activeStep];
+  const stepCopy = heading ?? OPENTAG_STEP_COPY[activeStep];
 
   return (
     <div className="flex min-h-screen flex-col bg-background">

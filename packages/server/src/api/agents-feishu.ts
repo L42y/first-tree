@@ -3,6 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { requireAgentAccess } from "../scope/require-resource.js";
 import * as chatService from "../services/chat/conversation.js";
 import { notifyRecipients } from "../services/notifier.js";
+import { feishuCliSetupKickoffKey } from "../services/onboarding-kickoff.js";
 
 const INSTALL_PROMPT = `请检查当前机器是否已安装飞书官方 lark-cli。如果没有，请根据当前 OS 和环境使用官方方式安装；不要擅自使用 sudo，遇到管理员权限时先询问我。安装后运行 lark-cli --version 和 lark-cli doctor 验证并回复结果。不要手工配置或输出 App Secret：需要调用 Bot 时，先用 First Tree 的 feishu credential-env 命令生成临时环境文件，source 后直接调用官方 lark-cli，并在完成后删除该临时文件。`;
 
@@ -50,6 +51,11 @@ export async function agentFeishuBindingRoutes(app: FastifyInstance): Promise<vo
         organizationId: agent.organizationId,
         initialRecipientAgentIds: [agent.uuid],
         contextParticipantAgentIds: [],
+        // Create-or-reuse, because this endpoint is now called automatically as
+        // well as by hand: OpenTag asks for it the moment the member commits to
+        // Feishu, and that request repeats on every reload, retry, and extra
+        // tab. Without the key each of those would open another identical Task.
+        onboardingKickoffKey: feishuCliSetupKickoffKey(scope.humanAgentId, agent.uuid, agent.clientId),
         topic: `配置 ${agent.displayName} 的飞书 CLI`,
         initialMessage: {
           format: "markdown",

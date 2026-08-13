@@ -19,6 +19,25 @@ import { messages } from "../db/schema/messages.js";
 import { createChat } from "./chat/conversation.js";
 import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./chat/message.js";
 
+/**
+ * Shared idempotency key for the Agent's own Feishu CLI setup Task.
+ *
+ * The Task is a system mechanism, not a step the member performs, so every way
+ * of reaching it — the automatic OpenTag preparation, a reload, a second tab,
+ * a retry, and the permanent Agent Detail repair action — has to converge on
+ * one conversation instead of leaving a trail of identical Tasks.
+ *
+ * The Client is part of the key because the capability the Task establishes is
+ * a fact about one machine: moving the Agent to another Computer genuinely
+ * needs a new check there, and reusing the old machine's Task would answer a
+ * question nobody asked. An Agent with no Client cannot run the check at all,
+ * so those callers share one inert key rather than minting a fresh Task per
+ * request.
+ */
+export function feishuCliSetupKickoffKey(humanAgentId: string, agentId: string, clientId: string | null): string {
+  return `${humanAgentId}:${agentId}:feishu-cli:${clientId ?? "unbound"}`;
+}
+
 /** Shared idempotency key for a landing-campaign action launcher. */
 export function campaignActionKickoffKey(humanAgentId: string, action: LandingCampaignActionContext): string {
   // GitHub owner/repo are case-insensitive, and the two paths derive the slug

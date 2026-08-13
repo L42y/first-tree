@@ -2,21 +2,29 @@ import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { createAgent, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
+import { createAgent, createAgentFeishuSetupChat, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
 import { useComputerConnection } from "../../features/agent-setup/use-computer-connection.js";
-import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
+import {
+  feishuBindingQueryKey,
+  feishuBindingQueryOptions,
+  isFeishuBotReachable,
+} from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
+import { feishuToolsDelayedCopy } from "./copy.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
+  FEISHU_TOOLS_SLOW_MS,
+  isFeishuHandoffUsable,
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,
   resolveOpenTagStep,
+  resolveOpenTagToolsPrep,
 } from "./flow.js";
 import { OpenTagShell } from "./opentag-shell.js";
 import { isAgentNameConflict, recoverCreatedAgent } from "./recover-created-agent.js";
@@ -243,6 +251,46 @@ export function OpenTagPage(): ReactElement | null {
   // the key: a re-registered Bot asks the question again rather than serving
   // the previous Bot's answer.
   const binding = feishuQuery.data?.binding ?? null;
+
+  // Committing to Feishu is what licenses this, and the binding is the durable
+  // proof of it: nothing is prepared for a member who has not asked for a Bot,
+  // and a reload does not have to remember a click because the Bot itself
+  // remembers. The call is create-or-reuse server-side, so firing it again on
+  // every load, tab, and retry converges on one Task rather than a pile.
+  const prepareTools = useMutation({
+    mutationFn: () => createAgentFeishuSetupChat(agentUuid ?? ""),
+  });
+  const toolsUnprepared = !!binding && binding.cli.state !== "ready";
+  const prepareToolsMutate = prepareTools.mutate;
+  const prepareToolsSettled = prepareTools.isPending || prepareTools.isSuccess || prepareTools.isError;
+  const [toolsPrepStartedAt, setToolsPrepStartedAt] = useState<number | null>(null);
+  useEffect(() => {
+    if (!feishuReady || !toolsUnprepared || prepareToolsSettled) return;
+    setToolsPrepStartedAt((started) => started ?? Date.now());
+    prepareToolsMutate();
+  }, [feishuReady, toolsUnprepared, prepareToolsSettled, prepareToolsMutate]);
+
+  // The threshold is a presentation change, not a deadline, so it is armed once
+  // and never disarmed: the Task keeps running either way, and a wait that has
+  // already been long does not become short again.
+  const [toolsSlow, setToolsSlow] = useState(false);
+  useEffect(() => {
+    if (toolsPrepStartedAt === null || toolsSlow) return;
+    const remaining = FEISHU_TOOLS_SLOW_MS - (Date.now() - toolsPrepStartedAt);
+    if (remaining <= 0) {
+      setToolsSlow(true);
+      return;
+    }
+    const timer = setTimeout(() => setToolsSlow(true), remaining);
+    return () => clearTimeout(timer);
+  }, [toolsPrepStartedAt, toolsSlow]);
+
+  const toolsPrep = resolveOpenTagToolsPrep({
+    cliState: binding?.cli.state ?? null,
+    callFailed: prepareTools.isError,
+    slow: toolsSlow,
+  });
+
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
   // Ownership, not readability, is what licenses the stamp below.
   //
@@ -267,10 +315,17 @@ export function OpenTagPage(): ReactElement | null {
     () => createOpenTagFirstUseScan(agentUuid ?? "", botBindingId ?? ""),
     [agentUuid, botBindingId],
   );
+  // Both halves of the handoff gate the search itself, not its answer. An Agent
+  // whose Computer cannot call Feishu would receive a first message it can
+  // never reply to, and finding that Task would stamp onboarding complete on a
+  // handoff that does not work. Gating the read rather than masking its result
+  // also means a Task already found stays found: the conversation is a durable
+  // fact, and a later capability blip should not walk the member back through a
+  // step they finished.
   const firstUseQuery = useQuery({
     queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
     queryFn: ({ signal }) => scanFirstUse(signal),
-    enabled: feishuReady && ownsUrlAgent && !!botBindingId,
+    enabled: feishuReady && ownsUrlAgent && !!botBindingId && isFeishuHandoffUsable(binding),
     // A failed read must stay "we don't know", never "not used yet" — and never
     // a blank frame. The poll below is the retry.
     retry: false,
@@ -331,8 +386,21 @@ export function OpenTagPage(): ReactElement | null {
       ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
       : null;
 
+  // The only heading this flow swaps: once the Bot half is settled and the
+  // Agent's own preparation is what is left, the standing "connect" heading
+  // would keep asking for something the member already did.
+  const feishuHeading =
+    step === "connect-feishu" && feishuReady && toolsPrep.state === "recoverable"
+      ? feishuToolsDelayedCopy(!!binding && isFeishuBotReachable(binding))
+      : undefined;
+
   return (
-    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
+    <OpenTagShell
+      activeStep={shellStep}
+      completedSteps={completedSteps}
+      handoff={handoff}
+      {...(feishuHeading ? { heading: feishuHeading } : {})}
+    >
       {facts.state === "unreadable" && (
         <OpenTagRecoverableError
           message="We couldn't load your Agent. Nothing was lost — it and its setup are still there."
@@ -403,7 +471,6 @@ export function OpenTagPage(): ReactElement | null {
       )}
       {feishuReady && step === "connect-feishu" && agent && agentUuid && (
         <StepConnectFeishu
-          agentDisplayName={agent.displayName}
           agentUuid={agentUuid}
           binding={binding}
           loading={feishuQuery.isPending}
@@ -414,6 +481,15 @@ export function OpenTagPage(): ReactElement | null {
           starting={startFeishu.isPending}
           error={startFeishu.error instanceof Error ? startFeishu.error.message : null}
           onConnect={() => startFeishu.mutate()}
+          tools={toolsPrep}
+          retrying={prepareTools.isPending}
+          // The same idempotent request the automatic path makes: when it never
+          // landed this starts the Task, and when it did the Agent is already
+          // working on the one Task this retry converges on.
+          onRetryTools={() => {
+            prepareToolsMutate();
+            void feishuQuery.refetch();
+          }}
         />
       )}
       {step === "use-in-feishu" && agent && firstUseChatId && (
