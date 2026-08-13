@@ -425,6 +425,57 @@ describe("server config", () => {
     expect(config.rateLimit).toBeUndefined();
   });
 
+  it("defaults the organization attachment object quota to 10,000 and accepts env overrides", async () => {
+    const defaultDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+
+    const defaultConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: defaultDir,
+    });
+
+    expect(defaultConfig.attachments.organizationObjectQuota).toBe(10_000);
+
+    resetConfig();
+    const configuredDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "25000");
+
+    const configured = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: configuredDir,
+    });
+
+    expect(configured.attachments.organizationObjectQuota).toBe(25_000);
+  });
+
+  it("rejects invalid organization attachment object quotas", async () => {
+    const zeroDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "0");
+
+    await expect(
+      initConfig({
+        schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+        role: "server",
+        configDir: zeroDir,
+      }),
+    ).rejects.toThrow(/organizationObjectQuota/);
+
+    resetConfig();
+    const nonNumericDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "not-a-number");
+
+    await expect(
+      initConfig({
+        schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+        role: "server",
+        configDir: nonNumericDir,
+      }),
+    ).rejects.toThrow(/organizationObjectQuota/);
+  });
+
   it("accepts operator-provided production server secrets without writing generated YAML", async () => {
     const configDir = makeTempConfigDir();
     const jwtSecret = "operator-jwt-secret";

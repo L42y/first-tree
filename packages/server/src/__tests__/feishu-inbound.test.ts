@@ -80,6 +80,7 @@ describe("Feishu inbound pipeline", () => {
         stream: Readable.from([bytes]),
         headers: { "content-type": "image/png", "content-length": String(bytes.length) },
       }),
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     };
   }
 

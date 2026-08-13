@@ -14,9 +14,20 @@ import type { AttachmentBlobStore } from "./attachment-blob-store.js";
 const log = createLogger("attachment");
 
 export const MAX_ORGANIZATION_ATTACHMENT_BYTES = 2 * 1024 * 1024 * 1024;
-export const MAX_ORGANIZATION_ATTACHMENTS = 1_000;
 export const MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER = 3;
 export const ORPHAN_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Deployment-resolved attachment object quota. Every creation path must pass
+ * the value parsed at server startup
+ * (`attachments.organizationObjectQuota`, env
+ * `FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT`) so HTTP uploads, Feishu inbound
+ * hydration, Skill bundle backfills, and Template adoption copies all enforce
+ * the same limit.
+ */
+export type AttachmentObjectQuota = {
+  maxOrganizationAttachments: number;
+};
 
 export type AttachmentRow = typeof attachments.$inferSelect;
 
@@ -37,7 +48,11 @@ export type CreateAttachmentInput = {
  * Reserve team quota, read one bounded upload, and publish the immutable
  * bytes together with their metadata in PostgreSQL.
  */
-export async function createAttachment(db: Database, input: CreateAttachmentInput): Promise<AttachmentRow> {
+export async function createAttachment(
+  db: Database,
+  input: CreateAttachmentInput,
+  quota: AttachmentObjectQuota,
+): Promise<AttachmentRow> {
   validateCreateInput(input);
   const id = input.id ?? randomUUID();
   const reservedBytes = input.contentLength ?? MAX_ATTACHMENT_BYTES;
@@ -46,10 +61,15 @@ export async function createAttachment(db: Database, input: CreateAttachmentInpu
     const targetDb = tx as unknown as Database;
     await lockOrganizationAttachmentQuota(targetDb, input.organizationId);
     await assertCallerUploadConcurrency(targetDb, input.organizationId, input.uploadedBy);
-    await assertOrganizationQuota(targetDb, input.organizationId, {
-      additionalObjects: 1,
-      additionalBytes: reservedBytes,
-    });
+    await assertOrganizationQuota(
+      targetDb,
+      input.organizationId,
+      {
+        additionalObjects: 1,
+        additionalBytes: reservedBytes,
+      },
+      quota,
+    );
     await targetDb.insert(attachments).values({
       id,
       organizationId: input.organizationId,
@@ -79,11 +99,16 @@ export async function createAttachment(db: Database, input: CreateAttachmentInpu
     return await db.transaction(async (tx) => {
       const targetDb = tx as unknown as Database;
       await lockOrganizationAttachmentQuota(targetDb, input.organizationId);
-      await assertOrganizationQuota(targetDb, input.organizationId, {
-        excludeId: id,
-        additionalObjects: 1,
-        additionalBytes: bytes.byteLength,
-      });
+      await assertOrganizationQuota(
+        targetDb,
+        input.organizationId,
+        {
+          excludeId: id,
+          additionalObjects: 1,
+          additionalBytes: bytes.byteLength,
+        },
+        quota,
+      );
       const [row] = await targetDb
         .update(attachments)
         .set({
@@ -179,6 +204,7 @@ async function assertOrganizationQuota(
     additionalObjects: number;
     additionalBytes: number;
   },
+  quota: AttachmentObjectQuota,
 ): Promise<void> {
   const conditions = [
     eq(attachments.organizationId, organizationId),
@@ -194,8 +220,8 @@ async function assertOrganizationQuota(
     .where(and(...conditions));
   const objectCount = Number(usage?.objectCount ?? 0);
   const sizeBytes = Number(usage?.sizeBytes ?? 0);
-  if (objectCount + input.additionalObjects > MAX_ORGANIZATION_ATTACHMENTS) {
-    throw new BadRequestError(`Organization attachment quota of ${MAX_ORGANIZATION_ATTACHMENTS} objects exceeded`);
+  if (objectCount + input.additionalObjects > quota.maxOrganizationAttachments) {
+    throw new BadRequestError(`Organization attachment quota of ${quota.maxOrganizationAttachments} objects exceeded`);
   }
   if (sizeBytes + input.additionalBytes > MAX_ORGANIZATION_ATTACHMENT_BYTES) {
     throw new BadRequestError(`Organization attachment quota of ${MAX_ORGANIZATION_ATTACHMENT_BYTES} bytes exceeded`);
@@ -220,6 +246,7 @@ export async function copyAttachmentForOrganization(
   sourceId: string,
   targetOrganizationId: string,
   uploadedBy: string,
+  quota: AttachmentObjectQuota,
 ): Promise<AttachmentRow> {
   // Quota-first, matching the normal upload path: the target Team's advisory
   // lock is always taken before any source row lock, so concurrent
@@ -242,10 +269,15 @@ export async function copyAttachmentForOrganization(
   } else {
     throw new BadRequestError("Source attachment bytes are unavailable");
   }
-  await assertOrganizationQuota(db, targetOrganizationId, {
-    additionalObjects: 1,
-    additionalBytes: bytes.byteLength,
-  });
+  await assertOrganizationQuota(
+    db,
+    targetOrganizationId,
+    {
+      additionalObjects: 1,
+      additionalBytes: bytes.byteLength,
+    },
+    quota,
+  );
   const id = randomUUID();
   const [row] = await db
     .insert(attachments)

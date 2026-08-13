@@ -2137,6 +2137,17 @@ The server applies this as one actor-aware global safety cap per minute. It
 keys by agent id, then user id, then request IP for unauthenticated traffic.
 Old per-route rate-limit env vars are no longer read.
 
+**Attachments:**
+
+| Variable | Default |
+|---|---|
+| `FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT` | `10000` |
+
+Maximum number of attachment objects one Team may hold. Chat uploads, Feishu
+inbound resources, Team Skill bundles, and Agent Template adoption copies all
+share the same per-Team pool. The per-file 10 MiB cap and the per-Team 2 GiB
+byte quota are fixed and stay the storage backstop regardless of this value.
+
 **Inbox / WS / archive sweeper:**
 
 | Variable | Default |

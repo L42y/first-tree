@@ -375,6 +375,7 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     notifier,
     encryptionKey: config.secrets.encryptionKey,
     instanceId: config.instanceId,
+    attachmentObjectQuota: { maxOrganizationAttachments: config.attachments.organizationObjectQuota },
     ...(options.feishuSdk ? { sdk: options.feishuSdk } : {}),
   });
   app.decorate("feishuIntegration", feishuIntegration);
@@ -770,7 +771,9 @@ export async function buildApp(config: Config, options: BuildAppOptions = {}) {
     await backfillExternalAttachmentsToPostgres(db, attachmentBlobStore).catch((err) => {
       app.log.warn({ err }, "legacy S3 attachment reverse backfill failed");
     });
-    await backfillSkillResourceBundles(db, attachmentBlobStore).catch((err) => {
+    await backfillSkillResourceBundles(db, attachmentBlobStore, {
+      maxOrganizationAttachments: config.attachments.organizationObjectQuota,
+    }).catch((err) => {
       app.log.warn({ err }, "legacy Skill bundle backfill failed");
     });
     const gitlabAttentionBackfill = await backfillGitlabAttentionPairs(db);

@@ -17,6 +17,8 @@ export const feishuBotBindingSchema = z.object({
   agentId: z.string(),
   appId: z.string().nullable(),
   botOpenId: z.string().nullable(),
+  botName: z.string().nullable(),
+  botAvatarUrl: z.string().url().nullable(),
   tenantKey: z.string().nullable(),
   status: feishuBotBindingStatusSchema,
   connectionStatus: feishuConnectionStatusSchema,

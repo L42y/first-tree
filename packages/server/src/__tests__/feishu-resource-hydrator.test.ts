@@ -23,6 +23,7 @@ describe("Feishu resource hydration", () => {
       messageId: "om_message",
       descriptors: [{ type: "image", fileKey: "img_a", fileName: "picture.png", origin: "message" }],
       download,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     });
 
     expect(download).toHaveBeenCalledWith({ messageId: "om_message", fileKey: "img_a", type: "image" });
@@ -71,6 +72,7 @@ describe("Feishu resource hydration", () => {
         { type: "image", fileKey: "card-image", origin: "interactive" },
       ],
       download,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     });
 
     expect(result.attachments).toEqual([]);
@@ -101,6 +103,7 @@ describe("Feishu resource hydration", () => {
       messageId: "om_message",
       descriptors,
       download,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     });
 
     expect(download).toHaveBeenCalledTimes(MAX_MESSAGE_ATTACHMENT_REFS);

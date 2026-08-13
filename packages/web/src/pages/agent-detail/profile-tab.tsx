@@ -60,7 +60,7 @@ export function ProfileTab() {
           version={resources.data.version}
         />
       ) : null}
-      {!ctx.isHuman && <FeishuSection />}
+      {!ctx.isHuman && <FeishuSection onOpenProfileEdit={onEdit} />}
       {/* Agent lifecycle is identity-level, so destructive controls stay at the
           end of Profile instead of mixing with runtime configuration. */}
       {ctx.canManageAgent && ctx.agent.type !== "human" && (
