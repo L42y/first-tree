@@ -661,6 +661,7 @@ describe("AgentDetailPage", () => {
     if (!profileNav) throw new Error("Expected Agent navigation");
     expect([...profileNav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -687,6 +688,7 @@ describe("AgentDetailPage", () => {
     if (!viewerNav) throw new Error("Expected Agent navigation");
     expect([...viewerNav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Tools & skills",
       "Usage",
     ]);
@@ -702,6 +704,7 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Identity");
     expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
+    expect(view.container.textContent).not.toContain("Feishu");
     expect(view.container.textContent).not.toContain("Some profile details couldn’t be loaded.");
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
     expect(templateMocks.listAgentTemplates).not.toHaveBeenCalled();
@@ -716,6 +719,7 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Identity");
     expect(agentSectionLabels(view.container)).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -724,6 +728,7 @@ describe("AgentDetailPage", () => {
     ]);
     expect(view.container.textContent).not.toContain("Responsibilities");
     expect(templateMocks.listAgentTemplates).not.toHaveBeenCalled();
+    expect(view.container.textContent).not.toContain("Feishu");
     await act(async () => view.root.unmount());
   });
 
@@ -860,6 +865,7 @@ describe("AgentDetailPage", () => {
     if (!nav) throw new Error("Expected Agent navigation");
     expect([...nav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",

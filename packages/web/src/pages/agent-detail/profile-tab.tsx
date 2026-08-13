@@ -3,7 +3,6 @@ import { Button } from "../../components/ui/button.js";
 import { AppearanceSection } from "./appearance-section.js";
 import { useAgentResources } from "./capability-section.js";
 import { DangerZone } from "./danger-zone.js";
-import { FeishuSection } from "./feishu-section.js";
 import { IdentitySection } from "./identity-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 import { ProfileEditDialog } from "./profile-edit-dialog.js";
@@ -60,7 +59,6 @@ export function ProfileTab() {
           version={resources.data.version}
         />
       ) : null}
-      {!ctx.isHuman && <FeishuSection onOpenProfileEdit={onEdit} />}
       {/* Agent lifecycle is identity-level, so destructive controls stay at the
           end of Profile instead of mixing with runtime configuration. */}
       {ctx.canManageAgent && ctx.agent.type !== "human" && (

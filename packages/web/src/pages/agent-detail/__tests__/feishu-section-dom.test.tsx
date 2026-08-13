@@ -76,7 +76,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderSection(props: { onOpenProfileEdit?: () => void } = {}): Promise<HTMLElement> {
+async function renderSection(props: { onOpenProfile?: () => void } = {}): Promise<HTMLElement> {
   const { FeishuSection } = await import("../feishu-section.js");
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -130,13 +130,14 @@ afterEach(async () => {
 describe("Feishu Agent Detail section", () => {
   it("starts the QR registration from the Agent Detail surface", async () => {
     const container = await renderSection();
-    expect(container.textContent).toContain("No Feishu Bot is connected");
+    expect(container.textContent).toContain("Not connected");
+    expect(container.textContent).toContain("Teammates can't reach this Agent in Feishu yet");
     await click(buttonByText(container, "Connect Bot"));
     expect(apiMocks.startAgentFeishuRegistration).toHaveBeenCalledWith("agent-a", "Agent A · First Tree");
   });
 
   it("explains the visibility requirement before a private Agent can connect", async () => {
-    const onOpenProfileEdit = vi.fn();
+    const onOpenProfile = vi.fn();
     const privateContext = context();
     contextMock.value = context({
       agent: {
@@ -144,13 +145,13 @@ describe("Feishu Agent Detail section", () => {
         visibility: "private",
       } as AgentDetailContext["agent"],
     });
-    const container = await renderSection({ onOpenProfileEdit });
+    const container = await renderSection({ onOpenProfile });
 
     expect(container.textContent).toContain("Organization visibility is required");
     expect(container.textContent).not.toContain("One Bot and Feishu chat map");
     expect(buttonByText(container, "Connect Bot")?.disabled).toBe(true);
-    await click(buttonByText(container, "Change visibility"));
-    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    await click(buttonByText(container, "Manage in Profile"));
+    expect(onOpenProfile).toHaveBeenCalledOnce();
     expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
   });
 
@@ -168,8 +169,36 @@ describe("Feishu Agent Detail section", () => {
     expect(container.querySelector('img[src="https://example.com/bot.png"]')).not.toBeNull();
   });
 
+  it("only reports Ready when both the Bot is reachable and the CLI is ready", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" }, grantedScopes: [] }),
+    });
+    const ready = await renderSection();
+    expect(ready.querySelector('[data-channel-state="ready"]')).not.toBeNull();
+    expect(ready.textContent).toContain("Ready for Feishu tasks");
+
+    await act(async () => roots.pop()?.unmount());
+    document.body.innerHTML = "";
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "missing", version: null, clientId: "client-a" } }),
+    });
+    const incomplete = await renderSection();
+    expect(incomplete.querySelector('[data-channel-state="setup-incomplete"]')).not.toBeNull();
+    expect(incomplete.textContent).toContain("The Bot is reachable. Finish the Agent setup");
+  });
+
+  it("separates an offline Computer from Bot reachability and marks the aggregate channel for attention", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "offline", version: null, clientId: null } }),
+    });
+    const container = await renderSection();
+    expect(container.querySelector('[data-channel-state="needs-attention"]')).not.toBeNull();
+    expect(container.textContent).toContain("The Bot may still receive messages");
+    expect(container.textContent).toContain("Computer offline");
+  });
+
   it("blocks Retry and explains visibility for a private Agent with an errored binding", async () => {
-    const onOpenProfileEdit = vi.fn();
+    const onOpenProfile = vi.fn();
     const privateContext = context();
     contextMock.value = context({
       agent: { ...privateContext.agent, visibility: "private" } as AgentDetailContext["agent"],
@@ -177,12 +206,12 @@ describe("Feishu Agent Detail section", () => {
     apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
       binding: binding({ status: "error", connectionStatus: "error", lastErrorMessage: "Registration failed" }),
     });
-    const container = await renderSection({ onOpenProfileEdit });
+    const container = await renderSection({ onOpenProfile });
 
     expect(container.textContent).toContain("Organization visibility is required");
     expect(buttonByText(container, "Retry")?.disabled).toBe(true);
-    await click(buttonByText(container, "Change visibility"));
-    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    await click(buttonByText(container, "Manage in Profile"));
+    expect(onOpenProfile).toHaveBeenCalledOnce();
     expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
   });
 
@@ -229,7 +258,22 @@ describe("Feishu Agent Detail section", () => {
       }),
     });
     const container = await renderSection();
-    expect(container.querySelector("svg")).toBeNull();
+    expect(container.querySelector("svg title")?.textContent).not.toBe("Feishu Bot registration QR code");
     expect(container.querySelector('a[href*="must-not-render"]')).toBeNull();
+    expect(buttonByText(container, "Disconnect")).toBeNull();
+    expect(buttonByText(container, "Retry")).toBeNull();
+  });
+
+  it("lets the viewer retry a failed binding read without claiming the channel is disconnected", async () => {
+    apiMocks.getAgentFeishuBinding
+      .mockRejectedValueOnce(new Error("status unavailable"))
+      .mockResolvedValueOnce({ binding: null });
+    const container = await renderSection();
+    expect(container.textContent).toContain("Couldn't check this channel");
+    expect(container.querySelector('[data-channel-state="not-connected"]')).toBeNull();
+
+    await click(buttonByText(container, "Retry"));
+    expect(apiMocks.getAgentFeishuBinding).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-channel-state="not-connected"]')).not.toBeNull();
   });
 });

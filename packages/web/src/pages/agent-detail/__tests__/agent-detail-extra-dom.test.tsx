@@ -1123,7 +1123,7 @@ describe("agent detail pure helpers", () => {
     expect(canManageAgentDetail({ managerId: "member-self" }, null, "member")).toBe(false);
     expect(canManageAgentDetail({ managerId: "member-other" }, null, "admin")).toBe(true);
 
-    expect(buildTabs(false, false).map((tab) => tab.path)).toEqual(["profile", "capabilities", "usage"]);
+    expect(buildTabs(false, false).map((tab) => tab.path)).toEqual(["profile", "channels", "capabilities", "usage"]);
 
     expect(isBindableClient({ status: "connected" })).toBe(true);
     expect(isBindableClient({ status: "retired" })).toBe(false);

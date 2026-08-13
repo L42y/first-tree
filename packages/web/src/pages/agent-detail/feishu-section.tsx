@@ -1,5 +1,6 @@
+import type { FeishuBotBinding } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, QrCode, Unplug } from "lucide-react";
+import { CircleAlert, CircleCheck, CircleMinus, Clock3, MessageSquare, QrCode, Unplug } from "lucide-react";
 import {
   createAgentFeishuSetupChat,
   revokeAgentFeishuBinding,
@@ -13,15 +14,35 @@ import {
   feishuBindingLabel,
   feishuBindingQueryKey,
   feishuBindingQueryOptions,
+  isFeishuBotReachable,
 } from "../../features/feishu/binding-view.js";
 import { ConfigRow } from "./flat-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 
 type FeishuSectionProps = {
-  onOpenProfileEdit?: () => void;
+  onOpenProfile?: () => void;
+  /** Visual previews seed a fixed binding and must not start ambient API polling. */
+  poll?: boolean;
 };
 
-function VisibilityRequirement({ onOpenProfileEdit }: FeishuSectionProps) {
+export type FeishuChannelState = "not-connected" | "setup-incomplete" | "ready" | "needs-attention";
+
+/**
+ * One user-value verdict for the whole channel. A reachable Bot is only half
+ * of the promise: the Agent also needs its official CLI before it can reply.
+ * Granted scopes are deliberately not interpreted here; the live connection
+ * and CLI capability are the existing contracts that prove current use.
+ */
+export function feishuChannelState(binding: FeishuBotBinding | null): FeishuChannelState {
+  if (!binding) return "not-connected";
+  if (binding.status === "error" || binding.connectionStatus === "error" || binding.cli.state === "offline") {
+    return "needs-attention";
+  }
+  if (isFeishuBotReachable(binding) && binding.cli.state === "ready") return "ready";
+  return "setup-incomplete";
+}
+
+function VisibilityRequirement({ onOpenProfile }: FeishuSectionProps) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: "var(--sp-3) 0" }}>
       <div>
@@ -32,19 +53,86 @@ function VisibilityRequirement({ onOpenProfileEdit }: FeishuSectionProps) {
           Only organization-visible Agents can connect to a Feishu Bot.
         </div>
       </div>
-      {onOpenProfileEdit && (
-        <Button size="xs" variant="outline" onClick={onOpenProfileEdit}>
-          Change visibility
+      {onOpenProfile && (
+        <Button size="xs" variant="outline" onClick={onOpenProfile}>
+          Manage in Profile
         </Button>
       )}
     </div>
   );
 }
 
-export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
+function ChannelSummary({ binding }: { binding: FeishuBotBinding | null }) {
+  const state = feishuChannelState(binding);
+  const presentation = (() => {
+    switch (state) {
+      case "not-connected":
+        return {
+          icon: CircleMinus,
+          color: "var(--fg-4)",
+          title: "Not connected",
+          detail: "Teammates can't reach this Agent in Feishu yet.",
+        };
+      case "ready":
+        return {
+          icon: CircleCheck,
+          color: "var(--success)",
+          title: "Ready for Feishu tasks",
+          detail: "The Bot is reachable, and this Agent can reply from its Computer.",
+        };
+      case "needs-attention":
+        return {
+          icon: CircleAlert,
+          color: "var(--state-needs-you)",
+          title: "Needs attention",
+          detail:
+            binding?.lastErrorMessage ??
+            (binding?.cli.state === "offline"
+              ? "The Bot may still receive messages, but this Agent's Computer is offline and can't reply."
+              : "The Feishu channel needs action before this Agent can handle a task."),
+        };
+      case "setup-incomplete":
+        return {
+          icon: Clock3,
+          color: "var(--state-idle)",
+          title: "Setup incomplete",
+          detail:
+            binding && isFeishuBotReachable(binding)
+              ? "The Bot is reachable. Finish the Agent setup before teammates send it a task."
+              : "Finish connecting the Bot before teammates send this Agent a task.",
+        };
+    }
+  })();
+  const StatusIcon = presentation.icon;
+
+  return (
+    <div
+      className="flex items-start gap-3"
+      data-channel-state={state}
+      style={{ padding: "var(--sp-3) 0", borderBottom: "var(--hairline) solid var(--border-faint)" }}
+    >
+      <StatusIcon className="h-5 w-5 shrink-0" aria-hidden="true" style={{ color: presentation.color }} />
+      <div className="min-w-0 flex-1">
+        <div className="text-body font-medium" style={{ color: "var(--fg)" }}>
+          {presentation.title}
+        </div>
+        <div className="text-caption" style={{ color: "var(--fg-3)", marginTop: "var(--sp-0_5)" }}>
+          {presentation.detail}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function FeishuSection({ onOpenProfile, poll = true }: FeishuSectionProps = {}) {
   const ctx = useAgentDetailContext();
   const queryClient = useQueryClient();
-  const query = useQuery({ ...feishuBindingQueryOptions(ctx.uuid), enabled: !ctx.isHuman });
+  const queryOptions = feishuBindingQueryOptions(ctx.uuid);
+  const query = useQuery({
+    ...queryOptions,
+    enabled: !ctx.isHuman,
+    refetchInterval: poll ? queryOptions.refetchInterval : false,
+  });
   const binding = query.data?.binding ?? null;
   const canConnect = ctx.agent.visibility === "organization";
   const visibilityBlocked = !canConnect && (!binding || binding.status === "error");
@@ -64,29 +152,52 @@ export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
     mutationFn: () => createAgentFeishuSetupChat(ctx.uuid, { retry: true }),
     onSuccess: ({ chatId }) => ctx.navigateAway(`/?c=${encodeURIComponent(chatId)}`),
   });
-  const error = start.error ?? revoke.error ?? setup.error ?? query.error;
+  const mutationError = start.error ?? revoke.error ?? setup.error;
 
   return (
     <Section
       headingLevel={3}
       title="Feishu"
-      description="Connect a dedicated Feishu Bot to this Agent."
+      description="Teammates reach this Agent through its dedicated Feishu Bot."
       action={
-        ctx.canManageAgent && !binding ? (
+        ctx.canManageAgent && !query.isLoading && !query.isError && !binding ? (
           <Button size="xs" variant="outline" disabled={start.isPending || !canConnect} onClick={() => start.mutate()}>
             <QrCode className="h-3.5 w-3.5" /> {start.isPending ? "Preparing…" : "Connect Bot"}
           </Button>
         ) : null
       }
     >
-      {visibilityBlocked && <VisibilityRequirement onOpenProfileEdit={onOpenProfileEdit} />}
-      {!binding ? (
+      {query.isLoading ? (
+        <div className="text-body" role="status" style={{ padding: "var(--sp-3) 0", color: "var(--fg-3)" }}>
+          Checking Feishu channel…
+        </div>
+      ) : query.isError && !query.data ? (
+        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: "var(--sp-3) 0" }}>
+          <div role="alert">
+            <div className="text-body font-medium" style={{ color: "var(--state-error)" }}>
+              Couldn't check this channel
+            </div>
+            <div className="text-caption" style={{ color: "var(--fg-3)", marginTop: "var(--sp-1)" }}>
+              {query.error instanceof Error ? query.error.message : "Feishu status is unavailable."}
+            </div>
+          </div>
+          <Button size="xs" variant="outline" disabled={query.isFetching} onClick={() => void query.refetch()}>
+            {query.isFetching ? "Retrying…" : "Retry"}
+          </Button>
+        </div>
+      ) : (
+        <>
+          <ChannelSummary binding={binding} />
+          {visibilityBlocked && <VisibilityRequirement onOpenProfile={onOpenProfile} />}
+        </>
+      )}
+      {!query.isLoading && !query.isError && !binding ? (
         canConnect ? (
           <div className="text-body" style={{ padding: "var(--sp-3) 0", color: "var(--fg-3)" }}>
-            No Feishu Bot is connected. First Tree will prepare the app and show a QR code; you only confirm in Feishu.
+            First Tree will prepare the app and show a QR code; you only confirm it in Feishu.
           </div>
         ) : null
-      ) : (
+      ) : binding ? (
         <>
           <ConfigRow
             label="Bot"
@@ -122,7 +233,15 @@ export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
               ) : undefined
             }
             meta={
-              <DenseBadge tone={binding.status === "error" ? "error" : binding.status === "active" ? "accent" : "warn"}>
+              <DenseBadge
+                tone={
+                  binding.status === "error" || binding.connectionStatus === "error"
+                    ? "error"
+                    : isFeishuBotReachable(binding)
+                      ? "accent"
+                      : "warn"
+                }
+              >
                 {feishuBindingLabel(binding.status, binding.connectionStatus)}
               </DenseBadge>
             }
@@ -167,7 +286,7 @@ export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
                     ? "Computer offline"
                     : "Not detected"
               }
-              description="The Agent records outbound intent in First Tree, then calls the official lark-cli directly with a temporary Bot credential environment."
+              description="This Agent uses the official Feishu CLI on its Computer to reply to tasks."
               action={
                 ctx.canManageAgent && binding.cli.state !== "ready" ? (
                   <Button size="xs" variant="outline" disabled={setup.isPending} onClick={() => setup.mutate()}>
@@ -178,10 +297,10 @@ export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
             />
           )}
         </>
-      )}
-      {error && (
+      ) : null}
+      {mutationError && (
         <div className="text-caption" role="alert" style={{ color: "var(--state-error)", padding: "var(--sp-2) 0" }}>
-          {error instanceof Error ? error.message : "Feishu setup failed."}
+          {mutationError instanceof Error ? mutationError.message : "Feishu setup failed."}
         </div>
       )}
     </Section>

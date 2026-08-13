@@ -5,6 +5,7 @@ export type TabDef = { key: string; label: string; path: string; description: st
 // handled as a redirect in app.tsx and is no longer part of this collection.
 const TAB_LABELS: Record<string, string> = {
   profile: "Profile",
+  channels: "Channels",
   runtime: "Runtime",
   prompt: "Instructions",
   capabilities: "Tools & skills",
@@ -14,6 +15,7 @@ const TAB_LABELS: Record<string, string> = {
 
 const TAB_DESCRIPTIONS: Record<string, string> = {
   profile: "Identity, ownership, and lifecycle for this agent.",
+  channels: "Where teammates can reach this agent and whether it can handle a task now.",
   runtime: "Where this agent runs and how it is configured.",
   prompt: "Guidance that shapes how this agent behaves.",
   capabilities: "Skills and integrations configured for this agent.",
@@ -27,9 +29,13 @@ const TAB_DESCRIPTIONS: Record<string, string> = {
  */
 export function tabKeysFor(canEditConfig: boolean, isHuman: boolean): { key: string; path: string }[] {
   const tabs: { key: string; path: string }[] = [{ key: "profile", path: "profile" }];
+  if (!isHuman) {
+    tabs.push({ key: "channels", path: "channels" });
+  }
   if (canEditConfig) {
-    // Runtime (model/effort/computer/env) comes first, followed by Instructions
-    // and the two resource tabs. Adopted Template provenance lives inside Profile.
+    // Channels follows Profile because it is how teammates reach the Agent;
+    // runtime configuration comes next, followed by Instructions and resources.
+    // Adopted Template provenance lives inside Profile.
     // Repositories is editor-only — repos + the read-only context tree lived on
     // the old (editor-only) Environment tab, so non-editors never saw them and
     // still don't.
