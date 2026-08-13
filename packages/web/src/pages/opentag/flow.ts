@@ -154,11 +154,12 @@ export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean
  * anything unusable starts over from the Agent choice, where nothing has been
  * created yet.
  *
- * Only a Task that is known to exist moves the member off the Bot step. A
- * connected Bot is not first use — the tail of this journey happens in Feishu,
- * and until it does the member still has something to finish here.
+ * A genuinely usable handoff moves the member to the first-use step. Bot
+ * reachability alone is not enough: the Agent must also have the Feishu tools
+ * ready on its Computer. First use remains a read-only wait until the exact Bot
+ * binding has produced a real Feishu Task.
  */
-export function resolveOpenTagStep(facts: OpenTagAgentFacts, firstUse: OpenTagFirstUse): OpenTagStepId | null {
+export function resolveOpenTagStep(facts: OpenTagAgentFacts, handoffUsable: boolean): OpenTagStepId | null {
   switch (facts.state) {
     case "none":
     case "unavailable":
@@ -168,6 +169,6 @@ export function resolveOpenTagStep(facts: OpenTagAgentFacts, firstUse: OpenTagFi
     case "team-unreadable":
       return null;
     case "resolved":
-      return firstUse.state === "present" ? "use-in-feishu" : "connect-feishu";
+      return handoffUsable ? "use-in-feishu" : "connect-feishu";
   }
 }

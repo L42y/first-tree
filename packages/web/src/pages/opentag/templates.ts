@@ -13,7 +13,7 @@ import type { AgentTemplatePublicTemplate } from "@first-tree/shared";
 export const OPENTAG_RECOMMENDED_TEMPLATE_SLUG = "team-assistant";
 
 export type OpenTagTemplateChoices = {
-  /** Active Templates, recommendation first, catalog order otherwise. */
+  /** Active Templates in the public catalog's order. */
   ordered: AgentTemplatePublicTemplate[];
   /** The recommended Template's slug, or null when this deployment has none. */
   recommendedSlug: string | null;
@@ -29,9 +29,19 @@ export function resolveOpenTagTemplateChoices(
 ): OpenTagTemplateChoices {
   const active = templates.filter((template) => template.status === "active");
   const recommended = active.find((template) => template.slug === OPENTAG_RECOMMENDED_TEMPLATE_SLUG) ?? null;
-  if (!recommended) return { ordered: [...active], recommendedSlug: null };
   return {
-    ordered: [recommended, ...active.filter((template) => template.slug !== recommended.slug)],
-    recommendedSlug: recommended.slug,
+    ordered: active,
+    recommendedSlug: recommended?.slug ?? null,
   };
+}
+
+const OPENTAG_TEMPLATE_TAGLINES: Readonly<Record<string, string>> = {
+  "team-assistant": "For team questions, decisions, and follow-through.",
+  "software-engineer": "For debugging, code review, and implementation planning.",
+  researcher: "For evidence gathering, comparison, and decision support.",
+};
+
+/** Product-approved onboarding copy over the real catalog-backed choices. */
+export function openTagTemplateTagline(template: AgentTemplatePublicTemplate): string {
+  return OPENTAG_TEMPLATE_TAGLINES[template.slug] ?? template.public.tagline;
 }

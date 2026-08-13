@@ -250,6 +250,15 @@ async function click(node: HTMLElement): Promise<void> {
   await flush();
 }
 
+async function setInputValue(input: HTMLInputElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    setter?.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await flush();
+}
+
 beforeEach(() => {
   authMock.value = {
     organizationId: ORG,
@@ -316,22 +325,26 @@ describe("OpenTag entry — choosing the Agent", () => {
     const container = await renderAt("/opentag");
 
     expect(container.textContent).toContain("Team Assistant");
+    expect(container.textContent).toContain("Step 1 of 4 · Create agent");
+    expect(container.textContent).toContain("Example task");
+    expect(container.textContent).toContain("Agent name");
+    expect(container.querySelector("legend")?.classList.contains("sr-only")).toBe(true);
+    const progress = container.querySelector("[role='progressbar']");
+    expect(progress?.getAttribute("aria-valuemin")).toBe("1");
+    expect(progress?.getAttribute("aria-valuemax")).toBe("4");
+    expect(progress?.getAttribute("aria-valuenow")).toBe("1");
     // No Team, visibility, or Computer decision belongs on this step.
     expect(container.textContent).not.toContain("Visible to your team");
     expect(container.textContent).not.toContain("Choose a computer");
 
-    await click(button(container, "Review Agent"));
-    // One primary decision per screen: the name only appears after the
-    // teammate is chosen.
-    expect(container.textContent).toContain("Name your Agent");
-    await click(button(container, "Continue"));
+    await click(button(container, "Set up its runtime"));
 
     // Still nothing persisted — the Computer decision comes first.
     expect(api.createAgent).not.toHaveBeenCalled();
     expect(lastLocation).toBe("/opentag");
     expect(container.textContent).toContain("Studio Mac");
 
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Create agent"));
 
     // One call carries the Template, the visibility, the Computer and the
     // runtime that Computer reported ready.
@@ -361,9 +374,8 @@ describe("OpenTag entry — choosing the Agent", () => {
     refreshMeStrict.mockRejectedValue(new Error("me is down"));
 
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
 
     expect(api.createAgent).toHaveBeenCalledTimes(1);
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
@@ -371,8 +383,8 @@ describe("OpenTag entry — choosing the Agent", () => {
     // create another Agent, because the URL is Agent-scoped.
     expect(container.textContent).toContain("couldn't refresh your team");
     const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
-    expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
-    expect(labels.some((label) => label.includes("Choose a different teammate"))).toBe(false);
+    expect(labels.some((label) => label.includes("Create agent"))).toBe(false);
+    expect(labels.some((label) => label.includes("Back to focus & name"))).toBe(false);
 
     refreshMeStrict.mockResolvedValue(undefined);
     await click(button(container, "Try again"));
@@ -393,7 +405,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(feishuStep(container)).toBeNull();
     expect(api.getAgentFeishuBinding).not.toHaveBeenCalled();
     const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
-    expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
+    expect(labels.some((label) => label.includes("Create agent"))).toBe(false);
     expect(labels.some((label) => label.includes("Review Agent"))).toBe(false);
     expect(api.createAgent).not.toHaveBeenCalled();
 
@@ -407,11 +419,25 @@ describe("OpenTag entry — choosing the Agent", () => {
   it("leaves nothing behind when the member turns back before creating", async () => {
     computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Choose a different teammate"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Back to focus & name"));
 
-    expect(container.textContent).toContain("What should it do?");
+    expect(container.textContent).toContain("What should your agent do?");
+    expect(api.createAgent).not.toHaveBeenCalled();
+  });
+
+  it("retains the edited focus and name after returning from Step 2", async () => {
+    const container = await renderAt("/opentag");
+    const name = container.querySelector<HTMLInputElement>("#opentag-agent-name");
+    if (!name) throw new Error("missing agent name field");
+    await setInputValue(name, "Atlas helper");
+
+    await click(button(container, "Set up its runtime"));
+    expect(container.textContent).toContain("Atlas helper · Team Assistant");
+    await click(button(container, "Back to focus & name"));
+
+    expect(container.querySelector<HTMLInputElement>("#opentag-agent-name")?.value).toBe("Atlas helper");
+    expect(container.querySelector<HTMLInputElement>("input[name='opentag-template']:checked")).not.toBeNull();
     expect(api.createAgent).not.toHaveBeenCalled();
   });
 
@@ -431,9 +457,8 @@ describe("OpenTag entry — choosing the Agent", () => {
 
     computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
 
     expect(api.createAgent).toHaveBeenCalledTimes(1);
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ name: "ada-assistant" });
@@ -465,9 +490,8 @@ describe("OpenTag entry — choosing the Agent", () => {
     computerMock.value = readyComputer();
 
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
 
     expect(container.textContent).toContain("already taken");
     expect(container.textContent).not.toContain("Continue with");
@@ -482,19 +506,19 @@ describe("OpenTag entry — choosing the Agent", () => {
     api.getAgent.mockResolvedValue(agentRow({ status: "suspended" }));
 
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
 
     expect(container.textContent).toContain("isn't available in this team anymore");
-    expect(container.textContent).toContain("What should it do?");
-    expect(container.textContent).not.toContain("Create Agent");
+    expect(container.textContent).toContain("What should your agent do?");
+    expect(
+      [...container.querySelectorAll("button")].some((candidate) => candidate.textContent?.includes("Create agent")),
+    ).toBe(false);
 
     // The rejected Agent leaves the URL, so the restart it advertises can
     // actually reach the Computer step instead of looping on the first screen.
     expect(lastLocation).toBe("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
+    await click(button(container, "Set up its runtime"));
     expect(container.textContent).toContain("Studio Mac");
   });
 
@@ -508,9 +532,8 @@ describe("OpenTag entry — choosing the Agent", () => {
 
     computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
 
     expect(container.textContent).toContain("already taken");
     expect(container.textContent).not.toContain("Continue with Ada");
@@ -549,7 +572,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Confirm Agent"))).toBe(false);
     expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Review Agent"))).toBe(false);
     // The guided path stays visible while it recovers.
-    expect(container.querySelector("nav[aria-label='Guided handoff']")).not.toBeNull();
+    expect(container.querySelector("nav[aria-label='OpenTag setup progress']")).not.toBeNull();
   });
 
   it("keeps the guided path visible while an Agent read is failing", async () => {
@@ -557,8 +580,8 @@ describe("OpenTag entry — choosing the Agent", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     // The fault replaces the step's content; the rail does not disappear.
-    expect(container.querySelector("nav[aria-label='Guided handoff']")).not.toBeNull();
-    expect(container.textContent).toContain("Add to Feishu");
+    expect(container.querySelector("nav[aria-label='OpenTag setup progress']")).not.toBeNull();
+    expect(container.textContent).toContain("Add it to Feishu");
   });
 
   it("recovers to the Agent choice for a private Agent rather than a Feishu write the server refuses", async () => {
@@ -597,15 +620,13 @@ describe("OpenTag entry — choosing the Agent", () => {
     computerMock.value = readyComputer();
 
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Set up its runtime"));
+    await click(button(container, "Create agent"));
     expect(container.textContent).toContain("Continue with Ada assistant");
 
     // Changing the decision invalidates what the previous one produced.
-    await click(button(container, "Choose a different teammate"));
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
+    await click(button(container, "Back to focus & name"));
+    await click(button(container, "Set up its runtime"));
 
     expect(container.textContent).not.toContain("Continue with Ada assistant");
     expect(container.textContent).not.toContain("already taken");
@@ -615,7 +636,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     api.getAgent.mockRejectedValue(new ApiError(500, "boom"));
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
-    expect(container.textContent).toContain("We couldn't load your Agent");
+    expect(container.textContent).toContain("We couldn't load your agent");
     // The flow must not restart — a second Agent would be the real damage.
     expect(container.textContent).not.toContain("Team Assistant");
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
@@ -627,7 +648,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     api.getAgent.mockRejectedValue(new Error("Failed to fetch"));
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
-    expect(container.textContent).toContain("We couldn't load your Agent");
+    expect(container.textContent).toContain("We couldn't load your agent");
     // The flow must not restart — a second Agent would be the real damage.
     expect(container.textContent).not.toContain("Team Assistant");
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
@@ -638,8 +659,7 @@ describe("OpenTag entry — choosing the Computer", () => {
   /** Walk the draft steps: Template -> review -> the Computer choice. */
   async function atComputerStep(): Promise<HTMLElement> {
     const container = await renderAt("/opentag");
-    await click(button(container, "Review Agent"));
-    await click(button(container, "Continue"));
+    await click(button(container, "Set up its runtime"));
     return container;
   }
 
@@ -652,8 +672,8 @@ describe("OpenTag entry — choosing the Computer", () => {
 
     // Waiting for a Computer is the longest first-run state; the way back to
     // the teammate choice has to be reachable from it.
-    await click(button(container, "Choose a different teammate"));
-    expect(container.textContent).toContain("What should it do?");
+    await click(button(container, "Back to focus & name"));
+    expect(container.textContent).toContain("What should your agent do?");
   });
 
   it("recommends a sole connected Computer and creates the Agent on it", async () => {
@@ -663,8 +683,10 @@ describe("OpenTag entry — choosing the Computer", () => {
 
     const container = await atComputerStep();
     expect(container.textContent).toContain("Studio Mac");
+    expect(container.querySelectorAll("input[name='opentag-coding-agent']")).toHaveLength(1);
+    expect(container.querySelector<HTMLInputElement>("input[name='opentag-coding-agent']")?.checked).toBe(true);
 
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Create agent"));
 
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-1", runtimeProvider: "codex" });
     // The URL is anchored on the new Agent straight away — the `agents`
@@ -678,6 +700,31 @@ describe("OpenTag entry — choosing the Computer", () => {
     expect(feishuStep(await renderAt(`/opentag?agent=${AGENT_UUID}`))).not.toBeNull();
   });
 
+  it("shows every executable coding agent as a neutral selectable option", async () => {
+    const setSelectedRuntime = vi.fn();
+    computerMock.value = computerConnection({
+      connectedClients: [client("client-1", "Studio Mac")],
+      selectedClientId: "client-1",
+      connectedClient: client("client-1", "Studio Mac"),
+      capabilitiesLoaded: true,
+      okRuntimes: ["claude-code", "codex"],
+      selectedRuntime: "codex",
+      setSelectedRuntime,
+    });
+
+    const container = await atComputerStep();
+    expect(container.querySelectorAll("input[name='opentag-coding-agent']")).toHaveLength(2);
+    expect(container.textContent).toContain("Codex");
+    expect(container.textContent).toContain("Claude Code");
+
+    const claudeOption = [...container.querySelectorAll("label")].find((label) =>
+      label.textContent?.includes("Claude Code"),
+    );
+    if (!claudeOption) throw new Error("missing Claude Code option");
+    await click(claudeOption);
+    expect(setSelectedRuntime).toHaveBeenCalledWith("claude-code");
+  });
+
   it("requires an explicit choice between several Computers, then creates on the chosen one", async () => {
     computerMock.value = computerConnection({
       connectedClients: [client("client-1", "Studio Mac"), client("client-2", "MacBook Pro")],
@@ -687,7 +734,7 @@ describe("OpenTag entry — choosing the Computer", () => {
     const container = await atComputerStep();
     expect(container.textContent).toContain("Choose a computer");
     // Nothing is pinned from heartbeat order.
-    expect(button(container, "Create Agent").disabled).toBe(true);
+    expect(button(container, "Create agent").disabled).toBe(true);
     expect(api.createAgent).not.toHaveBeenCalled();
 
     computerMock.value = computerConnection({
@@ -701,7 +748,7 @@ describe("OpenTag entry — choosing the Computer", () => {
     api.createAgent.mockResolvedValue(agentRow());
     api.getAgent.mockResolvedValue(agentRow());
     const chosen = await atComputerStep();
-    await click(button(chosen, "Create Agent"));
+    await click(button(chosen, "Create agent"));
 
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-2", runtimeProvider: "codex" });
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
@@ -728,7 +775,7 @@ describe("OpenTag entry — choosing the Computer", () => {
     const unsubscribe = observer.subscribe(() => undefined);
     await flush();
 
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Create agent"));
 
     expect(api.createAgent).toHaveBeenCalledTimes(1);
     expect(client.isFetching({ queryKey: ["agents"] })).toBe(1);
@@ -747,8 +794,8 @@ describe("OpenTag entry — choosing the Computer", () => {
     });
 
     const container = await atComputerStep();
-    expect(container.textContent).toContain("No coding agent is installed on this computer yet");
-    expect(button(container, "Create Agent").disabled).toBe(true);
+    expect(container.textContent).toContain("No supported coding agent was found on this computer");
+    expect(button(container, "Create agent").disabled).toBe(true);
     expect(api.createAgent).not.toHaveBeenCalled();
   });
 
@@ -757,11 +804,12 @@ describe("OpenTag entry — choosing the Computer", () => {
     api.createAgent.mockRejectedValue(new ApiError(400, 'Client "client-1" does not have runtime provider'));
 
     const container = await atComputerStep();
-    await click(button(container, "Create Agent"));
+    await click(button(container, "Create agent"));
 
     expect(container.textContent).toContain("does not have runtime provider");
+    expect(container.textContent).not.toContain("Feishu Bot for");
+    expect(button(container, "Create agent").disabled).toBe(false);
     expect(feishuStep(container)).toBeNull();
-    expect(button(container, "Create Agent").disabled).toBe(false);
     expect(lastLocation).toBe("/opentag");
   });
 });
@@ -802,11 +850,11 @@ describe("OpenTag entry — the Feishu handoff", () => {
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({ registrationUrl: "https://feishu.example/confirm/abc" }),
     });
-    await click(button(container, "Connect Bot"));
+    await click(button(container, "Add OpenTag to Feishu"));
 
-    expect(api.startAgentFeishuRegistration).toHaveBeenCalledWith(AGENT_UUID, "Ada assistant · First Tree");
+    expect(api.startAgentFeishuRegistration).toHaveBeenCalledWith(AGENT_UUID, "Ada assistant · OpenTag");
     expect(container.textContent).toContain("Scan with Feishu");
-    expect(container.querySelector("svg title")?.textContent).toBe("Feishu Bot registration QR code");
+    expect(container.querySelector("svg title")?.textContent).toBe("Feishu bot registration QR code");
     expect(container.querySelector("a[href='https://feishu.example/confirm/abc']")).not.toBeNull();
   });
 
@@ -820,13 +868,16 @@ describe("OpenTag entry — the Feishu handoff", () => {
     // Provisioned is not connected: promising a channel that carries no
     // messages yet is the failure mode this guards.
     expect(container.textContent).toContain("connecting to Feishu");
-    expect(container.textContent).not.toContain("Feishu Bot connected");
+    expect(container.textContent).not.toContain("Waiting for the first message…");
+    expect(container.textContent).not.toContain("Feishu bot connected");
 
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({ status: "active", connectionStatus: "connected", appId: "cli_1" }),
     });
     const connected = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    expect(connected.textContent).toContain("Feishu Bot connected");
+    // Reachability without the CLI keeps Step 3 open.
+    expect(connected.textContent).toContain("Feishu bot connected");
+    expect(connected.textContent).not.toContain("Waiting for the first message…");
   });
 
   it("states a failing Bot connection in words, not only in colour", async () => {
@@ -842,7 +893,8 @@ describe("OpenTag entry — the Feishu handoff", () => {
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     expect(container.querySelector("[role='alert']")?.textContent).toContain("Feishu rejected the Bot credentials.");
-    expect(container.textContent).not.toContain("Feishu Bot connected");
+    expect(container.textContent).not.toContain("Waiting for the first message…");
+    expect(container.textContent).not.toContain("Feishu bot connected");
   });
 
   it("does not offer to connect a Bot when the binding read failed", async () => {
@@ -852,8 +904,10 @@ describe("OpenTag entry — the Feishu handoff", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     // "No Bot" is not established, so starting a second registration must not
     // be on offer.
-    expect(container.textContent).toContain("couldn't check whether this Agent already has a Bot");
-    expect([...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Connect Bot"))).toBe(false);
+    expect(container.textContent).toContain("couldn't check whether this agent already has a bot");
+    expect(
+      [...container.querySelectorAll("button")].some((b) => b.textContent?.includes("Add OpenTag to Feishu")),
+    ).toBe(false);
   });
 
   it("keeps a failed registration on this step with the server's reason", async () => {
@@ -861,10 +915,10 @@ describe("OpenTag entry — the Feishu handoff", () => {
     api.startAgentFeishuRegistration.mockRejectedValue(new ApiError(502, "Feishu is unavailable right now"));
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    await click(button(container, "Connect Bot"));
+    await click(button(container, "Add OpenTag to Feishu"));
 
     expect(container.textContent).toContain("Feishu is unavailable right now");
-    expect(button(container, "Connect Bot").disabled).toBe(false);
+    expect(button(container, "Add OpenTag to Feishu").disabled).toBe(false);
   });
 });
 
@@ -893,8 +947,10 @@ describe("OpenTag entry — real first use in Feishu", () => {
 
     // A connected Bot is not first use. The member is still on the step they
     // have something to do about.
-    expect(container.textContent).toContain("Feishu Bot connected");
-    expect(container.textContent).not.toContain("has its first task from Feishu");
+    expect(container.textContent).toContain("Waiting for the first message…");
+    expect(container.textContent).not.toContain("received its first task from Feishu");
+    expect(container.querySelector("a")).toBeNull();
+    expect([...container.querySelectorAll("button")].map((candidate) => candidate.textContent)).toEqual(["Sign out"]);
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
   });
 
@@ -907,12 +963,12 @@ describe("OpenTag entry — real first use in Feishu", () => {
     await flush();
 
     expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.textContent).toContain("Ada assistant received its first task from Feishu");
     // The handoff destination is the task itself, in the workspace.
     expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
     // The Bot step is over — offering to connect one here would be a second
     // registration for an Agent that is already working.
-    expect(container.textContent).not.toContain("Connect Bot");
+    expect(container.textContent).not.toContain("Add OpenTag to Feishu");
   });
 
   it("withholds the destination until the completion stamp lands", async () => {
@@ -936,7 +992,7 @@ describe("OpenTag entry — real first use in Feishu", () => {
 
     // The task is already stated as fact — it is real — but the way in is not
     // offered while the workspace has not been told setup is finished.
-    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.textContent).toContain("Ada assistant received its first task from Feishu");
     expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
     expect(container.textContent).toContain("Finishing up…");
 
@@ -961,8 +1017,8 @@ describe("OpenTag entry — real first use in Feishu", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("has its first task from Feishu");
-    expect(container.textContent).toContain("Feishu Bot connected");
+    expect(container.textContent).not.toContain("received its first task from Feishu");
+    expect(container.textContent).toContain("Waiting for the first message…");
   });
 
   it("never stamps this member for a teammate's Agent, however visible its task is", async () => {
@@ -985,10 +1041,10 @@ describe("OpenTag entry — real first use in Feishu", () => {
     // The question is not even asked — the read that feeds the write is gated
     // on the same fact.
     expect(meChats.listMeChats).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("has its first task from Feishu");
-    // The Bot step itself stays available: continuing a teammate's Agent is
-    // legitimate, it just is not this member's onboarding to finish.
-    expect(feishuStep(container)).not.toBeNull();
+    expect(container.textContent).not.toContain("received its first task from Feishu");
+    // Step 4 is still the usable-handoff state, but this member cannot observe
+    // or stamp a teammate's first-use fact.
+    expect(container.textContent).toContain("Waiting for the first message…");
   });
 
   it("does not complete onboarding when the task read fails", async () => {
@@ -1000,8 +1056,8 @@ describe("OpenTag entry — real first use in Feishu", () => {
     // "We could not check" is not "not used yet", and it is certainly not
     // "used" — the member stays where they were.
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Feishu Bot connected");
-    expect(container.textContent).not.toContain("has its first task from Feishu");
+    expect(container.textContent).toContain("Waiting for the first message…");
+    expect(container.textContent).not.toContain("received its first task from Feishu");
   });
 
   it("recovers from a failed task read on the next poll", async () => {
@@ -1028,7 +1084,7 @@ describe("OpenTag entry — real first use in Feishu", () => {
 
       expect(meChats.listMeChats.mock.calls.length).toBeGreaterThan(1);
       expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
-      expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+      expect(container.textContent).toContain("Ada assistant received its first task from Feishu");
     } finally {
       vi.useRealTimers();
     }
@@ -1047,7 +1103,7 @@ describe("OpenTag entry — real first use in Feishu", () => {
     const reloaded = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(reloaded.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(reloaded.textContent).toContain("Ada assistant received its first task from Feishu");
     expect(reloaded.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
     // Nothing about the Agent is re-created, and the URL still names the one
     // Agent this flow made.
@@ -1069,7 +1125,7 @@ describe("OpenTag entry — real first use in Feishu", () => {
 
     // The task is real, so it is stated as fact — but the destination waits,
     // because an unstamped membership can be sent straight back into setup.
-    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.textContent).toContain("Ada assistant received its first task from Feishu");
     expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
     expect(container.querySelector("[role='alert']")?.textContent).toContain("couldn't finish setting up");
     // A failure holds until the member acts, rather than being re-fired by the
@@ -1153,7 +1209,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
       });
       await flush();
 
-      expect(container.textContent).toContain("Feishu Bot connected");
+      expect(container.textContent).toContain("Feishu bot connected");
       expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
@@ -1175,7 +1231,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     expect(meChats.listMeChats).not.toHaveBeenCalled();
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("has its first task from Feishu");
-    expect(container.textContent).not.toContain("a private message or an exact group mention");
+    expect(container.textContent).not.toContain("Send your first task");
   });
 
   it("invites real first use only once the Agent can answer", async () => {
@@ -1184,7 +1240,8 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.textContent).toContain("a private message or an exact group mention");
+    expect(container.textContent).toContain("Send your first task");
+    expect(container.textContent).toContain("Waiting for the first message…");
   });
 
   it("offers a retry and a way out when the automatic request never lands", async () => {
@@ -1200,7 +1257,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     // The row says what happened: nothing is being prepared, so telling the
     // member work is under way would ask them to keep waiting for nothing.
     expect(container.textContent).toContain("The automatic setup didn't start.");
-    expect(container.textContent).not.toContain("Preparing this Computer in the background");
+    expect(container.textContent).not.toContain("Preparing this computer in the background");
     expect(button(container, "Try again").disabled).toBe(false);
     // Leaving lands on the Agent's own page — the one permanent repair entry.
     expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
@@ -1239,7 +1296,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(2);
     expect(api.createAgentFeishuSetupChat).toHaveBeenLastCalledWith(AGENT_UUID, { retry: true });
     // The retry landed, so the member is back to an ordinary wait.
-    expect(container.textContent).toContain("Preparing this Computer in the background");
+    expect(container.textContent).toContain("Preparing this computer in the background");
     expect(container.textContent).not.toContain("You are not stuck here.");
   });
 
@@ -1284,7 +1341,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
       await flush();
 
       expect(container.textContent).not.toContain("You are not stuck here.");
-      expect(container.textContent).toContain("a private message or an exact group mention");
+      expect(container.textContent).toContain("Send your first task");
     } finally {
       vi.useRealTimers();
     }
@@ -1462,7 +1519,7 @@ describe("OpenTag entry — the Agent's Feishu tools across a change of Computer
 
       expect(container.textContent).not.toContain("You are not stuck here.");
       expect(container.textContent).not.toContain("taking longer");
-      expect(container.textContent).toContain("a private message or an exact group mention");
+      expect(container.textContent).toContain("Send your first task");
     } finally {
       vi.useRealTimers();
     }
@@ -1487,8 +1544,8 @@ describe("OpenTag entry — an Agent with no Computer to prepare", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.textContent).toContain("This Agent has no Computer yet.");
-    expect(container.textContent).not.toContain("Preparing this Computer in the background");
+    expect(container.textContent).toContain("This agent has no computer yet.");
+    expect(container.textContent).not.toContain("Preparing this computer in the background");
     // Offered immediately, and only the way out that can actually help.
     expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
     expect(container.textContent).not.toContain("Try again");

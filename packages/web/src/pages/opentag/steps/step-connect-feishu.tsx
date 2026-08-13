@@ -136,7 +136,7 @@ function NoBotYet({
     return (
       <>
         <FlowHint tone="error" role="alert">
-          We couldn't check whether this Agent already has a Bot.
+          We couldn't check whether this agent already has a bot.
         </FlowHint>
         <div className="flex">
           <Button type="button" variant="outline" onClick={onRetryRead}>
@@ -150,7 +150,7 @@ function NoBotYet({
   if (loading) {
     return (
       <p className="text-caption text-muted-foreground" role="status" style={{ margin: 0 }}>
-        Checking for a Bot…
+        Checking for a bot…
       </p>
     );
   }
@@ -158,12 +158,12 @@ function NoBotYet({
   return (
     <>
       <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-        First Tree prepares the Feishu app and shows a QR code. You only confirm it in Feishu.
+        OpenTag prepares the Feishu app and shows a QR code. You only confirm it in Feishu.
       </p>
       <div className="flex">
         <Button type="button" variant="cta" disabled={starting} onClick={onConnect}>
           <QrCode className="h-4 w-4" />
-          <span>{starting ? "Preparing…" : "Connect Bot"}</span>
+          <span>{starting ? "Preparing…" : "Add OpenTag to Feishu"}</span>
         </Button>
       </div>
     </>
@@ -204,7 +204,7 @@ function BotColumn({
       <div className="flex flex-col items-center text-center" style={{ gap: "var(--sp-2_5)" }}>
         <CircleCheck className="h-6 w-6" aria-hidden="true" style={{ color: "var(--success)" }} />
         <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
-          Feishu Bot connected
+          Feishu bot connected
         </p>
         {/* The invitation to use the Bot is the last thing this step says, and
             only once the Agent could actually answer. Asking earlier would send
@@ -213,7 +213,7 @@ function BotColumn({
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
           {isFeishuHandoffUsable(binding)
             ? "Message it in Feishu — a private message or an exact group mention starts the first task."
-            : "Your Bot and its permissions are kept."}
+            : "Your bot and its permissions are kept."}
         </p>
       </div>
     );
@@ -224,7 +224,7 @@ function BotColumn({
   if (binding.connectionStatus === "error") {
     return (
       <FlowHint tone="error" role="alert">
-        {binding.lastErrorMessage ?? "The Bot is set up but its connection to Feishu is failing."}
+        {binding.lastErrorMessage ?? "The bot is set up but its connection to Feishu is failing."}
       </FlowHint>
     );
   }
@@ -235,8 +235,8 @@ function BotColumn({
   return (
     <p className="text-caption text-muted-foreground" role="status" style={{ margin: 0 }}>
       {binding.status === "active"
-        ? "The Bot is set up and connecting to Feishu…"
-        : "Waiting for Feishu to confirm the Bot…"}
+        ? "The bot is set up and connecting to Feishu…"
+        : "Waiting for Feishu to confirm the bot…"}
     </p>
   );
 }
@@ -396,16 +396,16 @@ function toolsReadiness(binding: FeishuBotBinding, setupFailed: boolean): Readin
       return {
         tone: "ready",
         status: "ready",
-        detail: binding.cli.version ? `Ready on this Computer · ${binding.cli.version}` : "Ready on this Computer",
+        detail: binding.cli.version ? `Ready on this computer · ${binding.cli.version}` : "Ready on this computer",
       };
     case "offline":
-      return { tone: "attention", status: "not ready", detail: "This Agent has no Computer yet." };
+      return { tone: "attention", status: "not ready", detail: "This agent has no computer yet." };
     default:
       // The capability alone cannot tell "being prepared" from "never asked
       // for": both read as absent. Reporting a request that failed as work in
       // progress tells the member to keep waiting for nothing.
       return setupFailed
         ? { tone: "attention", status: "not ready", detail: "The automatic setup didn't start." }
-        : { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
+        : { tone: "pending", status: "preparing", detail: "Preparing this computer in the background" };
   }
 }
