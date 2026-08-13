@@ -21,10 +21,10 @@ const FEISHU_DOCUMENT_SCOPES = [
   "docs:permission.member:create",
   "docs:permission.member:retrieve",
   "docs:permission.member:update",
-  "docs:permission.member:delete",
   "drive:drive.metadata:readonly",
   "drive:file:upload",
   "drive:file:download",
+  "space:document:delete",
   "space:folder:create",
   "wiki:wiki",
 ] as const;

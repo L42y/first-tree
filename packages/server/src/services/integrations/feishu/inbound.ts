@@ -19,6 +19,7 @@ import { addChatParticipants } from "../../chat/membership/participants.js";
 import { sendMessage } from "../../chat/message.js";
 import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
+import { isFeishuBotUsable } from "./binding-state.js";
 import { convertFeishuContent } from "./content.js";
 import { type FeishuResourceDownloader, hydrateFeishuResources } from "./resource-hydrator.js";
 import { safeFeishuErrorContext } from "./safe-error.js";
@@ -45,7 +46,7 @@ export async function ingestFeishuMessage(
     attachmentObjectQuota: AttachmentObjectQuota;
   },
 ): Promise<FeishuInboundResult> {
-  if (binding.status !== "active") return { state: "ignored", reason: "inactive_binding" };
+  if (!isFeishuBotUsable(binding)) return { state: "ignored", reason: "inactive_binding" };
   if (input.senderId === binding.botOpenId) return { state: "ignored", reason: "bot_echo" };
   const exactBotMention = input.mentions.some((mention) => mention.openId === binding.botOpenId);
   if (input.chatType === "group" && (!input.mentionedBot || !exactBotMention)) {

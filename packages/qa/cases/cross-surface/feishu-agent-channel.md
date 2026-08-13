@@ -34,6 +34,12 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
   serializes polling, ignores stale generations, and converges to the persisted binding state. With two Server replicas,
   confirm only the lease owner holds the Channel connection and that lease loss fences the old connection. Confirm the
   stored granted-scope list equals the explicit tenant-scope bundle and does not claim implicit preset permissions.
+- With an active Bot, start registration again without disconnecting it. Confirm the existing Channel and Bot-scoped CLI
+  grant remain usable while the QR is pending; deny, expire and cancel attempts without changing the existing binding.
+  Then select the existing Bot in Feishu, approve the scope update, and confirm the App ID is preserved while credentials,
+  explicit scopes and the Channel connection are refreshed. Repeat by selecting a new Bot and confirm old chat mappings
+  detach only after the replacement succeeds. Reject invalid credentials or a mismatched same-App Bot identity before
+  cutover. After an expired attempt, start another and confirm late success or failure from the old attempt cannot change it.
 - From Agent A's isolated official `lark-cli` environment, create, read, update and delete one disposable document,
   spreadsheet, Base app/record, calendar/event and task/comment or attachment. Confirm every operation uses the Bot/App
   identity rather than a user token and cannot access an unshared user-owned resource.
@@ -62,7 +68,8 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
 - Revoke the binding and confirm credentials are cleared, the Channel disconnects, chat bindings detach, and later
   ingress/resource/CLI operations fail closed without deleting historical canonical messages or attachments.
 - Delete every disposable Feishu document, spreadsheet, Base app, calendar, event, task and attachment created by the
-  run, then verify no provider-side test resource remains.
+  run, then verify no provider-side test resource remains. Never use deletion scopes against pre-existing or shared
+  non-test resources; provider cleanup must target only the run's recorded disposable resource identifiers.
 
 ## Expected Result
 
