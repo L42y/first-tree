@@ -157,6 +157,414 @@ describe("SessionRuntime authority boundary", () => {
         kinds(violations).join("\n"),
       ).toBe(true);
     });
+    it("catches a public method returning live RouteState through a non-transparent wrapper", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type RouteState = { generation: number; injectReady: boolean };
+          type Box<T> = { value: T };
+          export class RouteTeardownAuthority {
+            private routeBySession = new WeakMap<object, RouteState>();
+            inspectLive(entry: object): Box<RouteState> | undefined {
+              const state = this.routeBySession.get(entry);
+              return state ? { value: state } : undefined;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private routes: RouteTeardownAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            (hit.kind === "public-return-forbidden-type" || hit.kind === "ledger-identity-escape") &&
+            hit.className === "RouteTeardownAuthority" &&
+            hit.member === "inspectLive",
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+  });
+
+  describe("compile-valid provenance fixtures", () => {
+    it("catches raw pendingQueue returned as unknown[] even when the host pops it", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            qaLeakPendingQueue(): unknown[] {
+              return this.pendingQueue;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private slotScheduler: SlotSchedulerAuthority) {}
+            qaMutateLeakedPendingQueue(): void {
+              this.slotScheduler.qaLeakPendingQueue().pop();
+            }
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakPendingQueue" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches the same raw pendingQueue return with no host consumer", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            qaLeakPendingQueue(): unknown[] {
+              return this.pendingQueue;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakPendingQueue" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a ledger alias, cast, and conditional return", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            leak(flag: boolean): unknown[] | null {
+              const queued = this.pendingQueue as unknown as unknown[];
+              return flag ? queued : null;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) => hit.kind === "ledger-identity-escape" && hit.member === "leak" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches nested object and tuple wrappers around the live queue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            boxed(): { value: unknown[] } {
+              const queue = this.pendingQueue;
+              return { value: queue };
+            }
+            tupled(): [unknown[]] {
+              return [this.pendingQueue];
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) => hit.kind === "ledger-identity-escape" && hit.member === "boxed" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) => hit.kind === "ledger-identity-escape" && hit.member === "tupled" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches Promise.resolve and async forwarding of the live queue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            promised(): Promise<unknown[]> {
+              return Promise.resolve(this.pendingQueue);
+            }
+            async forwarded(): Promise<unknown[]> {
+              return this.pendingQueue;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" && hit.member === "promised" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" && hit.member === "forwarded" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a public forwarder of a private helper that returns the ledger", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            private leak(): unknown[] {
+              return this.pendingQueue;
+            }
+            private get leaked(): unknown[] {
+              return this.leak();
+            }
+            expose(): unknown[] {
+              return this.leaked;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) => hit.kind === "ledger-identity-escape" && hit.member === "expose" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches Object.freeze of the raw ledger identity", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            frozen(): readonly unknown[] {
+              return Object.freeze(this.pendingQueue);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) => hit.kind === "ledger-identity-escape" && hit.member === "frozen" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches peekSlot deferredMessages erased to unknown[]", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type SlotState = { deferredMessages: Array<{ id: string }> };
+          export class SlotSchedulerAuthority {
+            private slotBySession = new WeakMap<object, SlotState>();
+            private peekSlot(entry: object): SlotState | undefined {
+              return this.slotBySession.get(entry);
+            }
+            leakDeferred(entry: object): unknown[] | undefined {
+              return this.peekSlot(entry)?.deferredMessages as unknown[] | undefined;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" &&
+            hit.member === "leakDeferred" &&
+            /deferredMessages/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("passes spread, Array.from, slice, nested copies, and a fresh accumulator", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type SlotState = { deferredMessages: Array<{ id: string }> };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            private slotBySession = new WeakMap<object, SlotState>();
+            private peekSlot(entry: object): SlotState | undefined {
+              return this.slotBySession.get(entry);
+            }
+            spreadCopy(): Array<{ chatId: string }> {
+              return [...this.pendingQueue];
+            }
+            fromCopy(): Array<{ chatId: string }> {
+              return Array.from(this.pendingQueue);
+            }
+            sliceCopy(): Array<{ chatId: string }> {
+              return this.pendingQueue.slice();
+            }
+            nestedCopy(entry: object): Array<{ id: string }> {
+              const state = this.peekSlot(entry);
+              return state ? [...state.deferredMessages] : [];
+            }
+            accumulator(): string[] {
+              const out: string[] = [];
+              for (const item of this.pendingQueue) out.push(item.chatId);
+              return out;
+            }
+          }
+          export class SessionProjectionAuthority {
+            private sessions = new Map<string, SessionEntry>();
+            getSession(chatId: string): SessionEntry | undefined {
+              return this.sessions.get(chatId);
+            }
+            snapshot(): Array<{ chatId: string }> {
+              return [...this.sessions.entries()].map(([chatId]) => ({ chatId }));
+            }
+          }
+          export class SessionRuntime {
+            constructor(
+              private scheduler: SlotSchedulerAuthority,
+              private projection: SessionProjectionAuthority,
+            ) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
+
+    it("passes observation iterators, frozen capability objects, and frozen snapshots", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type ReplayFenceWriter = { fence: (id: string) => void; clear: (id: string) => void };
+          export class SessionProjectionAuthority {
+            private sessions = new Map<string, SessionEntry>();
+            sessionsValues(): IterableIterator<SessionEntry> {
+              return this.sessions.values();
+            }
+            sessionsEntries(): IterableIterator<[string, SessionEntry]> {
+              return this.sessions.entries();
+            }
+            activate(entry: SessionEntry): { chatId: string } {
+              return Object.freeze({ chatId: entry.chatId });
+            }
+          }
+          export class ResetReplayAuthority {
+            private replayFence: { fence: (id: string) => void; clear: (id: string) => void } | null = null;
+            createHandlerReplayFenceWriter(): ReplayFenceWriter | null {
+              if (!this.replayFence) return null;
+              const store = this.replayFence;
+              return Object.freeze({
+                fence: (id: string) => {
+                  store.fence(id);
+                },
+                clear: (id: string) => {
+                  store.clear(id);
+                },
+              });
+            }
+          }
+          export class SessionRuntime {
+            constructor(
+              private projection: SessionProjectionAuthority,
+              private reset: ResetReplayAuthority,
+            ) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
   });
 
   describe("clean fixture", () => {

@@ -113,6 +113,51 @@ const FORBIDDEN_ESCAPE_NAMES = new Set([
 
 const MUTABLE_STORAGE_NAMES = new Set(["Map", "Set", "WeakMap", "WeakSet", "Array"]);
 
+const DETACH_METHODS = new Set([
+  "slice",
+  "map",
+  "filter",
+  "flatMap",
+  "concat",
+  "toSorted",
+  "toReversed",
+  "toSpliced",
+  "splice",
+]);
+
+const SLOT_MUTABLE_FIELDS = new Set(["deferredMessages", "retryTimer", "retryHeadMessage", "retryFromEvicted"]);
+
+const SESSION_ENTRY_TYPE_NAMES = new Set([
+  "TSession",
+  "SessionEntry",
+  "SlotSchedulerSessionEntry",
+  "RouteTeardownHostEntry",
+  "SessionProjectionSessionFields",
+]);
+
+/** Newly added public methods are not implicitly trusted; these names keep accepted live observations. */
+const ACCEPTED_RETURN_CONTRACTS: Record<string, Partial<Record<string, "session-iterator" | "replay-fence-writer">>> = {
+  SessionProjectionAuthority: {
+    sessionsValues: "session-iterator",
+    sessionsEntries: "session-iterator",
+  },
+  ResetReplayAuthority: {
+    createHandlerReplayFenceWriter: "replay-fence-writer",
+  },
+};
+
+/** Map.get / iteration values that are promises, primitives, or host SessionEntry — not live inner containers. */
+const SAFE_VALUE_LEDGERS = new Set([
+  "sessions",
+  "admissionGenerations",
+  "lastReportedStates",
+  "sessionRuntimeStates",
+  "currentTrigger",
+  "terminatingChats",
+  "retryFlights",
+  "postFenceRecoveryInFlight",
+]);
+
 const ASSIGNMENT_KINDS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsToken,
   ts.SyntaxKind.PlusEqualsToken,
@@ -407,6 +452,7 @@ function auditPublicReturns(
   checker: ts.TypeChecker,
   violations: AuditViolation[],
 ): void {
+  const analysis = new ClassProvenanceAnalysis(source, cls, className, checker);
   for (const member of cls.members) {
     if (
       !(ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member)) ||
@@ -419,17 +465,22 @@ function auditPublicReturns(
     const name = staticName(member.name);
     if (!name) continue;
     const signature = checker.getSignatureFromDeclaration(member);
-    if (!signature) continue;
-    const returnType = checker.getReturnTypeOfSignature(signature);
-    const escaped = forbiddenEscapeName(returnType, checker);
-    if (!escaped) continue;
-    violations.push({
-      kind: "public-return-forbidden-type",
-      file: fileLabel(source),
-      className,
-      member: name,
-      detail: `public ${ts.isGetAccessorDeclaration(member) ? "getter" : "method"} returns ${checker.typeToString(returnType, member, ts.TypeFormatFlags.NoTruncation)} (escape: ${escaped})`,
-    });
+    if (signature) {
+      const returnType = checker.getReturnTypeOfSignature(signature);
+      const escaped = forbiddenEscapeName(returnType, checker);
+      if (escaped) {
+        violations.push({
+          kind: "public-return-forbidden-type",
+          file: fileLabel(source),
+          className,
+          member: name,
+          detail: `public ${ts.isGetAccessorDeclaration(member) ? "getter" : "method"} returns ${checker.typeToString(returnType, member, ts.TypeFormatFlags.NoTruncation)} (escape: ${escaped})`,
+        });
+      }
+    }
+    for (const hit of analysis.publicEscapeFindings(member, name)) {
+      violations.push(hit);
+    }
   }
 }
 
@@ -848,4 +899,641 @@ function getTypeArguments(type: ts.Type, checker: ts.TypeChecker): readonly ts.T
     // Non-type-references throw or return empty; ignore.
   }
   return [];
+}
+
+type OriginTaint = {
+  kind:
+    | "ledger"
+    | "slot-state"
+    | "route-state"
+    | "slot-field"
+    | "nested-container"
+    | "live-iterator"
+    | "store"
+    | "timer"
+    | "quarantine-record";
+  name: string;
+  via?: string;
+};
+
+type Provenance = {
+  taints: OriginTaint[];
+  freshContainer: boolean;
+};
+
+const EMPTY_PROVENANCE: Provenance = { taints: [], freshContainer: false };
+const FRESH_PROVENANCE: Provenance = { taints: [], freshContainer: true };
+
+function taintKey(taint: OriginTaint): string {
+  return `${taint.kind}:${taint.name}:${taint.via ?? ""}`;
+}
+
+function enclosingForOf(node: ts.Node): ts.ForOfStatement | undefined {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (ts.isForOfStatement(current)) return current;
+    if (ts.isFunctionLike(current)) return undefined;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function mergeProvenance(parts: Provenance[]): Provenance {
+  const taints = new Map<string, OriginTaint>();
+  let freshContainer = parts.length > 0;
+  for (const part of parts) {
+    for (const taint of part.taints) taints.set(taintKey(taint), taint);
+    if (!part.freshContainer) freshContainer = false;
+  }
+  return { taints: [...taints.values()], freshContainer: freshContainer && taints.size === 0 };
+}
+
+function isPrimitiveLike(type: ts.Type): boolean {
+  const flags =
+    ts.TypeFlags.String |
+    ts.TypeFlags.Number |
+    ts.TypeFlags.Boolean |
+    ts.TypeFlags.Enum |
+    ts.TypeFlags.EnumLiteral |
+    ts.TypeFlags.StringLiteral |
+    ts.TypeFlags.NumberLiteral |
+    ts.TypeFlags.BooleanLiteral |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void |
+    ts.TypeFlags.Never |
+    ts.TypeFlags.BigInt |
+    ts.TypeFlags.BigIntLiteral |
+    ts.TypeFlags.ESSymbol |
+    ts.TypeFlags.UniqueESSymbol |
+    ts.TypeFlags.NonPrimitive;
+  if (type.flags & (flags & ~ts.TypeFlags.NonPrimitive)) return true;
+  if (type.isUnion()) return type.types.every(isPrimitiveLike);
+  return false;
+}
+
+function typeHasName(type: ts.Type, checker: ts.TypeChecker, names: Set<string>): boolean {
+  const found = new Set<string>();
+  collectTypeNames(type, checker, new Set(), found);
+  for (const name of names) {
+    if (found.has(name)) return true;
+  }
+  return false;
+}
+
+function containsMutableContainer(type: ts.Type, checker: ts.TypeChecker): boolean {
+  const names = new Set<string>();
+  collectTypeNames(type, checker, new Set(), names);
+  return (
+    names.has("Map") ||
+    names.has("Set") ||
+    names.has("WeakMap") ||
+    names.has("WeakSet") ||
+    names.has("Array") ||
+    names.has("ReadonlyArray")
+  );
+}
+
+class ClassProvenanceAnalysis {
+  private readonly ledgers: ReadonlySet<string>;
+  private readonly contract: Partial<Record<string, "session-iterator" | "replay-fence-writer">>;
+  private readonly methodByName = new Map<string, ts.MethodDeclaration | ts.GetAccessorDeclaration>();
+  private readonly summary = new Map<string, Provenance>();
+  private readonly inFlight = new Set<string>();
+  private readonly paramTaintStack: Array<Map<ts.Symbol, Provenance>> = [];
+
+  constructor(
+    private readonly source: ts.SourceFile,
+    cls: ts.ClassDeclaration,
+    private readonly className: string,
+    private readonly checker: ts.TypeChecker,
+  ) {
+    this.ledgers = new Set(
+      EXPECTED_LEDGERS[className as (typeof AUTHORITY_CLASS_NAMES)[number]] ?? Object.values(EXPECTED_LEDGERS).flat(),
+    );
+    this.contract = ACCEPTED_RETURN_CONTRACTS[className] ?? {};
+    for (const member of cls.members) {
+      if ((ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member)) && member.name) {
+        const name = staticName(member.name);
+        if (name) this.methodByName.set(name, member);
+      }
+    }
+  }
+
+  publicEscapeFindings(member: ts.MethodDeclaration | ts.GetAccessorDeclaration, methodName: string): AuditViolation[] {
+    const provenance = this.summarizeMember(member, methodName);
+    const findings: AuditViolation[] = [];
+    const allowedIterator = this.contract[methodName] === "session-iterator";
+    for (const taint of provenance.taints) {
+      if (allowedIterator && taint.kind === "live-iterator" && taint.name === "sessions") continue;
+      if (this.contract[methodName] === "replay-fence-writer" && taint.kind === "store") continue;
+      findings.push({
+        kind: "ledger-identity-escape",
+        file: fileLabel(this.source),
+        className: this.className,
+        member: methodName,
+        detail: `public method returns private ${taint.kind} ${taint.name}`,
+      });
+    }
+    const signature = this.checker.getSignatureFromDeclaration(member);
+    const returnType = signature ? this.checker.getReturnTypeOfSignature(signature) : undefined;
+    if (
+      returnType &&
+      containsMutableContainer(returnType, this.checker) &&
+      !provenance.freshContainer &&
+      provenance.taints.length === 0
+    ) {
+      const allowedWriter = this.contract[methodName] === "replay-fence-writer";
+      if (!allowedIterator && !allowedWriter) {
+        findings.push({
+          kind: "unproven-container-return",
+          file: fileLabel(this.source),
+          className: this.className,
+          member: methodName,
+          detail: `public method returns a mutable container without proving a detached copy (${this.checker.typeToString(returnType)})`,
+        });
+      }
+    }
+    return findings;
+  }
+
+  private summarizeMember(member: ts.MethodDeclaration | ts.GetAccessorDeclaration, methodName: string): Provenance {
+    const cached = this.summary.get(methodName);
+    if (cached) return cached;
+    if (this.inFlight.has(methodName)) return EMPTY_PROVENANCE;
+    this.inFlight.add(methodName);
+    const returns = this.returnExpressions(member);
+    const provenance =
+      returns.length === 0
+        ? FRESH_PROVENANCE
+        : mergeProvenance(returns.map((expr) => this.exprProvenance(expr, member)));
+    this.inFlight.delete(methodName);
+    this.summary.set(methodName, provenance);
+    return provenance;
+  }
+
+  private returnExpressions(member: ts.MethodDeclaration | ts.GetAccessorDeclaration): ts.Expression[] {
+    const out: ts.Expression[] = [];
+    if (!member.body || !ts.isBlock(member.body)) return out;
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== member) return;
+      if (ts.isReturnStatement(node) && node.expression) out.push(node.expression);
+      if (ts.isYieldExpression(node) && node.expression) out.push(node.expression);
+      ts.forEachChild(node, visit);
+    };
+    visit(member.body);
+    return out;
+  }
+
+  private exprProvenance(node: ts.Node, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+    const current = unwrap(node);
+    if (
+      ts.isStringLiteral(current) ||
+      ts.isNumericLiteral(current) ||
+      current.kind === ts.SyntaxKind.TrueKeyword ||
+      current.kind === ts.SyntaxKind.FalseKeyword ||
+      current.kind === ts.SyntaxKind.NullKeyword ||
+      current.kind === ts.SyntaxKind.UndefinedKeyword
+    ) {
+      return FRESH_PROVENANCE;
+    }
+    if (ts.isAwaitExpression(current)) return this.exprProvenance(current.expression, owner);
+    if (ts.isConditionalExpression(current)) {
+      return mergeProvenance([
+        this.exprProvenance(current.whenTrue, owner),
+        this.exprProvenance(current.whenFalse, owner),
+      ]);
+    }
+    if (ts.isBinaryExpression(current)) {
+      const op = current.operatorToken.kind;
+      if (
+        op === ts.SyntaxKind.BarBarToken ||
+        op === ts.SyntaxKind.AmpersandAmpersandToken ||
+        op === ts.SyntaxKind.QuestionQuestionToken
+      ) {
+        return mergeProvenance([this.exprProvenance(current.left, owner), this.exprProvenance(current.right, owner)]);
+      }
+      if (op === ts.SyntaxKind.CommaToken) return this.exprProvenance(current.right, owner);
+      if (ASSIGNMENT_KINDS.has(op)) return this.exprProvenance(current.right, owner);
+      return FRESH_PROVENANCE;
+    }
+    if (ts.isArrayLiteralExpression(current)) {
+      const taints: OriginTaint[] = [];
+      for (const element of current.elements) {
+        if (ts.isSpreadElement(element)) {
+          taints.push(
+            ...this.detachIterableIdentity(this.exprProvenance(element.expression, owner), element.expression),
+          );
+        } else {
+          taints.push(...this.exprProvenance(element, owner).taints);
+        }
+      }
+      return { taints: uniqueTaints(taints), freshContainer: taints.length === 0 };
+    }
+    if (ts.isObjectLiteralExpression(current)) {
+      const taints: OriginTaint[] = [];
+      for (const prop of current.properties) {
+        if (ts.isSpreadAssignment(prop)) {
+          taints.push(...this.exprProvenance(prop.expression, owner).taints);
+        } else if (ts.isPropertyAssignment(prop) && !ts.isFunctionLike(prop.initializer)) {
+          taints.push(...this.exprProvenance(prop.initializer, owner).taints);
+        } else if (ts.isShorthandPropertyAssignment(prop)) {
+          taints.push(...this.exprProvenance(prop.name, owner).taints);
+        }
+      }
+      return { taints: uniqueTaints(taints), freshContainer: taints.length === 0 };
+    }
+    if (ts.isNewExpression(current)) return FRESH_PROVENANCE;
+    if (ts.isCallExpression(current)) return this.callProvenance(current, owner);
+    if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      return this.memberProvenance(current, owner);
+    }
+    if (ts.isIdentifier(current)) return this.identifierProvenance(current, owner);
+    if (current.kind === ts.SyntaxKind.ThisKeyword) return EMPTY_PROVENANCE;
+    if (ts.isPrefixUnaryExpression(current) || ts.isPostfixUnaryExpression(current)) return FRESH_PROVENANCE;
+    if (ts.isTypeOfExpression(current) || ts.isVoidExpression(current)) return FRESH_PROVENANCE;
+    if (ts.isAsExpression(current) || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current)) {
+      return this.exprProvenance(current.expression, owner);
+    }
+    return EMPTY_PROVENANCE;
+  }
+
+  private callProvenance(call: ts.CallExpression, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+    const callee = unwrap(call.expression);
+    if (ts.isIdentifier(callee) && callee.text === "Array" && call.arguments.length > 0) {
+      /* Array(n) */
+      return FRESH_PROVENANCE;
+    }
+    if (ts.isPropertyAccessExpression(callee)) {
+      const method = callee.name.text;
+      if (ts.isIdentifier(callee.expression) && callee.expression.text === "Array" && method === "from") {
+        const arg = call.arguments[0];
+        const inner = arg ? this.exprProvenance(arg, owner) : FRESH_PROVENANCE;
+        const taints = arg ? this.detachIterableIdentity(inner, arg) : [];
+        return { taints, freshContainer: true };
+      }
+      if (ts.isIdentifier(callee.expression) && callee.expression.text === "Object" && method === "freeze") {
+        const arg = call.arguments[0];
+        return arg ? this.exprProvenance(arg, owner) : EMPTY_PROVENANCE;
+      }
+      if (
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "Promise" &&
+        (method === "resolve" || method === "reject")
+      ) {
+        const arg = call.arguments[0];
+        return arg ? this.exprProvenance(arg, owner) : FRESH_PROVENANCE;
+      }
+      if (DETACH_METHODS.has(method)) {
+        const receiver = this.exprProvenance(callee.expression, owner);
+        if (method === "map" || method === "flatMap") {
+          const element: Provenance = {
+            taints: receiver.taints.filter(
+              (taint) =>
+                taint.kind === "nested-container" ||
+                taint.kind === "slot-state" ||
+                taint.kind === "route-state" ||
+                taint.kind === "quarantine-record" ||
+                taint.kind === "store",
+            ),
+            freshContainer: false,
+          };
+          const callbackTaints: OriginTaint[] = [];
+          for (const arg of call.arguments) {
+            if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
+              callbackTaints.push(...this.functionCallbackProvenance(arg, element, owner).taints);
+            }
+          }
+          return { taints: uniqueTaints(callbackTaints), freshContainer: true };
+        }
+        const nested = receiver.taints.filter(
+          (taint) => taint.kind !== "ledger" && taint.kind !== "slot-field" && taint.kind !== "live-iterator",
+        );
+        return { taints: uniqueTaints(nested), freshContainer: true };
+      }
+      if (method === "get" || method === "values" || method === "entries" || method === "keys") {
+        return this.containerMethodProvenance(callee.expression, method, owner);
+      }
+      if (this.isThisReceiver(callee.expression)) {
+        const target = this.methodByName.get(method);
+        if (target) return this.summarizeMember(target, method);
+      }
+    }
+    const argTaints: OriginTaint[] = [];
+    for (const arg of call.arguments) argTaints.push(...this.exprProvenance(arg, owner).taints);
+    if (isPrimitiveLike(this.checker.getTypeAtLocation(call))) return FRESH_PROVENANCE;
+    if (argTaints.length > 0) return { taints: uniqueTaints(argTaints), freshContainer: false };
+    return EMPTY_PROVENANCE;
+  }
+
+  private blockReturnProvenance(block: ts.Block, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+    const returns: Provenance[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isFunctionLike(node) && node !== owner) return;
+      if (ts.isReturnStatement(node) && node.expression) returns.push(this.exprProvenance(node.expression, owner));
+      ts.forEachChild(node, visit);
+    };
+    visit(block);
+    return returns.length === 0 ? FRESH_PROVENANCE : mergeProvenance(returns);
+  }
+
+  private containerMethodProvenance(
+    receiver: ts.Expression,
+    method: string,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const recv = this.exprProvenance(receiver, owner);
+    const ledger = recv.taints.find((taint) => taint.kind === "ledger");
+    if (!ledger) return recv;
+    if (method === "get") {
+      if (SAFE_VALUE_LEDGERS.has(ledger.name)) return FRESH_PROVENANCE;
+      if (ledger.name === "slotBySession")
+        return { taints: [{ kind: "slot-state", name: ledger.name }], freshContainer: false };
+      if (ledger.name === "routeBySession")
+        return { taints: [{ kind: "route-state", name: ledger.name }], freshContainer: false };
+      if (ledger.name === "quarantinedSessions") {
+        return { taints: [{ kind: "quarantine-record", name: ledger.name }], freshContainer: false };
+      }
+      if (ledger.name === "handlerShutdowns") {
+        return { taints: [{ kind: "nested-container", name: ledger.name }], freshContainer: false };
+      }
+      if (
+        ledger.name === "replayFenceRetryTimers" ||
+        ledger.name === "postFenceRecoveryTimers" ||
+        ledger.name === "idleTimer"
+      ) {
+        return { taints: [{ kind: "timer", name: ledger.name }], freshContainer: false };
+      }
+      return { taints: [{ kind: "nested-container", name: ledger.name }], freshContainer: false };
+    }
+    if (method === "values" || method === "entries" || method === "keys") {
+      return { taints: [{ kind: "live-iterator", name: ledger.name, via: method }], freshContainer: false };
+    }
+    return recv;
+  }
+
+  private memberProvenance(
+    node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    let name: string | undefined;
+    if (ts.isPropertyAccessExpression(node)) {
+      name = node.name.text;
+    } else {
+      const key = resolveConstString(node.argumentExpression, this.checker);
+      if (key.kind === "literal") name = key.value;
+    }
+    const recvExpr = node.expression;
+    const type = this.checker.getTypeAtLocation(node);
+    if (isPrimitiveLike(type)) return FRESH_PROVENANCE;
+    if (name && this.isThisReceiver(recvExpr) && this.ledgers.has(name)) {
+      return this.thisLedgerProvenance(name, node);
+    }
+    if (name && this.isThisReceiver(recvExpr)) {
+      const target = this.methodByName.get(name);
+      if (target && ts.isGetAccessorDeclaration(target)) return this.summarizeMember(target, name);
+    }
+    const recv = this.exprProvenance(recvExpr, owner);
+    if (!name) {
+      if (ts.isElementAccessExpression(node) && this.isThisReceiver(recvExpr)) {
+        const key = resolveConstString(node.argumentExpression, this.checker);
+        if (key.kind !== "literal") {
+          return { taints: [...recv.taints, { kind: "ledger", name: "<dynamic>" }], freshContainer: false };
+        }
+      }
+      if (typeHasName(this.checker.getTypeAtLocation(recvExpr), this.checker, new Set(["Array", "ReadonlyArray"]))) {
+        return FRESH_PROVENANCE;
+      }
+      if (recv.taints.some((taint) => taint.kind === "ledger")) {
+        return this.containerMethodProvenance(recvExpr, "get", owner);
+      }
+      return recv;
+    }
+    if (recv.taints.some((taint) => taint.kind === "slot-state") && SLOT_MUTABLE_FIELDS.has(name)) {
+      return { taints: [{ kind: "slot-field", name }], freshContainer: false };
+    }
+    if (recv.taints.some((taint) => taint.kind === "route-state") && name !== "generation" && name !== "injectReady") {
+      if (name === "transition") return FRESH_PROVENANCE;
+      return { taints: [{ kind: "route-state", name: "routeBySession" }], freshContainer: false };
+    }
+    if (recv.taints.some((taint) => taint.kind === "quarantine-record") && name === "handler") return FRESH_PROVENANCE;
+    if (
+      recv.taints.some((taint) => taint.kind === "nested-container" && taint.name === "handlerShutdowns") &&
+      (name === "raw" || name === "observed")
+    ) {
+      return FRESH_PROVENANCE;
+    }
+    if (recv.taints.some((taint) => taint.kind === "store") && name !== "replayFence" && name !== "registry") {
+      return FRESH_PROVENANCE;
+    }
+    const nestedField = recv.taints.find((taint) => taint.kind === "slot-field" && taint.name === name);
+    if (nestedField) return { taints: [nestedField], freshContainer: false };
+    if (recv.taints.length > 0 && SLOT_MUTABLE_FIELDS.has(name)) {
+      return { taints: [{ kind: "slot-field", name }], freshContainer: false };
+    }
+    return {
+      taints: recv.taints.filter((taint) => taint.kind !== "slot-state" && taint.kind !== "route-state"),
+      freshContainer: false,
+    };
+  }
+
+  private thisLedgerProvenance(name: string, node: ts.Node): Provenance {
+    const type = this.checker.getTypeAtLocation(node);
+    if (isPrimitiveLike(type)) return FRESH_PROVENANCE;
+    if (typeHasName(type, this.checker, new Set(["ReplayFenceStore", "SessionRegistry"]))) {
+      return { taints: [{ kind: "store", name }], freshContainer: false };
+    }
+    if (typeHasName(type, this.checker, new Set(["Timeout"]))) {
+      return { taints: [{ kind: "timer", name }], freshContainer: false };
+    }
+    return { taints: [{ kind: "ledger", name }], freshContainer: false };
+  }
+
+  private identifierProvenance(id: ts.Identifier, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+    if (id.text === "undefined" || id.text === "NaN" || id.text === "Infinity") return FRESH_PROVENANCE;
+    const symbol = this.checker.getSymbolAtLocation(id);
+    if (!symbol) return EMPTY_PROVENANCE;
+    for (let index = this.paramTaintStack.length - 1; index >= 0; index--) {
+      const bound = this.paramTaintStack[index]?.get(symbol);
+      if (!bound) continue;
+      if (isPrimitiveLike(this.checker.getTypeAtLocation(id))) return FRESH_PROVENANCE;
+      return bound;
+    }
+    const parts: Provenance[] = [];
+    for (const declaration of symbol.declarations ?? []) {
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer) {
+        parts.push(this.exprProvenance(declaration.initializer, owner));
+      }
+      if (ts.isVariableDeclaration(declaration) && !declaration.initializer) {
+        const forOf = enclosingForOf(declaration);
+        if (forOf) parts.push(this.forOfNameProvenance(declaration.name, forOf, owner));
+      }
+      if (ts.isBindingElement(declaration)) {
+        const forOf = enclosingForOf(declaration);
+        if (forOf) {
+          parts.push(this.forOfBindingProvenance(declaration, forOf, owner));
+        } else {
+          const property = staticName(declaration.propertyName ?? declaration.name);
+          const target = declaration.parent.parent;
+          if (property && ts.isVariableDeclaration(target) && target.initializer) {
+            const recv = this.exprProvenance(target.initializer, owner);
+            if (
+              SLOT_MUTABLE_FIELDS.has(property) &&
+              recv.taints.some((taint) => taint.kind === "slot-state" || taint.kind === "slot-field")
+            ) {
+              parts.push({ taints: [{ kind: "slot-field", name: property }], freshContainer: false });
+            } else {
+              parts.push(recv);
+            }
+          }
+        }
+      }
+      if (ts.isParameter(declaration) && this.paramTaintStack.length === 0) parts.push(EMPTY_PROVENANCE);
+    }
+    if (owner.body) {
+      const visit = (node: ts.Node): void => {
+        if (ts.isFunctionLike(node) && node !== owner) return;
+        if (
+          ts.isBinaryExpression(node) &&
+          ASSIGNMENT_KINDS.has(node.operatorToken.kind) &&
+          ts.isIdentifier(unwrap(node.left))
+        ) {
+          const left = unwrap(node.left) as ts.Identifier;
+          if (this.checker.getSymbolAtLocation(left) === symbol) {
+            parts.push(this.exprProvenance(node.right, owner));
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(owner.body);
+    }
+    if (parts.length === 0) return EMPTY_PROVENANCE;
+    const merged = mergeProvenance(parts);
+    if (
+      typeHasName(this.checker.getTypeAtLocation(id), this.checker, SESSION_ENTRY_TYPE_NAMES) &&
+      !this.ledgers.has(id.text)
+    ) {
+      return FRESH_PROVENANCE;
+    }
+    if (isPrimitiveLike(this.checker.getTypeAtLocation(id))) return FRESH_PROVENANCE;
+    return merged;
+  }
+
+  private detachIterableIdentity(spread: Provenance, expr: ts.Expression): OriginTaint[] {
+    const out: OriginTaint[] = [];
+    for (const taint of spread.taints) {
+      if (taint.kind === "ledger") {
+        if (this.iterationYieldsLiveInner(taint.name, expr)) {
+          out.push({ kind: "nested-container", name: taint.name });
+        }
+        continue;
+      }
+      if (taint.kind === "slot-field") continue;
+      if (taint.kind === "live-iterator") {
+        if (taint.via === "keys") continue;
+        if (SAFE_VALUE_LEDGERS.has(taint.name)) continue;
+        out.push({ kind: "nested-container", name: taint.name });
+        continue;
+      }
+      if (taint.kind === "nested-container") continue;
+      out.push(taint);
+    }
+    return uniqueTaints(out);
+  }
+
+  private iterationYieldsLiveInner(name: string, expr: ts.Expression): boolean {
+    if (SAFE_VALUE_LEDGERS.has(name)) return false;
+    const names = new Set<string>();
+    collectTypeNames(this.checker.getTypeAtLocation(expr), this.checker, new Set(), names);
+    if (names.has("Array") || names.has("Set") || names.has("ReadonlyArray")) return false;
+    return names.has("Map") || names.has("WeakMap");
+  }
+
+  private functionCallbackProvenance(
+    fn: ts.ArrowFunction | ts.FunctionExpression,
+    element: Provenance,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const map = new Map<ts.Symbol, Provenance>();
+    for (const param of fn.parameters) this.bindCallbackName(param.name, element, map);
+    this.paramTaintStack.push(map);
+    try {
+      if (ts.isBlock(fn.body)) return this.blockReturnProvenance(fn.body, owner);
+      return this.exprProvenance(fn.body, owner);
+    } finally {
+      this.paramTaintStack.pop();
+    }
+  }
+
+  private bindCallbackName(name: ts.BindingName, element: Provenance, map: Map<ts.Symbol, Provenance>): void {
+    if (ts.isIdentifier(name)) {
+      const symbol = this.checker.getSymbolAtLocation(name);
+      if (symbol) map.set(symbol, element);
+      return;
+    }
+    if (ts.isArrayBindingPattern(name)) {
+      for (const [index, el] of name.elements.entries()) {
+        if (!ts.isBindingElement(el)) continue;
+        const inner =
+          index === 0 && element.taints.some((taint) => taint.kind === "nested-container") ? FRESH_PROVENANCE : element;
+        this.bindCallbackName(el.name, inner, map);
+      }
+      return;
+    }
+    if (ts.isObjectBindingPattern(name)) {
+      for (const el of name.elements) {
+        if (ts.isBindingElement(el)) this.bindCallbackName(el.name, element, map);
+      }
+    }
+  }
+
+  private forOfNameProvenance(
+    name: ts.BindingName,
+    forOf: ts.ForOfStatement,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const element = this.iteratedElementProvenance(forOf.expression, owner);
+    if (ts.isIdentifier(name)) {
+      if (isPrimitiveLike(this.checker.getTypeAtLocation(name))) return FRESH_PROVENANCE;
+      return element;
+    }
+    return element;
+  }
+
+  private forOfBindingProvenance(
+    declaration: ts.BindingElement,
+    forOf: ts.ForOfStatement,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const element = this.iteratedElementProvenance(forOf.expression, owner);
+    const pattern = declaration.parent;
+    if (ts.isArrayBindingPattern(pattern)) {
+      const index = pattern.elements.indexOf(declaration);
+      if (index === 0 && element.taints.some((taint) => taint.kind === "nested-container")) {
+        return FRESH_PROVENANCE;
+      }
+    }
+    if (isPrimitiveLike(this.checker.getTypeAtLocation(declaration.name))) return FRESH_PROVENANCE;
+    return element;
+  }
+
+  private iteratedElementProvenance(
+    expr: ts.Expression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const inner = this.exprProvenance(expr, owner);
+    const taints = this.detachIterableIdentity(inner, expr);
+    return { taints, freshContainer: taints.length === 0 };
+  }
+
+  private isThisReceiver(node: ts.Expression): boolean {
+    const current = followInitializer(node, this.checker, new Set());
+    return current.kind === ts.SyntaxKind.ThisKeyword;
+  }
+}
+
+function uniqueTaints(taints: OriginTaint[]): OriginTaint[] {
+  const map = new Map<string, OriginTaint>();
+  for (const taint of taints) map.set(taintKey(taint), taint);
+  return [...map.values()];
 }
