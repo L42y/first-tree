@@ -25,6 +25,7 @@ type UseAdminWsOptions = {
 
 const RECONNECT_BASE_MS = 2000;
 const RECONNECT_MAX_MS = 30_000;
+const ADMISSION_TIMEOUT_MS = 10_000;
 
 // Module-level singleton connection shared across all hook instances.
 type QC = ReturnType<typeof useQueryClient>;
@@ -368,14 +369,28 @@ function connect() {
   const socket = new WebSocket(wsUrl);
   let membershipChangeSignaled = false;
   let admissionConfirmed = false;
+  let admissionTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearAdmissionTimer = () => {
+    if (admissionTimer) {
+      clearTimeout(admissionTimer);
+      admissionTimer = null;
+    }
+  };
   ws = socket;
 
+  socket.onopen = () => {
+    admissionTimer = setTimeout(() => {
+      admissionTimer = null;
+      if (socket === ws && !admissionConfirmed) socket.close(1013, "admission timeout");
+    }, ADMISSION_TIMEOUT_MS);
+  };
   socket.onmessage = (ev) => {
     if (socket !== ws) return;
     try {
       const msg = JSON.parse(ev.data as string) as WsMessage;
       if (msg.type === "admin:connected" && !admissionConfirmed) {
         admissionConfirmed = true;
+        clearAdmissionTimer();
         const isReconnect = reconnectAttempt > 0;
         reconnectAttempt = 0;
         if (isReconnect) catchUpAfterReconnect();
@@ -390,6 +405,7 @@ function connect() {
     }
   };
   socket.onclose = (ev) => {
+    clearAdmissionTimer();
     // Only the current (latest) socket's close triggers reconnect.
     // An aborted CONNECTING socket from strict-mode unmount will also close here
     // but must not touch module state.

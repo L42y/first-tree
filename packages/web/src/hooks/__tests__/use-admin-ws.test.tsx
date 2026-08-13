@@ -27,6 +27,7 @@ class FakeWebSocket {
   onopen: (() => void) | null = null;
   onclose: CloseHandler = null;
   closed = false;
+  closeCode: number | null = null;
   readonly url: string;
 
   constructor(url: string) {
@@ -34,8 +35,10 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
   }
 
-  close(): void {
+  close(code = 1000): void {
     this.closed = true;
+    this.closeCode = code;
+    this.onclose?.(new CloseEvent("close", { code }));
   }
 
   emit(data: unknown): void {
@@ -336,6 +339,50 @@ describe("useAdminWs", () => {
     });
     expect(FakeWebSocket.instances).toHaveLength(4);
     window.removeEventListener("admin-ws:membership-changed", membershipChanged);
+  });
+
+  it("retries when transport opens without protocol admission", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    const onMessage = await renderHook();
+    const first = FakeWebSocket.instances[0];
+    if (!first) throw new Error("socket missing");
+    vi.useFakeTimers();
+    invalidateSpy.mockClear();
+
+    await act(async () => {
+      first.open();
+      vi.advanceTimersByTime(9_999);
+    });
+    expect(first.closed).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(first.closed).toBe(true);
+    expect(first.closeCode).toBe(1013);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_999);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    const replacement = FakeWebSocket.instances[1];
+    if (!replacement) throw new Error("replacement socket missing");
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      replacement.open();
+      replacement.emit({ type: "admin:connected" });
+    });
+    expect(onMessage.mock.calls.filter(([message]) => message.type === "ws:reconnect")).toHaveLength(1);
+    expect(invalidateSpy.mock.calls.filter(([options]) => options?.queryKey?.[0] === "activity")).toHaveLength(1);
   });
 
   it("refreshes access tokens on auth close and reconnects immediately", async () => {
