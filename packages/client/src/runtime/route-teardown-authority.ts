@@ -86,14 +86,14 @@ export class RouteTeardownAuthority {
    * CONFIRMED stop. A ref'd terminate joins/strictly tears down every pending
    * handler of the chat before it may ack; confirmed stops drop out of the set.
    */
-  readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
+  private readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
   /**
    * Chat-level authority for provider generations whose operator suspend
    * callback exceeded its bound. The entry lives for this manager's lifetime:
    * ordinary routing may replace the exact handler, while Reset remains
    * restart-required because provider teardown was never confirmed.
    */
-  readonly quarantinedSessions = new Map<string, QuarantinedSession>();
+  private readonly quarantinedSessions = new Map<string, QuarantinedSession>();
   /**
    * In-flight route producers (start/resume/retry provider calls), per chat.
    * Tracked from `beginRouteTransition` until the route settles: a canceled
@@ -101,7 +101,7 @@ export class RouteTeardownAuthority {
    * funnels that materialization into `discardStaleRouteTransition` → teardown
    * debt. Terminate and manager shutdown join these before they may ack/return.
    */
-  readonly routeProducers = new Map<string, Set<Promise<void>>>();
+  private readonly routeProducers = new Map<string, Set<Promise<void>>>();
   /** Handlers invalidated while start/resume was unresolved must never be reused. */
   private readonly retiredHandlers = new WeakSet<AgentHandler>();
   /**
@@ -115,6 +115,130 @@ export class RouteTeardownAuthority {
   private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
 
   constructor(private readonly deps: RouteTeardownAuthorityDeps) {}
+
+  hasQuarantinedChat(chatId: string): boolean {
+    return this.quarantinedSessions.has(chatId);
+  }
+
+  quarantinedChatIds(): string[] {
+    return [...this.quarantinedSessions.keys()];
+  }
+
+  quarantinedHandler(chatId: string): AgentHandler | undefined {
+    return this.quarantinedSessions.get(chatId)?.handler;
+  }
+
+  isHandlerInAnyQuarantine(handler: AgentHandler): boolean {
+    for (const quarantined of this.quarantinedSessions.values()) {
+      if (quarantined.handler === handler) return true;
+    }
+    return false;
+  }
+
+  hasPendingTeardown(chatId: string): boolean {
+    const pending = this.pendingTeardowns.get(chatId);
+    return Boolean(pending && pending.size > 0);
+  }
+
+  pendingTeardownHandlers(chatId: string): AgentHandler[] {
+    const pending = this.pendingTeardowns.get(chatId);
+    return pending ? [...pending] : [];
+  }
+
+  pendingTeardownChatIds(): string[] {
+    return [...this.pendingTeardowns.keys()];
+  }
+
+  allPendingTeardownEntries(): Array<[string, AgentHandler[]]> {
+    return [...this.pendingTeardowns.entries()].map(([chatId, handlers]) => [chatId, [...handlers]]);
+  }
+
+  /**
+   * Live iteration over pending-teardown chats. Mutating the ledger during
+   * consumption matches Map.entries() (new keys are visited; deleted
+   * not-yet-visited keys are skipped). Each batch is a snapshot of that chat's
+   * set so the host never holds the mutable container.
+   */
+  *pendingTeardownChatBatches(): IterableIterator<[string, AgentHandler[]]> {
+    for (const [chatId, pending] of this.pendingTeardowns) {
+      yield [chatId, [...pending]];
+    }
+  }
+
+  /**
+   * Live iteration over pending-teardown handler sets (manager-shutdown retry
+   * pass). Same Map.values() liveness as the historical host loop.
+   */
+  *pendingTeardownBatches(): IterableIterator<AgentHandler[]> {
+    for (const pending of this.pendingTeardowns.values()) {
+      yield [...pending];
+    }
+  }
+
+  hasRouteProducers(chatId: string): boolean {
+    return (this.routeProducers.get(chatId)?.size ?? 0) > 0;
+  }
+
+  routeProducerChatIds(): string[] {
+    return [...this.routeProducers.keys()];
+  }
+
+  allRouteProducerPromises(): Promise<void>[] {
+    return [...this.routeProducers.values()].flatMap((producers) => [...producers]);
+  }
+
+  hasInFlightTransition(entry: RouteTeardownHostEntry): boolean {
+    return entry.routeTransition !== null;
+  }
+
+  getRouteTransition(entry: RouteTeardownHostEntry): RouteTransitionToken | null {
+    return entry.routeTransition;
+  }
+
+  isRouteInjectReady(entry: RouteTeardownHostEntry): boolean {
+    return entry.routeInjectReady;
+  }
+
+  currentRouteLease(entry: RouteTeardownHostEntry): RouteLeaseToken {
+    return { generation: entry.routeTransitionGeneration, handler: entry.handler };
+  }
+
+  captureGeneration(entry: RouteTeardownHostEntry): number {
+    return entry.routeTransitionGeneration;
+  }
+
+  isGenerationCurrent(entry: RouteTeardownHostEntry, generation: number): boolean {
+    return entry.routeTransitionGeneration === generation;
+  }
+
+  /**
+   * Open live inject once the in-flight start/resume head has proven provider
+   * membership. Returns false when there is no live transition or the entry is
+   * not holding an active slot.
+   */
+  markRouteInjectReady(entry: RouteTeardownHostEntry): boolean {
+    if (entry.routeTransition === null) return false;
+    if (entry.status !== "active" || !entry.activeSlotHeld) return false;
+    entry.routeInjectReady = true;
+    return true;
+  }
+
+  /**
+   * Operator-suspend settlement window: drop the transition pointer and inject
+   * latch without bumping generation, so already-issued DeliveryTokens can
+   * still post notice+ACK. Returns the pointer that was cleared.
+   */
+  clearRoutePointerKeepGeneration(entry: RouteTeardownHostEntry): RouteTransitionToken | null {
+    const transition = entry.routeTransition;
+    entry.routeTransition = null;
+    entry.routeInjectReady = false;
+    return transition;
+  }
+
+  /** Bump adoption generation after operator-suspend settlement. */
+  bumpAdoptionGeneration(entry: RouteTeardownHostEntry): void {
+    entry.routeTransitionGeneration++;
+  }
 
   isHandlerRetired(handler: AgentHandler): boolean {
     return this.retiredHandlers.has(handler);

@@ -66,49 +66,49 @@ export type ResetReplayAuthorityOptions = {
  */
 export class ResetReplayAuthority {
   /** Chats whose terminate command has closed admission but is still draining cleanup. */
-  readonly terminatingChats = new Map<string, Promise<void>>();
+  private readonly terminatingChats = new Map<string, Promise<void>>();
   /**
    * Chats whose terminate cleanup finished in memory but whose final
    * synchronous registry flush failed.
    */
-  readonly terminatePersistFailures = new Set<string>();
+  private readonly terminatePersistFailures = new Set<string>();
   /**
    * Chats with Reset-fence parked debt that must not admit a provider route
    * or same-socket recoverChat until {@link releaseParkedResetFenceRecovery}
    * runs after an exact receipted post-apply terminal disposition.
    */
-  readonly awaitingResetFenceRelease = new Set<string>();
+  private readonly awaitingResetFenceRelease = new Set<string>();
   /**
    * THE Reset-generation authority for this client: `chatId → generation`.
    */
-  readonly resetGenerations = new Map<string, { refs: Set<string>; released: boolean }>();
+  private readonly resetGenerations = new Map<string, { refs: Set<string>; released: boolean }>();
   /**
    * Coalesce one post-disposition recovery per chat so duplicate or
    * concurrent release calls cannot open repeated same-socket recoverChat
    * calls.
    */
-  readonly postResetFenceRecoveryScheduled = new Set<string>();
+  private readonly postResetFenceRecoveryScheduled = new Set<string>();
   /**
    * Durable replay-fence store instance (unique owner). Disk format / write /
    * flush / tombstone behavior is unchanged — only custody moved.
    */
-  readonly replayFence: ReplayFenceStore | null;
+  private readonly replayFence: ReplayFenceStore | null;
   /**
    * Set when the replay-fence store could not be loaded. Fail-closed: every
    * dispatch is withheld as recovery debt until an operator repairs the store.
    */
-  replayFenceUnavailable: string | null = null;
+  private replayFenceUnavailable: string | null = null;
   /**
    * Fence keys the server has authoritatively proven settled. Once a key
    * lands here its settlement fact cannot be revoked by later tail traffic.
    */
-  readonly provenSettledFences = new Map<string, Set<string>>();
+  private readonly provenSettledFences = new Map<string, Set<string>>();
   /** Per-chat retry timers for the reconciliation/clear loop. */
-  readonly replayFenceRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly replayFenceRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** Chats whose post-fence-clear recovery has not yet succeeded. */
-  readonly postFenceRecoveryDebt = new Set<string>();
-  readonly postFenceRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  readonly postFenceRecoveryInFlight = new Map<string, Promise<void>>();
+  private readonly postFenceRecoveryDebt = new Set<string>();
+  private readonly postFenceRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly postFenceRecoveryInFlight = new Map<string, Promise<void>>();
 
   constructor(
     private readonly deps: ResetReplayAuthorityDeps,
@@ -128,6 +128,52 @@ export class ResetReplayAuthority {
     } else {
       this.replayFence = null;
     }
+  }
+
+  joinInFlightTermination(chatId: string): Promise<void> | undefined {
+    return this.terminatingChats.get(chatId);
+  }
+
+  beginTermination(chatId: string, promise: Promise<void>): void {
+    this.terminatingChats.set(chatId, promise);
+  }
+
+  finishTerminationIfCurrent(chatId: string, promise: Promise<void>): void {
+    if (this.terminatingChats.get(chatId) === promise) {
+      this.terminatingChats.delete(chatId);
+    }
+  }
+
+  hasTerminatingChat(chatId: string): boolean {
+    return this.terminatingChats.has(chatId);
+  }
+
+  terminatingChatIds(): string[] {
+    return [...this.terminatingChats.keys()];
+  }
+
+  terminatePersistFailureIds(): string[] {
+    return [...this.terminatePersistFailures];
+  }
+
+  awaitingResetFenceReleaseIds(): string[] {
+    return [...this.awaitingResetFenceRelease];
+  }
+
+  armedResetGenerationChatIds(): string[] {
+    const ids: string[] = [];
+    for (const id of this.resetGenerations.keys()) {
+      if (this.hasArmedResetGeneration(id)) ids.push(id);
+    }
+    return ids;
+  }
+
+  hasPostFenceRecoveryDebt(chatId: string): boolean {
+    return this.postFenceRecoveryDebt.has(chatId);
+  }
+
+  getReplayFenceStore(): ReplayFenceStore | null {
+    return this.replayFence;
   }
 
   /**

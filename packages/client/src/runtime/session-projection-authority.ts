@@ -56,7 +56,7 @@ export type SessionProjectionAuthorityDeps = {
   hasProcessingOwnedWork: (chatId: string) => boolean;
   /**
    * Called when projection transitions a chat to idle and the host may have
-   * pending slot work (SlotSchedulerAuthority.pendingQueue).
+   * pending slot work (SlotSchedulerAuthority drain).
    */
   drainPendingOnIdle: () => void;
   /**
@@ -81,24 +81,24 @@ export type SessionProjectionAuthorityOptions = {
 export class SessionProjectionAuthority<
   TSession extends SessionProjectionSessionFields = SessionProjectionSessionFields,
 > {
-  readonly sessions = new Map<string, TSession>();
-  readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
+  private readonly sessions = new Map<string, TSession>();
+  private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
   /**
    * Current trigger (messageId + senderId) per chat — the message that kicked
    * off the current or most-recent turn. The result-sink clears it at turn end.
    */
-  readonly currentTrigger = new Map<string, Trigger>();
-  readonly registry: SessionRegistry | null;
-  readonly lastReportedStates = new Map<string, SessionState>();
-  readonly sessionRuntimeStates = new Map<string, RuntimeState>();
+  private readonly currentTrigger = new Map<string, Trigger>();
+  private readonly registry: SessionRegistry | null;
+  private readonly lastReportedStates = new Map<string, SessionState>();
+  private readonly sessionRuntimeStates = new Map<string, RuntimeState>();
   /** Chats held specifically for a fresh bind, never same-socket recovery. */
-  readonly runtimeProofRecoveryChats = new Set<string>();
-  lastReportedRuntimeState: RuntimeState | null = null;
+  private readonly runtimeProofRecoveryChats = new Set<string>();
+  private lastReportedRuntimeState: RuntimeState | null = null;
   /**
    * Last lazy Context-Tree re-resolution attempt (epoch ms). Owned here so
    * SessionRuntime orchestration can rate-limit without a parallel field.
    */
-  lastTreeResolveAttemptAt = 0;
+  private lastTreeResolveAttemptAt = 0;
   private runtimeReaffirmTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -106,6 +106,103 @@ export class SessionProjectionAuthority<
     options: SessionProjectionAuthorityOptions = {},
   ) {
     this.registry = options.registryPath ? new SessionRegistry(options.registryPath) : null;
+  }
+
+  getSession(chatId: string): TSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  hasSession(chatId: string): boolean {
+    return this.sessions.has(chatId);
+  }
+
+  sessionCount(): number {
+    return this.sessions.size;
+  }
+
+  sessionsValues(): IterableIterator<TSession> {
+    return this.sessions.values();
+  }
+
+  sessionsEntries(): IterableIterator<[string, TSession]> {
+    return this.sessions.entries();
+  }
+
+  isSameSession(chatId: string, entry: TSession): boolean {
+    return this.sessions.get(chatId) === entry;
+  }
+
+  /** Install or replace the live session record for this chat. */
+  installSession(entry: TSession): void {
+    this.sessions.set(entry.chatId, entry);
+  }
+
+  /**
+   * Terminate-style drop: live session, evicted mapping, runtime/state
+   * projection, last-reported state, and current trigger.
+   */
+  forgetChat(chatId: string): void {
+    this.sessions.delete(chatId);
+    this.evictedMappings.delete(chatId);
+    this.sessionRuntimeStates.delete(chatId);
+    this.lastReportedStates.delete(chatId);
+    this.currentTrigger.delete(chatId);
+  }
+
+  /**
+   * Fail/abort path: drop the live session, runtime projection, and trigger.
+   * Leaves an evicted mapping in place if one was already recorded.
+   */
+  dropLiveSession(chatId: string): void {
+    this.sessions.delete(chatId);
+    this.sessionRuntimeStates.delete(chatId);
+    this.currentTrigger.delete(chatId);
+  }
+
+  /**
+   * Identity-guarded live-session drop used when an unestablished start is
+   * suspended: remove the entry and its trigger only if this exact record is
+   * still installed.
+   */
+  dropLiveSessionIfCurrent(chatId: string, entry: TSession): boolean {
+    if (this.sessions.get(chatId) !== entry) return false;
+    this.sessions.delete(chatId);
+    this.currentTrigger.delete(chatId);
+    return true;
+  }
+
+  dropSessionRuntimeState(chatId: string): void {
+    this.sessionRuntimeStates.delete(chatId);
+  }
+
+  getSessionRuntimeState(chatId: string): RuntimeState | undefined {
+    return this.sessionRuntimeStates.get(chatId);
+  }
+
+  getEvictedMapping(chatId: string): { claudeSessionId: string; lastActivity: number } | undefined {
+    return this.evictedMappings.get(chatId);
+  }
+
+  hasEvictedMapping(chatId: string): boolean {
+    return this.evictedMappings.has(chatId);
+  }
+
+  deleteEvictedMapping(chatId: string): void {
+    this.evictedMappings.delete(chatId);
+  }
+
+  getLastTreeResolveAttemptAt(): number {
+    return this.lastTreeResolveAttemptAt;
+  }
+
+  noteTreeResolveAttempt(at: number = Date.now()): void {
+    this.lastTreeResolveAttemptAt = at;
+  }
+
+  /** Clear live session + evicted maps (shutdown / destructive registry flush). */
+  clearLiveMapsOnShutdown(): void {
+    this.sessions.clear();
+    this.evictedMappings.clear();
   }
 
   /** Start jittered reaffirm loop when the host registers onSessionRuntimeChange. */

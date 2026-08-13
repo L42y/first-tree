@@ -80,7 +80,7 @@ export type SlotSchedulerAuthorityDeps = {
   sessionsValues: () => IterableIterator<SlotSchedulerSessionEntry>;
   sessionsEntries: () => IterableIterator<[string, SlotSchedulerSessionEntry]>;
   sessionCount: () => number;
-  deleteSession: (chatId: string) => void;
+  dropLiveSession: (chatId: string) => void;
   inbox: SlotSchedulerInboxHost;
   routeTeardown: RouteTeardownAuthority;
   onSessionEvent?: (
@@ -152,9 +152,7 @@ export type SlotSchedulerAuthorityDeps = {
   };
   addEvictedMapping: (chatId: string, mapping: { claudeSessionId: string; lastActivity: number }) => void;
   deleteEvictedMapping: (chatId: string) => void;
-  deleteSessionRuntimeState: (chatId: string) => void;
   getSessionRuntimeState: (chatId: string) => RuntimeState | undefined;
-  deleteCurrentTrigger: (chatId: string) => void;
   recomputeRuntimeState: () => void;
 };
 
@@ -176,16 +174,89 @@ export class SlotSchedulerAuthority {
    * trigger (timer fire + immediate delivery trigger) joins the in-flight
    * execution instead of running a second one.
    */
-  readonly retryFlights = new Map<string, Promise<void>>();
+  private readonly retryFlights = new Map<string, Promise<void>>();
   /** Monotonic fence for delivery work still inside the async admission pipeline. */
-  readonly admissionGenerations = new Map<string, number>();
+  private readonly admissionGenerations = new Map<string, number>();
   /** Messages waiting for an available concurrency / session slot. */
-  readonly pendingQueue: PendingMessage[] = [];
+  private readonly pendingQueue: PendingMessage[] = [];
   /** Number of sessions currently holding an active slot. */
-  activeCount = 0;
+  private activeCount = 0;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: SlotSchedulerAuthorityDeps) {}
+
+  getActiveCount(): number {
+    return this.activeCount;
+  }
+
+  currentAdmissionGeneration(chatId: string): number {
+    return this.admissionGenerations.get(chatId) ?? 0;
+  }
+
+  hasPendingTransientRetry(entry: SlotSchedulerSessionEntry): boolean {
+    return entry.retryAttempt > 0;
+  }
+
+  deferMessage(entry: SlotSchedulerSessionEntry, message: SessionMessage): void {
+    entry.deferredMessages.push(message);
+  }
+
+  takeDeferredMessages(entry: SlotSchedulerSessionEntry): SessionMessage[] {
+    return entry.deferredMessages.splice(0);
+  }
+
+  clearDeferredMessages(entry: SlotSchedulerSessionEntry): void {
+    entry.deferredMessages = [];
+  }
+
+  hasDeferredMessages(entry: SlotSchedulerSessionEntry): boolean {
+    return entry.deferredMessages.length > 0;
+  }
+
+  cancelRetryTimer(entry: SlotSchedulerSessionEntry): void {
+    if (entry.retryTimer) clearTimeout(entry.retryTimer);
+    entry.retryTimer = null;
+  }
+
+  cancelAllRetryTimers(): void {
+    for (const session of this.deps.sessionsValues()) {
+      this.cancelRetryTimer(session);
+    }
+  }
+
+  /**
+   * Arm transient-retry custody on the entry: persist the failed head, attempt
+   * metadata, backoff deadline, and the retry timer. Host still sequences
+   * slot release, status, projection, and event emit around this call.
+   */
+  scheduleTransientRetry(
+    entry: SlotSchedulerSessionEntry,
+    args: {
+      attemptedMessage: SessionMessage | null;
+      attempt: number;
+      reasonCode: string;
+      category: ProviderFailureClassification["category"];
+      scope: "session_start" | "session_resume";
+      rawError: string | null;
+      delayMs: number;
+    },
+  ): void {
+    entry.retryHeadMessage = args.attemptedMessage;
+    entry.retryAttempt = args.attempt;
+    entry.lastRetryReason = args.reasonCode;
+    entry.lastRetryCategory = args.category;
+    entry.lastRetryScope = args.scope;
+    entry.lastRetryRawError = args.rawError;
+    entry.retryNextAt = Date.now() + args.delayMs;
+    if (entry.retryTimer) clearTimeout(entry.retryTimer);
+    const chatId = entry.chatId;
+    entry.retryTimer = setTimeout(() => {
+      entry.retryTimer = null;
+      this.runRetry(chatId).catch((retryErr) => {
+        this.deps.log.warn({ chatId, retryErr }, "session retry failed");
+      });
+    }, args.delayMs);
+  }
 
   /** Arm the idle-eviction interval (SessionRuntime starts this after construction). */
   startIdleEviction(intervalMs = 10_000): void {
@@ -799,7 +870,7 @@ export class SlotSchedulerAuthority {
       // A chat with unresolved teardown debt is not a burden-free victim:
       // its detached handlers are still being confirmed stopped, so keep it
       // out of the candidate set (force-keep).
-      if (this.deps.routeTeardown.pendingTeardowns.has(key)) continue;
+      if (this.deps.routeTeardown.hasPendingTeardown(key)) continue;
       if (session.status !== "active") {
         if (!nonActiveCandidate || session.lastActivity < nonActiveCandidate.session.lastActivity) {
           nonActiveCandidate = { key, session };
@@ -869,14 +940,7 @@ export class SlotSchedulerAuthority {
       // advertise it as `suspended`, so the server's `agent_chat_sessions.state`
       // converges to "handler is gone" on the next sync without churn on
       // every eviction.
-      this.deps.deleteSession(candidate.key);
-      this.deps.deleteSessionRuntimeState(candidate.key);
-      // Drop the trigger alongside the session — the next message routed to
-      // this chat will set a fresh one. Leaving stale entries here would
-      // only burn memory (wrong replies are not a risk since `routeMessage`
-      // overwrites before the handler runs), but since `terminate` already
-      // cleans the same maps we keep the two paths symmetric.
-      this.deps.deleteCurrentTrigger(candidate.key);
+      this.deps.dropLiveSession(candidate.key);
       this.deps.inbox.prepareEvict(candidate.key, "session_evicted");
       this.deps.recomputeRuntimeState();
       this.deps.persistRegistry();
