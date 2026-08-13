@@ -19,6 +19,10 @@ import { getChatAgentStatuses } from "../../services/chat/sessions/status.js";
 import type { Notifier } from "../../services/notifier.js";
 
 const log = createLogger("OrgWs");
+const ADMIN_WS_ROUTE_OPTIONS = {
+  websocket: true,
+  config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+} as const;
 
 /**
  * Class B — `/api/v1/orgs/:orgId/ws`. Real-time admin push channel.
@@ -317,7 +321,7 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string): (app: Fastif
   }
 
   return async (app: FastifyInstance): Promise<void> => {
-    app.get<{ Params: { orgId: string } }>("/", { websocket: true }, async (socket, request) => {
+    app.get<{ Params: { orgId: string } }>("/", ADMIN_WS_ROUTE_OPTIONS, async (socket, request) => {
       const ua = request.headers["user-agent"];
       startWsConnectionSpan(socket, {
         remoteIp: request.ip,

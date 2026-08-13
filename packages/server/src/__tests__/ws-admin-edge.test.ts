@@ -146,11 +146,17 @@ function makeDb(options: {
   } as unknown as Database;
 }
 
-function makeApp(db: Database): { app: { db: Database; get: ReturnType<typeof vi.fn> }; getRoute: () => RouteHandler } {
+function makeApp(db: Database): {
+  app: { db: Database; get: ReturnType<typeof vi.fn> };
+  getRoute: () => RouteHandler;
+  getRouteOptions: () => unknown;
+} {
   let route: RouteHandler | undefined;
+  let routeOptions: unknown;
   const app = {
     db,
-    get: vi.fn((_path: string, _opts: unknown, handler: RouteHandler) => {
+    get: vi.fn((_path: string, options: unknown, handler: RouteHandler) => {
+      routeOptions = options;
       route = handler;
     }),
   };
@@ -160,6 +166,7 @@ function makeApp(db: Database): { app: { db: Database; get: ReturnType<typeof vi
       if (!route) throw new Error("admin ws route was not registered");
       return route;
     },
+    getRouteOptions: () => routeOptions,
   };
 }
 
@@ -223,6 +230,18 @@ async function waitForAsyncDispatch(): Promise<void> {
 }
 
 describe("Admin WS route edge paths", () => {
+  it("rate-limits membership authorization handshakes", async () => {
+    const handlers: CapturedHandlers = {};
+    const { app, getRouteOptions } = makeApp(makeDb({}));
+
+    await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
+
+    expect(getRouteOptions()).toEqual({
+      websocket: true,
+      config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+    });
+  });
+
   it("rejects missing, malformed, wrong-type, and non-member handshakes", async () => {
     const handlers: CapturedHandlers = {};
     const db = makeDb({ memberRows: [] });
