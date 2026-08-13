@@ -1,4 +1,4 @@
-import type { FeishuBotBinding } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, CircleCheck, CircleMinus, Clock3, MessageSquare, QrCode, Unplug } from "lucide-react";
 import {
@@ -15,6 +15,7 @@ import {
   feishuBindingQueryKey,
   feishuBindingQueryOptions,
   isFeishuBotReachable,
+  isFeishuHandoffUsable,
 } from "../../features/feishu/binding-view.js";
 import { ConfigRow } from "./flat-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
@@ -33,12 +34,13 @@ export type FeishuChannelState = "not-connected" | "setup-incomplete" | "ready" 
  * Granted scopes are deliberately not interpreted here; the live connection
  * and CLI capability are the existing contracts that prove current use.
  */
-export function feishuChannelState(binding: FeishuBotBinding | null): FeishuChannelState {
+export function feishuChannelState(binding: FeishuBotBinding | null, agentStatus: Agent["status"]): FeishuChannelState {
+  if (agentStatus !== "active") return "needs-attention";
   if (!binding) return "not-connected";
   if (binding.status === "error" || binding.connectionStatus === "error" || binding.cli.state === "offline") {
     return "needs-attention";
   }
-  if (isFeishuBotReachable(binding) && binding.cli.state === "ready") return "ready";
+  if (isFeishuHandoffUsable(binding)) return "ready";
   return "setup-incomplete";
 }
 
@@ -62,8 +64,8 @@ function VisibilityRequirement({ onOpenProfile }: FeishuSectionProps) {
   );
 }
 
-function ChannelSummary({ binding }: { binding: FeishuBotBinding | null }) {
-  const state = feishuChannelState(binding);
+function ChannelSummary({ binding, agentStatus }: { binding: FeishuBotBinding | null; agentStatus: Agent["status"] }) {
+  const state = feishuChannelState(binding, agentStatus);
   const presentation = (() => {
     switch (state) {
       case "not-connected":
@@ -84,12 +86,14 @@ function ChannelSummary({ binding }: { binding: FeishuBotBinding | null }) {
         return {
           icon: CircleAlert,
           color: "var(--state-needs-you)",
-          title: "Needs attention",
+          title: agentStatus === "suspended" ? "Agent is suspended" : "Needs attention",
           detail:
-            binding?.lastErrorMessage ??
-            (binding?.cli.state === "offline"
-              ? "The Bot may still receive messages, but this Agent's Computer is offline and can't reply."
-              : "The Feishu channel needs action before this Agent can handle a task."),
+            agentStatus === "suspended"
+              ? "Reactivate this Agent in Profile before teammates send it a Feishu task."
+              : (binding?.lastErrorMessage ??
+                (binding?.cli.state === "offline"
+                  ? "The Bot may still receive messages, but this Agent's Computer is offline and can't reply."
+                  : "The Feishu channel needs action before this Agent can handle a task.")),
         };
       case "setup-incomplete":
         return {
@@ -187,7 +191,7 @@ export function FeishuSection({ onOpenProfile, poll = true }: FeishuSectionProps
         </div>
       ) : (
         <>
-          <ChannelSummary binding={binding} />
+          <ChannelSummary binding={binding} agentStatus={ctx.agent.status} />
           {visibilityBlocked && <VisibilityRequirement onOpenProfile={onOpenProfile} />}
         </>
       )}

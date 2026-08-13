@@ -3,10 +3,13 @@ import type { LucideIcon } from "lucide-react";
 import { CircleAlert, CircleCheck, Clock3, QrCode } from "lucide-react";
 import type { ReactElement } from "react";
 import { Button } from "../../../components/ui/button.js";
-import { FeishuRegistrationQr, isFeishuBotReachable } from "../../../features/feishu/binding-view.js";
+import {
+  FeishuRegistrationQr,
+  isFeishuBotReachable,
+  isFeishuHandoffUsable,
+} from "../../../features/feishu/binding-view.js";
 import { FlowHint } from "../../onboarding/flow-ui.js";
 import { OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
-import { isFeishuHandoffUsable } from "../flow.js";
 
 /**
  * The focused Feishu step: one Bot for this one Agent.
@@ -301,7 +304,7 @@ function ToolsPanel({
                 preparing, and the Agent's own page is where this can be picked
                 up again for good. Onboarding stays unfinished on purpose. */}
             <Button type="button" variant="ghost" asChild>
-              <a href={`/agents/${encodeURIComponent(agentUuid)}/profile`}>{copy.finishLater}</a>
+              <a href={`/agents/${encodeURIComponent(agentUuid)}/channels`}>{copy.finishLater}</a>
             </Button>
           </div>
         </>

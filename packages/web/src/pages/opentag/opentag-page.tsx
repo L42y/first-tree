@@ -7,14 +7,17 @@ import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
 import { useComputerConnection } from "../../features/agent-setup/use-computer-connection.js";
-import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
+import {
+  feishuBindingQueryKey,
+  feishuBindingQueryOptions,
+  isFeishuHandoffUsable,
+} from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
   FEISHU_TOOLS_SLOW_MS,
-  isFeishuHandoffUsable,
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,

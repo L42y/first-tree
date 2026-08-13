@@ -38,6 +38,7 @@ function context(overrides: Partial<AgentDetailContext> = {}): AgentDetailContex
       displayName: "Agent A",
       type: "agent",
       visibility: "organization",
+      status: "active",
     } as AgentDetailContext["agent"],
     isHuman: false,
     canManageAgent: true,
@@ -195,6 +196,21 @@ describe("Feishu Agent Detail section", () => {
     expect(container.querySelector('[data-channel-state="needs-attention"]')).not.toBeNull();
     expect(container.textContent).toContain("The Bot may still receive messages");
     expect(container.textContent).toContain("Computer offline");
+  });
+
+  it("gives a suspended Agent precedence over an otherwise usable Feishu handoff", async () => {
+    contextMock.value = context({
+      agent: { ...context().agent, status: "suspended" } as AgentDetailContext["agent"],
+    });
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" } }),
+    });
+
+    const container = await renderSection();
+    expect(container.querySelector('[data-channel-state="needs-attention"]')).not.toBeNull();
+    expect(container.textContent).toContain("Agent is suspended");
+    expect(container.textContent).toContain("Reactivate this Agent in Profile");
+    expect(container.textContent).not.toContain("Ready for Feishu tasks");
   });
 
   it("blocks Retry and explains visibility for a private Agent with an errored binding", async () => {
