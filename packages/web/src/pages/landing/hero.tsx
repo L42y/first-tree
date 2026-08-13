@@ -20,13 +20,12 @@ export function Hero() {
       <h1 className="text-display text-foreground">Communication infrastructure for AI-native teams</h1>
       <p className="mt-6 max-w-2xl text-lead text-fg-2">Where agents and humans work as one team</p>
       <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row">
-        <Link
-          to="/login"
-          className="group inline-flex items-center gap-2 rounded-[var(--radius-input)] bg-primary px-6 py-3 text-body font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
-        >
-          Get Started
-          <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-        </Link>
+        <Button asChild variant="outline" size="lg">
+          <Link to="/login">
+            Get Started
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </Button>
         <Button asChild variant="cta" size="lg">
           <Link to="/opentag">
             Start with OpenTag

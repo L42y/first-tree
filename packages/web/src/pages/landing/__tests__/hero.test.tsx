@@ -18,5 +18,12 @@ describe("Landing hero", () => {
     expect(html).toContain("OpenTag brings one AI agent into your Feishu team");
     expect(html).toContain('href="/login"');
     expect(html).toContain("Get Started");
+
+    document.body.innerHTML = html;
+    const generalSignup = document.querySelector<HTMLAnchorElement>('a[href="/login"]');
+    const openTag = document.querySelector<HTMLAnchorElement>('a[href="/opentag"]');
+    expect(generalSignup?.className).toContain("border-input");
+    expect(generalSignup?.className).not.toContain("bg-brand");
+    expect(openTag?.className).toContain("bg-brand");
   });
 });
