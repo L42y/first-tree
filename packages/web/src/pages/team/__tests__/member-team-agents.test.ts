@@ -1,4 +1,4 @@
-import type { Agent, AgentResourcesOutput, FeishuBotBinding } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { feishuBotChatUrl, selectReadyTeamAgents, teamAgentResponsibility } from "../member-team-agents.js";
 
@@ -100,11 +100,7 @@ describe("member Team Agent copy and destination", () => {
     );
   });
 
-  it("uses the first public Template tagline as the short responsibility", () => {
-    const resources = {
-      adoptedTemplates: [{ public: { tagline: "Reviews production pull requests." } }],
-    } as AgentResourcesOutput;
-    expect(teamAgentResponsibility(resources, "Acme")).toBe("Reviews production pull requests.");
-    expect(teamAgentResponsibility(undefined, "Acme")).toBe("Ready to help Acme in Feishu.");
+  it("uses a short Team-scoped responsibility without fetching the full resource catalog", () => {
+    expect(teamAgentResponsibility("Acme")).toBe("Ready to help Acme in Feishu.");
   });
 });

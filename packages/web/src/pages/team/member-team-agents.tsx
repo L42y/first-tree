@@ -1,15 +1,14 @@
-import type { Agent, AgentResourcesOutput, FeishuBotBinding } from "@first-tree/shared";
+import type { Agent, FeishuBotBinding } from "@first-tree/shared";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { ExternalLink, MessageCircle } from "lucide-react";
 import type { ReactElement } from "react";
-import { getAgentResources } from "../../api/agent-resources.js";
-import { getAgentFeishuBinding, listAgents } from "../../api/agents.js";
+import { listAgents } from "../../api/agents.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Avatar } from "../../components/avatar.js";
 import { Button } from "../../components/ui/button.js";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "../../components/ui/card.js";
 import { PageHeader } from "../../components/ui/page-header.js";
-import { isFeishuBotReachable } from "../../features/feishu/binding-view.js";
+import { feishuBindingQueryOptions, isFeishuHandoffUsable } from "../../features/feishu/binding-view.js";
 
 const AGENT_PAGE_SIZE = 100;
 
@@ -55,7 +54,7 @@ export function selectReadyTeamAgents(
     }
     const binding = bindings.get(agent.uuid);
     const appId = binding?.appId?.trim();
-    if (!binding || !appId || !isFeishuBotReachable(binding) || binding.cli.state !== "ready") continue;
+    if (!binding || !appId || !isFeishuHandoffUsable(binding)) continue;
     ready.push({ agent, binding: { ...binding, appId } });
   }
   return ready;
@@ -68,9 +67,8 @@ export function feishuBotChatUrl(appId: string): string {
   return url.toString();
 }
 
-export function teamAgentResponsibility(resources: AgentResourcesOutput | undefined, teamName: string): string {
-  const publicProfile = resources?.adoptedTemplates.find((template) => template.public)?.public;
-  return publicProfile?.tagline ?? `Ready to help ${teamName} in Feishu.`;
+export function teamAgentResponsibility(teamName: string): string {
+  return `Ready to help ${teamName} in Feishu.`;
 }
 
 export function MemberTeamAgentsPage(): ReactElement {
@@ -80,10 +78,6 @@ export function MemberTeamAgentsPage(): ReactElement {
     queryKey: ["agents", "member-team-agents", organizationId],
     queryFn: listAllAddressableTeamAgents,
     staleTime: 30_000,
-    // runtimeState is the current reachability authority, and presence flips
-    // do not invalidate this roster query. Match the existing Team roster's
-    // polling floor so a card and its handoff disappear after an Agent drops.
-    refetchInterval: 10_000,
   });
 
   const eligibleAgents = (agentsQuery.data ?? []).filter(
@@ -95,10 +89,8 @@ export function MemberTeamAgentsPage(): ReactElement {
   );
   const bindingQueries = useQueries({
     queries: eligibleAgents.map((agent) => ({
-      queryKey: ["agent-feishu-binding", agent.uuid],
-      queryFn: () => getAgentFeishuBinding(agent.uuid),
+      ...feishuBindingQueryOptions(agent.uuid, { poll: false }),
       staleTime: 10_000,
-      refetchInterval: 10_000,
     })),
   });
   const bindings = new Map<string, FeishuBotBinding | null>();
@@ -106,14 +98,6 @@ export function MemberTeamAgentsPage(): ReactElement {
     bindings.set(agent.uuid, bindingQueries[index]?.data?.binding ?? null);
   });
   const readyAgents = selectReadyTeamAgents(eligibleAgents, bindings);
-
-  const resourceQueries = useQueries({
-    queries: readyAgents.map(({ agent }) => ({
-      queryKey: ["agent-resources", agent.uuid],
-      queryFn: () => getAgentResources(agent.uuid),
-      staleTime: 60_000,
-    })),
-  });
 
   const bindingReadFailed = bindingQueries.some((query) => query.isError);
   const loading = agentsQuery.isPending || bindingQueries.some((query) => query.isPending);
@@ -142,12 +126,12 @@ export function MemberTeamAgentsPage(): ReactElement {
         ) : (
           <>
             <div className="member-team-agent-grid" data-team-agent-count={readyAgents.length}>
-              {readyAgents.map(({ agent, binding }, index) => (
+              {readyAgents.map(({ agent, binding }) => (
                 <TeamAgentCard
                   key={agent.uuid}
                   agent={agent}
                   binding={binding}
-                  responsibility={teamAgentResponsibility(resourceQueries[index]?.data, teamName)}
+                  responsibility={teamAgentResponsibility(teamName)}
                 />
               ))}
             </div>

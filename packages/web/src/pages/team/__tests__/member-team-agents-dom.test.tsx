@@ -12,13 +12,11 @@ const agentApi = vi.hoisted(() => ({
   listAgents: vi.fn(),
   getAgentFeishuBinding: vi.fn(),
 }));
-const resourceApi = vi.hoisted(() => ({ getAgentResources: vi.fn() }));
 const authMock = vi.hoisted(() => ({
   value: { organizationId: "org-1", teamDisplayName: "Acme", role: "member" },
 }));
 
 vi.mock("../../../api/agents.js", () => agentApi);
-vi.mock("../../../api/agent-resources.js", () => resourceApi);
 vi.mock("../../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
 
 const NOW = "2026-08-14T00:00:00.000Z";
@@ -101,9 +99,6 @@ beforeEach(() => {
   document.body.innerHTML = "";
   vi.clearAllMocks();
   authMock.value = { organizationId: "org-1", teamDisplayName: "Acme", role: "member" };
-  resourceApi.getAgentResources.mockImplementation(async (uuid: string) => ({
-    adoptedTemplates: [{ public: { tagline: `Handles ${uuid} work.` } }],
-  }));
 });
 
 afterEach(() => {
@@ -188,10 +183,8 @@ describe("Member Team Agents page", () => {
     await act(async () => root.unmount());
   });
 
-  it("removes a handoff after the roster poll observes that its Agent went offline", async () => {
-    agentApi.listAgents
-      .mockResolvedValueOnce({ items: [agent(1, { displayName: "Atlas" })], nextCursor: null })
-      .mockResolvedValue({ items: [agent(1, { displayName: "Atlas", runtimeState: null })], nextCursor: null });
+  it("reads each eligible binding once without starting a directory polling fan-out", async () => {
+    agentApi.listAgents.mockResolvedValue({ items: [agent(1, { displayName: "Atlas" })], nextCursor: null });
     agentApi.getAgentFeishuBinding.mockResolvedValue({ binding: binding(1) });
 
     const { container, root } = await renderPage();
@@ -202,9 +195,8 @@ describe("Member Team Agents page", () => {
     });
     await flush();
 
-    expect(agentApi.listAgents).toHaveBeenCalledTimes(2);
-    expect(container.textContent).not.toContain("Atlas");
-    expect(container.textContent).toContain("You’re in Acme");
+    expect(agentApi.listAgents).toHaveBeenCalledTimes(1);
+    expect(agentApi.getAgentFeishuBinding).toHaveBeenCalledTimes(1);
     await act(async () => root.unmount());
   }, 15_000);
 });
