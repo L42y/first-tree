@@ -332,6 +332,14 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(container.textContent).toContain("Add to Feishu");
   });
 
+  it("recovers to the Agent choice for a private Agent rather than a Feishu write the server refuses", async () => {
+    api.getAgent.mockResolvedValue(agentRow({ visibility: "private", clientId: "client-1" }));
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("isn't available in this team anymore");
+    expect(container.textContent).not.toContain("Feishu Bot for");
+  });
+
   it("recovers to the Agent choice for a suspended Agent rather than a step it cannot finish", async () => {
     // The first bind refuses a suspended Agent, so advancing to Runtime would
     // guarantee a rejection the member cannot act on here.

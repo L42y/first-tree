@@ -12,6 +12,7 @@ const AGENT: ReadAgent = {
   status: "active",
   clientId: null,
   managerId: MEMBER,
+  visibility: "organization",
 };
 
 function read(overrides: Partial<OpenTagAgentRead> = {}): OpenTagAgentRead {
@@ -98,6 +99,14 @@ describe("classifyOpenTagAgent", () => {
     expect(classifyOpenTagAgent(read({ agent: { ...AGENT, managerId: "member-2" }, role: "admin" }))).toEqual({
       state: "resolved",
       bound: false,
+    });
+  });
+
+  it("treats a private Agent as unavailable rather than walking it into a rejected Feishu write", () => {
+    // `startRegistration` refuses every non-organization-visible Agent, so
+    // binding a Computer first would only make the wall arrive later.
+    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, visibility: "private" } }))).toEqual({
+      state: "unavailable",
     });
   });
 

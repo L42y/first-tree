@@ -43,7 +43,7 @@ export type OpenTagAgentRead = {
   failed: boolean;
   /** HTTP status of a failed read; null for a transport error or a success. */
   errorStatus: number | null;
-  agent: Pick<Agent, "organizationId" | "type" | "status" | "clientId" | "managerId"> | null;
+  agent: Pick<Agent, "organizationId" | "type" | "status" | "clientId" | "managerId" | "visibility"> | null;
 };
 
 export type OpenTagAgentFacts =
@@ -97,6 +97,11 @@ export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts 
   // the Client bind, the Feishu registration — needs manage authority, so
   // continuing on it would only produce a wall of 404s.
   if (!canManageAgentDetail(read.agent, read.memberId, read.role)) return { state: "unavailable" };
+  // The Feishu registration this flow ends in rejects every Agent that is not
+  // organization-visible, so a private Agent handed in through the URL would
+  // bind a Computer and then hit a wall. OpenTag always creates
+  // organization-visible Agents, so this only catches a foreign URL.
+  if (read.agent.visibility !== "organization") return { state: "unavailable" };
   return { state: "resolved", bound: read.agent.clientId !== null };
 }
 

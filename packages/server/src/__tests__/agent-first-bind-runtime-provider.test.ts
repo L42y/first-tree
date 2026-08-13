@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
@@ -74,6 +75,101 @@ describe("PATCH /agents/:uuid { clientId, runtimeProvider } — first bind", () 
     });
     expect(accepted.statusCode).toBe(200);
     expect(accepted.json<{ runtimeProvider: string }>().runtimeProvider).toBe("codex");
+  });
+
+  it("retags the durable runtime config so the row and the config agree", async () => {
+    const app = getApp();
+    const { agent, accessToken, clientId } = await createTestAgent(app, { name: `cfg-${Date.now()}` });
+    await unbind(app, agent.uuid);
+    const [before] = await app.db
+      .select({ payload: agentConfigs.payload, version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, agent.uuid))
+      .limit(1);
+    expect(before?.payload).toMatchObject({ kind: "claude-code" });
+
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agents/${agent.uuid}`,
+      headers: { Authorization: `Bearer ${accessToken}` },
+      payload: { clientId, runtimeProvider: "codex" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    // Creation initialized the config from the previous provider. Leaving it
+    // behind would give the Agent a row saying `codex` and a durable config
+    // still carrying the old kind and defaults.
+    const [after] = await app.db
+      .select({ payload: agentConfigs.payload, version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, agent.uuid))
+      .limit(1);
+    expect(after?.payload).toMatchObject({ kind: "codex" });
+    expect(after?.version).toBe((before?.version ?? 0) + 1);
+  });
+
+  it("lets only one concurrent first bind win", async () => {
+    const app = getApp();
+    const { agent, accessToken, clientId } = await createTestAgent(app, { name: `race-${Date.now()}` });
+    await unbind(app, agent.uuid);
+
+    // Both requests read a NULL clientId before either takes a lock. Without
+    // a locked re-check the loser would overwrite a live route, bypassing the
+    // managed switch flow's session draining and proof revocation.
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: "PATCH",
+        url: `/api/v1/agents/${agent.uuid}`,
+        headers: { Authorization: `Bearer ${accessToken}` },
+        payload: { clientId, runtimeProvider: "codex" },
+      }),
+      app.inject({
+        method: "PATCH",
+        url: `/api/v1/agents/${agent.uuid}`,
+        headers: { Authorization: `Bearer ${accessToken}` },
+        payload: { clientId, runtimeProvider: "claude-code" },
+      }),
+    ]);
+
+    const codes = [first.statusCode, second.statusCode].sort();
+    expect(codes).toEqual([200, 200]);
+    // Converging on the same target Computer is fine; the provider must not
+    // have been rewritten twice.
+    const [row] = await app.db
+      .select({ clientId: agents.clientId, runtimeProvider: agents.runtimeProvider })
+      .from(agents)
+      .where(eq(agents.uuid, agent.uuid))
+      .limit(1);
+    expect(row?.clientId).toBe(clientId);
+    const [config] = await app.db
+      .select({ payload: agentConfigs.payload })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, agent.uuid))
+      .limit(1);
+    expect(config?.payload).toMatchObject({ kind: row?.runtimeProvider });
+  });
+
+  it("refuses a first bind to a different Computer once one already won", async () => {
+    const app = getApp();
+    const { agent, accessToken, clientId } = await createTestAgent(app, { name: `won-${Date.now()}` });
+    await unbind(app, agent.uuid);
+    await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agents/${agent.uuid}`,
+      headers: { Authorization: `Bearer ${accessToken}` },
+      payload: { clientId },
+    });
+
+    // The generic PATCH guard already rejects this from the snapshot; the
+    // locked re-check is what makes it hold under concurrency too.
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/agents/${agent.uuid}`,
+      headers: { Authorization: `Bearer ${accessToken}` },
+      payload: { clientId: "some-other-client" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/managed runtime switch/i);
   });
 
   it("rejects a provider change that is not a first bind", async () => {

@@ -46,6 +46,7 @@ import {
   ensureClientSupportsRuntimeProvider,
   selectAgentRowWithRuntime,
 } from "./runtime/binding.js";
+import { retagRuntimeConfigPayload } from "./runtime/switch.js";
 import { initializeAdoptedTemplates } from "./templates/adoption.js";
 
 /**
@@ -1087,21 +1088,50 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
     }
 
     if (bindClientId !== undefined) {
-      const resolvedClientId = await resolveAgentClient(tx, {
-        clientId: bindClientId,
-        managerId: gatingManagerId,
-        type: agent.type,
-      });
-      if (resolvedClientId !== null) {
-        // A first bind may carry the provider it is binding to. Validate what
-        // will actually be stored, not the pre-bind default, so the same gate
-        // covers both the caller's choice and the untouched column.
-        // `agents.runtime_provider` is a text column (typed `string`); narrow
-        // it back to the RuntimeProvider union before the capability check.
-        const boundProvider = data.runtimeProvider ?? runtimeProviderSchema.parse(agent.runtimeProvider);
-        await ensureClientSupportsRuntimeProvider(tx, resolvedClientId, boundProvider);
-        updates.clientId = resolvedClientId;
-        if (data.runtimeProvider !== undefined) updates.runtimeProvider = data.runtimeProvider;
+      // `agent.clientId` came from a snapshot read taken before any lock, so
+      // two concurrent first binds could both see NULL and the loser would
+      // overwrite a route that is already live — moving it without the managed
+      // switch flow's session draining or proof revocation. Re-read the row
+      // under a lock and let only a still-unbound Agent through.
+      const [locked] = await tx
+        .select({ clientId: agents.clientId, runtimeProvider: agents.runtimeProvider })
+        .from(agents)
+        .where(eq(agents.uuid, agent.uuid))
+        .for("update")
+        .limit(1);
+      if (!locked) throw new NotFoundError(`Agent "${agent.uuid}" not found`);
+      if (locked.clientId !== null) {
+        if (locked.clientId !== bindClientId) {
+          throw new ConflictError(
+            "Agent was bound to a computer by another request — use the managed runtime switch flow to move it.",
+          );
+        }
+        // Same target, already applied: converge instead of rewriting.
+        updates.clientId = undefined;
+      } else {
+        const resolvedClientId = await resolveAgentClient(tx, {
+          clientId: bindClientId,
+          managerId: gatingManagerId,
+          type: agent.type,
+        });
+        if (resolvedClientId !== null) {
+          // A first bind may carry the provider it is binding to. Validate what
+          // will actually be stored, not the pre-bind default, so the same gate
+          // covers both the caller's choice and the untouched column.
+          // `agents.runtime_provider` is a text column (typed `string`); narrow
+          // it back to the RuntimeProvider union before the capability check.
+          const boundProvider = data.runtimeProvider ?? runtimeProviderSchema.parse(locked.runtimeProvider);
+          await ensureClientSupportsRuntimeProvider(tx, resolvedClientId, boundProvider);
+          updates.clientId = resolvedClientId;
+          if (data.runtimeProvider !== undefined && data.runtimeProvider !== locked.runtimeProvider) {
+            updates.runtimeProvider = data.runtimeProvider;
+            // The stored config was initialized from the previous provider, and
+            // the managed switch treats the column and the payload as one
+            // invariant. Retag it here too, or the row would say `codex` while
+            // the durable config still carried `claude-code` defaults.
+            await retagAgentRuntimeConfig(tx, agent.uuid, data.runtimeProvider, gatingManagerId);
+          }
+        }
       }
     }
 
@@ -1123,6 +1153,36 @@ export async function updateAgent(db: Database, uuid: string, data: UpdateAgent)
   const refreshed = await selectAgentRowWithRuntime(db, agent.uuid);
   if (!refreshed) throw new Error("Unexpected: agent disappeared after UPDATE");
   return refreshed;
+}
+
+/**
+ * Keep `agents.runtime_provider` and the durable runtime config in step when a
+ * first bind commits a different provider. Mirrors the managed runtime switch,
+ * which owns the same invariant for an already-bound Agent.
+ */
+async function retagAgentRuntimeConfig(
+  // The transaction handle, narrowed to what this needs — a `PgTransaction`
+  // is not assignable to the full `Database` type.
+  tx: Pick<Database, "select" | "update">,
+  agentUuid: string,
+  provider: RuntimeProvider,
+  updatedBy: string,
+): Promise<void> {
+  const [config] = await tx
+    .select({ payload: agentConfigs.payload })
+    .from(agentConfigs)
+    .where(eq(agentConfigs.agentId, agentUuid))
+    .limit(1);
+  if (!config) return;
+  await tx
+    .update(agentConfigs)
+    .set({
+      version: sql`${agentConfigs.version} + 1`,
+      payload: retagRuntimeConfigPayload(config.payload, provider),
+      updatedAt: new Date(),
+      updatedBy,
+    })
+    .where(eq(agentConfigs.agentId, agentUuid));
 }
 
 /**
