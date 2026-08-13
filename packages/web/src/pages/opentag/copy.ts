@@ -60,11 +60,17 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
  * handoff that has not happened.
  */
 export function feishuToolsDelayedCopy(botReachable: boolean): { why: string; lead: string } {
+  if (!botReachable) {
+    // Calling this the last part would be wrong while the Bot is still
+    // outstanding — the member has a confirmation of their own left to give.
+    return {
+      why: "This is taking longer than usual.",
+      lead: "Your Agent's Computer is still preparing the tools it needs to reply in Feishu.",
+    };
+  }
   return {
     why: "One last part is taking longer.",
-    lead: botReachable
-      ? "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply."
-      : "Your Agent's Computer is still preparing the tools it needs to reply in Feishu.",
+    lead: "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply.",
   };
 }
 

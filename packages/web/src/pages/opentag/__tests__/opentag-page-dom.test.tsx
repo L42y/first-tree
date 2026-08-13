@@ -1200,6 +1200,26 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     expect(container.textContent).not.toContain("has its first task from Feishu");
   });
 
+  it("does not call it the last part while the member still has a Bot to confirm", async () => {
+    // The automatic request can fail while the member is still scanning. The
+    // recovery is the same, but claiming a connected Bot — or that only one
+    // part is left — would report a half of the handoff that has not happened.
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: feishuBinding({ registrationUrl: "https://feishu.example/confirm/abc" }),
+    });
+    api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.textContent).toContain("This is taking longer than usual.");
+    expect(container.textContent).not.toContain("One last part is taking longer");
+    expect(container.textContent).not.toContain("Your Feishu Bot is connected.");
+    // The member's own half is still in front of them, and still recoverable.
+    expect(container.textContent).toContain("Scan with Feishu");
+    expect(button(container, "Try again")).toBeDefined();
+  });
+
   it("retries the same preparation rather than starting a second one", async () => {
     api.getAgentFeishuBinding.mockResolvedValue({ binding: botOnly() });
     api.createAgentFeishuSetupChat.mockRejectedValueOnce(new ApiError(500, "boom"));

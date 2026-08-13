@@ -382,10 +382,12 @@ function botReadiness(binding: FeishuBotBinding): Readiness {
     };
   }
   if (isFeishuBotReachable(binding)) return { tone: "ready", status: "ready", detail: "Connected and reachable" };
+  // An ordinary wait is not a verdict. "Not ready" is saved for the states
+  // where something is actually outstanding for the member to act on.
   if (binding.status === "provisioning") {
-    return { tone: "pending", status: "not ready", detail: "Waiting for your confirmation" };
+    return { tone: "pending", status: "waiting", detail: "Waiting for your confirmation" };
   }
-  return { tone: "pending", status: "not ready", detail: "Finishing the connection to Feishu" };
+  return { tone: "pending", status: "connecting", detail: "Finishing the connection to Feishu" };
 }
 
 /**
@@ -412,5 +414,5 @@ function toolsReadiness(binding: FeishuBotBinding, tools: OpenTagToolsPrep): Rea
       detail: tools.reason === "failed" ? "The automatic setup didn't start." : "Taking longer than usual.",
     };
   }
-  return { tone: "pending", status: "not ready", detail: "Preparing this Computer in the background" };
+  return { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
 }
