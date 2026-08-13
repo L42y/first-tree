@@ -17,7 +17,7 @@ import {
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
-import type { RouteTeardownAuthority, RouteTransitionToken } from "./route-teardown-authority.js";
+import type { RouteTeardownAuthority } from "./route-teardown-authority.js";
 
 export type SlotDeliveryKind = "fresh" | "recovery" | "control";
 
@@ -27,22 +27,28 @@ export type PendingMessage = {
   deliveryKind: SlotDeliveryKind;
 };
 
+export type EvictedResumeMapping = {
+  readonly claudeSessionId: string;
+  readonly lastActivity: number;
+};
+
 /**
- * Session-entry fields SlotSchedulerAuthority mutates or reads. Host SessionEntry
- * is structurally compatible; the authority never owns session-map membership.
+ * Host-owned session identity the scheduler keys private slot state against.
+ * Migrated retry/slot fields live only in {@link SlotSchedulerAuthority}'s
+ * WeakMap — the host must not construct or mutate them.
  */
 export type SlotSchedulerSessionEntry = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
   status: SessionState;
-  activeSlotHeld: boolean;
   lastActivity: number;
   suspending: Promise<void> | null;
   handlerStoppedBySuspend: AgentHandler | null;
-  routeTransitionGeneration: number;
-  routeTransition: RouteTransitionToken | null;
-  routeInjectReady: boolean;
+};
+
+type SlotState = {
+  activeSlotHeld: boolean;
   retryAttempt: number;
   retryNextAt: number | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -54,6 +60,24 @@ export type SlotSchedulerSessionEntry = {
   deferredMessages: SessionMessage[];
   retryFromEvicted: { claudeSessionId: string; lastActivity: number } | null;
 };
+
+function emptySlotState(resumeFromEvicted: EvictedResumeMapping | null): SlotState {
+  return {
+    activeSlotHeld: false,
+    retryAttempt: 0,
+    retryNextAt: null,
+    retryTimer: null,
+    lastRetryReason: null,
+    lastRetryCategory: null,
+    lastRetryScope: null,
+    lastRetryRawError: null,
+    retryHeadMessage: null,
+    deferredMessages: [],
+    retryFromEvicted: resumeFromEvicted
+      ? { claudeSessionId: resumeFromEvicted.claudeSessionId, lastActivity: resumeFromEvicted.lastActivity }
+      : null,
+  };
+}
 
 export type SlotSchedulerInboxHost = {
   hasRecoveryDebt(chatId: string): boolean;
@@ -139,9 +163,7 @@ export type SlotSchedulerAuthorityDeps = {
   drainDeferredMessages: (entry: SlotSchedulerSessionEntry) => void;
   persistRegistry: () => void;
   failSessionForRecovery: (chatId: string, reason: string, sessionId?: string) => void;
-  retryClassificationForEntry: (entry: SlotSchedulerSessionEntry) => ProviderFailureClassification;
   runtimeProvider: () => RuntimeProvider;
-  previousAvailable: (entry: SlotSchedulerSessionEntry) => boolean;
   normalizeResumeReceipt: (result: ResumeResult) => {
     sessionId: string;
     route: Extract<HandlerRouteReceipt, { kind: "owned" }> | null;
@@ -150,8 +172,7 @@ export type SlotSchedulerAuthorityDeps = {
     sessionId: string;
     route: Extract<HandlerRouteReceipt, { kind: "owned" }>;
   };
-  addEvictedMapping: (chatId: string, mapping: { claudeSessionId: string; lastActivity: number }) => void;
-  deleteEvictedMapping: (chatId: string) => void;
+  recordEvictionResume: (chatId: string, mapping: EvictedResumeMapping | null) => void;
   getSessionRuntimeState: (chatId: string) => RuntimeState | undefined;
   recomputeRuntimeState: () => void;
 };
@@ -182,8 +203,81 @@ export class SlotSchedulerAuthority {
   /** Number of sessions currently holding an active slot. */
   private activeCount = 0;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
+  /** Authority-private per-session slot/retry state. Never escapes. */
+  private readonly slotBySession = new WeakMap<SlotSchedulerSessionEntry, SlotState>();
 
   constructor(private readonly deps: SlotSchedulerAuthorityDeps) {}
+
+  /**
+   * Create (or replace) private slot/retry state for a live session. The host
+   * never constructs these fields; resume-from-eviction is initialized here.
+   */
+  attachLiveSession(
+    entry: SlotSchedulerSessionEntry,
+    opts: { resumeFromEvicted?: EvictedResumeMapping | null } = {},
+  ): void {
+    const prior = this.slotBySession.get(entry);
+    if (prior?.retryTimer) clearTimeout(prior.retryTimer);
+    this.slotBySession.set(entry, emptySlotState(opts.resumeFromEvicted ?? null));
+  }
+
+  private slot(entry: SlotSchedulerSessionEntry): SlotState {
+    const state = this.slotBySession.get(entry);
+    if (!state) {
+      throw new Error(`slot scheduler state missing for chat ${entry.chatId}`);
+    }
+    return state;
+  }
+
+  private peekSlot(entry: SlotSchedulerSessionEntry): SlotState | undefined {
+    return this.slotBySession.get(entry);
+  }
+
+  isActiveSlotHeld(entry: SlotSchedulerSessionEntry): boolean {
+    return this.peekSlot(entry)?.activeSlotHeld === true;
+  }
+
+  currentRetryAttempt(entry: SlotSchedulerSessionEntry): number {
+    return this.peekSlot(entry)?.retryAttempt ?? 0;
+  }
+
+  resumeFallbackSessionId(entry: SlotSchedulerSessionEntry): string | null {
+    return resumableProviderSessionId(this.peekSlot(entry)?.retryFromEvicted?.claudeSessionId);
+  }
+
+  hasResumableProviderSession(entry: SlotSchedulerSessionEntry): boolean {
+    return resumableProviderSessionId(entry.claudeSessionId, this.resumeFallbackSessionId(entry)) !== null;
+  }
+
+  retryClassificationForEntry(entry: SlotSchedulerSessionEntry): ProviderFailureClassification {
+    const state = this.slot(entry);
+    return {
+      category: state.lastRetryCategory ?? "unknown",
+      reasonCode: state.lastRetryReason ?? "unknown",
+      message: state.lastRetryRawError ?? state.lastRetryReason ?? "unknown",
+      sourceKind: "transient",
+    };
+  }
+
+  deferredMessageSnapshot(entry: SlotSchedulerSessionEntry): readonly SessionMessage[] {
+    const state = this.peekSlot(entry);
+    return state ? [...state.deferredMessages] : [];
+  }
+
+  hasArmedRetryTimer(entry: SlotSchedulerSessionEntry): boolean {
+    return this.peekSlot(entry)?.retryTimer != null;
+  }
+
+  private isRetryEligible(entry: SlotSchedulerSessionEntry): boolean {
+    const state = this.peekSlot(entry);
+    if (!state) return false;
+    return (
+      entry.status === "suspended" &&
+      !state.activeSlotHeld &&
+      !this.deps.routeTeardown.hasInFlightTransition(entry) &&
+      state.retryAttempt !== 0
+    );
+  }
 
   getActiveCount(): number {
     return this.activeCount;
@@ -194,28 +288,31 @@ export class SlotSchedulerAuthority {
   }
 
   hasPendingTransientRetry(entry: SlotSchedulerSessionEntry): boolean {
-    return entry.retryAttempt > 0;
+    return (this.peekSlot(entry)?.retryAttempt ?? 0) > 0;
   }
 
   deferMessage(entry: SlotSchedulerSessionEntry, message: SessionMessage): void {
-    entry.deferredMessages.push(message);
+    this.slot(entry).deferredMessages.push(message);
   }
 
   takeDeferredMessages(entry: SlotSchedulerSessionEntry): SessionMessage[] {
-    return entry.deferredMessages.splice(0);
+    return this.slot(entry).deferredMessages.splice(0);
   }
 
   clearDeferredMessages(entry: SlotSchedulerSessionEntry): void {
-    entry.deferredMessages = [];
+    const state = this.peekSlot(entry);
+    if (state) state.deferredMessages = [];
   }
 
   hasDeferredMessages(entry: SlotSchedulerSessionEntry): boolean {
-    return entry.deferredMessages.length > 0;
+    return (this.peekSlot(entry)?.deferredMessages.length ?? 0) > 0;
   }
 
   cancelRetryTimer(entry: SlotSchedulerSessionEntry): void {
-    if (entry.retryTimer) clearTimeout(entry.retryTimer);
-    entry.retryTimer = null;
+    const state = this.peekSlot(entry);
+    if (!state) return;
+    if (state.retryTimer) clearTimeout(state.retryTimer);
+    state.retryTimer = null;
   }
 
   cancelAllRetryTimers(): void {
@@ -241,17 +338,19 @@ export class SlotSchedulerAuthority {
       delayMs: number;
     },
   ): void {
-    entry.retryHeadMessage = args.attemptedMessage;
-    entry.retryAttempt = args.attempt;
-    entry.lastRetryReason = args.reasonCode;
-    entry.lastRetryCategory = args.category;
-    entry.lastRetryScope = args.scope;
-    entry.lastRetryRawError = args.rawError;
-    entry.retryNextAt = Date.now() + args.delayMs;
-    if (entry.retryTimer) clearTimeout(entry.retryTimer);
+    const state = this.slot(entry);
+    state.retryHeadMessage = args.attemptedMessage;
+    state.retryAttempt = args.attempt;
+    state.lastRetryReason = args.reasonCode;
+    state.lastRetryCategory = args.category;
+    state.lastRetryScope = args.scope;
+    state.lastRetryRawError = args.rawError;
+    state.retryNextAt = Date.now() + args.delayMs;
+    if (state.retryTimer) clearTimeout(state.retryTimer);
     const chatId = entry.chatId;
-    entry.retryTimer = setTimeout(() => {
-      entry.retryTimer = null;
+    state.retryTimer = setTimeout(() => {
+      const current = this.peekSlot(entry);
+      if (current) current.retryTimer = null;
       this.runRetry(chatId).catch((retryErr) => {
         this.deps.log.warn({ chatId, retryErr }, "session retry failed");
       });
@@ -285,31 +384,36 @@ export class SlotSchedulerAuthority {
   }
 
   clearRetryAttemptState(entry: SlotSchedulerSessionEntry): void {
-    if (entry.retryTimer) clearTimeout(entry.retryTimer);
-    entry.retryAttempt = 0;
-    entry.retryNextAt = null;
-    entry.retryTimer = null;
-    entry.lastRetryReason = null;
-    entry.lastRetryCategory = null;
-    entry.lastRetryScope = null;
-    entry.lastRetryRawError = null;
-    entry.retryHeadMessage = null;
+    const state = this.peekSlot(entry);
+    if (!state) return;
+    if (state.retryTimer) clearTimeout(state.retryTimer);
+    state.retryAttempt = 0;
+    state.retryNextAt = null;
+    state.retryTimer = null;
+    state.lastRetryReason = null;
+    state.lastRetryCategory = null;
+    state.lastRetryScope = null;
+    state.lastRetryRawError = null;
+    state.retryHeadMessage = null;
   }
 
   clearRetryState(entry: SlotSchedulerSessionEntry): void {
     this.clearRetryAttemptState(entry);
-    entry.deferredMessages = [];
+    const state = this.peekSlot(entry);
+    if (state) state.deferredMessages = [];
   }
 
   claimActiveSlot(entry: SlotSchedulerSessionEntry): void {
-    if (entry.activeSlotHeld) return;
-    entry.activeSlotHeld = true;
+    const state = this.slot(entry);
+    if (state.activeSlotHeld) return;
+    state.activeSlotHeld = true;
     this.activeCount++;
   }
 
   releaseActiveSlot(entry: SlotSchedulerSessionEntry): boolean {
-    if (!entry.activeSlotHeld) return false;
-    entry.activeSlotHeld = false;
+    const state = this.peekSlot(entry);
+    if (!state?.activeSlotHeld) return false;
+    state.activeSlotHeld = false;
     this.activeCount = Math.max(0, this.activeCount - 1);
     return true;
   }
@@ -322,19 +426,14 @@ export class SlotSchedulerAuthority {
     if (this.deps.isShuttingDown()) return;
     if (this.deps.isProviderRouteAdmissionFenced(chatId)) return;
     if (this.deps.getSession(chatId) !== entry) return;
-    if (
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
-      return;
-    }
+    if (!this.isRetryEligible(entry)) return;
+    const state = this.slot(entry);
     // Defensive: never overwrite a live handle with a duplicate timer.
-    if (entry.retryTimer !== null) return;
-    entry.retryNextAt = Date.now() + delayMs;
-    entry.retryTimer = setTimeout(() => {
-      entry.retryTimer = null;
+    if (state.retryTimer !== null) return;
+    state.retryNextAt = Date.now() + delayMs;
+    state.retryTimer = setTimeout(() => {
+      const current = this.peekSlot(entry);
+      if (current) current.retryTimer = null;
       this.runRetry(chatId).catch((err) => {
         this.deps.log.warn({ chatId, err }, "session retry rearm failed");
       });
@@ -369,14 +468,7 @@ export class SlotSchedulerAuthority {
     if (this.deps.isProviderRouteAdmissionFenced(chatId)) return;
     const entry = this.deps.getSession(chatId);
     if (!entry) return;
-    if (
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
-      return;
-    }
+    if (!this.isRetryEligible(entry)) return;
     if (this.deps.inbox.hasRecoveryDebt(chatId)) {
       this.clearRetryState(entry);
       await this.deps.inbox.recoverIfNeeded(chatId, "session_retry:recovery_debt");
@@ -384,8 +476,9 @@ export class SlotSchedulerAuthority {
       return;
     }
 
-    const retryHeadMessage = entry.retryHeadMessage;
-    const previousSessionId = entry.claudeSessionId || entry.retryFromEvicted?.claudeSessionId || "";
+    const slot = this.slot(entry);
+    const retryHeadMessage = slot.retryHeadMessage;
+    const previousSessionId = entry.claudeSessionId || slot.retryFromEvicted?.claudeSessionId || "";
     const retryRoute = previousSessionId
       ? { kind: "resume" as const, message: retryHeadMessage, previousSessionId }
       : retryHeadMessage
@@ -421,9 +514,9 @@ export class SlotSchedulerAuthority {
     this.deps.log.info(
       {
         chatId,
-        attempt: entry.retryAttempt,
-        reasonCode: entry.lastRetryReason,
-        category: entry.lastRetryCategory,
+        attempt: slot.retryAttempt,
+        reasonCode: slot.lastRetryReason,
+        category: slot.lastRetryCategory,
         resilienceEvent: "provider_retry_started",
       },
       "session transient retry — starting attempt",
@@ -431,8 +524,9 @@ export class SlotSchedulerAuthority {
     // Design §6.1: emit via SessionContext.emitEvent (post-slot-acquire we
     // build the real ctx; here we use a lightweight onSessionEvent path).
     try {
-      const scope = entry.lastRetryScope ?? (this.deps.previousAvailable(entry) ? "session_resume" : "session_start");
-      const classification = this.deps.retryClassificationForEntry(entry);
+      const scope =
+        slot.lastRetryScope ?? (this.hasResumableProviderSession(entry) ? "session_resume" : "session_start");
+      const classification = this.retryClassificationForEntry(entry);
       this.deps.onSessionEvent?.(chatId, {
         kind: "error",
         payload: {
@@ -443,7 +537,7 @@ export class SlotSchedulerAuthority {
               provider: this.deps.runtimeProvider(),
               scope,
               classification,
-              messagePreview: entry.lastRetryRawError,
+              messagePreview: slot.lastRetryRawError,
             }),
           ),
         },
@@ -470,13 +564,7 @@ export class SlotSchedulerAuthority {
     // (terminate clears the entry; shutdown clears the timers).
     if (this.deps.isShuttingDown()) return;
     if (this.deps.isProviderRouteAdmissionFenced(chatId)) return;
-    if (
-      this.deps.getSession(chatId) !== entry ||
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
+    if (this.deps.getSession(chatId) !== entry || !this.isRetryEligible(entry)) {
       return;
     }
 
@@ -509,10 +597,7 @@ export class SlotSchedulerAuthority {
       this.deps.isShuttingDown() ||
       this.deps.isProviderRouteAdmissionFenced(chatId) ||
       this.deps.getSession(chatId) !== entry ||
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
+      !this.isRetryEligible(entry)
     ) {
       return;
     }
@@ -590,10 +675,10 @@ export class SlotSchedulerAuthority {
           return;
         }
       }
-      const totalAttempts = entry.retryAttempt;
+      const totalAttempts = slot.retryAttempt;
       const succeededScope =
-        entry.lastRetryScope ?? (this.deps.previousAvailable(entry) ? "session_resume" : "session_start");
-      const succeededClassification = this.deps.retryClassificationForEntry(entry);
+        slot.lastRetryScope ?? (this.hasResumableProviderSession(entry) ? "session_resume" : "session_start");
+      const succeededClassification = this.retryClassificationForEntry(entry);
       if (!this.deps.routeTeardown.completeRouteTransition(entry, transition)) {
         this.deps.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
         return;
@@ -663,15 +748,16 @@ export class SlotSchedulerAuthority {
    */
   triggerImmediateRetry(chatId: string): void {
     const entry = this.deps.getSession(chatId);
-    if (!entry || entry.retryAttempt === 0) return;
+    if (!entry || !this.hasPendingTransientRetry(entry)) return;
+    const state = this.slot(entry);
     // Managed-Skill discovery safety is a local provider-preflight gate, not
     // an availability hint that newer input can bypass. Keep the original
     // head and FIFO tail behind the bounded timer so repeated deliveries or
     // resume commands cannot turn the safety wait into a hot retry loop.
-    if (entry.lastRetryReason === MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE) return;
-    if (entry.retryTimer) {
-      clearTimeout(entry.retryTimer);
-      entry.retryTimer = null;
+    if (state.lastRetryReason === MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE) return;
+    if (state.retryTimer) {
+      clearTimeout(state.retryTimer);
+      state.retryTimer = null;
     }
     void this.runRetry(chatId);
   }
@@ -908,19 +994,19 @@ export class SlotSchedulerAuthority {
       // active start transition but still has no resumable provider session.
       const resumableSessionId = resumableProviderSessionId(
         candidate.session.claudeSessionId,
-        candidate.session.retryFromEvicted?.claudeSessionId,
+        this.resumeFallbackSessionId(candidate.session),
       );
       if (resumableSessionId) {
-        this.deps.addEvictedMapping(candidate.key, {
+        this.deps.recordEvictionResume(candidate.key, {
           claudeSessionId: resumableSessionId,
           lastActivity: candidate.session.lastActivity,
         });
       } else {
-        this.deps.deleteEvictedMapping(candidate.key);
+        this.deps.recordEvictionResume(candidate.key, null);
       }
 
       this.deps.log.info({ chatId: candidate.key }, "session evicted (max_sessions reached)");
-      const activeSlotHeld = candidate.session.activeSlotHeld;
+      const activeSlotHeld = this.isActiveSlotHeld(candidate.session);
       this.releaseActiveSlot(candidate.session);
       if (activeSlotHeld) {
         this.deps.routeTeardown.detachHandlerWithPendingTeardown(

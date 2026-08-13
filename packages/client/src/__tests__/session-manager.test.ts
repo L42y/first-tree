@@ -26,7 +26,7 @@ import type {
 } from "../runtime/handler.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
-import { ReplayFenceStore } from "../runtime/replay-fence.js";
+import { ReplayFenceStore, type ReplayFenceWriter } from "../runtime/replay-fence.js";
 import { SessionRuntime } from "../runtime/session-runtime.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
@@ -3091,7 +3091,11 @@ describe("SessionRuntime replay fence gate", () => {
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
 
       expect(handler.start).toHaveBeenCalledTimes(1);
-      expect(captured?.replayFence).toBeInstanceOf(ReplayFenceStore);
+      expect(captured?.replayFence).toEqual(
+        expect.objectContaining({ fence: expect.any(Function), clear: expect.any(Function) }),
+      );
+      expect(Object.isFrozen(captured?.replayFence)).toBe(true);
+      expect(captured?.replayFence).not.toBeInstanceOf(ReplayFenceStore);
 
       await sm.shutdown();
     } finally {
@@ -3212,7 +3216,7 @@ describe("SessionRuntime replay fence reconcile", () => {
         .mockResolvedValue(undefined);
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
@@ -3225,7 +3229,7 @@ describe("SessionRuntime replay fence reconcile", () => {
         recoverChat,
         replayFencePath: fencePath,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -3478,7 +3482,7 @@ describe("SessionRuntime replay fence startup reconciliation", () => {
       const probeFencedSettlement = makeProbe([]);
       const ackEntry = mockAckEntry();
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
@@ -3491,7 +3495,7 @@ describe("SessionRuntime replay fence startup reconciliation", () => {
         probeFencedSettlement,
         ackEntry,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -3870,7 +3874,7 @@ describe("SessionRuntime pre-ledger settlement race", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const sm = createSessionRuntime({
         handler,
         ackEntry,
@@ -3878,7 +3882,7 @@ describe("SessionRuntime pre-ledger settlement race", () => {
         probeFencedSettlement,
         recoverChat,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -3946,7 +3950,7 @@ describe("SessionRuntime confirmed-ACK fence settlement suppression", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const ackEntry = mockAckEntry();
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
@@ -3958,7 +3962,7 @@ describe("SessionRuntime confirmed-ACK fence settlement suppression", () => {
         recoverChat,
         replayFencePath: fencePath,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });

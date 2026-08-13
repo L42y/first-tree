@@ -31,13 +31,26 @@ export async function waitForHandlerSuspend(chatId: string, suspend: () => Promi
 }
 
 export type RouteLeaseToken = {
-  generation: number;
-  handler: AgentHandler;
+  readonly generation: number;
+  readonly handler: AgentHandler;
 };
 
 export type RouteTransitionToken = RouteLeaseToken & {
-  phase: "start" | "resume";
+  readonly phase: "start" | "resume";
 };
+
+export type OperatorSuspendRouteCapture = {
+  readonly unestablishedStart: boolean;
+  readonly inFlightTransition: RouteTransitionToken | null;
+};
+
+function freezeRouteLease(token: RouteLeaseToken): RouteLeaseToken {
+  return Object.freeze({ generation: token.generation, handler: token.handler });
+}
+
+function freezeRouteTransition(token: RouteTransitionToken): RouteTransitionToken {
+  return Object.freeze({ generation: token.generation, handler: token.handler, phase: token.phase });
+}
 
 export type QuarantinedSession = {
   handler: AgentHandler;
@@ -47,27 +60,34 @@ export type QuarantinedSession = {
 };
 
 /**
- * Session-entry fields RouteTeardownAuthority mutates or validates. The host
- * SessionEntry is structurally compatible; the authority never owns session
- * map membership.
+ * Host-owned session identity RouteTeardownAuthority keys private route
+ * state against. Migrated generation/pointer/readiness live only in this
+ * authority's WeakMap.
  */
 export type RouteTeardownHostEntry = {
   chatId: string;
   handler: AgentHandler;
   status: SessionState;
-  activeSlotHeld: boolean;
   suspending: Promise<void> | null;
   handlerStoppedBySuspend: AgentHandler | null;
-  routeTransitionGeneration: number;
-  routeTransition: RouteTransitionToken | null;
-  routeInjectReady: boolean;
 };
+
+type RouteState = {
+  generation: number;
+  transition: RouteTransitionToken | null;
+  injectReady: boolean;
+};
+
+function emptyRouteState(): RouteState {
+  return { generation: 0, transition: null, injectReady: false };
+}
 
 export type RouteTeardownAuthorityDeps = {
   log: pino.Logger;
   isShuttingDown: () => boolean;
   /** Identity check against the host session map (`sessions.get(chatId) === entry`). */
   getSession: (chatId: string) => RouteTeardownHostEntry | undefined;
+  isActiveSlotHeld: (entry: RouteTeardownHostEntry) => boolean;
   createHandler: () => AgentHandler;
   invalidateDeliveryAdmission: (chatId: string) => void;
   runtimeProvider: () => RuntimeProvider;
@@ -113,8 +133,27 @@ export class RouteTeardownAuthority {
    * shutdown that a lenient caller started still sees the failure.
    */
   private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
+  /** Authority-private per-session route generation/pointer/readiness. Never escapes. */
+  private readonly routeBySession = new WeakMap<RouteTeardownHostEntry, RouteState>();
 
   constructor(private readonly deps: RouteTeardownAuthorityDeps) {}
+
+  /** Create private route state for a live session. Host never constructs these fields. */
+  attachLiveSession(entry: RouteTeardownHostEntry): void {
+    this.routeBySession.set(entry, emptyRouteState());
+  }
+
+  private route(entry: RouteTeardownHostEntry): RouteState {
+    const state = this.routeBySession.get(entry);
+    if (!state) {
+      throw new Error(`route teardown state missing for chat ${entry.chatId}`);
+    }
+    return state;
+  }
+
+  private peekRoute(entry: RouteTeardownHostEntry): RouteState | undefined {
+    return this.routeBySession.get(entry);
+  }
 
   hasQuarantinedChat(chatId: string): boolean {
     return this.quarantinedSessions.has(chatId);
@@ -188,27 +227,23 @@ export class RouteTeardownAuthority {
   }
 
   hasInFlightTransition(entry: RouteTeardownHostEntry): boolean {
-    return entry.routeTransition !== null;
-  }
-
-  getRouteTransition(entry: RouteTeardownHostEntry): RouteTransitionToken | null {
-    return entry.routeTransition;
+    return this.peekRoute(entry)?.transition != null;
   }
 
   isRouteInjectReady(entry: RouteTeardownHostEntry): boolean {
-    return entry.routeInjectReady;
+    return this.peekRoute(entry)?.injectReady === true;
   }
 
   currentRouteLease(entry: RouteTeardownHostEntry): RouteLeaseToken {
-    return { generation: entry.routeTransitionGeneration, handler: entry.handler };
+    return freezeRouteLease({ generation: this.route(entry).generation, handler: entry.handler });
   }
 
   captureGeneration(entry: RouteTeardownHostEntry): number {
-    return entry.routeTransitionGeneration;
+    return this.peekRoute(entry)?.generation ?? 0;
   }
 
   isGenerationCurrent(entry: RouteTeardownHostEntry, generation: number): boolean {
-    return entry.routeTransitionGeneration === generation;
+    return this.route(entry).generation === generation;
   }
 
   /**
@@ -217,27 +252,34 @@ export class RouteTeardownAuthority {
    * not holding an active slot.
    */
   markRouteInjectReady(entry: RouteTeardownHostEntry): boolean {
-    if (entry.routeTransition === null) return false;
-    if (entry.status !== "active" || !entry.activeSlotHeld) return false;
-    entry.routeInjectReady = true;
+    const state = this.peekRoute(entry);
+    if (!state || state.transition === null) return false;
+    if (entry.status !== "active" || !this.deps.isActiveSlotHeld(entry)) return false;
+    state.injectReady = true;
     return true;
   }
 
   /**
-   * Operator-suspend settlement window: drop the transition pointer and inject
-   * latch without bumping generation, so already-issued DeliveryTokens can
-   * still post notice+ACK. Returns the pointer that was cleared.
+   * Operator-suspend settlement window: capture the in-flight token, drop the
+   * transition pointer and inject latch without bumping generation, so
+   * already-issued DeliveryTokens can still post notice+ACK. Returns only the
+   * immutable orchestration outcome.
    */
-  clearRoutePointerKeepGeneration(entry: RouteTeardownHostEntry): RouteTransitionToken | null {
-    const transition = entry.routeTransition;
-    entry.routeTransition = null;
-    entry.routeInjectReady = false;
-    return transition;
+  beginOperatorSuspendTransition(entry: RouteTeardownHostEntry): OperatorSuspendRouteCapture {
+    const state = this.route(entry);
+    const captured = state.transition;
+    const unestablishedStart = captured?.phase === "start";
+    state.transition = null;
+    state.injectReady = false;
+    return Object.freeze({
+      unestablishedStart,
+      inFlightTransition: captured ? freezeRouteTransition(captured) : null,
+    });
   }
 
   /** Bump adoption generation after operator-suspend settlement. */
-  bumpAdoptionGeneration(entry: RouteTeardownHostEntry): void {
-    entry.routeTransitionGeneration++;
+  completeOperatorSuspendAdoptionFence(entry: RouteTeardownHostEntry): void {
+    this.route(entry).generation++;
   }
 
   isHandlerRetired(handler: AgentHandler): boolean {
@@ -270,7 +312,7 @@ export class RouteTeardownAuthority {
   }
 
   quarantineTimedOutSuspend(entry: RouteTeardownHostEntry, transition: RouteTransitionToken | null): void {
-    const generation = transition?.generation ?? entry.routeTransitionGeneration;
+    const generation = transition?.generation ?? this.route(entry).generation;
     const handler = transition?.handler ?? entry.handler;
     const routeTransitionInFlight = transition !== null;
     const quarantine: QuarantinedSession = {
@@ -325,22 +367,23 @@ export class RouteTeardownAuthority {
     handler: AgentHandler,
     phase: RouteTransitionToken["phase"],
   ): RouteTransitionToken {
-    entry.routeTransitionGeneration++;
-    entry.routeInjectReady = false;
-    const transition = { generation: entry.routeTransitionGeneration, handler, phase };
-    entry.routeTransition = transition;
+    const state = this.route(entry);
+    state.generation++;
+    state.injectReady = false;
+    const transition = freezeRouteTransition({ generation: state.generation, handler, phase });
+    state.transition = transition;
     return transition;
   }
 
   isCurrentRouteTransition(entry: RouteTeardownHostEntry, transition: RouteTransitionToken): boolean {
-    return entry.routeTransition === transition && this.isRouteAdoptionValid(entry, transition);
+    return this.route(entry).transition === transition && this.isRouteAdoptionValid(entry, transition);
   }
 
   /** Shared identity checks for delivery-route leases (generation/handler/entry). */
   isDeliveryRouteIdentityValid(entry: RouteTeardownHostEntry, transition: RouteLeaseToken): boolean {
     return (
       this.deps.getSession(entry.chatId) === entry &&
-      entry.routeTransitionGeneration === transition.generation &&
+      this.route(entry).generation === transition.generation &&
       entry.handler === transition.handler &&
       !this.retiredHandlers.has(transition.handler)
     );
@@ -357,7 +400,7 @@ export class RouteTeardownAuthority {
       !this.deps.isShuttingDown() &&
       this.isDeliveryRouteIdentityValid(entry, transition) &&
       entry.status === "active" &&
-      entry.activeSlotHeld
+      this.deps.isActiveSlotHeld(entry)
     );
   }
 
@@ -369,15 +412,16 @@ export class RouteTeardownAuthority {
    */
   isDeliverySettlementLeaseValid(entry: RouteTeardownHostEntry, transition: RouteLeaseToken): boolean {
     const leaseHolder =
-      (entry.status === "active" && entry.activeSlotHeld) ||
+      (entry.status === "active" && this.deps.isActiveSlotHeld(entry)) ||
       (entry.status === "suspended" && entry.suspending !== null);
     return this.isDeliveryRouteIdentityValid(entry, transition) && leaseHolder;
   }
 
   completeRouteTransition(entry: RouteTeardownHostEntry, transition: RouteTransitionToken): boolean {
-    if (!this.isCurrentRouteTransition(entry, transition)) return false;
-    entry.routeTransition = null;
-    entry.routeInjectReady = false;
+    const state = this.route(entry);
+    if (state.transition !== transition || !this.isRouteAdoptionValid(entry, transition)) return false;
+    state.transition = null;
+    state.injectReady = false;
     return true;
   }
 
@@ -544,10 +588,11 @@ export class RouteTeardownAuthority {
 
   invalidateRouteTransition(entry: RouteTeardownHostEntry, reason: string): RouteTransitionToken | null {
     this.deps.invalidateDeliveryAdmission(entry.chatId);
-    const transition = entry.routeTransition;
-    entry.routeTransitionGeneration++;
-    entry.routeTransition = null;
-    entry.routeInjectReady = false;
+    const state = this.route(entry);
+    const transition = state.transition;
+    state.generation++;
+    state.transition = null;
+    state.injectReady = false;
     if (transition) this.retireTransitionHandler(transition, reason);
     return transition;
   }

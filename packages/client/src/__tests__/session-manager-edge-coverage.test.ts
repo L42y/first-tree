@@ -31,26 +31,26 @@ type SessionRecord = {
   claudeSessionId: string;
   handler: AgentHandler;
   status: SessionState;
-  activeSlotHeld: boolean;
   lastActivity: number;
   suspending: Promise<void> | null;
   suspendError: { error: unknown } | null;
   handlerStoppedBySuspend: AgentHandler | null;
   teardownError: { error: unknown } | null;
-  retryAttempt: number;
-  retryNextAt: number | null;
-  retryTimer: ReturnType<typeof setTimeout> | null;
-  lastRetryReason: string | null;
-  lastRetryCategory: string | null;
-  lastRetryScope: "session_start" | "session_resume" | null;
-  lastRetryRawError: string | null;
-  retryHeadMessage: SessionMessage | null;
-  deferredMessages: SessionMessage[];
-  routeTransitionGeneration: number;
-  routeTransition: { generation: number; handler: AgentHandler; phase: "start" | "resume" } | null;
-  routeInjectReady: boolean;
   pendingRuntimeFailureNotice: ProviderRetryEventPayload | null;
-  retryFromEvicted: { claudeSessionId: string; lastActivity: number } | null;
+};
+
+type SessionSeed = Partial<SessionRecord> & {
+  activeSlotHeld?: boolean;
+  retryAttempt?: number;
+  retryHeadMessage?: SessionMessage | null;
+  retryFromEvicted?: { claudeSessionId: string; lastActivity: number } | null;
+  lastRetryReason?: string | null;
+  lastRetryCategory?: string | null;
+  lastRetryScope?: "session_start" | "session_resume" | null;
+  lastRetryRawError?: string | null;
+  deferredMessages?: SessionMessage[];
+  routeTransition?: { generation: number; handler: AgentHandler; phase: "start" | "resume" } | null;
+  routeInjectReady?: boolean;
 };
 
 type SessionRuntimeInternals = {
@@ -83,6 +83,16 @@ type SessionRuntimeInternals = {
       }
     >;
     routeProducers: Map<string, Set<Promise<void>>>;
+    attachLiveSession(entry: SessionRecord): void;
+    beginRouteTransition(
+      entry: SessionRecord,
+      handler: AgentHandler,
+      phase: "start" | "resume",
+    ): { generation: number; handler: AgentHandler; phase: "start" | "resume" };
+    hasInFlightTransition(entry: SessionRecord): boolean;
+    isRouteInjectReady(entry: SessionRecord): boolean;
+    captureGeneration(entry: SessionRecord): number;
+    markRouteInjectReady(entry: SessionRecord): boolean;
     registerPendingTeardown(chatId: string, handler: AgentHandler): void;
     detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void;
     discardStaleRouteTransition(
@@ -94,6 +104,29 @@ type SessionRuntimeInternals = {
   slotScheduler: {
     pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
     activeCount: number;
+    attachLiveSession(
+      entry: SessionRecord,
+      opts?: { resumeFromEvicted?: { claudeSessionId: string; lastActivity: number } | null },
+    ): void;
+    claimActiveSlot(entry: SessionRecord): void;
+    isActiveSlotHeld(entry: SessionRecord): boolean;
+    scheduleTransientRetry(
+      entry: SessionRecord,
+      args: {
+        attemptedMessage: SessionMessage | null;
+        attempt: number;
+        reasonCode: string;
+        category: string;
+        scope: "session_start" | "session_resume";
+        rawError: string | null;
+        delayMs: number;
+      },
+    ): void;
+    cancelRetryTimer(entry: SessionRecord): void;
+    hasArmedRetryTimer(entry: SessionRecord): boolean;
+    deferMessage(entry: SessionRecord, message: SessionMessage): void;
+    deferredMessageSnapshot(entry: SessionRecord): readonly SessionMessage[];
+    currentRetryAttempt(entry: SessionRecord): number;
     acquireActiveSlot(
       chatId: string,
       message: SessionMessage | null,
@@ -305,35 +338,64 @@ function messageFromEntry(entry: InboxEntryWithMessage): SessionMessage {
   };
 }
 
-function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {}): SessionRecord {
+const pendingSeeds = new WeakMap<SessionRecord, SessionSeed>();
+
+function makeSessionRecord(chatId: string, overrides: SessionSeed = {}): SessionRecord {
   const status = overrides.status ?? "suspended";
-  return {
+  const record: SessionRecord = {
     chatId,
-    claudeSessionId: `session-${chatId}`,
-    handler: handler(),
+    claudeSessionId: overrides.claudeSessionId ?? `session-${chatId}`,
+    handler: overrides.handler ?? handler(),
     status,
-    activeSlotHeld: status === "active",
-    lastActivity: Date.now(),
-    suspending: null,
-    suspendError: null,
-    handlerStoppedBySuspend: null,
-    teardownError: null,
-    retryAttempt: 0,
-    retryNextAt: null,
-    retryTimer: null,
-    lastRetryReason: null,
-    lastRetryCategory: null,
-    lastRetryScope: null,
-    lastRetryRawError: null,
-    retryHeadMessage: null,
-    deferredMessages: [],
-    routeTransitionGeneration: 0,
-    routeTransition: null,
-    routeInjectReady: false,
-    pendingRuntimeFailureNotice: null,
-    retryFromEvicted: null,
-    ...overrides,
+    lastActivity: overrides.lastActivity ?? Date.now(),
+    suspending: overrides.suspending ?? null,
+    suspendError: overrides.suspendError ?? null,
+    handlerStoppedBySuspend: overrides.handlerStoppedBySuspend ?? null,
+    teardownError: overrides.teardownError ?? null,
+    pendingRuntimeFailureNotice: overrides.pendingRuntimeFailureNotice ?? null,
   };
+  pendingSeeds.set(record, overrides);
+  return record;
+}
+
+function bindSeededSession(i: SessionRuntimeInternals, record: SessionRecord): SessionRecord {
+  const overrides = pendingSeeds.get(record) ?? {};
+  i.projection.sessions.set(record.chatId, record);
+  i.slotScheduler.attachLiveSession(record, { resumeFromEvicted: overrides.retryFromEvicted ?? null });
+  i.routeTeardown.attachLiveSession(record);
+  if (overrides.activeSlotHeld ?? overrides.status === "active") i.slotScheduler.claimActiveSlot(record);
+  if ((overrides.retryAttempt ?? 0) > 0) {
+    i.slotScheduler.scheduleTransientRetry(record, {
+      attemptedMessage: overrides.retryHeadMessage ?? null,
+      attempt: overrides.retryAttempt ?? 1,
+      reasonCode: overrides.lastRetryReason ?? "unknown",
+      category: overrides.lastRetryCategory ?? "unknown",
+      scope: overrides.lastRetryScope ?? "session_start",
+      rawError: overrides.lastRetryRawError ?? null,
+      delayMs: 60_000,
+    });
+    // Old SessionEntry defaulted retryTimer to null even when retryAttempt > 0.
+    // Production re-arm / explicit scheduleTransientRetry still own live timers.
+    i.slotScheduler.cancelRetryTimer(record);
+  }
+  for (const message of overrides.deferredMessages ?? []) {
+    i.slotScheduler.deferMessage(record, message);
+  }
+  if (overrides.routeTransition) {
+    i.routeTeardown.beginRouteTransition(record, overrides.routeTransition.handler, overrides.routeTransition.phase);
+    if (overrides.routeInjectReady) i.routeTeardown.markRouteInjectReady(record);
+  }
+  return record;
+}
+
+function installSession(i: SessionRuntimeInternals, chatId: string, overrides: SessionSeed = {}): SessionRecord {
+  return bindSeededSession(i, makeSessionRecord(chatId, overrides));
+}
+
+function requireSession(i: SessionRuntimeInternals, chatId: string): SessionRecord {
+  const entry = i.projection.sessions.get(chatId);
+  if (!entry) throw new Error(`session missing: ${chatId}`);
+  return entry;
 }
 
 afterEach(() => {
@@ -346,9 +408,9 @@ describe("SessionRuntime edge coverage", () => {
   it("filters runtime sync by active set while force-keeping queued work", async () => {
     const sm = makeRuntime();
     const i = internals(sm);
-    i.projection.sessions.set("chat-active", makeSessionRecord("chat-active"));
-    i.projection.sessions.set("chat-archived", makeSessionRecord("chat-archived"));
-    i.projection.sessions.set("chat-pending", makeSessionRecord("chat-pending"));
+    installSession(i, "chat-active");
+    installSession(i, "chat-archived");
+    installSession(i, "chat-pending");
     i.projection.evictedMappings.set("chat-evicted-active", { claudeSessionId: "evicted-active", lastActivity: 1 });
     i.projection.evictedMappings.set("chat-evicted-archived", { claudeSessionId: "evicted-archived", lastActivity: 2 });
     i.slotScheduler.pendingQueue.push({
@@ -374,19 +436,18 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [activeHandler] });
     const i = internals(sm);
     const chatId = "chat-inject-ready-suspend";
-    const generation = 3;
-    i.projection.sessions.set(
-      chatId,
+    const record = bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         status: "active",
         activeSlotHeld: true,
         handler: activeHandler,
-        routeTransitionGeneration: generation,
-        routeTransition: { generation, handler: activeHandler, phase: "start" },
+        routeTransition: { generation: 1, handler: activeHandler, phase: "start" },
         routeInjectReady: true,
         deferredMessages: [makeMessage(chatId)],
       }),
     );
+    const generation = i.routeTeardown.captureGeneration(record);
     i.slotScheduler.activeCount = 1;
 
     // Operator suspend clears the transition pointer immediately while keeping
@@ -395,15 +456,16 @@ describe("SessionRuntime edge coverage", () => {
     const suspendPromise = sm.handleCommand(chatId, "session:suspend");
     const duringSettle = i.projection.sessions.get(chatId);
     expect(duringSettle).toBeDefined();
-    expect(duringSettle?.routeTransition).toBeNull();
-    expect(duringSettle?.routeInjectReady).toBe(false);
-    expect(duringSettle?.status).toBe("suspended");
-    expect(duringSettle?.routeTransitionGeneration).toBe(generation);
+    if (!duringSettle) throw new Error("session missing during operator suspend");
+    expect(i.routeTeardown.hasInFlightTransition(duringSettle)).toBe(false);
+    expect(i.routeTeardown.isRouteInjectReady(duringSettle)).toBe(false);
+    expect(duringSettle.status).toBe("suspended");
+    expect(i.routeTeardown.captureGeneration(duringSettle)).toBe(generation);
 
     await suspendPromise;
     const afterSettle = i.projection.sessions.get(chatId);
-    expect(afterSettle?.routeTransition).toBeNull();
-    expect(afterSettle?.routeInjectReady).toBe(false);
+    expect(afterSettle ? i.routeTeardown.hasInFlightTransition(afterSettle) : true).toBe(false);
+    expect(afterSettle ? i.routeTeardown.isRouteInjectReady(afterSettle) : true).toBe(false);
 
     await sm.shutdown();
   });
@@ -488,11 +550,9 @@ describe("SessionRuntime edge coverage", () => {
 
   it("terminates retrying sessions by clearing retry timers and evicted mappings", async () => {
     const sm = makeRuntime();
-    const retryTimer = setTimeout(() => undefined, 60_000);
-    internals(sm).projection.sessions.set(
-      "chat-retry",
+    bindSeededSession(
+      internals(sm),
       makeSessionRecord("chat-retry", {
-        retryTimer,
         status: "suspended",
         retryAttempt: 1,
       }),
@@ -816,7 +876,7 @@ describe("SessionRuntime edge coverage", () => {
       suspending: Promise.resolve(),
     });
     const sm = makeRuntime();
-    internals(sm).projection.sessions.set("chat-admin-resume", record);
+    bindSeededSession(internals(sm), record);
 
     await internals(sm).resumeSession(record, null);
 
@@ -828,7 +888,7 @@ describe("SessionRuntime edge coverage", () => {
   it("queues admin resume as a control item when no active slot can be acquired", async () => {
     const record = makeSessionRecord("chat-queued-resume", { status: "suspended" });
     const sm = makeRuntime({ concurrency: 1 });
-    internals(sm).projection.sessions.set("chat-queued-resume", record);
+    bindSeededSession(internals(sm), record);
     internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).resumeSession(record, null);
@@ -854,8 +914,8 @@ describe("SessionRuntime edge coverage", () => {
       handler: handler({ resume: pausedResume }),
     });
     const sm = makeRuntime({ concurrency: 1 });
-    internals(sm).projection.sessions.set("chat-working", working);
-    internals(sm).projection.sessions.set("chat-paused", paused);
+    bindSeededSession(internals(sm), working);
+    bindSeededSession(internals(sm), paused);
     internals(sm).slotScheduler.activeCount = 1;
 
     const workingEntry = mockEntry({ id: 99, chatId: "chat-working" });
@@ -888,7 +948,7 @@ describe("SessionRuntime edge coverage", () => {
       handler: handler({ resume }),
     });
     const sm = makeRuntime({ concurrency: 1 });
-    internals(sm).projection.sessions.set("chat-paused", paused);
+    bindSeededSession(internals(sm), paused);
 
     await sm.handleCommand("chat-paused", "session:suspend");
 
@@ -1070,10 +1130,7 @@ describe("SessionRuntime edge coverage", () => {
     });
 
     await internals(sm).slotScheduler.runRetry("missing-chat");
-    internals(sm).projection.sessions.set(
-      "chat-active",
-      makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }),
-    );
+    bindSeededSession(internals(sm), makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }));
     await internals(sm).slotScheduler.runRetry("chat-active");
 
     const queued = makeSessionRecord("chat-retry-queue", {
@@ -1083,17 +1140,14 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-queue"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-retry-queue", queued);
+    bindSeededSession(internals(sm), queued);
     const activeRecord = internals(sm).projection.sessions.get("chat-active");
     if (!activeRecord) throw new Error("active retry guard record missing");
     activeRecord.status = "suspended";
     internals(sm).slotScheduler.activeCount = 1;
     await internals(sm).slotScheduler.runRetry("chat-retry-queue");
-    expect(queued.retryTimer).not.toBeNull();
-    if (queued.retryTimer) {
-      clearTimeout(queued.retryTimer);
-      queued.retryTimer = null;
-    }
+    expect(internals(sm).slotScheduler.hasArmedRetryTimer(queued)).toBe(true);
+    internals(sm).slotScheduler.cancelRetryTimer(queued);
 
     internals(sm).slotScheduler.activeCount = 0;
     await internals(sm).slotScheduler.runRetry("chat-retry-queue");
@@ -1107,14 +1161,14 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-evicted"),
       lastRetryReason: "network_error",
     });
-    internals(sm).projection.sessions.set("chat-retry-evicted", fromEvicted);
+    bindSeededSession(internals(sm), fromEvicted);
     await internals(sm).slotScheduler.runRetry("chat-retry-evicted");
     expect(fromEvicted.claudeSessionId).toBe("retry-from-evicted");
 
     expect(events.some((event) => event.kind === "error")).toBe(true);
 
     internals(sm).slotScheduler.triggerImmediateRetry("missing");
-    internals(sm).projection.sessions.set("chat-no-retry", makeSessionRecord("chat-no-retry", { retryAttempt: 0 }));
+    installSession(internals(sm), "chat-no-retry", { retryAttempt: 0 });
     internals(sm).slotScheduler.triggerImmediateRetry("chat-no-retry");
     await sm.shutdown();
   });
@@ -1141,13 +1195,13 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage(chatId),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set(chatId, retrying);
+    bindSeededSession(internals(sm), retrying);
 
     await internals(sm).slotScheduler.runRetry(chatId);
 
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(recovered.start).not.toHaveBeenCalled();
-    expect(retrying.retryAttempt).toBe(0);
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retrying)).toBe(0);
     await sm.shutdown();
   });
 
@@ -1170,8 +1224,8 @@ describe("SessionRuntime edge coverage", () => {
       lastRetryReason: "network_error",
     });
     const blocker = makeSessionRecord("chat-retry-slot-blocker", { status: "active" });
-    i.projection.sessions.set(chatId, retrying);
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, retrying);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 901, chatId: blocker.chatId, messageId: "msg-slot-blocker" });
@@ -1184,7 +1238,7 @@ describe("SessionRuntime edge coverage", () => {
 
     expect(recovered.resume).not.toHaveBeenCalled();
     expect(i.slotScheduler.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
-    expect(retrying.retryTimer).not.toBeNull();
+    expect(internals(sm).slotScheduler.hasArmedRetryTimer(retrying)).toBe(true);
 
     blocker.status = "suspended";
     i.slotScheduler.activeCount = 0;
@@ -1193,8 +1247,8 @@ describe("SessionRuntime edge coverage", () => {
     expect(recovered.resume).toHaveBeenCalledTimes(1);
     expect(recovered.resume).toHaveBeenCalledWith(head, "previous-session", expect.anything(), expect.anything());
     expect(recovered.inject).not.toHaveBeenCalled();
-    expect(retrying.retryAttempt).toBe(0);
-    expect(retrying.retryTimer).toBeNull();
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retrying)).toBe(0);
+    expect(internals(sm).slotScheduler.hasArmedRetryTimer(retrying)).toBe(false);
 
     await sm.shutdown();
   });
@@ -1218,8 +1272,8 @@ describe("SessionRuntime edge coverage", () => {
       lastRetryReason: "network_error",
     });
     const blocker = makeSessionRecord("chat-control-slot-blocker", { status: "active" });
-    i.projection.sessions.set(chatId, retrying);
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, retrying);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 902, chatId: blocker.chatId, messageId: "msg-control-blocker" });
@@ -1232,7 +1286,7 @@ describe("SessionRuntime edge coverage", () => {
 
     expect(recovered.resume).not.toHaveBeenCalled();
     expect(i.slotScheduler.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
-    expect(retrying.retryTimer).not.toBeNull();
+    expect(internals(sm).slotScheduler.hasArmedRetryTimer(retrying)).toBe(true);
 
     blocker.status = "suspended";
     i.slotScheduler.activeCount = 0;
@@ -1240,8 +1294,8 @@ describe("SessionRuntime edge coverage", () => {
 
     expect(recovered.resume).toHaveBeenCalledTimes(1);
     expect(recovered.resume).toHaveBeenCalledWith(undefined, "previous-control-session", expect.anything());
-    expect(retrying.retryAttempt).toBe(0);
-    expect(retrying.retryTimer).toBeNull();
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retrying)).toBe(0);
+    expect(internals(sm).slotScheduler.hasArmedRetryTimer(retrying)).toBe(false);
 
     await sm.shutdown();
   });
@@ -1268,7 +1322,7 @@ describe("SessionRuntime edge coverage", () => {
       },
       lastRetryReason: "network_error",
     });
-    internals(sm).projection.sessions.set(chatId, retrying);
+    bindSeededSession(internals(sm), retrying);
 
     await internals(sm).slotScheduler.runRetry(chatId);
 
@@ -1312,8 +1366,8 @@ describe("SessionRuntime edge coverage", () => {
     const head = messageFromEntry(headEntry);
 
     if (resumeKind === "normal") {
-      i.projection.sessions.set(
-        chatId,
+      bindSeededSession(
+        i,
         makeSessionRecord(chatId, {
           handler: nullRouteHandler,
           status: "suspended",
@@ -1330,8 +1384,8 @@ describe("SessionRuntime edge coverage", () => {
       const tail = messageFromEntry(tailEntry);
       i.inboxDelivery.receive(headEntry);
       i.inboxDelivery.receive(tailEntry);
-      i.projection.sessions.set(
-        chatId,
+      bindSeededSession(
+        i,
         makeSessionRecord(chatId, {
           retryAttempt: 1,
           retryHeadMessage: head,
@@ -1375,8 +1429,8 @@ describe("SessionRuntime edge coverage", () => {
     const tail = messageFromEntry(tailEntry);
     i.inboxDelivery.receive(headEntry);
     i.inboxDelivery.receive(tailEntry);
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
         status: "suspended",
@@ -1443,8 +1497,8 @@ describe("SessionRuntime edge coverage", () => {
     const chatId = "chat-suspend-late-success-resume";
     const headEntry = mockEntry({ id: 2, chatId, messageId: "msg-late-success-head" });
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-late-success-tail" });
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: existingHandler,
         status: "suspended",
@@ -1452,14 +1506,14 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-suspend-race-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await resumeStarted;
     expect(sm.activeCount).toBe(2);
     await sm.dispatch(tailEntry);
-    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.slotScheduler.deferredMessageSnapshot(requireSession(i, chatId))).toHaveLength(1);
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true));
@@ -1543,13 +1597,13 @@ describe("SessionRuntime edge coverage", () => {
     const headEntry = mockEntry({ id: 82, chatId, messageId: "msg-canceled-start-head" });
     const tailEntry = mockEntry({ id: 83, chatId, messageId: "msg-canceled-start-tail" });
     const blocker = makeSessionRecord("chat-canceled-start-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await startStarted;
     await sm.dispatch(tailEntry);
-    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.slotScheduler.deferredMessageSnapshot(requireSession(i, chatId))).toHaveLength(1);
     expect(sm.activeCount).toBe(2);
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -1635,7 +1689,7 @@ describe("SessionRuntime edge coverage", () => {
     const headEntry = mockEntry({ id: 85, chatId, messageId: "msg-canceled-start-processing-head" });
     const tailEntry = mockEntry({ id: 86, chatId, messageId: "msg-canceled-start-during-ack" });
     const blocker = makeSessionRecord("chat-canceled-start-ack-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -1702,8 +1756,8 @@ describe("SessionRuntime edge coverage", () => {
     const headEntry = mockEntry({ id: 84, chatId, messageId: "msg-lru-fresh-start-retry" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         status: "suspended",
         claudeSessionId: "",
@@ -2197,8 +2251,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ recoverChat: vi.fn().mockResolvedValue(undefined) });
     const i = internals(sm);
     const chatId = "chat-late-materialized-cleanup";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: lateHandler,
         status: "suspended",
@@ -2279,8 +2333,8 @@ describe("SessionRuntime edge coverage", () => {
     const chatId = "chat-preempted-late-success";
     const headEntry = mockEntry({ id: 20, chatId, messageId: "msg-preempted-head" });
     const tailEntry = mockEntry({ id: 21, chatId, messageId: "msg-preempted-tail" });
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -2291,7 +2345,7 @@ describe("SessionRuntime edge coverage", () => {
       status: "active",
       lastActivity: Date.now() + 10_000,
     });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -2319,7 +2373,7 @@ describe("SessionRuntime edge coverage", () => {
 
     await freshResumeStarted;
     await sm.dispatch(tailEntry);
-    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.slotScheduler.deferredMessageSnapshot(requireSession(i, chatId))).toHaveLength(1);
     expect(requesterHandler.suspend).toHaveBeenCalledTimes(1);
 
     resolveFreshResume?.();
@@ -2368,8 +2422,8 @@ describe("SessionRuntime edge coverage", () => {
     const chatId = "chat-suspend-late-transient-resume";
     const headEntry = mockEntry({ id: 2, chatId, messageId: "msg-late-transient-head" });
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-late-transient-tail" });
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: existingHandler,
         status: "suspended",
@@ -2377,7 +2431,7 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-transient-race-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -2392,7 +2446,7 @@ describe("SessionRuntime edge coverage", () => {
     rejectResume?.({ status: 429, message: "provider still limited" });
     await headDispatch;
 
-    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.slotScheduler.currentRetryAttempt(requireSession(i, chatId))).toBe(0);
     expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
     expect(sm.activeCount).toBe(1);
 
@@ -2438,8 +2492,8 @@ describe("SessionRuntime edge coverage", () => {
     const tailEntry = mockEntry({ id: 41, chatId, messageId: "msg-retry-late-tail" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
         retryHeadMessage: head,
@@ -2449,14 +2503,14 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-retry-late-success-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const retryPromise = i.slotScheduler.runRetry(chatId);
     await retryStarted;
     expect(sm.activeCount).toBe(2);
     await sm.dispatch(tailEntry);
-    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.slotScheduler.deferredMessageSnapshot(requireSession(i, chatId))).toHaveLength(1);
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true));
@@ -2469,7 +2523,7 @@ describe("SessionRuntime edge coverage", () => {
     expect(retryEvents).toContain("provider_retry_started");
     expect(retryEvents).not.toContain("provider_retry_succeeded");
     expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("previous-retry-session");
-    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.slotScheduler.currentRetryAttempt(requireSession(i, chatId))).toBe(0);
     expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
     expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
@@ -2500,15 +2554,15 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ recoverChat });
     const i = internals(sm);
     const chatId = "chat-terminate-admission";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: terminatingHandler,
         status: "active",
       }),
     );
     const blocker = makeSessionRecord("chat-terminate-admission-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 2;
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
@@ -2555,7 +2609,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-shared";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    installSession(i, chatId, { handler: activeHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
@@ -2604,7 +2658,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-fence";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    installSession(i, chatId, { handler: activeHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
     i.inboxDelivery.drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
@@ -2640,7 +2694,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-retry";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    installSession(i, chatId, { handler: activeHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi
       .fn<(chatId: string) => Promise<void>>()
@@ -2693,7 +2747,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-joins-suspend";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: suspendingHandler, status: "active" }));
+    installSession(i, chatId, { handler: suspendingHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2742,7 +2796,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-suspend-failed";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: failingSuspendHandler, status: "active" }));
+    installSession(i, chatId, { handler: failingSuspendHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2804,7 +2858,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-retry-teardown-failed";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2877,8 +2931,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-joins-prior-shutdown";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "active",
@@ -2960,8 +3014,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-prior-shutdown-success";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "active",
@@ -3024,8 +3078,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-suspend-covers-transition-shutdown";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "active",
@@ -3094,7 +3148,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-falsey-suspend-rejection";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3124,8 +3178,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [replacementHandler] });
     const i = internals(sm);
     const chatId = "chat-terminate-replacement-handler";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: retiredHandler,
         status: "active",
@@ -3146,7 +3200,7 @@ describe("SessionRuntime edge coverage", () => {
     await sm.handleCommand(chatId, "session:resume");
     const entry = i.projection.sessions.get(chatId);
     expect(entry?.handler).toBe(replacementHandler);
-    expect(entry?.activeSlotHeld).toBe(true);
+    expect(entry ? i.slotScheduler.isActiveSlotHeld(entry) : false).toBe(true);
 
     // The marker must NOT exempt the replacement: the terminate tears it
     // down strictly, and a shutdown failure rejects the apply (applied:false).
@@ -3169,8 +3223,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-no-double-teardown";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: stoppedHandler,
         status: "active",
@@ -3215,14 +3269,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ maxSessions: 1 });
     const i = internals(sm);
     const chatId = "chat-evicted-pending-teardown";
-    i.projection.sessions.set(
-      chatId,
-      makeSessionRecord(chatId, { handler: victimHandler, status: "active", lastActivity: 1_000 }),
-    );
-    i.projection.sessions.set(
-      "chat-evicted-blocker",
-      makeSessionRecord("chat-evicted-blocker", { status: "active", lastActivity: 2_000 }),
-    );
+    bindSeededSession(i, makeSessionRecord(chatId, { handler: victimHandler, status: "active", lastActivity: 1_000 }));
+    bindSeededSession(i, makeSessionRecord("chat-evicted-blocker", { status: "active", lastActivity: 2_000 }));
     i.slotScheduler.activeCount = 2;
 
     // LRU eviction detaches the victim: fire-and-forget shutdown (gated)
@@ -3272,7 +3320,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-shutdown-after-failed-suspend";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3330,7 +3378,7 @@ describe("SessionRuntime edge coverage", () => {
     await sm.dispatch(headEntry);
     if (!initialCtx || !initialHead) throw new Error("initial route was not captured");
     await sm.dispatch(queuedTailEntry);
-    expect(i.projection.sessions.get(chatId)?.routeTransition).toBe(null);
+    expect(i.routeTeardown.hasInFlightTransition(requireSession(i, chatId))).toBe(false);
 
     await sm.handleCommand(chatId, "session:suspend");
     const laterDispatch = sm.dispatch(mockEntry({ id: 9102, chatId, messageId: "msg-after-timeout" }));
@@ -3464,7 +3512,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-quarantine-repeated-resume";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    installSession(i, chatId, { handler: oldHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3524,8 +3572,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler], ackEntry, onSessionEvent });
     const i = internals(sm);
     const chatId = "chat-quarantined-late-generation";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -3585,7 +3633,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-quarantine-reset-restart-required";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    installSession(i, chatId, { handler: oldHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3611,7 +3659,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-shutdown-after-falsey-suspend-error";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3640,7 +3688,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-resume-after-failed-suspend";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    installSession(i, chatId, { handler: oldHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     // Suspend fails: the old handler was never confirmed stopped.
@@ -3680,8 +3728,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-canceled-start-pending-teardown";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: startHandler,
         status: "active",
@@ -3738,7 +3786,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ maxSessions: 1 });
     const i = internals(sm);
     const chatId = "chat-late-debt-drain";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
+    installSession(i, chatId, { handler: evictedHandler, status: "suspended" });
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
@@ -3853,8 +3901,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-shutdown-quiesce-suspend";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: startHandler,
         status: "active",
@@ -3915,8 +3963,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-late-materialization";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: staleHandler,
         status: "active",
@@ -3984,7 +4032,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-resume-fenced-by-terminate";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    installSession(i, chatId, { handler: oldHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -4255,7 +4303,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-route-waits-for-debt";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    installSession(i, chatId, { handler: sessionHandler, status: "suspended" });
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const dispatch = sm.dispatch(mockEntry({ id: 96, chatId, messageId: "msg-route-waits" }));
@@ -4291,7 +4339,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ recoverChat });
     const i = internals(sm);
     const chatId = "chat-route-debt-fails";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    installSession(i, chatId, { handler: sessionHandler, status: "suspended" });
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Settle failure: no route is created, and the delivery keeps its
@@ -4339,8 +4387,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-vs-terminate";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         status: "suspended",
         retryAttempt: 1,
@@ -4386,8 +4434,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-after-debt-settle";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         status: "suspended",
         retryAttempt: 1,
@@ -4427,8 +4475,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-vs-shutdown";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         status: "suspended",
         retryAttempt: 1,
@@ -4547,7 +4595,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-concurrent-resumes";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    installSession(i, chatId, { handler: sessionHandler, status: "suspended" });
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Both dispatches reach resumeSession and wait on the same gated debt
@@ -4649,8 +4697,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-replace-stop";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4672,15 +4720,12 @@ describe("SessionRuntime edge coverage", () => {
     rejectReplaceStop?.(boom);
     await firstAttempt;
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
-    expect(i.projection.sessions.get(chatId)?.retryTimer).not.toBe(null);
+    expect(i.slotScheduler.hasArmedRetryTimer(requireSession(i, chatId))).toBe(true);
     expect(freshHandler.resume).not.toHaveBeenCalled();
 
     // Next attempt: the stop confirms and the retry route installs.
     const entry = i.projection.sessions.get(chatId);
-    if (entry?.retryTimer) {
-      clearTimeout(entry.retryTimer);
-      entry.retryTimer = null;
-    }
+    if (entry) i.slotScheduler.cancelRetryTimer(entry);
     await i.slotScheduler.runRetry(chatId);
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
     expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
@@ -4710,8 +4755,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-stop-debt-first";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4770,8 +4815,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-retry-stop";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4829,8 +4874,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-overlapping-retries";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4843,16 +4888,22 @@ describe("SessionRuntime edge coverage", () => {
 
     // The scheduled retry timer fires first: it clears its handle and starts
     // the first retry execution.
-    entry.retryTimer = setTimeout(() => {
-      entry.retryTimer = null;
-      void i.slotScheduler.runRetry(chatId);
-    }, 0);
+    i.slotScheduler.cancelRetryTimer(entry);
+    i.slotScheduler.scheduleTransientRetry(entry, {
+      attemptedMessage: makeMessage(chatId),
+      attempt: 1,
+      reasonCode: "unknown",
+      category: "unknown",
+      scope: "session_start",
+      rawError: null,
+      delayMs: 0,
+    });
     await replaceStopStarted;
 
     // A same-chat delivery triggers the immediate retry, which must JOIN the
     // in-flight execution instead of running a second one.
     const delivery = sm.dispatch(mockEntry({ id: 122, chatId, messageId: "msg-retry-tail" }));
-    await vi.waitFor(() => expect(entry.deferredMessages).toHaveLength(1));
+    await vi.waitFor(() => expect(i.slotScheduler.deferredMessageSnapshot(entry)).toHaveLength(1));
     expect(freshHandler.resume).not.toHaveBeenCalled();
 
     resolveReplaceStop?.();
@@ -4887,8 +4938,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-single-rearm";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4902,10 +4953,16 @@ describe("SessionRuntime edge coverage", () => {
 
     // Timer fires the first execution; the same-chat dispatch triggers the
     // immediate retry — it joins the single flight instead of running one.
-    entry.retryTimer = setTimeout(() => {
-      entry.retryTimer = null;
-      void i.slotScheduler.runRetry(chatId);
-    }, 0);
+    i.slotScheduler.cancelRetryTimer(entry);
+    i.slotScheduler.scheduleTransientRetry(entry, {
+      attemptedMessage: makeMessage(chatId),
+      attempt: 1,
+      reasonCode: "unknown",
+      category: "unknown",
+      scope: "session_start",
+      rawError: null,
+      delayMs: 0,
+    });
     await vi.advanceTimersByTimeAsync(0);
     await replaceStopStarted;
     const delivery = sm.dispatch(mockEntry({ id: 123, chatId, messageId: "msg-single-rearm-tail" }));
@@ -4918,7 +4975,7 @@ describe("SessionRuntime edge coverage", () => {
     // Exactly ONE re-arm handle exists (the single-flight failure path ran
     // once), and manager shutdown clears it — no duplicate retry callback
     // survives.
-    expect(entry.retryTimer).not.toBe(null);
+    expect(i.slotScheduler.hasArmedRetryTimer(entry)).toBe(true);
     await sm.shutdown();
     retrySpy.mockClear();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -4948,8 +5005,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-terminate-retry-stop-fails";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -4977,7 +5034,7 @@ describe("SessionRuntime edge coverage", () => {
     // No late re-arm: the terminate's in-flight window canceled the retry
     // timer, and the failed stop's failure path must not resurrect one —
     // nothing may install a provider route before the operator retries.
-    expect(entry.retryTimer).toBe(null);
+    expect(i.slotScheduler.hasArmedRetryTimer(entry)).toBe(false);
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(freshHandler.start).not.toHaveBeenCalled();
 
@@ -5014,8 +5071,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-late-rearm";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -5039,7 +5096,7 @@ describe("SessionRuntime edge coverage", () => {
     // Fail closed: the failure path must not create a timer once manager
     // shutdown has begun — no re-arm handle exists and nothing fires after
     // shutdown returned.
-    expect(entry.retryTimer).toBe(null);
+    expect(i.slotScheduler.hasArmedRetryTimer(entry)).toBe(false);
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(freshHandler.start).not.toHaveBeenCalled();
     retrySpy.mockClear();
@@ -5082,8 +5139,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-bounded-followup";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -5169,8 +5226,8 @@ describe("SessionRuntime edge coverage", () => {
       retryAttempt: 1,
       retryHeadMessage: makeMessage("chat-cap-b"),
     });
-    i.projection.sessions.set(entryA.chatId, entryA);
-    i.projection.sessions.set(entryB.chatId, entryB);
+    bindSeededSession(i, entryA);
+    bindSeededSession(i, entryB);
     // Give chat A owned processing work so its (winning) session cannot be
     // preempted by the loser's acquire — the loser must re-arm instead.
     const ownedEntry = mockEntry({ id: 131, chatId: entryA.chatId, messageId: "msg-cap-a-owned" });
@@ -5196,13 +5253,9 @@ describe("SessionRuntime edge coverage", () => {
     expect(freshB.resume).not.toHaveBeenCalled();
     expect(freshB.start).not.toHaveBeenCalled();
     // The loser keeps retry custody: still in transient-retry, timer armed.
-    expect(entryB.retryAttempt).toBe(1);
-    expect(entryB.retryTimer).not.toBe(null);
-
-    if (entryB.retryTimer) {
-      clearTimeout(entryB.retryTimer);
-      entryB.retryTimer = null;
-    }
+    expect(i.slotScheduler.currentRetryAttempt(entryB)).toBe(1);
+    expect(i.slotScheduler.hasArmedRetryTimer(entryB)).toBe(true);
+    i.slotScheduler.cancelRetryTimer(entryB);
     await sm.shutdown();
   });
 
@@ -5230,8 +5283,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [handlerC, freshA], concurrency: 1 });
     const i = internals(sm);
     const chatId = "chat-freed-slot-retry";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: oldHandler,
         status: "suspended",
@@ -5261,13 +5314,9 @@ describe("SessionRuntime edge coverage", () => {
     expect(freshA.start).not.toHaveBeenCalled();
     expect(freshA.resume).not.toHaveBeenCalled();
     expect(sm.activeCount).toBe(1);
-    expect(entry.retryAttempt).toBe(1);
-    expect(entry.retryTimer).not.toBe(null);
-
-    if (entry.retryTimer) {
-      clearTimeout(entry.retryTimer);
-      entry.retryTimer = null;
-    }
+    expect(i.slotScheduler.currentRetryAttempt(entry)).toBe(1);
+    expect(i.slotScheduler.hasArmedRetryTimer(entry)).toBe(true);
+    i.slotScheduler.cancelRetryTimer(entry);
     await sm.shutdown();
   });
 
@@ -5576,8 +5625,8 @@ describe("SessionRuntime edge coverage", () => {
     const i = internals(sm);
     const debtChat = "chat-force-keep-debt";
     const otherChat = "chat-force-keep-other";
-    i.projection.sessions.set(debtChat, makeSessionRecord(debtChat, { status: "suspended", lastActivity: 1_000 }));
-    i.projection.sessions.set(otherChat, makeSessionRecord(otherChat, { status: "suspended", lastActivity: 2_000 }));
+    installSession(i, debtChat, { status: "suspended", lastActivity: 1_000 });
+    installSession(i, otherChat, { status: "suspended", lastActivity: 2_000 });
     i.routeTeardown.registerPendingTeardown(debtChat, handler());
 
     // The debt chat is the older non-active session and would be the
@@ -5597,8 +5646,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminal-no-fake-debt";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "suspended",
@@ -5625,7 +5674,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-active-shutdown-failed";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     // The active-slot teardown is strict too: a shutdown rejection must fail
@@ -5654,7 +5703,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ log: logger });
     const i = internals(sm);
     const chatId = "chat-stale-teardown-failed";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     // First reconcile pass: the strict teardown rejects, but the
@@ -5704,7 +5753,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime();
     const i = internals(sm);
     const chatId = "chat-terminate-teardown-failed";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    installSession(i, chatId, { handler: targetHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -5994,8 +6043,8 @@ describe("SessionRuntime edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminate-teardown-park";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: terminatingHandler,
         status: "active",
@@ -6226,7 +6275,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [terminatingHandler], recoverChat });
     const i = internals(sm);
     const chatId = "chat-reset-ref-join";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    installSession(i, chatId, { handler: terminatingHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-first" });
@@ -6273,7 +6322,7 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ handlers: [terminatingHandler], recoverChat });
     const i = internals(sm);
     const chatId = "chat-reset-alias-order";
-    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    installSession(i, chatId, { handler: terminatingHandler, status: "active" });
     i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
@@ -6489,12 +6538,12 @@ describe("SessionRuntime edge coverage", () => {
       suspending,
       claudeSessionId: "previous-session",
     });
-    i.projection.sessions.set(chatId, target);
+    bindSeededSession(i, target);
     const blocker = makeSessionRecord("chat-manager-shutdown-pending-resume-blocker", {
       handler: blockerHandler,
       status: "active",
     });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const resume = i.resumeSession(target, head);
@@ -6553,8 +6602,8 @@ describe("SessionRuntime edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-invalidated";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "suspended",
@@ -6606,8 +6655,8 @@ describe("SessionRuntime edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-terminate";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "suspended",
@@ -6615,14 +6664,14 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-terminate-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-terminate" }));
     await confirmStarted;
 
     expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
+    expect(i.slotScheduler.isActiveSlotHeld(requireSession(i, chatId))).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     // The terminate must wait for the in-flight route producer (gated on the
@@ -6672,8 +6721,8 @@ describe("SessionRuntime edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-evict";
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         handler: targetHandler,
         status: "suspended",
@@ -6681,14 +6730,14 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-evict-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-evict" }));
     await confirmStarted;
 
     expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
+    expect(i.slotScheduler.isActiveSlotHeld(requireSession(i, chatId))).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     i.slotScheduler.evictIfNeeded();
@@ -6735,8 +6784,8 @@ describe("SessionRuntime edge coverage", () => {
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-terminal-confirm-tail" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.projection.sessions.set(
-      chatId,
+    bindSeededSession(
+      i,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
         status: "suspended",
@@ -6746,15 +6795,15 @@ describe("SessionRuntime edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-admission-blocker", { status: "active" });
-    i.projection.sessions.set(blocker.chatId, blocker);
+    bindSeededSession(i, blocker);
     i.slotScheduler.activeCount = 1;
 
     const retryPromise = i.slotScheduler.runRetry(chatId);
     await confirmStarted;
 
     expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
-    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.slotScheduler.isActiveSlotHeld(requireSession(i, chatId))).toBe(true);
+    expect(i.slotScheduler.currentRetryAttempt(requireSession(i, chatId))).toBe(0);
     expect(sm.activeCount).toBe(2);
 
     await sm.dispatch(tailEntry);
@@ -6808,9 +6857,9 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-transient"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-retry-transient", retrying);
+    bindSeededSession(internals(sm), retrying);
     await internals(sm).slotScheduler.runRetry("chat-retry-transient");
-    expect(retrying.retryAttempt).toBeGreaterThan(1);
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retrying)).toBeGreaterThan(1);
 
     const failing = makeSessionRecord("chat-retry-permanent", {
       retryAttempt: 1,
@@ -6818,7 +6867,7 @@ describe("SessionRuntime edge coverage", () => {
       claudeSessionId: "",
       retryHeadMessage: makeMessage("chat-retry-permanent"),
     });
-    internals(sm).projection.sessions.set("chat-retry-permanent", failing);
+    bindSeededSession(internals(sm), failing);
     await internals(sm).slotScheduler.runRetry("chat-retry-permanent");
 
     expect(internals(sm).projection.sessions.has("chat-retry-permanent")).toBe(false);
@@ -6855,7 +6904,7 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage("chat-rearm"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-rearm", retrying);
+    bindSeededSession(internals(sm), retrying);
     internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).slotScheduler.runRetry("chat-rearm");
@@ -6867,7 +6916,6 @@ describe("SessionRuntime edge coverage", () => {
 
   it("uses retry-time config cache, clears existing retry timers, and catches retry-success emit failures", async () => {
     const cache = makeCache();
-    const existingTimer = setTimeout(() => undefined, 60_000);
     const successfulResume = handler({
       resume: vi
         .fn()
@@ -6891,7 +6939,7 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: null,
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-retry-success", succeeds);
+    bindSeededSession(internals(sm), succeeds);
     await internals(sm).slotScheduler.runRetry("chat-retry-success");
     expect(successfulResume.resume).toHaveBeenCalledWith(undefined, "previous-session", expect.anything());
 
@@ -6899,13 +6947,12 @@ describe("SessionRuntime edge coverage", () => {
       retryAttempt: 1,
       status: "suspended",
       claudeSessionId: "previous-session-again",
-      retryTimer: existingTimer,
       retryHeadMessage: makeMessage("chat-retry-again"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-retry-again", retriesAgain);
+    bindSeededSession(internals(sm), retriesAgain);
     await internals(sm).slotScheduler.runRetry("chat-retry-again");
-    expect(retriesAgain.retryAttempt).toBeGreaterThan(1);
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retriesAgain)).toBeGreaterThan(1);
 
     await sm.shutdown();
   });
@@ -6923,7 +6970,7 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-from-evicted"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).projection.sessions.set("chat-retry-from-evicted", retrying);
+    bindSeededSession(internals(sm), retrying);
 
     await internals(sm).slotScheduler.runRetry("chat-retry-from-evicted");
 
@@ -6933,7 +6980,7 @@ describe("SessionRuntime edge coverage", () => {
       expect.anything(),
       expect.anything(),
     );
-    expect(retrying.retryAttempt).toBeGreaterThan(1);
+    expect(internals(sm).slotScheduler.currentRetryAttempt(retrying)).toBeGreaterThan(1);
     await sm.shutdown();
   });
 
@@ -6961,8 +7008,8 @@ describe("SessionRuntime edge coverage", () => {
     const sm = makeRuntime({ maxSessions: 2 });
     const activeOld = makeSessionRecord("chat-active-old", { status: "active", lastActivity: 10 });
     const activeNew = makeSessionRecord("chat-active-new", { status: "active", lastActivity: 20 });
-    internals(sm).projection.sessions.set("chat-active-new", activeNew);
-    internals(sm).projection.sessions.set("chat-active-old", activeOld);
+    bindSeededSession(internals(sm), activeNew);
+    bindSeededSession(internals(sm), activeOld);
     internals(sm).slotScheduler.evictIfNeeded();
     expect(internals(sm).projection.evictedMappings.has("chat-active-old")).toBe(true);
 
@@ -6971,8 +7018,8 @@ describe("SessionRuntime edge coverage", () => {
     internals(sm).slotScheduler.activeCount = 1;
     const active = makeSessionRecord("chat-active", { status: "active", lastActivity: 10 });
     const suspended = makeSessionRecord("chat-suspended", { status: "suspended", lastActivity: 20 });
-    internals(sm).projection.sessions.set("chat-active", active);
-    internals(sm).projection.sessions.set("chat-suspended", suspended);
+    bindSeededSession(internals(sm), active);
+    bindSeededSession(internals(sm), suspended);
     internals(sm).slotScheduler.evictIfNeeded();
     expect(internals(sm).projection.evictedMappings.has("chat-suspended")).toBe(true);
 
@@ -6988,7 +7035,7 @@ describe("SessionRuntime edge coverage", () => {
 
     internals(sm).slotScheduler.pendingQueue.length = 0;
     const active = makeSessionRecord("chat-same", { status: "active" });
-    internals(sm).projection.sessions.set("chat-same", active);
+    bindSeededSession(internals(sm), active);
     internals(sm).slotScheduler.activeCount = 1;
     expect(internals(sm).slotScheduler.acquireActiveSlot("chat-same", makeMessage("chat-same"))).toBe(false);
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-same")).toBe(true);
@@ -7067,8 +7114,8 @@ describe("SessionRuntime edge coverage", () => {
 
     const withoutRuntimeCallback = makeRuntime();
     internals(withoutRuntimeCallback).projection.reaffirmRuntimeStates();
-    internals(withoutRuntimeCallback).projection.sessions.set(
-      "chat-suspended-snapshot",
+    bindSeededSession(
+      internals(withoutRuntimeCallback),
       makeSessionRecord("chat-suspended-snapshot", { status: "suspended" }),
     );
     expect(withoutRuntimeCallback.getSessionRuntimeStates()).toEqual([]);
@@ -7188,9 +7235,9 @@ describe("SessionRuntime edge coverage", () => {
       onRuntimeStateChange: (state) => aggregateChanges.push(state),
     });
     const i = internals(sm);
-    i.projection.sessions.set("chat-working", makeSessionRecord("chat-working", { status: "active" }));
-    i.projection.sessions.set("chat-error", makeSessionRecord("chat-error", { status: "errored" }));
-    i.projection.sessions.set("chat-idle", makeSessionRecord("chat-idle", { status: "active" }));
+    installSession(i, "chat-working", { status: "active" });
+    installSession(i, "chat-error", { status: "errored" });
+    installSession(i, "chat-idle", { status: "active" });
     i.projection.sessionRuntimeStates.set("chat-working", "working");
     i.projection.sessionRuntimeStates.set("chat-error", "error");
     i.projection.sessionRuntimeStates.set("chat-idle", "idle");
@@ -7388,7 +7435,7 @@ describe("SessionRuntime edge coverage", () => {
       status: "active",
       handler: handler({ shutdown: badShutdown }),
     });
-    i.projection.sessions.set("chat-unowned", record);
+    bindSeededSession(i, record);
     i.slotScheduler.activeCount = 1;
 
     i.abortUnownedRoute(record, "test_unowned_route");
@@ -7441,7 +7488,7 @@ describe("SessionRuntime edge coverage", () => {
       }),
     });
     const resumeManager = makeRuntime();
-    internals(resumeManager).projection.sessions.set("chat-resume-lost", suspendedRecord);
+    bindSeededSession(internals(resumeManager), suspendedRecord);
     internals(resumeManager).markRouteOwned = loseOwnership;
     await internals(resumeManager).resumeSession(suspendedRecord, makeMessage("chat-resume-lost"));
     expect(internals(resumeManager).projection.sessions.has("chat-resume-lost")).toBe(false);
@@ -7454,8 +7501,8 @@ describe("SessionRuntime edge coverage", () => {
       }),
     });
     const retryResumeManager = makeRuntime({ handlers: [retryResumeHandler] });
-    internals(retryResumeManager).projection.sessions.set(
-      "chat-retry-resume-lost",
+    bindSeededSession(
+      internals(retryResumeManager),
       makeSessionRecord("chat-retry-resume-lost", {
         retryAttempt: 1,
         status: "suspended",
@@ -7475,8 +7522,8 @@ describe("SessionRuntime edge coverage", () => {
       }),
     });
     const retryStartManager = makeRuntime({ handlers: [retryStartHandler] });
-    internals(retryStartManager).projection.sessions.set(
-      "chat-retry-start-lost",
+    bindSeededSession(
+      internals(retryStartManager),
       makeSessionRecord("chat-retry-start-lost", {
         retryAttempt: 1,
         status: "suspended",
@@ -7493,10 +7540,7 @@ describe("SessionRuntime edge coverage", () => {
   it("drains active and control pending queue branches, including asynchronous requeue failures", async () => {
     const activeManager = makeRuntime();
     const activeInternals = internals(activeManager);
-    activeInternals.projection.sessions.set(
-      "chat-active-drain",
-      makeSessionRecord("chat-active-drain", { status: "active" }),
-    );
+    bindSeededSession(activeInternals, makeSessionRecord("chat-active-drain", { status: "active" }));
     activeInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-drain",
       message: null,
@@ -7516,10 +7560,7 @@ describe("SessionRuntime edge coverage", () => {
 
     const activeInboxManager = makeRuntime();
     const activeInboxInternals = internals(activeInboxManager);
-    activeInboxInternals.projection.sessions.set(
-      "chat-active-inbox-drain",
-      makeSessionRecord("chat-active-inbox-drain", { status: "active" }),
-    );
+    bindSeededSession(activeInboxInternals, makeSessionRecord("chat-active-inbox-drain", { status: "active" }));
     const activeInboxEntry = mockEntry({
       id: 999,
       chatId: "chat-active-inbox-drain",
@@ -7543,7 +7584,7 @@ describe("SessionRuntime edge coverage", () => {
     const controlManager = makeRuntime();
     const controlInternals = internals(controlManager);
     const suspended = makeSessionRecord("chat-control-drain", { status: "suspended" });
-    controlInternals.projection.sessions.set("chat-control-drain", suspended);
+    bindSeededSession(controlInternals, suspended);
     controlInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-control-drain",
       message: null,
@@ -7599,7 +7640,7 @@ describe("SessionRuntime edge coverage", () => {
       retryHeadMessage: head,
       deferredMessages: [firstTail, secondTail],
     });
-    i.projection.sessions.set(chatId, retrying);
+    bindSeededSession(i, retrying);
 
     await i.slotScheduler.runRetry(chatId);
 
@@ -7620,8 +7661,8 @@ describe("SessionRuntime edge coverage", () => {
     };
     const sm = makeRuntime({ maxSessions: 1, subprocessProbe });
     const i = internals(sm);
-    i.projection.sessions.set(
-      "chat-live-subprocess",
+    bindSeededSession(
+      i,
       makeSessionRecord("chat-live-subprocess", {
         status: "active",
         lastActivity: 1,
@@ -7635,8 +7676,8 @@ describe("SessionRuntime edge coverage", () => {
 
     const noCandidate = makeRuntime({ maxSessions: 1 });
     const noCandidateInternals = internals(noCandidate);
-    noCandidateInternals.projection.sessions.set(
-      "chat-working-only",
+    bindSeededSession(
+      noCandidateInternals,
       makeSessionRecord("chat-working-only", {
         status: "active",
         lastActivity: 1,

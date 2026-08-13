@@ -43,8 +43,11 @@ export type SessionProjectionSessionFields = {
   claudeSessionId: string;
   status: SessionState;
   lastActivity: number;
-  retryAttempt?: number;
-  retryFromEvicted?: { claudeSessionId: string; lastActivity: number } | null;
+};
+
+export type EvictedMappingSnapshot = {
+  readonly claudeSessionId: string;
+  readonly lastActivity: number;
 };
 
 export type SessionProjectionAuthorityDeps = {
@@ -66,6 +69,10 @@ export type SessionProjectionAuthorityDeps = {
   hasRuntimeSyncForceKeepExtra: (chatId: string) => boolean;
   /** Bind-recovery completion still settles inbox ledgers on the host. */
   completeBindRecovery: (chatId: string) => void;
+  /** Readonly resume fallback owned by SlotSchedulerAuthority. */
+  resumeFallbackSessionId: (session: SessionProjectionSessionFields) => string | null;
+  /** Transient-retry window owned by SlotSchedulerAuthority. */
+  hasPendingTransientRetry: (session: SessionProjectionSessionFields) => boolean;
 };
 
 export type SessionProjectionAuthorityOptions = {
@@ -132,9 +139,19 @@ export class SessionProjectionAuthority<
     return this.sessions.get(chatId) === entry;
   }
 
-  /** Install or replace the live session record for this chat. */
-  installSession(entry: TSession): void {
+  /**
+   * Activate a live session: install the host entry and consume any evicted
+   * mapping for this chat as one transition. Returns a frozen resume snapshot
+   * when a valid mapping existed.
+   */
+  activateLiveSession(entry: TSession): EvictedMappingSnapshot | null {
+    const stored = this.evictedMappings.get(entry.chatId);
+    this.evictedMappings.delete(entry.chatId);
     this.sessions.set(entry.chatId, entry);
+    if (!stored) return null;
+    const sessionId = resumableProviderSessionId(stored.claudeSessionId);
+    if (!sessionId) return null;
+    return Object.freeze({ claudeSessionId: sessionId, lastActivity: stored.lastActivity });
   }
 
   /**
@@ -171,24 +188,27 @@ export class SessionProjectionAuthority<
     return true;
   }
 
-  dropSessionRuntimeState(chatId: string): void {
+  /** Session is no longer active for runtime projection (suspend / retry window). */
+  clearActiveRuntimeProjection(chatId: string): void {
     this.sessionRuntimeStates.delete(chatId);
+    this.recomputeRuntimeState();
   }
 
   getSessionRuntimeState(chatId: string): RuntimeState | undefined {
     return this.sessionRuntimeStates.get(chatId);
   }
 
-  getEvictedMapping(chatId: string): { claudeSessionId: string; lastActivity: number } | undefined {
-    return this.evictedMappings.get(chatId);
-  }
-
   hasEvictedMapping(chatId: string): boolean {
     return this.evictedMappings.has(chatId);
   }
 
-  deleteEvictedMapping(chatId: string): void {
-    this.evictedMappings.delete(chatId);
+  /**
+   * Eviction resume mapping transition: record a frozen copy, or drop the
+   * mapping when the victim has no resumable provider session.
+   */
+  recordEvictionResume(chatId: string, mapping: EvictedMappingSnapshot | null): void {
+    if (mapping) this.addEvictedMapping(chatId, mapping);
+    else this.evictedMappings.delete(chatId);
   }
 
   getLastTreeResolveAttemptAt(): number {
@@ -257,7 +277,7 @@ export class SessionProjectionAuthority<
     for (const [chatId, session] of this.sessions) {
       const resumableSessionId = resumableProviderSessionId(
         session.claudeSessionId,
-        session.retryFromEvicted?.claudeSessionId,
+        this.deps.resumeFallbackSessionId(session),
       );
       if (!resumableSessionId) continue;
       entries.set(chatId, {
@@ -303,7 +323,7 @@ export class SessionProjectionAuthority<
   }
 
   /** Add an evicted mapping, pruning the oldest if over capacity. */
-  addEvictedMapping(chatId: string, mapping: { claudeSessionId: string; lastActivity: number }): void {
+  private addEvictedMapping(chatId: string, mapping: { claudeSessionId: string; lastActivity: number }): void {
     const resumableSessionId = resumableProviderSessionId(mapping.claudeSessionId);
     if (!resumableSessionId) {
       this.evictedMappings.delete(chatId);
@@ -485,7 +505,7 @@ export class SessionProjectionAuthority<
 
   private hasPendingTransientRetry(chatId: string): boolean {
     const entry = this.sessions.get(chatId);
-    return Boolean(entry && (entry.retryAttempt ?? 0) > 0);
+    return Boolean(entry && this.deps.hasPendingTransientRetry(entry));
   }
 
   /** Clear projection ledgers that shutdown tears down with the session maps. */

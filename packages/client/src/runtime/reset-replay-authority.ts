@@ -1,7 +1,7 @@
 import { INBOX_FENCE_PROBE_MAX_IDS, type RuntimeState } from "@first-tree/shared";
 import type { pino } from "../cloud/observability/logger.js";
 import type { SessionMessage } from "./handler.js";
-import { ReplayFenceStore } from "./replay-fence.js";
+import { type ReplayFenceEntry, ReplayFenceStore, type ReplayFenceWriter } from "./replay-fence.js";
 
 /**
  * Minimum spacing between gate-triggered replay-fence reconciliations for
@@ -134,14 +134,22 @@ export class ResetReplayAuthority {
     return this.terminatingChats.get(chatId);
   }
 
-  beginTermination(chatId: string, promise: Promise<void>): void {
-    this.terminatingChats.set(chatId, promise);
-  }
-
-  finishTerminationIfCurrent(chatId: string, promise: Promise<void>): void {
-    if (this.terminatingChats.get(chatId) === promise) {
-      this.terminatingChats.delete(chatId);
-    }
+  /**
+   * Single-flight terminate: start `work` or join the in-flight run. Owns
+   * map set / await / finally-delete so the host cannot assemble that
+   * transition from generic setters.
+   */
+  runOrJoinTermination(chatId: string, work: () => Promise<void>): Promise<void> {
+    const existing = this.terminatingChats.get(chatId);
+    if (existing) return existing;
+    const workPromise = work();
+    const flight = workPromise.finally(() => {
+      if (this.terminatingChats.get(chatId) === flight) {
+        this.terminatingChats.delete(chatId);
+      }
+    });
+    this.terminatingChats.set(chatId, flight);
+    return flight;
   }
 
   hasTerminatingChat(chatId: string): boolean {
@@ -172,8 +180,21 @@ export class ResetReplayAuthority {
     return this.postFenceRecoveryDebt.has(chatId);
   }
 
-  getReplayFenceStore(): ReplayFenceStore | null {
-    return this.replayFence;
+  /**
+   * Frozen handler-facing writer. Fence/clear execute inside this authority;
+   * the ReplayFenceStore instance never escapes.
+   */
+  createHandlerReplayFenceWriter(): ReplayFenceWriter | null {
+    if (!this.replayFence) return null;
+    const store = this.replayFence;
+    return Object.freeze({
+      fence: (entry: ReplayFenceEntry) => {
+        store.fence(entry);
+      },
+      clear: (chatId: string, messageId: string) => {
+        store.clear(chatId, messageId);
+      },
+    });
   }
 
   /**
