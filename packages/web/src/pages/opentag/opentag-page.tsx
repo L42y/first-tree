@@ -51,11 +51,18 @@ export function OpenTagPage(): ReactElement | null {
   // would never build is not a URL this page will act on. Anything else is
   // replaced with the bare entry rather than driving a read that can only
   // fail.
-  const target = parseOpenTagEntryPath(`${location.pathname}${location.search}`);
+  const target = parseOpenTagEntryPath(`${location.pathname}${location.search}${location.hash}`);
   const agentUuid = target?.agentUuid ?? null;
   useEffect(() => {
-    if (!target) navigate(opentagEntryPath(), { replace: true });
-  }, [target, navigate]);
+    if (!target) {
+      navigate(opentagEntryPath(), { replace: true });
+      return;
+    }
+    // A fragment is ignored, so drop it from the address bar too. This URL is
+    // the flow's only progress memory and the thing a member reloads or
+    // re-shares, so it should be the one canonical spelling of this entry.
+    if (location.hash !== "") navigate(opentagEntryPath(target.agentUuid), { replace: true });
+  }, [target, location.hash, navigate]);
 
   // Remembered across the URL rewrite below, so the member is told why they are
   // back at the start even though the rejected Agent is no longer in the URL.
