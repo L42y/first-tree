@@ -1,66 +1,80 @@
 # Environment Recipes
 
-Match environment cost to the selected tier. `test-only` needs no QA run cell, `focused-local` may run relevant surfaces
-locally, and `full-isolated` uses the complete disposable Docker-backed harness.
+Match environment cost to the selected tier and affected scope. `test-only` needs no live QA slot, while both live tiers
+prefer one QA-owned warm environment outside the source repository.
+
+## Standing Warm Environment
+
+- Keep one warm environment per QA workspace. It may retain the bare source cache, dependency cache, built images,
+  Docker network, stopped or healthy reusable services, and external artifact root.
+- Give each task a stable task key and exclusive slot. Reuse that slot across retries and target revisions instead of
+  cloning, installing, and booting from zero each time.
+- Before reuse, record the warm-environment ID, profile/toolchain versions, task key, exact target, lease owner, service
+  health, mutable-state baseline, and the reset needed for the selected scope.
+- Between tasks, reset task-owned databases, schemas, volumes, files, ports, processes, browser state, provider sessions,
+  and credentials. Release the task lease but retain compatible infrastructure; report it as retained, not leaked.
+- Never treat retained mutable state as clean isolation. If the reset cannot make attribution credible, repair or replace
+  the affected slot, narrow the conclusion, or report `BLOCKED`/`INCONCLUSIVE`.
 
 ## `test-only`
 
-Run the documented test command against the exact target. In First Tree the repository-wide default is `pnpm test`.
-An explicitly narrow request may use the relevant package or named suite. Do not start product services solely to make
-this tier look like live QA.
+Run the smallest documented test command that covers the exact target. In First Tree, prefer the relevant package or
+named suite for a localized change and use `pnpm test` for repository-wide requests or shared-input impact. Reusing
+dependency caches is allowed; do not start product services solely to make this tier look like live QA.
 
 ## `focused-local`
 
-- Prefer an exact-target worktree so source identity is attributable, but reuse compatible dependency caches.
-- Start only the services and surfaces needed by the validation question. Docker is optional.
-- Before reusing an existing local dependency or service, record its owner, target/config, mutable state, and health.
+- Prefer the exact-target worktree already assigned to the task slot and reuse compatible dependencies and services.
+- Start only affected surfaces and the nearest boundary needed by the validation question. Docker is optional.
+- Before reusing the warm slot or another local dependency, record its owner, target/config, mutable state, and health.
 - Do not write into valuable or operator-owned databases, homes, browser profiles, provider sessions, or credentials.
   Create run-local data/config whenever the scenario mutates state.
-- Assign ports and process names narrowly enough to avoid collisions. Reset only state owned by the run, and record any
-  residual shared state as a limitation.
+- Assign ports and process names narrowly enough to avoid collisions. Reset only task-owned state, retain compatible
+  infrastructure after the report, and record residual shared state as a limitation.
 - If shared state prevents attribution, safe reset, or credible evidence, stop with `BLOCKED`/`INCONCLUSIVE` or escalate
   only when the request authorizes `full-isolated`.
 
-## `full-isolated`: Temporary Source Worktree
+## `full-isolated`: Reusable Exact-Target Source Slot
 
-Use a run-local bare clone as the owner of the tested worktree:
+Keep the bare clone in the warm environment and give the task one exact-target worktree:
 
 ```bash
-RUN_ROOT=/tmp/first-tree-qa-runs/<run-id>
-mkdir -p "$RUN_ROOT/artifacts"
-RUN_ROOT_REAL=$(realpath "$RUN_ROOT")
-git clone --bare --no-hardlinks <source-repo> "$RUN_ROOT_REAL/repo.git"
-git --git-dir="$RUN_ROOT_REAL/repo.git" worktree add --detach "$RUN_ROOT_REAL/source" <target-ref>
+QA_WARM_ROOT=<qa-workspace>/warm
+QA_TASK_ROOT="$QA_WARM_ROOT/tasks/<task-key>"
+mkdir -p "$QA_TASK_ROOT/artifacts"
+QA_TASK_ROOT_REAL=$(realpath "$QA_TASK_ROOT")
+git --git-dir="$QA_WARM_ROOT/repo.git" worktree add --detach "$QA_TASK_ROOT_REAL/source" <target-ref>
 ```
 
-`realpath` matters on macOS because `/tmp` normally resolves through `/private/tmp` and git stores absolute worktree
-paths. Mount the resolved root at the same absolute path inside containers.
+Create or fetch the warm bare clone when the environment is first provisioned or refreshed. `realpath` matters because
+git stores absolute worktree paths; mount the resolved task root at the same absolute path inside containers.
 
-This recipe materializes committed refs only. If requested behavior depends on unreproducible local state, report the
-limitation or `BLOCKED`; never silently test a different target.
+Reuse the task worktree while the task remains active. When its exact target changes, record the new target and reset or
+rebuild only affected artifacts before rerunning. This recipe materializes committed refs only; if requested behavior
+depends on unreproducible local state, report the limitation or `BLOCKED` and never silently test a different target.
 
-## `full-isolated`: Complete Docker Run Cell
+## `full-isolated`: Scoped Docker Slot
 
-- Use a unique Compose/project prefix and run-local networks, volumes, homes, ports, and data.
-- Build and start every shipped or publicly promised First Tree surface discovered at the ref: final CLI/package
-  artifacts, production Server/Web image and Postgres, documentation, portable artifacts, runtime/daemon paths, and
-  other release surfaces.
+- Take an exclusive lease on the warm Docker environment and reset task-owned networks, volumes, homes, ports, and data.
+- Select affected surfaces and critical adjacent boundaries before setup. Build and start only that scope; build every
+  shipped or publicly promised surface only when the request explicitly requires release-wide qualification.
 - Bind public endpoints to loopback and discover dynamic host ports after startup.
 - Do not expose Postgres, artifacts, provider homes, runtime homes, or host credential stores.
 - Use native or platform bridges for artifacts that cannot execute credibly in Linux Docker; keep their state run-local.
-- Define reset and cleanup for every surface before declaring `QA READY`.
+- Define reset and retained-infrastructure state for every selected surface before declaring scoped `QA READY`.
 
-The task scope is chosen after the full cell reaches `QA READY`; it does not decide which release surfaces initialize.
+`QA READY` applies only to the recorded isolated scope. Keeping the warm environment after the task does not broaden the
+claim; the report must distinguish task reset from retained infrastructure.
 
 ## Provider Bridge
 
 Classify provider readiness as `binary-detected`, `binary-launchable`, or `one-turn-ready`. A provider-backed product
 operation requires `one-turn-ready`; a binary probe alone cannot prove real agent behavior.
 
-For `focused-local`, use a new run-scoped provider session rather than the operator's existing session. For
-`full-isolated`, discover host state first, bridge only the minimum required material, prefer read-only copies/mounts,
-and use a compatible runtime binary. Never mount a full host provider home writable. Missing auth, entitlement,
-compatible binaries, or authorized turn capacity is `BLOCKED`, not product `FAIL`.
+For either live tier, use a task-scoped provider session in the warm environment rather than the operator's existing
+session. Reset it between tasks. For `full-isolated`, discover host state first, bridge only the minimum required
+material, prefer read-only copies/mounts, and use a compatible runtime binary. Never mount a full host provider home
+writable. Missing auth, entitlement, compatible binaries, or authorized turn capacity is `BLOCKED`, not product `FAIL`.
 
 ## Mock GitHub App
 

@@ -45,7 +45,7 @@ describe("first-tree-qa lifecycle contract", () => {
     }
   });
 
-  it("selects the lowest sufficient tier and reserves complete readiness for full QA", () => {
+  it("selects the lowest sufficient tier and scopes validation before setup", () => {
     const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
     const packageInstructions = readRepoFile("packages/qa/AGENTS.md");
     const planTemplate = readRepoFile("packages/qa/templates/qa-plan.md");
@@ -55,12 +55,28 @@ describe("first-tree-qa lifecycle contract", () => {
       expect(combined).toContain(`\`${tier}\``);
     }
     expect(combined).toContain("Start with the lowest tier");
-    expect(packageInstructions).toContain("Run `pnpm test` for repository-wide deterministic validation");
+    expect(packageInstructions).toContain("matching package or named suite for a localized deterministic change");
+    expect(packageInstructions).toContain("`full-isolated` strengthens isolation");
+    expect(packageInstructions).toContain("Select affected surfaces and critical adjacent boundaries");
     expect(packageInstructions).toContain("Local non-isolated startup is allowed");
-    expect(packageInstructions).toContain("Release preflight/qualification");
     expect(planTemplate).toContain("Create for `focused-local` only after its in-scope capabilities are ready.");
-    expect(planTemplate).toContain("Create for `full-isolated` only after the");
+    expect(planTemplate).toContain("selected isolated scope is `QA READY`");
     expect(planTemplate).toContain("Do not create for `test-only`.");
+  });
+
+  it("reuses one QA-owned warm environment without retaining task-owned state", () => {
+    const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
+    const packageInstructions = readRepoFile("packages/qa/AGENTS.md");
+    const environment = readRepoFile("packages/qa/environment/README.md");
+    const runContext = readRepoFile("packages/qa/templates/run-context.md");
+    const combined = [skill, packageInstructions, environment].join("\n");
+
+    expect(combined).toMatch(/one QA-owned warm environment/iu);
+    expect(combined).toMatch(/reuse the same task (?:environment|slot)/iu);
+    expect(combined).toMatch(/reset task-owned/iu);
+    expect(combined).toMatch(/retain compatible infrastructure/iu);
+    expect(runContext).toContain("Warm-environment ID/profile and task key");
+    expect(runContext).toContain("Task reset owner and retained infrastructure");
   });
 
   it("keeps every case disposition aligned in the skill and report template", () => {
@@ -73,7 +89,7 @@ describe("first-tree-qa lifecycle contract", () => {
     }
   });
 
-  it("rejects the superseded universal complete-harness contract", () => {
+  it("rejects the superseded universal and disposable harness contracts", () => {
     const files = [
       "skills/first-tree-qa/SKILL.md",
       "packages/qa/AGENTS.md",
@@ -86,5 +102,7 @@ describe("first-tree-qa lifecycle contract", () => {
     expect(combined).not.toMatch(/First make the whole product testable/iu);
     expect(combined).not.toMatch(/A narrow request changes execution scope after readiness/iu);
     expect(combined).not.toMatch(/complete harness before scoping execution/iu);
+    expect(combined).not.toMatch(/every shipped or publicly promised .*surface/iu);
+    expect(combined).not.toMatch(/complete disposable Docker/iu);
   });
 });

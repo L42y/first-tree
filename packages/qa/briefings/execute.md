@@ -8,8 +8,8 @@ Execute only the boundary authorized by the selected tier.
   behavior from assertions alone.
 - `focused-local`: confirm relevant capabilities and reset paths remain credible, then exercise the planned product
   boundaries under the recorded local conditions.
-- `full-isolated`: confirm complete-harness `QA READY` and the post-readiness plan, then exercise selected final-artifact,
-  cross-surface, provider, installer, persistence, recovery, performance, or exploratory paths.
+- `full-isolated`: confirm scoped `QA READY` and the post-readiness plan, then exercise only the selected isolated
+  final-artifact, cross-surface, provider, installer, persistence, recovery, performance, or exploratory paths.
 - For live tiers, verify meaningful preconditions and use credible product output or independent readback.
 - Save evidence as it occurs, adapt when facts contradict the plan, and keep every conclusion within the actual tier and
   scope.
@@ -26,7 +26,7 @@ Return one overall status: `PASS`, `FAIL`, `BLOCKED`, or `INCONCLUSIVE`. Include
 - evidence and reproducible findings;
 - performance observations proportional to the tier and question;
 - skipped, blocked, unstable, escalated, or out-of-scope areas;
-- artifact paths and cleanup or residual state;
+- artifact paths, task-owned reset, and retained warm-environment state;
 - case disposition: `no-change`, `candidate-new-case`, `candidate-case-update`, `move-to-product-test`,
   `move-to-skill-eval`, or `merge-or-retire`.
 

@@ -44,7 +44,7 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["focused-local", "tier-selection", "shared-state-safety", "scope-limit"],
+    tags: ["focused-local", "tier-selection", "warm-environment", "shared-state-safety", "scope-limit"],
     tier: "gate",
   },
   {
@@ -59,11 +59,11 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     fixture: { mode: "readiness-blocked" },
     id: "first-tree-qa-readiness-blocked",
     prompt:
-      "Use first-tree-qa to perform pre-release qualification of Northstar, focusing execution on CLI status behavior.",
+      "Use first-tree-qa to validate Northstar's high-risk CLI status release path in an isolated environment. The requested scope is CLI only; Web is unrelated.",
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["full-isolated", "release-qualification", "readiness-gate"],
+    tags: ["full-isolated", "risk-scoped", "warm-environment", "readiness-gate"],
     tier: "gate",
   },
   {
@@ -78,11 +78,11 @@ export const FIRST_TREE_QA_LIVE_GATE_CASES: readonly FirstTreeQaEvalCase[] = [
     fixture: { mode: "ready" },
     id: "first-tree-qa-ready-then-scope",
     prompt:
-      "Use first-tree-qa to perform pre-release qualification of Northstar, focusing execution on CLI status behavior.",
+      "Use first-tree-qa to validate Northstar's high-risk CLI status release path in an isolated environment. The requested scope is CLI only; Web is unrelated.",
     provider: "codex",
     skill: "first-tree-qa",
     status: "implemented",
-    tags: ["full-isolated", "release-qualification", "task-scope", "performance"],
+    tags: ["full-isolated", "risk-scoped", "warm-environment", "task-scope", "performance"],
     tier: "gate",
   },
 ];
@@ -127,11 +127,12 @@ export function validateFirstTreeQaFloor(cases: readonly SkillEvalCase[]): reado
     "first-tree-qa-ready-then-scope",
   ];
   if (JSON.stringify(gateIds) !== JSON.stringify(expectedGateIds)) {
-    errors.push("gate coverage must declare lower-tier selection and full-isolated readiness cases");
+    errors.push("gate coverage must declare lower-tier selection and scoped full-isolated readiness cases");
   }
 
   const skill = readRepoFile("skills/first-tree-qa/SKILL.md");
   const packageInstructions = readRepoFile("packages/qa/AGENTS.md");
+  const environment = readRepoFile("packages/qa/environment/README.md");
   const planTemplate = readRepoFile("packages/qa/templates/qa-plan.md");
   const reportTemplate = readRepoFile("packages/qa/templates/qa-report.md");
   const requiredSkillMarkers = [
@@ -159,8 +160,8 @@ export function validateFirstTreeQaFloor(cases: readonly SkillEvalCase[]): reado
   if (!planTemplate.includes("Create for `focused-local` only after its in-scope capabilities are ready.")) {
     errors.push("QA plan template must gate focused-local planning on in-scope capabilities");
   }
-  if (!planTemplate.includes("Create for `full-isolated` only after the")) {
-    errors.push("QA plan template must gate full-isolated planning on complete readiness");
+  if (!planTemplate.includes("selected isolated scope is `QA READY`")) {
+    errors.push("QA plan template must gate full-isolated planning on scoped readiness");
   }
   if (!planTemplate.includes("Do not create for `test-only`.")) {
     errors.push("QA plan template must keep test-only free of formal planning");
@@ -178,9 +179,22 @@ export function validateFirstTreeQaFloor(cases: readonly SkillEvalCase[]): reado
       break;
     }
   }
-  const combined = [skill, packageInstructions, planTemplate].join("\n");
-  if (/First make the whole product testable|complete harness before scoping execution/iu.test(combined)) {
-    errors.push("superseded universal complete-harness language remains");
+  const combined = [skill, packageInstructions, environment, planTemplate].join("\n");
+  for (const marker of [
+    /one QA-owned warm environment/iu,
+    /reuse the same task (?:environment|slot)/iu,
+    /reset task-owned/iu,
+    /retain compatible infrastructure/iu,
+    /affected surfaces and critical adjacent boundaries/iu,
+  ]) {
+    if (!marker.test(combined)) errors.push("QA reuse and risk-scoping contract is incomplete");
+  }
+  if (
+    /First make the whole product testable|complete harness before scoping execution|complete disposable Docker/iu.test(
+      combined,
+    )
+  ) {
+    errors.push("superseded universal or disposable harness language remains");
   }
   return [...new Set(errors)];
 }
@@ -193,14 +207,14 @@ export const FIRST_TREE_QA_SUITE: SkillEvalSuiteDefinition = {
       {
         caseIds: [FLOOR_CASE_ID],
         description:
-          "Skill metadata, tiered lifecycle, package boundary, capability matrix, and case disposition contract.",
+          "Skill metadata, tiered lifecycle, risk-scoped breadth, warm-environment reuse, and case disposition contract.",
         status: "implemented",
         tier: "floor",
       },
       {
         caseIds: FIRST_TREE_QA_LIVE_GATE_CASES.map((evalCase) => evalCase.id),
         description:
-          "Behavioral tier selection for deterministic and focused-local requests plus full-isolated release readiness.",
+          "Behavioral tier selection, observable warm-environment lifecycle, and scoped full-isolated readiness.",
         status: "implemented",
         tier: "gate",
       },
