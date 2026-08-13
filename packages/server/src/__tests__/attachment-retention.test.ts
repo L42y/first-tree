@@ -1,4 +1,4 @@
-import type { AgentTemplatePayload } from "@first-tree/shared";
+import { type AgentTemplatePayload, MESSAGE_ATTACHMENT_RETENTION_DAYS } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
@@ -23,6 +23,12 @@ type Admin = Awaited<ReturnType<typeof createTestAdmin>>;
 const TEST_QUOTA = { maxOrganizationAttachments: 10_000 };
 const EXPIRED_AGE_MS = MESSAGE_ATTACHMENT_RETENTION_MS + 24 * 60 * 60 * 1_000;
 
+type MessageRefShape =
+  | "legacy-imageId"
+  | "content-attachments-imageId"
+  | "content-attachments-attachmentId"
+  | "metadata-attachments-attachmentId";
+
 async function createAgedAttachment(app: TestApp, admin: Admin, ageMs: number, filename = "aged.bin") {
   const row = await createAttachment(
     app.db,
@@ -42,28 +48,45 @@ async function createAgedAttachment(app: TestApp, admin: Admin, ageMs: number, f
   return row;
 }
 
-async function addMessageReference(app: TestApp, admin: Admin, attachmentId: string): Promise<void> {
+async function addMessageReference(
+  app: TestApp,
+  admin: Admin,
+  attachmentId: string,
+  shape: MessageRefShape = "metadata-attachments-attachmentId",
+): Promise<void> {
   const chatId = uuidv7();
   await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
+  const documentMeta = {
+    attachmentId,
+    kind: "document",
+    mimeType: "application/octet-stream",
+    filename: "aged.bin",
+    size: 10,
+    sha256: "a".repeat(64),
+    source: { path: "aged.bin" },
+  };
+  const imageRef = {
+    imageId: attachmentId,
+    mimeType: "image/png",
+    filename: "aged.png",
+  };
+  const row =
+    shape === "legacy-imageId"
+      ? { format: "file" as const, content: imageRef, metadata: {} }
+      : shape === "content-attachments-imageId"
+        ? { format: "file" as const, content: { attachments: [imageRef] }, metadata: {} }
+        : shape === "content-attachments-attachmentId"
+          ? { format: "file" as const, content: { attachments: [documentMeta] }, metadata: {} }
+          : {
+              format: "markdown" as const,
+              content: "message referencing the attachment",
+              metadata: { attachments: [documentMeta] },
+            };
   await app.db.insert(messages).values({
     id: uuidv7(),
     chatId,
     senderId: admin.humanAgentUuid,
-    format: "markdown",
-    content: "message referencing the attachment",
-    metadata: {
-      attachments: [
-        {
-          attachmentId,
-          kind: "document",
-          mimeType: "application/octet-stream",
-          filename: "aged.bin",
-          size: 10,
-          sha256: "a".repeat(64),
-          source: { path: "aged.bin" },
-        },
-      ],
-    },
+    ...row,
     source: "api",
   });
 }
@@ -87,6 +110,11 @@ async function addResourceReference(app: TestApp, admin: Admin, attachmentId: st
 describe("message attachment retention sweep", () => {
   const getApp = useTestApp();
 
+  it("derives the millisecond cutoff from the shared day-count contract", () => {
+    expect(MESSAGE_ATTACHMENT_RETENTION_DAYS).toBe(14);
+    expect(MESSAGE_ATTACHMENT_RETENTION_MS).toBe(MESSAGE_ATTACHMENT_RETENTION_DAYS * 24 * 60 * 60 * 1_000);
+  });
+
   it("dry-run counts expired message attachments without deleting them", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `ret-dry-${crypto.randomUUID().slice(0, 6)}` });
@@ -106,6 +134,42 @@ describe("message attachment retention sweep", () => {
     expect(await app.db.select().from(attachments).where(eq(attachments.id, expired.id))).toHaveLength(1);
   });
 
+  it("does not classify a same-age ready attachment with no message reference", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `ret-generic-${crypto.randomUUID().slice(0, 6)}` });
+    const orphaned = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, "generic.bin");
+
+    const dryRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: false });
+    expect(dryRun.eligibleObjects).toBe(0);
+    expect(dryRun.deleted).toBe(0);
+
+    const deletedRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: true });
+    expect(deletedRun.eligibleObjects).toBe(0);
+    expect(deletedRun.deleted).toBe(0);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, orphaned.id))).toHaveLength(1);
+  });
+
+  it.each([
+    "legacy-imageId",
+    "content-attachments-imageId",
+    "content-attachments-attachmentId",
+    "metadata-attachments-attachmentId",
+  ] as const)("treats %s as a message-class candidate", async (shape) => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `ret-shape-${crypto.randomUUID().slice(0, 6)}` });
+    const expired = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, `${shape}.bin`);
+    await addMessageReference(app, admin, expired.id, shape);
+
+    const dryRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: false });
+    expect(dryRun.eligibleObjects).toBe(1);
+    expect(dryRun.eligibleBytes).toBe(expired.sizeBytes);
+
+    const deletedRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: true });
+    expect(deletedRun.deleted).toBe(1);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, expired.id))).toHaveLength(0);
+    expect(await app.db.select().from(messages).where(eq(messages.senderId, admin.humanAgentUuid))).toHaveLength(1);
+  });
+
   it("deletes expired rows even while a historical message still references them", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `ret-del-${crypto.randomUUID().slice(0, 6)}` });
@@ -121,9 +185,9 @@ describe("message attachment retention sweep", () => {
     expect(await app.db.select().from(messages).where(eq(messages.senderId, admin.humanAgentUuid))).toHaveLength(1);
   });
 
-  it("keeps rows protected by a Team Skill Resource and reclaims them after release", async () => {
+  it("does not retain-delete a released Skill bundle that has no message reference", async () => {
     const app = getApp();
-    const admin = await createTestAdmin(app, { username: `ret-res-${crypto.randomUUID().slice(0, 6)}` });
+    const admin = await createTestAdmin(app, { username: `ret-res-orphan-${crypto.randomUUID().slice(0, 6)}` });
     const bundle = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, "skill-bundle.zip");
     const resourceId = await addResourceReference(app, admin, bundle.id);
 
@@ -132,16 +196,36 @@ describe("message attachment retention sweep", () => {
     });
     expect(protectedRun.deleted).toBe(0);
     expect(protectedRun.eligibleObjects).toBe(0);
+
+    await app.db.delete(resources).where(eq(resources.id, resourceId));
+    const releasedRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: true });
+    expect(releasedRun.deleted).toBe(0);
+    expect(releasedRun.eligibleObjects).toBe(0);
+    expect(await app.db.select().from(attachments).where(eq(attachments.id, bundle.id))).toHaveLength(1);
+  });
+
+  it("reclaims a Skill bundle after release only when a historical message still references it", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `ret-res-msg-${crypto.randomUUID().slice(0, 6)}` });
+    const bundle = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, "skill-bundle.zip");
+    const resourceId = await addResourceReference(app, admin, bundle.id);
+    await addMessageReference(app, admin, bundle.id);
+
+    const protectedRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, {
+      deleteEnabled: true,
+    });
+    expect(protectedRun.deleted).toBe(0);
+    expect(protectedRun.eligibleObjects).toBe(0);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, bundle.id))).toHaveLength(1);
 
-    // Once the last bundle reference is released the row expires normally.
     await app.db.delete(resources).where(eq(resources.id, resourceId));
     const releasedRun = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: true });
     expect(releasedRun.deleted).toBe(1);
     expect(await app.db.select().from(attachments).where(eq(attachments.id, bundle.id))).toHaveLength(0);
+    expect(await app.db.select().from(messages).where(eq(messages.senderId, admin.humanAgentUuid))).toHaveLength(1);
   });
 
-  it("keeps rows referenced only by an Agent Template bundle", async () => {
+  it("keeps a message-referenced row protected by an Agent Template bundle", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `ret-tpl-${crypto.randomUUID().slice(0, 6)}` });
     const bundle = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, "template-bundle.zip");
@@ -174,6 +258,7 @@ describe("message attachment retention sweep", () => {
       createdBy: "qa",
       updatedBy: "qa",
     });
+    await addMessageReference(app, admin, bundle.id);
 
     const result = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, { deleteEnabled: true });
 
@@ -200,6 +285,7 @@ describe("message attachment retention sweep", () => {
       .update(attachments)
       .set({ createdAt: new Date(Date.now() - EXPIRED_AGE_MS) })
       .where(eq(attachments.id, expired.id));
+    await addMessageReference(app, admin, expired.id);
     await expect(
       createAttachment(
         app.db,
@@ -244,6 +330,8 @@ describe("message attachment retention sweep", () => {
       .update(attachments)
       .set({ createdAt: new Date(cutoff.getTime() - 1) })
       .where(eq(attachments.id, oneMsOlder.id));
+    await addMessageReference(app, admin, atCutoff.id);
+    await addMessageReference(app, admin, oneMsOlder.id);
 
     const result = await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, {
       deleteEnabled: true,
@@ -259,6 +347,7 @@ describe("message attachment retention sweep", () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `ret-race-${crypto.randomUUID().slice(0, 6)}` });
     const bundle = await createAgedAttachment(app, admin, EXPIRED_AGE_MS, "race-bundle.zip");
+    await addMessageReference(app, admin, bundle.id);
 
     let sweepPromise: Promise<Awaited<ReturnType<typeof sweepExpiredMessageAttachments>>> | undefined;
     await app.db.transaction(async (rawTx) => {

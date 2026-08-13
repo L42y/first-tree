@@ -1,3 +1,4 @@
+import { MESSAGE_ATTACHMENT_RETENTION_DAYS } from "@first-tree/shared";
 import { SdkError } from "../../cloud/sdk.js";
 
 /**
@@ -10,7 +11,7 @@ import { SdkError } from "../../cloud/sdk.js";
  * cleanup ran. 5xx and network errors stay generic unavailability.
  */
 
-export const ATTACHMENT_UNAVAILABLE_NOTE = "Cloud message attachments are retained for 14 days";
+export const ATTACHMENT_UNAVAILABLE_NOTE = `Cloud message attachments are retained for ${MESSAGE_ATTACHMENT_RETENTION_DAYS} days`;
 
 /**
  * True when a fetch failure means the attachment row is gone server-side.

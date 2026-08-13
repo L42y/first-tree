@@ -269,6 +269,7 @@ export {
   type AttachmentMetadata,
   attachmentMetadataSchema,
   MAX_ATTACHMENT_BYTES,
+  MESSAGE_ATTACHMENT_RETENTION_DAYS,
   type UploadAttachmentResponse,
   uploadAttachmentResponseSchema,
 } from "./schemas/attachment.js";

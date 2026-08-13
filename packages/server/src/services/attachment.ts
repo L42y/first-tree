@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
-import { and, asc, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { MAX_ATTACHMENT_BYTES, MESSAGE_ATTACHMENT_RETENTION_DAYS } from "@first-tree/shared";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, ne, or, type SQLWrapper, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
 import { attachments } from "../db/schema/attachments.js";
@@ -427,24 +427,41 @@ export async function isAttachmentProtectedByBundleReference(db: Database, id: s
   return !!templateRef;
 }
 
-export async function isAttachmentReferenced(db: Database, id: string): Promise<boolean> {
-  if (await isAttachmentProtectedByBundleReference(db, id)) return true;
+/**
+ * Four JSONB shapes that count as a message reference to an attachment.
+ * Kept as one SQL owner so `isAttachmentReferenced` and the retention
+ * selector cannot drift. Expressions match the existing btree
+ * (`content ->> 'imageId'`) and GIN jsonb_path_ops indexes
+ * (`content -> 'attachments'`, `metadata -> 'attachments'`).
+ */
+function messageReferencesAttachmentSql(attachmentId: SQLWrapper) {
+  return sql`(
+    ${messages.content} ->> 'imageId' = (${attachmentId})::text
+    OR ${messages.content} -> 'attachments' @> jsonb_build_array(jsonb_build_object('imageId', (${attachmentId})::text))
+    OR ${messages.content} -> 'attachments' @> jsonb_build_array(jsonb_build_object('attachmentId', (${attachmentId})::text))
+    OR ${messages.metadata} -> 'attachments' @> jsonb_build_array(jsonb_build_object('attachmentId', (${attachmentId})::text))
+  )`;
+}
 
-  const imageArray = JSON.stringify([{ imageId: id }]);
-  const attachmentArray = JSON.stringify([{ attachmentId: id }]);
+function messageReferencesAttachmentExistsSql(attachmentId: SQLWrapper) {
+  return sql`EXISTS (
+    SELECT 1 FROM ${messages}
+    WHERE ${messageReferencesAttachmentSql(attachmentId)}
+  )`;
+}
+
+async function isAttachmentReferencedByMessage(db: Database, id: string): Promise<boolean> {
   const [messageRef] = await db
     .select({ id: messages.id })
     .from(messages)
-    .where(
-      or(
-        sql`${messages.content} ->> 'imageId' = ${id}`,
-        sql`${messages.content} -> 'attachments' @> ${imageArray}::jsonb`,
-        sql`${messages.content} -> 'attachments' @> ${attachmentArray}::jsonb`,
-        sql`${messages.metadata} -> 'attachments' @> ${attachmentArray}::jsonb`,
-      ),
-    )
+    .where(messageReferencesAttachmentSql(sql`${id}`))
     .limit(1);
   return !!messageRef;
+}
+
+export async function isAttachmentReferenced(db: Database, id: string): Promise<boolean> {
+  if (await isAttachmentProtectedByBundleReference(db, id)) return true;
+  return isAttachmentReferencedByMessage(db, id);
 }
 
 /** Delete an immutable PostgreSQL row only after every known consumer releases it. */
@@ -536,14 +553,16 @@ export async function sweepOrphanAttachments(
 
 /**
  * Message-class attachments (chat images/documents, Feishu inbound resources)
- * expire 14 days after creation, even while historical messages still
- * reference them — messages stay immutable and render an explicit
- * expired/unavailable state. Attachments held by a Team Skill Resource or an
- * Agent Template bundle are permanently protected and never expire here; once
- * the last bundle reference is released, the normal release/orphan path
- * reclaims them.
+ * expire after {@link MESSAGE_ATTACHMENT_RETENTION_DAYS} even while historical
+ * messages still reference them — messages stay immutable and render an
+ * explicit expired/unavailable state. Eligibility is positive: a row must
+ * actually be referenced by a message. Attachments held by a Team Skill
+ * Resource or an Agent Template bundle are permanently protected and never
+ * expire here. After the last bundle reference is released, a remaining
+ * message reference still makes the row retention-eligible; with no message
+ * reference, the release/orphan lifecycle reclaims it.
  */
-export const MESSAGE_ATTACHMENT_RETENTION_MS = 14 * 24 * 60 * 60 * 1_000;
+export const MESSAGE_ATTACHMENT_RETENTION_MS = MESSAGE_ATTACHMENT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 
 export type AttachmentRetentionSweepOptions = {
   /**
@@ -567,15 +586,17 @@ export type AttachmentRetentionSweepResult = {
 };
 
 /**
- * Eligible = ready, older than the retention window, and not protected by any
- * Resource/Template bundle reference. Excluding protected rows in SQL keeps
- * long-lived bundles from permanently filling each batch and starving
- * ordinary message attachments.
+ * Eligible = ready, older than the retention window, referenced by at least
+ * one message, and not protected by any Resource/Template bundle reference.
+ * The positive message EXISTS keeps generic (non-message) attachments out of
+ * this sweep. Excluding protected rows in SQL keeps long-lived bundles from
+ * permanently filling each batch and starving ordinary message attachments.
  */
 function retentionEligibleConditions(cutoff: Date) {
   return and(
     eq(attachments.lifecycleState, "ready"),
     lt(attachments.createdAt, cutoff),
+    messageReferencesAttachmentExistsSql(attachments.id),
     sql`NOT EXISTS (
       SELECT 1 FROM ${resources}
       WHERE ${resources.bundleAttachmentId} = ${attachments.id}
@@ -599,9 +620,10 @@ function retentionEligibleConditions(cutoff: Date) {
 /**
  * Delete one expired message-class attachment. The row is locked FOR UPDATE —
  * which conflicts with the FOR KEY SHARE reference lock the Skill/Template
- * bind path takes — and the bundle protections are re-checked inside the
- * transaction, so a reference that lands between candidate selection and
- * deletion is always honored. Message references are deliberately ignored.
+ * bind path takes — and both the message-class proof and the bundle
+ * protections are re-checked inside the transaction, so a reference that
+ * lands (or a message reference that disappears) between candidate selection
+ * and deletion is always honored.
  */
 async function deleteExpiredAttachmentIfUnprotected(
   db: Database,
@@ -624,6 +646,7 @@ async function deleteExpiredAttachmentIfUnprotected(
       .limit(1);
     if (!row || row.lifecycleState !== "ready") return;
     if (await isAttachmentProtectedByBundleReference(targetDb, id)) return;
+    if (!(await isAttachmentReferencedByMessage(targetDb, id))) return;
     legacyObjectKey = row.objectKey;
     deletePostgresRow = true;
     if (legacyObjectKey) {

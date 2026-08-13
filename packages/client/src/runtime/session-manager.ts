@@ -3703,19 +3703,28 @@ export class SessionManager {
     return flight;
   }
 
+  /**
+   * Full retry-eligibility CAS used after every await on the retry install
+   * path (teardown-debt settle, attachment rematerialization, replacement
+   * stop). A terminate/reset/shutdown that wins during an await must cause
+   * the stale retry to abandon: no new teardown debt, no second old-handler
+   * shutdown, no fresh route.
+   */
+  private isRetryAdmissionOpen(chatId: string, entry: SessionEntry): boolean {
+    return (
+      !this.shuttingDown &&
+      !this.isProviderRouteAdmissionFenced(chatId) &&
+      this.sessions.get(chatId) === entry &&
+      entry.status === "suspended" &&
+      !entry.activeSlotHeld &&
+      entry.routeTransition === null &&
+      entry.retryAttempt !== 0
+    );
+  }
+
   private async executeRetry(chatId: string): Promise<void> {
-    if (this.shuttingDown) return;
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
     const entry = this.sessions.get(chatId);
-    if (!entry) return;
-    if (
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
-      return;
-    }
+    if (!entry || !this.isRetryAdmissionOpen(chatId, entry)) return;
     if (this.inboxDelivery.hasRecoveryDebt(chatId)) {
       this.clearRetryState(entry);
       await this.inboxDelivery.recoverIfNeeded(chatId, "session_retry:recovery_debt");
@@ -3807,23 +3816,20 @@ export class SessionManager {
     // semantics at the top of this function: no new handler is installed,
     // and the retry choreography is left to whoever now owns the chat
     // (terminate clears the entry; shutdown clears the timers).
-    if (this.shuttingDown) return;
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
-    if (
-      this.sessions.get(chatId) !== entry ||
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
-      return;
-    }
+    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
 
     // Re-materialize the retried head message's attachments: local cache hits
     // skip the network, still-missing bytes re-fetch, and the transient 404
     // availability set is rebuilt from this attempt instead of reusing the
     // failed delivery's verdicts. Control retries carry no head message.
     if (retryHeadMessage) await this.ensureImagesLocal(retryHeadMessage);
+
+    // The attachment fetch awaited: a concurrent Reset/terminate/shutdown
+    // may have already cleared this session and finished draining. Re-run
+    // the same fence/session-entry/status CAS before registering teardown
+    // debt so a stale retry cannot add debt or shut down the old handler
+    // after termination has acknowledged.
+    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
 
     // Fresh handler — the old one may have closed its SDK transport. But the
     // replaced handler must be CONFIRMED stopped before the fresh one is
@@ -3850,17 +3856,7 @@ export class SessionManager {
     // already have installed the replacement route. Abandon the install
     // instead of opening a second provider route for the same retry head;
     // the winner's route owns the head's custody.
-    if (
-      this.shuttingDown ||
-      this.isProviderRouteAdmissionFenced(chatId) ||
-      this.sessions.get(chatId) !== entry ||
-      entry.status !== "suspended" ||
-      entry.activeSlotHeld ||
-      entry.routeTransition !== null ||
-      entry.retryAttempt === 0
-    ) {
-      return;
-    }
+    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
 
     // Capacity decision LAST, immediately before the synchronous install.
     // Acquiring earlier would be a check-then-act race across chats: two

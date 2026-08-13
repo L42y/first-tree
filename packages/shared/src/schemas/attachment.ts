@@ -12,6 +12,15 @@ import { z } from "zod";
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 
 /**
+ * Cloud message-class attachment retention window, in days.
+ *
+ * Single numeric owner for the policy: Server derives the millisecond cutoff
+ * from this value, and Client/Web interpolate it into user-facing copy.
+ * Changing the number here is the only production policy edit.
+ */
+export const MESSAGE_ATTACHMENT_RETENTION_DAYS = 14;
+
+/**
  * Header name (case-insensitive) carrying the original filename on upload.
  * Octet-stream uploads do not carry a filename in `Content-Disposition`, so
  * the SDK forwards the user-visible name in this header. Server falls back

@@ -1,3 +1,4 @@
+import { MESSAGE_ATTACHMENT_RETENTION_DAYS } from "@first-tree/shared";
 import { useEffect, useState } from "react";
 import { fetchAttachmentBase64 } from "../api/attachments.js";
 import { ApiError } from "../api/client.js";
@@ -10,7 +11,7 @@ import { getImage, putImage } from "../api/image-store.js";
  * UI cannot tell which, so the copy says "expired or unavailable" and states
  * the retention window without asserting which cleanup ran.
  */
-export const ATTACHMENT_RETENTION_NOTE = "Cloud message attachments are retained for 14 days";
+export const ATTACHMENT_RETENTION_NOTE = `Cloud message attachments are retained for ${MESSAGE_ATTACHMENT_RETENTION_DAYS} days`;
 
 /** True when the attachment row is gone server-side (reclaimed or deleted). */
 export function isAttachmentGoneError(error: unknown): boolean {
