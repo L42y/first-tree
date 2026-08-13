@@ -80,6 +80,10 @@ export function MemberTeamAgentsPage(): ReactElement {
     queryKey: ["agents", "member-team-agents", organizationId],
     queryFn: listAllAddressableTeamAgents,
     staleTime: 30_000,
+    // runtimeState is the current reachability authority, and presence flips
+    // do not invalidate this roster query. Match the existing Team roster's
+    // polling floor so a card and its handoff disappear after an Agent drops.
+    refetchInterval: 10_000,
   });
 
   const eligibleAgents = (agentsQuery.data ?? []).filter(

@@ -10,7 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const authMock = vi.hoisted(() => ({
   value: {
     meLoaded: true,
-    role: "admin" as "admin" | "member",
+    role: "admin" as "admin" | "member" | null,
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: "2026-05-28T00:00:00.000Z" as string | null,
@@ -448,5 +448,22 @@ describe("WorkspacePage DOM behavior", () => {
     expect(deepLink.container.textContent).toContain("center:chat-1");
     expect(deepLink.container.textContent).not.toContain("Team Agents route");
     await act(async () => deepLink.root.unmount());
+  });
+
+  it("does not treat an unresolved role as a Team Member", async () => {
+    const { WorkspacePage } = await import("../index.js");
+    authMock.value = {
+      ...authMock.value,
+      role: null,
+      onboardingStep: "connect",
+      onboardingCompletedAt: null,
+      currentOrgHasPersonalAgent: false,
+    };
+
+    const unresolved = await renderDom("/", <WorkspacePage />);
+
+    expect(unresolved.container.textContent).toContain("Onboarding route");
+    expect(unresolved.container.textContent).not.toContain("Team Agents route");
+    await act(async () => unresolved.root.unmount());
   });
 });

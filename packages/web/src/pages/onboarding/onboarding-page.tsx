@@ -43,7 +43,7 @@ export function OnboardingPage() {
   // Invited members enter through the Team's ready Agents. Personal Agent and
   // Computer setup is an admin journey here; a later member-owned Agent entry
   // belongs to its own, deliberately weaker surface.
-  if (role !== "admin") {
+  if (role === "member") {
     return <Navigate to="/team" replace />;
   }
   if (leaveDecision.current === null) {

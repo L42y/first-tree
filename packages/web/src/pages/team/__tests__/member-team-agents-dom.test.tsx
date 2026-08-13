@@ -107,6 +107,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   document.body.innerHTML = "";
 });
 
@@ -186,4 +187,24 @@ describe("Member Team Agents page", () => {
 
     await act(async () => root.unmount());
   });
+
+  it("removes a handoff after the roster poll observes that its Agent went offline", async () => {
+    agentApi.listAgents
+      .mockResolvedValueOnce({ items: [agent(1, { displayName: "Atlas" })], nextCursor: null })
+      .mockResolvedValue({ items: [agent(1, { displayName: "Atlas", runtimeState: null })], nextCursor: null });
+    agentApi.getAgentFeishuBinding.mockResolvedValue({ binding: binding(1) });
+
+    const { container, root } = await renderPage();
+    expect(container.textContent).toContain("Atlas");
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10_100));
+    });
+    await flush();
+
+    expect(agentApi.listAgents).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain("Atlas");
+    expect(container.textContent).toContain("You’re in Acme");
+    await act(async () => root.unmount());
+  }, 15_000);
 });

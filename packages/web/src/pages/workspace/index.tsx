@@ -105,7 +105,7 @@ export function WorkspacePage() {
   const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
     useAuth();
 
-  if (meLoaded && role !== "admin") {
+  if (meLoaded && role === "member") {
     if (location.pathname === "/" && !location.search && !location.hash) {
       return <Navigate to="/team" replace />;
     }

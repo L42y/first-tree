@@ -228,6 +228,17 @@ describe("OnboardingPage", () => {
     expect(container.textContent).not.toContain("Get Started Step");
   });
 
+  it("keeps an unresolved role on the existing invitee recovery path", async () => {
+    authMock.value = { ...authMock.value, role: null };
+    flowMock.activeStep = "get-started";
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Get Started Step");
+    expect(container.querySelector('[data-flow-path="invitee"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Team Agents");
+  });
+
   it("renders no body for an unknown flow step", async () => {
     flowMock.activeStep = "unknown";
 

@@ -99,7 +99,7 @@ export async function fetchAllAgents(
 
 export function TeamPage() {
   const { role } = useAuth();
-  if (role !== "admin") return <MemberTeamAgentsPage />;
+  if (role === "member") return <MemberTeamAgentsPage />;
   return <TeamManagementPage />;
 }
 
