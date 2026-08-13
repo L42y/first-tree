@@ -741,6 +741,45 @@ describe("Multi-org self-service", () => {
     expect(redemptions[0]).toMatchObject({ userId: invitee.userId, userAgent: "me-multi-org-test" });
   });
 
+  it("rejoins a self-left former admin with the invitation-authorized member role", async () => {
+    const app = getApp();
+    const formerAdmin = await createTestAdmin(app, {
+      username: `former-admin-rejoin-${crypto.randomUUID().slice(0, 8)}`,
+    });
+    const remainingAdmin = await createMember(app.db, formerAdmin.organizationId, {
+      username: `remaining-admin-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Remaining Admin",
+      role: "admin",
+    });
+
+    const leave = await app.inject({
+      method: "POST",
+      url: `/api/v1/me/memberships/${formerAdmin.memberId}/leave`,
+      headers: { authorization: `Bearer ${formerAdmin.accessToken}` },
+    });
+    expect(leave.statusCode).toBe(204);
+
+    const invitation = await rotateInvitation(app.db, formerAdmin.organizationId, remainingAdmin.userId);
+    const rejoin = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/organizations/join",
+      headers: { authorization: `Bearer ${formerAdmin.accessToken}` },
+      payload: { token: invitation.token },
+    });
+
+    expect(rejoin.statusCode).toBe(200);
+    expect(rejoin.json()).toMatchObject({
+      memberId: formerAdmin.memberId,
+      organizationId: formerAdmin.organizationId,
+      role: "member",
+    });
+    const [membership] = await app.db
+      .select({ id: members.id, role: members.role, status: members.status })
+      .from(members)
+      .where(eq(members.id, formerAdmin.memberId));
+    expect(membership).toEqual({ id: formerAdmin.memberId, role: "member", status: "active" });
+  });
+
   it("keeps physical Team and account lifecycle routes unsupported and side-effect free", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, {

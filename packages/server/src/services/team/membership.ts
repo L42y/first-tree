@@ -197,10 +197,12 @@ export async function ensureMembershipInTransaction(
         // Rejoin starts a fresh onboarding lifecycle for this stable row.
         await reactivateMembershipRows(db, existing, {
           username: data.username,
+          role: data.role,
           resetOnboarding: true,
         });
         return {
           ...existing,
+          role: data.role,
           status: MEMBER_STATUSES.ACTIVE,
           onboardingSuppressedAt: null,
           onboardingSuppressedReason: null,
