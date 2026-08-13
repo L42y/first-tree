@@ -1,11 +1,15 @@
-import { ArrowRight, Bot, Check, CircleCheck, ExternalLink, Laptop, MessageSquareText } from "lucide-react";
-import { type ReactElement, type ReactNode, useEffect, useState } from "react";
+import { orderRuntimeProvidersByPreference, type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
+import { ArrowRight, Bot, Check, CircleCheck, ExternalLink, MessageSquareText } from "lucide-react";
+import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
+import type { HubClient } from "../api/activity.js";
+import { ConnectedComputerSelect, ConnectedComputerSummary } from "../components/connected-computer-select.js";
 import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import { OptionCard } from "../components/ui/option-card.js";
+import { resolveComputerSelection, resolveRuntimeSelection } from "../features/agent-setup/computer-selection.js";
 import { FeishuRegistrationQr } from "../features/feishu/binding-view.js";
-import { CommandBox } from "./onboarding/flow-ui.js";
+import { CommandBox, FlowHint } from "./onboarding/flow-ui.js";
 import "./opentag-onboarding-preview-brand.css";
 
 /**
@@ -23,8 +27,12 @@ type PreviewViewport = "desktop" | "mobile";
 const STATE_OPTIONS = {
   focus: [{ value: "ready", label: "Ready / valid" }],
   computer: [
-    { value: "no-computer", label: "No Computer / recovery" },
-    { value: "ready", label: "Connected / runtime ready" },
+    { value: "no-computer", label: "No computer / waiting" },
+    { value: "command-error", label: "Setup command error" },
+    { value: "ready", label: "One computer / selectable" },
+    { value: "multiple-computers", label: "Multiple computers / choose" },
+    { value: "checking", label: "Checking coding agents" },
+    { value: "no-coding-agent", label: "No supported coding agent" },
   ],
   feishu: [
     { value: "ready", label: "Bot ready to connect" },
@@ -37,12 +45,13 @@ const STATE_OPTIONS = {
 } as const;
 
 type PreviewState = (typeof STATE_OPTIONS)[PreviewStep][number]["value"];
+type ComputerPreviewState = (typeof STATE_OPTIONS.computer)[number]["value"];
 
 const STEP_META: Record<
   PreviewStep,
   {
     number: number;
-    group: "Create Agent" | "Start in Feishu";
+    group: "Create agent" | "Start in Feishu";
     railTitle: string;
     railDetail: string;
     title: string;
@@ -51,25 +60,25 @@ const STEP_META: Record<
 > = {
   focus: {
     number: 1,
-    group: "Create Agent",
-    railTitle: "Shape your Agent",
+    group: "Create agent",
+    railTitle: "Shape your agent",
     railDetail: "Focus & name",
-    title: "What should your Agent do?",
-    lead: "Choose the kind of work you want to delegate. We'll use the matching Template as its starting setup, and you can refine it later.",
+    title: "What should your agent do?",
+    lead: "Choose the kind of work you want to delegate. We'll use the matching template as its starting setup, and you can refine it later.",
   },
   computer: {
     number: 2,
-    group: "Create Agent",
-    railTitle: "Set up its Runtime",
-    railDetail: "Computer & Coding Agent",
-    title: "Connect your Computer",
-    lead: "Connect or choose the Computer where your Agent will work. We'll use an available Coding Agent on it.",
+    group: "Create agent",
+    railTitle: "Set up its runtime",
+    railDetail: "Computer & coding agent",
+    title: "Connect your computer",
+    lead: "Connect or choose the computer where your agent will work. We'll use an available coding agent on it.",
   },
   feishu: {
     number: 3,
     group: "Start in Feishu",
     railTitle: "Add to Feishu",
-    railDetail: "Connect one Bot",
+    railDetail: "Connect one bot",
     title: "Add OpenTag to Feishu",
     lead: "OpenTag prepares a dedicated Feishu Bot for this Agent. Confirm it in Feishu when you are ready.",
   },
@@ -111,10 +120,40 @@ const DEFAULT_STATE: Record<PreviewStep, PreviewState> = {
   "first-task": "waiting",
 };
 
-const PREVIEW_CONNECT_COMMAND =
+// Opaque deterministic fixture for the server-authored `bootstrapCommand`.
+// The Preview passes it through unchanged; production OpenTag receives the
+// real release-channel-aware value from `useComputerConnection`.
+const PREVIEW_SERVER_BOOTSTRAP_COMMAND =
   "curl -fsSL https://download.first-tree.ai/releases/prod/install.sh | sh\n" +
   "~/.local/bin/first-tree login ft_preview_only";
 const PREVIEW_FEISHU_URL = "https://open.feishu.cn/app/preview-only-registration";
+
+const PREVIEW_COMPUTERS = [
+  previewComputer("preview-macbook", "Gandy's MacBook", "darwin", "2026-08-13T10:00:00.000Z"),
+  previewComputer("preview-studio", "Team Studio", "linux", "2026-08-13T09:00:00.000Z"),
+];
+
+const PREVIEW_CODING_AGENTS: Readonly<Record<string, readonly RuntimeProvider[]>> = {
+  "preview-macbook": ["claude-code", "codex"],
+  "preview-studio": ["claude-code"],
+};
+
+function previewComputer(id: string, hostname: string, os: string, lastSeenAt: string): HubClient {
+  return {
+    id,
+    userId: null,
+    status: "connected",
+    authState: "ok",
+    binName: "first-tree",
+    sdkVersion: null,
+    hostname,
+    os,
+    agentCount: 0,
+    connectedAt: lastSeenAt,
+    lastSeenAt,
+    capabilities: {},
+  };
+}
 export function OpenTagOnboardingPreviewPage(): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
   const step = parseStep(searchParams.get("step"));
@@ -151,6 +190,7 @@ export function OpenTagOnboardingPreviewPage(): ReactElement {
             state={state}
             viewport={viewport}
             onAdvance={(nextStep) => setPreview({ step: nextStep })}
+            onStateChange={(nextState) => setPreview({ state: nextState })}
           />
         </PreviewShell>
       </div>
@@ -204,7 +244,7 @@ function PreviewShell({
       >
         {mobile ? <MobileProgress activeIndex={meta.number - 1} /> : <DesktopRail step={step} />}
         <main className="min-w-0">
-          <p className="text-eyebrow uppercase" style={{ margin: 0, color: "var(--fg-3)" }}>
+          <p className="text-eyebrow" style={{ margin: 0, color: "var(--fg-3)" }}>
             Step {meta.number} of 4 · {meta.group}
           </p>
           <h1 className="text-title font-semibold" style={{ margin: "var(--sp-3) 0 var(--sp-3)", color: "var(--fg)" }}>
@@ -226,7 +266,7 @@ function PreviewShell({
 function DesktopRail({ step }: { step: PreviewStep }): ReactElement {
   return (
     <nav aria-label="OpenTag setup progress">
-      <RailGroup label="Create Agent" steps={PREVIEW_STEPS.slice(0, 2)} activeStep={step} />
+      <RailGroup label="Create agent" steps={PREVIEW_STEPS.slice(0, 2)} activeStep={step} />
       <div style={{ marginTop: "var(--sp-8)" }}>
         <RailGroup label="Start in Feishu" steps={PREVIEW_STEPS.slice(2)} activeStep={step} />
       </div>
@@ -245,7 +285,7 @@ function RailGroup({
 }): ReactElement {
   return (
     <div>
-      <p className="text-eyebrow uppercase" style={{ margin: "0 0 var(--sp-4)", color: "var(--fg-3)" }}>
+      <p className="text-eyebrow" style={{ margin: "0 0 var(--sp-4)", color: "var(--fg-3)" }}>
         {label}
       </p>
       <ol className="flex flex-col" style={{ margin: 0, padding: 0, listStyle: "none", gap: "var(--sp-5)" }}>
@@ -313,20 +353,26 @@ function StepContent({
   state,
   viewport,
   onAdvance,
+  onStateChange,
 }: {
   step: PreviewStep;
   state: PreviewState;
   viewport: PreviewViewport;
   onAdvance: (step: PreviewStep) => void;
+  onStateChange: (state: PreviewState) => void;
 }): ReactElement {
   switch (step) {
     case "focus":
       return <FocusAndNameStep mobile={viewport === "mobile"} onAdvance={() => onAdvance("computer")} />;
     case "computer":
-      return state === "no-computer" ? (
-        <ComputerRecoveryStep />
-      ) : (
-        <ComputerReadyStep mobile={viewport === "mobile"} onAdvance={() => onAdvance("feishu")} />
+      return (
+        <ComputerStep
+          key={state}
+          state={state as ComputerPreviewState}
+          mobile={viewport === "mobile"}
+          onAdvance={() => onAdvance("feishu")}
+          onStateChange={onStateChange}
+        />
       );
     case "feishu":
       return state === "provisioning" ? (
@@ -359,7 +405,7 @@ function FocusAndNameStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: (
                 <span className="text-subtitle font-semibold">{option.name}</span>
                 {option.slug === "team-assistant" ? (
                   <span
-                    className="block text-eyebrow uppercase"
+                    className="block text-eyebrow"
                     style={{ marginTop: mobile ? "var(--sp-1)" : 0, color: "var(--fg-3)" }}
                   >
                     Best for most teams
@@ -377,11 +423,7 @@ function FocusAndNameStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: (
       <LabeledDetail label="Example task">{selected.example}</LabeledDetail>
 
       <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
-        <label
-          htmlFor="preview-agent-name"
-          className="text-label font-semibold uppercase"
-          style={{ color: "var(--fg-2)" }}
-        >
+        <label htmlFor="preview-agent-name" className="text-label font-semibold" style={{ color: "var(--fg-2)" }}>
           Agent name
         </label>
         <Input id="preview-agent-name" value={name} maxLength={200} onChange={(event) => setName(event.target.value)} />
@@ -395,57 +437,204 @@ function FocusAndNameStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: (
           disabled={!name.trim()}
           onClick={onAdvance}
         >
-          Set up its Runtime <ArrowRight className="h-4 w-4" />
+          Set up its runtime <ArrowRight className="h-4 w-4" />
         </Button>
       </div>
     </div>
   );
 }
 
-function ComputerReadyStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: () => void }): ReactElement {
+function ComputerStep({
+  state,
+  mobile,
+  onAdvance,
+  onStateChange,
+}: {
+  state: ComputerPreviewState;
+  mobile: boolean;
+  onAdvance: () => void;
+  onStateChange: (state: PreviewState) => void;
+}): ReactElement {
+  if (state === "no-computer" || state === "command-error") {
+    return (
+      <ComputerRecoveryStep commandError={state === "command-error"} onRetry={() => onStateChange("no-computer")} />
+    );
+  }
+
+  const computers = state === "multiple-computers" ? PREVIEW_COMPUTERS : PREVIEW_COMPUTERS.slice(0, 1);
   return (
-    <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
-      <div className="flex items-start" style={{ gap: "var(--sp-4)" }}>
-        <span className="surface-sunken inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-panel)]">
-          <Laptop className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <span>
-          <span className="block text-subtitle font-semibold">Gandy's MacBook</span>
-          <span className="mt-1 block text-body" style={{ color: "var(--fg-3)" }}>
-            Computer connected
-          </span>
-        </span>
-      </div>
-      <PreviewStatusRow state="ok" label="Claude Code is ready on this Computer" />
-      <LabeledDetail label="Draft Agent">gandy2025 assistant · Team Assistant</LabeledDetail>
-      <div className="flex">
-        <Button type="button" variant="cta" className={mobile ? "w-full" : undefined} onClick={onAdvance}>
-          Create Agent <ArrowRight className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
+    <ComputerSelectionStep
+      computers={computers}
+      capabilitiesLoaded={state !== "checking"}
+      noCodingAgent={state === "no-coding-agent"}
+      mobile={mobile}
+      onAdvance={onAdvance}
+    />
   );
 }
 
-function ComputerRecoveryStep(): ReactElement {
+function ComputerRecoveryStep({ commandError, onRetry }: { commandError: boolean; onRetry: () => void }): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-6)" }}>
       <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
-        <p className="text-label font-semibold uppercase" style={{ margin: 0, color: "var(--fg-2)" }}>
-          Connect your Computer
+        <p className="text-label font-semibold" style={{ margin: 0, color: "var(--fg-2)" }}>
+          Connect your computer
         </p>
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-          Connect the Computer where you want this Agent to work.
+          Connect the computer where you want this agent to work.
         </p>
-        <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
-          Open Terminal on that Computer and run:
-        </p>
-        <CommandBox command={PREVIEW_CONNECT_COMMAND} />
+        {commandError ? (
+          <FlowHint tone="error" role="alert">
+            We couldn't prepare the setup command.
+          </FlowHint>
+        ) : (
+          <>
+            <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
+              Open Terminal on that computer and run:
+            </p>
+            <CommandBox command={PREVIEW_SERVER_BOOTSTRAP_COMMAND} />
+          </>
+        )}
       </div>
-      <PreviewStatusRow state="waiting" label="Waiting for your Computer to connect…" />
+      {commandError ? (
+        <Button type="button" className="w-fit" onClick={onRetry}>
+          Try again
+        </Button>
+      ) : (
+        <PreviewStatusRow state="waiting" label="Waiting for your computer to connect…" />
+      )}
       <Button type="button" variant="link" className="h-auto w-fit p-0 text-label">
-        Back to Focus & name
+        Back to focus & name
       </Button>
+    </div>
+  );
+}
+
+function ComputerSelectionStep({
+  computers,
+  capabilitiesLoaded,
+  noCodingAgent,
+  mobile,
+  onAdvance,
+}: {
+  computers: HubClient[];
+  capabilitiesLoaded: boolean;
+  noCodingAgent: boolean;
+  mobile: boolean;
+  onAdvance: () => void;
+}): ReactElement {
+  const clientIds = useMemo(() => computers.map((computer) => computer.id), [computers]);
+  const [currentClientId, setCurrentClientId] = useState<string | null>(null);
+  const [explicitClientId, setExplicitClientId] = useState<string | null>(null);
+  const selectedClientId = resolveComputerSelection({
+    clientIds,
+    currentClientId,
+    explicitlySelectedClientId: explicitClientId,
+    requireExplicitWhenMultiple: true,
+  });
+  const selectedComputer = computers.find((computer) => computer.id === selectedClientId) ?? null;
+  const orderedCodingAgents = useMemo(
+    () =>
+      selectedClientId && capabilitiesLoaded && !noCodingAgent
+        ? orderRuntimeProvidersByPreference(PREVIEW_CODING_AGENTS[selectedClientId] ?? [])
+        : [],
+    [capabilitiesLoaded, noCodingAgent, selectedClientId],
+  );
+  const [currentCodingAgent, setCurrentCodingAgent] = useState<RuntimeProvider | null>(null);
+  const [codingAgentSelectionIsManual, setCodingAgentSelectionIsManual] = useState(false);
+  const codingAgentSelection = resolveRuntimeSelection({
+    currentRuntime: currentCodingAgent,
+    selectionIsManual: codingAgentSelectionIsManual,
+    readyRuntimes: orderedCodingAgents,
+  });
+
+  useEffect(() => {
+    setCurrentClientId((current) => (current === selectedClientId ? current : selectedClientId));
+  }, [selectedClientId]);
+
+  useEffect(() => {
+    setCurrentCodingAgent((current) =>
+      current === codingAgentSelection.runtime ? current : codingAgentSelection.runtime,
+    );
+    setCodingAgentSelectionIsManual((current) =>
+      current === codingAgentSelection.selectionIsManual ? current : codingAgentSelection.selectionIsManual,
+    );
+  }, [codingAgentSelection.runtime, codingAgentSelection.selectionIsManual]);
+
+  const selectedCodingAgent = codingAgentSelection.runtime;
+  const canCreate =
+    !!selectedClientId &&
+    !!selectedCodingAgent &&
+    orderedCodingAgents.includes(selectedCodingAgent) &&
+    capabilitiesLoaded;
+
+  return (
+    <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
+      <fieldset className="flex flex-col" style={{ gap: "var(--sp-3)", margin: 0, padding: 0, border: 0 }}>
+        <legend className="text-label font-semibold" style={{ color: "var(--fg-2)" }}>
+          {computers.length > 1 ? "Choose a computer" : "Computer"}
+        </legend>
+        {computers.length > 1 ? (
+          <ConnectedComputerSelect
+            clients={computers}
+            value={selectedClientId}
+            onChange={(clientId) => {
+              setExplicitClientId(clientId);
+              setCurrentClientId(clientId);
+            }}
+            id="preview-opentag-runtime-computer"
+          />
+        ) : selectedComputer ? (
+          <ConnectedComputerSummary client={selectedComputer} />
+        ) : null}
+      </fieldset>
+
+      <fieldset className="flex flex-col" style={{ gap: "var(--sp-3)", margin: 0, padding: 0, border: 0 }}>
+        <legend className="text-label font-semibold" style={{ color: "var(--fg-2)" }}>
+          Coding agent
+        </legend>
+        {selectedComputer ? (
+          !capabilitiesLoaded ? (
+            <p className="text-body" role="status" style={{ margin: 0, color: "var(--fg-3)" }}>
+              Checking available coding agents…
+            </p>
+          ) : orderedCodingAgents.length === 0 ? (
+            <FlowHint role="status">
+              No supported coding agent was found on this computer. Install one, then we'll check again.
+            </FlowHint>
+          ) : (
+            <div className="flex flex-wrap" style={{ gap: "var(--sp-2)" }}>
+              {orderedCodingAgents.map((provider) => (
+                <OptionCard
+                  key={provider}
+                  name="preview-opentag-coding-agent"
+                  layout="pill"
+                  checked={selectedCodingAgent === provider}
+                  onSelect={() => {
+                    setCurrentCodingAgent(provider);
+                    setCodingAgentSelectionIsManual(true);
+                  }}
+                >
+                  <span className="text-body">{runtimeProviderLabel(provider)}</span>
+                </OptionCard>
+              ))}
+            </div>
+          )
+        ) : null}
+      </fieldset>
+
+      <LabeledDetail label="Draft agent">gandy2025 assistant · Team Assistant</LabeledDetail>
+      <div className="flex">
+        <Button
+          type="button"
+          variant="cta"
+          className={mobile ? "w-full" : undefined}
+          disabled={!canCreate}
+          onClick={onAdvance}
+        >
+          Create agent <ArrowRight className="h-4 w-4" />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -529,7 +718,7 @@ function FirstTaskCompletedStep(): ReactElement {
 function LabeledDetail({ label, children }: { label: string; children: ReactNode }): ReactElement {
   return (
     <div>
-      <p className="text-label font-semibold uppercase" style={{ margin: "0 0 var(--sp-2)", color: "var(--fg-2)" }}>
+      <p className="text-label font-semibold" style={{ margin: "0 0 var(--sp-2)", color: "var(--fg-2)" }}>
         {label}
       </p>
       <p className="text-body" style={{ margin: 0, color: "var(--fg-2)" }}>
