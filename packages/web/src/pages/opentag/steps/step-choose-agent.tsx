@@ -6,32 +6,28 @@ import { listAgentTemplates } from "../../../api/agent-templates.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { OptionCard } from "../../../components/ui/option-card.js";
-import { FlowHint, WorkingState } from "../../onboarding/flow-ui.js";
+import { FlowHint } from "../../onboarding/flow-ui.js";
 import { resolveOpenTagTemplateChoices } from "../templates.js";
 
 /**
  * One Template, one Agent, in two screens so each carries a single decision:
- * first what the teammate does, then confirming it under a name the member
+ * first what the teammate does, then reviewing it under a name the member
  * chose. Everything else this Team needs was already established by sign-in.
  *
+ * Nothing is created here. Both answers are handed back as a draft, and the
+ * Agent is materialized in one atomic create once the next step knows which
+ * Computer and runtime it will run on — so leaving mid-way leaves no
+ * half-configured Agent behind.
+ *
  * Deliberately absent: Team naming, a Team chooser, a visibility choice, and
- * any Computer or provider configuration. The Agent is created
- * organization-visible and unbound through the ordinary organization-scoped
- * Agent-create boundary, and where it runs is the next step's single decision.
+ * any Computer or provider configuration.
  */
 export function StepChooseAgent({
   defaultAgentName,
-  onCreate,
-  creating,
-  error,
-  recovery,
+  onContinue,
 }: {
   defaultAgentName: string;
-  onCreate: (args: { displayName: string; templateId: string; templateName: string }) => void;
-  creating: boolean;
-  error: string | null;
-  /** Offered when a repeated create collided with an Agent this member already owns. */
-  recovery: { displayName: string; onContinue: () => void } | null;
+  onContinue: (draft: { templateId: string; templateName: string; displayName: string }) => void;
 }): ReactElement {
   // Same key the public Template Library uses, so the two surfaces share
   // one cached catalog instead of each holding a private copy.
@@ -47,24 +43,18 @@ export function StepChooseAgent({
 
   const trimmed = displayName.trim();
 
-  if (creating) {
-    return <WorkingState label="Creating your Agent…" hint="This takes a moment." />;
-  }
-
   if (confirming && selected) {
     return (
-      <ConfirmAgent
+      <ReviewAgent
         template={selected}
         displayName={displayName}
         onDisplayNameChange={setDisplayName}
         onBack={() => setConfirming(false)}
-        onConfirm={() => {
+        onContinue={() => {
           if (!trimmed) return;
-          onCreate({ displayName: trimmed, templateId: selected.id, templateName: selected.name });
+          onContinue({ templateId: selected.id, templateName: selected.name, displayName: trimmed });
         }}
-        canConfirm={!!trimmed}
-        error={error}
-        recovery={recovery}
+        canContinue={!!trimmed}
       />
     );
   }
@@ -117,27 +107,24 @@ export function StepChooseAgent({
 }
 
 /**
- * The confirmation half of step one: what was chosen, under a name the member
- * can change, and one button that actually creates the Agent.
+ * The review half of step one: what was chosen, under a name the member can
+ * change. Continuing carries the draft to the Computer choice — it does not
+ * create anything yet.
  */
-function ConfirmAgent({
+function ReviewAgent({
   template,
   displayName,
   onDisplayNameChange,
   onBack,
-  onConfirm,
-  canConfirm,
-  error,
-  recovery,
+  onContinue,
+  canContinue,
 }: {
   template: AgentTemplatePublicTemplate;
   displayName: string;
   onDisplayNameChange: (next: string) => void;
   onBack: () => void;
-  onConfirm: () => void;
-  canConfirm: boolean;
-  error: string | null;
-  recovery: { displayName: string; onContinue: () => void } | null;
+  onContinue: () => void;
+  canContinue: boolean;
 }): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
@@ -171,29 +158,9 @@ function ConfirmAgent({
         />
       </div>
 
-      {error && (
-        <FlowHint tone="error" role="alert">
-          {error}
-        </FlowHint>
-      )}
-
-      {recovery && (
-        <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
-          <p className="text-label" style={{ margin: 0, color: "var(--fg-2)" }}>
-            You already have an Agent called {recovery.displayName}. If your last attempt looked like it failed, this is
-            probably it.
-          </p>
-          <div className="flex">
-            <Button type="button" variant="outline" onClick={recovery.onContinue}>
-              Continue with {recovery.displayName}
-            </Button>
-          </div>
-        </div>
-      )}
-
       <div className="flex items-center" style={{ gap: "var(--sp-3)" }}>
-        <Button type="button" variant="cta" disabled={!canConfirm} onClick={onConfirm}>
-          <span>Confirm Agent</span>
+        <Button type="button" variant="cta" disabled={!canContinue} onClick={onContinue}>
+          <span>Continue</span>
           <ArrowRight className="h-4 w-4" />
         </Button>
         <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack}>

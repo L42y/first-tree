@@ -180,15 +180,6 @@ export const updateAgentSchema = z.object({
    */
   clientId: z.string().min(1).max(100).nullable().optional(),
   /**
-   * Runtime provider to commit together with a first bind. Accepted only
-   * alongside a `NULL → ID` `clientId`, and validated against that Client's
-   * reported capabilities by the same gate the bind already runs. Without it
-   * an Agent created before its Computer was known would be stuck on the
-   * service default: the bind rejects any Client that lacks that provider,
-   * and no other path can change it while the Agent is still unbound.
-   */
-  runtimeProvider: runtimeProviderSchema.optional(),
-  /**
    * Avatar color override. Explicit `null` clears the override (falls back
    * to the deterministic hash). Omitting the field leaves the row untouched.
    */

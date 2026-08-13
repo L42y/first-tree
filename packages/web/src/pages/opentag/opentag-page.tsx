@@ -2,7 +2,7 @@ import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactElement, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { createAgent, getAgent, startAgentFeishuRegistration, updateAgent } from "../../api/agents.js";
+import { createAgent, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
@@ -25,12 +25,21 @@ import { StepSetUpRuntime } from "./steps/step-set-up-runtime.js";
  * creates or names one. It owns three decisions — which Agent, which Computer,
  * which Feishu Bot — and nothing else.
  *
- * State lives in exactly two places: the Agent id in the URL, and
- * authoritative server reads of that Agent, its Client binding, and its Feishu
- * binding. There is no step index, no draft, and no completion stamp, so a
+ * The Agent is materialized once, atomically, when both halves of it are
+ * known: the Template the member picked and the Computer plus runtime it will
+ * run on. Until then the two choices are ordinary local state — nothing is in
+ * the database to leave half-finished, and a reload simply re-asks them. After
+ * it, the Agent id in the URL plus authoritative reads answer every step, so a
  * reload, a lost response, a wrong Agent, or a deleted Agent all resolve to a
  * defined step instead of a half-remembered one.
  */
+/** What the member has chosen before anything is created. */
+export type OpenTagDraft = {
+  templateId: string;
+  templateName: string;
+  displayName: string;
+};
+
 export function OpenTagPage(): ReactElement | null {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -76,39 +85,44 @@ export function OpenTagPage(): ReactElement | null {
   const step = resolveOpenTagStep(facts);
   const agent = facts.state === "resolved" ? (agentQuery.data ?? null) : null;
 
-  // The responsibility the member picked, for the handoff summary only. It is
-  // deliberately session-scoped rather than persisted: after a reload the
-  // summary shows the Agent alone instead of a remembered claim, because the
-  // Agent read is the only fact this entry is allowed to rely on.
-  const [chosenTemplateName, setChosenTemplateName] = useState<string | null>(null);
+  // What the member has chosen but not yet created. Plain component state on
+  // purpose: nothing here exists server-side, so a reload has nothing to
+  // recover and re-asking two questions is cheaper than any draft store.
+  const [draft, setDraft] = useState<OpenTagDraft | null>(null);
   // Set only when a repeated create collided with an Agent this member already
   // manages under the exact handle OpenTag derived. It is offered, never taken
   // automatically — the name is a hint, not proof of what happened.
   const [recoverableAgent, setRecoverableAgent] = useState<{ uuid: string; displayName: string } | null>(null);
 
   const create = useMutation({
-    mutationFn: (args: { displayName: string; templateId: string; templateName: string }) => {
-      // Send the derived handle, exactly like the other creation surfaces do.
-      // It is also what keeps a lost create response from silently producing a
-      // second Agent: the handle is unique per Team, so pressing Confirm again
-      // is refused with a name conflict instead of quietly duplicating.
-      const name = slugify(args.displayName);
+    mutationFn: (args: { draft: OpenTagDraft; clientId: string; runtimeProvider: RuntimeProvider }) => {
+      // One call, one transaction: the Agent row, its Computer and runtime, the
+      // matching durable config, and the Template adoption all land together or
+      // not at all. This is the same organization-scoped create the standalone
+      // onboarding flow uses — there is no second protocol for OpenTag.
+      //
+      // The derived handle also keeps a lost response from silently producing a
+      // second Agent: it is unique per Team, so pressing the button again is
+      // refused with a name conflict instead of quietly duplicating.
+      const name = slugify(args.draft.displayName);
       return createAgent({
         type: "agent",
-        displayName: args.displayName,
+        displayName: args.draft.displayName,
         ...(name ? { name } : {}),
         // Organization-visible by default: an OpenTag Agent exists to be
         // reachable from Feishu by the team, and hiding it would contradict
         // the handoff this entry promises.
         visibility: "organization",
-        templateIds: [args.templateId],
+        templateIds: [args.draft.templateId],
+        clientId: args.clientId,
+        runtimeProvider: args.runtimeProvider,
         ...(organizationId ? { organizationId } : {}),
       });
     },
     onError: async (error, variables) => {
       setRecoverableAgent(null);
       if (!isAgentNameConflict(error)) return;
-      const handle = slugify(variables.displayName);
+      const handle = slugify(variables.draft.displayName);
       if (!handle) return;
       const existing = await recoverCreatedAgent(handle, organizationId);
       if (existing) setRecoverableAgent({ uuid: existing.uuid, displayName: existing.displayName });
@@ -126,28 +140,13 @@ export function OpenTagPage(): ReactElement | null {
     },
   });
 
-  // Runtime detection runs only while the Computer decision is live, so an
-  // already-bound Agent never mints a connect code it cannot use.
-  const computer = useComputerConnection(step === "set-up-runtime", { requireExplicitSelectionWhenMultiple: true });
-
-  const bind = useMutation({
-    // The Agent was created before its Computer was known, so it still carries
-    // the service default provider. Commit the provider this Computer actually
-    // reports as ready in the same call: without it a Computer that runs
-    // anything else is a dead end no retry can clear.
-    mutationFn: ({ clientId, runtimeProvider }: { clientId: string; runtimeProvider: RuntimeProvider }) =>
-      updateAgent(agentUuid ?? "", { clientId, runtimeProvider }),
-    onSuccess: async (updated) => {
-      // The bind response is the authoritative Agent, so the step advances off
-      // the server's answer rather than an optimistic local flag.
-      queryClient.setQueryData(["agent", updated.uuid], updated);
-      await queryClient.invalidateQueries({ queryKey: ["agents"] });
-      await queryClient.invalidateQueries({ queryKey: ["agent-client-status", updated.uuid] });
-      // The account-level onboarding step turns on a connected Computer, so a
-      // snapshot taken before this bind would still send the member to
-      // `/onboarding` from the workspace root.
-      await refreshMe();
-    },
+  // With no Agent in the URL, the member is still choosing: the Template first,
+  // then the Computer. Runtime detection runs only for that second choice, so
+  // an existing Agent never mints a connect code it has no use for.
+  const draftStep: OpenTagActiveStepId | null =
+    step === "choose-agent" ? (draft ? "set-up-runtime" : "choose-agent") : step;
+  const computer = useComputerConnection(draftStep === "set-up-runtime", {
+    requireExplicitSelectionWhenMultiple: true,
   });
 
   const feishuQuery = useQuery({
@@ -166,10 +165,16 @@ export function OpenTagPage(): ReactElement | null {
   // A fault renders inside the step it belongs to. Without an authoritative
   // Team nothing has been created yet, so that one belongs at the beginning.
   const shellStep: OpenTagActiveStepId =
-    step ?? (facts.state === "team-unreadable" ? "choose-agent" : "set-up-runtime");
+    draftStep ?? (facts.state === "team-unreadable" ? "choose-agent" : "set-up-runtime");
 
   const completedSteps = OPENTAG_STEPS.slice(0, OPENTAG_STEPS.indexOf(shellStep));
-  const handoff = agent ? { agentDisplayName: agent.displayName, responsibility: chosenTemplateName } : null;
+  // The summary reflects what has been decided so far — the draft before the
+  // Agent exists, the Agent itself afterwards.
+  const handoff = agent
+    ? { agentDisplayName: agent.displayName, responsibility: draft?.templateName ?? null }
+    : draft
+      ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
+      : null;
 
   return (
     <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
@@ -185,39 +190,35 @@ export function OpenTagPage(): ReactElement | null {
           onRetry={() => void refreshMe()}
         />
       )}
-      {step === "choose-agent" && (
+      {draftStep === "choose-agent" && (
         <>
           {facts.state === "unavailable" && <WrongAgentNotice />}
           <StepChooseAgent
             defaultAgentName={user?.username ? `${user.username} assistant` : "Assistant"}
-            creating={create.isPending}
-            error={create.error instanceof Error ? create.error.message : null}
-            onCreate={(args) => {
-              setChosenTemplateName(args.templateName);
-              create.mutate(args);
-            }}
-            recovery={
-              recoverableAgent
-                ? {
-                    displayName: recoverableAgent.displayName,
-                    onContinue: () => {
-                      // The recovered Agent already exists, so the readiness
-                      // snapshot taken before this flow started is stale.
-                      void refreshMe();
-                      navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true });
-                    },
-                  }
-                : null
-            }
+            onContinue={setDraft}
           />
         </>
       )}
-      {step === "set-up-runtime" && (
+      {draftStep === "set-up-runtime" && draft && (
         <StepSetUpRuntime
           computer={computer}
-          pending={bind.isPending}
-          error={bind.error instanceof Error ? bind.error.message : null}
-          onUseComputer={(clientId, runtimeProvider) => bind.mutate({ clientId, runtimeProvider })}
+          pending={create.isPending}
+          error={create.error instanceof Error ? create.error.message : null}
+          onBack={() => setDraft(null)}
+          onUseComputer={(clientId, runtimeProvider) => create.mutate({ draft, clientId, runtimeProvider })}
+          recovery={
+            recoverableAgent
+              ? {
+                  displayName: recoverableAgent.displayName,
+                  onContinue: () => {
+                    // The recovered Agent already exists, so the readiness
+                    // snapshot taken before this flow started is stale.
+                    void refreshMe();
+                    navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true });
+                  },
+                }
+              : null
+          }
         />
       )}
       {step === "connect-feishu" && agent && agentUuid && (

@@ -1,5 +1,5 @@
 import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
-import { ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { ReactElement } from "react";
 import { ConnectedComputerSelect, ConnectedComputerSummary } from "../../../components/connected-computer-select.js";
 import { Button } from "../../../components/ui/button.js";
@@ -7,7 +7,7 @@ import type { ComputerConnection } from "../../../features/agent-setup/use-compu
 import { CommandBox, FlowHint, StatusRow } from "../../onboarding/flow-ui.js";
 
 /**
- * Give the Agent one Computer.
+ * Choose the Computer the Agent will run on — and create it.
  *
  * Three shapes, one decision each:
  *   - no Computer — the server-authored connect command inline, then the same
@@ -16,20 +16,27 @@ import { CommandBox, FlowHint, StatusRow } from "../../onboarding/flow-ui.js";
  *   - several — an explicit choice, because silently taking the most recent
  *     heartbeat would pin the Agent to a machine the member never named.
  *
- * The bind is the one-shot claim of an unbound Agent, so a failure has to stay
- * on this step: advancing on anything but an authoritative bind would show the
- * member a Feishu step for an Agent that still has nowhere to run.
+ * This is where the Agent is finally materialized: the Template chosen on the
+ * previous screen plus this Computer and its ready runtime go into one atomic
+ * create, so there is never an Agent with nowhere to run. A failure therefore
+ * has to stay here — nothing was created, and the member can retry or pick a
+ * different Computer.
  */
 export function StepSetUpRuntime({
   computer,
   onUseComputer,
+  onBack,
   pending,
   error,
+  recovery,
 }: {
   computer: ComputerConnection;
   onUseComputer: (clientId: string, runtimeProvider: RuntimeProvider) => void;
+  onBack: () => void;
   pending: boolean;
   error: string | null;
+  /** Offered when a repeated create collided with an Agent this member already owns. */
+  recovery: { displayName: string; onContinue: () => void } | null;
 }): ReactElement {
   const { connectedClients, selectedClientId, setSelectedClientId, cliCommand, tokenError, retry } = computer;
   const single = connectedClients.length === 1 ? connectedClients[0] : null;
@@ -99,7 +106,7 @@ export function StepSetUpRuntime({
           </FlowHint>
         ) : runtimeReady && runtime ? (
           <p className="text-caption" style={{ margin: 0, color: "var(--fg-3)" }}>
-            It will run with {runtimeProviderLabel(runtime)}. This Agent stays on the computer you choose, and your
+            It will run with {runtimeProviderLabel(runtime)}. Your Agent is created on the computer you choose, and your
             other computers are not affected.
           </p>
         ) : (
@@ -115,7 +122,21 @@ export function StepSetUpRuntime({
         </FlowHint>
       )}
 
-      <div className="flex">
+      {recovery && (
+        <div className="flex flex-col" style={{ gap: "var(--sp-2)" }}>
+          <p className="text-label" style={{ margin: 0, color: "var(--fg-2)" }}>
+            You already have an Agent called {recovery.displayName}. If your last attempt looked like it failed, this is
+            probably it.
+          </p>
+          <div className="flex">
+            <Button type="button" variant="outline" onClick={recovery.onContinue}>
+              Continue with {recovery.displayName}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center" style={{ gap: "var(--sp-3)" }}>
         <Button
           type="button"
           variant="cta"
@@ -125,8 +146,12 @@ export function StepSetUpRuntime({
             onUseComputer(selectedClientId, runtime);
           }}
         >
-          <span>{pending ? "Setting up…" : single ? "Use this computer" : "Use selected computer"}</span>
+          <span>{pending ? "Creating your Agent…" : "Create Agent"}</span>
           {!pending && <ArrowRight className="h-4 w-4" />}
+        </Button>
+        <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack} disabled={pending}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
         </Button>
       </div>
     </div>

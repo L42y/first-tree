@@ -4,13 +4,17 @@ import { canManageAgentDetail } from "../agent-detail/access.js";
 /**
  * Pure step logic for the standalone `/opentag` entry.
  *
- * OpenTag deliberately has NO persisted onboarding state: there is no step
- * index in storage, no server-side progress record, and no browser draft. The
- * only thing that survives a reload, a lost response, or a retry is the exact
- * Agent in the URL — every step is then re-derived from authoritative reads of
- * that Agent, its Client binding, and its Feishu binding. Keeping the decision
- * here (and pure) is what makes the recovery states testable without a DOM,
- * matching this package's `.test.ts` convention.
+ * The Agent is materialized in one atomic create once its Computer and runtime
+ * are known, so there is exactly one durable fact in this flow: whether the URL
+ * carries an Agent. Before that, choosing a Template and a Computer are local
+ * choices with nothing persisted to recover; after it, the Agent is already
+ * bound and the only thing left is Feishu.
+ *
+ * That is also why there is no stored step index, draft, or completion stamp: a
+ * reload before creation just re-asks two cheap questions, and a reload after it
+ * is answered by reading the Agent. Keeping the decision here (and pure) makes
+ * the recovery states testable without a DOM, matching this package's
+ * `.test.ts` convention.
  */
 
 /**
@@ -57,7 +61,8 @@ export type OpenTagAgentFacts =
   | { state: "unreadable" }
   /** `/me` never produced an authoritative Team, so nothing Team-scoped is safe. */
   | { state: "team-unreadable" }
-  | { state: "resolved"; bound: boolean };
+  /** The Agent exists, belongs here, and is usable. */
+  | { state: "resolved" };
 
 /**
  * Turn one authoritative Agent read into the fact the flow branches on.
@@ -102,14 +107,17 @@ export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts 
   // bind a Computer and then hit a wall. OpenTag always creates
   // organization-visible Agents, so this only catches a foreign URL.
   if (read.agent.visibility !== "organization") return { state: "unavailable" };
-  return { state: "resolved", bound: read.agent.clientId !== null };
+  // Created atomically with its Computer, so a usable Agent is a bound Agent.
+  // An unbound one is not something this flow produces or can finish.
+  if (read.agent.clientId === null) return { state: "unavailable" };
+  return { state: "resolved" };
 }
 
 /**
- * The step to render, or `null` while the facts have not settled.
- *
- * A bound Agent skips Runtime setup outright: the bind already happened, so
- * re-running the step would offer a move the one-shot bind path cannot make.
+ * Where an Agent in the URL puts the member, or `null` while the facts have not
+ * settled. An existing Agent is past both setup choices, so the only step it
+ * can land on is Feishu; anything unusable starts over from the Agent choice,
+ * where nothing has been created yet.
  */
 export function resolveOpenTagStep(facts: OpenTagAgentFacts): OpenTagActiveStepId | null {
   switch (facts.state) {
@@ -121,6 +129,6 @@ export function resolveOpenTagStep(facts: OpenTagAgentFacts): OpenTagActiveStepI
     case "team-unreadable":
       return null;
     case "resolved":
-      return facts.bound ? "connect-feishu" : "set-up-runtime";
+      return "connect-feishu";
   }
 }

@@ -6,11 +6,13 @@ const ORG = "org-1";
 type ReadAgent = NonNullable<OpenTagAgentRead["agent"]>;
 
 const MEMBER = "member-1";
+// An Agent that reached the URL was created atomically with its Computer, so
+// the usable shape is always a bound one.
 const AGENT: ReadAgent = {
   organizationId: ORG,
   type: "agent",
   status: "active",
-  clientId: null,
+  clientId: "client-1",
   managerId: MEMBER,
   visibility: "organization",
 };
@@ -49,15 +51,14 @@ describe("classifyOpenTagAgent", () => {
     expect(classifyOpenTagAgent(read({ loading: true, agent: null }))).toEqual({ state: "loading" });
   });
 
-  it("resolves an unbound Agent", () => {
-    expect(classifyOpenTagAgent(read())).toEqual({ state: "resolved", bound: false });
+  it("resolves an Agent that is set up", () => {
+    expect(classifyOpenTagAgent(read())).toEqual({ state: "resolved" });
   });
 
-  it("resolves a bound Agent", () => {
-    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, clientId: "client-1" } }))).toEqual({
-      state: "resolved",
-      bound: true,
-    });
+  it("treats an unbound Agent as unavailable", () => {
+    // This flow only produces Agents that were created together with their
+    // Computer, so an unbound one is a foreign object it cannot finish.
+    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, clientId: null } }))).toEqual({ state: "unavailable" });
   });
 
   it("treats a missing or forbidden Agent as unavailable", () => {
@@ -83,7 +84,7 @@ describe("classifyOpenTagAgent", () => {
     expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "suspended" } }))).toEqual({
       state: "unavailable",
     });
-    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "suspended", clientId: "client-1" } }))).toEqual({
+    expect(classifyOpenTagAgent(read({ agent: { ...AGENT, status: "suspended" } }))).toEqual({
       state: "unavailable",
     });
   });
@@ -98,7 +99,6 @@ describe("classifyOpenTagAgent", () => {
     // An admin manages every Agent in their Team, so the same row is usable.
     expect(classifyOpenTagAgent(read({ agent: { ...AGENT, managerId: "member-2" }, role: "admin" }))).toEqual({
       state: "resolved",
-      bound: false,
     });
   });
 
@@ -118,7 +118,7 @@ describe("classifyOpenTagAgent", () => {
   });
 
   it("keeps working from a cached Agent when the failure says nothing about it", () => {
-    expect(classifyOpenTagAgent(read({ failed: true, errorStatus: 500 }))).toEqual({ state: "resolved", bound: false });
+    expect(classifyOpenTagAgent(read({ failed: true, errorStatus: 500 }))).toEqual({ state: "resolved" });
   });
 
   it("keeps a transient read failure retryable instead of discarding the Agent", () => {
@@ -150,8 +150,9 @@ describe("resolveOpenTagStep", () => {
     expect(resolveOpenTagStep({ state: "team-unreadable" })).toBeNull();
   });
 
-  it("sets up the Runtime for an unbound Agent and skips it for a bound one", () => {
-    expect(resolveOpenTagStep({ state: "resolved", bound: false })).toBe("set-up-runtime");
-    expect(resolveOpenTagStep({ state: "resolved", bound: true })).toBe("connect-feishu");
+  it("sends an existing Agent straight to Feishu", () => {
+    // Both setup choices already happened at creation, so there is nothing
+    // between an existing Agent and its Bot.
+    expect(resolveOpenTagStep({ state: "resolved" })).toBe("connect-feishu");
   });
 });

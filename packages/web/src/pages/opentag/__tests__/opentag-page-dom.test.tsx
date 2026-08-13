@@ -108,6 +108,17 @@ function feishuBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBind
   };
 }
 
+function readyComputer(): ComputerConnection {
+  return computerConnection({
+    connectedClients: [client("client-1", "Studio Mac")],
+    selectedClientId: "client-1",
+    connectedClient: client("client-1", "Studio Mac"),
+    capabilitiesLoaded: true,
+    okRuntimes: ["codex"],
+    selectedRuntime: "codex",
+  });
+}
+
 function agentRow(overrides: Partial<Agent> = {}): Agent {
   return {
     uuid: AGENT_UUID,
@@ -121,8 +132,8 @@ function agentRow(overrides: Partial<Agent> = {}): Agent {
     visibility: "organization",
     metadata: {},
     managerId: MEMBER,
-    clientId: null,
-    runtimeProvider: "claude-code",
+    clientId: "client-1",
+    runtimeProvider: "codex",
     avatarColorToken: null,
     avatarImageUrl: null,
     createdAt: "2026-08-13T00:00:00.000Z",
@@ -231,7 +242,8 @@ afterEach(async () => {
 });
 
 describe("OpenTag entry — choosing the Agent", () => {
-  it("creates an organization-visible, unbound Agent and carries it in the URL", async () => {
+  it("creates nothing until the Computer is known, then creates it all at once", async () => {
+    computerMock.value = readyComputer();
     api.createAgent.mockResolvedValue(agentRow());
     api.getAgent.mockResolvedValue(agentRow());
     const container = await renderAt("/opentag");
@@ -245,19 +257,42 @@ describe("OpenTag entry — choosing the Agent", () => {
     // One primary decision per screen: the name only appears after the
     // teammate is chosen.
     expect(container.textContent).toContain("Name your Agent");
-    await click(button(container, "Confirm Agent"));
+    await click(button(container, "Continue"));
 
+    // Still nothing persisted — the Computer decision comes first.
+    expect(api.createAgent).not.toHaveBeenCalled();
+    expect(lastLocation).toBe("/opentag");
+    expect(container.textContent).toContain("Studio Mac");
+
+    await click(button(container, "Create Agent"));
+
+    // One call carries the Template, the visibility, the Computer and the
+    // runtime that Computer reported ready.
     expect(api.createAgent).toHaveBeenCalledTimes(1);
-    const body = api.createAgent.mock.calls[0]?.[0];
-    expect(body).toMatchObject({
+    expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({
       type: "agent",
       displayName: "ada assistant",
+      name: "ada-assistant",
       visibility: "organization",
       templateIds: [TEMPLATE_ID],
       organizationId: ORG,
+      clientId: "client-1",
+      runtimeProvider: "codex",
     });
-    expect(body).not.toHaveProperty("clientId");
+    expect(api.updateAgent).not.toHaveBeenCalled();
+    expect(refreshMe).toHaveBeenCalled();
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("leaves nothing behind when the member turns back before creating", async () => {
+    computerMock.value = readyComputer();
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Back"));
+
+    expect(container.textContent).toContain("What should it do?");
+    expect(api.createAgent).not.toHaveBeenCalled();
   });
 
   it("offers the Agent a lost create response already made, without adopting it silently", async () => {
@@ -269,9 +304,11 @@ describe("OpenTag entry — choosing the Agent", () => {
     );
     api.listManagedAgents.mockResolvedValue([{ ...agentRow(), name: "ada-assistant", displayName: "Ada assistant" }]);
 
+    computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
     await click(button(container, "Review Agent"));
-    await click(button(container, "Confirm Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
 
     expect(api.createAgent).toHaveBeenCalledTimes(1);
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ name: "ada-assistant" });
@@ -291,12 +328,14 @@ describe("OpenTag entry — choosing the Agent", () => {
     );
     api.listManagedAgents.mockResolvedValue([]);
 
+    computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
     await click(button(container, "Review Agent"));
-    await click(button(container, "Confirm Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
 
     expect(container.textContent).toContain("already taken");
-    expect(container.textContent).not.toContain("Continue with");
+    expect(container.textContent).not.toContain("Continue with Ada");
     expect(lastLocation).toBe("/opentag");
   });
 
@@ -382,55 +421,49 @@ describe("OpenTag entry — choosing the Agent", () => {
   });
 });
 
-describe("OpenTag entry — setting up the Runtime", () => {
-  beforeEach(() => {
-    api.getAgent.mockResolvedValue(agentRow());
-  });
+describe("OpenTag entry — choosing the Computer", () => {
+  /** Walk the draft steps: Template -> review -> the Computer choice. */
+  async function atComputerStep(): Promise<HTMLElement> {
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    return container;
+  }
 
   it("shows the server-authored connect command when no Computer is connected", async () => {
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    const container = await atComputerStep();
 
     expect(container.textContent).toContain("first-tree login CODE-123");
     expect(container.textContent).toContain("Waiting for your computer to connect");
+    expect(api.createAgent).not.toHaveBeenCalled();
   });
 
-  it("recommends a sole connected Computer and binds it", async () => {
-    computerMock.value = computerConnection({
-      connectedClients: [client("client-1", "Studio Mac")],
-      selectedClientId: "client-1",
-      connectedClient: client("client-1", "Studio Mac"),
-      capabilitiesLoaded: true,
-      okRuntimes: ["codex"],
-      selectedRuntime: "codex",
-    });
-    api.updateAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+  it("recommends a sole connected Computer and creates the Agent on it", async () => {
+    computerMock.value = readyComputer();
+    api.createAgent.mockResolvedValue(agentRow());
+    api.getAgent.mockResolvedValue(agentRow());
 
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    const container = await atComputerStep();
     expect(container.textContent).toContain("Studio Mac");
 
-    await click(button(container, "Use this computer"));
+    await click(button(container, "Create Agent"));
 
-    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-1", runtimeProvider: "codex" });
-    // The authoritative bind response advances the flow.
+    expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-1", runtimeProvider: "codex" });
     expect(container.textContent).toContain("Feishu Bot for Ada assistant");
-    // A connected Computer changes account-level readiness, so the stale
-    // snapshot must not survive to bounce the member into `/onboarding`.
-    expect(refreshMe).toHaveBeenCalled();
   });
 
-  it("requires an explicit choice between several Computers, then binds the chosen one", async () => {
+  it("requires an explicit choice between several Computers, then creates on the chosen one", async () => {
     computerMock.value = computerConnection({
       connectedClients: [client("client-1", "Studio Mac"), client("client-2", "MacBook Pro")],
       selectedClientId: null,
     });
 
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    const container = await atComputerStep();
     expect(container.textContent).toContain("Choose a computer");
     // Nothing is pinned from heartbeat order.
-    expect(button(container, "Use selected computer").disabled).toBe(true);
-    expect(api.updateAgent).not.toHaveBeenCalled();
+    expect(button(container, "Create Agent").disabled).toBe(true);
+    expect(api.createAgent).not.toHaveBeenCalled();
 
-    // The member picks the second Computer; only that one may be bound.
     computerMock.value = computerConnection({
       connectedClients: [client("client-1", "Studio Mac"), client("client-2", "MacBook Pro")],
       selectedClientId: "client-2",
@@ -439,15 +472,16 @@ describe("OpenTag entry — setting up the Runtime", () => {
       okRuntimes: ["codex"],
       selectedRuntime: "codex",
     });
-    api.updateAgent.mockResolvedValue(agentRow({ clientId: "client-2" }));
-    const chosen = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    await click(button(chosen, "Use selected computer"));
+    api.createAgent.mockResolvedValue(agentRow());
+    api.getAgent.mockResolvedValue(agentRow());
+    const chosen = await atComputerStep();
+    await click(button(chosen, "Create Agent"));
 
-    expect(api.updateAgent).toHaveBeenCalledWith(AGENT_UUID, { clientId: "client-2", runtimeProvider: "codex" });
+    expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-2", runtimeProvider: "codex" });
     expect(chosen.textContent).toContain("Feishu Bot for Ada assistant");
   });
 
-  it("does not offer a bind a Computer with no coding agent would reject", async () => {
+  it("does not offer to create on a Computer with no coding agent", async () => {
     computerMock.value = computerConnection({
       connectedClients: [client("client-1", "Studio Mac")],
       selectedClientId: "client-1",
@@ -457,35 +491,29 @@ describe("OpenTag entry — setting up the Runtime", () => {
       selectedRuntime: null,
     });
 
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    const container = await atComputerStep();
     expect(container.textContent).toContain("No coding agent is installed on this computer yet");
-    expect(button(container, "Use this computer").disabled).toBe(true);
-    expect(api.updateAgent).not.toHaveBeenCalled();
+    expect(button(container, "Create Agent").disabled).toBe(true);
+    expect(api.createAgent).not.toHaveBeenCalled();
   });
 
-  it("keeps a failed bind on this step and retryable", async () => {
-    computerMock.value = computerConnection({
-      connectedClients: [client("client-1", "Studio Mac")],
-      selectedClientId: "client-1",
-      connectedClient: client("client-1", "Studio Mac"),
-      capabilitiesLoaded: true,
-      okRuntimes: ["codex"],
-      selectedRuntime: "codex",
-    });
-    api.updateAgent.mockRejectedValue(new ApiError(400, 'Client "client-1" does not have runtime provider'));
+  it("keeps a failed create on this step and retryable, with nothing created", async () => {
+    computerMock.value = readyComputer();
+    api.createAgent.mockRejectedValue(new ApiError(400, 'Client "client-1" does not have runtime provider'));
 
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    await click(button(container, "Use this computer"));
+    const container = await atComputerStep();
+    await click(button(container, "Create Agent"));
 
     expect(container.textContent).toContain("does not have runtime provider");
     expect(container.textContent).not.toContain("Feishu Bot for");
-    expect(button(container, "Use this computer").disabled).toBe(false);
+    expect(button(container, "Create Agent").disabled).toBe(false);
+    expect(lastLocation).toBe("/opentag");
   });
 });
 
 describe("OpenTag entry — the Feishu handoff", () => {
-  it("skips Runtime for an already-bound Agent on reload", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+  it("goes straight to Feishu for an existing Agent on reload", async () => {
+    api.getAgent.mockResolvedValue(agentRow());
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     expect(container.textContent).toContain("Feishu Bot for Ada assistant");
@@ -493,7 +521,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
   });
 
   it("starts the Bot registration and shows the confirmation QR", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+    api.getAgent.mockResolvedValue(agentRow());
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     api.getAgentFeishuBinding.mockResolvedValue({
@@ -508,7 +536,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
   });
 
   it("only calls the Bot connected once it is actually reachable", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+    api.getAgent.mockResolvedValue(agentRow());
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({ status: "active", connectionStatus: "connecting", appId: "cli_1" }),
     });
@@ -527,7 +555,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
   });
 
   it("states a failing Bot connection in words, not only in colour", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+    api.getAgent.mockResolvedValue(agentRow());
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({
         status: "active",
@@ -543,7 +571,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
   });
 
   it("does not offer to connect a Bot when the binding read failed", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+    api.getAgent.mockResolvedValue(agentRow());
     api.getAgentFeishuBinding.mockRejectedValue(new ApiError(500, "boom"));
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
@@ -554,7 +582,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
   });
 
   it("keeps a failed registration on this step with the server's reason", async () => {
-    api.getAgent.mockResolvedValue(agentRow({ clientId: "client-1" }));
+    api.getAgent.mockResolvedValue(agentRow());
     api.startAgentFeishuRegistration.mockRejectedValue(new ApiError(502, "Feishu is unavailable right now"));
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);

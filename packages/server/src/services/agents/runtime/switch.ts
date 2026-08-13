@@ -122,13 +122,7 @@ function assertRuntimeSwitchClientVersion(sdkVersion: string | null): void {
   }
 }
 
-/**
- * Re-tag a stored runtime config for a different provider, keeping everything
- * the member configured. Exported because the one-shot first bind commits the
- * same provider invariant: `agents.runtime_provider` and the durable config
- * payload must never disagree about which runtime the Agent runs.
- */
-export function retagRuntimeConfigPayload(
+function retagRuntimeConfigPayload(
   currentPayload: unknown,
   targetProvider: RuntimeProvider,
 ): AgentRuntimeConfigPayload {
