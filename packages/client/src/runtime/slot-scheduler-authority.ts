@@ -103,11 +103,7 @@ export type SlotSchedulerAuthorityDeps = {
     message: SessionMessage | undefined,
     deliveryKind: SlotDeliveryKind,
   ) => Promise<void>;
-  retryDeliveryTurn: (
-    chatId: string,
-    messages: SessionMessage | readonly SessionMessage[],
-    reason: string,
-  ) => void;
+  retryDeliveryTurn: (chatId: string, messages: SessionMessage | readonly SessionMessage[], reason: string) => void;
   createHandler: () => AgentHandler;
   buildSessionContext: (
     chatId: string,
@@ -126,11 +122,7 @@ export type SlotSchedulerAuthorityDeps = {
     receipt: { sessionId: string; route: Extract<HandlerRouteReceipt, { kind: "owned" }> | null },
     lostReason: string,
   ) => boolean;
-  markRouteOwned: (
-    chatId: string,
-    message: SessionMessage,
-    route: HandlerRouteReceipt,
-  ) => DeliveryRouteOwnership;
+  markRouteOwned: (chatId: string, message: SessionMessage, route: HandlerRouteReceipt) => DeliveryRouteOwnership;
   abortUnownedRoute: (entry: SlotSchedulerSessionEntry, reason: string) => void;
   handleSessionFailure: (args: {
     entry: SlotSchedulerSessionEntry;
@@ -238,7 +230,6 @@ export class SlotSchedulerAuthority {
     entry.deferredMessages = [];
   }
 
-
   claimActiveSlot(entry: SlotSchedulerSessionEntry): void {
     if (entry.activeSlotHeld) return;
     entry.activeSlotHeld = true;
@@ -252,11 +243,9 @@ export class SlotSchedulerAuthority {
     return true;
   }
 
-
   invalidateDeliveryAdmission(chatId: string): void {
     this.admissionGenerations.set(chatId, (this.admissionGenerations.get(chatId) ?? 0) + 1);
   }
-
 
   rearmRetryTimer(chatId: string, entry: SlotSchedulerSessionEntry, delayMs = 5_000): void {
     if (this.deps.isShuttingDown()) return;
@@ -501,7 +490,11 @@ export class SlotSchedulerAuthority {
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
           : await newHandler.resume(undefined, retryRoute.previousSessionId, ctx);
         if (!this.deps.routeTeardown.isCurrentRouteTransition(entry, transition)) {
-          this.deps.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_resume_stale_completion");
+          this.deps.routeTeardown.discardStaleRouteTransition(
+            entry.chatId,
+            transition,
+            "session_retry_resume_stale_completion",
+          );
           return;
         }
         const receipt = this.deps.normalizeResumeReceipt(resumeResult);
@@ -513,7 +506,11 @@ export class SlotSchedulerAuthority {
           await newHandler.start(retryRoute.message, ctx, this.deps.createDeliveryToken(chatId, routeLeases)),
         );
         if (!this.deps.routeTeardown.isCurrentRouteTransition(entry, transition)) {
-          this.deps.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_start_stale_completion");
+          this.deps.routeTeardown.discardStaleRouteTransition(
+            entry.chatId,
+            transition,
+            "session_retry_start_stale_completion",
+          );
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -523,7 +520,8 @@ export class SlotSchedulerAuthority {
         }
       }
       const totalAttempts = entry.retryAttempt;
-      const succeededScope = entry.lastRetryScope ?? (this.deps.previousAvailable(entry) ? "session_resume" : "session_start");
+      const succeededScope =
+        entry.lastRetryScope ?? (this.deps.previousAvailable(entry) ? "session_resume" : "session_start");
       const succeededClassification = this.deps.retryClassificationForEntry(entry);
       if (!this.deps.routeTeardown.completeRouteTransition(entry, transition)) {
         this.deps.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
@@ -579,7 +577,8 @@ export class SlotSchedulerAuthority {
         attemptedMessage: retryHeadMessage,
       });
       if (this.deps.getSession(chatId) !== entry) return;
-      if (handling.kind === "terminal") await this.deps.teardownTerminalSessionFailure(entry, retryHeadMessage, handling);
+      if (handling.kind === "terminal")
+        await this.deps.teardownTerminalSessionFailure(entry, retryHeadMessage, handling);
     } finally {
       settleRouteProducer();
     }
@@ -606,7 +605,6 @@ export class SlotSchedulerAuthority {
     void this.runRetry(chatId);
   }
 
-
   acquireActiveSlot(
     chatId: string,
     message: SessionMessage | null,
@@ -622,7 +620,9 @@ export class SlotSchedulerAuthority {
     // last-resort victim (the evictIdle hard cap bounds how long it could hold
     // the slot anyway), so we fall back to allowing it rather than starve the
     // requester. `protectSubprocess=false` is that fallback pass.
-    const choose = (protectSubprocess: boolean): { victim: SlotSchedulerSessionEntry; kind: "idle" | "working" } | null => {
+    const choose = (
+      protectSubprocess: boolean,
+    ): { victim: SlotSchedulerSessionEntry; kind: "idle" | "working" } | null => {
       const idle = this.findOldestActiveSession(
         (session) =>
           session.chatId !== chatId &&
@@ -707,8 +707,6 @@ export class SlotSchedulerAuthority {
     this.pendingQueue.push({ message, chatId, deliveryKind });
   }
 
-
-
   queuedMessageStillOwned(queued: PendingMessage): boolean {
     const { message, chatId } = queued;
     if (!message || message.inboxEntryId === undefined) return true;
@@ -784,7 +782,6 @@ export class SlotSchedulerAuthority {
     });
   }
 
-
   evictIfNeeded(chatId?: string, message?: SessionMessage, deliveryKind: SlotDeliveryKind = "fresh"): boolean {
     const max_sessions = this.deps.maxSessions();
     if (this.deps.sessionCount() < max_sessions) return true;
@@ -855,7 +852,11 @@ export class SlotSchedulerAuthority {
       const activeSlotHeld = candidate.session.activeSlotHeld;
       this.releaseActiveSlot(candidate.session);
       if (activeSlotHeld) {
-        this.deps.routeTeardown.detachHandlerWithPendingTeardown(candidate.key, candidate.session.handler, "session_evicted");
+        this.deps.routeTeardown.detachHandlerWithPendingTeardown(
+          candidate.key,
+          candidate.session.handler,
+          "session_evicted",
+        );
       } else {
         // A non-active handler is not shut down on eviction (existing
         // semantics), but its stop is unconfirmed — record the debt.
@@ -882,7 +883,6 @@ export class SlotSchedulerAuthority {
     }
     return true;
   }
-
 
   evictIdle(): void {
     const timeoutMs = this.deps.idleTimeoutSec() * 1000;
@@ -933,6 +933,4 @@ export class SlotSchedulerAuthority {
       this.deps.suspendSession(session);
     }
   }
-
-
 }

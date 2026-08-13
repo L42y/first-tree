@@ -138,10 +138,7 @@ export class SessionProjectionAuthority<
       // checks evictedMappings and calls handler.resume instead of start).
       const resumableSessionId = resumableProviderSessionId(data.claudeSessionId);
       if (!resumableSessionId) {
-        this.deps.log.warn(
-          { chatId },
-          "ignoring persisted session mapping without a resumable provider session id",
-        );
+        this.deps.log.warn({ chatId }, "ignoring persisted session mapping without a resumable provider session id");
         continue;
       }
       this.addEvictedMapping(chatId, {

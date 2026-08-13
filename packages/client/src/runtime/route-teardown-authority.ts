@@ -112,10 +112,7 @@ export class RouteTeardownAuthority {
    * fire-and-forget callers — so a strict caller joining an in-flight
    * shutdown that a lenient caller started still sees the failure.
    */
-  private readonly handlerShutdowns = new WeakMap<
-    AgentHandler,
-    { raw: Promise<void>; observed: Promise<void> }
-  >();
+  private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
 
   constructor(private readonly deps: RouteTeardownAuthorityDeps) {}
 

@@ -344,10 +344,7 @@ export class ResetReplayAuthority {
         this.replayFence.clear(chatId, messageId);
         proven.delete(messageId);
         clearedMessageIds.push(messageId);
-        this.deps.log.info(
-          { chatId, messageId },
-          "cleared stale replay fence: delivery confirmed settled server-side",
-        );
+        this.deps.log.info({ chatId, messageId }, "cleared stale replay fence: delivery confirmed settled server-side");
       } catch (err) {
         this.deps.log.error(
           { err, chatId, messageId },

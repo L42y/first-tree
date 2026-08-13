@@ -62,15 +62,8 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
+import { type ResetFenceReleaseVerdict, ResetReplayAuthority } from "./reset-replay-authority.js";
 import { createResultSink } from "./result-sink.js";
-import {
-  ResetReplayAuthority,
-  type ResetFenceReleaseVerdict,
-} from "./reset-replay-authority.js";
-import {
-  SlotSchedulerAuthority,
-  type SlotDeliveryKind,
-} from "./slot-scheduler-authority.js";
 import {
   HandlerSuspendTimeoutError,
   RouteTeardownAuthority,
@@ -82,10 +75,8 @@ import {
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
 } from "./runtime-notice.js";
-import {
-  SessionProjectionAuthority,
-  type RuntimeSyncActiveSet,
-} from "./session-projection-authority.js";
+import { type RuntimeSyncActiveSet, SessionProjectionAuthority } from "./session-projection-authority.js";
+import { type SlotDeliveryKind, SlotSchedulerAuthority } from "./slot-scheduler-authority.js";
 
 type SessionEntry = {
   chatId: string;
@@ -634,8 +625,7 @@ export class SessionRuntime {
       suspendSession: (entry, opts) => this.suspendSession(entry as SessionEntry, opts),
       emitResilienceEvent: (chatId, eventName, payload) => this.emitResilienceEvent(chatId, eventName, payload),
       routeMessage: (chatId, message, deliveryKind) => this.routeMessage(chatId, message, deliveryKind),
-      resumeSession: (entry, message, deliveryKind) =>
-        this.resumeSession(entry as SessionEntry, message, deliveryKind),
+      resumeSession: (entry, message, deliveryKind) => this.resumeSession(entry as SessionEntry, message, deliveryKind),
       retryDeliveryTurn: (chatId, messages, reason) => this.retryDeliveryTurn(chatId, messages, reason),
       createHandler: () => this.createHandler(),
       buildSessionContext: (chatId, lease) => this.buildSessionContext(chatId, lease),
@@ -656,8 +646,7 @@ export class SessionRuntime {
         this.teardownTerminalSessionFailure(entry as SessionEntry, message, handling),
       drainDeferredMessages: (entry) => this.drainDeferredMessages(entry as SessionEntry),
       persistRegistry: () => this.projection.persistRegistry(),
-      failSessionForRecovery: (chatId, reason, sessionId) =>
-        this.failSessionForRecovery(chatId, reason, sessionId),
+      failSessionForRecovery: (chatId, reason, sessionId) => this.failSessionForRecovery(chatId, reason, sessionId),
       retryClassificationForEntry: (entry) => this.retryClassificationForEntry(entry as SessionEntry),
       runtimeProvider: () => this.runtimeProvider(),
       previousAvailable: (entry) => previousAvailable(entry as SessionEntry),
@@ -1280,7 +1269,8 @@ export class SessionRuntime {
       }
     }
     for (const [pendingHandler, chatIds] of debtChatsByHandler) {
-      if (chatIds.some((chatId) => this.routeTeardown.quarantinedSessions.get(chatId)?.handler === pendingHandler)) continue;
+      if (chatIds.some((chatId) => this.routeTeardown.quarantinedSessions.get(chatId)?.handler === pendingHandler))
+        continue;
       if (attemptedHandlers.has(pendingHandler)) continue;
       attemptedHandlers.add(pendingHandler);
       shutdowns.push(
@@ -1323,17 +1313,20 @@ export class SessionRuntime {
     const retriedHandlers = new Set<AgentHandler>();
     for (const pending of this.routeTeardown.pendingTeardowns.values()) {
       for (const pendingHandler of [...pending]) {
-        if ([...this.routeTeardown.quarantinedSessions.values()].some((entry) => entry.handler === pendingHandler)) continue;
+        if ([...this.routeTeardown.quarantinedSessions.values()].some((entry) => entry.handler === pendingHandler))
+          continue;
         if (retriedHandlers.has(pendingHandler)) continue;
         retriedHandlers.add(pendingHandler);
         // Each attempt joins a still in-flight shutdown when one exists; a
         // failure earns exactly ONE fresh retry — bounded, so manager
         // shutdown never blocks on a handler that will not die.
         const stopOnce = (): Promise<boolean> =>
-          this.routeTeardown.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
-            () => true,
-            () => false,
-          );
+          this.routeTeardown
+            .shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true })
+            .then(
+              () => true,
+              () => false,
+            );
         if (!(await stopOnce()) && !(await stopOnce())) continue;
         this.routeTeardown.dropPendingTeardownEverywhere(pendingHandler);
       }
@@ -1577,7 +1570,12 @@ export class SessionRuntime {
     );
     if (!held) return false;
 
-    if (entry && payload && this.projection.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
+    if (
+      entry &&
+      payload &&
+      this.projection.sessions.get(chatId) === entry &&
+      entry.pendingRuntimeFailureNotice === payload
+    ) {
       entry.pendingRuntimeFailureNotice = null;
     }
     this.projection.runtimeProofRecoveryChats.add(chatId);
@@ -2218,7 +2216,11 @@ export class SessionRuntime {
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
         if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
-          this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_eviction_resume_stale_completion");
+          this.routeTeardown.discardStaleRouteTransition(
+            entry.chatId,
+            transition,
+            "session_eviction_resume_stale_completion",
+          );
           return;
         }
         if (!this.adoptResumeReceipt(entry, message, receipt, "session_eviction_resume_unowned_delivery")) return;
@@ -2305,7 +2307,9 @@ export class SessionRuntime {
     // route below installs a fresh handler without registering ordinary debt.
     if (entry.suspendError) {
       if (entry.handlerStoppedBySuspend !== entry.handler && !this.routeTeardown.isCurrentHandlerQuarantined(entry)) {
-        await this.routeTeardown.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+        await this.routeTeardown.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", {
+          observeFailure: true,
+        });
         entry.handlerStoppedBySuspend = entry.handler;
         this.routeTeardown.retireHandler(entry.handler);
       }
@@ -2604,7 +2608,8 @@ export class SessionRuntime {
     mutationLeaseValid: (() => boolean) | null = null,
   ): Promise<boolean> {
     const captureLeaseValid = () =>
-      (!expectedEntry || this.projection.sessions.get(chatId) === expectedEntry) && (!mutationLeaseValid || mutationLeaseValid());
+      (!expectedEntry || this.projection.sessions.get(chatId) === expectedEntry) &&
+      (!mutationLeaseValid || mutationLeaseValid());
     if (this.config.confirmSessionEvent) {
       try {
         await this.config.confirmSessionEvent(chatId, event);
@@ -3253,5 +3258,4 @@ export class SessionRuntime {
       precedingMessages: msg.precedingMessages ?? [],
     };
   }
-
 }
