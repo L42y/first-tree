@@ -6,6 +6,7 @@ import {
 } from "@first-tree/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { connectDatabase } from "../db/connection.js";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
@@ -2337,5 +2338,74 @@ describe("POST /me/landing-campaigns/start", () => {
       headers: { authorization: `Bearer ${otherAdmin.accessToken}` },
     });
     expect(deleteMember.statusCode).toBe(404);
+  });
+  /**
+   * The caller is authorized from a snapshot read before provisioning opens
+   * its transaction. A removal that commits inside that window used to leave
+   * the stale request provisioning the service member and trial Agent into the
+   * Team the caller had just lost — rows that commit on their own, before chat
+   * creation gets a chance to reject the inactive human mirror.
+   */
+  it("refuses a start whose membership is removed between authorization and provisioning", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    await seedOfficialRuntime(app, admin.organizationId);
+
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the race test");
+    const agentsBefore = await app.db
+      .select({ uuid: agents.uuid })
+      .from(agents)
+      .where(eq(agents.organizationId, admin.organizationId));
+
+    const blockerDb = connectDatabase(databaseUrl);
+    let releaseUserLock: () => void = () => undefined;
+    let announceUserLock: () => void = () => undefined;
+    const userLockReleased = new Promise<void>((resolve) => {
+      releaseUserLock = resolve;
+    });
+    const userLockHeld = new Promise<void>((resolve) => {
+      announceUserLock = resolve;
+    });
+    // Hold the per-user lifecycle lock, then commit the removal from inside the
+    // same transaction — exactly the ordering a real leave/remove produces.
+    const remover = blockerDb.transaction(async (tx) => {
+      await tx.select({ id: users.id }).from(users).where(eq(users.id, admin.userId)).for("no key update").limit(1);
+      announceUserLock();
+      await userLockReleased;
+      await tx.update(members).set({ status: "removed" }).where(eq(members.id, admin.memberId));
+    });
+
+    try {
+      await userLockHeld;
+      let startSettled = false;
+      const start = startProductionScan(app, admin).finally(() => {
+        startSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      // Outer authorization already succeeded; provisioning must be waiting on
+      // the lifecycle lock rather than writing behind the removal.
+      expect(startSettled).toBe(false);
+
+      releaseUserLock();
+      await remover;
+      const res = await start;
+      expect(res.statusCode).toBe(404);
+    } finally {
+      releaseUserLock();
+      await remover.catch(() => undefined);
+      await blockerDb.end();
+    }
+
+    const serviceMemberRows = await app.db
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, SERVICE_USER_ID), eq(members.organizationId, admin.organizationId)));
+    expect(serviceMemberRows).toEqual([]);
+    const agentsAfter = await app.db
+      .select({ uuid: agents.uuid })
+      .from(agents)
+      .where(eq(agents.organizationId, admin.organizationId));
+    expect(agentsAfter).toEqual(agentsBefore);
   });
 });
