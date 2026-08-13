@@ -320,8 +320,10 @@ export function OpenTagPage(): ReactElement | null {
   // established rather than suspected, so none of them waits for the clock.
   const showRecovery =
     !!binding && !isFeishuHandoffUsable(binding) && (setupFailed || botFailed || !hasComputer || stepSlow);
-  // Retrying only helps while there is a Computer that could still finish.
-  const canRetryTools = showRecovery && hasComputer && !toolsReady;
+  // Retrying is scoped to the half it retries. A Bot that failed can put the
+  // way out on screen, but it is no reason to ask the Agent to prepare a
+  // Computer that is already getting on with it.
+  const canRetryTools = hasComputer && !toolsReady && (setupFailed || stepSlow);
 
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
   // Ownership, not readability, is what licenses the stamp below.
@@ -514,6 +516,7 @@ export function OpenTagPage(): ReactElement | null {
           starting={startFeishu.isPending}
           error={startFeishu.error instanceof Error ? startFeishu.error.message : null}
           onConnect={() => startFeishu.mutate()}
+          setupFailed={setupFailed}
           recovery={showRecovery}
           canRetryTools={canRetryTools}
           retrying={prepareTools.isPending}

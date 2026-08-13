@@ -37,6 +37,7 @@ export function StepConnectFeishu({
   starting,
   error,
   onConnect,
+  setupFailed,
   recovery,
   canRetryTools,
   retrying,
@@ -51,6 +52,8 @@ export function StepConnectFeishu({
   starting: boolean;
   error: string | null;
   onConnect: () => void;
+  /** The automatic preparation request failed, so nothing is being prepared. */
+  setupFailed: boolean;
   /** Waiting is no longer enough: show the member a way forward. */
   recovery: boolean;
   /** Retrying the preparation can still help — there is a Computer to finish. */
@@ -82,6 +85,7 @@ export function StepConnectFeishu({
               <ToolsPanel
                 agentUuid={agentUuid}
                 binding={binding}
+                setupFailed={setupFailed}
                 recovery={recovery}
                 canRetryTools={canRetryTools}
                 retrying={retrying}
@@ -244,6 +248,7 @@ function BotColumn({
 function ToolsPanel({
   agentUuid,
   binding,
+  setupFailed,
   recovery,
   canRetryTools,
   retrying,
@@ -251,6 +256,7 @@ function ToolsPanel({
 }: {
   agentUuid: string;
   binding: FeishuBotBinding;
+  setupFailed: boolean;
   recovery: boolean;
   canRetryTools: boolean;
   retrying: boolean;
@@ -265,7 +271,7 @@ function ToolsPanel({
     <>
       <div style={{ borderTop: "var(--hairline) solid var(--border-faint)" }}>
         <ReadinessRow label={copy.botLabel} readiness={botReadiness(binding)} />
-        <ReadinessRow label={copy.toolsLabel} readiness={toolsReadiness(binding)} />
+        <ReadinessRow label={copy.toolsLabel} readiness={toolsReadiness(binding, setupFailed)} />
       </div>
 
       {recovery && (
@@ -384,7 +390,7 @@ function botReadiness(binding: FeishuBotBinding): Readiness {
  * `missing` and `unknown` both mean the Agent cannot call Feishu yet; `offline`
  * means there is no Computer to call it from at all.
  */
-function toolsReadiness(binding: FeishuBotBinding): Readiness {
+function toolsReadiness(binding: FeishuBotBinding, setupFailed: boolean): Readiness {
   switch (binding.cli.state) {
     case "ready":
       return {
@@ -395,6 +401,11 @@ function toolsReadiness(binding: FeishuBotBinding): Readiness {
     case "offline":
       return { tone: "attention", status: "not ready", detail: "This Agent has no Computer yet." };
     default:
-      return { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
+      // The capability alone cannot tell "being prepared" from "never asked
+      // for": both read as absent. Reporting a request that failed as work in
+      // progress tells the member to keep waiting for nothing.
+      return setupFailed
+        ? { tone: "attention", status: "not ready", detail: "The automatic setup didn't start." }
+        : { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
   }
 }

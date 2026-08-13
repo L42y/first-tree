@@ -36,9 +36,12 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
     why: "Give your Agent one place to work.",
     lead: "Choose a connected Computer for this Agent. It stays on that Computer, and your other Computers are untouched.",
   },
+  // Purely descriptive, because it is the one heading this step has. Directing
+  // an action here would keep asking for a confirmation that may already be
+  // done — or, when the Bot has failed, one the member cannot give at all.
   "connect-feishu": {
     why: "Connect your Agent to Feishu.",
-    lead: "Confirm the Bot in Feishu. Both parts have to be ready before your Agent can work there.",
+    lead: "This needs two things: a Feishu Bot, and the Feishu tools on your Agent's Computer.",
   },
   // Says only what the Task itself establishes. The shell renders this heading
   // for the whole step, including while the completion stamp is still in flight

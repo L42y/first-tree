@@ -1197,6 +1197,10 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     await flush();
 
     expect(container.textContent).toContain("You are not stuck here.");
+    // The row says what happened: nothing is being prepared, so telling the
+    // member work is under way would ask them to keep waiting for nothing.
+    expect(container.textContent).toContain("The automatic setup didn't start.");
+    expect(container.textContent).not.toContain("Preparing this Computer in the background");
     expect(button(container, "Try again").disabled).toBe(false);
     // Leaving lands on the Agent's own page — the one permanent repair entry.
     expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
@@ -1518,8 +1522,40 @@ describe("OpenTag entry — a Bot that failed", () => {
 
     expect(container.querySelector("[role='alert']")?.textContent).toContain("Feishu rejected the Bot credentials.");
     expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    // The one standing heading has to hold here too: confirming is not the
+    // outstanding action, and this member could not do it anyway.
+    expect(container.textContent).not.toContain("Confirm the Bot in Feishu");
     // The Computer is done, so retrying its preparation would do nothing.
     expect(container.textContent).not.toContain("Try again");
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
+  });
+});
+
+describe("OpenTag entry — retrying is scoped to the half it retries", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("does not ask the Agent again because the Bot failed", async () => {
+    // The Bot failing puts the way out on screen, but the Computer is getting
+    // on with it — asking again would append work to the Task for no reason.
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: feishuBinding({
+        status: "active",
+        connectionStatus: "error",
+        appId: "cli_1",
+        lastErrorMessage: "Feishu rejected the Bot credentials.",
+        cli: { state: "missing", version: null, clientId: "client-1" },
+      }),
+    });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.textContent).not.toContain("Try again");
+    // One ensure call for the Computer, and nothing beyond it.
+    expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
   });
 });
