@@ -59,17 +59,26 @@ type SessionManagerInternals = {
   terminatingChats: Map<string, Promise<void>>;
   terminatePersistFailures: Set<string>;
   awaitingResetFenceRelease: Set<string>;
-  pendingTeardowns: Map<string, Set<AgentHandler>>;
-  quarantinedSessions: Map<
-    string,
-    {
-      handler: AgentHandler;
-      generation: number;
-      reason: "operator_suspend_timeout";
-      routeTransitionInFlight: boolean;
-    }
-  >;
-  routeProducers: Map<string, Set<Promise<void>>>;
+  routeTeardown: {
+    pendingTeardowns: Map<string, Set<AgentHandler>>;
+    quarantinedSessions: Map<
+      string,
+      {
+        handler: AgentHandler;
+        generation: number;
+        reason: "operator_suspend_timeout";
+        routeTransitionInFlight: boolean;
+      }
+    >;
+    routeProducers: Map<string, Set<Promise<void>>>;
+    registerPendingTeardown(chatId: string, handler: AgentHandler): void;
+    detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void;
+    discardStaleRouteTransition(
+      chatId: string,
+      transition: { generation: number; handler: AgentHandler; phase: "start" | "resume" },
+      reason: string,
+    ): void;
+  };
   registry: SessionRegistry | null;
   pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
   sessionRuntimeStates: Map<string, RuntimeState>;
@@ -90,13 +99,6 @@ type SessionManagerInternals = {
     };
   };
   _activeCount: number;
-  registerPendingTeardown(chatId: string, handler: AgentHandler): void;
-  detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void;
-  discardStaleRouteTransition(
-    chatId: string,
-    transition: { generation: number; handler: AgentHandler; phase: "start" | "resume" },
-    reason: string,
-  ): void;
   acquireActiveSlot(
     chatId: string,
     message: SessionMessage | null,
@@ -3209,7 +3211,7 @@ describe("SessionManager edge coverage", () => {
     i.evictIfNeeded();
     await shutdownStarted;
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
 
     // The terminate joins the in-flight shutdown's raw face — it must not
     // ack while the old handler's stop is unconfirmed.
@@ -3230,13 +3232,13 @@ describe("SessionManager edge coverage", () => {
 
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
-    expect(i.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: strict teardown re-runs and succeeds, debt cleared.
     await sm.handleCommand(chatId, "session:terminate");
     expect(victimHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3325,8 +3327,8 @@ describe("SessionManager edge coverage", () => {
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.quarantinedSessions.get(chatId)).toEqual(
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.quarantinedSessions.get(chatId)).toEqual(
       expect.objectContaining({
         handler: oldHandler,
         reason: "operator_suspend_timeout",
@@ -3461,7 +3463,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(freshHandler.resume).toHaveBeenCalledTimes(2);
     expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
-    expect(i.quarantinedSessions.get(chatId)?.handler).toBe(oldHandler);
+    expect(i.routeTeardown.quarantinedSessions.get(chatId)?.handler).toBe(oldHandler);
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
 
     await sm.shutdown();
@@ -3518,7 +3520,7 @@ describe("SessionManager edge coverage", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await i.sessions.get(chatId)?.suspending;
 
-    expect(i.quarantinedSessions.get(chatId)).toEqual(
+    expect(i.routeTeardown.quarantinedSessions.get(chatId)).toEqual(
       expect.objectContaining({
         handler: oldHandler,
         routeTransitionInFlight: true,
@@ -3552,7 +3554,7 @@ describe("SessionManager edge coverage", () => {
     resolveResume?.();
     await resumeDispatch;
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
   });
 
   it("returns restart-required Reset failure and bounds manager shutdown after suspend timeout", async () => {
@@ -3575,7 +3577,7 @@ describe("SessionManager edge coverage", () => {
       "Reset blocked: operator_suspend_timeout; provider teardown was not confirmed",
     );
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.quarantinedSessions.has(chatId)).toBe(true);
+    expect(i.routeTeardown.quarantinedSessions.has(chatId)).toBe(true);
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
 
     await expect(sm.shutdown()).resolves.toBeUndefined();
@@ -3674,19 +3676,19 @@ describe("SessionManager edge coverage", () => {
     // the entry — but the teardown debt must survive it.
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
-    expect(i.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
 
     // No session, mapping, queue, or inbox custody remains — without the
     // debt this terminate would early-return a false applied:true. Instead
     // it runs the strict teardown and rejects on its failure.
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
-    expect(i.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     // Retry: strict teardown succeeds and the debt is cleared.
     await sm.handleCommand(chatId, "session:terminate");
     expect(startHandler.shutdown).toHaveBeenCalledTimes(3);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3718,7 +3720,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-late-debt-drain";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
     let terminateSettled = false;
@@ -3736,8 +3738,8 @@ describe("SessionManager edge coverage", () => {
     // producers include a stale route discard or the suspend finally) —
     // one the in-flight terminate's first snapshot never saw. (Eviction no
     // longer produces it here: chats with debt are force-kept.)
-    i.registerPendingTeardown(chatId, evictedHandler);
-    expect(i.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
+    i.routeTeardown.registerPendingTeardown(chatId, evictedHandler);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
     expect(terminateSettled).toBe(false);
 
     // Releasing the first shutdown must NOT ack: the drain loops until the
@@ -3745,15 +3747,15 @@ describe("SessionManager edge coverage", () => {
     // failure rejects the apply.
     resolveFirstShutdown?.();
     await expect(terminate).rejects.toBe(boom);
-    expect(i.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(false);
-    expect(i.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: the late debt's teardown succeeds, set drained.
     await sm.handleCommand(chatId, "session:terminate");
     expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(evictedHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3780,10 +3782,10 @@ describe("SessionManager edge coverage", () => {
     // A register-only debt (no shutdown in flight) and a debt whose detach
     // shutdown is still gated, plus the same handler registered under two
     // chats to prove dedupe.
-    i.registerPendingTeardown("chat-pending-register-only", registerOnlyHandler);
-    i.registerPendingTeardown("chat-pending-shared-1", sharedHandler);
-    i.registerPendingTeardown("chat-pending-shared-2", sharedHandler);
-    i.detachHandlerWithPendingTeardown("chat-pending-detach", failedDetachHandler, "test_detach");
+    i.routeTeardown.registerPendingTeardown("chat-pending-register-only", registerOnlyHandler);
+    i.routeTeardown.registerPendingTeardown("chat-pending-shared-1", sharedHandler);
+    i.routeTeardown.registerPendingTeardown("chat-pending-shared-2", sharedHandler);
+    i.routeTeardown.detachHandlerWithPendingTeardown("chat-pending-detach", failedDetachHandler, "test_detach");
     await detachShutdownStarted;
 
     // Manager shutdown is the last owner of detached handlers: it must join
@@ -3909,31 +3911,31 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
     expect(staleHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     // The canceled start MATERIALIZES late: the discard's second shutdown
     // (afterPrior — the first was a no-op over a not-yet-started handler)
     // must enter the teardown authority instead of running ownerless.
-    i.discardStaleRouteTransition(
+    i.routeTeardown.discardStaleRouteTransition(
       chatId,
       { generation: 0, handler: staleHandler, phase: "start" },
       "test_stale_completion",
     );
     await staleStarted;
-    expect(i.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
 
     // A terminate joins the in-flight second shutdown; its failure rejects
     // the apply and keeps the debt retryable.
     const terminate = sm.handleCommand(chatId, "session:terminate");
     rejectStale?.(boom);
     await expect(terminate).rejects.toBe(boom);
-    expect(i.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(staleHandler.shutdown).toHaveBeenCalledTimes(3);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -4065,13 +4067,13 @@ describe("SessionManager edge coverage", () => {
     // The late stop fails → applied:false, debt retained for retry.
     rejectLateStop?.(stopBoom);
     await expect(terminate).rejects.toBe(stopBoom);
-    expect(i.pendingTeardowns.get(chatId)?.has(pendingHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(pendingHandler)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(3);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await dispatch;
@@ -4139,7 +4141,7 @@ describe("SessionManager edge coverage", () => {
     resolveLateStop?.();
     await terminate;
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await dispatch;
@@ -4235,7 +4237,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-route-waits-for-debt";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const dispatch = sm.dispatch(mockEntry({ id: 96, chatId, messageId: "msg-route-waits" }));
     await debtStopStarted;
@@ -4250,7 +4252,7 @@ describe("SessionManager edge coverage", () => {
     resolveDebtStop?.();
     await dispatch;
     expect(sessionHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -4271,7 +4273,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-route-debt-fails";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Settle failure: no route is created, and the delivery keeps its
     // recovery custody instead of being dropped (dispatch surfaces the
@@ -4282,7 +4284,7 @@ describe("SessionManager edge coverage", () => {
     expect(sessionHandler.resume).not.toHaveBeenCalled();
     expect(sessionHandler.start).not.toHaveBeenCalled();
     expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(true);
     // Custody is preserved via the existing recovery semantics: the fenced
     // failure requests server recovery (the message is NOT acked/dropped).
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
@@ -4291,7 +4293,7 @@ describe("SessionManager edge coverage", () => {
     // finally created.
     await sm.dispatch(mockEntry({ id: 100, chatId, messageId: "msg-route-debt-fails-2" }));
     expect(sessionHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -4326,7 +4328,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // The retry waits on the gated debt stop; the terminate joins the same
     // shutdown and must not ack while it is unconfirmed.
@@ -4373,7 +4375,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     await i.runRetry(chatId);
 
@@ -4414,7 +4416,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const retry = i.runRetry(chatId);
     await debtStopStarted;
@@ -4472,7 +4474,7 @@ describe("SessionManager edge coverage", () => {
     // still be held / force-kept or the reconcile channel breaks.
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(sm.getHeldChatIds(new Set())).toContain(chatId);
 
     // The next delivery drives the server-side recovery; the redelivery
@@ -4493,7 +4495,7 @@ describe("SessionManager edge coverage", () => {
     await redelivery;
     expect(freshHandler.start).toHaveBeenCalledTimes(1);
     expect(canceledHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.routeProducers.has(chatId)).toBe(false);
+    expect(i.routeTeardown.routeProducers.has(chatId)).toBe(false);
 
     await headDispatch;
     await sm.shutdown();
@@ -4527,7 +4529,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-concurrent-resumes";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Both dispatches reach resumeSession and wait on the same gated debt
     // stop. After it confirms, exactly ONE waiter may install the route.
@@ -4577,7 +4579,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-concurrent-starts";
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Two real concurrent dispatches for the same entry-less chat: both
     // starts wait on the same gated debt stop.
@@ -4650,7 +4652,7 @@ describe("SessionManager edge coverage", () => {
     // re-armed, nothing installed.
     rejectReplaceStop?.(boom);
     await firstAttempt;
-    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
     expect(i.sessions.get(chatId)?.retryTimer).not.toBe(null);
     expect(freshHandler.resume).not.toHaveBeenCalled();
 
@@ -4704,7 +4706,7 @@ describe("SessionManager edge coverage", () => {
     // The stop was registered as debt BEFORE it started — while it is gated
     // the entry is slot-free, but the terminate must still join the debt
     // instead of acking over an unsettled stop.
-    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
     let terminateSettled = false;
@@ -4721,7 +4723,7 @@ describe("SessionManager edge coverage", () => {
     expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -4949,7 +4951,7 @@ describe("SessionManager edge coverage", () => {
     rejectReplaceStop?.(boom);
     await expect(terminate).rejects.toBe(boom);
     await retry;
-    expect(i.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
     expect(i.sessions.has(chatId)).toBe(true);
     expect(i.terminatingChats.has(chatId)).toBe(false);
 
@@ -4964,7 +4966,7 @@ describe("SessionManager edge coverage", () => {
     // the strict stop and converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5092,7 +5094,7 @@ describe("SessionManager edge coverage", () => {
     await stopped;
     await retry;
     expect(oldHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
   });
 
   it("caps concurrent replacement installs at the configured concurrency across chats", async () => {
@@ -5263,7 +5265,7 @@ describe("SessionManager edge coverage", () => {
     // The route failed, but the producer settled through the finally — no
     // quiesce can ever wait on this chat forever, and the failure followed
     // the existing classification path.
-    expect(i.routeProducers.has(chatId)).toBe(false);
+    expect(i.routeTeardown.routeProducers.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5335,7 +5337,7 @@ describe("SessionManager edge coverage", () => {
     // Bounded: exactly one best-effort retry (3 stops total), then shutdown
     // returns with the debt cleared — the last owner did not drop it.
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(3);
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await dispatch;
   });
@@ -5512,7 +5514,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     // A chat whose only trace is teardown debt must stay held: dropping it
     // would lose the reconcile retry channel for the unconfirmed stop.
-    i.registerPendingTeardown("chat-debt-only", handler());
+    i.routeTeardown.registerPendingTeardown("chat-debt-only", handler());
     expect(sm.getHeldChatIds()).toContain("chat-debt-only");
     await sm.shutdown();
   });
@@ -5525,7 +5527,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-debt-force-keep";
-    i.registerPendingTeardown(chatId, debtHandler);
+    i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Production shape: AgentSlot.reconcileNow always passes
     // activeRuntimeChatIds, and an archived/hidden chat is not in it. The
@@ -5538,13 +5540,13 @@ describe("SessionManager edge coverage", () => {
     // status survive for the next reconcile pass.
     sm.applyStaleChatIds([chatId]);
     await vi.waitFor(() => expect(debtHandler.shutdown).toHaveBeenCalledTimes(1));
-    expect(i.pendingTeardowns.has(chatId)).toBe(true);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(true);
     expect(sm.getHeldChatIds(activeSet)).toContain(chatId);
 
     // Next reconcile pass: the teardown succeeds, the debt clears, and the
     // chat finally leaves the held set.
     sm.applyStaleChatIds([chatId]);
-    await vi.waitFor(() => expect(i.pendingTeardowns.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false));
     expect(sm.getHeldChatIds(activeSet)).not.toContain(chatId);
 
     await sm.shutdown();
@@ -5557,7 +5559,7 @@ describe("SessionManager edge coverage", () => {
     const otherChat = "chat-force-keep-other";
     i.sessions.set(debtChat, makeSessionRecord(debtChat, { status: "suspended", lastActivity: 1_000 }));
     i.sessions.set(otherChat, makeSessionRecord(otherChat, { status: "suspended", lastActivity: 2_000 }));
-    i.registerPendingTeardown(debtChat, handler());
+    i.routeTeardown.registerPendingTeardown(debtChat, handler());
 
     // The debt chat is the older non-active session and would be the
     // preferred victim; the force-keep skips it, so the other chat is
@@ -5591,7 +5593,7 @@ describe("SessionManager edge coverage", () => {
     // confirmed, so no register-only "fake" debt lingers.
     await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
     expect(targetHandler.shutdown).toHaveBeenCalled();
-    expect(i.pendingTeardowns.has(chatId)).toBe(false);
+    expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });

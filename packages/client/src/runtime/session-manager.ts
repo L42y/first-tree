@@ -67,6 +67,12 @@ import { redactErrorPreview } from "./redact-error-preview.js";
 import { ReplayFenceStore } from "./replay-fence.js";
 import { createResultSink, type Trigger } from "./result-sink.js";
 import {
+  HandlerSuspendTimeoutError,
+  RouteTeardownAuthority,
+  type RouteTransitionToken,
+  waitForHandlerSuspend,
+} from "./route-teardown-authority.js";
+import {
   isRuntimeSessionProofFailure,
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
@@ -182,22 +188,6 @@ type SessionEntry = {
    * path (handler.resume) instead of regressing to handler.start.
    */
   retryFromEvicted: { claudeSessionId: string; lastActivity: number } | null;
-};
-
-type RouteLeaseToken = {
-  generation: number;
-  handler: AgentHandler;
-};
-
-type RouteTransitionToken = RouteLeaseToken & {
-  phase: "start" | "resume";
-};
-
-type QuarantinedSession = {
-  handler: AgentHandler;
-  generation: number;
-  reason: "operator_suspend_timeout";
-  routeTransitionInFlight: boolean;
 };
 
 type SessionFailureHandling =
@@ -476,34 +466,6 @@ type SessionManagerConfig = {
 const MAX_EVICTED_MAPPINGS = 500;
 
 /**
- * Provider suspend/drain callbacks can disappear across host sleep or
- * transport loss. Bound an operator pause so later inbox work can recover.
- */
-const OPERATOR_SUSPEND_TIMEOUT_MS = 30_000;
-
-class HandlerSuspendTimeoutError extends Error {
-  constructor(chatId: string) {
-    super(`handler suspend timed out after ${OPERATOR_SUSPEND_TIMEOUT_MS}ms for chat ${chatId}`);
-    this.name = "HandlerSuspendTimeoutError";
-  }
-}
-
-async function waitForHandlerSuspend(chatId: string, suspend: () => Promise<void>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  try {
-    await Promise.race([
-      Promise.resolve().then(suspend),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new HandlerSuspendTimeoutError(chatId)), OPERATOR_SUSPEND_TIMEOUT_MS);
-        timer.unref?.();
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/**
  * Minimum spacing between gate-triggered replay-fence reconciliations for
  * one chat. Withheld dispatches retry the server-truth readback so a
  * transient readback/clear failure converges without a process restart,
@@ -674,32 +636,10 @@ export class SessionManager {
    */
   private readonly postResetFenceRecoveryScheduled = new Set<string>();
   /**
-   * Per-chat teardown debt: handlers detached from their SessionEntry (LRU
-   * eviction, failSessionForRecovery, abortUnownedRoute, terminal cleanup,
-   * canceled fresh-start, resume/retry handler replacement) without a
-   * CONFIRMED stop. A ref'd terminate joins/strictly tears down every
-   * pending handler of the chat before it may ack; confirmed stops drop out
-   * of the set. Entries are registered at the detach point (see
-   * `detachHandlerWithPendingTeardown` / `registerPendingTeardown`).
+   * Unique owner of route-transition fencing, teardown debt, route producers,
+   * handler retire/shutdown coalescing, and operator-suspend quarantine.
    */
-  private readonly pendingTeardowns = new Map<string, Set<AgentHandler>>();
-  /**
-   * Chat-level authority for provider generations whose operator suspend
-   * callback exceeded its bound. The entry lives for this manager's lifetime:
-   * ordinary routing may replace the exact handler, while Reset remains
-   * restart-required because provider teardown was never confirmed.
-   */
-  private readonly quarantinedSessions = new Map<string, QuarantinedSession>();
-  /**
-   * In-flight route producers (start/resume/retry provider calls), per chat.
-   * Tracked from `beginRouteTransition` until the route settles: a canceled
-   * transition can still MATERIALIZE late (the provider call returns after
-   * its pre-materialization shutdown ran as a no-op), and only the
-   * producer's settle funnels that materialization into
-   * `discardStaleRouteTransition` → teardown debt. Terminate and manager
-   * shutdown join these before they may ack/return.
-   */
-  private readonly routeProducers = new Map<string, Set<Promise<void>>>();
+  private readonly routeTeardown: RouteTeardownAuthority;
   /**
    * Per-chat single-flight registry for `runRetry` executions. An
    * overlapping trigger (timer fire + immediate delivery trigger) joins the
@@ -714,17 +654,6 @@ export class SessionManager {
   private readonly sessionRuntimeStates = new Map<string, RuntimeState>();
   /** Chats held specifically for a fresh bind, never same-socket recovery. */
   private readonly runtimeProofRecoveryChats = new Set<string>();
-  /** Handlers invalidated while start/resume was unresolved must never be reused. */
-  private readonly retiredHandlers = new WeakSet<AgentHandler>();
-  /**
-   * Coalesces concurrent cleanup; a stale settlement may enqueue a later
-   * cleanup pass. Each entry keeps both faces of the shutdown: `raw`
-   * (rejects on failure) for `observeFailure` callers such as the Reset
-   * terminate, and `observed` (swallow-and-warn, always resolves) for
-   * fire-and-forget callers — so a strict caller joining an in-flight
-   * shutdown that a lenient caller started still sees the failure.
-   */
-  private readonly handlerShutdowns = new WeakMap<AgentHandler, { raw: Promise<void>; observed: Promise<void> }>();
   private lastReportedRuntimeState: RuntimeState | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private runtimeReaffirmTimer: ReturnType<typeof setTimeout> | null = null;
@@ -732,6 +661,15 @@ export class SessionManager {
 
   constructor(config: SessionManagerConfig) {
     this.config = config;
+    this.routeTeardown = new RouteTeardownAuthority({
+      log: config.log,
+      isShuttingDown: () => this.shuttingDown,
+      getSession: (chatId) => this.sessions.get(chatId),
+      createHandler: () => this.createHandler(),
+      invalidateDeliveryAdmission: (chatId) => this.invalidateDeliveryAdmission(chatId),
+      runtimeProvider: () => this.runtimeProvider(),
+      emitResilienceEvent: (chatId, eventName, payload) => this.emitResilienceEvent(chatId, eventName, payload),
+    });
     this.inboxDelivery = new InboxDeliveryCoordinator({
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
@@ -1030,8 +968,8 @@ export class SessionManager {
    * or `session:command:aborted`) can lift the fence.
    */
   async handleCommand(chatId: string, command: SessionCommandType, options?: { resetRef?: string }): Promise<void> {
-    if (command === "session:terminate" && this.quarantinedSessions.has(chatId)) {
-      throw this.quarantineRestartRequiredError(chatId, "Reset");
+    if (command === "session:terminate" && this.routeTeardown.quarantinedSessions.has(chatId)) {
+      throw this.routeTeardown.quarantineRestartRequiredError(chatId, "Reset");
     }
     const inFlightTermination = this.terminatingChats.get(chatId);
     if (inFlightTermination) {
@@ -1077,8 +1015,8 @@ export class SessionManager {
     if (command === "session:resume") {
       const session = this.sessions.get(chatId);
       if (session?.suspending) await session.suspending;
-      if (this.isProviderAdmissionRestartRequired(chatId)) {
-        throw this.quarantineRestartRequiredError(chatId, "provider admission");
+      if (this.routeTeardown.isProviderAdmissionRestartRequired(chatId)) {
+        throw this.routeTeardown.quarantineRestartRequiredError(chatId, "provider admission");
       }
       if (await this.recoverDebtBeforeResume(chatId, "session_resume:recovery_debt")) {
         this.drainPendingQueue();
@@ -1117,7 +1055,7 @@ export class SessionManager {
           clearTimeout(session.retryTimer);
           session.retryTimer = null;
         }
-        if (session) this.invalidateRouteTransition(session, "session_terminated");
+        if (session) this.routeTeardown.invalidateRouteTransition(session, "session_terminated");
         // Join an in-flight suspend before any state deletion: handler.suspend()
         // may still be running, and the slot was already released so the
         // activeSlotHeld teardown below would never fire. `suspending` never
@@ -1126,8 +1064,8 @@ export class SessionManager {
         // apply instead of acking over a possibly-live handler.
         const joinedSuspend = session?.suspending != null;
         if (session?.suspending) await session.suspending;
-        if (this.quarantinedSessions.has(chatId)) {
-          throw this.quarantineRestartRequiredError(chatId, "Reset");
+        if (this.routeTeardown.quarantinedSessions.has(chatId)) {
+          throw this.routeTeardown.quarantineRestartRequiredError(chatId, "Reset");
         }
         if (joinedSuspend && session?.suspendError) throw asTerminateError("suspend", session.suspendError.error);
         const activeSlotHeld = session?.activeSlotHeld === true;
@@ -1156,7 +1094,7 @@ export class SessionManager {
           (activeSlotHeld || joinedSuspend || session.suspendError != null || session.teardownError != null);
         if (session && needsTeardown) {
           try {
-            await this.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
+            await this.routeTeardown.shutdownHandler(session.handler, "session_terminated", { observeFailure: true });
           } catch (err) {
             session.teardownError = { error: err };
             throw asTerminateError("teardown", err);
@@ -1168,7 +1106,7 @@ export class SessionManager {
         // settle funnels that materialization into
         // `discardStaleRouteTransition` → fresh teardown debt. The drain
         // below must see that complete debt, so this quiesce runs first.
-        await this.quiesceRouteProducers(chatId);
+        await this.routeTeardown.quiesceRouteProducers(chatId);
 
         // Settle every pending teardown debt for this chat: handlers detached
         // from their entry (eviction / recovery / abort / terminal cleanup /
@@ -1182,12 +1120,12 @@ export class SessionManager {
         // concurrent max-session eviction of the still-present session), so
         // loop until a full scan finds nothing left.
         for (;;) {
-          const pendingTeardown = this.pendingTeardowns.get(chatId);
+          const pendingTeardown = this.routeTeardown.pendingTeardowns.get(chatId);
           if (!pendingTeardown || pendingTeardown.size === 0) break;
           for (const pendingHandler of [...pendingTeardown]) {
             try {
-              await this.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
-              this.dropPendingTeardown(chatId, pendingHandler);
+              await this.routeTeardown.shutdownHandler(pendingHandler, "session_terminated", { observeFailure: true });
+              this.routeTeardown.dropPendingTeardown(chatId, pendingHandler);
             } catch (err) {
               throw asTerminateError("teardown", err);
             }
@@ -1275,17 +1213,17 @@ export class SessionManager {
     // Unresolved teardown debt keeps the chat held: the handler is not
     // confirmed stopped, so the server must keep this chat in the sync set —
     // dropping it would lose the reconcile retry channel for the debt.
-    for (const id of this.pendingTeardowns.keys()) {
+    for (const id of this.routeTeardown.pendingTeardowns.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     // In-flight route producers hold the chat the same way: a canceled
     // start/resume can still materialize late, so the server must keep the
     // chat in the sync set until the producer settles and its
     // materialization is confirmed stopped.
-    for (const id of this.routeProducers.keys()) {
+    for (const id of this.routeTeardown.routeProducers.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
-    for (const id of this.quarantinedSessions.keys()) {
+    for (const id of this.routeTeardown.quarantinedSessions.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     // Unresolved Reset retirement (in-flight terminate, failed durable flush,
@@ -1399,9 +1337,9 @@ export class SessionManager {
       if (!session.activeSlotHeld && session.suspending === null && !stopUnconfirmedAfterFailedBoundary) {
         return Promise.resolve();
       }
-      if (this.isCurrentHandlerQuarantined(session)) return Promise.resolve();
+      if (this.routeTeardown.isCurrentHandlerQuarantined(session)) return Promise.resolve();
       attemptedHandlers.add(session.handler);
-      return this.shutdownHandler(session.handler, reason ?? "manager_shutdown", {
+      return this.routeTeardown.shutdownHandler(session.handler, reason ?? "manager_shutdown", {
         ...(session.activeSlotHeld ? { settleProviderEntered: true } : {}),
         // Failed-boundary / in-flight-suspend stops are best-effort on the
         // manager face — do not reject the whole client shutdown.
@@ -1417,7 +1355,7 @@ export class SessionManager {
     // stop, so the bounded pass below only ever sees handlers whose stop is
     // genuinely unconfirmed.
     const debtChatsByHandler = new Map<AgentHandler, string[]>();
-    for (const [chatId, pending] of this.pendingTeardowns) {
+    for (const [chatId, pending] of this.routeTeardown.pendingTeardowns) {
       for (const pendingHandler of pending) {
         const chatIds = debtChatsByHandler.get(pendingHandler) ?? [];
         chatIds.push(chatId);
@@ -1425,13 +1363,13 @@ export class SessionManager {
       }
     }
     for (const [pendingHandler, chatIds] of debtChatsByHandler) {
-      if (chatIds.some((chatId) => this.quarantinedSessions.get(chatId)?.handler === pendingHandler)) continue;
+      if (chatIds.some((chatId) => this.routeTeardown.quarantinedSessions.get(chatId)?.handler === pendingHandler)) continue;
       if (attemptedHandlers.has(pendingHandler)) continue;
       attemptedHandlers.add(pendingHandler);
       shutdowns.push(
-        this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
+        this.routeTeardown.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
           () => {
-            for (const chatId of chatIds) this.dropPendingTeardown(chatId, pendingHandler);
+            for (const chatId of chatIds) this.routeTeardown.dropPendingTeardown(chatId, pendingHandler);
           },
           () => {},
         ),
@@ -1445,7 +1383,7 @@ export class SessionManager {
     // cannot hang manager shutdown.
     const shutdownReason = reason ?? "manager_shutdown";
     for (const session of this.sessions.values()) {
-      this.invalidateRouteTransition(session, shutdownReason);
+      this.routeTeardown.invalidateRouteTransition(session, shutdownReason);
     }
 
     // Suspend boundaries AND route producers settling DURING the sweep can
@@ -1463,26 +1401,24 @@ export class SessionManager {
       ...[...this.sessions.values()]
         .map((session) => session.suspending)
         .filter((pending): pending is Promise<void> => pending !== null),
-      ...[...this.routeProducers.values()].flatMap((producers) => [...producers]),
+      ...[...this.routeTeardown.routeProducers.values()].flatMap((producers) => [...producers]),
     ]);
     const retriedHandlers = new Set<AgentHandler>();
-    for (const pending of this.pendingTeardowns.values()) {
+    for (const pending of this.routeTeardown.pendingTeardowns.values()) {
       for (const pendingHandler of [...pending]) {
-        if ([...this.quarantinedSessions.values()].some((entry) => entry.handler === pendingHandler)) continue;
+        if ([...this.routeTeardown.quarantinedSessions.values()].some((entry) => entry.handler === pendingHandler)) continue;
         if (retriedHandlers.has(pendingHandler)) continue;
         retriedHandlers.add(pendingHandler);
         // Each attempt joins a still in-flight shutdown when one exists; a
         // failure earns exactly ONE fresh retry — bounded, so manager
         // shutdown never blocks on a handler that will not die.
         const stopOnce = (): Promise<boolean> =>
-          this.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
+          this.routeTeardown.shutdownHandler(pendingHandler, reason ?? "manager_shutdown", { observeFailure: true }).then(
             () => true,
             () => false,
           );
         if (!(await stopOnce()) && !(await stopOnce())) continue;
-        for (const [id, set] of this.pendingTeardowns) {
-          if (set.delete(pendingHandler) && set.size === 0) this.pendingTeardowns.delete(id);
-        }
+        this.routeTeardown.dropPendingTeardownEverywhere(pendingHandler);
       }
     }
 
@@ -1605,15 +1541,15 @@ export class SessionManager {
   }
 
   private hasRuntimeSyncForceKeep(chatId: string): boolean {
-    if (this.quarantinedSessions.has(chatId)) return true;
+    if (this.routeTeardown.quarantinedSessions.has(chatId)) return true;
     // Unresolved teardown debt force-keeps the chat: its handler is not
     // confirmed stopped, so dropping the chat from the held report would
     // lose the reconcile retry channel for the debt.
-    if (this.pendingTeardowns.has(chatId)) return true;
+    if (this.routeTeardown.pendingTeardowns.has(chatId)) return true;
     // An in-flight route producer force-keeps the chat too: the canceled
     // start/resume can still materialize late, and the reconcile channel is
     // what retries its teardown if the stop fails.
-    if ((this.routeProducers.get(chatId)?.size ?? 0) > 0) return true;
+    if ((this.routeTeardown.routeProducers.get(chatId)?.size ?? 0) > 0) return true;
     // In-flight Reset drain or failed durable Reset flush: keep reconcile
     // authority until the successful terminate retry clears the fence.
     if (this.isProviderRouteAdmissionFenced(chatId)) return true;
@@ -1646,7 +1582,7 @@ export class SessionManager {
       this.terminatePersistFailures.has(chatId) ||
       this.awaitingResetFenceRelease.has(chatId) ||
       this.hasArmedResetGeneration(chatId) ||
-      this.isProviderAdmissionRestartRequired(chatId)
+      this.routeTeardown.isProviderAdmissionRestartRequired(chatId)
     );
   }
 
@@ -2104,330 +2040,6 @@ export class SessionManager {
     return this.config.handlerFactory(handlerCfg);
   }
 
-  private quarantineMatches(chatId: string, lease: RouteLeaseToken): boolean {
-    const quarantined = this.quarantinedSessions.get(chatId);
-    return quarantined?.handler === lease.handler && quarantined.generation === lease.generation;
-  }
-
-  private isCurrentHandlerQuarantined(entry: SessionEntry): boolean {
-    return this.quarantinedSessions.get(entry.chatId)?.handler === entry.handler;
-  }
-
-  private isProviderAdmissionRestartRequired(chatId: string): boolean {
-    return this.quarantinedSessions.get(chatId)?.routeTransitionInFlight === true;
-  }
-
-  private quarantineRestartRequiredError(chatId: string, operation: "Reset" | "provider admission"): Error {
-    const quarantined = this.quarantinedSessions.get(chatId);
-    const reason = quarantined?.reason ?? "operator_suspend_timeout";
-    return new Error(
-      `${operation} blocked: ${reason}; provider teardown was not confirmed for chat ${chatId}. Restart this agent daemon and retry.`,
-    );
-  }
-
-  private quarantineTimedOutSuspend(entry: SessionEntry, transition: RouteTransitionToken | null): void {
-    const generation = transition?.generation ?? entry.routeTransitionGeneration;
-    const handler = transition?.handler ?? entry.handler;
-    const routeTransitionInFlight = transition !== null;
-    const quarantine: QuarantinedSession = {
-      handler,
-      generation,
-      reason: "operator_suspend_timeout",
-      routeTransitionInFlight,
-    };
-    this.quarantinedSessions.set(entry.chatId, quarantine);
-    this.retiredHandlers.add(handler);
-    // The quarantine is now the sole authority for this lost generation.
-    // Remove its unresolved producer from ordinary lifecycle joins; the
-    // producer's own finally remains safe when the set is already absent.
-    if (transition) this.routeProducers.delete(entry.chatId);
-
-    const provider = this.runtimeProvider();
-    const details = {
-      provider,
-      chatId: entry.chatId,
-      generation,
-      routeTransitionInFlight,
-      routeTransitionPhase: transition?.phase ?? null,
-      reason: quarantine.reason,
-    };
-    this.config.log.error(details, "operator suspend timed out; provider session quarantined");
-    this.emitResilienceEvent(entry.chatId, "resilience.session.operator_suspend_timeout", details);
-  }
-
-  private handlerForRouteTransition(entry: SessionEntry): AgentHandler {
-    if (!this.retiredHandlers.has(entry.handler)) return entry.handler;
-    const previous = entry.handler;
-    const handler = this.createHandler();
-    entry.handler = handler;
-    // The quarantined generation has no trustworthy teardown join. Keep it
-    // exclusively in quarantinedSessions: ordinary pendingTeardowns would
-    // make later routes and manager shutdown wait on the lost callback again.
-    if (this.quarantinedSessions.get(entry.chatId)?.handler === previous) return handler;
-    // The retired handler's shutdown was fire-and-forget — never confirmed.
-    // Record the debt so a ref'd terminate strictly confirms the stop before
-    // it may ack (the join resolves immediately when the stop already
-    // confirmed, dropping the debt right away). Skip entirely when the stop
-    // was already confirmed by the suspend boundary — a confirmed-stopped
-    // handler is not debt.
-    if (entry.handlerStoppedBySuspend !== previous) {
-      this.detachHandlerWithPendingTeardown(entry.chatId, previous, "handler_replaced_after_retire");
-    }
-    return handler;
-  }
-
-  private beginRouteTransition(
-    entry: SessionEntry,
-    handler: AgentHandler,
-    phase: RouteTransitionToken["phase"],
-  ): RouteTransitionToken {
-    entry.routeTransitionGeneration++;
-    entry.routeInjectReady = false;
-    const transition = { generation: entry.routeTransitionGeneration, handler, phase };
-    entry.routeTransition = transition;
-    return transition;
-  }
-
-  private isCurrentRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
-    return entry.routeTransition === transition && this.isRouteAdoptionValid(entry, transition);
-  }
-
-  /** Shared identity checks for delivery-route leases (generation/handler/entry). */
-  private isDeliveryRouteIdentityValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    return (
-      this.sessions.get(entry.chatId) === entry &&
-      entry.routeTransitionGeneration === transition.generation &&
-      entry.handler === transition.handler &&
-      !this.retiredHandlers.has(transition.handler)
-    );
-  }
-
-  /**
-   * Active mutation/adoption fence for SessionContext and route receipt adoption.
-   * Requires a live active slot and fails closed on manager shutdown. Manual
-   * operator suspend releases the slot immediately — ordinary mutations must
-   * not reopen through the settlement-only `suspended && suspending` window.
-   */
-  private isRouteAdoptionValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    return (
-      !this.shuttingDown &&
-      this.isDeliveryRouteIdentityValid(entry, transition) &&
-      entry.status === "active" &&
-      entry.activeSlotHeld
-    );
-  }
-
-  /**
-   * Lease for already-issued DeliveryToken notice+ACK during graceful drain.
-   * Ignores `shuttingDown` and additionally accepts the operator-suspend window
-   * (`suspended && suspending`) so provider-entered custody can still settle.
-   * Must not be used for ordinary SessionContext mutations.
-   */
-  private isDeliverySettlementLeaseValid(entry: SessionEntry, transition: RouteLeaseToken): boolean {
-    const leaseHolder =
-      (entry.status === "active" && entry.activeSlotHeld) ||
-      (entry.status === "suspended" && entry.suspending !== null);
-    return this.isDeliveryRouteIdentityValid(entry, transition) && leaseHolder;
-  }
-
-  private completeRouteTransition(entry: SessionEntry, transition: RouteTransitionToken): boolean {
-    if (!this.isCurrentRouteTransition(entry, transition)) return false;
-    entry.routeTransition = null;
-    entry.routeInjectReady = false;
-    return true;
-  }
-
-  private shutdownHandler(
-    handler: AgentHandler,
-    reason: string,
-    opts: { afterPrior?: boolean; observeFailure?: boolean; settleProviderEntered?: boolean } = {},
-  ): Promise<void> {
-    const prior = this.handlerShutdowns.get(handler);
-    // Joining a prior shutdown must not hide its failure from a strict
-    // caller: `observeFailure` joins `raw`, lenient callers join `observed`.
-    if (prior && opts.afterPrior !== true) return opts.observeFailure ? prior.raw : prior.observed;
-    const raw = (prior?.observed ?? Promise.resolve()).then(() =>
-      handler.shutdown(reason, {
-        ...(opts.settleProviderEntered === true ? { settleProviderEntered: true } : {}),
-      }),
-    );
-    // `observed` keeps the legacy swallow-and-warn semantics for
-    // fire-and-forget callers; an `observeFailure` caller gets `raw` so a
-    // teardown failure can fail its operation (Reset terminate apply-ack).
-    // `raw`'s rejection is always handled by `observed`.
-    const observed = raw.catch((err) => {
-      this.config.log.warn({ reason, err }, "handler shutdown failed");
-    });
-    const record = { raw, observed };
-    this.handlerShutdowns.set(handler, record);
-    void observed.finally(() => {
-      if (this.handlerShutdowns.get(handler) === record) this.handlerShutdowns.delete(handler);
-    });
-    return opts.observeFailure ? raw : observed;
-  }
-
-  /** Record a detached, unconfirmed-stop handler as teardown debt for the chat. */
-  private registerPendingTeardown(chatId: string, handler: AgentHandler): void {
-    let set = this.pendingTeardowns.get(chatId);
-    if (!set) {
-      set = new Set();
-      this.pendingTeardowns.set(chatId, set);
-    }
-    set.add(handler);
-  }
-
-  private dropPendingTeardown(chatId: string, handler: AgentHandler): void {
-    const set = this.pendingTeardowns.get(chatId);
-    if (!set) return;
-    set.delete(handler);
-    if (set.size === 0) this.pendingTeardowns.delete(chatId);
-  }
-
-  /**
-   * Register an in-flight route producer (the provider start/resume call of
-   * a route transition). Returns the settle callback; the tracked promise
-   * never rejects, so joining it is always safe.
-   */
-  private registerRouteProducer(chatId: string): () => void {
-    let resolvePromise!: () => void;
-    const promise = new Promise<void>((resolve) => {
-      resolvePromise = resolve;
-    });
-    let set = this.routeProducers.get(chatId);
-    if (!set) {
-      set = new Set();
-      this.routeProducers.set(chatId, set);
-    }
-    set.add(promise);
-    return () => {
-      resolvePromise();
-      const current = this.routeProducers.get(chatId);
-      if (!current) return;
-      current.delete(promise);
-      if (current.size === 0) this.routeProducers.delete(chatId);
-    };
-  }
-
-  /**
-   * Join every in-flight route producer for the chat, draining to a stable
-   * quiet point. A producer's settle can reveal late materialization debt
-   * (via `discardStaleRouteTransition`), so callers must run the debt drain
-   * AFTER this returns.
-   */
-  private async quiesceRouteProducers(chatId: string): Promise<void> {
-    for (;;) {
-      const producers = this.routeProducers.get(chatId);
-      if (!producers || producers.size === 0) return;
-      await Promise.allSettled([...producers]);
-    }
-  }
-
-  /**
-   * Route admission fence: before a chat may create a new provider route,
-   * its teardown authority must be clean — otherwise the chat could run
-   * "old handler never confirmed stopped + new provider route started".
-   * Settles every pending handler strictly (coalescing joins in-flight
-   * shutdowns). Returns false when a stop fails: the debt stays registered
-   * and the caller must keep the delivery's recovery/retry custody instead
-   * of routing.
-   */
-  private async settleTeardownDebtBeforeRoute(chatId: string): Promise<boolean> {
-    if (this.isProviderAdmissionRestartRequired(chatId)) {
-      this.config.log.error(
-        { chatId, provider: this.runtimeProvider(), reason: "operator_suspend_timeout" },
-        "provider admission blocked by unresolved quarantined route transition; daemon restart required",
-      );
-      return false;
-    }
-    // Quiesce in-flight route producers FIRST: a canceled start/resume can
-    // still materialize late, and its discard registers teardown debt only
-    // when the producer settles — debt drained before this point would be
-    // incomplete, and a fresh route started over an unquiesced producer
-    // could race the late materialization. (Guarded so the common no-
-    // producer case adds no extra awaits to the route hot path.)
-    if ((this.routeProducers.get(chatId)?.size ?? 0) > 0) {
-      await this.quiesceRouteProducers(chatId);
-    }
-    for (;;) {
-      const pending = this.pendingTeardowns.get(chatId);
-      if (!pending || pending.size === 0) return true;
-      let settled = true;
-      for (const pendingHandler of [...pending]) {
-        try {
-          await this.shutdownHandler(pendingHandler, "route_admission_teardown", { observeFailure: true });
-          this.dropPendingTeardown(chatId, pendingHandler);
-        } catch (err) {
-          this.config.log.warn({ chatId, err }, "route admission teardown failed; keeping recovery custody");
-          settled = false;
-        }
-      }
-      if (!settled) return false;
-    }
-  }
-
-  /**
-   * Detach a handler whose stop is not yet confirmed. Keeps the calling
-   * path's existing fire-and-forget shutdown semantics (lenient observed
-   * face still logs failures), but records the debt so a later ref'd
-   * terminate strictly confirms the stop. The raw face drives
-   * deregistration — a failed shutdown keeps the debt, so the terminate
-   * retry loop converges instead of acking over a live old run.
-   */
-  private detachHandlerWithPendingTeardown(chatId: string, handler: AgentHandler, reason: string): void {
-    this.registerPendingTeardown(chatId, handler);
-    void this.shutdownHandler(handler, reason, { observeFailure: true }).then(
-      () => this.dropPendingTeardown(chatId, handler),
-      () => {
-        // Failure keeps the debt — a later ref'd terminate strictly retries.
-      },
-    );
-  }
-
-  private retireTransitionHandler(transition: RouteTransitionToken, reason: string): void {
-    this.retiredHandlers.add(transition.handler);
-    void this.shutdownHandler(transition.handler, reason);
-  }
-
-  private invalidateRouteTransition(entry: SessionEntry, reason: string): RouteTransitionToken | null {
-    this.invalidateDeliveryAdmission(entry.chatId);
-    const transition = entry.routeTransition;
-    entry.routeTransitionGeneration++;
-    entry.routeTransition = null;
-    entry.routeInjectReady = false;
-    if (transition) this.retireTransitionHandler(transition, reason);
-    return transition;
-  }
-
-  private discardStaleRouteTransition(chatId: string, transition: RouteTransitionToken, reason: string): void {
-    this.retiredHandlers.add(transition.handler);
-    if (this.quarantineMatches(chatId, transition)) {
-      this.config.log.warn(
-        {
-          chatId,
-          provider: this.runtimeProvider(),
-          generation: transition.generation,
-          phase: transition.phase,
-          reason,
-        },
-        "late quarantined route completion ignored",
-      );
-      return;
-    }
-    // A stale route completion MATERIALIZES the handler (the canceled
-    // start/resume returned late), so it needs a NEW shutdown chained after
-    // any prior (a pre-materialization shutdown was a no-op). That stop's
-    // outcome enters the pending-teardown authority: on failure the
-    // possibly-live stale handler stays joinable for a ref'd terminate /
-    // reconcile retry / manager shutdown instead of becoming ownerless.
-    this.registerPendingTeardown(chatId, transition.handler);
-    void this.shutdownHandler(transition.handler, reason, { afterPrior: true, observeFailure: true }).then(
-      () => this.dropPendingTeardown(chatId, transition.handler),
-      () => {
-        // Failure keeps the debt — a later terminate / reconcile retries it.
-      },
-    );
-  }
-
   private claimActiveSlot(entry: SessionEntry): void {
     if (entry.activeSlotHeld) return;
     entry.activeSlotHeld = true;
@@ -2562,7 +2174,7 @@ export class SessionManager {
     const entry = this.sessions.get(chatId);
     if (!entry) return;
     const reason = `runtime_session_proof:${reasonCode}`;
-    this.invalidateRouteTransition(entry, reason);
+    this.routeTeardown.invalidateRouteTransition(entry, reason);
     this.clearRetryState(entry);
     const resumeSessionId = resumableProviderSessionId(entry.claudeSessionId, entry.retryFromEvicted?.claudeSessionId);
     if (resumeSessionId) {
@@ -2572,7 +2184,7 @@ export class SessionManager {
       });
     }
     this.releaseActiveSlot(entry);
-    void this.shutdownHandler(entry.handler, reason);
+    void this.routeTeardown.shutdownHandler(entry.handler, reason);
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -2659,7 +2271,7 @@ export class SessionManager {
     const entry = this.sessions.get(chatId);
     if (!entry) return;
 
-    this.invalidateRouteTransition(entry, reason);
+    this.routeTeardown.invalidateRouteTransition(entry, reason);
     this.clearRetryState(entry);
     const resumeSessionId = resumableProviderSessionId(
       sessionId,
@@ -2673,7 +2285,7 @@ export class SessionManager {
       });
     }
     this.releaseActiveSlot(entry);
-    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
+    this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
 
     this.inboxDelivery.prepareEvict(chatId, reason);
     this.sessions.delete(chatId);
@@ -2690,9 +2302,9 @@ export class SessionManager {
     const { chatId } = entry;
     if (this.sessions.get(chatId) !== entry) return;
     this.config.log.warn({ chatId, reason }, "handler route completed after inbox custody was cleared");
-    this.invalidateRouteTransition(entry, reason);
+    this.routeTeardown.invalidateRouteTransition(entry, reason);
     this.releaseActiveSlot(entry);
-    this.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
+    this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -3079,7 +2691,7 @@ export class SessionManager {
     // handler never confirmed stopped + new route started". On failure the
     // throw routes into the caller's existing retryDeliveryTurn path, so the
     // delivery keeps its recovery custody.
-    if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
+    if (!(await this.routeTeardown.settleTeardownDebtBeforeRoute(chatId))) {
       throw new Error("route admission: teardown debt settle failed");
     }
     // The settle awaited: re-validate the fences — a terminate or manager
@@ -3148,9 +2760,9 @@ export class SessionManager {
 
     this.sessions.set(chatId, entry);
     this.claimActiveSlot(entry);
-    const transition = this.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
-    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
-    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const transition = this.routeTeardown.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
+    const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, transition);
+    const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, transition);
     const routeLeases = { mutationValid, settlementValid };
     const ctx = this.buildSessionContext(chatId, routeLeases);
     if (evicted) this.evictedMappings.delete(chatId);
@@ -3169,21 +2781,21 @@ export class SessionManager {
       // Track the route producer from here until it settles: a canceled
       // start can still materialize late, and terminate / manager shutdown
       // join this before they may ack/return (see routeProducers).
-      settleRouteProducer = this.registerRouteProducer(chatId);
+      settleRouteProducer = this.routeTeardown.registerRouteProducer(chatId);
       this.setCurrentTrigger(chatId, message);
       const token = this.createDeliveryToken(chatId, routeLeases);
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
-        if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(entry.chatId, transition, "session_eviction_resume_stale_completion");
+        if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+          this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_eviction_resume_stale_completion");
           return;
         }
         if (!this.adoptResumeReceipt(entry, message, receipt, "session_eviction_resume_unowned_delivery")) return;
         this.config.log.info({ chatId, sessionId: entry.claudeSessionId }, "session resumed from eviction");
       } else {
         const receipt = normalizeStartReceipt(await handler.start(message, ctx, token));
-        if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_completion");
+        if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+          this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -3193,18 +2805,18 @@ export class SessionManager {
         }
         this.config.log.info({ chatId, sessionId: entry.claudeSessionId }, "session created");
       }
-      if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_adoption");
+      if (!this.routeTeardown.completeRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
       this.persistRegistry();
     } catch (err) {
-      if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_failure");
+      if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_failure");
         return;
       }
-      this.invalidateRouteTransition(entry, "session_start_failed");
+      this.routeTeardown.invalidateRouteTransition(entry, "session_start_failed");
       const phase: "start" | "resume" = evicted ? "resume" : "start";
       const classification = classifyProviderFailure(err, {
         provider: this.runtimeProvider(),
@@ -3242,8 +2854,8 @@ export class SessionManager {
     }
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_suspend")) return;
     if (this.sessions.get(entry.chatId) !== entry) return;
-    if (this.isProviderAdmissionRestartRequired(entry.chatId)) {
-      throw this.quarantineRestartRequiredError(entry.chatId, "provider admission");
+    if (this.routeTeardown.isProviderAdmissionRestartRequired(entry.chatId)) {
+      throw this.routeTeardown.quarantineRestartRequiredError(entry.chatId, "provider admission");
     }
     if (await this.recoverDebtBeforeResume(entry.chatId, "session_resume:recovery_debt")) return;
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_recovery")) return;
@@ -3261,10 +2873,10 @@ export class SessionManager {
     // its exact handler/generation stays fenced by quarantinedSessions and the
     // route below installs a fresh handler without registering ordinary debt.
     if (entry.suspendError) {
-      if (entry.handlerStoppedBySuspend !== entry.handler && !this.isCurrentHandlerQuarantined(entry)) {
-        await this.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
+      if (entry.handlerStoppedBySuspend !== entry.handler && !this.routeTeardown.isCurrentHandlerQuarantined(entry)) {
+        await this.routeTeardown.shutdownHandler(entry.handler, "session_resume_after_failed_suspend", { observeFailure: true });
         entry.handlerStoppedBySuspend = entry.handler;
-        this.retiredHandlers.add(entry.handler);
+        this.routeTeardown.retireHandler(entry.handler);
       }
       entry.suspendError = null;
     }
@@ -3272,7 +2884,7 @@ export class SessionManager {
     // Route admission fence: settle this chat's teardown authority before
     // installing or reusing a handler — on failure the throw routes into the
     // caller's existing retryDeliveryTurn path, keeping recovery custody.
-    if (!(await this.settleTeardownDebtBeforeRoute(entry.chatId))) {
+    if (!(await this.routeTeardown.settleTeardownDebtBeforeRoute(entry.chatId))) {
       throw new Error("route admission: teardown debt settle failed");
     }
     // The settle awaited: re-validate the entry, then the terminate fence —
@@ -3313,12 +2925,12 @@ export class SessionManager {
     if (!this.acquireActiveSlot(entry.chatId, message ?? null, slotKind)) return;
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_slot")) return;
 
-    const routeHandler = this.handlerForRouteTransition(entry);
+    const routeHandler = this.routeTeardown.handlerForRouteTransition(entry);
     entry.status = "active";
     this.claimActiveSlot(entry);
-    const transition = this.beginRouteTransition(entry, routeHandler, "resume");
-    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
-    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const transition = this.routeTeardown.beginRouteTransition(entry, routeHandler, "resume");
+    const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, transition);
+    const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, transition);
     const routeLeases = { mutationValid, settlementValid };
     const ctx = this.buildSessionContext(entry.chatId, routeLeases);
     entry.lastActivity = Date.now();
@@ -3333,7 +2945,7 @@ export class SessionManager {
     try {
       // Track the route producer: a canceled resume can still materialize
       // late, and terminate / manager shutdown join this before ack/return.
-      settleRouteProducer = this.registerRouteProducer(entry.chatId);
+      settleRouteProducer = this.routeTeardown.registerRouteProducer(entry.chatId);
       if (message) this.setCurrentTrigger(entry.chatId, message);
       // Mirror the pattern in `startNewSession` (line 449): the handler may
       // return a DIFFERENT sessionId than the one passed in — e.g. when the
@@ -3348,25 +2960,25 @@ export class SessionManager {
       const resumeResult = token
         ? await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx, token)
         : await routeHandler.resume(message ?? undefined, entry.claudeSessionId, ctx);
-      if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_completion");
+      if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_completion");
         return;
       }
       const receipt = normalizeResumeReceipt(resumeResult);
       if (!this.adoptResumeReceipt(entry, message, receipt, "session_resume_unowned_delivery")) return;
-      if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_adoption");
+      if (!this.routeTeardown.completeRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_adoption");
         return;
       }
       this.drainDeferredMessages(entry);
       this.config.log.info({ chatId: entry.chatId, sessionId: entry.claudeSessionId }, "session resumed");
       this.persistRegistry();
     } catch (err) {
-      if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_failure");
+      if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_failure");
         return;
       }
-      this.invalidateRouteTransition(entry, "session_resume_failed");
+      this.routeTeardown.invalidateRouteTransition(entry, "session_resume_failed");
       const classification = classifyProviderFailure(err, {
         provider: this.runtimeProvider(),
         scope: "session_resume",
@@ -3588,7 +3200,7 @@ export class SessionManager {
   ): Promise<void> {
     const chatId = entry.chatId;
     if (this.sessions.get(chatId) !== entry) return;
-    this.invalidateRouteTransition(entry, "session_terminal_failure");
+    this.routeTeardown.invalidateRouteTransition(entry, "session_terminal_failure");
     const hasDeferredTail = entry.deferredMessages.length > 0;
     const hasRecoveryDebt = this.inboxDelivery.hasRecoveryDebt(chatId);
     this.clearRetryState(entry);
@@ -3612,7 +3224,7 @@ export class SessionManager {
     // (register-only debt that lingered until a terminate). Register-then-
     // shutdown instead: the debt mirrors the real shutdown timeline — a
     // confirmed stop drops it immediately, a failure keeps it retryable.
-    this.detachHandlerWithPendingTeardown(chatId, entry.handler, "session_terminal_failure");
+    this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, "session_terminal_failure");
     this.sessions.delete(chatId);
     this.sessionRuntimeStates.delete(chatId);
     this.currentTrigger.delete(chatId);
@@ -3784,7 +3396,7 @@ export class SessionManager {
     // Route admission fence: settle this chat's teardown debt before the
     // retry builds a fresh handler. On failure keep retry custody — re-arm
     // with the same short-delay pass as slot contention below.
-    if (!(await this.settleTeardownDebtBeforeRoute(chatId))) {
+    if (!(await this.routeTeardown.settleTeardownDebtBeforeRoute(chatId))) {
       this.rearmRetryTimer(chatId, entry);
       return;
     }
@@ -3819,10 +3431,10 @@ export class SessionManager {
     // (joinable for terminate/reconcile) and the retry keeps its custody
     // via the same re-arm as slot contention, instead of silently
     // continuing.
-    this.registerPendingTeardown(chatId, entry.handler);
+    this.routeTeardown.registerPendingTeardown(chatId, entry.handler);
     try {
-      await this.shutdownHandler(entry.handler, "session_retry_replace", { observeFailure: true });
-      this.dropPendingTeardown(chatId, entry.handler);
+      await this.routeTeardown.shutdownHandler(entry.handler, "session_retry_replace", { observeFailure: true });
+      this.routeTeardown.dropPendingTeardown(chatId, entry.handler);
     } catch (err) {
       this.config.log.warn({ chatId, err }, "session retry replace-stop failed; keeping retry custody");
       this.rearmRetryTimer(chatId, entry);
@@ -3865,9 +3477,9 @@ export class SessionManager {
     entry.status = "active";
     this.claimActiveSlot(entry);
     entry.lastActivity = Date.now();
-    const transition = this.beginRouteTransition(entry, newHandler, retryRoute.kind);
-    const mutationValid = () => this.isRouteAdoptionValid(entry, transition);
-    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, transition);
+    const transition = this.routeTeardown.beginRouteTransition(entry, newHandler, retryRoute.kind);
+    const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, transition);
+    const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, transition);
     const routeLeases = { mutationValid, settlementValid };
     const ctx = this.buildSessionContext(chatId, routeLeases);
 
@@ -3882,15 +3494,15 @@ export class SessionManager {
       // Track the route producer: a canceled retry route can still
       // materialize late, and terminate / manager shutdown join this before
       // ack/return.
-      settleRouteProducer = this.registerRouteProducer(chatId);
+      settleRouteProducer = this.routeTeardown.registerRouteProducer(chatId);
       if (retryHeadMessage) this.setCurrentTrigger(chatId, retryHeadMessage);
       const token = retryHeadMessage ? this.createDeliveryToken(chatId, routeLeases) : undefined;
       if (retryRoute.kind === "resume") {
         const resumeResult = token
           ? await newHandler.resume(retryHeadMessage ?? undefined, retryRoute.previousSessionId, ctx, token)
           : await newHandler.resume(undefined, retryRoute.previousSessionId, ctx);
-        if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_resume_stale_completion");
+        if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+          this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_resume_stale_completion");
           return;
         }
         const receipt = normalizeResumeReceipt(resumeResult);
@@ -3901,8 +3513,8 @@ export class SessionManager {
         const receipt = normalizeStartReceipt(
           await newHandler.start(retryRoute.message, ctx, this.createDeliveryToken(chatId, routeLeases)),
         );
-        if (!this.isCurrentRouteTransition(entry, transition)) {
-          this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_start_stale_completion");
+        if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+          this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_start_stale_completion");
           return;
         }
         entry.claudeSessionId = receipt.sessionId;
@@ -3914,8 +3526,8 @@ export class SessionManager {
       const totalAttempts = entry.retryAttempt;
       const succeededScope = entry.lastRetryScope ?? (previousAvailable(entry) ? "session_resume" : "session_start");
       const succeededClassification = this.retryClassificationForEntry(entry);
-      if (!this.completeRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
+      if (!this.routeTeardown.completeRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_adoption");
         return;
       }
       this.clearRetryAttemptState(entry);
@@ -3949,11 +3561,11 @@ export class SessionManager {
       this.drainDeferredMessages(entry);
       this.persistRegistry();
     } catch (err) {
-      if (!this.isCurrentRouteTransition(entry, transition)) {
-        this.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_failure");
+      if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
+        this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_retry_stale_failure");
         return;
       }
-      this.invalidateRouteTransition(entry, "session_retry_failed");
+      this.routeTeardown.invalidateRouteTransition(entry, "session_retry_failed");
       const phase = retryRoute.kind;
       const classification = classifyProviderFailure(err, {
         provider: this.runtimeProvider(),
@@ -4017,8 +3629,8 @@ export class SessionManager {
       generation: entry.routeTransitionGeneration,
       handler: entry.handler,
     };
-    const mutationValid = () => this.isRouteAdoptionValid(entry, routeLease);
-    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, routeLease);
+    const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, routeLease);
+    const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, routeLease);
     if (!mutationValid()) {
       this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
       return;
@@ -4056,8 +3668,8 @@ export class SessionManager {
       generation: entry.routeTransitionGeneration,
       handler: entry.handler,
     };
-    const mutationValid = () => this.isRouteAdoptionValid(entry, routeLease);
-    const settlementValid = () => this.isDeliverySettlementLeaseValid(entry, routeLease);
+    const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, routeLease);
+    const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, routeLease);
     for (let index = 0; index < queued.length; index++) {
       const message = queued[index];
       if (!message) continue;
@@ -4281,7 +3893,7 @@ export class SessionManager {
         } catch (err) {
           entry.suspendError = { error: err };
           timedOut = err instanceof HandlerSuspendTimeoutError;
-          if (timedOut) this.quarantineTimedOutSuspend(entry, inFlightTransition);
+          if (timedOut) this.routeTeardown.quarantineTimedOutSuspend(entry, inFlightTransition);
           try {
             this.config.log.warn({ chatId: entry.chatId, err }, "operator suspend settlement error");
           } catch (logErr) {
@@ -4304,14 +3916,14 @@ export class SessionManager {
         entry.routeTransitionGeneration++;
         const target = inFlightTransition?.handler ?? entry.handler;
         if (inFlightTransition) {
-          this.retiredHandlers.add(inFlightTransition.handler);
+          this.routeTeardown.retireHandler(inFlightTransition.handler);
         }
 
         if (!settled && !timedOut) {
           entry.suspending = null;
           if (unestablishedStart) {
             if (entry.handlerStoppedBySuspend !== entry.handler) {
-              this.registerPendingTeardown(entry.chatId, entry.handler);
+              this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
             }
             if (this.sessions.get(entry.chatId) === entry) {
               this.sessions.delete(entry.chatId);
@@ -4322,8 +3934,8 @@ export class SessionManager {
         }
 
         const stopPromise =
-          settled && (inFlightTransition || !this.retiredHandlers.has(entry.handler))
-            ? this.shutdownHandler(target, opts.reason, { observeFailure: true })
+          settled && (inFlightTransition || !this.routeTeardown.isHandlerRetired(entry.handler))
+            ? this.routeTeardown.shutdownHandler(target, opts.reason, { observeFailure: true })
             : Promise.resolve();
 
         try {
@@ -4349,7 +3961,7 @@ export class SessionManager {
         entry.suspending = null;
         if (unestablishedStart) {
           if (entry.handlerStoppedBySuspend !== entry.handler) {
-            this.registerPendingTeardown(entry.chatId, entry.handler);
+            this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
           }
           if (this.sessions.get(entry.chatId) === entry) {
             this.sessions.delete(entry.chatId);
@@ -4363,7 +3975,7 @@ export class SessionManager {
       return;
     }
 
-    const canceledTransition = this.invalidateRouteTransition(entry, opts.reason);
+    const canceledTransition = this.routeTeardown.invalidateRouteTransition(entry, opts.reason);
     // A canceled fresh start has never established a provider-neutral resume
     // handle. Keeping that entry as "suspended" would make redelivery call
     // resume(undefined/empty-id) instead of starting a replacement route.
@@ -4381,7 +3993,7 @@ export class SessionManager {
     this.recomputeRuntimeState();
     entry.suspending = prepare
       .then(async () => {
-        if (canceledTransition || this.retiredHandlers.has(entry.handler)) {
+        if (canceledTransition || this.routeTeardown.isHandlerRetired(entry.handler)) {
           // The suspend boundary must cover this teardown end-to-end:
           // returning (not void-ing) the shutdown keeps `entry.suspending`
           // in flight until the handler is confirmed stopped, and the
@@ -4391,7 +4003,7 @@ export class SessionManager {
           // bound to the handler identity so a later handler replacement
           // cannot inherit it.
           const target = canceledTransition?.handler ?? entry.handler;
-          await this.shutdownHandler(target, opts.reason, { observeFailure: true });
+          await this.routeTeardown.shutdownHandler(target, opts.reason, { observeFailure: true });
           if (target === entry.handler) entry.handlerStoppedBySuspend = entry.handler;
           return;
         }
@@ -4431,7 +4043,7 @@ export class SessionManager {
           // detach registers too — Set semantics make a duplicate a no-op),
           // an unconfirmed-stop handler must stay joinable.
           if (entry.handlerStoppedBySuspend !== entry.handler) {
-            this.registerPendingTeardown(entry.chatId, entry.handler);
+            this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
           }
           if (this.sessions.get(entry.chatId) === entry) {
             this.sessions.delete(entry.chatId);
@@ -4531,7 +4143,7 @@ export class SessionManager {
       // A chat with unresolved teardown debt is not a burden-free victim:
       // its detached handlers are still being confirmed stopped, so keep it
       // out of the candidate set (force-keep).
-      if (this.pendingTeardowns.has(key)) continue;
+      if (this.routeTeardown.pendingTeardowns.has(key)) continue;
       if (session.status !== "active") {
         if (!nonActiveCandidate || session.lastActivity < nonActiveCandidate.session.lastActivity) {
           nonActiveCandidate = { key, session };
@@ -4563,7 +4175,7 @@ export class SessionManager {
     }
 
     if (candidate) {
-      this.invalidateRouteTransition(candidate.session, "session_evicted");
+      this.routeTeardown.invalidateRouteTransition(candidate.session, "session_evicted");
       // Preserve only an adopted, provider-neutral resume handle. Transition
       // phase is not sufficient: a fresh-start retry/terminal window has no
       // active start transition but still has no resumable provider session.
@@ -4584,11 +4196,11 @@ export class SessionManager {
       const activeSlotHeld = candidate.session.activeSlotHeld;
       this.releaseActiveSlot(candidate.session);
       if (activeSlotHeld) {
-        this.detachHandlerWithPendingTeardown(candidate.key, candidate.session.handler, "session_evicted");
+        this.routeTeardown.detachHandlerWithPendingTeardown(candidate.key, candidate.session.handler, "session_evicted");
       } else {
         // A non-active handler is not shut down on eviction (existing
         // semantics), but its stop is unconfirmed — record the debt.
-        this.registerPendingTeardown(candidate.key, candidate.session.handler);
+        this.routeTeardown.registerPendingTeardown(candidate.key, candidate.session.handler);
       }
       // LRU eviction is local memory-management, not operator intent — do
       // NOT emit a wire state here. The chat now lives in `evictedMappings`
