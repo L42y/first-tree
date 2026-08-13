@@ -463,7 +463,13 @@ describe("shouldPreserveSoloSignupNext", () => {
     // Non-canonical spellings of the same destination.
     expect(shouldPreserveSoloSignupNext("/opentag/")).toBe(false);
     expect(shouldPreserveSoloSignupNext("/opentag?")).toBe(false);
-    expect(shouldPreserveSoloSignupNext("/opentag#step")).toBe(false);
+    // A fragment is ignored rather than dropping the destination: the browser
+    // stashes `pathname + search + hash`, so a shared link carrying `#...`
+    // would otherwise land a brand-new member at the workspace root.
+    expect(shouldPreserveSoloSignupNext("/opentag#step")).toBe(true);
+    expect(shouldPreserveSoloSignupNext("/opentag?agent=0198b2c4-1f6a-7c31-9a02-4d5e6f708192#step")).toBe(true);
+    // Still not a hole: the fragment cannot carry anything past the gate.
+    expect(shouldPreserveSoloSignupNext("/opentag?step=runtime#a")).toBe(false);
     // Unknown or malformed parameters.
     expect(shouldPreserveSoloSignupNext("/opentag?agent=not-a-uuid")).toBe(false);
     expect(shouldPreserveSoloSignupNext("/opentag?step=runtime")).toBe(false);

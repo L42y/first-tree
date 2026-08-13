@@ -149,7 +149,8 @@ let root: Root | null = null;
 let lastLocation = "";
 
 function LocationProbe() {
-  lastLocation = `${useLocation().pathname}${useLocation().search}`;
+  const loc = useLocation();
+  lastLocation = `${loc.pathname}${loc.search}${loc.hash}`;
   return null;
 }
 
@@ -467,6 +468,18 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe("/opentag");
     expect(api.getAgent).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Team Assistant");
+  });
+
+  it("normalizes a fragment out of the entry URL while keeping the Agent", async () => {
+    // A shared link can pick up `#...`. It is not part of this entry, so the
+    // Agent still resolves and the address bar is rewritten to the one
+    // canonical spelling the flow reloads and re-shares.
+    api.getAgent.mockResolvedValue(agentRow());
+
+    await renderAt(`/opentag?agent=${AGENT_UUID}#step`);
+
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+    expect(api.getAgent).toHaveBeenCalledWith(AGENT_UUID);
   });
 
   it("offers a team retry instead of creating against a guessed Team", async () => {

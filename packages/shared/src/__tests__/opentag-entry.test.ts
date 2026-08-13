@@ -30,7 +30,25 @@ describe("parseOpenTagEntryPath", () => {
     expect(parseOpenTagEntryPath("/opentag/")).toBeNull();
     expect(parseOpenTagEntryPath("/opentag?")).toBeNull();
     expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID}&`)).toBeNull();
-    expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID}#step`)).toBeNull();
+  });
+
+  it("ignores a fragment instead of dropping the whole destination", () => {
+    // A link that picked up `#...` is still this entry. Rejecting it used to
+    // strand a brand-new member at the workspace root after solo signup,
+    // which is the one journey this contract exists to protect.
+    expect(parseOpenTagEntryPath("/opentag#step")).toEqual({ agentUuid: null });
+    expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID}#step`)).toEqual({ agentUuid: AGENT_UUID });
+    expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID}#`)).toEqual({ agentUuid: AGENT_UUID });
+  });
+
+  it("still requires everything outside the fragment to be canonical", () => {
+    // The fragment is ignored, not a hole: it cannot carry a second path,
+    // an extra parameter, or a non-canonical spelling past the gate.
+    expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID}&step=1#a`)).toBeNull();
+    expect(parseOpenTagEntryPath(`/opentag?agent=${AGENT_UUID.toUpperCase()}#a`)).toBeNull();
+    expect(parseOpenTagEntryPath("/opentag/#a")).toBeNull();
+    expect(parseOpenTagEntryPath("/opentagged#a")).toBeNull();
+    expect(parseOpenTagEntryPath("https://evil.example/opentag#a")).toBeNull();
   });
 
   it("rejects an unknown or extra query parameter", () => {
