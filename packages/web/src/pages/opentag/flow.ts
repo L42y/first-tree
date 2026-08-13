@@ -1,6 +1,8 @@
 import type { Agent } from "@first-tree/shared";
 import { canManageAgentDetail } from "../agent-detail/access.js";
 
+export { isFeishuHandoffUsable } from "../../features/feishu/binding-view.js";
+
 /**
  * Pure step logic for the standalone `/opentag` entry.
  *

@@ -10,8 +10,9 @@
  * Two paths:
  *   - "admin"   — the team creator (org admin). Creates/confirms the team,
  *                 connects a computer, creates the agent, and starts chat.
- *   - "invitee" — joining an existing team. Starts with the personal First
- *                 Tree agent journey and can explicitly continue without one.
+ *   - "invitee" — legacy preview plus unresolved-role recovery. Confirmed
+ *                 Members are redirected to the Team Agent directory before
+ *                 this sequence is mounted.
  *
  * Step ids are deliberately product-facing, jargon-free concepts — never
  * "tree" / "binding" / "runtime" / "installation". The user-facing strings
@@ -27,12 +28,10 @@
 // flow populates `selectedRepoUrls`, so the repo-aware branches downstream
 // (e.g. the `hasRepos` path in step-start-chat.tsx) stay dormant by design.
 export const ADMIN_STEPS = ["create-team", "connect-computer", "create-agent", "start-chat"] as const;
-// Invite acceptance already creates the membership and selects the joined
-// Team. Repeating "Join team" inside onboarding adds no decision or work, so
-// invited members land directly on the recommended personal-agent entry. The
-// product starts with
-// the personal-agent journey. Team-agent quick start and optional external
-// Context access are revealed only after explicit continuation.
+// Retained for the explicit onboarding preview and the unresolved-role
+// recovery state. Confirmed Members do not enter this sequence; any later
+// member-owned Agent entry is a separate weak surface, not this setup-first
+// route.
 export const INVITEE_STEPS = ["get-started", "connect-computer", "create-agent", "start-chat"] as const;
 
 /**

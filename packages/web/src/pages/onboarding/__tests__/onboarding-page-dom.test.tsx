@@ -73,6 +73,7 @@ async function renderRoute(element: ReactElement, route = "/onboarding"): Promis
       <MemoryRouter initialEntries={[route]}>
         <Routes>
           <Route path="/" element={<div>Workspace Home</div>} />
+          <Route path="/team" element={<div>Team Agents</div>} />
           <Route path="/onboarding" element={element} />
         </Routes>
       </MemoryRouter>,
@@ -204,7 +205,6 @@ describe("OnboardingPage", () => {
       ["connect-computer", "Connect Computer Step", "admin", "admin"],
       ["create-agent", "Create Agent Step", "admin", "admin"],
       ["start-chat", "Start Chat Step", "admin", "admin"],
-      ["get-started", "Get Started Step", "member", "invitee"],
     ];
 
     for (const [step, label, role, path] of cases) {
@@ -216,6 +216,27 @@ describe("OnboardingPage", () => {
       expect(container.querySelector(`[data-flow-path="${path}"]`)).toBeTruthy();
       await cleanupRoot();
     }
+  });
+
+  it("routes invited members to Team Agents instead of personal setup", async () => {
+    authMock.value = { ...authMock.value, role: "member", currentOrgHasPersonalAgent: false };
+    flowMock.activeStep = "get-started";
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Team Agents");
+    expect(container.textContent).not.toContain("Get Started Step");
+  });
+
+  it("keeps an unresolved role on the existing invitee recovery path", async () => {
+    authMock.value = { ...authMock.value, role: null };
+    flowMock.activeStep = "get-started";
+
+    const container = await renderRoute(<OnboardingPage />);
+
+    expect(container.textContent).toContain("Get Started Step");
+    expect(container.querySelector('[data-flow-path="invitee"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("Team Agents");
   });
 
   it("renders no body for an unknown flow step", async () => {
