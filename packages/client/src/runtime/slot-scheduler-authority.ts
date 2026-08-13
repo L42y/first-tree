@@ -175,7 +175,7 @@ function resumableProviderSessionId(...candidates: Array<string | null | undefin
 
 /**
  * Unique owner of retry single-flight, delivery-admission generations, pending
- * slot queue, active-slot accounting, and idle eviction timer. SessionManager
+ * slot queue, active-slot accounting, and idle eviction timer. SessionRuntime
  * composes this; it must not keep parallel copies of these ledgers.
  */
 export class SlotSchedulerAuthority {
@@ -195,7 +195,7 @@ export class SlotSchedulerAuthority {
 
   constructor(private readonly deps: SlotSchedulerAuthorityDeps) {}
 
-  /** Arm the idle-eviction interval (SessionManager starts this after construction). */
+  /** Arm the idle-eviction interval (SessionRuntime starts this after construction). */
   startIdleEviction(intervalMs = 10_000): void {
     if (this.idleTimer) return;
     this.idleTimer = setInterval(() => this.evictIdle(), intervalMs);

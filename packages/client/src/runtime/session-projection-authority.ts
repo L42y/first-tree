@@ -75,7 +75,7 @@ export type SessionProjectionAuthorityOptions = {
 /**
  * Unique owner of session-map membership, evicted resume mappings, current
  * trigger, SessionRegistry persistence timing, and runtime/state projection
- * ledgers. SessionManager composes this; it must not keep parallel copies of
+ * ledgers. SessionRuntime composes this; it must not keep parallel copies of
  * these maps or the registry instance.
  */
 export class SessionProjectionAuthority<
@@ -96,7 +96,7 @@ export class SessionProjectionAuthority<
   lastReportedRuntimeState: RuntimeState | null = null;
   /**
    * Last lazy Context-Tree re-resolution attempt (epoch ms). Owned here so
-   * SessionManager orchestration can rate-limit without a parallel field.
+   * SessionRuntime orchestration can rate-limit without a parallel field.
    */
   lastTreeResolveAttemptAt = 0;
   private runtimeReaffirmTimer: ReturnType<typeof setTimeout> | null = null;

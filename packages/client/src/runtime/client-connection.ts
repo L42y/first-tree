@@ -246,7 +246,7 @@ type ClientConnectionEvents = {
   /**
    * Server pushed a fully-assembled inbox entry over the WS data plane.
    * First arg is `frame.inboxId` (not agentId). ACK is deferred until the
-   * handler turn closes inside SessionManager — do not ACK from this listener
+   * handler turn closes inside SessionRuntime — do not ACK from this listener
    * merely because the frame reached the session manager / early buffer.
    */
   "inbox:deliver": [inboxId: string, frame: InboxDeliverFrame];

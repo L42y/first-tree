@@ -38,7 +38,7 @@ export type ResetReplayAuthorityDeps = {
   isShuttingDown: () => boolean;
   /** Quarantine restart fence still owned by RouteTeardownAuthority. */
   isQuarantineRestartRequired: (chatId: string) => boolean;
-  /** Lazy so SessionManager can construct inboxDelivery after this authority. */
+  /** Lazy so SessionRuntime can construct inboxDelivery after this authority. */
   inbox: () => ResetReplayInboxHost;
   recoverChat: () => ((chatId: string) => Promise<void>) | undefined;
   probeFencedSettlement: () =>
@@ -61,7 +61,7 @@ export type ResetReplayAuthorityOptions = {
 
 /**
  * Unique owner of Reset-generation fencing, terminate-admission ledgers, and
- * replay-fence reconciliation / post-fence recovery. SessionManager composes
+ * replay-fence reconciliation / post-fence recovery. SessionRuntime composes
  * this; it must not keep parallel copies of these maps or the ReplayFenceStore.
  */
 export class ResetReplayAuthority {

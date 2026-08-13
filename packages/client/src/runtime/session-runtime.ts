@@ -184,7 +184,7 @@ type SessionEntry = {
    * Latest terminal, user-actionable provider failure observed on the session
    * event channel. Posting the durable chat notice at the delivery-settlement
    * boundary keeps the policy centralized: handlers classify and emit
-   * `provider.retry`, while SessionManager decides whether ACK may consume the
+   * `provider.retry`, while SessionRuntime decides whether ACK may consume the
    * user's inbox entry. Non-consuming delivery paths clear this cache so a
    * provider failure from one delivery cannot be posted as evidence for a later
    * delivery on the same session.
@@ -207,7 +207,7 @@ type RuntimeFailureNoticePostResult =
   | { kind: "failed" }
   | { kind: "runtime_session_proof"; reasonCode: string };
 
-export type SessionManagerShutdownOptions = {
+export type SessionRuntimeShutdownOptions = {
   /**
    * Runtime switches are destructive: server-side switch-runtime has already
    * archived/evicted chat sessions, so the retiring local slot must not write
@@ -250,7 +250,7 @@ export type { ResetFenceReleaseVerdict } from "./reset-replay-authority.js";
  *
  * IMPORTANT — `existsSync(legacyDir)` is a *proxy* for "the handler chose the
  * legacy cwd". It is exact for new chats (no legacy dir ⇒ agent home, for both
- * handlers) but `SessionManager` is handler-agnostic (it only knows
+ * handlers) but `SessionRuntime` is handler-agnostic (it only knows
  * `workspaceRoot`, never the handler kind), so two legacy-chat cases diverge —
  * the resolver returns the legacy dir while the handler actually ran at the
  * agent home:
@@ -364,7 +364,7 @@ function repoLocalPath(repo: GitRepo): string {
   return repo.localPath ?? deriveRepoLocalPath(repo.url);
 }
 
-type SessionManagerConfig = {
+type SessionRuntimeConfig = {
   session: SessionConfig;
   concurrency: number;
   /**
@@ -524,8 +524,8 @@ export function encodeResilienceMessage(eventName: string, payload: Record<strin
   return `${eventName}: ${JSON.stringify(payload)}`;
 }
 
-export class SessionManager {
-  private readonly config: SessionManagerConfig;
+export class SessionRuntime {
+  private readonly config: SessionRuntimeConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
   /**
    * Unique owner of session-map membership, evicted resume mappings, current
@@ -550,7 +550,7 @@ export class SessionManager {
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
   private shuttingDown = false;
 
-  constructor(config: SessionManagerConfig) {
+  constructor(config: SessionRuntimeConfig) {
     this.config = config;
     this.projection = new SessionProjectionAuthority<SessionEntry>(
       {
@@ -1215,7 +1215,7 @@ export class SessionManager {
   }
 
   /** Shut down all sessions gracefully. */
-  async shutdown(reason?: string, opts: SessionManagerShutdownOptions = {}): Promise<void> {
+  async shutdown(reason?: string, opts: SessionRuntimeShutdownOptions = {}): Promise<void> {
     this.shuttingDown = true;
     this.config.subprocessProbe?.stop();
     this.slotScheduler.stopIdleEviction();

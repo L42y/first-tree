@@ -11,7 +11,7 @@ import type { FirstTreeHubSDK } from "../../../cloud/sdk.js";
 import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
 import type { AgentHandler } from "../../../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
-import { SessionManager } from "../../../runtime/session-manager.js";
+import { SessionRuntime } from "../../../runtime/session-runtime.js";
 import { SessionRegistry } from "../../../runtime/session-registry.js";
 import { createPiHandler, freshStartPiSessionId, type PiRetrySleep } from "../index.js";
 
@@ -355,7 +355,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-describe("Pi handler → SessionManager custody", () => {
+describe("Pi handler → SessionRuntime custody", () => {
   it("posts durable exhausted-retry notice before ACK with a single prompt write", async () => {
     setPiTestMode("exhausted_retry");
     const specs: ProviderProcessSpec[] = [];
@@ -376,7 +376,7 @@ describe("Pi handler → SessionManager custody", () => {
       providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
 
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -429,21 +429,21 @@ describe("Pi handler → SessionManager custody", () => {
     await sm.shutdown();
   });
 
-  function makePiSessionManager(input: {
+  function makePiSessionRuntime(input: {
     specs: ProviderProcessSpec[];
     ackEntry: ReturnType<typeof mockAckEntry>;
     sendMessage: ReturnType<typeof vi.fn>;
     onHandler?: (handler: ReturnType<typeof createPiHandler>) => void;
     recoverChat?: (chatId: string) => Promise<void>;
     registryPath?: string;
-  }): SessionManager {
+  }): SessionRuntime {
     const sdk = {
       register: vi.fn(),
       sendMessage: input.sendMessage,
       sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
       getChatContext: vi.fn().mockResolvedValue(null),
     } as unknown as FirstTreeHubSDK;
-    return new SessionManager({
+    return new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -493,7 +493,7 @@ describe("Pi handler → SessionManager custody", () => {
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
     const shutdownCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
 
-    const sm = makePiSessionManager({
+    const sm = makePiSessionRuntime({
       specs,
       ackEntry,
       sendMessage,
@@ -543,7 +543,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-resume" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     await sm.dispatch(mockEntry({ id: 70, chatId: "chat-pi-resume-race", messageId: "msg-first", content: "first" }));
     expect(ackEntry).toHaveBeenCalledWith(70);
@@ -599,7 +599,7 @@ describe("Pi handler → SessionManager custody", () => {
         signal.addEventListener("abort", onAbort, { once: true });
       });
     };
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -730,14 +730,14 @@ describe("Pi handler → SessionManager custody", () => {
       inject: () => ({ kind: "rejected", reason: "no_active_context", retryable: true }),
       suspend: async () => {},
       // Mirror Pi: release the deferred start and wait for notice+ACK before
-      // SessionManager invalidates the settlement lease.
+      // SessionRuntime invalidates the settlement lease.
       shutdown: async () => {
         releaseStart?.();
         await inFlightStart;
       },
     };
 
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -810,7 +810,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-write-gap" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({
@@ -843,7 +843,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-no-events" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({
@@ -946,7 +946,7 @@ describe("Pi handler → SessionManager custody", () => {
       resume: async () => ({ sessionId: "unused", route: null }),
       inject: () => ({ kind: "rejected", reason: "no_active_context", retryable: true }),
       // Mirror Pi operator-suspend settle: release the deferred start and join
-      // notice+ACK before SessionManager invalidates the settlement lease.
+      // notice+ACK before SessionRuntime invalidates the settlement lease.
       suspend: async (_reason, opts) => {
         if (opts?.settleProviderEntered === true) {
           releaseStart?.();
@@ -956,7 +956,7 @@ describe("Pi handler → SessionManager custody", () => {
       shutdown: async () => {},
     };
 
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1035,7 +1035,7 @@ describe("Pi handler → SessionManager custody", () => {
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-suspend" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const suspendCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
-    const sm = makePiSessionManager({
+    const sm = makePiSessionRuntime({
       specs,
       ackEntry,
       sendMessage,
@@ -1116,7 +1116,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1186,7 +1186,7 @@ describe("Pi handler → SessionManager custody", () => {
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-active-inject" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
     const chatId = "chat-pi-active-inject-suspend";
 
     await sm.dispatch(
@@ -1257,7 +1257,7 @@ describe("Pi handler → SessionManager custody", () => {
       .fn()
       .mockRejectedValueOnce(new Error("runtime notice store offline"))
       .mockResolvedValue({ id: "runtime-notice-after-recovery" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
     const chatId = "chat-pi-active-inject-notice-recover";
     const injectEntry = mockEntry({
       id: 113,
@@ -1338,7 +1338,7 @@ describe("Pi handler → SessionManager custody", () => {
       .mockRejectedValueOnce(new Error("runtime notice store offline"))
       .mockRejectedValueOnce(new Error("runtime notice store still offline"))
       .mockResolvedValue({ id: "runtime-notice-after-recovery-2" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
     const chatId = "chat-pi-active-inject-notice-recover-twice";
     const injectEntry = mockEntry({
       id: 119,
@@ -1429,7 +1429,7 @@ describe("Pi handler → SessionManager custody", () => {
       await recoverGate;
     });
     const sendMessage = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
     const chatId = "chat-pi-active-inject-notice-fail-persist";
     const injectEntry = mockEntry({
       id: 121,
@@ -1546,7 +1546,7 @@ describe("Pi handler → SessionManager custody", () => {
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1649,7 +1649,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1709,12 +1709,12 @@ describe("Pi handler → SessionManager custody", () => {
     expect(sm.activeCount).toBe(0);
   });
 
-  it("live SessionManager inject steers while start still awaits agent_settled", async () => {
+  it("live SessionRuntime inject steers while start still awaits agent_settled", async () => {
     setPiTestMode("bash_hold_until_abort");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-steer" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1761,7 +1761,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-fifo" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1806,7 +1806,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-prereadiness" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1845,7 +1845,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-suspend-defer" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1885,7 +1885,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-steer" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     // First dispatch returns after the transient failure schedules retry — it
     // does not await the winning retry turn. Observe custody via wire counts/ACK.
@@ -1931,7 +1931,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-fifo" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     void sm.dispatch(
       mockEntry({
@@ -1973,7 +1973,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     await sm.dispatch(mockEntry({ id: 301, chatId: "chat-pi-continuity", messageId: "msg-cont-1", content: "first" }));
     expect(ackEntry).toHaveBeenCalledWith(301);
@@ -1995,7 +1995,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
 
     await sm.dispatch(
       mockEntry({ id: 311, chatId: "chat-pi-reset", messageId: "msg-reset-1", content: "before reset" }),
@@ -2034,7 +2034,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-reidentity" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({ id: 321, chatId: "chat-pi-reidentity", messageId: "msg-reidentity", content: "run sleep 60" }),
@@ -2059,7 +2059,7 @@ describe("Pi handler → SessionManager custody", () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
 
     await sm.dispatch(
       mockEntry({ id: 331, chatId: "chat-pi-reset-flush", messageId: "msg-flush-1", content: "before reset" }),
@@ -2101,13 +2101,13 @@ describe("Pi handler → SessionManager custody", () => {
     await sm.shutdown();
   });
 
-  it("settled + ACK failure + Pause/Reset + new SessionManager + same-row redelivery cannot reopen retired Pi history", async () => {
+  it("settled + ACK failure + Pause/Reset + new SessionRuntime + same-row redelivery cannot reopen retired Pi history", async () => {
     const registryPath = join(workspaceRoot, "sessions-reset-redelivery.json");
     const specs: ProviderProcessSpec[] = [];
     // Persistent ACK failure leaves the settled first row as recovery debt.
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("ack offline"));
     const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath });
+    const sm1 = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
 
     const chatId = "chat-pi-reset-redelivery";
     const messageId = "msg-reset-redelivery";
@@ -2148,10 +2148,10 @@ describe("Pi handler → SessionManager custody", () => {
 
     await sm1.shutdown();
 
-    // New SessionManager (client restart): in-memory terminal ledger is gone.
+    // New SessionRuntime (client restart): in-memory terminal ledger is gone.
     // Same durable inbox row is redelivered; ACK is available this time.
     const ackEntry2 = mockAckEntry();
-    const sm2 = makePiSessionManager({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
+    const sm2 = makePiSessionRuntime({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
     await sm2.dispatch(mockEntry({ id: entryId, chatId, messageId, content: "settled but unacked" }));
     expect(ackEntry2).toHaveBeenCalledWith(entryId);
 
@@ -2183,7 +2183,7 @@ describe("Pi handler → SessionManager custody", () => {
         throw new Error("recover_failed: no-progress circuit open");
       }
     });
-    const sm1 = makePiSessionManager({ specs, ackEntry, sendMessage, registryPath, recoverChat });
+    const sm1 = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath, recoverChat });
     const chatId = "chat-pi-reset-fence";
 
     await sm1.dispatch(mockEntry({ id: 351, chatId, messageId: "msg-fence-old", content: "establish identity" }));

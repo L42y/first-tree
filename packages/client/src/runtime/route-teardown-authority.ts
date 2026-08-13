@@ -77,7 +77,7 @@ export type RouteTeardownAuthorityDeps = {
 /**
  * Unique owner of route-transition fencing, handler retire/shutdown coalescing,
  * pending teardown debt, route-producer quiescence, and operator-suspend
- * quarantine ledgers. SessionManager composes this; it must not keep parallel
+ * quarantine ledgers. SessionRuntime composes this; it must not keep parallel
  * copies of these maps.
  */
 export class RouteTeardownAuthority {

@@ -815,7 +815,7 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
    * `messages` is the concrete inbox batch this turn consumed — always one
    * message for start / resume / single-inject paths, and N when mergeAndRun
    * fuses queued messages into one input. Completion acks through the last
-   * consumed message id instead of shifting a count from SessionManager state.
+   * consumed message id instead of shifting a count from SessionRuntime state.
    */
   /**
    * Returns whether the turn was actually delivered to the provider and

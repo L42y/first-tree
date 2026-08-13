@@ -387,7 +387,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     // Defensive fallback path: when sessionId can't be located at EITHER
     // cwd (legacy chatId dir or agent home), the handler mints a fresh
     // id and starts cold — First Tree-side chat history is preserved.
-    // SessionManager then persists the returned id, so subsequent inbox
+    // SessionRuntime then persists the returned id, so subsequent inbox
     // messages resume against the new id cleanly (no permanent error loop).
     capturedSdkOptions.length = 0;
     const dataDir = mkdtempSync(join(tmpdir(), "ftt-e8-"));
@@ -411,7 +411,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     );
 
     // Returned sessionId MUST differ from the stale input — that's how
-    // SessionManager learns to update its registry.
+    // SessionRuntime learns to update its registry.
     expect(returnedSessionId.sessionId).not.toBe(staleSessionId);
     expect(returnedSessionId.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 

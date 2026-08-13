@@ -6,13 +6,13 @@ import { AGENT_RUNTIME_SESSION_HEADER, encodeProviderRetryEventMessage } from "@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler } from "../runtime/handler.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
 /**
  * Product-faithful drain settlement: prove that clearing the dynamic
- * runtime-session proof provider *before* SessionManager.shutdown() makes
+ * runtime-session proof provider *before* SessionRuntime.shutdown() makes
  * notice HTTP authenticate with a stale bind-time token (QA FAIL mode), while
  * keeping the provider registered through drain authenticates with the current
  * proof and ACKs once (required repair).
@@ -119,7 +119,7 @@ function makeDeferredSettleHandler(opts: {
   };
 }
 
-describe("AgentSlot/SessionManager shutdown settlement authority", () => {
+describe("AgentSlot/SessionRuntime shutdown settlement authority", () => {
   const roots: string[] = [];
   const servers: Server[] = [];
 
@@ -184,7 +184,7 @@ describe("AgentSlot/SessionManager shutdown settlement authority", () => {
     const inFlight = { current: null as Promise<void> | null };
     const sessionEvents: Array<{ kind: string }> = [];
 
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -318,7 +318,7 @@ describe("AgentSlot/SessionManager shutdown settlement authority", () => {
     });
     const inFlight = { current: null as Promise<void> | null };
 
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,

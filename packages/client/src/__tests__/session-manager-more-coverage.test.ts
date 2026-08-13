@@ -25,7 +25,7 @@ import type {
 import { findImagePath } from "../runtime/image-store.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
-import { SessionManager, type SessionManagerShutdownOptions } from "../runtime/session-manager.js";
+import { SessionRuntime, type SessionRuntimeShutdownOptions } from "../runtime/session-runtime.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -77,7 +77,7 @@ function createMockHandler(overrides: Partial<AgentHandler> = {}): AgentHandler 
   };
 }
 
-function createSessionManager(opts: {
+function createSessionRuntime(opts: {
   sdk?: FirstTreeHubSDK;
   handler?: AgentHandler;
   handlerConfig?: HandlerConfig;
@@ -93,7 +93,7 @@ function createSessionManager(opts: {
   subprocessProbe?: SubprocessProbe;
 }) {
   const handler = opts.handler ?? createMockHandler();
-  return new SessionManager({
+  return new SessionRuntime({
     session: {
       idle_timeout: 300,
       max_sessions: 10,
@@ -416,7 +416,7 @@ describe("InboxDeliveryCoordinator additional delivery coverage", () => {
   });
 });
 
-describe("SessionManager additional delivery token and payload coverage", () => {
+describe("SessionRuntime additional delivery token and payload coverage", () => {
   it("logs and ignores duplicate terminal outcomes from one delivery token", async () => {
     const { logger, records } = recordingLogger();
     const ackEntry = mockAckEntry();
@@ -429,7 +429,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry, log: logger });
+    const sm = createSessionRuntime({ handler, ackEntry, log: logger });
 
     await sm.dispatch(mockEntry({ id: 401, chatId: "chat-token-duplicate", messageId: "msg-token-duplicate" }));
     if (!capturedToken || !capturedMessage) throw new Error("delivery token was not captured");
@@ -471,7 +471,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       recoverChat,
@@ -534,7 +534,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry, sdk });
+    const sm = createSessionRuntime({ handler, ackEntry, sdk });
 
     await sm.dispatch(mockEntry({ id: 403, chatId: "chat-malformed-provider-event", messageId: "msg-malformed" }));
     if (!capturedCtx || !capturedToken || !capturedMessage) throw new Error("delivery token was not captured");
@@ -567,7 +567,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({ handler, sdk });
+      const sm = createSessionRuntime({ handler, sdk });
       const attachmentId = "11111111-1111-4111-8111-111111111111";
 
       await sm.dispatch(
@@ -613,7 +613,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
-    const sm = createSessionManager({ handler, sdk });
+    const sm = createSessionRuntime({ handler, sdk });
     const base = mockEntry({ id: 404, chatId: "chat-malformed-file", messageId: "msg-malformed-file" });
     const malformedFileEntry: InboxEntryWithMessage = {
       ...base,
@@ -652,7 +652,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({ handler, sdk });
+      const sm = createSessionRuntime({ handler, sdk });
       const imageId = "11111111-1111-4111-8111-111111111111";
       const base = mockEntry({ id: 405, chatId: "chat-request-image", messageId: "msg-request-image" });
       const requestEntry: InboxEntryWithMessage = {
@@ -720,7 +720,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({ handler, sdk });
+      const sm = createSessionRuntime({ handler, sdk });
       const base = mockEntry({ id: 408, chatId: "chat-bounded-images", messageId: "msg-bounded-images" });
       const imageIds = Array.from(
         { length: 12 },
@@ -799,7 +799,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
     const fetchAttachment = vi.fn().mockResolvedValue({ bytes: Buffer.from("image bytes") });
     const sdk = mockSdk({ fetchAttachment });
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler, sdk });
+    const sm = createSessionRuntime({ handler, sdk });
     const base = mockEntry({ id: 409, chatId: "chat-card-batch", messageId: "msg-card-batch" });
     const cardEntry: InboxEntryWithMessage = {
       ...base,
@@ -838,7 +838,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
       forget: vi.fn(),
     };
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler, agentConfigCache, log: logger });
+    const sm = createSessionRuntime({ handler, agentConfigCache, log: logger });
 
     await sm.dispatch(mockEntry({ id: 405, chatId: "chat-config-log", messageId: "msg-config-log" }));
 
@@ -856,7 +856,7 @@ describe("SessionManager additional delivery token and payload coverage", () => 
   });
 });
 
-describe("SessionManager additional shutdown and finalization coverage", () => {
+describe("SessionRuntime additional shutdown and finalization coverage", () => {
   it("clears pending transient retry timers during shutdown", async () => {
     vi.useFakeTimers();
     try {
@@ -867,7 +867,7 @@ describe("SessionManager additional shutdown and finalization coverage", () => {
           }),
         }),
       );
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handlerFactory,
         handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "claude-code" },
       });
@@ -896,8 +896,8 @@ describe("SessionManager additional shutdown and finalization coverage", () => {
       })),
       shutdown: vi.fn().mockRejectedValue(new Error("provider already closed")),
     });
-    const sm = createSessionManager({ handler, registryPath, onStateChange });
-    const opts: SessionManagerShutdownOptions = { clearPersistedRegistry: true, reportSuspendedSessions: false };
+    const sm = createSessionRuntime({ handler, registryPath, onStateChange });
+    const opts: SessionRuntimeShutdownOptions = { clearPersistedRegistry: true, reportSuspendedSessions: false };
 
     try {
       await sm.dispatch(mockEntry({ id: 502, chatId: "chat-clear-registry", messageId: "msg-clear-registry" }));
