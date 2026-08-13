@@ -24,18 +24,6 @@ import type { OpenTagFirstUse } from "./flow.js";
 export const FIRST_USE_PAGE_SIZE = 50;
 
 /**
- * How many pages a single read will walk before giving up.
- *
- * The conversation list is ordered by recent activity, so a Task the member is
- * using right now sorts to the top and the first page answers the live wait.
- * The pages exist for the other case: revisiting the entry long after first
- * use, once other Feishu conversations have become more active. Reaching this
- * bound means the candidate set was never exhausted, which is reported as
- * `unknown` rather than `absent` — see {@link readOpenTagFirstUse}.
- */
-export const FIRST_USE_MAX_PAGES = 10;
-
-/**
  * How often the page re-asks while the member is over in Feishu sending that
  * first message. It stops once the answer is `present` — the fact is terminal.
  */
@@ -48,42 +36,62 @@ export function isFeishuTaskForBinding(metadata: unknown, botBindingId: string):
   return parsed.data.botBindingId === botBindingId;
 }
 
+/** One member's repeatable search for one Agent's first use. */
+export type OpenTagFirstUseScan = (signal?: AbortSignal) => Promise<OpenTagFirstUse>;
+
 /**
- * Resolve first use, or throw. A thrown read is reported as {@link OpenTagFirstUse}
- * `unknown` by the caller rather than being flattened into `absent` here, so a
- * failing API can never be mistaken for a member who has not started yet.
+ * Build the search this entry polls.
  *
- * `absent` is only ever returned once the candidate list has been walked to its
- * end. A page that stops early proves nothing: the list is ordered by recent
- * activity, not by relevance, so an unexamined page can still hold the Task.
- * Answering `absent` from a partial page would strand a member who really did
- * use their Agent — and strand them permanently, because every poll would
- * re-read the same first page and reach the same wrong conclusion.
+ * The scan runs to the end of the list rather than to a page bound. A bound
+ * would only move the horizon: the poll behind it starts over from the first
+ * page every time, so a Task beyond the bound stays unreachable no matter how
+ * long the member waits, which is exactly the convergence this entry promises.
+ *
+ * What makes exhaustion affordable is the verdict cache. Confirming a candidate
+ * costs a chat read, because the conversation list does not carry chat
+ * metadata — but a chat's Bot binding is written once by ingress and never
+ * changes, so a candidate ruled out stays ruled out. Later polls therefore walk
+ * the list again but pay for only the conversations they have not seen before,
+ * instead of re-reading hundreds of the same chats every five seconds.
+ *
+ * The cache is per member and per Agent by construction: the caller builds one
+ * of these per (member, Agent, Bot) and throws it away when any of them change.
  */
-export async function readOpenTagFirstUse(agentUuid: string, botBindingId: string): Promise<OpenTagFirstUse> {
-  let cursor: string | undefined;
-  for (let page = 0; page < FIRST_USE_MAX_PAGES; page++) {
-    const candidates = await listMeChats({
-      origin: ["feishu"],
-      with: [agentUuid],
-      // Archiving the Task does not un-use the Agent, so the terminal state has
-      // to survive it. (Deleted rows are outside every view and stay excluded.)
-      engagement: "all",
-      limit: FIRST_USE_PAGE_SIZE,
-      ...(cursor ? { cursor } : {}),
-    });
-    // `rows` is the complete additive stream — a pinned Task also appears here —
-    // so the priority projection does not have to be scanned separately.
-    for (const row of candidates.rows) {
-      // The conversation list does not carry chat metadata, so ownership is
-      // confirmed one candidate at a time. This Agent owns one Bot, so in
-      // practice its own Task is the first and only candidate.
-      const chat = await getChat(row.chatId);
-      if (isFeishuTaskForBinding(chat.metadata, botBindingId)) return { state: "present", chatId: row.chatId };
+export function createOpenTagFirstUseScan(agentUuid: string, botBindingId: string): OpenTagFirstUseScan {
+  const ruledOut = new Set<string>();
+
+  return async (signal?: AbortSignal): Promise<OpenTagFirstUse> => {
+    let cursor: string | undefined;
+    for (;;) {
+      // A superseded poll stops walking rather than finishing a scan whose
+      // answer nobody will read. Its own result is `unknown` — abandoning a
+      // search establishes nothing either way.
+      if (signal?.aborted) return { state: "unknown" };
+      const page = await listMeChats(
+        {
+          origin: ["feishu"],
+          with: [agentUuid],
+          // Archiving the Task does not un-use the Agent, so the terminal state
+          // has to survive it. (Deleted rows are outside every view already.)
+          engagement: "all",
+          limit: FIRST_USE_PAGE_SIZE,
+          ...(cursor ? { cursor } : {}),
+        },
+        signal ? { signal } : undefined,
+      );
+      // `rows` is the complete additive stream — a pinned Task also appears
+      // here — so the priority projection is not scanned separately.
+      for (const row of page.rows) {
+        if (ruledOut.has(row.chatId)) continue;
+        if (signal?.aborted) return { state: "unknown" };
+        const chat = await getChat(row.chatId);
+        if (isFeishuTaskForBinding(chat.metadata, botBindingId)) return { state: "present", chatId: row.chatId };
+        ruledOut.add(row.chatId);
+      }
+      // Only the end of the list licenses `absent`. Anything earlier is a
+      // partial answer, and this one gets written to a membership.
+      if (!page.nextCursor) return { state: "absent" };
+      cursor = page.nextCursor;
     }
-    if (!candidates.nextCursor) return { state: "absent" };
-    cursor = candidates.nextCursor;
-  }
-  // Pages remained unread, so this Agent's Task may still be among them.
-  return { state: "unknown" };
+  };
 }

@@ -1,6 +1,6 @@
 import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { createAgent, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
@@ -10,7 +10,7 @@ import { useComputerConnection } from "../../features/agent-setup/use-computer-c
 import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
-import { FIRST_USE_POLL_MS, readOpenTagFirstUse } from "./first-use.js";
+import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
   OPENTAG_STEPS,
@@ -251,9 +251,15 @@ export function OpenTagPage(): ReactElement | null {
   //
   // The member id is in the key for the same reason: a cached answer belongs to
   // whoever it was read for.
+  // One scan per (member, Agent, Bot), reused across polls so its verdict cache
+  // survives them; any of the three changing throws the whole thing away.
+  const scanFirstUse = useMemo(
+    () => createOpenTagFirstUseScan(agentUuid ?? "", botBindingId ?? ""),
+    [agentUuid, botBindingId, memberId],
+  );
   const firstUseQuery = useQuery({
     queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
-    queryFn: () => readOpenTagFirstUse(agentUuid ?? "", botBindingId ?? ""),
+    queryFn: ({ signal }) => scanFirstUse(signal),
     enabled: feishuReady && ownsUrlAgent && !!botBindingId,
     // A failed read must stay "we don't know", never "not used yet" — and never
     // a blank frame. The poll below is the retry.

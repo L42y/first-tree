@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { FIRST_USE_MAX_PAGES, FIRST_USE_PAGE_SIZE, isFeishuTaskForBinding, readOpenTagFirstUse } from "../first-use.js";
+import { createOpenTagFirstUseScan, FIRST_USE_PAGE_SIZE, isFeishuTaskForBinding } from "../first-use.js";
 
 const AGENT_UUID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708192";
 const BINDING = "binding-1";
@@ -45,17 +45,23 @@ describe("isFeishuTaskForBinding", () => {
   });
 });
 
-describe("readOpenTagFirstUse", () => {
+describe("createOpenTagFirstUseScan", () => {
+  /** A fresh scan, as the page builds one per (member, Agent, Bot). */
+  const scan = () => createOpenTagFirstUseScan(AGENT_UUID, BINDING);
+
   it("asks only for this Agent's Feishu chats, archived ones included", async () => {
     meChats.listMeChats.mockResolvedValue(page([]));
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "absent" });
-    expect(meChats.listMeChats).toHaveBeenCalledWith({
-      origin: ["feishu"],
-      with: [AGENT_UUID],
-      engagement: "all",
-      limit: FIRST_USE_PAGE_SIZE,
-    });
+    expect(await scan()()).toEqual({ state: "absent" });
+    expect(meChats.listMeChats).toHaveBeenCalledWith(
+      {
+        origin: ["feishu"],
+        with: [AGENT_UUID],
+        engagement: "all",
+        limit: FIRST_USE_PAGE_SIZE,
+      },
+      undefined,
+    );
     expect(chats.getChat).not.toHaveBeenCalled();
   });
 
@@ -71,27 +77,67 @@ describe("readOpenTagFirstUse", () => {
       chatId === "chat-mine" ? feishuChat(BINDING) : feishuChat("binding-2"),
     );
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "present", chatId: "chat-mine" });
+    expect(await scan()()).toEqual({ state: "present", chatId: "chat-mine" });
     expect(meChats.listMeChats).toHaveBeenCalledTimes(2);
     expect(meChats.listMeChats.mock.calls[1]?.[0]).toMatchObject({ cursor: "cursor-1" });
   });
 
-  it("does not call a partially read list an absence", async () => {
-    // Reporting `absent` here would strand a member who really did use their
-    // Agent. `unknown` keeps the poll going instead of concluding from a page
-    // that was never finished.
-    meChats.listMeChats.mockResolvedValue(page(["chat-other"], "cursor-forever"));
+  it("has no page horizon — a Task far down the list is still reached", async () => {
+    // A fixed page budget would not fix this, it would only move it: the poll
+    // behind this restarts from the first page every time, so anything past the
+    // budget stays permanently unreachable however long the member waits.
+    const DEEP = 40;
+    for (let i = 0; i < DEEP; i++) meChats.listMeChats.mockResolvedValueOnce(page([`chat-busy-${i}`], `cursor-${i}`));
+    meChats.listMeChats.mockResolvedValueOnce(page(["chat-mine"]));
+    chats.getChat.mockImplementation(async (chatId: string) =>
+      chatId === "chat-mine" ? feishuChat(BINDING) : feishuChat("binding-2"),
+    );
+
+    expect(await scan()()).toEqual({ state: "present", chatId: "chat-mine" });
+    expect(meChats.listMeChats).toHaveBeenCalledTimes(DEEP + 1);
+  });
+
+  it("does not pay twice for a conversation it has already ruled out", async () => {
+    // Exhaustion is only affordable because a verdict keeps: a chat's Bot
+    // binding is written once and never changes. Without this, a member with a
+    // long Feishu history would re-read every one of those chats every five
+    // seconds.
+    const scanner = scan();
+    meChats.listMeChats.mockResolvedValue(page(["chat-a", "chat-b"]));
     chats.getChat.mockResolvedValue(feishuChat("binding-2"));
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "unknown" });
-    expect(meChats.listMeChats).toHaveBeenCalledTimes(FIRST_USE_MAX_PAGES);
+    expect(await scanner()).toEqual({ state: "absent" });
+    expect(chats.getChat).toHaveBeenCalledTimes(2);
+
+    // The Task arrives. The poll finds it without re-reading the two it
+    // already knows are somebody else's.
+    meChats.listMeChats.mockResolvedValue(page(["chat-mine", "chat-a", "chat-b"]));
+    chats.getChat.mockImplementation(async (chatId: string) =>
+      chatId === "chat-mine" ? feishuChat(BINDING) : feishuChat("binding-2"),
+    );
+
+    expect(await scanner()).toEqual({ state: "present", chatId: "chat-mine" });
+    expect(chats.getChat).toHaveBeenCalledTimes(3);
+  });
+
+  it("abandons a superseded scan without claiming anything", async () => {
+    const controller = new AbortController();
+    meChats.listMeChats.mockImplementation(async () => {
+      controller.abort();
+      return page(["chat-a"], "cursor-1");
+    });
+    chats.getChat.mockResolvedValue(feishuChat("binding-2"));
+
+    // Giving up establishes neither presence nor absence.
+    expect(await scan()(controller.signal)).toEqual({ state: "unknown" });
+    expect(chats.getChat).not.toHaveBeenCalled();
   });
 
   it("reports the Task chat once this Agent's Bot has one", async () => {
     meChats.listMeChats.mockResolvedValue(page(["chat-1"]));
     chats.getChat.mockResolvedValue(feishuChat(BINDING));
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "present", chatId: "chat-1" });
+    expect(await scan()()).toEqual({ state: "present", chatId: "chat-1" });
   });
 
   it("does not accept a teammate's Feishu Task this Agent was invited into", async () => {
@@ -101,7 +147,7 @@ describe("readOpenTagFirstUse", () => {
     meChats.listMeChats.mockResolvedValue(page(["chat-neighbour"]));
     chats.getChat.mockResolvedValue(feishuChat("binding-2"));
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "absent" });
+    expect(await scan()()).toEqual({ state: "absent" });
   });
 
   it("finds this Agent's own Task past a neighbour's", async () => {
@@ -110,15 +156,15 @@ describe("readOpenTagFirstUse", () => {
       chatId === "chat-mine" ? feishuChat(BINDING) : feishuChat("binding-2"),
     );
 
-    expect(await readOpenTagFirstUse(AGENT_UUID, BINDING)).toEqual({ state: "present", chatId: "chat-mine" });
+    expect(await scan()()).toEqual({ state: "present", chatId: "chat-mine" });
   });
 
   it("propagates a failed read instead of reporting no first use", async () => {
     meChats.listMeChats.mockRejectedValue(new Error("offline"));
-    await expect(readOpenTagFirstUse(AGENT_UUID, BINDING)).rejects.toThrow("offline");
+    await expect(scan()()).rejects.toThrow("offline");
 
     meChats.listMeChats.mockResolvedValue(page(["chat-1"]));
     chats.getChat.mockRejectedValue(new Error("offline"));
-    await expect(readOpenTagFirstUse(AGENT_UUID, BINDING)).rejects.toThrow("offline");
+    await expect(scan()()).rejects.toThrow("offline");
   });
 });
