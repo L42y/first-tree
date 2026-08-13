@@ -9,7 +9,7 @@ import { Avatar } from "../../components/avatar.js";
 import { Button } from "../../components/ui/button.js";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "../../components/ui/card.js";
 import { PageHeader } from "../../components/ui/page-header.js";
-import { isFeishuHandoffUsable } from "../opentag/flow.js";
+import { isFeishuBotReachable } from "../../features/feishu/binding-view.js";
 
 const AGENT_PAGE_SIZE = 100;
 
@@ -55,7 +55,7 @@ export function selectReadyTeamAgents(
     }
     const binding = bindings.get(agent.uuid);
     const appId = binding?.appId?.trim();
-    if (!binding || !appId || !isFeishuHandoffUsable(binding)) continue;
+    if (!binding || !appId || !isFeishuBotReachable(binding) || binding.cli.state !== "ready") continue;
     ready.push({ agent, binding: { ...binding, appId } });
   }
   return ready;
