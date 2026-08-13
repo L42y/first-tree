@@ -400,18 +400,34 @@ describe("tree tree command action", () => {
   });
 
   /** Clone a real checkout at `<base>/context-tree` from a fresh origin. */
-  function makeDeclaredBindingFixture(): { checkout: string; originA: string; originB: string } {
-    const seed = makeTreeFixture();
+  function makeDeclaredBindingFixture(): {
+    checkout: string;
+    originA: string;
+    originB: string;
+    seedA: string;
+    seedB: string;
+  } {
+    const seedA = makeTreeFixture();
+    const seedB = makeTreeFixture();
     const base = makeTempDir("ft-tree-upstream-guard-");
     const originA = join(base, "origin-a.git");
     const originB = join(base, "origin-b.git");
     const checkout = join(base, "context-tree");
     execFileSync("git", ["init", "--bare", "-b", "main", originA], { stdio: "ignore" });
     execFileSync("git", ["init", "--bare", "-b", "main", originB], { stdio: "ignore" });
-    git(seed, "remote", "add", "origin", originA);
-    git(seed, "push", "-u", "origin", "main");
+    git(seedA, "remote", "add", "origin", originA);
+    git(seedA, "push", "-u", "origin", "main");
+    git(seedB, "remote", "add", "origin", originB);
+    git(seedB, "push", "-u", "origin", "main");
     execFileSync("git", ["clone", originA, checkout], { stdio: "ignore" });
-    return { checkout, originA, originB };
+    return { checkout, originA, originB, seedA, seedB };
+  }
+
+  function advanceSeed(seed: string, leaf: string, title: string): void {
+    writeLeaf(join(seed, "docs", leaf), title, `${title} detail`);
+    git(seed, "add", ".");
+    git(seed, "commit", "-m", `advance ${leaf}`);
+    git(seed, "push");
   }
 
   function expectBindingMismatch(checkout: string, options: Record<string, unknown>, mismatch: string): void {
@@ -435,31 +451,58 @@ describe("tree tree command action", () => {
     expect(git(checkout, "status", "--porcelain")).toBe("");
   }
 
-  it("fails closed when the same-named branch tracks a different remote or ref", () => {
-    const { checkout, originA, originB } = makeDeclaredBindingFixture();
+  it("fails closed when only one expect flag is given", () => {
+    const { checkout, originA } = makeDeclaredBindingFixture();
+    expectBindingMismatch(checkout, { expectRemote: originA }, "Incomplete declared Context Tree binding identity");
+    expectBindingMismatch(checkout, { expectBranch: "main" }, "Incomplete declared Context Tree binding identity");
+  });
 
-    // Same branch name "main", origin URL matches — but the branch upstream
-    // points at a different remote, so the argument-free pull would refresh
-    // from the wrong Tree.
+  it("reads only the declared origin/branch content when the branch upstream points at another remote", () => {
+    const { checkout, originA, originB, seedA, seedB } = makeDeclaredBindingFixture();
+
+    // The branch's upstream points at a different remote — irrelevant to the
+    // refresh, which is pinned to the validated origin/branch.
     git(checkout, "remote", "add", "other", originB);
     git(checkout, "config", "branch.main.remote", "other");
     git(checkout, "config", "branch.main.merge", "refs/heads/main");
-    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream remote mismatch");
+    advanceSeed(seedA, "a-only.md", "Declared Tree Leaf");
+    advanceSeed(seedB, "b-only.md", "Other Tree Leaf");
 
-    // Same for a same-named branch tracking a different ref on the right
-    // remote.
-    git(checkout, "config", "branch.main.remote", "origin");
-    git(checkout, "config", "branch.main.merge", "refs/heads/other-main");
-    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream mismatch");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+
+    runTreeTreeCommand(
+      context(commandWithOptions({ expectRemote: originA, expectBranch: "main", pull: true }, ["docs"])),
+    );
+
+    const output = readMockOutput(stderr);
+    expect(output).toContain("a-only.md");
+    expect(output).not.toContain("b-only.md");
+    expect(output).not.toContain("reading local copy");
+    // Remote and upstream config are never modified.
+    expect(git(checkout, "config", "--get", "branch.main.remote")).toBe("other");
+    expect(git(checkout, "config", "--get", "branch.main.merge")).toBe("refs/heads/main");
+    expect(git(checkout, "remote")).toBe("origin\nother");
   });
 
-  it("fails closed when the expected branch has no configured upstream", () => {
-    const { checkout, originA } = makeDeclaredBindingFixture();
+  it("still pulls and reads the advanced declared content when the checkout upstream is missing", () => {
+    const { checkout, originA, seedA } = makeDeclaredBindingFixture();
     git(checkout, "config", "--unset", "branch.main.remote");
     git(checkout, "config", "--unset", "branch.main.merge");
+    advanceSeed(seedA, "a-only.md", "Declared Tree Leaf");
 
-    // No silent fall-through to reading the local copy as authoritative.
-    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream mismatch");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+
+    runTreeTreeCommand(
+      context(commandWithOptions({ expectRemote: originA, expectBranch: "main", pull: true }, ["docs"])),
+    );
+
+    const output = readMockOutput(stderr);
+    expect(output).toContain("a-only.md");
+    expect(output).not.toContain("reading local copy");
   });
 
   it("prints the selected subtree with repo-root ancestor context in human mode", () => {

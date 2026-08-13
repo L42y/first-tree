@@ -437,65 +437,52 @@ function parseTreeTreeOptions(options: Record<string, unknown>, args: string[]):
 }
 
 /**
- * Read `git config --get <key>` in `root`, or `undefined` when unset.
+ * The validated binding identity: the refresh pull is pinned to it, so the
+ * checkout's own upstream config is irrelevant to which Tree gets read.
  */
-function readGitConfigValue(root: string, key: string): string | undefined {
-  try {
-    const value = runCommand("git", ["config", "--get", key], root).trim();
-    return value.length > 0 ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
+type ValidatedBindingIdentity = {
+  remote: string;
+  branch: string;
+};
 
 /**
  * Fail-closed binding guard for an existing checkout. The Tree always lands
  * at `<agentHome>/context-tree`, so a same-path checkout left by a previous
  * binding is indistinguishable by location alone: before any content or
- * hierarchy read (and before the refresh pull), verify the checkout against
- * the declared binding — canonical origin, current branch, and the branch's
- * configured upstream (`branch.<name>.merge` must be
- * `refs/heads/<expected branch>` on the validated remote), because the
- * refresh pull follows that upstream. A mismatch or a missing upstream is
- * declared-broken: never read, never delete, never repoint.
+ * hierarchy read (and before the refresh pull), verify the checkout's
+ * canonical `origin` URL and current branch name against the declared
+ * binding. A mismatch is declared-broken: never read, never delete, never
+ * repoint. The branch's upstream config is deliberately NOT consulted: the
+ * refresh pull is pinned to the validated identity, so a missing or foreign
+ * upstream cannot redirect or weaken the read.
  *
- * Returns the validated upstream remote name for the explicit pull target;
- * `undefined` when no expectations were given.
+ * Both expect flags must be given together — a partial identity is not a
+ * binding we can pin a pull to, so it fails closed as invalid.
+ *
+ * Returns the validated identity for the pull target; `undefined` when no
+ * expectations were given (plain `tree tree` behavior is unchanged).
  */
 function assertCheckoutMatchesDeclaredBinding(
   repoRoot: string,
   expectRemote: string | undefined,
   expectBranch: string | undefined,
-): string | undefined {
+): ValidatedBindingIdentity | undefined {
   if (expectRemote === undefined && expectBranch === undefined) return undefined;
+  if (expectRemote === undefined || expectBranch === undefined) {
+    throw new TreeTreeCommandError(
+      TREE_TREE_BINDING_MISMATCH,
+      "Incomplete declared Context Tree binding identity: --expect-remote and --expect-branch must be given together. No tree content was read and nothing was modified.",
+    );
+  }
 
   const mismatches: string[] = [];
-  if (expectRemote !== undefined) {
-    const actualRemote = readGitRemoteUrl(repoRoot);
-    if (actualRemote === undefined || normalizeRemoteForMatch(actualRemote) !== normalizeRemoteForMatch(expectRemote)) {
-      mismatches.push("origin");
-    }
+  const actualRemote = readGitRemoteUrl(repoRoot);
+  if (actualRemote === undefined || normalizeRemoteForMatch(actualRemote) !== normalizeRemoteForMatch(expectRemote)) {
+    mismatches.push("origin");
   }
-  let upstreamRemote: string | undefined;
-  if (expectBranch !== undefined) {
-    const currentBranch = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).trim();
-    if (currentBranch !== expectBranch) {
-      mismatches.push("branch");
-    } else {
-      upstreamRemote = readGitConfigValue(repoRoot, `branch.${expectBranch}.remote`);
-      const upstreamMerge = readGitConfigValue(repoRoot, `branch.${expectBranch}.merge`);
-      if (upstreamRemote === undefined || upstreamMerge !== `refs/heads/${expectBranch}`) {
-        mismatches.push("upstream");
-      } else if (expectRemote !== undefined) {
-        const upstreamUrl = readGitRemoteUrl(repoRoot, upstreamRemote);
-        if (
-          upstreamUrl === undefined ||
-          normalizeRemoteForMatch(upstreamUrl) !== normalizeRemoteForMatch(expectRemote)
-        ) {
-          mismatches.push("upstream remote");
-        }
-      }
-    }
+  const currentBranch = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).trim();
+  if (currentBranch !== expectBranch) {
+    mismatches.push("branch");
   }
 
   if (mismatches.length > 0) {
@@ -504,7 +491,7 @@ function assertCheckoutMatchesDeclaredBinding(
       `Existing checkout does not match the declared Context Tree binding (${mismatches.join(" and ")} mismatch). Treating it as declared-broken: no tree content was read and nothing was modified; do not read, delete, or repoint this checkout.`,
     );
   }
-  return upstreamRemote;
+  return { remote: "origin", branch: expectBranch };
 }
 
 /**
@@ -520,14 +507,14 @@ function assertCheckoutMatchesDeclaredBinding(
  * already runs git with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails
  * fast instead of hanging.
  */
-function pullContextTreeRepo(root: string, remote?: string, branch?: string): void {
+function pullContextTreeRepo(root: string, validated?: ValidatedBindingIdentity): void {
   try {
-    // When the binding guard validated an upstream, pull that exact
-    // remote/branch instead of following whatever the local branch config
-    // happens to say.
+    // When the binding guard validated an identity, the pull is pinned to
+    // that exact origin/branch — the checkout's own upstream config is never
+    // consulted to decide the refresh target.
     runCommand(
       "git",
-      branch !== undefined && remote !== undefined ? ["pull", "--ff-only", remote, branch] : ["pull", "--ff-only"],
+      validated !== undefined ? ["pull", "--ff-only", validated.remote, validated.branch] : ["pull", "--ff-only"],
       root,
     );
   } catch (error) {
@@ -757,11 +744,11 @@ function configureTreeTreeCommand(command: Command): void {
     )
     .option(
       "--expect-remote <url>",
-      "declared Context Tree origin from the trusted briefing; an existing checkout with a different origin fails closed as declared-broken",
+      "declared Context Tree origin from the trusted briefing (requires --expect-branch); a mismatched checkout fails closed as declared-broken, and the refresh pull is pinned to the validated origin/branch",
     )
     .option(
       "--expect-branch <branch>",
-      "declared Context Tree branch from the trusted briefing; an existing checkout on a different branch fails closed as declared-broken",
+      "declared Context Tree branch from the trusted briefing (requires --expect-remote); a mismatched checkout fails closed as declared-broken, and the refresh pull is pinned to the validated origin/branch",
     );
 }
 
@@ -772,7 +759,7 @@ export function runTreeTreeCommand(context: CommandContext): void {
     const resolvedTarget = resolveTreeTarget(process.cwd(), parsedOptions.path);
     // Binding guard before any read or refresh: a same-path checkout that does
     // not match the declared binding is declared-broken — fail closed.
-    const validatedRemote = assertCheckoutMatchesDeclaredBinding(
+    const validatedIdentity = assertCheckoutMatchesDeclaredBinding(
       resolvedTarget.repoRoot,
       parsedOptions.expectRemote,
       parsedOptions.expectBranch,
@@ -783,7 +770,7 @@ export function runTreeTreeCommand(context: CommandContext): void {
     // already pinned to an exact commit and must never refresh per selector.
     // Managed checkouts retain their existing best-effort stale fallback.
     if (parsedOptions.pull && readSnapshot === null) {
-      pullContextTreeRepo(resolvedTarget.repoRoot, validatedRemote, parsedOptions.expectBranch);
+      pullContextTreeRepo(resolvedTarget.repoRoot, validatedIdentity);
     }
     const snapshot = readContextTreeSnapshot(resolvedTarget.repoRoot, {
       level: parsedOptions.level,
