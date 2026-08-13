@@ -528,6 +528,48 @@ describe("tree tree command action", () => {
     }
   });
 
+  it("accepts a default-port self-managed HTTPS checkout against an scp-like declaration", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com/group/tree.git");
+
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+
+    runTreeTreeCommand(
+      context(
+        commandWithOptions({ expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" }, ["docs"]),
+      ),
+    );
+
+    expect(process.exitCode).toBeUndefined();
+    expect(readMockOutput(stderr)).toContain("docs/");
+  });
+
+  it("fails closed when an http checkout matches a declared https binding", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "http://gitlab.example.com/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("fails closed when a non-default-port HTTPS checkout matches an scp-like declaration", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    // The SSH spelling carries no web origin, so a non-default HTTPS port can
+    // be a different self-managed instance — unprovable, hence fail closed.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:9443/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
   it("fails closed on a different host, a different path, or a different HTTPS port", () => {
     const { checkout } = makeDeclaredBindingFixture();
     git(checkout, "remote", "set-url", "origin", "https://gitlab.com/group/subgroup/tree.git");
