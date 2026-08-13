@@ -5,8 +5,8 @@ import type { ReactElement } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { FeishuRegistrationQr, isFeishuBotReachable } from "../../../features/feishu/binding-view.js";
 import { FlowHint } from "../../onboarding/flow-ui.js";
-import { OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
-import type { OpenTagToolsPrep } from "../flow.js";
+import { feishuReadinessPanelCopy, OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
+import { isFeishuHandoffUsable, type OpenTagFeishuStepState, type OpenTagToolsPrep } from "../flow.js";
 
 /**
  * The focused Feishu step: one Bot for this one Agent.
@@ -37,7 +37,7 @@ export function StepConnectFeishu({
   starting,
   error,
   onConnect,
-  tools,
+  step,
   retrying,
   onRetryTools,
 }: {
@@ -50,9 +50,9 @@ export function StepConnectFeishu({
   starting: boolean;
   error: string | null;
   onConnect: () => void;
-  /** What the Agent's own tool preparation is doing. */
-  tools: OpenTagToolsPrep;
-  /** A member-triggered retry of that preparation is in flight. */
+  /** What this step is showing and what it offers the member. */
+  step: OpenTagFeishuStepState;
+  /** A member-triggered retry of the preparation is in flight. */
   retrying: boolean;
   onRetryTools: () => void;
 }): ReactElement {
@@ -68,12 +68,7 @@ export function StepConnectFeishu({
         {binding ? (
           <div className="grid md:grid-cols-2">
             <div className="flex flex-col justify-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}>
-              <BotColumn
-                binding={binding}
-                starting={starting}
-                onConnect={onConnect}
-                toolsReady={tools.state === "ready"}
-              />
+              <BotColumn binding={binding} starting={starting} onConnect={onConnect} />
             </div>
             {/* The divider is horizontal while the columns are stacked, so the
                 two waits never read as one continuous list on a phone. */}
@@ -84,7 +79,7 @@ export function StepConnectFeishu({
               <ToolsPanel
                 agentUuid={agentUuid}
                 binding={binding}
-                tools={tools}
+                step={step}
                 retrying={retrying}
                 onRetryTools={onRetryTools}
               />
@@ -172,12 +167,10 @@ function BotColumn({
   binding,
   starting,
   onConnect,
-  toolsReady,
 }: {
   binding: FeishuBotBinding;
   starting: boolean;
   onConnect: () => void;
-  toolsReady: boolean;
 }): ReactElement {
   if (binding.status === "error") {
     return (
@@ -210,7 +203,7 @@ function BotColumn({
             the member to a chat that goes unanswered and, worse, let a first
             Task finish setup the Agent cannot yet deliver on. */}
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-          {toolsReady
+          {isFeishuHandoffUsable(binding)
             ? "Message it in Feishu — a private message or an exact group mention starts the first task."
             : "Your Bot and its permissions are kept while the rest finishes."}
         </p>
@@ -247,41 +240,41 @@ function BotColumn({
 function ToolsPanel({
   agentUuid,
   binding,
-  tools,
+  step,
   retrying,
   onRetryTools,
 }: {
   agentUuid: string;
   binding: FeishuBotBinding;
-  tools: OpenTagToolsPrep;
+  step: OpenTagFeishuStepState;
   retrying: boolean;
   onRetryTools: () => void;
 }): ReactElement {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
-  const delayed = tools.state === "recoverable";
-  const settled = tools.state === "ready" && isFeishuBotReachable(binding);
-  const bot = botReadiness(binding);
-  const agentTools = toolsReadiness(binding, tools);
+  const botReachable = isFeishuBotReachable(binding);
+  const toolsReady = step.tools.state === "ready";
+  const settled = toolsReady && botReachable;
+  const header = feishuReadinessPanelCopy(botReachable, toolsReady);
 
   return (
     <>
       {!settled && (
         <div>
           <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
-            {delayed ? copy.panelDelayedTitle : copy.panelPreparingTitle}
+            {header.title}
           </p>
           <p className="text-caption" style={{ margin: "var(--sp-0_5) 0 0", color: "var(--fg-3)" }}>
-            {delayed ? copy.panelDelayedLead : copy.panelPreparingLead}
+            {header.lead}
           </p>
         </div>
       )}
 
       <div style={{ borderTop: "var(--hairline) solid var(--border-faint)" }}>
-        <ReadinessRow label={copy.botLabel} readiness={bot} />
-        <ReadinessRow label={copy.toolsLabel} readiness={agentTools} />
+        <ReadinessRow label={copy.botLabel} readiness={botReadiness(binding)} />
+        <ReadinessRow label={copy.toolsLabel} readiness={toolsReadiness(binding, step.tools)} />
       </div>
 
-      {delayed && (
+      {step.recovery === "offered" && (
         <>
           <div
             style={{
@@ -295,13 +288,15 @@ function ToolsPanel({
               {copy.recoveryTitle}
             </p>
             <p className="text-label" style={{ margin: "var(--sp-0_5) 0 0" }}>
-              {copy.recoveryLead}
+              {step.canRetryTools ? copy.recoveryLead : copy.recoveryLeadFinishOnly}
             </p>
           </div>
           <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-            <Button type="button" disabled={retrying} onClick={onRetryTools}>
-              {retrying ? "Trying…" : copy.tryAgain}
-            </Button>
+            {step.canRetryTools && (
+              <Button type="button" disabled={retrying} onClick={onRetryTools}>
+                {retrying ? "Trying…" : copy.tryAgain}
+              </Button>
+            )}
             {/* Leaving is a real outcome, not an escape hatch: the Agent keeps
                 preparing, and the Agent's own page is where this can be picked
                 up again for good. Onboarding stays unfinished on purpose. */}

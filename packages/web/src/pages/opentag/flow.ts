@@ -126,13 +126,12 @@ export type OpenTagFirstUse =
   | { state: "present"; chatId: string };
 
 /**
- * How long the Agent's own tool preparation is allowed to look ordinary.
+ * How long this step is allowed to look ordinary.
  *
- * Preparing the official Feishu CLI on the member's Computer usually lands well
- * inside this, so a longer wait is the first honest signal that watching the
- * page may not be enough. It is a presentation threshold only: nothing is
- * cancelled, the Task keeps running, and the member is offered a retry and a
- * way out rather than an error.
+ * Both halves usually land well inside it, so a longer wait is the first honest
+ * signal that watching the page may not be enough. It is a presentation
+ * threshold only: nothing is cancelled, the Task keeps running, and the member
+ * is offered a way forward rather than an error.
  */
 export const FEISHU_TOOLS_SLOW_MS = 90_000;
 
@@ -169,19 +168,55 @@ export type OpenTagToolsPrep =
  * along — either way the capability is a fact about the machine now, not a
  * verdict on how it got there.
  */
-export function resolveOpenTagToolsPrep(input: {
-  /** The exact Agent's reported CLI capability, or null while it has no Bot. */
-  cliState: FeishuBotBinding["cli"]["state"] | null;
+/**
+ * Everything the Feishu step needs to decide what it is showing.
+ *
+ * The two halves are resolved together because the member's way out depends on
+ * both. Recovery is offered for the step, not for the CLI: a Bot that never
+ * gets confirmed strands somebody just as completely as a Computer that never
+ * finishes, and either way they need to be able to leave.
+ */
+export type OpenTagFeishuStepState = {
+  /** What the `Agent tools` row reports. */
+  tools: OpenTagToolsPrep;
+  /** Whether the member is offered a way forward instead of more waiting. */
+  recovery: "none" | "offered";
+  /**
+   * Whether `Try again` is one of those ways. Retrying the automatic
+   * preparation is meaningless once the Computer is ready — the only thing
+   * still outstanding then is the member's own confirmation in Feishu, which
+   * this page cannot press for them.
+   */
+  canRetryTools: boolean;
+};
+
+export function resolveOpenTagFeishuStep(input: {
+  /** The exact Agent's Bot binding, or null while it has none. */
+  binding: FeishuBotBinding | null;
   /** The automatic preparation request failed and has not since succeeded. */
   callFailed: boolean;
-  /** Preparation has been running for at least `FEISHU_TOOLS_SLOW_MS`. */
+  /** The step has been outstanding for at least `FEISHU_TOOLS_SLOW_MS`. */
   slow: boolean;
-}): OpenTagToolsPrep {
-  if (input.cliState === null) return { state: "idle" };
-  if (input.cliState === "ready") return { state: "ready" };
-  if (input.callFailed) return { state: "recoverable", reason: "failed" };
-  if (input.slow) return { state: "recoverable", reason: "slow" };
-  return { state: "preparing" };
+}): OpenTagFeishuStepState {
+  const cliState = input.binding?.cli.state ?? null;
+  const toolsReady = cliState === "ready";
+  const tools: OpenTagToolsPrep =
+    cliState === null
+      ? { state: "idle" }
+      : toolsReady
+        ? { state: "ready" }
+        : input.callFailed
+          ? { state: "recoverable", reason: "failed" }
+          : input.slow
+            ? { state: "recoverable", reason: "slow" }
+            : { state: "preparing" };
+
+  // A finished handoff has nothing to recover from, and a wait that has not run
+  // long yet is still an ordinary wait. A failed request is neither: it is
+  // established, so it never waits for the clock.
+  const stranded = input.slow && !isFeishuHandoffUsable(input.binding);
+  const recovery = input.callFailed || stranded ? "offered" : "none";
+  return { tools, recovery, canRetryTools: recovery === "offered" && !toolsReady };
 }
 
 /**

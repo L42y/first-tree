@@ -33,9 +33,16 @@ import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./chat/mes
  * question nobody asked. An Agent with no Client cannot run the check at all,
  * so those callers share one inert key rather than minting a fresh Task per
  * request.
+ *
+ * The surface token stays last. `clients.id` is client-supplied free text, and
+ * this column is read by suffix elsewhere — `hasTreeSetupKickoffMessage` scans
+ * for `%:tree-setup` and `%:tree` — so a key ending in an arbitrary client id
+ * could impersonate another namespace and, in that case, silently retire the
+ * organization's Context Tree setup prompt. A fixed suffix cannot. The two
+ * UUIDs ahead of it keep the client segment unambiguous.
  */
 export function feishuCliSetupKickoffKey(humanAgentId: string, agentId: string, clientId: string | null): string {
-  return `${humanAgentId}:${agentId}:feishu-cli:${clientId ?? "unbound"}`;
+  return `${humanAgentId}:${agentId}:${clientId ?? "unbound"}:feishu-cli`;
 }
 
 /** Shared idempotency key for a landing-campaign action launcher. */

@@ -23,8 +23,8 @@ import {
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,
+  resolveOpenTagFeishuStep,
   resolveOpenTagStep,
-  resolveOpenTagToolsPrep,
 } from "./flow.js";
 import { OpenTagShell } from "./opentag-shell.js";
 import { isAgentNameConflict, recoverCreatedAgent } from "./recover-created-agent.js";
@@ -258,37 +258,52 @@ export function OpenTagPage(): ReactElement | null {
   // remembers. The call is create-or-reuse server-side, so firing it again on
   // every load, tab, and retry converges on one Task rather than a pile.
   const prepareTools = useMutation({
-    mutationFn: () => createAgentFeishuSetupChat(agentUuid ?? ""),
+    mutationFn: (args: { retry: boolean }) => createAgentFeishuSetupChat(agentUuid ?? "", args),
   });
-  const toolsUnprepared = !!binding && binding.cli.state !== "ready";
   const prepareToolsMutate = prepareTools.mutate;
   const prepareToolsSettled = prepareTools.isPending || prepareTools.isSuccess || prepareTools.isError;
-  const [toolsPrepStartedAt, setToolsPrepStartedAt] = useState<number | null>(null);
+  // Ownership, not readability, licenses this. An admin may legitimately open a
+  // teammate's Agent here, but their visit is not that member's setup: starting
+  // work on somebody else's Computer just by looking at a page is a side effect
+  // nobody asked for. The same rule already governs the reads and the stamp
+  // below.
+  const preparesTools = feishuReady && ownsUrlAgent && !!binding && binding.cli.state !== "ready";
   useEffect(() => {
-    if (!feishuReady || !toolsUnprepared || prepareToolsSettled) return;
-    setToolsPrepStartedAt((started) => started ?? Date.now());
-    prepareToolsMutate();
-  }, [feishuReady, toolsUnprepared, prepareToolsSettled, prepareToolsMutate]);
+    if (!preparesTools || prepareToolsSettled) return;
+    prepareToolsMutate({ retry: false });
+  }, [preparesTools, prepareToolsSettled, prepareToolsMutate]);
 
+  // The clock starts when the member commits to Feishu, not when the automatic
+  // request goes out. Both halves can strand somebody — a Bot that is never
+  // confirmed as surely as a Computer that never finishes — and a Computer that
+  // was already ready sends no request at all, so timing the request would
+  // leave exactly those members with no way out.
+  //
   // The threshold is a presentation change, not a deadline, so it is armed once
   // and never disarmed: the Task keeps running either way, and a wait that has
   // already been long does not become short again.
-  const [toolsSlow, setToolsSlow] = useState(false);
+  const committedToFeishu = feishuReady && !!binding;
+  const [stepStartedAt, setStepStartedAt] = useState<number | null>(null);
   useEffect(() => {
-    if (toolsPrepStartedAt === null || toolsSlow) return;
-    const remaining = FEISHU_TOOLS_SLOW_MS - (Date.now() - toolsPrepStartedAt);
+    if (!committedToFeishu) return;
+    setStepStartedAt((started) => started ?? Date.now());
+  }, [committedToFeishu]);
+  const [stepSlow, setStepSlow] = useState(false);
+  useEffect(() => {
+    if (stepStartedAt === null || stepSlow) return;
+    const remaining = FEISHU_TOOLS_SLOW_MS - (Date.now() - stepStartedAt);
     if (remaining <= 0) {
-      setToolsSlow(true);
+      setStepSlow(true);
       return;
     }
-    const timer = setTimeout(() => setToolsSlow(true), remaining);
+    const timer = setTimeout(() => setStepSlow(true), remaining);
     return () => clearTimeout(timer);
-  }, [toolsPrepStartedAt, toolsSlow]);
+  }, [stepStartedAt, stepSlow]);
 
-  const toolsPrep = resolveOpenTagToolsPrep({
-    cliState: binding?.cli.state ?? null,
+  const feishuStep = resolveOpenTagFeishuStep({
+    binding,
     callFailed: prepareTools.isError,
-    slow: toolsSlow,
+    slow: stepSlow,
   });
 
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
@@ -351,13 +366,27 @@ export function OpenTagPage(): ReactElement | null {
     // feeds it: this is the line that changes durable state, and it should not
     // depend on a caller upstream having kept a cached answer honest.
     if (!ownsUrlAgent) return;
+    // The handoff is re-checked at the write for the same reason. The scan that
+    // produced this Task ran against an earlier read, and a capability that has
+    // since gone means the Agent cannot answer the very Task about to finish
+    // its setup. Holding here costs a member nothing — the poll behind this
+    // keeps the answer current — while stamping would be wrong for good.
+    if (!isFeishuHandoffUsable(binding)) return;
     // Once per landed Task: a failure holds until the member retries, so a
     // failing endpoint is not hammered by the first-use poll behind it.
     if (!firstUseChatId || completePending || completeSettled || completeFailed) return;
     completeMutate();
-  }, [ownsUrlAgent, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
+  }, [ownsUrlAgent, binding, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
 
-  const step = resolveOpenTagStep(facts, firstUse);
+  // The Task is a durable fact, but it only carries the member forward while
+  // the Agent can actually work it. A capability that goes before setup is
+  // stamped would otherwise strand them on the destination step — the Task is
+  // there, the stamp will not land, and the recovery lives on the step behind
+  // them. Once the stamp is in, that step is finished for good and a later blip
+  // must not walk them back through it.
+  const advancingFirstUse: OpenTagFirstUse =
+    isFeishuHandoffUsable(binding) || completeSettled ? firstUse : { state: "unknown" };
+  const step = resolveOpenTagStep(facts, advancingFirstUse);
 
   // The draft only describes the pre-creation choices, so an Agent in the URL
   // always supersedes it — including an Agent that turns out to be unusable,
@@ -390,7 +419,7 @@ export function OpenTagPage(): ReactElement | null {
   // Agent's own preparation is what is left, the standing "connect" heading
   // would keep asking for something the member already did.
   const feishuHeading =
-    step === "connect-feishu" && feishuReady && toolsPrep.state === "recoverable"
+    step === "connect-feishu" && feishuReady && feishuStep.recovery === "offered"
       ? feishuToolsDelayedCopy(!!binding && isFeishuBotReachable(binding))
       : undefined;
 
@@ -481,13 +510,13 @@ export function OpenTagPage(): ReactElement | null {
           starting={startFeishu.isPending}
           error={startFeishu.error instanceof Error ? startFeishu.error.message : null}
           onConnect={() => startFeishu.mutate()}
-          tools={toolsPrep}
+          step={feishuStep}
           retrying={prepareTools.isPending}
           // The same idempotent request the automatic path makes: when it never
           // landed this starts the Task, and when it did the Agent is already
           // working on the one Task this retry converges on.
           onRetryTools={() => {
-            prepareToolsMutate();
+            prepareToolsMutate({ retry: true });
             void feishuQuery.refetch();
           }}
         />

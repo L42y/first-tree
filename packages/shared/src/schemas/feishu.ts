@@ -44,6 +44,13 @@ export type StartFeishuRegistration = z.infer<typeof startFeishuRegistrationSche
 
 export const createFeishuSetupChatSchema = z.object({
   requestInstall: z.literal(true),
+  /**
+   * A member explicitly asked to try again, rather than a surface ensuring the
+   * Task exists. The two must stay distinguishable: ensuring runs on every
+   * load, reload, and extra tab and has to stay a no-op, while a retry has to
+   * reach an Agent that may have already consumed the original request.
+   */
+  retry: z.boolean().optional().default(false),
 });
 export type CreateFeishuSetupChat = z.infer<typeof createFeishuSetupChatSchema>;
 

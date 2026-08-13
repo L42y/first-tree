@@ -5,8 +5,8 @@ import {
   classifyOpenTagAgent,
   isFeishuHandoffUsable,
   type OpenTagAgentRead,
+  resolveOpenTagFeishuStep,
   resolveOpenTagStep,
-  resolveOpenTagToolsPrep,
 } from "../flow.js";
 
 const ORG = "org-1";
@@ -204,26 +204,57 @@ describe("why the readiness refresh has to be authoritative", () => {
   });
 });
 
-describe("what the Agent's own tool preparation is doing", () => {
-  const preparing = { cliState: "missing" as const, callFailed: false, slow: false };
+describe("what the Feishu step is showing and what it offers", () => {
+  const BINDING: FeishuBotBinding = {
+    id: "binding-1",
+    agentId: "agent-1",
+    appId: "cli_1",
+    botOpenId: null,
+    botName: null,
+    botAvatarUrl: null,
+    tenantKey: null,
+    status: "active",
+    connectionStatus: "connected",
+    grantedScopes: [],
+    registrationUrl: null,
+    registrationExpiresAt: null,
+    lastConnectedAt: null,
+    lastEventAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    cli: { state: "missing", version: null, clientId: "client-1" },
+  };
+  const READY_CLI = { state: "ready" as const, version: "1.4.0", clientId: "client-1" };
+  const waiting = { binding: BINDING, callFailed: false, slow: false };
 
   it("prepares nothing for a member who has not chosen Feishu", () => {
     // No Bot means no commitment, and a machine check nobody asked for is
     // exactly the install concept this flow exists to keep off the member.
-    expect(resolveOpenTagToolsPrep({ cliState: null, callFailed: false, slow: false })).toEqual({ state: "idle" });
-    expect(resolveOpenTagToolsPrep({ cliState: null, callFailed: true, slow: true })).toEqual({ state: "idle" });
+    expect(resolveOpenTagFeishuStep({ binding: null, callFailed: false, slow: false })).toEqual({
+      tools: { state: "idle" },
+      recovery: "none",
+      canRetryTools: false,
+    });
   });
 
   it("asks nothing of the member while the wait is ordinary", () => {
-    expect(resolveOpenTagToolsPrep(preparing)).toEqual({ state: "preparing" });
-    expect(resolveOpenTagToolsPrep({ ...preparing, cliState: "unknown" })).toEqual({ state: "preparing" });
+    expect(resolveOpenTagFeishuStep(waiting)).toEqual({
+      tools: { state: "preparing" },
+      recovery: "none",
+      canRetryTools: false,
+    });
   });
 
   it("offers a way forward once waiting has stopped being reasonable", () => {
-    expect(resolveOpenTagToolsPrep({ ...preparing, slow: true })).toEqual({ state: "recoverable", reason: "slow" });
-    expect(resolveOpenTagToolsPrep({ ...preparing, callFailed: true })).toEqual({
-      state: "recoverable",
-      reason: "failed",
+    expect(resolveOpenTagFeishuStep({ ...waiting, slow: true })).toEqual({
+      tools: { state: "recoverable", reason: "slow" },
+      recovery: "offered",
+      canRetryTools: true,
+    });
+    expect(resolveOpenTagFeishuStep({ ...waiting, callFailed: true })).toEqual({
+      tools: { state: "recoverable", reason: "failed" },
+      recovery: "offered",
+      canRetryTools: true,
     });
   });
 
@@ -231,7 +262,7 @@ describe("what the Agent's own tool preparation is doing", () => {
     // A request that never landed is established, not suspected: the member is
     // not waiting for anything, and a timeout that measures nothing would tell
     // them to keep waiting for work that was never started.
-    expect(resolveOpenTagToolsPrep({ ...preparing, callFailed: true, slow: true })).toEqual({
+    expect(resolveOpenTagFeishuStep({ ...waiting, callFailed: true, slow: true }).tools).toEqual({
       state: "recoverable",
       reason: "failed",
     });
@@ -240,7 +271,28 @@ describe("what the Agent's own tool preparation is doing", () => {
   it("reports the capability, not the history that produced it", () => {
     // The Agent may well have failed once and recovered on its own. What the
     // member needs is whether their Agent can work in Feishu now.
-    expect(resolveOpenTagToolsPrep({ cliState: "ready", callFailed: true, slow: true })).toEqual({ state: "ready" });
+    const binding = { ...BINDING, cli: READY_CLI };
+    expect(resolveOpenTagFeishuStep({ binding, callFailed: true, slow: true }).tools).toEqual({ state: "ready" });
+  });
+
+  it("strands nobody when the Bot is the half that never lands", () => {
+    // A Computer that was ready all along sends no request, so timing the
+    // request would leave exactly this member with no way out: the Bot is stuck,
+    // and the page offers nothing. Retrying is not among the ways forward —
+    // the automatic preparation has nothing left to do.
+    const stuck = { ...BINDING, status: "provisioning" as const, connectionStatus: "disconnected" as const };
+    const state = resolveOpenTagFeishuStep({ binding: { ...stuck, cli: READY_CLI }, callFailed: false, slow: true });
+    expect(state).toEqual({ tools: { state: "ready" }, recovery: "offered", canRetryTools: false });
+  });
+
+  it("offers nothing once the handoff actually works", () => {
+    // A long wait that ended well is not a problem to recover from.
+    const state = resolveOpenTagFeishuStep({
+      binding: { ...BINDING, cli: READY_CLI },
+      callFailed: false,
+      slow: true,
+    });
+    expect(state.recovery).toBe("none");
   });
 });
 

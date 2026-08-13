@@ -1,10 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../db/schema/im-chat-bindings.js";
+import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
@@ -135,13 +136,21 @@ describe("Feishu binding lifecycle", () => {
 describe("Feishu CLI setup Task", () => {
   const getApp = useTestApp();
 
-  async function requestSetupChat(app: FastifyInstance, accessToken: string, agentUuid: string) {
+  async function requestSetupChat(app: FastifyInstance, accessToken: string, agentUuid: string, retry = false) {
     return app.inject({
       method: "POST",
       url: `/api/v1/agents/${agentUuid}/feishu-binding/setup-chat`,
       headers: { authorization: `Bearer ${accessToken}` },
-      payload: { requestInstall: true },
+      payload: { requestInstall: true, retry },
     });
+  }
+
+  /** Backdate every message so a retry is not declined by the burst cooldown. */
+  async function agePriorRequests(app: FastifyInstance, chatId: string) {
+    await app.db
+      .update(messages)
+      .set({ createdAt: new Date(Date.now() - 10 * 60 * 1_000) })
+      .where(eq(messages.chatId, chatId));
   }
 
   it("returns one Task however many times the same member asks for it", async () => {
@@ -191,6 +200,57 @@ describe("Feishu CLI setup Task", () => {
     await app.db.update(agents).set({ clientId: a.clientId }).where(eq(agents.uuid, a.agent.uuid));
     const back = await requestSetupChat(app, a.accessToken, a.agent.uuid);
     expect(back.json<{ chatId: string }>().chatId).toBe(firstChatId);
+  });
+
+  it("asks the Agent again on an explicit retry, in the Task it already has", async () => {
+    // Reuse is not the same as doing nothing. Once the Agent has taken the
+    // original request, re-arming it wakes nobody — so a retry that only
+    // returned the same chat id would report work that never restarted.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    const retried = await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+
+    expect(retried.json<{ chatId: string }>().chatId).toBe(chatId);
+    const asked = await app.db.select().from(messages).where(eq(messages.chatId, chatId));
+    expect(asked).toHaveLength(2);
+    // The Agent is woken for the new ask, not merely told the Task exists.
+    const delivered = await app.db
+      .select()
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.chatId, chatId), eq(inboxEntries.notify, true)));
+    expect(delivered).toHaveLength(2);
+  });
+
+  it("does not ask again for the loads, reloads and tabs that only ensure the Task", async () => {
+    // Ensuring runs on every visit. If that woke the Agent, a background
+    // mechanism would become a stream of interruptions about one machine check.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    await requestSetupChat(app, a.accessToken, a.agent.uuid);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid);
+
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(1);
+  });
+
+  it("collapses a burst of retries into one request at the Agent", async () => {
+    // Two tabs sitting on the recovery state, or one impatient double click,
+    // are one intent — not three identical asks.
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A" });
+    const chatId = (await requestSetupChat(app, a.accessToken, a.agent.uuid)).json<{ chatId: string }>().chatId;
+    await agePriorRequests(app, chatId);
+
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+    await requestSetupChat(app, a.accessToken, a.agent.uuid, true);
+
+    expect(await app.db.select().from(messages).where(eq(messages.chatId, chatId))).toHaveLength(2);
   });
 
   it("keeps one administrator out of another's private setup Task", async () => {

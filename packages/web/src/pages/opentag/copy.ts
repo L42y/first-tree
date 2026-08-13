@@ -84,6 +84,23 @@ export const OPENTAG_FEISHU_READINESS_COPY = {
   toolsLabel: "Agent tools",
   recoveryTitle: "You are not stuck here.",
   recoveryLead: "Try the automatic setup again, or finish later and repair it from this Agent's settings.",
+  // When the Computer is already done, the automatic setup has nothing left to
+  // retry — the outstanding half is the member's own confirmation in Feishu.
+  recoveryLeadFinishOnly: "Finish later and pick this up from this Agent's settings whenever you're ready.",
   tryAgain: "Try again",
   finishLater: "Finish later",
 } as const;
+
+/**
+ * The readiness panel's own header.
+ *
+ * It narrows to the Computer only once the Computer is the thing left. While
+ * the member still owes a confirmation in Feishu, naming the tools would
+ * report one half as the whole remaining job.
+ */
+export function feishuReadinessPanelCopy(botReachable: boolean, toolsReady: boolean): { title: string; lead: string } {
+  const copy = OPENTAG_FEISHU_READINESS_COPY;
+  return botReachable && !toolsReady
+    ? { title: copy.panelDelayedTitle, lead: copy.panelDelayedLead }
+    : { title: copy.panelPreparingTitle, lead: copy.panelPreparingLead };
+}
