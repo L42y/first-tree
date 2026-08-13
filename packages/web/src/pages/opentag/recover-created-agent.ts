@@ -27,6 +27,13 @@ export function isAgentNameConflict(error: unknown): boolean {
   );
 }
 
+/**
+ * `/me/managed-agents` includes Agents this flow cannot continue with —
+ * suspended, private, or never bound. Offering one of those would send the
+ * member to an Agent the eligibility check immediately rejects, straight back
+ * into the same conflict. The candidate therefore has to satisfy the same
+ * conditions `classifyOpenTagAgent` requires of a URL Agent.
+ */
 export function findManagedAgentByHandle(
   agents: readonly ManagedAgent[],
   handle: string,
@@ -37,7 +44,9 @@ export function findManagedAgentByHandle(
       (agent) =>
         agent.name === handle &&
         agent.type === "agent" &&
-        agent.status !== "deleted" &&
+        agent.status === "active" &&
+        agent.visibility === "organization" &&
+        agent.clientId !== null &&
         (!organizationId || agent.organizationId === organizationId),
     ) ?? null
   );

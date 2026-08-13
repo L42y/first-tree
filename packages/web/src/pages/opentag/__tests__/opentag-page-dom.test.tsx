@@ -289,7 +289,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     const container = await renderAt("/opentag");
     await click(button(container, "Review Agent"));
     await click(button(container, "Continue"));
-    await click(button(container, "Back"));
+    await click(button(container, "Choose a different teammate"));
 
     expect(container.textContent).toContain("What should it do?");
     expect(api.createAgent).not.toHaveBeenCalled();
@@ -302,7 +302,11 @@ describe("OpenTag entry — choosing the Agent", () => {
     api.createAgent.mockRejectedValue(
       new ApiError(409, "Agent name is already taken", undefined, "agent_name_conflict"),
     );
-    api.listManagedAgents.mockResolvedValue([{ ...agentRow(), name: "ada-assistant", displayName: "Ada assistant" }]);
+    api.listManagedAgents.mockResolvedValue([
+      // Same handle, but unusable — must not be offered.
+      { ...agentRow(), name: "ada-assistant", displayName: "Old private", visibility: "private" },
+      { ...agentRow(), name: "ada-assistant", displayName: "Ada assistant" },
+    ]);
 
     computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
@@ -317,7 +321,50 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(container.textContent).toContain("already taken");
 
     await click(button(container, "Continue with Ada assistant"));
+    // Readiness is refreshed before moving, or a fast visit to `/` bounces the
+    // member into `/onboarding` for an Agent they already have.
+    expect(refreshMe).toHaveBeenCalled();
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("does not offer a same-handle Agent this flow could not continue with", async () => {
+    api.createAgent.mockRejectedValue(
+      new ApiError(409, "Agent name is already taken", undefined, "agent_name_conflict"),
+    );
+    // Suspended, private, and never-bound Agents all share the handle; none of
+    // them would survive the eligibility check on the next screen.
+    api.listManagedAgents.mockResolvedValue([
+      { ...agentRow(), name: "ada-assistant", displayName: "Suspended one", status: "suspended" },
+      { ...agentRow(), name: "ada-assistant", displayName: "Private one", visibility: "private" },
+      { ...agentRow(), name: "ada-assistant", displayName: "Unbound one", clientId: null },
+    ]);
+    computerMock.value = readyComputer();
+
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
+
+    expect(container.textContent).toContain("already taken");
+    expect(container.textContent).not.toContain("Continue with");
+    expect(lastLocation).toBe("/opentag");
+  });
+
+  it("does not carry the draft into an Agent that turns out to be unusable", async () => {
+    // A recovered-then-rejected Agent used to land back on the create step with
+    // the old draft, straight into the same conflict.
+    computerMock.value = readyComputer();
+    api.createAgent.mockResolvedValue(agentRow());
+    api.getAgent.mockResolvedValue(agentRow({ status: "suspended" }));
+
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
+
+    expect(container.textContent).toContain("isn't available in this team anymore");
+    expect(container.textContent).toContain("What should it do?");
+    expect(container.textContent).not.toContain("Create Agent");
   });
 
   it("surfaces a name clash it cannot attribute to this member", async () => {
@@ -436,6 +483,11 @@ describe("OpenTag entry — choosing the Computer", () => {
     expect(container.textContent).toContain("first-tree login CODE-123");
     expect(container.textContent).toContain("Waiting for your computer to connect");
     expect(api.createAgent).not.toHaveBeenCalled();
+
+    // Waiting for a Computer is the longest first-run state; the way back to
+    // the teammate choice has to be reachable from it.
+    await click(button(container, "Choose a different teammate"));
+    expect(container.textContent).toContain("What should it do?");
   });
 
   it("recommends a sole connected Computer and creates the Agent on it", async () => {

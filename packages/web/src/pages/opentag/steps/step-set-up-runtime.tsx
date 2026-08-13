@@ -36,13 +36,13 @@ export function StepSetUpRuntime({
   pending: boolean;
   error: string | null;
   /** Offered when a repeated create collided with an Agent this member already owns. */
-  recovery: { displayName: string; onContinue: () => void } | null;
+  recovery: { displayName: string; pending: boolean; onContinue: () => void } | null;
 }): ReactElement {
   const { connectedClients, selectedClientId, setSelectedClientId, cliCommand, tokenError, retry } = computer;
   const single = connectedClients.length === 1 ? connectedClients[0] : null;
-  // The Agent was created before any Computer was known, so the provider is
-  // decided here — by the shared catalog preference over what this Computer
-  // reports, not by a picker. Nothing to bind to means nothing to offer.
+  // The runtime comes from this Computer's own capabilities, chosen by the
+  // shared catalog preference rather than by a picker — the Computer stays the
+  // single decision. Nothing ready to run on means nothing to create.
   const runtime = computer.selectedRuntime;
   const runtimeReady = !!runtime && computer.okRuntimes.includes(runtime);
   const noRuntime = computer.capabilitiesLoaded && computer.okRuntimes.length === 0;
@@ -72,6 +72,10 @@ export function StepSetUpRuntime({
             <StatusRow state="waiting" label="Waiting for your computer to connect…" />
           </>
         )}
+        {/* Waiting for a Computer is the most common first-run state and the
+            longest one, so the way back to the teammate choice has to be here
+            too — not only once a Computer has shown up. */}
+        <BackLink onBack={onBack} disabled={false} />
       </div>
     );
   }
@@ -129,8 +133,8 @@ export function StepSetUpRuntime({
             probably it.
           </p>
           <div className="flex">
-            <Button type="button" variant="outline" onClick={recovery.onContinue}>
-              Continue with {recovery.displayName}
+            <Button type="button" variant="outline" disabled={recovery.pending} onClick={recovery.onContinue}>
+              {recovery.pending ? "Continuing…" : `Continue with ${recovery.displayName}`}
             </Button>
           </div>
         </div>
@@ -149,11 +153,20 @@ export function StepSetUpRuntime({
           <span>{pending ? "Creating your Agent…" : "Create Agent"}</span>
           {!pending && <ArrowRight className="h-4 w-4" />}
         </Button>
-        <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack} disabled={pending}>
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back
-        </Button>
+        <BackLink onBack={onBack} disabled={pending} />
       </div>
+    </div>
+  );
+}
+
+/** The way back to the teammate choice. Nothing has been created yet. */
+function BackLink({ onBack, disabled }: { onBack: () => void; disabled: boolean }): ReactElement {
+  return (
+    <div className="flex">
+      <Button type="button" variant="link" className="h-auto p-0 text-label" onClick={onBack} disabled={disabled}>
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Choose a different teammate
+      </Button>
     </div>
   );
 }

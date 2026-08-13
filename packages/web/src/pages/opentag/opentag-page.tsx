@@ -140,14 +140,35 @@ export function OpenTagPage(): ReactElement | null {
     },
   });
 
-  // With no Agent in the URL, the member is still choosing: the Template first,
-  // then the Computer. Runtime detection runs only for that second choice, so
-  // an existing Agent never mints a connect code it has no use for.
+  // The draft only describes the pre-creation choices, so an Agent in the URL
+  // always supersedes it — including an Agent that turns out to be unusable,
+  // where keeping the draft would push the member straight back into the
+  // create step and the conflict they just came from.
   const draftStep: OpenTagActiveStepId | null =
-    step === "choose-agent" ? (draft ? "set-up-runtime" : "choose-agent") : step;
+    step === "choose-agent" && !agentUuid ? (draft ? "set-up-runtime" : "choose-agent") : step;
   const computer = useComputerConnection(draftStep === "set-up-runtime", {
     requireExplicitSelectionWhenMultiple: true,
   });
+
+  // The recovered Agent was created by the request whose response was lost, so
+  // the current `/me` still says this member has no Agent. Refresh before
+  // moving: navigating first leaves a fast visit to `/` bouncing into
+  // `/onboarding`, and swallows a failed refresh.
+  const [continuing, setContinuing] = useState(false);
+  const [continueError, setContinueError] = useState<string | null>(null);
+  const continueWithRecovered = async (uuid: string): Promise<void> => {
+    setContinuing(true);
+    setContinueError(null);
+    try {
+      await refreshMe();
+    } catch {
+      setContinueError("We couldn't refresh your team. Try again.");
+      setContinuing(false);
+      return;
+    }
+    setContinuing(false);
+    navigate(opentagEntryPath(uuid), { replace: true });
+  };
 
   const feishuQuery = useQuery({
     ...feishuBindingQueryOptions(agentUuid ?? ""),
@@ -203,19 +224,15 @@ export function OpenTagPage(): ReactElement | null {
         <StepSetUpRuntime
           computer={computer}
           pending={create.isPending}
-          error={create.error instanceof Error ? create.error.message : null}
+          error={continueError ?? (create.error instanceof Error ? create.error.message : null)}
           onBack={() => setDraft(null)}
           onUseComputer={(clientId, runtimeProvider) => create.mutate({ draft, clientId, runtimeProvider })}
           recovery={
             recoverableAgent
               ? {
                   displayName: recoverableAgent.displayName,
-                  onContinue: () => {
-                    // The recovered Agent already exists, so the readiness
-                    // snapshot taken before this flow started is stale.
-                    void refreshMe();
-                    navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true });
-                  },
+                  pending: continuing,
+                  onContinue: () => void continueWithRecovered(recoverableAgent.uuid),
                 }
               : null
           }
