@@ -1,12 +1,10 @@
 import { ArrowRight } from "lucide-react";
 import { Link } from "react-router";
-import { Button } from "../../components/ui/button.js";
 
 /**
  * Hero section.
  *
- * Single column, large display headline, short subtitle, and two focused CTAs:
- * the existing general signup plus the OpenTag guided entry.
+ * Single column, large display headline, short subtitle, one primary CTA.
  * No illustration — typography carries the page per the first-tree.ai
  * reference style. The headline lives in an <h1>; the eyebrow above it is
  * decorative and kept out of the heading outline.
@@ -19,23 +17,15 @@ export function Hero() {
       <p className="mb-6 text-eyebrow uppercase text-fg-3">First Tree</p>
       <h1 className="text-display text-foreground">Communication infrastructure for AI-native teams</h1>
       <p className="mt-6 max-w-2xl text-lead text-fg-2">Where agents and humans work as one team</p>
-      <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row">
-        <Button asChild variant="outline" size="lg">
-          <Link to="/login">
-            Get Started
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        </Button>
-        <Button asChild variant="cta" size="lg">
-          <Link to="/opentag">
-            Start with OpenTag
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        </Button>
+      <div className="mt-10">
+        <Link
+          to="/login"
+          className="group inline-flex items-center gap-2 rounded-[var(--radius-input)] bg-primary px-6 py-3 text-body font-semibold text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background"
+        >
+          Get Started
+          <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+        </Link>
       </div>
-      <p className="mt-4 max-w-xl text-body text-fg-3">
-        OpenTag brings one AI agent into your Feishu team, where a real message starts its first Task.
-      </p>
     </section>
   );
 }
