@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { shouldEnterOnboarding } from "../../onboarding/steps.js";
 import { classifyOpenTagAgent, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
 
 const ORG = "org-1";
@@ -154,5 +155,24 @@ describe("resolveOpenTagStep", () => {
     // Both setup choices already happened at creation, so there is nothing
     // between an existing Agent and its Bot.
     expect(resolveOpenTagStep({ state: "resolved" })).toBe("connect-feishu");
+  });
+});
+
+describe("why the readiness refresh has to be authoritative", () => {
+  it("shows what a stale readiness fact would do to a member who already has an Agent", () => {
+    // This is the gate OpenTag hands the member to. If `/me` was not refreshed
+    // after the atomic create, the workspace root still sees no personal Agent
+    // and sends them into onboarding — whose create step only skips itself when
+    // this same fact is true. That is the second-Agent path the strict refresh
+    // exists to close, so it is asserted here rather than described in prose.
+    const stale = {
+      meLoaded: true,
+      onboardingStep: "completed" as const,
+      currentOrgHasPersonalAgent: false,
+      onboardingSuppressedAt: null,
+      onboardingCompletedAt: null,
+    };
+    expect(shouldEnterOnboarding(stale)).toBe(true);
+    expect(shouldEnterOnboarding({ ...stale, currentOrgHasPersonalAgent: true })).toBe(false);
   });
 });

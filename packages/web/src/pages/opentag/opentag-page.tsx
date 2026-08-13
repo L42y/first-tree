@@ -225,6 +225,27 @@ export function OpenTagPage(): ReactElement | null {
       ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
       : null;
 
+  // The Agent exists and only its readiness read failed. This state is keyed by
+  // the held id alone — not by the draft, the step, or whether a Computer is
+  // still connected — because every other control on this screen could either
+  // discard that Agent or create a second one under the same stale snapshot.
+  if (pendingAgentUuid) {
+    return (
+      <OpenTagShell activeStep="set-up-runtime" completedSteps={["choose-agent"]} handoff={handoff}>
+        <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
+          <FlowHint tone="error" role="alert">
+            {readinessError ?? "Your Agent is ready, but we couldn't refresh your team."}
+          </FlowHint>
+          <div className="flex">
+            <Button type="button" variant="cta" disabled={continuing} onClick={() => void goToAgent(pendingAgentUuid)}>
+              {continuing ? "Checking…" : "Try again"}
+            </Button>
+          </div>
+        </div>
+      </OpenTagShell>
+    );
+  }
+
   return (
     <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
       {facts.state === "unreadable" && (
@@ -258,8 +279,7 @@ export function OpenTagPage(): ReactElement | null {
         <StepSetUpRuntime
           computer={computer}
           pending={create.isPending || continuing}
-          error={readinessError ?? (create.error instanceof Error ? create.error.message : null)}
-          readinessRetry={pendingAgentUuid ? () => void goToAgent(pendingAgentUuid) : null}
+          error={create.error instanceof Error ? create.error.message : null}
           onBack={() => {
             clearRecoveryState();
             setDraft(null);

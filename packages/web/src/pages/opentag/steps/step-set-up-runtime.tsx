@@ -28,7 +28,6 @@ export function StepSetUpRuntime({
   onBack,
   pending,
   error,
-  readinessRetry,
   recovery,
 }: {
   computer: ComputerConnection;
@@ -36,8 +35,6 @@ export function StepSetUpRuntime({
   onBack: () => void;
   pending: boolean;
   error: string | null;
-  /** Retry the readiness read for an Agent that exists but is not confirmed yet. */
-  readinessRetry: (() => void) | null;
   /** Offered when a repeated create collided with an Agent this member already owns. */
   recovery: { displayName: string; pending: boolean; onContinue: () => void } | null;
 }): ReactElement {
@@ -127,14 +124,6 @@ export function StepSetUpRuntime({
         <FlowHint tone="error" role="alert">
           {error}
         </FlowHint>
-      )}
-
-      {readinessRetry && (
-        <div className="flex">
-          <Button type="button" variant="outline" disabled={pending} onClick={readinessRetry}>
-            Try again
-          </Button>
-        </div>
       )}
 
       {recovery && (

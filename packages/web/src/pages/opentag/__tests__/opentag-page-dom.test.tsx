@@ -306,6 +306,18 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe("/opentag");
     expect(container.textContent).toContain("couldn't refresh your team");
 
+    // Nothing that could abandon or duplicate the created Agent stays
+    // reachable: no create, no back, and no connect command if the Computer
+    // drops. Holding the id in state protects nothing while those are live.
+    const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
+    expect(labels.some((label) => label.includes("Choose a different teammate"))).toBe(false);
+
+    // The Computer disappearing must not take the only safe continuation away.
+    computerMock.value = computerConnection();
+    const stillLocked = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(stillLocked.some((label) => label.includes("Try again"))).toBe(true);
+
     // The retry continues to the Agent that already exists — it never creates
     // another one.
     refreshMeStrict.mockResolvedValue(undefined);
