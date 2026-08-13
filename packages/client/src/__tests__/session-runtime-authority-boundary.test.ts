@@ -1,365 +1,203 @@
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import ts from "typescript";
 import { describe, expect, it } from "vitest";
+import {
+  auditAuthorityBoundary,
+  createClientBoundaryProgram,
+  createInMemoryProgram,
+  fixtureDiagnostics,
+  formatViolation,
+  HOST_FILE,
+} from "./session-runtime-authority-boundary-audit.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const runtimeDir = join(here, "..", "runtime");
+const clientRoot = join(here, "..", "..");
 
-const HOST_FILE = "session-runtime.ts";
-const AUTHORITY_FILES = [
-  "route-teardown-authority.ts",
-  "reset-replay-authority.ts",
-  "slot-scheduler-authority.ts",
-  "session-projection-authority.ts",
-] as const;
+const FIXTURE_AUDIT = { requireCompleteInventory: false as const, hostFileNames: ["host.ts"] };
 
-const MIGRATED_SESSION_FIELDS = [
-  "activeSlotHeld",
-  "retryAttempt",
-  "retryNextAt",
-  "retryTimer",
-  "lastRetryReason",
-  "lastRetryCategory",
-  "lastRetryScope",
-  "lastRetryRawError",
-  "retryHeadMessage",
-  "deferredMessages",
-  "retryFromEvicted",
-  "routeTransitionGeneration",
-  "routeTransition",
-  "routeInjectReady",
-] as const;
-
-const ARRAY_MUTATORS = new Set(["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "copyWithin", "fill"]);
-
-const FORBIDDEN_PUBLIC_TYPE_NAMES = new Set(["Map", "Set", "ReplayFenceStore", "SlotState", "RouteState", "WeakMap"]);
-
-const AUTHORITY_LEDGER_NAMES = new Set([
-  "sessions",
-  "evictedMappings",
-  "currentTrigger",
-  "sessionRuntimeStates",
-  "lastReportedStates",
-  "runtimeProofRecoveryChats",
-  "terminatingChats",
-  "terminatePersistFailures",
-  "awaitingResetFenceRelease",
-  "resetGenerations",
-  "replayFence",
-  "pendingTeardowns",
-  "quarantinedSessions",
-  "routeProducers",
-  "pendingQueue",
-  "admissionGenerations",
-  "retryFlights",
-  "activeCount",
-  "slotBySession",
-  "routeBySession",
-]);
-
-function parseFile(fileName: string, source: string): ts.SourceFile {
-  return ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-}
-
-function readRuntime(name: string): string {
-  return readFileSync(join(runtimeDir, name), "utf8");
-}
-
-function typeNameOf(node: ts.TypeNode | undefined): string | undefined {
-  if (!node) return undefined;
-  if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName)) return node.typeName.text;
-  if (ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression)) return node.expression.text;
-  if (ts.isArrayTypeNode(node)) return "Array";
-  if (ts.isTypeOperatorNode(node) && node.operator === ts.SyntaxKind.ReadonlyKeyword) {
-    return typeNameOf(node.type);
-  }
-  if (ts.isUnionTypeNode(node)) {
-    for (const part of node.types) {
-      const name = typeNameOf(part);
-      if (name && FORBIDDEN_PUBLIC_TYPE_NAMES.has(name)) return name;
-    }
-  }
-  return undefined;
-}
-
-function propertyNameText(name: ts.PropertyName | ts.BindingName | ts.LeftHandSideExpression): string | undefined {
-  if (ts.isIdentifier(name)) return name.text;
-  if (ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
-  if (ts.isComputedPropertyName(name)) {
-    const expr = name.expression;
-    if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
-    if (ts.isIdentifier(expr)) return expr.text;
-  }
-  return undefined;
-}
-
-function collectSessionEntryPropertyNames(sourceFile: ts.SourceFile): string[] {
-  const names: string[] = [];
-  for (const stmt of sourceFile.statements) {
-    if (!ts.isTypeAliasDeclaration(stmt) || stmt.name.text !== "SessionEntry") continue;
-    if (!ts.isTypeLiteralNode(stmt.type)) continue;
-    for (const member of stmt.type.members) {
-      if (!ts.isPropertySignature(member) || !member.name) continue;
-      const text = propertyNameText(member.name);
-      if (text) names.push(text);
-    }
-  }
-  return names;
-}
-
-type WriteHit = { kind: string; name: string; text: string };
-
-function walkWrites(sourceFile: ts.SourceFile, fieldNames: ReadonlySet<string>): WriteHit[] {
-  const hits: WriteHit[] = [];
-
-  const visit = (node: ts.Node): void => {
-    if (ts.isObjectLiteralExpression(node)) {
-      for (const prop of node.properties) {
-        if (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop) || ts.isMethodDeclaration(prop)) {
-          const name = prop.name ? propertyNameText(prop.name) : undefined;
-          if (name && fieldNames.has(name)) {
-            hits.push({ kind: "object-literal", name, text: prop.getText(sourceFile) });
-          }
-        }
-      }
-    }
-
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      collectAssignmentTarget(node.left, "assignment");
-    }
-    if (ts.isBinaryExpression(node) && isCompoundAssignment(node.operatorToken.kind)) {
-      collectAssignmentTarget(node.left, "compound-assignment");
-    }
-    if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-      const operand = node.operand;
-      if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) {
-        collectAssignmentTarget(operand, "increment");
-      }
-    }
-    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name)) {
-      collectBinding(node.name, "destructure");
-    }
-    if (ts.isParameter(node) && ts.isObjectBindingPattern(node.name)) {
-      collectBinding(node.name, "destructure");
-    }
-    if (ts.isElementAccessExpression(node)) {
-      const arg = node.argumentExpression;
-      if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) {
-        if (fieldNames.has(arg.text)) {
-          hits.push({ kind: "bracket-access", name: arg.text, text: node.getText(sourceFile) });
-        }
-      }
-    }
-    if (ts.isPropertyAccessExpression(node) && fieldNames.has(node.name.text)) {
-      const parent = node.parent;
-      if (ts.isCallExpression(parent) && parent.expression === node && ARRAY_MUTATORS.has(node.name.text)) {
-        hits.push({ kind: "array-mutator", name: node.name.text, text: parent.getText(sourceFile) });
-      }
-    }
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      ARRAY_MUTATORS.has(node.expression.name.text)
-    ) {
-      const recv = node.expression.expression;
-      if (ts.isPropertyAccessExpression(recv) && fieldNames.has(recv.name.text)) {
-        hits.push({ kind: "array-mutator", name: recv.name.text, text: node.getText(sourceFile) });
-      }
-      if (ts.isElementAccessExpression(recv)) {
-        const arg = recv.argumentExpression;
-        if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) && fieldNames.has(arg.text)) {
-          hits.push({ kind: "array-mutator", name: arg.text, text: node.getText(sourceFile) });
-        }
-      }
-    }
-
-    ts.forEachChild(node, visit);
+function auditFixture(files: Record<string, string>) {
+  const program = createInMemoryProgram(files);
+  return {
+    diagnostics: fixtureDiagnostics(program, files),
+    violations: auditAuthorityBoundary(program, FIXTURE_AUDIT),
   };
-
-  const collectAssignmentTarget = (target: ts.Node, kind: string): void => {
-    if (ts.isPropertyAccessExpression(target) && fieldNames.has(target.name.text)) {
-      hits.push({ kind, name: target.name.text, text: target.parent.getText(sourceFile) });
-    }
-    if (ts.isElementAccessExpression(target)) {
-      const arg = target.argumentExpression;
-      if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg)) && fieldNames.has(arg.text)) {
-        hits.push({ kind: `${kind}-bracket`, name: arg.text, text: target.parent.getText(sourceFile) });
-      }
-    }
-    if (ts.isObjectBindingPattern(target)) collectBinding(target, kind);
-  };
-
-  const collectBinding = (pattern: ts.ObjectBindingPattern, kind: string): void => {
-    for (const element of pattern.elements) {
-      const name = propertyNameText(element.propertyName ?? element.name);
-      if (name && fieldNames.has(name)) {
-        hits.push({ kind, name, text: element.getText(sourceFile) });
-      }
-      if (ts.isObjectBindingPattern(element.name)) collectBinding(element.name, kind);
-    }
-  };
-
-  visit(sourceFile);
-  return hits;
 }
 
-function isCompoundAssignment(kind: ts.SyntaxKind): boolean {
-  return (
-    kind === ts.SyntaxKind.PlusEqualsToken ||
-    kind === ts.SyntaxKind.MinusEqualsToken ||
-    kind === ts.SyntaxKind.AsteriskEqualsToken ||
-    kind === ts.SyntaxKind.SlashEqualsToken ||
-    kind === ts.SyntaxKind.PercentEqualsToken ||
-    kind === ts.SyntaxKind.AmpersandEqualsToken ||
-    kind === ts.SyntaxKind.BarEqualsToken ||
-    kind === ts.SyntaxKind.CaretEqualsToken ||
-    kind === ts.SyntaxKind.LessThanLessThanEqualsToken ||
-    kind === ts.SyntaxKind.GreaterThanGreaterThanEqualsToken ||
-    kind === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken ||
-    kind === ts.SyntaxKind.AsteriskAsteriskEqualsToken ||
-    kind === ts.SyntaxKind.AmpersandAmpersandEqualsToken ||
-    kind === ts.SyntaxKind.BarBarEqualsToken ||
-    kind === ts.SyntaxKind.QuestionQuestionEqualsToken
-  );
-}
-
-function classDeclarations(sourceFile: ts.SourceFile): ts.ClassDeclaration[] {
-  return sourceFile.statements.filter(ts.isClassDeclaration);
-}
-
-function isPrivateMember(member: ts.ClassElement): boolean {
-  if (!ts.canHaveModifiers(member)) return false;
-  const mods = ts.getModifiers(member);
-  return Boolean(mods?.some((mod) => mod.kind === ts.SyntaxKind.PrivateKeyword));
-}
-
-function ledgerLikeName(name: string): boolean {
-  return /(Map|Set|Timer|Timers|Queue|Store|Fence|Flights|Generations|Count)$/.test(name) || name.endsWith("BySession");
-}
-
-function publicReturnViolations(sourceFile: ts.SourceFile): string[] {
-  const violations: string[] = [];
-  for (const cls of classDeclarations(sourceFile)) {
-    for (const member of cls.members) {
-      if (!ts.isMethodDeclaration(member) || isPrivateMember(member) || !member.name) continue;
-      const name = propertyNameText(member.name);
-      if (!name) continue;
-      const returnType = typeNameOf(member.type);
-      if (returnType && FORBIDDEN_PUBLIC_TYPE_NAMES.has(returnType)) {
-        violations.push(`${cls.name?.text ?? "?"}.${name} returns ${returnType}`);
-      }
-      if (member.type && ts.isTypeReferenceNode(member.type)) {
-        const text = member.type.getText(sourceFile);
-        if (/\bMap\s*</.test(text) || /\bSet\s*</.test(text) || /\bReplayFenceStore\b/.test(text)) {
-          violations.push(`${cls.name?.text ?? "?"}.${name} return type ${text}`);
-        }
-      }
-    }
-  }
-  return violations;
-}
-
-function privateLedgerViolations(sourceFile: ts.SourceFile): string[] {
-  const violations: string[] = [];
-  for (const cls of classDeclarations(sourceFile)) {
-    for (const member of cls.members) {
-      if (!ts.isPropertyDeclaration(member) || !member.name) continue;
-      const name = propertyNameText(member.name);
-      if (!name || !ledgerLikeName(name)) continue;
-      if (!isPrivateMember(member)) {
-        violations.push(`${cls.name?.text ?? "?"}.${name} is not private`);
-      }
-    }
-  }
-  return violations;
-}
-
-function scanLedgerAccess(sourceFile: ts.SourceFile): WriteHit[] {
-  const hits: WriteHit[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isPropertyAccessExpression(node) && AUTHORITY_LEDGER_NAMES.has(node.name.text)) {
-      hits.push({ kind: "ledger-access", name: node.name.text, text: node.getText(sourceFile) });
-    }
-    if (ts.isElementAccessExpression(node)) {
-      const arg = node.argumentExpression;
-      if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg))) {
-        if (AUTHORITY_LEDGER_NAMES.has(arg.text)) {
-          hits.push({ kind: "ledger-bracket", name: arg.text, text: node.getText(sourceFile) });
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(sourceFile);
-  return hits;
+function kinds(violations: ReturnType<typeof auditAuthorityBoundary>): string[] {
+  return violations.map(formatViolation);
 }
 
 describe("SessionRuntime authority boundary", () => {
-  const hostSource = readRuntime(HOST_FILE);
-  const hostFile = parseFile(HOST_FILE, hostSource);
-  const migrated = new Set<string>(MIGRATED_SESSION_FIELDS);
+  describe("production Client program", () => {
+    const program = createClientBoundaryProgram(clientRoot);
+    const violations = auditAuthorityBoundary(program, { requireCompleteInventory: true });
 
-  it("keeps migrated scheduler/route fields off the host SessionEntry type", () => {
-    const names = collectSessionEntryPropertyNames(hostFile);
-    expect(names.length).toBeGreaterThan(0);
-    expect(names.filter((name) => migrated.has(name))).toEqual([]);
+    it("builds a type-aware Program from Client tsconfig.json and reports no ownership escapes", () => {
+      expect(program.getTypeChecker(), "TypeChecker must exist").toBeTruthy();
+      expect(violations, violations.length ? kinds(violations).join("\n") : "clean").toEqual([]);
+    });
+
+    it("keeps the host source in the Program so SessionEntry is checker-resolved", () => {
+      const host = program.getSourceFiles().find((file) => file.fileName.endsWith(`/${HOST_FILE}`));
+      expect(host).toBeTruthy();
+    });
   });
 
-  it("does not initialize, assign, increment, destructure, or bracket-write migrated fields in the host", () => {
-    expect(walkWrites(hostFile, migrated)).toEqual([]);
+  describe("compile-valid negative fixtures", () => {
+    it("catches removing private from RouteTeardownAuthority.quarantinedSessions", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class RouteTeardownAuthority {
+            quarantinedSessions = new Map<string, { handler: object }>();
+            private routeBySession = new WeakMap<object, { generation: number }>();
+          }
+          export class SessionRuntime {
+            constructor(private routes: RouteTeardownAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-not-private" &&
+            hit.className === "RouteTeardownAuthority" &&
+            hit.member === "quarantinedSessions",
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a public method returning live RouteState through a type alias union", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type RouteState = { generation: number; injectReady: boolean };
+          type RouteStateAlias = RouteState;
+          type Box<T> = T;
+          export class RouteTeardownAuthority {
+            private routeBySession = new WeakMap<object, RouteState>();
+            inspectLive(entry: object): Box<RouteStateAlias> | undefined {
+              return this.routeBySession.get(entry);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private routes: RouteTeardownAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "public-return-forbidden-type" &&
+            hit.className === "RouteTeardownAuthority" &&
+            hit.member === "inspectLive" &&
+            /RouteState/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches queue.push after aliasing deferredMessages under a different variable name", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SessionRuntime {
+            enqueue(entry: SessionEntry, message: { id: string }): void {
+              const queue = (entry as SessionEntry & { deferredMessages: Array<{ id: string }> }).deferredMessages;
+              queue.push(message);
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some((hit) => hit.kind === "aliased-array-mutator" && hit.member === "deferredMessages"),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches computed-key mutation of projection.sessions after a Record cast", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SessionProjectionAuthority {
+            private sessions = new Map<string, { chatId: string }>();
+            getSession(chatId: string): { chatId: string } | undefined {
+              return this.sessions.get(chatId);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private projection: SessionProjectionAuthority) {}
+            wipe(): void {
+              const ledgerName = "sessions";
+              (this.projection as unknown as Record<string, Map<string, unknown> | undefined>)[ledgerName]?.clear();
+            }
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some((hit) => hit.kind === "computed-ledger-mutation" && hit.member === "sessions"),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
   });
 
-  it("does not reach authority ledgers except through intent methods", () => {
-    expect(scanLedgerAccess(hostFile)).toEqual([]);
-  });
-
-  it("keeps authority ledgers private and public methods from exposing mutable containers", () => {
-    const privacy: string[] = [];
-    const returns: string[] = [];
-    for (const fileName of AUTHORITY_FILES) {
-      const source = readRuntime(fileName);
-      const parsed = parseFile(fileName, source);
-      privacy.push(...privateLedgerViolations(parsed));
-      returns.push(...publicReturnViolations(parsed));
-    }
-    expect(privacy).toEqual([]);
-    expect(returns).toEqual([]);
-  });
-
-  it("fails the write walker on the bypasses QA demonstrated", () => {
-    const probes = parseFile(
-      "probes.ts",
-      `
-      const projection = this.projection;
-      projection.sessions.clear();
-      this.projection["sessions"].clear();
-      const entry = { retryTimer: null, retryAttempt: 0, retryFromEvicted: evicted, deferredMessages: [] };
-      record.retryTimer = null;
-      alias["retryAttempt"] = 1;
-      const { retryHeadMessage } = record;
-      entry.deferredMessages.push(msg);
-      entry.routeTransitionGeneration++;
-      entry["activeSlotHeld"] = true;
-      `,
-    );
-    const hits = walkWrites(probes, migrated);
-    const kinds = new Set(hits.map((hit) => hit.kind));
-    const names = new Set(hits.map((hit) => hit.name));
-    expect(names.has("retryTimer")).toBe(true);
-    expect(names.has("retryAttempt")).toBe(true);
-    expect(names.has("retryFromEvicted")).toBe(true);
-    expect(names.has("retryHeadMessage")).toBe(true);
-    expect(names.has("deferredMessages")).toBe(true);
-    expect(names.has("routeTransitionGeneration")).toBe(true);
-    expect(names.has("activeSlotHeld")).toBe(true);
-    expect(kinds.has("object-literal")).toBe(true);
-    expect(kinds.has("assignment") || kinds.has("assignment-bracket")).toBe(true);
-    expect(kinds.has("bracket-access") || kinds.has("assignment-bracket")).toBe(true);
-    expect(kinds.has("destructure")).toBe(true);
-    expect(kinds.has("array-mutator")).toBe(true);
-    const ledgerHits = scanLedgerAccess(probes);
-    expect(ledgerHits.some((hit) => hit.name === "sessions")).toBe(true);
+  describe("clean fixture", () => {
+    it("passes a miniature unique-ownership Program with no violations", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type RouteState = { generation: number };
+          export class RouteTeardownAuthority {
+            private quarantinedSessions = new Map<string, object>();
+            private routeBySession = new WeakMap<object, RouteState>();
+            attach(entry: object): void {
+              this.routeBySession.set(entry, { generation: 0 });
+            }
+            hasQuarantine(chatId: string): boolean {
+              return this.quarantinedSessions.has(chatId);
+            }
+          }
+          export class SessionProjectionAuthority {
+            private sessions = new Map<string, { chatId: string }>();
+            getSession(chatId: string): { chatId: string } | undefined {
+              return this.sessions.get(chatId);
+            }
+          }
+          export class SessionRuntime {
+            constructor(
+              private routes: RouteTeardownAuthority,
+              private projection: SessionProjectionAuthority,
+            ) {}
+            start(entry: SessionEntry): void {
+              this.routes.attach(entry);
+            }
+            lookup(chatId: string): { chatId: string } | undefined {
+              return this.projection.getSession(chatId);
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
   });
 });
