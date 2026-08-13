@@ -520,16 +520,30 @@ function auditPublicReturns(
 ): void {
   const analysis = new ClassProvenanceAnalysis(source, cls, className, checker);
   for (const member of cls.members) {
-    if (
-      !(ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member)) ||
-      !member.name ||
-      ts.isPrivateIdentifier(member.name)
-    ) {
-      continue;
-    }
+    if (!member.name || ts.isPrivateIdentifier(member.name)) continue;
     if (!isPublicSurface(member)) continue;
     const name = staticName(member.name);
     if (!name) continue;
+
+    if (ts.isPropertyDeclaration(member)) {
+      const type = checker.getTypeAtLocation(member);
+      const escaped = forbiddenEscapeName(type, checker);
+      if (escaped) {
+        violations.push({
+          kind: "public-return-forbidden-type",
+          file: fileLabel(source),
+          className,
+          member: name,
+          detail: `public property has type ${checker.typeToString(type, member, ts.TypeFormatFlags.NoTruncation)} (escape: ${escaped})`,
+        });
+      }
+      for (const hit of analysis.publicEscapeFindings(member, name)) {
+        violations.push(hit);
+      }
+      continue;
+    }
+
+    if (!(ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member))) continue;
     const signature = checker.getSignatureFromDeclaration(member);
     if (signature) {
       const returnType = checker.getReturnTypeOfSignature(signature);
@@ -988,6 +1002,9 @@ type Provenance = {
   freshContainer: boolean;
 };
 
+type FunctionOwner = ts.MethodDeclaration | ts.GetAccessorDeclaration;
+type ProvenanceOwner = FunctionOwner | ts.PropertyDeclaration;
+
 type SourceLookup = { kind: "present"; expr: ts.Expression } | { kind: "missing" } | { kind: "unknown" };
 
 const EMPTY_PROVENANCE: Provenance = { taints: [], freshContainer: false };
@@ -1072,7 +1089,7 @@ function containsMutableContainer(type: ts.Type, checker: ts.TypeChecker): boole
 class ClassProvenanceAnalysis {
   private readonly ledgers: ReadonlySet<string>;
   private readonly contract: Partial<Record<string, AcceptedReturnContract>>;
-  private readonly methodByName = new Map<string, ts.MethodDeclaration | ts.GetAccessorDeclaration>();
+  private readonly methodByName = new Map<string, FunctionOwner>();
   private readonly summary = new Map<string, Provenance>();
   private readonly inFlight = new Set<string>();
   private readonly boundSummary = new Map<string, Provenance>();
@@ -1097,7 +1114,7 @@ class ClassProvenanceAnalysis {
     }
   }
 
-  publicEscapeFindings(member: ts.MethodDeclaration | ts.GetAccessorDeclaration, methodName: string): AuditViolation[] {
+  publicEscapeFindings(member: ProvenanceOwner, methodName: string): AuditViolation[] {
     const provenance = this.summarizeMember(member, methodName);
     const findings: AuditViolation[] = [];
     const contract = this.contract[methodName];
@@ -1123,7 +1140,7 @@ class ClassProvenanceAnalysis {
           file: fileLabel(this.source),
           className: this.className,
           member: methodName,
-          detail: `public method returns a callable that can mutate private ${taint.name}`,
+          detail: `public ${ts.isPropertyDeclaration(member) ? "property" : "method"} returns a callable that can mutate private ${taint.name}`,
         });
         continue;
       }
@@ -1132,10 +1149,10 @@ class ClassProvenanceAnalysis {
         file: fileLabel(this.source),
         className: this.className,
         member: methodName,
-        detail: `public method returns private ${taint.kind} ${taint.name}`,
+        detail: `public ${ts.isPropertyDeclaration(member) ? "property" : "method"} returns private ${taint.kind} ${taint.name}`,
       });
     }
-    const signature = this.checker.getSignatureFromDeclaration(member);
+    const signature = ts.isPropertyDeclaration(member) ? undefined : this.checker.getSignatureFromDeclaration(member);
     const returnType = signature ? this.checker.getReturnTypeOfSignature(signature) : undefined;
     if (
       returnType &&
@@ -1157,26 +1174,31 @@ class ClassProvenanceAnalysis {
     return findings;
   }
 
-  private summarizeMember(member: ts.MethodDeclaration | ts.GetAccessorDeclaration, methodName: string): Provenance {
+  private summarizeMember(member: ProvenanceOwner, methodName: string): Provenance {
     const cached = this.summary.get(methodName);
     if (cached) return cached;
     if (this.inFlight.has(methodName)) return EMPTY_PROVENANCE;
     this.inFlight.add(methodName);
-    const returns = this.returnExpressions(member);
-    const provenance =
-      returns.length === 0
-        ? FRESH_PROVENANCE
-        : mergeProvenance(returns.map((expr) => this.exprProvenance(expr, member)));
+    let provenance: Provenance;
+    if (ts.isPropertyDeclaration(member)) {
+      provenance = member.initializer ? this.exprProvenance(member.initializer, member) : FRESH_PROVENANCE;
+    } else {
+      const returns = this.returnExpressions(member);
+      provenance =
+        returns.length === 0
+          ? FRESH_PROVENANCE
+          : mergeProvenance(returns.map((expr) => this.exprProvenance(expr, member)));
+    }
     this.inFlight.delete(methodName);
     this.summary.set(methodName, provenance);
     return provenance;
   }
 
   private summarizeBoundMember(
-    member: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    member: FunctionOwner,
     methodName: string,
     args: readonly ts.Expression[] | undefined,
-    caller: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    caller: ProvenanceOwner,
   ): Provenance {
     const bindings = this.bindCallParameters(member, args, caller);
     if (bindings.size === 0) return this.summarizeMember(member, methodName);
@@ -1201,9 +1223,9 @@ class ClassProvenanceAnalysis {
   }
 
   private bindCallParameters(
-    callee: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    callee: FunctionOwner,
     args: readonly ts.Expression[] | undefined,
-    caller: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    caller: ProvenanceOwner,
   ): Map<ts.Symbol, Provenance> {
     const map = new Map<ts.Symbol, Provenance>();
     const actual = args ?? [];
@@ -1257,9 +1279,9 @@ class ClassProvenanceAnalysis {
     name: ts.BindingName,
     provenance: Provenance,
     map: Map<ts.Symbol, Provenance>,
-    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    initOwner: ProvenanceOwner,
     source: ts.Expression | undefined,
-    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    sourceOwner: ProvenanceOwner,
   ): void {
     if (ts.isIdentifier(name)) {
       const symbol = this.checker.getSymbolAtLocation(name);
@@ -1281,9 +1303,9 @@ class ClassProvenanceAnalysis {
     pattern: ts.ObjectBindingPattern,
     provenance: Provenance,
     map: Map<ts.Symbol, Provenance>,
-    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    initOwner: ProvenanceOwner,
     source: ts.Expression | undefined,
-    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    sourceOwner: ProvenanceOwner,
   ): void {
     for (const element of pattern.elements) {
       if (!ts.isBindingElement(element)) continue;
@@ -1304,9 +1326,9 @@ class ClassProvenanceAnalysis {
     pattern: ts.ArrayBindingPattern,
     provenance: Provenance,
     map: Map<ts.Symbol, Provenance>,
-    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    initOwner: ProvenanceOwner,
     source: ts.Expression | undefined,
-    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    sourceOwner: ProvenanceOwner,
   ): void {
     let index = 0;
     for (const element of pattern.elements) {
@@ -1333,8 +1355,8 @@ class ClassProvenanceAnalysis {
     element: ts.BindingElement,
     lookup: SourceLookup,
     map: Map<ts.Symbol, Provenance>,
-    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    initOwner: ProvenanceOwner,
+    sourceOwner: ProvenanceOwner,
   ): Provenance {
     const parts: Provenance[] = [];
     if (lookup.kind === "present") {
@@ -1355,7 +1377,7 @@ class ClassProvenanceAnalysis {
   private evalBindingInitializer(
     initializer: ts.Expression,
     map: Map<ts.Symbol, Provenance>,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     this.paramTaintStack.push(map);
     try {
@@ -1406,7 +1428,7 @@ class ClassProvenanceAnalysis {
     return parts.join("|");
   }
 
-  private returnExpressions(member: ts.MethodDeclaration | ts.GetAccessorDeclaration): ts.Expression[] {
+  private returnExpressions(member: FunctionOwner): ts.Expression[] {
     const out: ts.Expression[] = [];
     if (!member.body || !ts.isBlock(member.body)) return out;
     const visit = (node: ts.Node): void => {
@@ -1419,7 +1441,7 @@ class ClassProvenanceAnalysis {
     return out;
   }
 
-  private exprProvenance(node: ts.Node, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+  private exprProvenance(node: ts.Node, owner: ProvenanceOwner): Provenance {
     const current = unwrap(node);
     if (
       ts.isStringLiteral(current) ||
@@ -1501,7 +1523,7 @@ class ClassProvenanceAnalysis {
     return EMPTY_PROVENANCE;
   }
 
-  private callProvenance(call: ts.CallExpression, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+  private callProvenance(call: ts.CallExpression, owner: ProvenanceOwner): Provenance {
     const callee = unwrap(call.expression);
     if (ts.isIdentifier(callee) && callee.text === "Array" && call.arguments.length > 0) {
       /* Array(n) */
@@ -1561,7 +1583,7 @@ class ClassProvenanceAnalysis {
     return EMPTY_PROVENANCE;
   }
 
-  private blockReturnProvenance(block: ts.Block, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+  private blockReturnProvenance(block: ts.Block, owner: ProvenanceOwner): Provenance {
     const returns: Provenance[] = [];
     const visit = (node: ts.Node): void => {
       if (ts.isFunctionLike(node) && node !== owner) return;
@@ -1572,11 +1594,7 @@ class ClassProvenanceAnalysis {
     return returns.length === 0 ? FRESH_PROVENANCE : mergeProvenance(returns);
   }
 
-  private containerMethodProvenance(
-    receiver: ts.Expression,
-    method: string,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-  ): Provenance {
+  private containerMethodProvenance(receiver: ts.Expression, method: string, owner: ProvenanceOwner): Provenance {
     const recv = this.exprProvenance(receiver, owner);
     const ledger = recv.taints.find((taint) => taint.kind === "ledger");
     if (!ledger) return recv;
@@ -1611,7 +1629,7 @@ class ClassProvenanceAnalysis {
     recvExpr: ts.Expression,
     method: string,
     call: ts.CallExpression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     const receiver = this.exprProvenance(recvExpr, owner);
     if (method === "map" || method === "flatMap") {
@@ -1647,7 +1665,7 @@ class ClassProvenanceAnalysis {
   private arrayElementSelectionProvenance(
     recvExpr: ts.Expression,
     resultNode: ts.Node,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     if (isPrimitiveLike(this.checker.getTypeAtLocation(resultNode))) return FRESH_PROVENANCE;
     const recv = this.exprProvenance(recvExpr, owner);
@@ -1657,7 +1675,7 @@ class ClassProvenanceAnalysis {
 
   private memberProvenance(
     node: ts.PropertyAccessExpression | ts.ElementAccessExpression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     let name: string | undefined;
     if (ts.isPropertyAccessExpression(node)) {
@@ -1732,7 +1750,7 @@ class ClassProvenanceAnalysis {
     return { taints: [{ kind: "ledger", name }], freshContainer: false };
   }
 
-  private identifierProvenance(id: ts.Identifier, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance {
+  private identifierProvenance(id: ts.Identifier, owner: ProvenanceOwner): Provenance {
     if (id.text === "undefined" || id.text === "NaN" || id.text === "Infinity") return FRESH_PROVENANCE;
     const symbol = this.checker.getSymbolAtLocation(id);
     if (!symbol) return EMPTY_PROVENANCE;
@@ -1773,7 +1791,7 @@ class ClassProvenanceAnalysis {
       }
       if (ts.isParameter(declaration) && this.paramTaintStack.length === 0) parts.push(EMPTY_PROVENANCE);
     }
-    if (owner.body) {
+    if (!ts.isPropertyDeclaration(owner) && owner.body) {
       const visit = (node: ts.Node): void => {
         if (ts.isFunctionLike(node) && node !== owner) return;
         if (
@@ -1835,7 +1853,7 @@ class ClassProvenanceAnalysis {
   private functionCallbackProvenance(
     fn: ts.ArrowFunction | ts.FunctionExpression,
     element: Provenance,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     const map = new Map<ts.Symbol, Provenance>();
     for (const param of fn.parameters) this.bindCallbackName(param.name, element, map);
@@ -1870,11 +1888,7 @@ class ClassProvenanceAnalysis {
     }
   }
 
-  private forOfNameProvenance(
-    name: ts.BindingName,
-    forOf: ts.ForOfStatement,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-  ): Provenance {
+  private forOfNameProvenance(name: ts.BindingName, forOf: ts.ForOfStatement, owner: ProvenanceOwner): Provenance {
     const element = this.iteratedElementProvenance(forOf.expression, owner);
     if (ts.isIdentifier(name)) {
       if (isPrimitiveLike(this.checker.getTypeAtLocation(name))) return FRESH_PROVENANCE;
@@ -1886,7 +1900,7 @@ class ClassProvenanceAnalysis {
   private forOfBindingProvenance(
     declaration: ts.BindingElement,
     forOf: ts.ForOfStatement,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     const element = this.iteratedElementProvenance(forOf.expression, owner);
     const pattern = declaration.parent;
@@ -1900,10 +1914,7 @@ class ClassProvenanceAnalysis {
     return element;
   }
 
-  private iteratedElementProvenance(
-    expr: ts.Expression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-  ): Provenance {
+  private iteratedElementProvenance(expr: ts.Expression, owner: ProvenanceOwner): Provenance {
     const inner = this.exprProvenance(expr, owner);
     const taints = this.detachIterableIdentity(inner, expr);
     return { taints, freshContainer: taints.length === 0 };
@@ -1914,10 +1925,7 @@ class ClassProvenanceAnalysis {
     return current.kind === ts.SyntaxKind.ThisKeyword;
   }
 
-  private newExpressionProvenance(
-    expr: ts.NewExpression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-  ): Provenance {
+  private newExpressionProvenance(expr: ts.NewExpression, owner: ProvenanceOwner): Provenance {
     const ctor = unwrap(expr.expression);
     const name = ts.isIdentifier(ctor) ? ctor.text : "";
     // Named constructors only: Promise/Error executors stay internal; Set/Map/Array detach identity.
@@ -1942,7 +1950,7 @@ class ClassProvenanceAnalysis {
       | ts.MethodDeclaration
       | ts.GetAccessorDeclaration
       | ts.SetAccessorDeclaration,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance {
     const parts: Provenance[] = [];
     if (!fn.body) return FRESH_PROVENANCE;
@@ -1962,7 +1970,7 @@ class ClassProvenanceAnalysis {
     return parts.length === 0 ? FRESH_PROVENANCE : mergeProvenance(parts);
   }
 
-  private mutationAt(node: ts.Node, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance | undefined {
+  private mutationAt(node: ts.Node, owner: ProvenanceOwner): Provenance | undefined {
     if (ts.isCallExpression(node)) {
       const callee = unwrap(node.expression);
       if (ts.isPropertyAccessExpression(callee)) {
@@ -1982,10 +1990,7 @@ class ClassProvenanceAnalysis {
     return undefined;
   }
 
-  private capabilityFromAssigned(
-    target: ts.Expression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
-  ): Provenance | undefined {
+  private capabilityFromAssigned(target: ts.Expression, owner: ProvenanceOwner): Provenance | undefined {
     const found = this.exprProvenance(target, owner).taints.filter(
       (taint) =>
         taint.kind === "ledger" ||
@@ -2006,7 +2011,7 @@ class ClassProvenanceAnalysis {
   private capabilityFromReceiver(
     method: string,
     receiver: ts.Expression,
-    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    owner: ProvenanceOwner,
   ): Provenance | undefined {
     const recv = this.exprProvenance(receiver, owner);
     const storage = recv.taints.filter(

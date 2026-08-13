@@ -570,6 +570,42 @@ describe("SessionRuntime authority boundary", () => {
   });
 
   describe("compile-valid write-capability fixtures", () => {
+    it("catches a public callable property initializer that pops the private pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            leak = () => this.pendingQueue.pop();
+            observeProperty = () => this.pendingQueue.length;
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "leak" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some((hit) => hit.member === "observeProperty"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
+    });
+
     it("catches a raw closure that pops the private pendingQueue", () => {
       const files = {
         "host.ts": `
@@ -1315,6 +1351,8 @@ describe("SessionRuntime authority boundary", () => {
         .replace(
           /\n}\n$/,
           `
+  leak = () => this.pendingQueue.pop();
+  observeProperty = () => this.pendingQueue.length;
   qaLeakPendingQueueMutator(): () => PendingMessage | undefined {
     return () => this.pendingQueue.pop();
   }
@@ -1496,6 +1534,17 @@ describe("SessionRuntime authority boundary", () => {
       const diagnostics = fixtureDiagnostics(program, { "slot-scheduler-authority.ts": patched });
       const violations = auditAuthorityBoundary(program, { requireCompleteInventory: true });
       expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" && hit.member === "leak" && /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some((hit) => hit.member === "observeProperty"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
       expect(
         violations.some(
           (hit) =>
