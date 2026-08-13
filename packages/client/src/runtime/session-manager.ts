@@ -33,7 +33,6 @@ import {
   formatInboundContent,
   resolveSenderLabel,
 } from "./agent-io.js";
-import { isAttachmentGoneError } from "./attachment-availability.js";
 import { findAttachmentFile, writeAttachmentFile } from "./attachment-store.js";
 import { type ContextTreeBinding, resolveAgentContextTreeBinding } from "./bootstrap.js";
 import type { SessionConfig } from "./config.js";
@@ -64,6 +63,7 @@ import {
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
+import { isAttachmentGoneError } from "./provider-support/attachment-availability.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 import { ReplayFenceStore } from "./replay-fence.js";
 import { createResultSink, type Trigger } from "./result-sink.js";

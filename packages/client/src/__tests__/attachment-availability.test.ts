@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SdkError } from "../cloud/sdk.js";
-import { isAttachmentGoneError } from "../runtime/attachment-availability.js";
+import { isAttachmentGoneError } from "../runtime/provider-support/attachment-availability.js";
 
 describe("isAttachmentGoneError", () => {
   it("treats only a 404 SdkError as the attachment row being gone", () => {

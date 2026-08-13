@@ -671,8 +671,13 @@ export async function sweepExpiredMessageAttachments(
 
   if (!options.deleteEnabled) {
     // Always log, even at zero — a silent dry-run leaves operators unable to
-    // tell "nothing to clean" from "the sweep never ran".
-    log.info({ eligibleObjects, eligibleBytes, cutoff }, "attachment retention sweep dry-run — no rows deleted");
+    // tell "nothing to clean" from "the sweep never ran". Resolve the logger at
+    // call time so the live createLogger export remains observable after this
+    // module has already been evaluated.
+    createLogger("attachment").info(
+      { eligibleObjects, eligibleBytes, cutoff },
+      "attachment retention sweep dry-run — no rows deleted",
+    );
     return { eligibleObjects, eligibleBytes, deleted: 0, reclaimedBytes: 0, batches: 0 };
   }
 

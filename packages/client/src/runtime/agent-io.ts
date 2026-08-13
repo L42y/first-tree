@@ -14,11 +14,11 @@ import {
   TRUSTED_SYSTEM_SENDER_NAMES,
 } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
-import { ATTACHMENT_UNAVAILABLE_NOTE } from "./attachment-availability.js";
 import { findAttachmentFile } from "./attachment-store.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity, SessionMessage } from "./handler.js";
 import { findImagePath } from "./image-store.js";
+import { ATTACHMENT_UNAVAILABLE_NOTE } from "./provider-support/attachment-availability.js";
 
 /**
  * Cross-handler plumbing for First Tree ↔ agent-runtime interaction.

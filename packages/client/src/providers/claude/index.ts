@@ -20,7 +20,6 @@ import {
   runtimeProviderSchema,
   SUPPORTED_IMAGE_MIMES as SHARED_SUPPORTED_IMAGE_MIMES,
 } from "@first-tree/shared";
-import { ATTACHMENT_UNAVAILABLE_NOTE } from "../../runtime/attachment-availability.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -39,6 +38,7 @@ import type {
   ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
+  ATTACHMENT_UNAVAILABLE_NOTE,
   buildAgentBriefing,
   buildBriefingUpdateNotice,
   buildProviderRetryEvent,
