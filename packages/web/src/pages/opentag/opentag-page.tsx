@@ -10,7 +10,6 @@ import { useComputerConnection } from "../../features/agent-setup/use-computer-c
 import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
-import { feishuStepCopy } from "./copy.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
@@ -19,8 +18,6 @@ import {
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,
-  resolveFeishuBotState,
-  resolveOpenTagFeishuStep,
   resolveOpenTagStep,
 } from "./flow.js";
 import { OpenTagShell } from "./opentag-shell.js";
@@ -310,16 +307,21 @@ export function OpenTagPage(): ReactElement | null {
     return () => clearTimeout(timer);
   }, [stepStartedAt, stepSlow]);
 
-  const feishuStep = resolveOpenTagFeishuStep({
-    binding,
-    // A failure belongs to the Agent and Computer it was asked for. Once either
-    // moves on, the old machine's failed request says nothing about the new one
-    // — and a Computer that arrives already prepared never asks again, so the
-    // stale failure would otherwise offer a way out of an ordinary Bot wait
-    // that has barely started.
-    callFailed: prepareTools.isError && askedToolsFor === toolsIdentity,
-    slow: stepSlow,
-  });
+  // What the step offers, as plain facts rather than a second state machine.
+  // A failure belongs to the Agent and Computer it was asked for: once either
+  // moves on, the old machine's failed request says nothing about the new one,
+  // and a Computer that arrives already prepared never asks again.
+  const setupFailed = prepareTools.isError && askedToolsFor === toolsIdentity;
+  const botFailed = !!binding && (binding.status === "error" || binding.connectionStatus === "error");
+  const hasComputer = !!binding && binding.cli.state !== "offline";
+  const toolsReady = binding?.cli.state === "ready";
+  // A finished handoff has nothing to recover from, however it got there. Short
+  // of that, a failed request, a failed Bot and a missing Computer are all
+  // established rather than suspected, so none of them waits for the clock.
+  const showRecovery =
+    !!binding && !isFeishuHandoffUsable(binding) && (setupFailed || botFailed || !hasComputer || stepSlow);
+  // Retrying only helps while there is a Computer that could still finish.
+  const canRetryTools = showRecovery && hasComputer && !toolsReady;
 
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
   // Ownership, not readability, is what licenses the stamp below.
@@ -430,21 +432,8 @@ export function OpenTagPage(): ReactElement | null {
       ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
       : null;
 
-  // The only heading this flow swaps: once the Bot half is settled and the
-  // Agent's own preparation is what is left, the standing "connect" heading
-  // would keep asking for something the member already did.
-  const feishuHeading =
-    step === "connect-feishu" && feishuReady && feishuStep.recovery === "offered"
-      ? (feishuStepCopy(resolveFeishuBotState(binding), feishuStep.tools).heading ?? undefined)
-      : undefined;
-
   return (
-    <OpenTagShell
-      activeStep={shellStep}
-      completedSteps={completedSteps}
-      handoff={handoff}
-      {...(feishuHeading ? { heading: feishuHeading } : {})}
-    >
+    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
       {facts.state === "unreadable" && (
         <OpenTagRecoverableError
           message="We couldn't load your Agent. Nothing was lost — it and its setup are still there."
@@ -525,7 +514,8 @@ export function OpenTagPage(): ReactElement | null {
           starting={startFeishu.isPending}
           error={startFeishu.error instanceof Error ? startFeishu.error.message : null}
           onConnect={() => startFeishu.mutate()}
-          step={feishuStep}
+          recovery={showRecovery}
+          canRetryTools={canRetryTools}
           retrying={prepareTools.isPending}
           // The same idempotent request the automatic path makes: when it never
           // landed this starts the Task, and when it did the Agent is already

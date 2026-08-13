@@ -1196,13 +1196,6 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    // A request that never landed is reported as failed, not as a duration —
-    // and nothing on the page may claim the Computer is being worked on, since
-    // the row right there says the setup never started.
-    expect(container.textContent).toContain("We couldn't start the setup.");
-    expect(container.textContent).toContain("Agent tools didn't start.");
-    expect(container.textContent).not.toContain("taking longer");
-    expect(container.textContent).not.toContain("keep checking this Computer");
     expect(container.textContent).toContain("You are not stuck here.");
     expect(button(container, "Try again").disabled).toBe(false);
     // Leaving lands on the Agent's own page — the one permanent repair entry.
@@ -1212,10 +1205,9 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     expect(container.textContent).not.toContain("has its first task from Feishu");
   });
 
-  it("does not call it the last part while the member still has a Bot to confirm", async () => {
+  it("offers the way forward without taking the Bot's half away", async () => {
     // The automatic request can fail while the member is still scanning. The
-    // recovery is the same, but claiming a connected Bot — or that only one
-    // part is left — would report a half of the handoff that has not happened.
+    // recovery appears, and the QR they are in the middle of using stays.
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({ registrationUrl: "https://feishu.example/confirm/abc" }),
     });
@@ -1224,10 +1216,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.textContent).toContain("We couldn't start the setup.");
-    expect(container.textContent).not.toContain("One last part is taking longer");
-    expect(container.textContent).not.toContain("Your Feishu Bot is connected.");
-    expect(container.textContent).not.toContain("still preparing");
+    expect(container.textContent).toContain("You are not stuck here.");
     // The member's own half is still in front of them, and still recoverable.
     expect(container.textContent).toContain("Scan with Feishu");
     expect(button(container, "Try again").disabled).toBe(false);
@@ -1265,8 +1254,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
       });
       await flush();
 
-      expect(container.textContent).toContain("One last part is taking longer");
-      expect(container.textContent).toContain("Taking longer than usual.");
+      expect(container.textContent).toContain("You are not stuck here.");
       expect(button(container, "Try again").disabled).toBe(false);
       expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)).not.toBeNull();
     } finally {
@@ -1292,7 +1280,6 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
       await flush();
 
       expect(container.textContent).not.toContain("You are not stuck here.");
-      expect(container.textContent).not.toContain("One last part is taking longer");
       expect(container.textContent).toContain("a private message or an exact group mention");
     } finally {
       vi.useRealTimers();
@@ -1384,11 +1371,6 @@ describe("OpenTag entry — whose setup this step is finishing", () => {
       // Retrying the automatic preparation would be a lie: it has nothing left
       // to do, and the outstanding half is the member's own confirmation.
       expect(container.textContent).not.toContain("Try again");
-      expect(container.textContent).not.toContain("Try the automatic setup again");
-      // And the heading must not contradict the row right beside it, which
-      // reports the Computer as ready.
-      expect(container.textContent).toContain("Feishu hasn't confirmed the Bot yet");
-      expect(container.textContent).not.toContain("Computer is still preparing");
     } finally {
       vi.useRealTimers();
     }
@@ -1414,29 +1396,6 @@ describe("OpenTag entry — whose setup this step is finishing", () => {
       await click(button(container, "Try again"));
 
       expect(api.createAgentFeishuSetupChat).toHaveBeenLastCalledWith(AGENT_UUID, { retry: true });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("does not narrow the panel to the Computer while the Bot is still outstanding", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
-      api.getAgent.mockResolvedValue(agentRow());
-      api.getAgentFeishuBinding.mockResolvedValue({
-        binding: feishuBinding({ registrationUrl: "https://feishu.example/confirm/abc" }),
-      });
-
-      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(FEISHU_TOOLS_SLOW_MS + 1_000);
-      });
-      await flush();
-
-      // Both halves are outstanding, so the panel keeps naming both.
-      expect(container.textContent).toContain("Preparing First Tree for Feishu…");
-      expect(container.textContent).not.toContain("Finishing Agent tools…");
     } finally {
       vi.useRealTimers();
     }
@@ -1506,52 +1465,6 @@ describe("OpenTag entry — the Agent's Feishu tools across a change of Computer
   });
 });
 
-describe("OpenTag entry — a failed request belongs to the Computer it was asked for", () => {
-  beforeEach(() => {
-    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
-    api.getAgent.mockResolvedValue(agentRow());
-  });
-
-  it("does not carry the old Computer's failure into a machine that arrives ready", async () => {
-    // The new Computer needs no request at all, so nothing ever clears the old
-    // one's error. Left attributed, it would offer a way out of an ordinary Bot
-    // wait that has barely started — and call it "taking longer" on the first
-    // frame the member sees it.
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    try {
-      api.getAgentFeishuBinding.mockResolvedValue({
-        binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
-      });
-      api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
-
-      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-      await flush();
-      expect(container.textContent).toContain("You are not stuck here.");
-
-      // Moved to a Computer that already has the tools; the Bot is not confirmed.
-      api.getAgentFeishuBinding.mockResolvedValue({
-        binding: feishuBinding({
-          registrationUrl: "https://f.test/c",
-          cli: { state: "ready", version: "1.4.0", clientId: "client-2" },
-        }),
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(11_000);
-      });
-      await flush();
-
-      // An ordinary wait on the member's own confirmation, and nothing more.
-      expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
-      expect(container.textContent).toContain("Scan with Feishu");
-      expect(container.textContent).not.toContain("You are not stuck here.");
-      expect(container.textContent).not.toContain("taking longer");
-      expect(container.textContent).toContain("Connect your Agent to Feishu.");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
-
 describe("OpenTag entry — an Agent with no Computer to prepare", () => {
   beforeEach(() => {
     authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
@@ -1571,8 +1484,6 @@ describe("OpenTag entry — an Agent with no Computer to prepare", () => {
     await flush();
 
     expect(container.textContent).toContain("This Agent has no Computer yet.");
-    expect(container.textContent).not.toContain("still preparing");
-    expect(container.textContent).not.toContain("keep checking this Computer");
     expect(container.textContent).not.toContain("Preparing this Computer in the background");
     // Offered immediately, and only the way out that can actually help.
     expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
@@ -1582,43 +1493,16 @@ describe("OpenTag entry — an Agent with no Computer to prepare", () => {
   });
 });
 
-describe("OpenTag entry — the Bot column agrees with the rest of the step", () => {
+describe("OpenTag entry — a Bot that failed", () => {
   beforeEach(() => {
     authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
     api.getAgent.mockResolvedValue(agentRow());
   });
 
-  it("does not promise the rest is finishing when nothing is", async () => {
-    // The Bot is connected and its supporting line sits beside a panel and a
-    // row that both say preparation never started. "While the rest finishes"
-    // would be the third surface disagreeing with the other two.
-    api.getAgentFeishuBinding.mockResolvedValue({
-      binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
-    });
-    api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
-
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    await flush();
-
-    expect(container.textContent).toContain("Your Bot and its permissions are kept.");
-    expect(container.textContent).not.toContain("while the rest finishes");
-  });
-
-  it("does not promise the rest is finishing when there is no Computer", async () => {
-    api.getAgentFeishuBinding.mockResolvedValue({
-      binding: connectedBinding({ cli: { state: "offline", version: null, clientId: null } }),
-    });
-
-    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
-    await flush();
-
-    expect(container.textContent).not.toContain("while the rest finishes");
-  });
-
-  it("does not frame a failed Bot connection as a confirmation still to come", async () => {
-    // The Computer is ready and the Bot's connection has failed. The Bot column
-    // and its row report the error; a panel saying Feishu is about to confirm
-    // it would contradict both.
+  it("offers the way out at once instead of after the wait", async () => {
+    // A failed connection has no Bot retry of its own and a ready Computer has
+    // no tools retry, so holding the exit behind the timer would leave the
+    // member in front of an error with nothing at all to do.
     api.getAgentFeishuBinding.mockResolvedValue({
       binding: feishuBinding({
         status: "active",
@@ -1633,9 +1517,9 @@ describe("OpenTag entry — the Bot column agrees with the rest of the step", ()
     await flush();
 
     expect(container.querySelector("[role='alert']")?.textContent).toContain("Feishu rejected the Bot credentials.");
-    expect(container.textContent).toContain("Feishu Bot needs attention.");
-    expect(container.textContent).not.toContain("Waiting for Feishu");
-    expect(container.textContent).not.toContain("hasn't confirmed");
-    expect(container.textContent).not.toContain("both parts finish");
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    // The Computer is done, so retrying its preparation would do nothing.
+    expect(container.textContent).not.toContain("Try again");
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
   });
 });

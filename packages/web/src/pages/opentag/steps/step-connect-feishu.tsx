@@ -5,13 +5,8 @@ import type { ReactElement } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { FeishuRegistrationQr, isFeishuBotReachable } from "../../../features/feishu/binding-view.js";
 import { FlowHint } from "../../onboarding/flow-ui.js";
-import { feishuStepCopy, OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
-import {
-  isFeishuHandoffUsable,
-  type OpenTagFeishuStepState,
-  type OpenTagToolsPrep,
-  resolveFeishuBotState,
-} from "../flow.js";
+import { OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
+import { isFeishuHandoffUsable } from "../flow.js";
 
 /**
  * The focused Feishu step: one Bot for this one Agent.
@@ -42,7 +37,8 @@ export function StepConnectFeishu({
   starting,
   error,
   onConnect,
-  step,
+  recovery,
+  canRetryTools,
   retrying,
   onRetryTools,
 }: {
@@ -55,8 +51,10 @@ export function StepConnectFeishu({
   starting: boolean;
   error: string | null;
   onConnect: () => void;
-  /** What this step is showing and what it offers the member. */
-  step: OpenTagFeishuStepState;
+  /** Waiting is no longer enough: show the member a way forward. */
+  recovery: boolean;
+  /** Retrying the preparation can still help — there is a Computer to finish. */
+  canRetryTools: boolean;
   /** A member-triggered retry of the preparation is in flight. */
   retrying: boolean;
   onRetryTools: () => void;
@@ -73,7 +71,7 @@ export function StepConnectFeishu({
         {binding ? (
           <div className="grid md:grid-cols-2">
             <div className="flex flex-col justify-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}>
-              <BotColumn binding={binding} starting={starting} onConnect={onConnect} tools={step.tools} />
+              <BotColumn binding={binding} starting={starting} onConnect={onConnect} />
             </div>
             {/* The divider is horizontal while the columns are stacked, so the
                 two waits never read as one continuous list on a phone. */}
@@ -84,7 +82,8 @@ export function StepConnectFeishu({
               <ToolsPanel
                 agentUuid={agentUuid}
                 binding={binding}
-                step={step}
+                recovery={recovery}
+                canRetryTools={canRetryTools}
                 retrying={retrying}
                 onRetryTools={onRetryTools}
               />
@@ -172,12 +171,10 @@ function BotColumn({
   binding,
   starting,
   onConnect,
-  tools,
 }: {
   binding: FeishuBotBinding;
   starting: boolean;
   onConnect: () => void;
-  tools: OpenTagToolsPrep;
 }): ReactElement {
   if (binding.status === "error") {
     return (
@@ -212,12 +209,7 @@ function BotColumn({
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
           {isFeishuHandoffUsable(binding)
             ? "Message it in Feishu — a private message or an exact group mention starts the first task."
-            : // "the rest finishes" is only true while something still is
-              // finishing. Nothing is, once preparation failed or has no
-              // Computer to run on.
-              tools.state === "preparing" || (tools.state === "recoverable" && tools.reason === "slow")
-              ? "Your Bot and its permissions are kept while the rest finishes."
-              : "Your Bot and its permissions are kept."}
+            : "Your Bot and its permissions are kept."}
         </p>
       </div>
     );
@@ -252,39 +244,31 @@ function BotColumn({
 function ToolsPanel({
   agentUuid,
   binding,
-  step,
+  recovery,
+  canRetryTools,
   retrying,
   onRetryTools,
 }: {
   agentUuid: string;
   binding: FeishuBotBinding;
-  step: OpenTagFeishuStepState;
+  recovery: boolean;
+  canRetryTools: boolean;
   retrying: boolean;
   onRetryTools: () => void;
 }): ReactElement {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
-  // The same derivation the page heading uses, so the two cannot disagree.
-  const header = feishuStepCopy(resolveFeishuBotState(binding), step.tools).panel;
 
+  // Two rows, each reading its own half straight from the binding. Nothing
+  // narrates the pair: the step heading frames it once, and anything that
+  // explained the same state a second time here only ever disagreed with it.
   return (
     <>
-      {header && (
-        <div>
-          <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
-            {header.title}
-          </p>
-          <p className="text-caption" style={{ margin: "var(--sp-0_5) 0 0", color: "var(--fg-3)" }}>
-            {header.lead}
-          </p>
-        </div>
-      )}
-
       <div style={{ borderTop: "var(--hairline) solid var(--border-faint)" }}>
         <ReadinessRow label={copy.botLabel} readiness={botReadiness(binding)} />
-        <ReadinessRow label={copy.toolsLabel} readiness={toolsReadiness(binding, step.tools)} />
+        <ReadinessRow label={copy.toolsLabel} readiness={toolsReadiness(binding)} />
       </div>
 
-      {step.recovery === "offered" && (
+      {recovery && (
         <>
           <div
             style={{
@@ -298,11 +282,11 @@ function ToolsPanel({
               {copy.recoveryTitle}
             </p>
             <p className="text-label" style={{ margin: "var(--sp-0_5) 0 0" }}>
-              {step.canRetryTools ? copy.recoveryLead : copy.recoveryLeadFinishOnly}
+              {canRetryTools ? copy.recoveryLead : copy.recoveryLeadFinishOnly}
             </p>
           </div>
           <div className="flex items-center" style={{ gap: "var(--sp-2)" }}>
-            {step.canRetryTools && (
+            {canRetryTools && (
               <Button type="button" disabled={retrying} onClick={onRetryTools}>
                 {retrying ? "Trying…" : copy.tryAgain}
               </Button>
@@ -396,28 +380,21 @@ function botReadiness(binding: FeishuBotBinding): Readiness {
 }
 
 /**
- * The Agent half. The nuance the member can act on lives in the preparation
- * state, not in the raw capability enum: "missing" and "unknown" both mean the
- * Agent cannot call Feishu yet, and what differs is whether waiting is still
- * the right thing to do.
+ * The Agent half, read straight from the capability the Client reports.
+ * `missing` and `unknown` both mean the Agent cannot call Feishu yet; `offline`
+ * means there is no Computer to call it from at all.
  */
-function toolsReadiness(binding: FeishuBotBinding, tools: OpenTagToolsPrep): Readiness {
-  if (tools.state === "ready") {
-    return {
-      tone: "ready",
-      status: "ready",
-      detail: binding.cli.version ? `Ready on this Computer · ${binding.cli.version}` : "Ready on this Computer",
-    };
+function toolsReadiness(binding: FeishuBotBinding): Readiness {
+  switch (binding.cli.state) {
+    case "ready":
+      return {
+        tone: "ready",
+        status: "ready",
+        detail: binding.cli.version ? `Ready on this Computer · ${binding.cli.version}` : "Ready on this Computer",
+      };
+    case "offline":
+      return { tone: "attention", status: "not ready", detail: "This Agent has no Computer yet." };
+    default:
+      return { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
   }
-  if (tools.state === "unavailable") {
-    return { tone: "attention", status: "not ready", detail: "This Agent has no Computer yet." };
-  }
-  if (tools.state === "recoverable") {
-    return {
-      tone: "attention",
-      status: "not ready",
-      detail: tools.reason === "failed" ? "The automatic setup didn't start." : "Taking longer than usual.",
-    };
-  }
-  return { tone: "pending", status: "preparing", detail: "Preparing this Computer in the background" };
 }
