@@ -82,7 +82,20 @@ type SessionManagerInternals = {
     ): void;
   };
   registry: SessionRegistry | null;
-  pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
+  slotScheduler: {
+    pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
+    activeCount: number;
+    acquireActiveSlot(
+      chatId: string,
+      message: SessionMessage | null,
+      deliveryKind?: string,
+      opts?: { queueOnFailure?: boolean },
+    ): boolean;
+    runRetry(chatId: string): Promise<void>;
+    drainPendingQueue(): void;
+    triggerImmediateRetry(chatId: string): void;
+    evictIfNeeded(): void;
+  };
   sessionRuntimeStates: Map<string, RuntimeState>;
   currentTrigger: Map<string, { messageId: string; senderId: string }>;
   inboxDelivery: {
@@ -100,17 +113,9 @@ type SessionManagerInternals = {
       admissionPending: boolean;
     };
   };
-  _activeCount: number;
-  acquireActiveSlot(
-    chatId: string,
-    message: SessionMessage | null,
-    deliveryKind?: string,
-    opts?: { queueOnFailure?: boolean },
-  ): boolean;
   routeMessage(chatId: string, message: SessionMessage): Promise<void>;
   startNewSession(chatId: string, message: SessionMessage, deliveryKind?: string): Promise<void>;
   resumeSession(entry: SessionRecord, message: SessionMessage | null | undefined): Promise<void>;
-  runRetry(chatId: string): Promise<void>;
   abortUnownedRoute(entry: SessionRecord, reason: string): void;
   ensureContextTreeBinding(): Promise<void>;
   markRouteOwned(
@@ -118,9 +123,6 @@ type SessionManagerInternals = {
     message: SessionMessage,
     receipt: { kind: "owned"; mode: "queued" },
   ): DeliveryRouteOwnership;
-  triggerImmediateRetry(chatId: string): void;
-  drainPendingQueue(): void;
-  evictIfNeeded(): void;
   notifySessionState(chatId: string, state: SessionState): void;
   projectSessionRuntime(chatId: string, opts?: { drainPendingOnIdle?: boolean }): void;
   recomputeRuntimeState(): void;
@@ -347,7 +349,7 @@ describe("SessionManager edge coverage", () => {
     i.sessions.set("chat-pending", makeSessionRecord("chat-pending"));
     i.evictedMappings.set("chat-evicted-active", { claudeSessionId: "evicted-active", lastActivity: 1 });
     i.evictedMappings.set("chat-evicted-archived", { claudeSessionId: "evicted-archived", lastActivity: 2 });
-    i.pendingQueue.push({ chatId: "chat-pending", message: makeMessage("chat-pending"), deliveryKind: "fresh" });
+    i.slotScheduler.pendingQueue.push({ chatId: "chat-pending", message: makeMessage("chat-pending"), deliveryKind: "fresh" });
 
     const activeSet = new Set(["chat-active", "chat-evicted-active"]);
 
@@ -379,7 +381,7 @@ describe("SessionManager edge coverage", () => {
         deferredMessages: [makeMessage(chatId)],
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Operator suspend clears the transition pointer immediately while keeping
     // generation stable through settle. Probe the entry before awaiting the
@@ -463,16 +465,16 @@ describe("SessionManager edge coverage", () => {
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(ackEntry).not.toHaveBeenCalledWith(2);
 
-    internals(sm).pendingQueue.push({
+    internals(sm).slotScheduler.pendingQueue.push({
       chatId: "chat-queued",
       message: makeMessage("chat-queued"),
       deliveryKind: "fresh",
     });
     internals(sm).evictedMappings.set("chat-queued", { claudeSessionId: "queued-session", lastActivity: 1 });
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(true);
 
     await sm.handleCommand("chat-queued", "session:terminate");
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
     expect(states.some((item) => item.chatId === "chat-active" && item.state === "suspended")).toBe(true);
 
     await sm.shutdown();
@@ -815,12 +817,12 @@ describe("SessionManager edge coverage", () => {
     const record = makeSessionRecord("chat-queued-resume", { status: "suspended" });
     const sm = makeManager({ concurrency: 1 });
     internals(sm).sessions.set("chat-queued-resume", record);
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).resumeSession(record, null);
 
     expect(
-      internals(sm).pendingQueue.some(
+      internals(sm).slotScheduler.pendingQueue.some(
         (item) => item.chatId === "chat-queued-resume" && item.message === null && item.deliveryKind === "control",
       ),
     ).toBe(true);
@@ -842,7 +844,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ concurrency: 1 });
     internals(sm).sessions.set("chat-working", working);
     internals(sm).sessions.set("chat-paused", paused);
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
 
     const workingEntry = mockEntry({ id: 99, chatId: "chat-working" });
     const decision = internals(sm).inboxDelivery.receive(workingEntry);
@@ -857,7 +859,7 @@ describe("SessionManager edge coverage", () => {
     expect(workingSuspend).not.toHaveBeenCalled();
     expect(pausedResume).not.toHaveBeenCalled();
     expect(
-      internals(sm).pendingQueue.some(
+      internals(sm).slotScheduler.pendingQueue.some(
         (item) => item.chatId === "chat-paused" && item.message === null && item.deliveryKind === "control",
       ),
     ).toBe(true);
@@ -887,7 +889,7 @@ describe("SessionManager edge coverage", () => {
       expect.anything(),
       expect.anything(),
     );
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-paused")).toBe(false);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-paused")).toBe(false);
     expect(sm.activeCount).toBe(1);
     await sm.shutdown();
   });
@@ -917,7 +919,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(working.suspend).not.toHaveBeenCalled();
     expect(recovered.start).not.toHaveBeenCalled();
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
 
     await sm.shutdown();
   });
@@ -948,7 +950,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(recovered.start).not.toHaveBeenCalled();
-    expect(internals(sm).pendingQueue.filter((item) => item.chatId === "chat-recovery")).toHaveLength(2);
+    expect(internals(sm).slotScheduler.pendingQueue.filter((item) => item.chatId === "chat-recovery")).toHaveLength(2);
 
     await sm.shutdown();
   });
@@ -981,7 +983,7 @@ describe("SessionManager edge coverage", () => {
     internals(sm).evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery" }));
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
 
     await sm.dispatch(mockEntry({ id: 3, chatId: "chat-fresh", messageId: "msg-fresh" }));
 
@@ -990,7 +992,7 @@ describe("SessionManager edge coverage", () => {
       { chatId: "chat-working", phase: "start" },
       { chatId: "chat-fresh", phase: "start" },
     ]);
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
 
     await sm.shutdown();
   });
@@ -1022,14 +1024,14 @@ describe("SessionManager edge coverage", () => {
 
     await sm.dispatch(mockEntry({ id: 10, chatId: "chat-working", messageId: "msg-working" }));
     await sm.dispatch(mockEntry({ id: 11, chatId: "chat-queued", messageId: "msg-queued" }));
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(true);
     if (!firstContext || !firstMessage) throw new Error("first context missing");
 
     await firstContext.finishTurn(firstMessage, { status: "success", terminal: true });
 
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-queued"));
     expect(ackEntry).toHaveBeenCalledWith(10);
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
 
     await sm.shutdown();
   });
@@ -1055,9 +1057,9 @@ describe("SessionManager edge coverage", () => {
       onSessionEvent: (_chatId, event) => events.push(event),
     });
 
-    await internals(sm).runRetry("missing-chat");
+    await internals(sm).slotScheduler.runRetry("missing-chat");
     internals(sm).sessions.set("chat-active", makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }));
-    await internals(sm).runRetry("chat-active");
+    await internals(sm).slotScheduler.runRetry("chat-active");
 
     const queued = makeSessionRecord("chat-retry-queue", {
       retryAttempt: 1,
@@ -1070,16 +1072,16 @@ describe("SessionManager edge coverage", () => {
     const activeRecord = internals(sm).sessions.get("chat-active");
     if (!activeRecord) throw new Error("active retry guard record missing");
     activeRecord.status = "suspended";
-    internals(sm)._activeCount = 1;
-    await internals(sm).runRetry("chat-retry-queue");
+    internals(sm).slotScheduler.activeCount = 1;
+    await internals(sm).slotScheduler.runRetry("chat-retry-queue");
     expect(queued.retryTimer).not.toBeNull();
     if (queued.retryTimer) {
       clearTimeout(queued.retryTimer);
       queued.retryTimer = null;
     }
 
-    internals(sm)._activeCount = 0;
-    await internals(sm).runRetry("chat-retry-queue");
+    internals(sm).slotScheduler.activeCount = 0;
+    await internals(sm).slotScheduler.runRetry("chat-retry-queue");
     expect(queued.claudeSessionId).toBe("retry-empty-start");
 
     const fromEvicted = makeSessionRecord("chat-retry-evicted", {
@@ -1091,14 +1093,14 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "network_error",
     });
     internals(sm).sessions.set("chat-retry-evicted", fromEvicted);
-    await internals(sm).runRetry("chat-retry-evicted");
+    await internals(sm).slotScheduler.runRetry("chat-retry-evicted");
     expect(fromEvicted.claudeSessionId).toBe("retry-from-evicted");
 
     expect(events.some((event) => event.kind === "error")).toBe(true);
 
-    internals(sm).triggerImmediateRetry("missing");
+    internals(sm).slotScheduler.triggerImmediateRetry("missing");
     internals(sm).sessions.set("chat-no-retry", makeSessionRecord("chat-no-retry", { retryAttempt: 0 }));
-    internals(sm).triggerImmediateRetry("chat-no-retry");
+    internals(sm).slotScheduler.triggerImmediateRetry("chat-no-retry");
     await sm.shutdown();
   });
 
@@ -1126,7 +1128,7 @@ describe("SessionManager edge coverage", () => {
     });
     internals(sm).sessions.set(chatId, retrying);
 
-    await internals(sm).runRetry(chatId);
+    await internals(sm).slotScheduler.runRetry(chatId);
 
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(recovered.start).not.toHaveBeenCalled();
@@ -1155,7 +1157,7 @@ describe("SessionManager edge coverage", () => {
     const blocker = makeSessionRecord("chat-retry-slot-blocker", { status: "active" });
     i.sessions.set(chatId, retrying);
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 901, chatId: blocker.chatId, messageId: "msg-slot-blocker" });
     const blockerMessage = messageFromEntry(blockerEntry);
@@ -1163,14 +1165,14 @@ describe("SessionManager edge coverage", () => {
     i.inboxDelivery.markOwned({ chatId: blocker.chatId, entryId: blockerEntry.id, messageId: blockerMessage.id });
     i.inboxDelivery.markProcessingStarted(blocker.chatId, blockerMessage);
 
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
 
     expect(recovered.resume).not.toHaveBeenCalled();
-    expect(i.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
+    expect(i.slotScheduler.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
     expect(retrying.retryTimer).not.toBeNull();
 
     blocker.status = "suspended";
-    i._activeCount = 0;
+    i.slotScheduler.activeCount = 0;
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(recovered.resume).toHaveBeenCalledTimes(1);
@@ -1203,7 +1205,7 @@ describe("SessionManager edge coverage", () => {
     const blocker = makeSessionRecord("chat-control-slot-blocker", { status: "active" });
     i.sessions.set(chatId, retrying);
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 902, chatId: blocker.chatId, messageId: "msg-control-blocker" });
     const blockerMessage = messageFromEntry(blockerEntry);
@@ -1211,14 +1213,14 @@ describe("SessionManager edge coverage", () => {
     i.inboxDelivery.markOwned({ chatId: blocker.chatId, entryId: blockerEntry.id, messageId: blockerMessage.id });
     i.inboxDelivery.markProcessingStarted(blocker.chatId, blockerMessage);
 
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
 
     expect(recovered.resume).not.toHaveBeenCalled();
-    expect(i.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
+    expect(i.slotScheduler.pendingQueue.some((queued) => queued.chatId === chatId)).toBe(false);
     expect(retrying.retryTimer).not.toBeNull();
 
     blocker.status = "suspended";
-    i._activeCount = 0;
+    i.slotScheduler.activeCount = 0;
     await vi.advanceTimersByTimeAsync(5_000);
 
     expect(recovered.resume).toHaveBeenCalledTimes(1);
@@ -1253,7 +1255,7 @@ describe("SessionManager edge coverage", () => {
     });
     internals(sm).sessions.set(chatId, retrying);
 
-    await internals(sm).runRetry(chatId);
+    await internals(sm).slotScheduler.runRetry(chatId);
 
     expect(factory).not.toHaveBeenCalled();
     expect(blockedHandler.start).not.toHaveBeenCalled();
@@ -1324,7 +1326,7 @@ describe("SessionManager edge coverage", () => {
           claudeSessionId: "previous-retry-session",
         }),
       );
-      await i.runRetry(chatId);
+      await i.slotScheduler.runRetry(chatId);
       expect(nullRouteHandler.inject).not.toHaveBeenCalled();
     }
 
@@ -1369,7 +1371,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
 
     expect(ackEntry).toHaveBeenCalledWith(2);
     expect(recoverChat).toHaveBeenCalledWith(chatId);
@@ -1436,7 +1438,7 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-suspend-race-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await resumeStarted;
@@ -1527,7 +1529,7 @@ describe("SessionManager edge coverage", () => {
     const tailEntry = mockEntry({ id: 83, chatId, messageId: "msg-canceled-start-tail" });
     const blocker = makeSessionRecord("chat-canceled-start-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await startStarted;
@@ -1619,7 +1621,7 @@ describe("SessionManager edge coverage", () => {
     const tailEntry = mockEntry({ id: 86, chatId, messageId: "msg-canceled-start-during-ack" });
     const blocker = makeSessionRecord("chat-canceled-start-ack-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await startStarted;
@@ -1696,7 +1698,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    i.evictIfNeeded();
+    i.slotScheduler.evictIfNeeded();
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
 
     expect(i.sessions.has(chatId)).toBe(false);
@@ -2275,7 +2277,7 @@ describe("SessionManager edge coverage", () => {
       lastActivity: Date.now() + 10_000,
     });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await oldResumeStarted;
@@ -2361,7 +2363,7 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-transient-race-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await resumeStarted;
@@ -2433,9 +2435,9 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-retry-late-success-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
-    const retryPromise = i.runRetry(chatId);
+    const retryPromise = i.slotScheduler.runRetry(chatId);
     await retryStarted;
     expect(sm.activeCount).toBe(2);
     await sm.dispatch(tailEntry);
@@ -2492,7 +2494,7 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-terminate-admission-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 2;
+    i.slotScheduler.activeCount = 2;
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
     await shutdownStarted;
@@ -2539,7 +2541,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-shared";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
       await drainGate;
@@ -2588,7 +2590,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-fence";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
     i.inboxDelivery.drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
       await drainGate;
@@ -2624,7 +2626,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-retry";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi
       .fn<(chatId: string) => Promise<void>>()
       .mockImplementationOnce(async () => {
@@ -2677,7 +2679,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-joins-suspend";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: suspendingHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await suspendStarted;
@@ -2726,7 +2728,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-suspend-failed";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: failingSuspendHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await suspendStarted;
@@ -2788,7 +2790,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-retry-teardown-failed";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await suspendStarted;
@@ -2868,7 +2870,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
     // Keep the suspend's promise in flight so the terminate below actually
     // joins it while the canceled transition's shutdown is still gated.
     i.inboxDelivery.prepareOperatorSuspend = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
@@ -2951,7 +2953,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
     i.inboxDelivery.prepareOperatorSuspend = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       await prepareGate;
     });
@@ -3015,7 +3017,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: targetHandler, phase: "resume" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Prepare is NOT gated: it settles immediately. The suspend boundary
     // must still stay in flight — it now covers the canceled transition's
@@ -3078,7 +3080,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-falsey-suspend-rejection";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await suspendStarted;
@@ -3115,7 +3117,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: retiredHandler, phase: "resume" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Suspend cancels the transition and the suspend boundary shuts the
     // retired handler down — the stopped marker binds to THAT handler.
@@ -3160,7 +3162,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: stoppedHandler, phase: "resume" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
@@ -3206,11 +3208,11 @@ describe("SessionManager edge coverage", () => {
       "chat-evicted-blocker",
       makeSessionRecord("chat-evicted-blocker", { status: "active", lastActivity: 2_000 }),
     );
-    i._activeCount = 2;
+    i.slotScheduler.activeCount = 2;
 
     // LRU eviction detaches the victim: fire-and-forget shutdown (gated)
     // plus a registered teardown debt.
-    i.evictIfNeeded();
+    i.slotScheduler.evictIfNeeded();
     await shutdownStarted;
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
@@ -3256,7 +3258,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-shutdown-after-failed-suspend";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
@@ -3448,7 +3450,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-quarantine-repeated-resume";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
@@ -3569,7 +3571,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-quarantine-reset-restart-required";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
@@ -3595,7 +3597,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-shutdown-after-falsey-suspend-error";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
@@ -3624,7 +3626,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-resume-after-failed-suspend";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Suspend fails: the old handler was never confirmed stopped.
     await sm.handleCommand(chatId, "session:suspend");
@@ -3671,7 +3673,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: startHandler, phase: "start" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Suspend cancels the fresh start; the suspend boundary covers the
     // shutdown, which FAILS. The canceledUnestablishedStart finally drops
@@ -3844,7 +3846,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: startHandler, phase: "start" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Canceled fresh-start suspend: the slot is released immediately while
     // the suspend boundary covers the handler shutdown — gated here.
@@ -3906,7 +3908,7 @@ describe("SessionManager edge coverage", () => {
         routeTransition: { generation: 0, handler: staleHandler, phase: "start" },
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // Suspend cancels the start; the boundary's FIRST shutdown succeeds and
     // the entry is dropped with no debt (the stop was confirmed).
@@ -3968,7 +3970,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-resume-fenced-by-terminate";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
@@ -4334,7 +4336,7 @@ describe("SessionManager edge coverage", () => {
 
     // The retry waits on the gated debt stop; the terminate joins the same
     // shutdown and must not ack while it is unconfirmed.
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await debtStopStarted;
     const terminate = sm.handleCommand(chatId, "session:terminate");
     let terminateSettled = false;
@@ -4379,7 +4381,7 @@ describe("SessionManager edge coverage", () => {
     );
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
 
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
     expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
@@ -4420,7 +4422,7 @@ describe("SessionManager edge coverage", () => {
     );
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await debtStopStarted;
 
     // Manager shutdown starts while the retry waits on the debt stop: the
@@ -4644,7 +4646,7 @@ describe("SessionManager edge coverage", () => {
 
     // The replacement stop is gated: the fresh handler must NOT be installed
     // while the old one's stop is unconfirmed.
-    const firstAttempt = i.runRetry(chatId);
+    const firstAttempt = i.slotScheduler.runRetry(chatId);
     await replaceStopStarted;
     await Promise.resolve();
     expect(i.sessions.get(chatId)?.handler).toBe(oldHandler);
@@ -4664,7 +4666,7 @@ describe("SessionManager edge coverage", () => {
       clearTimeout(entry.retryTimer);
       entry.retryTimer = null;
     }
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
     expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
 
@@ -4703,7 +4705,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await replaceStopStarted;
     // The stop was registered as debt BEFORE it started — while it is gated
     // the entry is slot-free, but the terminate must still join the debt
@@ -4763,7 +4765,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await replaceStopStarted;
 
     const stopped = sm.shutdown();
@@ -4828,7 +4830,7 @@ describe("SessionManager edge coverage", () => {
     // the first retry execution.
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
-      void i.runRetry(chatId);
+      void i.slotScheduler.runRetry(chatId);
     }, 0);
     await replaceStopStarted;
 
@@ -4881,13 +4883,13 @@ describe("SessionManager edge coverage", () => {
     );
     const entry = i.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
-    const retrySpy = vi.spyOn(sm as unknown as { runRetry(id: string): Promise<void> }, "runRetry");
+    const retrySpy = vi.spyOn(internals(sm).slotScheduler, "runRetry");
 
     // Timer fires the first execution; the same-chat dispatch triggers the
     // immediate retry — it joins the single flight instead of running one.
     entry.retryTimer = setTimeout(() => {
       entry.retryTimer = null;
-      void i.runRetry(chatId);
+      void i.slotScheduler.runRetry(chatId);
     }, 0);
     await vi.advanceTimersByTimeAsync(0);
     await replaceStopStarted;
@@ -4943,7 +4945,7 @@ describe("SessionManager edge coverage", () => {
     const entry = i.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await replaceStopStarted;
     const terminate = sm.handleCommand(chatId, "session:terminate");
 
@@ -5008,9 +5010,9 @@ describe("SessionManager edge coverage", () => {
     );
     const entry = i.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
-    const retrySpy = vi.spyOn(sm as unknown as { runRetry(id: string): Promise<void> }, "runRetry");
+    const retrySpy = vi.spyOn(internals(sm).slotScheduler, "runRetry");
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await stopStarted;
     // Shutdown begins while the replacement stop is gated: its timer sweep
     // runs BEFORE the stop fails — a fail-open re-arm would survive it.
@@ -5075,7 +5077,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await firstStopStarted;
     const stopped = sm.shutdown();
 
@@ -5163,8 +5165,8 @@ describe("SessionManager edge coverage", () => {
 
     // Both retries wait on their own replacement stop; the capacity check
     // now happens AFTER the stop + CAS, so they cannot both pass it.
-    const retryA = i.runRetry(entryA.chatId);
-    const retryB = i.runRetry(entryB.chatId);
+    const retryA = i.slotScheduler.runRetry(entryA.chatId);
+    const retryB = i.slotScheduler.runRetry(entryB.chatId);
     await Promise.all([stopStartedA, stopStartedB]);
     expect(sm.activeCount).toBe(0);
 
@@ -5225,7 +5227,7 @@ describe("SessionManager edge coverage", () => {
     const entry = i.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
 
-    const retry = i.runRetry(chatId);
+    const retry = i.slotScheduler.runRetry(chatId);
     await stopStarted;
 
     // While the replacement stop is gated, another route takes the freed
@@ -5566,7 +5568,7 @@ describe("SessionManager edge coverage", () => {
     // The debt chat is the older non-active session and would be the
     // preferred victim; the force-keep skips it, so the other chat is
     // evicted instead.
-    i.evictIfNeeded();
+    i.slotScheduler.evictIfNeeded();
     expect(i.sessions.has(debtChat)).toBe(true);
     expect(i.sessions.has(otherChat)).toBe(false);
 
@@ -5609,7 +5611,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-active-shutdown-failed";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // The active-slot teardown is strict too: a shutdown rejection must fail
     // the apply instead of being acked over a possibly-live handler.
@@ -5638,7 +5640,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-stale-teardown-failed";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     // First reconcile pass: the strict teardown rejects, but the
     // fire-and-forget path observes the rejection — logged, not an unhandled
@@ -5688,7 +5690,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-terminate-teardown-failed";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await suspendStarted;
@@ -5984,7 +5986,7 @@ describe("SessionManager edge coverage", () => {
         status: "active",
       }),
     );
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
     await shutdownStarted;
@@ -6210,7 +6212,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-reset-ref-join";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-first" });
     await shutdownStarted;
@@ -6257,7 +6259,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-reset-alias-order";
     i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
     await shutdownStarted;
@@ -6478,7 +6480,7 @@ describe("SessionManager edge coverage", () => {
       status: "active",
     });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const resume = i.resumeSession(target, head);
     const shutdown = sm.shutdown();
@@ -6599,7 +6601,7 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-terminate-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-terminate" }));
     await confirmStarted;
@@ -6665,7 +6667,7 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-evict-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-evict" }));
     await confirmStarted;
@@ -6674,7 +6676,7 @@ describe("SessionManager edge coverage", () => {
     expect(i.sessions.get(chatId)?.activeSlotHeld).toBe(true);
     expect(sm.activeCount).toBe(2);
 
-    i.evictIfNeeded();
+    i.slotScheduler.evictIfNeeded();
 
     expect(i.sessions.has(chatId)).toBe(false);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
@@ -6730,9 +6732,9 @@ describe("SessionManager edge coverage", () => {
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-admission-blocker", { status: "active" });
     i.sessions.set(blocker.chatId, blocker);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
-    const retryPromise = i.runRetry(chatId);
+    const retryPromise = i.slotScheduler.runRetry(chatId);
     await confirmStarted;
 
     expect(i.sessions.get(chatId)?.status).toBe("errored");
@@ -6745,12 +6747,12 @@ describe("SessionManager edge coverage", () => {
     // Re-entry joins the in-flight single-flight execution instead of
     // running a second retry — the join identity is the single-flight
     // guarantee (previously this returned immediately via the entry guard).
-    expect(i.runRetry(chatId)).toBe(retryPromise);
+    expect(i.slotScheduler.runRetry(chatId)).toBe(retryPromise);
 
     expect(terminalRetry.resume).toHaveBeenCalledTimes(1);
     expect(replacement.start).not.toHaveBeenCalled();
     expect(replacement.resume).not.toHaveBeenCalled();
-    expect(i.pendingQueue.some((queued) => queued.message?.id === tailEntry.message.id)).toBe(true);
+    expect(i.slotScheduler.pendingQueue.some((queued) => queued.message?.id === tailEntry.message.id)).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     resolveConfirm?.();
@@ -6792,7 +6794,7 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "rate_limit",
     });
     internals(sm).sessions.set("chat-retry-transient", retrying);
-    await internals(sm).runRetry("chat-retry-transient");
+    await internals(sm).slotScheduler.runRetry("chat-retry-transient");
     expect(retrying.retryAttempt).toBeGreaterThan(1);
 
     const failing = makeSessionRecord("chat-retry-permanent", {
@@ -6802,7 +6804,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-permanent"),
     });
     internals(sm).sessions.set("chat-retry-permanent", failing);
-    await internals(sm).runRetry("chat-retry-permanent");
+    await internals(sm).slotScheduler.runRetry("chat-retry-permanent");
 
     expect(internals(sm).sessions.has("chat-retry-permanent")).toBe(false);
     expect(states).toContain("errored");
@@ -6839,10 +6841,10 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "rate_limit",
     });
     internals(sm).sessions.set("chat-rearm", retrying);
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
 
-    await internals(sm).runRetry("chat-rearm");
-    internals(sm)._activeCount = 0;
+    await internals(sm).slotScheduler.runRetry("chat-rearm");
+    internals(sm).slotScheduler.activeCount = 0;
     await vi.advanceTimersByTimeAsync(5_000);
 
     await sm.shutdown();
@@ -6875,7 +6877,7 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "rate_limit",
     });
     internals(sm).sessions.set("chat-retry-success", succeeds);
-    await internals(sm).runRetry("chat-retry-success");
+    await internals(sm).slotScheduler.runRetry("chat-retry-success");
     expect(successfulResume.resume).toHaveBeenCalledWith(undefined, "previous-session", expect.anything());
 
     const retriesAgain = makeSessionRecord("chat-retry-again", {
@@ -6887,7 +6889,7 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "rate_limit",
     });
     internals(sm).sessions.set("chat-retry-again", retriesAgain);
-    await internals(sm).runRetry("chat-retry-again");
+    await internals(sm).slotScheduler.runRetry("chat-retry-again");
     expect(retriesAgain.retryAttempt).toBeGreaterThan(1);
 
     await sm.shutdown();
@@ -6908,7 +6910,7 @@ describe("SessionManager edge coverage", () => {
     });
     internals(sm).sessions.set("chat-retry-from-evicted", retrying);
 
-    await internals(sm).runRetry("chat-retry-from-evicted");
+    await internals(sm).slotScheduler.runRetry("chat-retry-from-evicted");
 
     expect(resumeFails.resume).toHaveBeenCalledWith(
       expect.anything(),
@@ -6943,17 +6945,17 @@ describe("SessionManager edge coverage", () => {
     const activeNew = makeSessionRecord("chat-active-new", { status: "active", lastActivity: 20 });
     internals(sm).sessions.set("chat-active-new", activeNew);
     internals(sm).sessions.set("chat-active-old", activeOld);
-    internals(sm).evictIfNeeded();
+    internals(sm).slotScheduler.evictIfNeeded();
     expect(internals(sm).evictedMappings.has("chat-active-old")).toBe(true);
 
     internals(sm).sessions.clear();
     internals(sm).evictedMappings.clear();
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
     const active = makeSessionRecord("chat-active", { status: "active", lastActivity: 10 });
     const suspended = makeSessionRecord("chat-suspended", { status: "suspended", lastActivity: 20 });
     internals(sm).sessions.set("chat-active", active);
     internals(sm).sessions.set("chat-suspended", suspended);
-    internals(sm).evictIfNeeded();
+    internals(sm).slotScheduler.evictIfNeeded();
     expect(internals(sm).evictedMappings.has("chat-suspended")).toBe(true);
 
     await sm.shutdown();
@@ -6962,16 +6964,16 @@ describe("SessionManager edge coverage", () => {
   it("queues from start-new-session and from same-chat active-slot acquisition", async () => {
     const sm = makeManager({ concurrency: 1 });
 
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
     await internals(sm).routeMessage("chat-start-queued", makeMessage("chat-start-queued"));
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-start-queued")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-start-queued")).toBe(true);
 
-    internals(sm).pendingQueue.length = 0;
+    internals(sm).slotScheduler.pendingQueue.length = 0;
     const active = makeSessionRecord("chat-same", { status: "active" });
     internals(sm).sessions.set("chat-same", active);
-    internals(sm)._activeCount = 1;
-    expect(internals(sm).acquireActiveSlot("chat-same", makeMessage("chat-same"))).toBe(false);
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-same")).toBe(true);
+    internals(sm).slotScheduler.activeCount = 1;
+    expect(internals(sm).slotScheduler.acquireActiveSlot("chat-same", makeMessage("chat-same"))).toBe(false);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-same")).toBe(true);
 
     await sm.shutdown();
   });
@@ -6979,24 +6981,24 @@ describe("SessionManager edge coverage", () => {
   it("covers drainPendingQueue return and edge branches", async () => {
     const sm = makeManager({ concurrency: 1, handlers: [handler()] });
 
-    internals(sm).pendingQueue.push({ chatId: "chat-held", message: makeMessage("chat-held"), deliveryKind: "fresh" });
-    internals(sm)._activeCount = 1;
-    internals(sm).drainPendingQueue();
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-held")).toBe(true);
+    internals(sm).slotScheduler.pendingQueue.push({ chatId: "chat-held", message: makeMessage("chat-held"), deliveryKind: "fresh" });
+    internals(sm).slotScheduler.activeCount = 1;
+    internals(sm).slotScheduler.drainPendingQueue();
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-held")).toBe(true);
 
-    internals(sm)._activeCount = 0;
-    internals(sm).drainPendingQueue();
+    internals(sm).slotScheduler.activeCount = 0;
+    internals(sm).slotScheduler.drainPendingQueue();
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     expect(internals(sm).sessions.has("chat-held")).toBe(true);
 
     const emptyShift = internals(makeManager());
-    emptyShift.pendingQueue.push({
+    emptyShift.slotScheduler.pendingQueue.push({
       chatId: "chat-empty-shift",
       message: makeMessage("chat-empty-shift"),
       deliveryKind: "fresh",
     });
-    emptyShift.pendingQueue.shift = () => undefined;
-    emptyShift.drainPendingQueue();
+    emptyShift.slotScheduler.pendingQueue.shift = () => undefined;
+    emptyShift.slotScheduler.drainPendingQueue();
     await (emptyShift as unknown as SessionManager).shutdown();
 
     await sm.shutdown();
@@ -7008,12 +7010,12 @@ describe("SessionManager edge coverage", () => {
         throw new Error("factory failed during drain");
       },
     });
-    internals(sm).pendingQueue.push({
+    internals(sm).slotScheduler.pendingQueue.push({
       chatId: "chat-drain",
       message: makeMessage("chat-drain"),
       deliveryKind: "fresh",
     });
-    internals(sm).drainPendingQueue();
+    internals(sm).slotScheduler.drainPendingQueue();
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
 
     expect(sm.totalCount).toBe(0);
@@ -7326,11 +7328,11 @@ describe("SessionManager edge coverage", () => {
         throw new Error("event sink unavailable");
       },
     });
-    internals(sm)._activeCount = 1;
+    internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).routeMessage("chat-queue-emit-fail", makeMessage("chat-queue-emit-fail"));
 
-    expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queue-emit-fail")).toBe(true);
+    expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queue-emit-fail")).toBe(true);
     await sm.shutdown();
   });
 
@@ -7365,7 +7367,7 @@ describe("SessionManager edge coverage", () => {
       handler: handler({ shutdown: badShutdown }),
     });
     i.sessions.set("chat-unowned", record);
-    i._activeCount = 1;
+    i.slotScheduler.activeCount = 1;
 
     i.abortUnownedRoute(record, "test_unowned_route");
 
@@ -7440,7 +7442,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     internals(retryResumeManager).markRouteOwned = loseOwnership;
-    await internals(retryResumeManager).runRetry("chat-retry-resume-lost");
+    await internals(retryResumeManager).slotScheduler.runRetry("chat-retry-resume-lost");
     expect(internals(retryResumeManager).sessions.has("chat-retry-resume-lost")).toBe(false);
     await retryResumeManager.shutdown();
 
@@ -7461,7 +7463,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     internals(retryStartManager).markRouteOwned = loseOwnership;
-    await internals(retryStartManager).runRetry("chat-retry-start-lost");
+    await internals(retryStartManager).slotScheduler.runRetry("chat-retry-start-lost");
     expect(internals(retryStartManager).sessions.has("chat-retry-start-lost")).toBe(false);
     await retryStartManager.shutdown();
   });
@@ -7470,21 +7472,21 @@ describe("SessionManager edge coverage", () => {
     const activeManager = makeManager();
     const activeInternals = internals(activeManager);
     activeInternals.sessions.set("chat-active-drain", makeSessionRecord("chat-active-drain", { status: "active" }));
-    activeInternals.pendingQueue.push({
+    activeInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-drain",
       message: null,
       deliveryKind: "control",
     });
-    activeInternals.pendingQueue.push({
+    activeInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-drain",
       message: makeMessage("chat-active-drain"),
       deliveryKind: "fresh",
     });
     activeInternals.routeMessage = vi.fn().mockRejectedValue(new Error("active drain failed"));
 
-    activeInternals.drainPendingQueue();
+    activeInternals.slotScheduler.drainPendingQueue();
     await vi.waitFor(() => expect(activeInternals.routeMessage).toHaveBeenCalledTimes(1));
-    expect(activeInternals.pendingQueue.some((item) => item.chatId === "chat-active-drain")).toBe(true);
+    expect(activeInternals.slotScheduler.pendingQueue.some((item) => item.chatId === "chat-active-drain")).toBe(true);
     await activeManager.shutdown();
 
     const activeInboxManager = makeManager();
@@ -7499,34 +7501,34 @@ describe("SessionManager edge coverage", () => {
       messageId: "msg-chat-active-inbox-drain",
     });
     activeInboxInternals.inboxDelivery.receive(activeInboxEntry);
-    activeInboxInternals.pendingQueue.push({
+    activeInboxInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-inbox-drain",
       message: { ...makeMessage("chat-active-inbox-drain"), inboxEntryId: 999 },
       deliveryKind: "fresh",
     });
     activeInboxInternals.routeMessage = vi.fn().mockRejectedValue(new Error("active inbox drain failed"));
 
-    activeInboxInternals.drainPendingQueue();
+    activeInboxInternals.slotScheduler.drainPendingQueue();
     await vi.waitFor(() => expect(activeInboxInternals.routeMessage).toHaveBeenCalledTimes(1));
-    expect(activeInboxInternals.pendingQueue.some((item) => item.chatId === "chat-active-inbox-drain")).toBe(false);
+    expect(activeInboxInternals.slotScheduler.pendingQueue.some((item) => item.chatId === "chat-active-inbox-drain")).toBe(false);
     await activeInboxManager.shutdown();
 
     const controlManager = makeManager();
     const controlInternals = internals(controlManager);
     const suspended = makeSessionRecord("chat-control-drain", { status: "suspended" });
     controlInternals.sessions.set("chat-control-drain", suspended);
-    controlInternals.pendingQueue.push({
+    controlInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-control-drain",
       message: null,
       deliveryKind: "control",
     });
     controlInternals.resumeSession = vi.fn().mockRejectedValue(new Error("control resume failed"));
 
-    controlInternals.drainPendingQueue();
+    controlInternals.slotScheduler.drainPendingQueue();
     await vi.waitFor(() =>
       expect(controlInternals.resumeSession).toHaveBeenCalledWith(suspended, undefined, "control"),
     );
-    expect(controlInternals.pendingQueue.some((item) => item.chatId === "chat-control-drain")).toBe(true);
+    expect(controlInternals.slotScheduler.pendingQueue.some((item) => item.chatId === "chat-control-drain")).toBe(true);
     await controlManager.shutdown();
   });
 
@@ -7572,7 +7574,7 @@ describe("SessionManager edge coverage", () => {
     });
     i.sessions.set(chatId, retrying);
 
-    await i.runRetry(chatId);
+    await i.slotScheduler.runRetry(chatId);
 
     expect(retryHandler.inject).toHaveBeenCalledTimes(1);
     expect(retryHandler.inject).toHaveBeenCalledWith(firstTail, expect.anything());
@@ -7599,7 +7601,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
 
-    i.evictIfNeeded();
+    i.slotScheduler.evictIfNeeded();
 
     expect(i.evictedMappings.has("chat-live-subprocess")).toBe(true);
     await sm.shutdown();
@@ -7619,7 +7621,7 @@ describe("SessionManager edge coverage", () => {
     noCandidateInternals.inboxDelivery.markOwned(decision.work);
     noCandidateInternals.inboxDelivery.markProcessingStarted("chat-working-only", messageFromEntry(entry));
 
-    noCandidateInternals.evictIfNeeded();
+    noCandidateInternals.slotScheduler.evictIfNeeded();
 
     expect(noCandidateInternals.sessions.has("chat-working-only")).toBe(true);
     await noCandidate.shutdown();
