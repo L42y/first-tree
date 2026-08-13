@@ -52,12 +52,16 @@ gates.
    `agent_configs` payload tagged with the same provider, and the Template's
    imported Team Resources and bindings. A row whose provider and config
    disagree is a failure even if the UI looks correct.
-4. **Readiness.** Block `/me`, then create. The member must stay put with a
-   retry and no navigation, and the Agent must exist exactly once. From that
-   state confirm nothing offers to create another: no create action, no way
-   back to the Template choice, and the retry survives the Computer
-   disconnecting. Unblock `/me`, retry, and confirm it continues to that same
-   Agent. Then visit `/` and confirm the member is not sent into onboarding.
+4. **Readiness.** Block `/me`, then create. The Agent must appear in the URL
+   immediately — that URL is the only durable recovery anchor this route has —
+   and the page must say the team could not be refreshed while offering a
+   retry. Confirm nothing offers to create another Agent from there: no create
+   action and no way back to the Template choice. Then **reload with `/me`
+   still blocked**, and confirm the same Agent is still the subject, the retry
+   is still there, and creation is still not on offer; a UUID that only lived
+   in memory would be lost here and the bare entry would invite a second
+   Agent. Unblock `/me`, retry, and confirm the readiness fact is now current.
+   Finally visit `/` and confirm the member is not sent into onboarding.
 5. **Lost response.** Re-run the create against the same handle to simulate a
    response that never arrived. The retry must be refused rather than
    duplicating, and the Agent already owned under that handle may be offered by

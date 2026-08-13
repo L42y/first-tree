@@ -25,6 +25,7 @@ const authMock = vi.hoisted(() => ({
   value: {
     organizationId: null as string | null,
     meAuthoritative: true,
+    currentOrgHasPersonalAgent: false,
     memberId: null as string | null,
     role: null as string | null,
     user: { username: "ada" },
@@ -199,6 +200,7 @@ beforeEach(() => {
   authMock.value = {
     organizationId: ORG,
     meAuthoritative: true,
+    currentOrgHasPersonalAgent: false,
     memberId: MEMBER,
     role: "admin",
     user: { username: "ada" },
@@ -288,10 +290,10 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
   });
 
-  it("does not hand over an Agent whose readiness could not be confirmed", async () => {
-    // A stale `currentOrgHasPersonalAgent` does more than misroute: `/` sends
-    // the member to `/onboarding`, which freezes its entry decision and can
-    // walk them into creating a second Agent.
+  it("puts the created Agent in the URL before waiting on readiness, and heals it there", async () => {
+    // The URL is this route's only durable recovery state. Holding the Agent in
+    // component state would lose it on reload and let a bare entry offer to
+    // create a second one.
     computerMock.value = readyComputer();
     api.createAgent.mockResolvedValue(agentRow());
     api.getAgent.mockResolvedValue(agentRow());
@@ -303,27 +305,33 @@ describe("OpenTag entry — choosing the Agent", () => {
     await click(button(container, "Create Agent"));
 
     expect(api.createAgent).toHaveBeenCalledTimes(1);
-    expect(lastLocation).toBe("/opentag");
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+    // Readiness failed, so it says so and offers a retry — but nothing here can
+    // create another Agent, because the URL is Agent-scoped.
     expect(container.textContent).toContain("couldn't refresh your team");
-
-    // Nothing that could abandon or duplicate the created Agent stays
-    // reachable: no create, no back, and no connect command if the Computer
-    // drops. Holding the id in state protects nothing while those are live.
     const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
     expect(labels.some((label) => label.includes("Choose a different teammate"))).toBe(false);
 
-    // The Computer disappearing must not take the only safe continuation away.
-    computerMock.value = computerConnection();
-    const stillLocked = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
-    expect(stillLocked.some((label) => label.includes("Try again"))).toBe(true);
-
-    // The retry continues to the Agent that already exists — it never creates
-    // another one.
     refreshMeStrict.mockResolvedValue(undefined);
     await click(button(container, "Try again"));
     expect(api.createAgent).toHaveBeenCalledTimes(1);
-    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("keeps the created Agent across a reload while /me is still failing", async () => {
+    // The reload case the URL-only model exists for: the Agent must still be
+    // the subject, and creation must not be on offer again.
+    api.getAgent.mockResolvedValue(agentRow());
+    refreshMeStrict.mockRejectedValue(new Error("me is down"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("couldn't refresh your team");
+    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+    const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
+    expect(labels.some((label) => label.includes("Review Agent"))).toBe(false);
+    expect(api.createAgent).not.toHaveBeenCalled();
   });
 
   it("leaves nothing behind when the member turns back before creating", async () => {
@@ -349,6 +357,7 @@ describe("OpenTag entry — choosing the Agent", () => {
       { ...agentRow(), name: "ada-assistant", displayName: "Old private", visibility: "private" },
       { ...agentRow(), name: "ada-assistant", displayName: "Ada assistant" },
     ]);
+    api.getAgent.mockResolvedValue(agentRow());
 
     computerMock.value = readyComputer();
     const container = await renderAt("/opentag");
@@ -362,15 +371,14 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe("/opentag");
     expect(container.textContent).toContain("already taken");
 
-    // Creating and continuing are mutually exclusive, so they share one
-    // pending state rather than both being live at once.
-    expect(button(container, "Create Agent").disabled).toBe(false);
-
     await click(button(container, "Continue with Ada assistant"));
-    // Readiness is refreshed before moving, or a fast visit to `/` bounces the
-    // member into `/onboarding` for an Agent they already have.
-    expect(refreshMeStrict).toHaveBeenCalled();
+    // The recovered Agent goes into the URL, and readiness is healed from
+    // there — a fast visit to `/` must not bounce the member into
+    // `/onboarding` for an Agent they already have.
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+    // The Agent read has to land before readiness healing can start.
+    await flush();
+    expect(refreshMeStrict).toHaveBeenCalled();
   });
 
   it("does not offer a same-handle Agent this flow could not continue with", async () => {

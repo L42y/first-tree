@@ -1,6 +1,6 @@
 import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactElement, useEffect, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { createAgent, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
@@ -44,7 +44,8 @@ export function OpenTagPage(): ReactElement | null {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
-  const { organizationId, memberId, role, user, meAuthoritative, refreshMeStrict } = useAuth();
+  const { organizationId, memberId, role, user, meAuthoritative, currentOrgHasPersonalAgent, refreshMeStrict } =
+    useAuth();
 
   // One parser for the browser route and the OAuth `next`, so a URL this app
   // would never build is not a URL this page will act on. Anything else is
@@ -59,9 +60,6 @@ export function OpenTagPage(): ReactElement | null {
   // Remembered across the URL rewrite below, so the member is told why they are
   // back at the start even though the rejected Agent is no longer in the URL.
   const [rejectedAgent, setRejectedAgent] = useState(false);
-  // An Agent that exists but whose readiness read failed: held here so the
-  // retry continues to it instead of creating another one.
-  const [pendingAgentUuid, setPendingAgentUuid] = useState<string | null>(null);
 
   const agentQuery = useQuery({
     queryKey: ["agent", agentUuid],
@@ -147,7 +145,7 @@ export function OpenTagPage(): ReactElement | null {
     onSuccess: async (created) => {
       queryClient.setQueryData(["agent", created.uuid], created);
       await queryClient.invalidateQueries({ queryKey: ["agents"] });
-      await goToAgent(created.uuid);
+      goToAgent(created.uuid);
     },
   });
 
@@ -161,40 +159,39 @@ export function OpenTagPage(): ReactElement | null {
     requireExplicitSelectionWhenMultiple: true,
   });
 
-  // Both paths below hand the member an Agent that the current `/me` does not
-  // know about yet. Navigating on a stale `currentOrgHasPersonalAgent` does not
-  // merely misroute them once: `/` sends them to `/onboarding`, which freezes
-  // its entry decision without re-reading `/me`, and whose create-agent step
-  // only skips itself when that same flag is true — so they can be walked into
-  // creating a second Agent. The refresh therefore has to be authoritative, and
-  // the move waits for it.
-  const [continuing, setContinuing] = useState(false);
-  const [readinessError, setReadinessError] = useState<string | null>(null);
-  const goToAgent = async (uuid: string): Promise<void> => {
-    setContinuing(true);
-    setReadinessError(null);
-    try {
-      await refreshMeStrict();
-    } catch {
-      // The Agent exists; only the readiness read failed. Keep the member here
-      // with a retry rather than sending them somewhere that would offer to
-      // create another one.
-      setReadinessError("Your Agent is ready, but we couldn't refresh your team. Try again.");
-      setPendingAgentUuid(uuid);
-      setContinuing(false);
-      return;
-    }
-    setContinuing(false);
-    setPendingAgentUuid(null);
+  // The URL is this route's only durable recovery state, so an Agent goes into
+  // it the moment it exists — before anything slower. A reload or a lost tab
+  // then still points at that Agent instead of a bare entry that would offer to
+  // create another one.
+  const goToAgent = (uuid: string): void => {
     // Replace, not push: the pre-Agent URL is no longer a state the member
     // should be able to go back into and create a second Agent from.
     navigate(opentagEntryPath(uuid), { replace: true });
   };
 
+  // Readiness is then healed from that Agent URL. `/me` still says this member
+  // has no Agent, and a stale `currentOrgHasPersonalAgent` does not merely
+  // misroute them: `/` sends them to `/onboarding`, which freezes its entry
+  // decision without re-reading `/me`, and whose create-agent step only skips
+  // itself when that same flag is true — so they could be walked into creating
+  // a second Agent. Keyed by the URL Agent, so it survives a remount.
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const readinessSettled = facts.state !== "resolved" || currentOrgHasPersonalAgent;
+  const healReadiness = useCallback(async (): Promise<void> => {
+    setReadinessError(null);
+    try {
+      await refreshMeStrict();
+    } catch {
+      setReadinessError("Your Agent is ready, but we couldn't refresh your team.");
+    }
+  }, [refreshMeStrict]);
+  useEffect(() => {
+    if (readinessSettled) return;
+    void healReadiness();
+  }, [readinessSettled, healReadiness]);
+
   const clearRecoveryState = (): void => {
     setRecoverableAgent(null);
-    setReadinessError(null);
-    setPendingAgentUuid(null);
     create.reset();
   };
 
@@ -224,27 +221,6 @@ export function OpenTagPage(): ReactElement | null {
     : draft
       ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
       : null;
-
-  // The Agent exists and only its readiness read failed. This state is keyed by
-  // the held id alone — not by the draft, the step, or whether a Computer is
-  // still connected — because every other control on this screen could either
-  // discard that Agent or create a second one under the same stale snapshot.
-  if (pendingAgentUuid) {
-    return (
-      <OpenTagShell activeStep="set-up-runtime" completedSteps={["choose-agent"]} handoff={handoff}>
-        <div className="flex flex-col" style={{ gap: "var(--sp-4)" }}>
-          <FlowHint tone="error" role="alert">
-            {readinessError ?? "Your Agent is ready, but we couldn't refresh your team."}
-          </FlowHint>
-          <div className="flex">
-            <Button type="button" variant="cta" disabled={continuing} onClick={() => void goToAgent(pendingAgentUuid)}>
-              {continuing ? "Checking…" : "Try again"}
-            </Button>
-          </div>
-        </div>
-      </OpenTagShell>
-    );
-  }
 
   return (
     <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
@@ -278,7 +254,7 @@ export function OpenTagPage(): ReactElement | null {
       {draftStep === "set-up-runtime" && draft && (
         <StepSetUpRuntime
           computer={computer}
-          pending={create.isPending || continuing}
+          pending={create.isPending}
           error={create.error instanceof Error ? create.error.message : null}
           onBack={() => {
             clearRecoveryState();
@@ -289,12 +265,24 @@ export function OpenTagPage(): ReactElement | null {
             recoverableAgent
               ? {
                   displayName: recoverableAgent.displayName,
-                  pending: continuing || create.isPending,
-                  onContinue: () => void goToAgent(recoverableAgent.uuid),
+                  pending: create.isPending,
+                  onContinue: () => goToAgent(recoverableAgent.uuid),
                 }
               : null
           }
         />
+      )}
+      {readinessError && (
+        <div className="flex flex-col" style={{ margin: "0 0 var(--sp-4)", gap: "var(--sp-3)" }}>
+          <FlowHint tone="error" role="alert">
+            {readinessError}
+          </FlowHint>
+          <div className="flex">
+            <Button type="button" variant="outline" onClick={() => void healReadiness()}>
+              Try again
+            </Button>
+          </div>
+        </div>
       )}
       {step === "connect-feishu" && agent && agentUuid && (
         <StepConnectFeishu
