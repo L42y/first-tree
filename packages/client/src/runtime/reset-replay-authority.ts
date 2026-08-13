@@ -47,7 +47,7 @@ export type ResetReplayAuthorityDeps = {
   onSessionRuntimeChange: () => ((chatId: string, state: RuntimeState) => void) | undefined;
   projectSessionRuntime: (chatId: string) => void;
   /**
-   * Registry still lives on SessionManager until a later S5 commit. These
+   * SessionRegistry custody lives on SessionProjectionAuthority; these
    * callbacks preserve byte-compatible terminate flush / tombstone behavior.
    */
   rotateFreshStartNonce: (chatId: string) => void;

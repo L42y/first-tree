@@ -3900,9 +3900,9 @@ describe("SessionManager pre-ledger settlement race", () => {
         releaseSuspension = resolvePromise;
       });
       const internals = sm as unknown as {
-        sessions: Map<string, { suspending: Promise<void> | null }>;
+        projection: { sessions: Map<string, { suspending: Promise<void> | null }> };
       };
-      const entry = internals.sessions.get("chat-race");
+      const entry = internals.projection.sessions.get("chat-race");
       if (!entry) throw new Error("session entry missing");
       entry.suspending = suspending;
 

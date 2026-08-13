@@ -22,7 +22,7 @@ import { mockEntry } from "./test-helpers.js";
 type Trigger = { messageId: string; senderId: string };
 
 type SessionManagerInternals = {
-  currentTrigger: Map<string, Trigger>;
+  projection: { currentTrigger: Map<string, Trigger> };
 };
 
 function internals(sm: SessionManager): SessionManagerInternals {
@@ -232,7 +232,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
     const ctx = captured;
     if (!ctx) throw new Error("missing session context");
 
-    expect(internals(sm).currentTrigger.get("chat-char")).toEqual({
+    expect(internals(sm).projection.currentTrigger.get("chat-char")).toEqual({
       messageId: "msg-char-1",
       senderId: "sender-1",
     });
@@ -244,7 +244,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
 
     await ctx.forwardResult("characterization final text");
 
-    expect(internals(sm).currentTrigger.has("chat-char")).toBe(false);
+    expect(internals(sm).projection.currentTrigger.has("chat-char")).toBe(false);
     expect(sdk.sendMessage).not.toHaveBeenCalled();
     expect(sdk.getChatDetail).not.toHaveBeenCalled();
     expect(cache.refreshIfNewer).not.toHaveBeenCalled();

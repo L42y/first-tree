@@ -54,8 +54,18 @@ type SessionRecord = {
 };
 
 type SessionManagerInternals = {
-  sessions: Map<string, SessionRecord>;
-  evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
+  projection: {
+    sessions: Map<string, SessionRecord>;
+    evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
+    registry: SessionRegistry | null;
+    sessionRuntimeStates: Map<string, RuntimeState>;
+    currentTrigger: Map<string, { messageId: string; senderId: string }>;
+    notifySessionState(chatId: string, state: SessionState): void;
+    projectSessionRuntime(chatId: string, opts?: { drainPendingOnIdle?: boolean }): void;
+    recomputeRuntimeState(): void;
+    reaffirmRuntimeStates(): void;
+    persistRegistry(): void;
+  };
   resetReplay: {
     terminatingChats: Map<string, Promise<void>>;
     terminatePersistFailures: Set<string>;
@@ -81,7 +91,6 @@ type SessionManagerInternals = {
       reason: string,
     ): void;
   };
-  registry: SessionRegistry | null;
   slotScheduler: {
     pendingQueue: Array<{ message: SessionMessage | null; chatId: string; deliveryKind: string }>;
     activeCount: number;
@@ -96,8 +105,6 @@ type SessionManagerInternals = {
     triggerImmediateRetry(chatId: string): void;
     evictIfNeeded(): void;
   };
-  sessionRuntimeStates: Map<string, RuntimeState>;
-  currentTrigger: Map<string, { messageId: string; senderId: string }>;
   inboxDelivery: {
     receive(entry: InboxEntryWithMessage): DeliveryDecision;
     markOwned(work: DeliveryWork): DeliveryRouteOwnership;
@@ -123,13 +130,8 @@ type SessionManagerInternals = {
     message: SessionMessage,
     receipt: { kind: "owned"; mode: "queued" },
   ): DeliveryRouteOwnership;
-  notifySessionState(chatId: string, state: SessionState): void;
-  projectSessionRuntime(chatId: string, opts?: { drainPendingOnIdle?: boolean }): void;
-  recomputeRuntimeState(): void;
   buildSessionContext(chatId: string): SessionContext;
   confirmSessionEventOrThrow(chatId: string, event: SessionEvent): Promise<void>;
-  reaffirmRuntimeStates(): void;
-  persistRegistry(): void;
 };
 
 type TestRuntimeState = RuntimeState;
@@ -344,11 +346,11 @@ describe("SessionManager edge coverage", () => {
   it("filters runtime sync by active set while force-keeping queued work", async () => {
     const sm = makeManager();
     const i = internals(sm);
-    i.sessions.set("chat-active", makeSessionRecord("chat-active"));
-    i.sessions.set("chat-archived", makeSessionRecord("chat-archived"));
-    i.sessions.set("chat-pending", makeSessionRecord("chat-pending"));
-    i.evictedMappings.set("chat-evicted-active", { claudeSessionId: "evicted-active", lastActivity: 1 });
-    i.evictedMappings.set("chat-evicted-archived", { claudeSessionId: "evicted-archived", lastActivity: 2 });
+    i.projection.sessions.set("chat-active", makeSessionRecord("chat-active"));
+    i.projection.sessions.set("chat-archived", makeSessionRecord("chat-archived"));
+    i.projection.sessions.set("chat-pending", makeSessionRecord("chat-pending"));
+    i.projection.evictedMappings.set("chat-evicted-active", { claudeSessionId: "evicted-active", lastActivity: 1 });
+    i.projection.evictedMappings.set("chat-evicted-archived", { claudeSessionId: "evicted-archived", lastActivity: 2 });
     i.slotScheduler.pendingQueue.push({ chatId: "chat-pending", message: makeMessage("chat-pending"), deliveryKind: "fresh" });
 
     const activeSet = new Set(["chat-active", "chat-evicted-active"]);
@@ -369,7 +371,7 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const chatId = "chat-inject-ready-suspend";
     const generation = 3;
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         status: "active",
@@ -387,7 +389,7 @@ describe("SessionManager edge coverage", () => {
     // generation stable through settle. Probe the entry before awaiting the
     // suspending promise so we observe that latch-clear window.
     const suspendPromise = sm.handleCommand(chatId, "session:suspend");
-    const duringSettle = i.sessions.get(chatId);
+    const duringSettle = i.projection.sessions.get(chatId);
     expect(duringSettle).toBeDefined();
     expect(duringSettle?.routeTransition).toBeNull();
     expect(duringSettle?.routeInjectReady).toBe(false);
@@ -395,7 +397,7 @@ describe("SessionManager edge coverage", () => {
     expect(duringSettle?.routeTransitionGeneration).toBe(generation);
 
     await suspendPromise;
-    const afterSettle = i.sessions.get(chatId);
+    const afterSettle = i.projection.sessions.get(chatId);
     expect(afterSettle?.routeTransition).toBeNull();
     expect(afterSettle?.routeInjectReady).toBe(false);
 
@@ -470,7 +472,7 @@ describe("SessionManager edge coverage", () => {
       message: makeMessage("chat-queued"),
       deliveryKind: "fresh",
     });
-    internals(sm).evictedMappings.set("chat-queued", { claudeSessionId: "queued-session", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-queued", { claudeSessionId: "queued-session", lastActivity: 1 });
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(true);
 
     await sm.handleCommand("chat-queued", "session:terminate");
@@ -483,7 +485,7 @@ describe("SessionManager edge coverage", () => {
   it("terminates retrying sessions by clearing retry timers and evicted mappings", async () => {
     const sm = makeManager();
     const retryTimer = setTimeout(() => undefined, 60_000);
-    internals(sm).sessions.set(
+    internals(sm).projection.sessions.set(
       "chat-retry",
       makeSessionRecord("chat-retry", {
         retryTimer,
@@ -491,12 +493,12 @@ describe("SessionManager edge coverage", () => {
         retryAttempt: 1,
       }),
     );
-    internals(sm).evictedMappings.set("chat-retry", { claudeSessionId: "old-session", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-retry", { claudeSessionId: "old-session", lastActivity: 1 });
 
     await sm.handleCommand("chat-retry", "session:terminate");
 
-    expect(internals(sm).sessions.has("chat-retry")).toBe(false);
-    expect(internals(sm).evictedMappings.has("chat-retry")).toBe(false);
+    expect(internals(sm).projection.sessions.has("chat-retry")).toBe(false);
+    expect(internals(sm).projection.evictedMappings.has("chat-retry")).toBe(false);
     await sm.shutdown();
   });
 
@@ -538,8 +540,8 @@ describe("SessionManager edge coverage", () => {
       expect.anything(),
     );
 
-    internals(sm).evictedMappings.set("chat-extra", { claudeSessionId: "evicted-extra", lastActivity: 2_000 });
-    internals(sm).persistRegistry();
+    internals(sm).projection.evictedMappings.set("chat-extra", { claudeSessionId: "evicted-extra", lastActivity: 2_000 });
+    internals(sm).projection.persistRegistry();
     await sm.shutdown();
 
     rmSync(dir, { recursive: true, force: true });
@@ -600,7 +602,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(replacement.start).toHaveBeenCalledTimes(1);
     expect(replacement.resume).not.toHaveBeenCalled();
-    expect(internals(second).sessions.get(chatId)?.claudeSessionId).toBe("replacement-session");
+    expect(internals(second).projection.sessions.get(chatId)?.claudeSessionId).toBe("replacement-session");
 
     await second.shutdown();
     rmSync(dir, { recursive: true, force: true });
@@ -632,8 +634,8 @@ describe("SessionManager edge coverage", () => {
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-active" }));
     expect(activeHandler.start).toHaveBeenCalled();
     onStateChange.mockClear();
-    internals(sm).evictedMappings.set("chat-extra", { claudeSessionId: "extra-session", lastActivity: 2_000 });
-    internals(sm).persistRegistry();
+    internals(sm).projection.evictedMappings.set("chat-extra", { claudeSessionId: "extra-session", lastActivity: 2_000 });
+    internals(sm).projection.persistRegistry();
 
     await sm.shutdown("runtime switched by server", {
       clearPersistedRegistry: true,
@@ -804,7 +806,7 @@ describe("SessionManager edge coverage", () => {
       suspending: Promise.resolve(),
     });
     const sm = makeManager();
-    internals(sm).sessions.set("chat-admin-resume", record);
+    internals(sm).projection.sessions.set("chat-admin-resume", record);
 
     await internals(sm).resumeSession(record, null);
 
@@ -816,7 +818,7 @@ describe("SessionManager edge coverage", () => {
   it("queues admin resume as a control item when no active slot can be acquired", async () => {
     const record = makeSessionRecord("chat-queued-resume", { status: "suspended" });
     const sm = makeManager({ concurrency: 1 });
-    internals(sm).sessions.set("chat-queued-resume", record);
+    internals(sm).projection.sessions.set("chat-queued-resume", record);
     internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).resumeSession(record, null);
@@ -842,8 +844,8 @@ describe("SessionManager edge coverage", () => {
       handler: handler({ resume: pausedResume }),
     });
     const sm = makeManager({ concurrency: 1 });
-    internals(sm).sessions.set("chat-working", working);
-    internals(sm).sessions.set("chat-paused", paused);
+    internals(sm).projection.sessions.set("chat-working", working);
+    internals(sm).projection.sessions.set("chat-paused", paused);
     internals(sm).slotScheduler.activeCount = 1;
 
     const workingEntry = mockEntry({ id: 99, chatId: "chat-working" });
@@ -876,7 +878,7 @@ describe("SessionManager edge coverage", () => {
       handler: handler({ resume }),
     });
     const sm = makeManager({ concurrency: 1 });
-    internals(sm).sessions.set("chat-paused", paused);
+    internals(sm).projection.sessions.set("chat-paused", paused);
 
     await sm.handleCommand("chat-paused", "session:suspend");
 
@@ -910,7 +912,7 @@ describe("SessionManager edge coverage", () => {
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-working", messageId: "msg-working" }));
-    internals(sm).evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
 
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery" }));
     expect(recoverChat).toHaveBeenCalledWith("chat-recovery");
@@ -940,7 +942,7 @@ describe("SessionManager edge coverage", () => {
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-working", messageId: "msg-working" }));
-    internals(sm).evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
 
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery-1" }));
     expect(recoverChat).toHaveBeenCalledTimes(1);
@@ -980,7 +982,7 @@ describe("SessionManager edge coverage", () => {
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-working", messageId: "msg-working" }));
-    internals(sm).evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-recovery", { claudeSessionId: "old-recovery", lastActivity: 1 });
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-recovery", messageId: "msg-recovery" }));
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-recovery")).toBe(true);
@@ -1058,7 +1060,7 @@ describe("SessionManager edge coverage", () => {
     });
 
     await internals(sm).slotScheduler.runRetry("missing-chat");
-    internals(sm).sessions.set("chat-active", makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }));
+    internals(sm).projection.sessions.set("chat-active", makeSessionRecord("chat-active", { status: "active", retryAttempt: 1 }));
     await internals(sm).slotScheduler.runRetry("chat-active");
 
     const queued = makeSessionRecord("chat-retry-queue", {
@@ -1068,8 +1070,8 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-queue"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-retry-queue", queued);
-    const activeRecord = internals(sm).sessions.get("chat-active");
+    internals(sm).projection.sessions.set("chat-retry-queue", queued);
+    const activeRecord = internals(sm).projection.sessions.get("chat-active");
     if (!activeRecord) throw new Error("active retry guard record missing");
     activeRecord.status = "suspended";
     internals(sm).slotScheduler.activeCount = 1;
@@ -1092,14 +1094,14 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-evicted"),
       lastRetryReason: "network_error",
     });
-    internals(sm).sessions.set("chat-retry-evicted", fromEvicted);
+    internals(sm).projection.sessions.set("chat-retry-evicted", fromEvicted);
     await internals(sm).slotScheduler.runRetry("chat-retry-evicted");
     expect(fromEvicted.claudeSessionId).toBe("retry-from-evicted");
 
     expect(events.some((event) => event.kind === "error")).toBe(true);
 
     internals(sm).slotScheduler.triggerImmediateRetry("missing");
-    internals(sm).sessions.set("chat-no-retry", makeSessionRecord("chat-no-retry", { retryAttempt: 0 }));
+    internals(sm).projection.sessions.set("chat-no-retry", makeSessionRecord("chat-no-retry", { retryAttempt: 0 }));
     internals(sm).slotScheduler.triggerImmediateRetry("chat-no-retry");
     await sm.shutdown();
   });
@@ -1126,7 +1128,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage(chatId),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set(chatId, retrying);
+    internals(sm).projection.sessions.set(chatId, retrying);
 
     await internals(sm).slotScheduler.runRetry(chatId);
 
@@ -1155,8 +1157,8 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "network_error",
     });
     const blocker = makeSessionRecord("chat-retry-slot-blocker", { status: "active" });
-    i.sessions.set(chatId, retrying);
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(chatId, retrying);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 901, chatId: blocker.chatId, messageId: "msg-slot-blocker" });
@@ -1203,8 +1205,8 @@ describe("SessionManager edge coverage", () => {
       lastRetryReason: "network_error",
     });
     const blocker = makeSessionRecord("chat-control-slot-blocker", { status: "active" });
-    i.sessions.set(chatId, retrying);
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(chatId, retrying);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const blockerEntry = mockEntry({ id: 902, chatId: blocker.chatId, messageId: "msg-control-blocker" });
@@ -1253,7 +1255,7 @@ describe("SessionManager edge coverage", () => {
       },
       lastRetryReason: "network_error",
     });
-    internals(sm).sessions.set(chatId, retrying);
+    internals(sm).projection.sessions.set(chatId, retrying);
 
     await internals(sm).slotScheduler.runRetry(chatId);
 
@@ -1261,7 +1263,7 @@ describe("SessionManager edge coverage", () => {
     expect(blockedHandler.start).not.toHaveBeenCalled();
     expect(blockedHandler.resume).not.toHaveBeenCalled();
     expect(recoverChat).toHaveBeenCalledWith(chatId);
-    expect(internals(sm).sessions.has(chatId)).toBe(false);
+    expect(internals(sm).projection.sessions.has(chatId)).toBe(false);
     expect(
       events.some(
         (event) =>
@@ -1297,7 +1299,7 @@ describe("SessionManager edge coverage", () => {
     const head = messageFromEntry(headEntry);
 
     if (resumeKind === "normal") {
-      i.sessions.set(
+      i.projection.sessions.set(
         chatId,
         makeSessionRecord(chatId, {
           handler: nullRouteHandler,
@@ -1307,7 +1309,7 @@ describe("SessionManager edge coverage", () => {
       );
       await sm.dispatch(headEntry);
     } else if (resumeKind === "evicted") {
-      i.evictedMappings.set(chatId, { claudeSessionId: "previous-evicted-session", lastActivity: 1 });
+      i.projection.evictedMappings.set(chatId, { claudeSessionId: "previous-evicted-session", lastActivity: 1 });
       i.inboxDelivery.receive(headEntry);
       await i.startNewSession(chatId, head, "recovery");
     } else {
@@ -1315,7 +1317,7 @@ describe("SessionManager edge coverage", () => {
       const tail = messageFromEntry(tailEntry);
       i.inboxDelivery.receive(headEntry);
       i.inboxDelivery.receive(tailEntry);
-      i.sessions.set(
+      i.projection.sessions.set(
         chatId,
         makeSessionRecord(chatId, {
           retryAttempt: 1,
@@ -1332,7 +1334,7 @@ describe("SessionManager edge coverage", () => {
 
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
     expect(nullRouteHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
     expect(sm.activeCount).toBe(0);
     expect(retryEvents).not.toContain("provider_retry_succeeded");
@@ -1360,7 +1362,7 @@ describe("SessionManager edge coverage", () => {
     const tail = messageFromEntry(tailEntry);
     i.inboxDelivery.receive(headEntry);
     i.inboxDelivery.receive(tailEntry);
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
@@ -1377,7 +1379,7 @@ describe("SessionManager edge coverage", () => {
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(i.inboxDelivery.hasEntry({ chatId, entryId: tailEntry.id, messageId: tail.id })).toBe(false);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -1428,7 +1430,7 @@ describe("SessionManager edge coverage", () => {
     const chatId = "chat-suspend-late-success-resume";
     const headEntry = mockEntry({ id: 2, chatId, messageId: "msg-late-success-head" });
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-late-success-tail" });
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: existingHandler,
@@ -1437,14 +1439,14 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-suspend-race-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await resumeStarted;
     expect(sm.activeCount).toBe(2);
     await sm.dispatch(tailEntry);
-    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true));
@@ -1457,14 +1459,14 @@ describe("SessionManager edge coverage", () => {
     expect(staleHead?.id).toBe(headEntry.message.id);
     expect(existingHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(existingHandler.inject).not.toHaveBeenCalled();
-    expect(i.sessions.get(chatId)?.status).toBe("suspended");
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("previous-session");
+    expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("previous-session");
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(recoverChat).not.toHaveBeenCalled();
     expect(ackEntry).not.toHaveBeenCalledWith(2);
     expect(ackEntry).not.toHaveBeenCalledWith(3);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(true);
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
 
     await sm.handleCommand(chatId, "session:resume");
@@ -1528,22 +1530,22 @@ describe("SessionManager edge coverage", () => {
     const headEntry = mockEntry({ id: 82, chatId, messageId: "msg-canceled-start-head" });
     const tailEntry = mockEntry({ id: 83, chatId, messageId: "msg-canceled-start-tail" });
     const blocker = makeSessionRecord("chat-canceled-start-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
     await startStarted;
     await sm.dispatch(tailEntry);
-    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
     expect(sm.activeCount).toBe(2);
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true));
-    const suspension = i.sessions.get(chatId)?.suspending;
+    const suspension = i.projection.sessions.get(chatId)?.suspending;
     expect(suspension).not.toBeNull();
     await suspension;
 
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(sm.activeCount).toBe(1);
     expect(oldHandler.resume).not.toHaveBeenCalled();
 
@@ -1564,7 +1566,7 @@ describe("SessionManager edge coverage", () => {
       expect.objectContaining({ id: tailEntry.message.id }),
       expect.anything(),
     );
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("fresh-start-session");
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("fresh-start-session");
     expect(sm.activeCount).toBe(2);
 
     if (!freshCtx || !freshHead) throw new Error("fresh replacement start route was not captured");
@@ -1620,7 +1622,7 @@ describe("SessionManager edge coverage", () => {
     const headEntry = mockEntry({ id: 85, chatId, messageId: "msg-canceled-start-processing-head" });
     const tailEntry = mockEntry({ id: 86, chatId, messageId: "msg-canceled-start-during-ack" });
     const blocker = makeSessionRecord("chat-canceled-start-ack-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -1629,7 +1631,7 @@ describe("SessionManager edge coverage", () => {
 
     await sm.handleCommand(chatId, "session:suspend");
     await ackStarted;
-    expect(i.sessions.get(chatId)?.suspending).not.toBeNull();
+    expect(i.projection.sessions.get(chatId)?.suspending).not.toBeNull();
     expect(sm.activeCount).toBe(1);
 
     const tailDispatch = sm.dispatch(tailEntry);
@@ -1638,7 +1640,7 @@ describe("SessionManager edge coverage", () => {
     expect(replacement.start).not.toHaveBeenCalled();
     expect(replacement.resume).not.toHaveBeenCalled();
     expect(oldHandler.inject).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
 
     resolveAck?.();
@@ -1651,7 +1653,7 @@ describe("SessionManager edge coverage", () => {
     resolveStart?.();
     await tailDispatch;
 
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("replacement-tail-session");
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("replacement-tail-session");
     expect(replacement.start).toHaveBeenCalledTimes(1);
     expect(replacement.start).toHaveBeenCalledWith(
       expect.objectContaining({ id: tailEntry.message.id }),
@@ -1687,7 +1689,7 @@ describe("SessionManager edge coverage", () => {
     const headEntry = mockEntry({ id: 84, chatId, messageId: "msg-lru-fresh-start-retry" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         status: "suspended",
@@ -1701,14 +1703,14 @@ describe("SessionManager edge coverage", () => {
     i.slotScheduler.evictIfNeeded();
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
 
-    expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.evictedMappings.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
+    expect(i.projection.evictedMappings.has(chatId)).toBe(false);
 
     await sm.dispatch(headEntry);
 
     expect(replacement.start).toHaveBeenCalledTimes(1);
     expect(replacement.resume).not.toHaveBeenCalled();
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("replacement-after-lru");
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("replacement-after-lru");
 
     await sm.shutdown();
   });
@@ -1899,7 +1901,7 @@ describe("SessionManager edge coverage", () => {
     expect(ackEntry.mock.calls.filter((call) => call[0] === 2)).toHaveLength(1);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = i.sessions.get(chatId)?.suspending;
+    const suspending = i.projection.sessions.get(chatId)?.suspending;
     await suspending;
 
     // Queued tail must not be force-resolved by prepareOperatorSuspend.
@@ -2049,7 +2051,7 @@ describe("SessionManager edge coverage", () => {
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     await sm.dispatch(entry);
 
-    const winningEntry = i.sessions.get(chatId);
+    const winningEntry = i.projection.sessions.get(chatId);
     if (!winningEntry) throw new Error("winning route was not established");
     winningEntry.pendingRuntimeFailureNotice = winningPayload;
 
@@ -2120,7 +2122,7 @@ describe("SessionManager edge coverage", () => {
     };
 
     await sm.dispatch(entry);
-    const oldEntry = i.sessions.get(chatId);
+    const oldEntry = i.projection.sessions.get(chatId);
     if (!oldEntry || !oldToken) throw new Error("old notice route was not captured");
     oldEntry.pendingRuntimeFailureNotice = stalePayload;
     const staleCompletion = oldToken.complete(message, {
@@ -2136,7 +2138,7 @@ describe("SessionManager edge coverage", () => {
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     await sm.dispatch(entry);
 
-    const winningEntry = i.sessions.get(chatId);
+    const winningEntry = i.projection.sessions.get(chatId);
     if (!winningEntry || !winningToken) throw new Error("winning notice route was not captured");
     winningEntry.pendingRuntimeFailureNotice = winningPayload;
     resolveNotice?.();
@@ -2182,7 +2184,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ recoverChat: vi.fn().mockResolvedValue(undefined) });
     const i = internals(sm);
     const chatId = "chat-late-materialized-cleanup";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: lateHandler,
@@ -2204,7 +2206,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(providerMaterialized).toBe(true);
     expect(providerClosed).toBe(true);
-    expect(i.sessions.get(chatId)?.status).toBe("suspended");
+    expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
     expect(sm.activeCount).toBe(0);
 
     await sm.shutdown();
@@ -2264,7 +2266,7 @@ describe("SessionManager edge coverage", () => {
     const chatId = "chat-preempted-late-success";
     const headEntry = mockEntry({ id: 20, chatId, messageId: "msg-preempted-head" });
     const tailEntry = mockEntry({ id: 21, chatId, messageId: "msg-preempted-tail" });
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -2276,7 +2278,7 @@ describe("SessionManager edge coverage", () => {
       status: "active",
       lastActivity: Date.now() + 10_000,
     });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -2299,12 +2301,12 @@ describe("SessionManager edge coverage", () => {
 
     resolveOldResume?.();
     await headDispatch;
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("previous-preemption-session");
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("previous-preemption-session");
     expect(oldHandler.inject).not.toHaveBeenCalled();
 
     await freshResumeStarted;
     await sm.dispatch(tailEntry);
-    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
     expect(requesterHandler.suspend).toHaveBeenCalledTimes(1);
 
     resolveFreshResume?.();
@@ -2317,7 +2319,7 @@ describe("SessionManager edge coverage", () => {
       expect.objectContaining({ id: tailEntry.message.id }),
       expect.anything(),
     );
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     if (!freshCtx || !freshHead) throw new Error("fresh preemption route was not captured");
@@ -2353,7 +2355,7 @@ describe("SessionManager edge coverage", () => {
     const chatId = "chat-suspend-late-transient-resume";
     const headEntry = mockEntry({ id: 2, chatId, messageId: "msg-late-transient-head" });
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-late-transient-tail" });
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: existingHandler,
@@ -2362,7 +2364,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-transient-race-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(headEntry);
@@ -2377,15 +2379,15 @@ describe("SessionManager edge coverage", () => {
     rejectResume?.({ status: 429, message: "provider still limited" });
     await headDispatch;
 
-    expect(i.sessions.get(chatId)?.retryAttempt).toBe(0);
-    expect(i.sessions.get(chatId)?.status).toBe("suspended");
+    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
     expect(sm.activeCount).toBe(1);
 
     await sm.handleCommand(chatId, "session:resume");
 
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
 
     await sm.shutdown();
@@ -2423,7 +2425,7 @@ describe("SessionManager edge coverage", () => {
     const tailEntry = mockEntry({ id: 41, chatId, messageId: "msg-retry-late-tail" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
@@ -2434,14 +2436,14 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-retry-late-success-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const retryPromise = i.slotScheduler.runRetry(chatId);
     await retryStarted;
     expect(sm.activeCount).toBe(2);
     await sm.dispatch(tailEntry);
-    expect(i.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
+    expect(i.projection.sessions.get(chatId)?.deferredMessages).toHaveLength(1);
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.waitFor(() => expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true));
@@ -2453,10 +2455,10 @@ describe("SessionManager edge coverage", () => {
     expect(retryHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(retryEvents).toContain("provider_retry_started");
     expect(retryEvents).not.toContain("provider_retry_succeeded");
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("previous-retry-session");
-    expect(i.sessions.get(chatId)?.retryAttempt).toBe(0);
-    expect(i.sessions.get(chatId)?.status).toBe("suspended");
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("previous-retry-session");
+    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.projection.sessions.get(chatId)?.status).toBe("suspended");
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
 
     await sm.handleCommand(chatId, "session:resume");
@@ -2485,7 +2487,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ recoverChat });
     const i = internals(sm);
     const chatId = "chat-terminate-admission";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: terminatingHandler,
@@ -2493,7 +2495,7 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminate-admission-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 2;
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
@@ -2520,8 +2522,8 @@ describe("SessionManager edge coverage", () => {
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
-    expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
 
     await sm.shutdown();
@@ -2540,7 +2542,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-shared";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
@@ -2570,7 +2572,7 @@ describe("SessionManager edge coverage", () => {
     expect(secondSettled).toBe(true);
     expect(drainForTerminate).toHaveBeenCalledTimes(1);
     expect(activeHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2589,7 +2591,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-fence";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
     i.inboxDelivery.drainForTerminate = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       signalDrainStarted?.();
@@ -2609,7 +2611,7 @@ describe("SessionManager edge coverage", () => {
     resolveDrain?.();
     await terminate;
 
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2625,7 +2627,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-retry";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: activeHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
     const drainForTerminate = vi
       .fn<(chatId: string) => Promise<void>>()
@@ -2651,10 +2653,10 @@ describe("SessionManager edge coverage", () => {
 
     // Simulate the chat becoming known again (e.g. runtime sync re-adds the
     // evicted mapping): a fresh terminate re-executes the full cleanup.
-    i.evictedMappings.set(chatId, { claudeSessionId: `session-${chatId}`, lastActivity: Date.now() });
+    i.projection.evictedMappings.set(chatId, { claudeSessionId: `session-${chatId}`, lastActivity: Date.now() });
     await sm.handleCommand(chatId, "session:terminate");
     expect(drainForTerminate).toHaveBeenCalledTimes(2);
-    expect(i.evictedMappings.has(chatId)).toBe(false);
+    expect(i.projection.evictedMappings.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2678,7 +2680,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-joins-suspend";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: suspendingHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: suspendingHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2702,7 +2704,7 @@ describe("SessionManager edge coverage", () => {
     // handler down — a suspended handler is still a live old run.
     expect(suspendingHandler.suspend).toHaveBeenCalledTimes(1);
     expect(suspendingHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2727,7 +2729,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-suspend-failed";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: failingSuspendHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: failingSuspendHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2739,7 +2741,7 @@ describe("SessionManager edge coverage", () => {
     // A failed suspend means the old run was never confirmed stopped — the
     // apply must reject (agent-slot maps this to applied:false), not ack.
     await expect(terminate).rejects.toBe(boom);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
     expect(failingSuspendHandler.shutdown).not.toHaveBeenCalled();
 
@@ -2747,11 +2749,11 @@ describe("SessionManager edge coverage", () => {
     // strict teardown of the still-installed handler, and only after it
     // succeeds does the terminate delete state and resolve.
     vi.mocked(failingSuspendHandler.shutdown).mockImplementation(async () => {
-      expect(i.sessions.has(chatId)).toBe(true);
+      expect(i.projection.sessions.has(chatId)).toBe(true);
     });
     await sm.handleCommand(chatId, "session:terminate");
     expect(failingSuspendHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2789,7 +2791,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-retry-teardown-failed";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -2819,14 +2821,14 @@ describe("SessionManager edge coverage", () => {
     rejectTeardown?.(teardownBoom);
     await expect(retry).rejects.toBe(teardownBoom);
     await vi.waitFor(() => expect(retrySettled).toBe(true));
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Next retry tears down (now succeeding) and completes the apply.
     vi.mocked(targetHandler.shutdown).mockResolvedValue(undefined);
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2862,7 +2864,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-joins-prior-shutdown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -2901,7 +2903,7 @@ describe("SessionManager edge coverage", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
+    expect(i.projection.sessions.get(chatId)?.suspending).not.toBe(null);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(terminateSettled).toBe(false);
 
@@ -2910,14 +2912,14 @@ describe("SessionManager edge coverage", () => {
     // handler that was never confirmed stopped.
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry re-attempts the teardown (the one-shot gated implementation is
     // consumed, the default now resolves) and completes the apply.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -2945,7 +2947,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-prior-shutdown-success";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -2972,7 +2974,7 @@ describe("SessionManager edge coverage", () => {
     await Promise.resolve();
     await Promise.resolve();
     await Promise.resolve();
-    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
+    expect(i.projection.sessions.get(chatId)?.suspending).not.toBe(null);
     expect(terminateSettled).toBe(false);
 
     resolveShutdown?.();
@@ -2982,7 +2984,7 @@ describe("SessionManager edge coverage", () => {
     // instead of starting a second one, then completed the apply.
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(terminateSettled).toBe(true);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3009,7 +3011,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-suspend-covers-transition-shutdown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -3026,7 +3028,7 @@ describe("SessionManager edge coverage", () => {
     await shutdownStarted;
     await Promise.resolve();
     await Promise.resolve();
-    expect(i.sessions.get(chatId)?.suspending).not.toBe(null);
+    expect(i.projection.sessions.get(chatId)?.suspending).not.toBe(null);
 
     // The terminate joins that boundary and must not settle (ack) while the
     // handler shutdown is still gated.
@@ -3048,14 +3050,14 @@ describe("SessionManager edge coverage", () => {
     // and the joined terminate rejects (applied:false), entry retained.
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: strict teardown re-runs (now resolving) and the apply
     // completes.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3079,7 +3081,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-falsey-suspend-rejection";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -3090,7 +3092,7 @@ describe("SessionManager edge coverage", () => {
     // the apply still rejects (normalized to an Error), never applied:true.
     rejectSuspend?.(null);
     await expect(terminate).rejects.toThrow(/session suspend failed/);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3109,7 +3111,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [replacementHandler] });
     const i = internals(sm);
     const chatId = "chat-terminate-replacement-handler";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: retiredHandler,
@@ -3122,14 +3124,14 @@ describe("SessionManager edge coverage", () => {
     // Suspend cancels the transition and the suspend boundary shuts the
     // retired handler down — the stopped marker binds to THAT handler.
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
     expect(retiredHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(retiredHandler);
+    expect(i.projection.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(retiredHandler);
 
     // Resume installs a replacement handler (the old one is retired) and
     // re-acquires the active slot.
     await sm.handleCommand(chatId, "session:resume");
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     expect(entry?.handler).toBe(replacementHandler);
     expect(entry?.activeSlotHeld).toBe(true);
 
@@ -3137,13 +3139,13 @@ describe("SessionManager edge coverage", () => {
     // down strictly, and a shutdown failure rejects the apply (applied:false).
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     expect(replacementHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry: teardown succeeds and the apply completes (applied:true).
     await sm.handleCommand(chatId, "session:terminate");
     expect(replacementHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3154,7 +3156,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-no-double-teardown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: stoppedHandler,
@@ -3165,14 +3167,14 @@ describe("SessionManager edge coverage", () => {
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
     expect(stoppedHandler.shutdown).toHaveBeenCalledTimes(1);
 
     // The handler was never replaced, so the marker still matches: the
     // terminate cleans up state without a second shutdown.
     await sm.handleCommand(chatId, "session:terminate");
     expect(stoppedHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -3200,11 +3202,11 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ maxSessions: 1 });
     const i = internals(sm);
     const chatId = "chat-evicted-pending-teardown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, { handler: victimHandler, status: "active", lastActivity: 1_000 }),
     );
-    i.sessions.set(
+    i.projection.sessions.set(
       "chat-evicted-blocker",
       makeSessionRecord("chat-evicted-blocker", { status: "active", lastActivity: 2_000 }),
     );
@@ -3214,7 +3216,7 @@ describe("SessionManager edge coverage", () => {
     // plus a registered teardown debt.
     i.slotScheduler.evictIfNeeded();
     await shutdownStarted;
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
 
     // The terminate joins the in-flight shutdown's raw face — it must not
@@ -3257,13 +3259,13 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-shutdown-after-failed-suspend";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
-    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: suspendBoom });
-    expect(i.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(null);
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.projection.sessions.get(chatId)?.suspendError).toEqual({ error: suspendBoom });
+    expect(i.projection.sessions.get(chatId)?.handlerStoppedBySuspend).toBe(null);
     // Failed settle intentionally skipped teardown — stop is still unconfirmed.
     expect(targetHandler.shutdown).not.toHaveBeenCalled();
 
@@ -3275,7 +3277,7 @@ describe("SessionManager edge coverage", () => {
         settleProviderEntered: true,
       }),
     );
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
   });
 
   it("quarantines a timed-out operator suspend and recovers real inbox debt before a fresh handler", async () => {
@@ -3315,7 +3317,7 @@ describe("SessionManager edge coverage", () => {
     await sm.dispatch(headEntry);
     if (!initialCtx || !initialHead) throw new Error("initial route was not captured");
     await sm.dispatch(queuedTailEntry);
-    expect(i.sessions.get(chatId)?.routeTransition).toBe(null);
+    expect(i.projection.sessions.get(chatId)?.routeTransition).toBe(null);
 
     await sm.handleCommand(chatId, "session:suspend");
     const laterDispatch = sm.dispatch(mockEntry({ id: 9102, chatId, messageId: "msg-after-timeout" }));
@@ -3355,7 +3357,7 @@ describe("SessionManager edge coverage", () => {
     expect(recoveryOrder).toBeDefined();
     expect(resumeOrder).toBeDefined();
     expect(Number(recoveryOrder)).toBeLessThan(Number(resumeOrder));
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
     if (!freshCtx || !freshMessage) throw new Error("fresh route was not captured");
     await freshCtx.finishTurn(freshMessage, { status: "success", terminal: true });
 
@@ -3405,7 +3407,7 @@ describe("SessionManager edge coverage", () => {
     await sm.dispatch(headEntry);
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
-    await i.sessions.get(chatId)?.suspending;
+    await i.projection.sessions.get(chatId)?.suspending;
 
     expect(ackEntry).not.toHaveBeenCalled();
     expect(i.inboxDelivery.snapshot(chatId)).toMatchObject({
@@ -3449,24 +3451,24 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-quarantine-repeated-resume";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
-    await i.sessions.get(chatId)?.suspending;
+    await i.projection.sessions.get(chatId)?.suspending;
     await sm.handleCommand(chatId, "session:resume");
 
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
 
     await sm.handleCommand(chatId, "session:suspend");
-    await i.sessions.get(chatId)?.suspending;
+    await i.projection.sessions.get(chatId)?.suspending;
     await sm.handleCommand(chatId, "session:resume");
 
     expect(freshHandler.resume).toHaveBeenCalledTimes(2);
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
     expect(i.routeTeardown.quarantinedSessions.get(chatId)?.handler).toBe(oldHandler);
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
 
@@ -3509,7 +3511,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler], ackEntry, onSessionEvent });
     const i = internals(sm);
     const chatId = "chat-quarantined-late-generation";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -3522,7 +3524,7 @@ describe("SessionManager edge coverage", () => {
     await resumeStarted;
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
-    await i.sessions.get(chatId)?.suspending;
+    await i.projection.sessions.get(chatId)?.suspending;
 
     expect(i.routeTeardown.quarantinedSessions.get(chatId)).toEqual(
       expect.objectContaining({
@@ -3533,8 +3535,8 @@ describe("SessionManager edge coverage", () => {
     if (!oldCtx || !oldToken || !oldMessage) throw new Error("old route output handles were not captured");
     const eventCount = onSessionEvent.mock.calls.length;
     const ackCount = ackEntry.mock.calls.length;
-    const lastActivity = i.sessions.get(chatId)?.lastActivity;
-    const trigger = i.currentTrigger.get(chatId);
+    const lastActivity = i.projection.sessions.get(chatId)?.lastActivity;
+    const trigger = i.projection.currentTrigger.get(chatId);
 
     oldCtx.emitEvent({ kind: "assistant_text", payload: { text: "late output" } });
     oldCtx.recordProviderActivity();
@@ -3544,9 +3546,9 @@ describe("SessionManager edge coverage", () => {
 
     expect(onSessionEvent).toHaveBeenCalledTimes(eventCount);
     expect(ackEntry).toHaveBeenCalledTimes(ackCount);
-    expect(i.sessions.get(chatId)?.lastActivity).toBe(lastActivity);
-    expect(i.currentTrigger.get(chatId)).toEqual(trigger);
-    expect(i.sessions.get(chatId)?.claudeSessionId).toBe("existing-session");
+    expect(i.projection.sessions.get(chatId)?.lastActivity).toBe(lastActivity);
+    expect(i.projection.currentTrigger.get(chatId)).toEqual(trigger);
+    expect(i.projection.sessions.get(chatId)?.claudeSessionId).toBe("existing-session");
 
     await sm.dispatch(mockEntry({ id: 9121, chatId, messageId: "msg-provider-admission-fenced" }));
     expect(freshHandler.start).not.toHaveBeenCalled();
@@ -3557,7 +3559,7 @@ describe("SessionManager edge coverage", () => {
 
     resolveResume?.();
     await resumeDispatch;
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
   });
 
@@ -3570,17 +3572,17 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-quarantine-reset-restart-required";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
     await vi.advanceTimersByTimeAsync(30_000);
-    await i.sessions.get(chatId)?.suspending;
+    await i.projection.sessions.get(chatId)?.suspending;
 
     await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-restart" })).rejects.toThrow(
       "Reset blocked: operator_suspend_timeout; provider teardown was not confirmed",
     );
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.routeTeardown.quarantinedSessions.has(chatId)).toBe(true);
     expect(oldHandler.shutdown).not.toHaveBeenCalled();
 
@@ -3596,18 +3598,18 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-shutdown-after-falsey-suspend-error";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
     // Boxed error: falsey rejections are still failures.
-    expect(i.sessions.get(chatId)?.suspendError).toEqual({ error: undefined });
+    expect(i.projection.sessions.get(chatId)?.suspendError).toEqual({ error: undefined });
     expect(targetHandler.shutdown).not.toHaveBeenCalled();
 
     await sm.shutdown("manager_shutdown");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
   });
 
   it("strictly stops a failed-suspend handler before resume installs a fresh one", async () => {
@@ -3625,13 +3627,13 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-resume-after-failed-suspend";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     // Suspend fails: the old handler was never confirmed stopped.
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
-    expect(i.sessions.get(chatId)?.suspendError).not.toBe(null);
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.projection.sessions.get(chatId)?.suspendError).not.toBe(null);
 
     // Resume must NOT reuse or overwrite the unconfirmed-stop reference: it
     // strictly stops the old handler first, and a stop failure propagates
@@ -3639,7 +3641,7 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:resume")).rejects.toBe(stopBoom);
     expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(freshHandler.resume).not.toHaveBeenCalled();
-    expect(i.sessions.get(chatId)?.handler).toBe(oldHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(oldHandler);
 
     // Retry resume: the stop succeeds, the old handler is retired and
     // replaced by a fresh one, and the route proceeds — strictly after the
@@ -3647,7 +3649,7 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:resume");
     expect(oldHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
     const stopOrder = vi.mocked(oldHandler.shutdown).mock.invocationCallOrder[1];
     const resumeOrder = vi.mocked(freshHandler.resume).mock.invocationCallOrder[0];
     expect(stopOrder).toBeDefined();
@@ -3665,7 +3667,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-canceled-start-pending-teardown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: startHandler,
@@ -3679,7 +3681,7 @@ describe("SessionManager edge coverage", () => {
     // shutdown, which FAILS. The canceledUnestablishedStart finally drops
     // the entry — but the teardown debt must survive it.
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
 
     // No session, mapping, queue, or inbox custody remains — without the
@@ -3723,7 +3725,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ maxSessions: 1 });
     const i = internals(sm);
     const chatId = "chat-late-debt-drain";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: evictedHandler, status: "suspended" }));
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
@@ -3838,7 +3840,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-shutdown-quiesce-suspend";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: startHandler,
@@ -3900,7 +3902,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-late-materialization";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: staleHandler,
@@ -3913,7 +3915,7 @@ describe("SessionManager edge coverage", () => {
     // Suspend cancels the start; the boundary's FIRST shutdown succeeds and
     // the entry is dropped with no debt (the stop was confirmed).
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(staleHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
@@ -3969,12 +3971,12 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-resume-fenced-by-terminate";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: oldHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.get(chatId)?.suspending ?? null).toBe(null));
-    expect(i.sessions.get(chatId)?.suspendError).not.toBe(null);
+    await vi.waitFor(() => expect(i.projection.sessions.get(chatId)?.suspending ?? null).toBe(null));
+    expect(i.projection.sessions.get(chatId)?.suspendError).not.toBe(null);
 
     // Resume's strict stop of the failed-suspend handler is gated; the
     // terminate joins the same raw shutdown.
@@ -3992,7 +3994,7 @@ describe("SessionManager edge coverage", () => {
       expect((resumeResult.reason as Error).message).toMatch(/fenced/);
     }
     expect(freshHandler.resume).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -4043,7 +4045,7 @@ describe("SessionManager edge coverage", () => {
     // Pause cancels the start; the boundary's first stop succeeds (a no-op
     // over the not-yet-materialized handler) and the entry is dropped.
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(1);
 
     // Reset while the provider start is STILL gated: the terminate must join
@@ -4125,7 +4127,7 @@ describe("SessionManager edge coverage", () => {
     await startStarted;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
 
     const terminate = sm.handleCommand(chatId, "session:terminate");
     let terminateSettled = false;
@@ -4240,7 +4242,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-route-waits-for-debt";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     const dispatch = sm.dispatch(mockEntry({ id: 96, chatId, messageId: "msg-route-waits" }));
@@ -4276,7 +4278,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ recoverChat });
     const i = internals(sm);
     const chatId = "chat-route-debt-fails";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Settle failure: no route is created, and the delivery keeps its
@@ -4324,7 +4326,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-vs-terminate";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         status: "suspended",
@@ -4355,7 +4357,7 @@ describe("SessionManager edge coverage", () => {
     await terminate;
     expect(freshHandler.start).not.toHaveBeenCalled();
     expect(freshHandler.resume).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -4371,7 +4373,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-after-debt-settle";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         status: "suspended",
@@ -4385,7 +4387,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
     expect(debtHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
 
     await sm.shutdown();
   });
@@ -4412,7 +4414,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-vs-shutdown";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         status: "suspended",
@@ -4477,7 +4479,7 @@ describe("SessionManager edge coverage", () => {
     // dropped — the chat is producer-only now (no entry, no debt), and must
     // still be held / force-kept or the reconcile channel breaks.
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(sm.getHeldChatIds(new Set())).toContain(chatId);
 
@@ -4532,7 +4534,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-concurrent-resumes";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: sessionHandler, status: "suspended" }));
     i.routeTeardown.registerPendingTeardown(chatId, debtHandler);
 
     // Both dispatches reach resumeSession and wait on the same gated debt
@@ -4634,7 +4636,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-replace-stop";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4649,7 +4651,7 @@ describe("SessionManager edge coverage", () => {
     const firstAttempt = i.slotScheduler.runRetry(chatId);
     await replaceStopStarted;
     await Promise.resolve();
-    expect(i.sessions.get(chatId)?.handler).toBe(oldHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(oldHandler);
     expect(freshHandler.resume).not.toHaveBeenCalled();
 
     // Stop failure: the retry keeps custody — debt registered, timer
@@ -4657,18 +4659,18 @@ describe("SessionManager edge coverage", () => {
     rejectReplaceStop?.(boom);
     await firstAttempt;
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
-    expect(i.sessions.get(chatId)?.retryTimer).not.toBe(null);
+    expect(i.projection.sessions.get(chatId)?.retryTimer).not.toBe(null);
     expect(freshHandler.resume).not.toHaveBeenCalled();
 
     // Next attempt: the stop confirms and the retry route installs.
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (entry?.retryTimer) {
       clearTimeout(entry.retryTimer);
       entry.retryTimer = null;
     }
     await i.slotScheduler.runRetry(chatId);
     expect(freshHandler.resume).toHaveBeenCalledTimes(1);
-    expect(i.sessions.get(chatId)?.handler).toBe(freshHandler);
+    expect(i.projection.sessions.get(chatId)?.handler).toBe(freshHandler);
 
     await sm.shutdown();
   });
@@ -4695,7 +4697,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-retry-stop-debt-first";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4726,7 +4728,7 @@ describe("SessionManager edge coverage", () => {
     await terminate;
     expect(oldHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(freshHandler.resume).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
@@ -4755,7 +4757,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-retry-stop";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4814,7 +4816,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-overlapping-retries";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4823,7 +4825,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
 
     // The scheduled retry timer fires first: it clears its handle and starts
@@ -4872,7 +4874,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-single-rearm";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4881,7 +4883,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
     const retrySpy = vi.spyOn(internals(sm).slotScheduler, "runRetry");
 
@@ -4933,7 +4935,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-terminate-retry-stop-fails";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -4942,7 +4944,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
 
     const retry = i.slotScheduler.runRetry(chatId);
@@ -4956,7 +4958,7 @@ describe("SessionManager edge coverage", () => {
     await expect(terminate).rejects.toBe(boom);
     await retry;
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // No late re-arm: the terminate's in-flight window canceled the retry
@@ -4969,7 +4971,7 @@ describe("SessionManager edge coverage", () => {
     // The operator's retry path still works: the next terminate re-attempts
     // the strict stop and converges.
     await sm.handleCommand(chatId, "session:terminate");
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -4999,7 +5001,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-late-rearm";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -5008,7 +5010,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
     const retrySpy = vi.spyOn(internals(sm).slotScheduler, "runRetry");
 
@@ -5067,7 +5069,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [freshHandler] });
     const i = internals(sm);
     const chatId = "chat-shutdown-bounded-followup";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -5154,8 +5156,8 @@ describe("SessionManager edge coverage", () => {
       retryAttempt: 1,
       retryHeadMessage: makeMessage("chat-cap-b"),
     });
-    i.sessions.set(entryA.chatId, entryA);
-    i.sessions.set(entryB.chatId, entryB);
+    i.projection.sessions.set(entryA.chatId, entryA);
+    i.projection.sessions.set(entryB.chatId, entryB);
     // Give chat A owned processing work so its (winning) session cannot be
     // preempted by the loser's acquire — the loser must re-arm instead.
     const ownedEntry = mockEntry({ id: 131, chatId: entryA.chatId, messageId: "msg-cap-a-owned" });
@@ -5215,7 +5217,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [handlerC, freshA], concurrency: 1 });
     const i = internals(sm);
     const chatId = "chat-freed-slot-retry";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: oldHandler,
@@ -5224,7 +5226,7 @@ describe("SessionManager edge coverage", () => {
         retryHeadMessage: makeMessage(chatId),
       }),
     );
-    const entry = i.sessions.get(chatId);
+    const entry = i.projection.sessions.get(chatId);
     if (!entry) throw new Error("entry missing");
 
     const retry = i.slotScheduler.runRetry(chatId);
@@ -5318,7 +5320,7 @@ describe("SessionManager edge coverage", () => {
     await startStarted;
 
     await sm.handleCommand(chatId, "session:suspend");
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
 
     const stopped = sm.shutdown();
     let stopSettled = false;
@@ -5375,8 +5377,8 @@ describe("SessionManager edge coverage", () => {
     // terminally (provider 401) — terminal cleanup deletes the entry but
     // leaves memory with no session and no evicted mapping.
     await sm.dispatch(mockEntry({ id: 150, chatId, messageId: "msg-terminal-401" }));
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
-    expect(i.evictedMappings.has(chatId)).toBe(false);
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
+    expect(i.projection.evictedMappings.has(chatId)).toBe(false);
 
     // The debounced write may not have landed: the disk still shows the old
     // thread when the Reset arrives (memory is empty). Even so, the
@@ -5425,7 +5427,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ registryPath });
     const i = internals(sm);
     // Simulate the QA state: the mapping exists ONLY on disk (memory empty).
-    i.evictedMappings.delete(chatId);
+    i.projection.evictedMappings.delete(chatId);
 
     const boom = new Error("disk full");
     vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
@@ -5480,7 +5482,7 @@ describe("SessionManager edge coverage", () => {
     writeEntries({ [chatReset]: "thread-reset", [chatKeep]: "thread-keep" });
     const sm = makeManager({ registryPath });
     const i = internals(sm);
-    const registry = i.registry;
+    const registry = i.projection.registry;
     if (!registry) throw new Error("registry missing");
 
     // A pending debounced snapshot that still CONTAINS the mapping being
@@ -5561,16 +5563,16 @@ describe("SessionManager edge coverage", () => {
     const i = internals(sm);
     const debtChat = "chat-force-keep-debt";
     const otherChat = "chat-force-keep-other";
-    i.sessions.set(debtChat, makeSessionRecord(debtChat, { status: "suspended", lastActivity: 1_000 }));
-    i.sessions.set(otherChat, makeSessionRecord(otherChat, { status: "suspended", lastActivity: 2_000 }));
+    i.projection.sessions.set(debtChat, makeSessionRecord(debtChat, { status: "suspended", lastActivity: 1_000 }));
+    i.projection.sessions.set(otherChat, makeSessionRecord(otherChat, { status: "suspended", lastActivity: 2_000 }));
     i.routeTeardown.registerPendingTeardown(debtChat, handler());
 
     // The debt chat is the older non-active session and would be the
     // preferred victim; the force-keep skips it, so the other chat is
     // evicted instead.
     i.slotScheduler.evictIfNeeded();
-    expect(i.sessions.has(debtChat)).toBe(true);
-    expect(i.sessions.has(otherChat)).toBe(false);
+    expect(i.projection.sessions.has(debtChat)).toBe(true);
+    expect(i.projection.sessions.has(otherChat)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5582,7 +5584,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminal-no-fake-debt";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -5595,7 +5597,7 @@ describe("SessionManager edge coverage", () => {
 
     // The terminal path registers-then-shuts-down the handler: the stop
     // confirmed, so no register-only "fake" debt lingers.
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(targetHandler.shutdown).toHaveBeenCalled();
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
 
@@ -5610,21 +5612,21 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-active-shutdown-failed";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     // The active-slot teardown is strict too: a shutdown rejection must fail
     // the apply instead of being acked over a possibly-live handler.
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // The recorded teardownError drives a strict re-attempt on retry even
     // though the slot was already released.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -5639,7 +5641,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ log: logger });
     const i = internals(sm);
     const chatId = "chat-stale-teardown-failed";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     // First reconcile pass: the strict teardown rejects, but the
@@ -5654,7 +5656,7 @@ describe("SessionManager edge coverage", () => {
         ),
       ).toBe(true),
     );
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(sm.getHeldChatIds()).toContain(chatId);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
@@ -5662,7 +5664,7 @@ describe("SessionManager edge coverage", () => {
     // declares it stale again; teardown now succeeds and the entry is cleaned
     // up — the retry converges instead of early-returning a false success.
     sm.applyStaleChatIds([chatId]);
-    await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.projection.sessions.has(chatId)).toBe(false));
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
@@ -5689,7 +5691,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager();
     const i = internals(sm);
     const chatId = "chat-terminate-teardown-failed";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: targetHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     await sm.handleCommand(chatId, "session:suspend");
@@ -5701,7 +5703,7 @@ describe("SessionManager edge coverage", () => {
     // The handler stayed live after the slot-releasing suspend; teardown
     // failure must fail the apply rather than inherit the swallow semantics.
     await expect(terminate).rejects.toBe(boom);
-    expect(i.sessions.has(chatId)).toBe(true);
+    expect(i.projection.sessions.has(chatId)).toBe(true);
     expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
@@ -5762,7 +5764,7 @@ describe("SessionManager edge coverage", () => {
     );
     const sm = makeManager({ registryPath });
     const i = internals(sm);
-    expect(i.evictedMappings.has(chatId)).toBe(true);
+    expect(i.projection.evictedMappings.has(chatId)).toBe(true);
 
     const boom = new Error("disk full");
     const flushSpy = vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
@@ -5772,7 +5774,7 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     // In-memory state is gone but the stale mapping is still on disk, and the
     // failed delete is remembered as pending work.
-    expect(i.evictedMappings.has(chatId)).toBe(false);
+    expect(i.projection.evictedMappings.has(chatId)).toBe(false);
     expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
     let data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
     expect(Object.keys(data.entries)).toContain(chatId);
@@ -5823,7 +5825,7 @@ describe("SessionManager edge coverage", () => {
       recoverChat,
     });
     const i = internals(sm);
-    expect(i.evictedMappings.has(chatId)).toBe(true);
+    expect(i.projection.evictedMappings.has(chatId)).toBe(true);
 
     const boom = new Error("disk full");
     vi.spyOn(SessionRegistry.prototype, "flushOrThrow").mockImplementationOnce(() => {
@@ -5839,7 +5841,7 @@ describe("SessionManager edge coverage", () => {
     expect(start).not.toHaveBeenCalled();
     expect(resume).not.toHaveBeenCalled();
     expect(inject).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     // Parked behind the fence: no same-socket recoverChat storm.
     expect(recoverChat).not.toHaveBeenCalled();
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
@@ -5979,7 +5981,7 @@ describe("SessionManager edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminate-teardown-park";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: terminatingHandler,
@@ -6211,7 +6213,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
     const i = internals(sm);
     const chatId = "chat-reset-ref-join";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-first" });
@@ -6258,7 +6260,7 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ handlers: [terminatingHandler], recoverChat });
     const i = internals(sm);
     const chatId = "chat-reset-alias-order";
-    i.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
+    i.projection.sessions.set(chatId, makeSessionRecord(chatId, { handler: terminatingHandler, status: "active" }));
     i.slotScheduler.activeCount = 1;
 
     const first = sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
@@ -6387,7 +6389,7 @@ describe("SessionManager edge coverage", () => {
 
     const dispatch = sm.dispatch(mockEntry({ id: 70, chatId, messageId: "msg-pending-admission" }));
     await bindingStarted;
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.inboxDelivery.snapshot(chatId).admissionPending).toBe(true);
 
     await sm.handleCommand(chatId, "session:terminate");
@@ -6401,7 +6403,7 @@ describe("SessionManager edge coverage", () => {
     await dispatch;
 
     expect(pendingHandler.start).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
     expect(sm.activeCount).toBe(0);
 
@@ -6428,7 +6430,7 @@ describe("SessionManager edge coverage", () => {
 
     const dispatch = sm.dispatch(mockEntry({ id: 71, chatId, messageId: "msg-manager-shutdown-admission" }));
     await bindingStarted;
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(i.inboxDelivery.snapshot(chatId).admissionPending).toBe(true);
 
     await sm.shutdown();
@@ -6436,7 +6438,7 @@ describe("SessionManager edge coverage", () => {
     await dispatch;
 
     expect(pendingHandler.start).not.toHaveBeenCalled();
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(sm.activeCount).toBe(0);
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(true);
@@ -6474,12 +6476,12 @@ describe("SessionManager edge coverage", () => {
       suspending,
       claudeSessionId: "previous-session",
     });
-    i.sessions.set(chatId, target);
+    i.projection.sessions.set(chatId, target);
     const blocker = makeSessionRecord("chat-manager-shutdown-pending-resume-blocker", {
       handler: blockerHandler,
       status: "active",
     });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const resume = i.resumeSession(target, head);
@@ -6499,7 +6501,7 @@ describe("SessionManager edge coverage", () => {
     await shutdown;
 
     expect(sm.activeCount).toBe(0);
-    expect(i.sessions.size).toBe(0);
+    expect(i.projection.sessions.size).toBe(0);
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(true);
   });
@@ -6538,7 +6540,7 @@ describe("SessionManager edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-invalidated";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -6558,7 +6560,7 @@ describe("SessionManager edge coverage", () => {
     expect(ackEntry).not.toHaveBeenCalled();
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(true);
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
 
     resolveShutdown?.();
     await terminate;
@@ -6591,7 +6593,7 @@ describe("SessionManager edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-terminate";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -6600,14 +6602,14 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-terminate-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-terminate" }));
     await confirmStarted;
 
-    expect(i.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.sessions.get(chatId)?.activeSlotHeld).toBe(true);
+    expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
+    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     // The terminate must wait for the in-flight route producer (gated on the
@@ -6625,13 +6627,13 @@ describe("SessionManager edge coverage", () => {
     await headDispatch;
     await terminate;
 
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     // Two stops: the terminate's strict teardown, then the stale route
     // completion's afterPrior stop of the materialized handler.
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(sm.activeCount).toBe(1);
 
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
     await sm.shutdown();
   });
@@ -6657,7 +6659,7 @@ describe("SessionManager edge coverage", () => {
     });
     const i = internals(sm);
     const chatId = "chat-terminal-confirm-evict";
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         handler: targetHandler,
@@ -6666,26 +6668,26 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-evict-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const headDispatch = sm.dispatch(mockEntry({ id: 2, chatId, messageId: "msg-terminal-confirm-evict" }));
     await confirmStarted;
 
-    expect(i.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.sessions.get(chatId)?.activeSlotHeld).toBe(true);
+    expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
+    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
     expect(sm.activeCount).toBe(2);
 
     i.slotScheduler.evictIfNeeded();
 
-    expect(i.sessions.has(chatId)).toBe(false);
+    expect(i.projection.sessions.has(chatId)).toBe(false);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(sm.activeCount).toBe(1);
 
     resolveConfirm?.();
     await headDispatch;
 
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(1);
     await sm.shutdown();
   });
@@ -6720,7 +6722,7 @@ describe("SessionManager edge coverage", () => {
     const tailEntry = mockEntry({ id: 3, chatId, messageId: "msg-terminal-confirm-tail" });
     const head = messageFromEntry(headEntry);
     i.inboxDelivery.receive(headEntry);
-    i.sessions.set(
+    i.projection.sessions.set(
       chatId,
       makeSessionRecord(chatId, {
         retryAttempt: 1,
@@ -6731,15 +6733,15 @@ describe("SessionManager edge coverage", () => {
       }),
     );
     const blocker = makeSessionRecord("chat-terminal-confirm-admission-blocker", { status: "active" });
-    i.sessions.set(blocker.chatId, blocker);
+    i.projection.sessions.set(blocker.chatId, blocker);
     i.slotScheduler.activeCount = 1;
 
     const retryPromise = i.slotScheduler.runRetry(chatId);
     await confirmStarted;
 
-    expect(i.sessions.get(chatId)?.status).toBe("errored");
-    expect(i.sessions.get(chatId)?.activeSlotHeld).toBe(true);
-    expect(i.sessions.get(chatId)?.retryAttempt).toBe(0);
+    expect(i.projection.sessions.get(chatId)?.status).toBe("errored");
+    expect(i.projection.sessions.get(chatId)?.activeSlotHeld).toBe(true);
+    expect(i.projection.sessions.get(chatId)?.retryAttempt).toBe(0);
     expect(sm.activeCount).toBe(2);
 
     await sm.dispatch(tailEntry);
@@ -6765,7 +6767,7 @@ describe("SessionManager edge coverage", () => {
       expect.anything(),
     );
     expect(terminalRetry.resume).toHaveBeenCalledTimes(1);
-    expect(i.sessions.has(blocker.chatId)).toBe(true);
+    expect(i.projection.sessions.has(blocker.chatId)).toBe(true);
     expect(sm.activeCount).toBe(2);
     await sm.shutdown();
   });
@@ -6793,7 +6795,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-transient"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-retry-transient", retrying);
+    internals(sm).projection.sessions.set("chat-retry-transient", retrying);
     await internals(sm).slotScheduler.runRetry("chat-retry-transient");
     expect(retrying.retryAttempt).toBeGreaterThan(1);
 
@@ -6803,10 +6805,10 @@ describe("SessionManager edge coverage", () => {
       claudeSessionId: "",
       retryHeadMessage: makeMessage("chat-retry-permanent"),
     });
-    internals(sm).sessions.set("chat-retry-permanent", failing);
+    internals(sm).projection.sessions.set("chat-retry-permanent", failing);
     await internals(sm).slotScheduler.runRetry("chat-retry-permanent");
 
-    expect(internals(sm).sessions.has("chat-retry-permanent")).toBe(false);
+    expect(internals(sm).projection.sessions.has("chat-retry-permanent")).toBe(false);
     expect(states).toContain("errored");
     await sm.shutdown();
   });
@@ -6840,7 +6842,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-rearm"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-rearm", retrying);
+    internals(sm).projection.sessions.set("chat-rearm", retrying);
     internals(sm).slotScheduler.activeCount = 1;
 
     await internals(sm).slotScheduler.runRetry("chat-rearm");
@@ -6876,7 +6878,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: null,
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-retry-success", succeeds);
+    internals(sm).projection.sessions.set("chat-retry-success", succeeds);
     await internals(sm).slotScheduler.runRetry("chat-retry-success");
     expect(successfulResume.resume).toHaveBeenCalledWith(undefined, "previous-session", expect.anything());
 
@@ -6888,7 +6890,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-again"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-retry-again", retriesAgain);
+    internals(sm).projection.sessions.set("chat-retry-again", retriesAgain);
     await internals(sm).slotScheduler.runRetry("chat-retry-again");
     expect(retriesAgain.retryAttempt).toBeGreaterThan(1);
 
@@ -6908,7 +6910,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: makeMessage("chat-retry-from-evicted"),
       lastRetryReason: "rate_limit",
     });
-    internals(sm).sessions.set("chat-retry-from-evicted", retrying);
+    internals(sm).projection.sessions.set("chat-retry-from-evicted", retrying);
 
     await internals(sm).slotScheduler.runRetry("chat-retry-from-evicted");
 
@@ -6931,7 +6933,7 @@ describe("SessionManager edge coverage", () => {
       handlers: [resumeFails],
       onStateChange: (_chatId, state) => states.push(state),
     });
-    internals(sm).evictedMappings.set("chat-evicted-fail", { claudeSessionId: "evicted-session", lastActivity: 1 });
+    internals(sm).projection.evictedMappings.set("chat-evicted-fail", { claudeSessionId: "evicted-session", lastActivity: 1 });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-evicted-fail" }));
 
@@ -6943,20 +6945,20 @@ describe("SessionManager edge coverage", () => {
     const sm = makeManager({ maxSessions: 2 });
     const activeOld = makeSessionRecord("chat-active-old", { status: "active", lastActivity: 10 });
     const activeNew = makeSessionRecord("chat-active-new", { status: "active", lastActivity: 20 });
-    internals(sm).sessions.set("chat-active-new", activeNew);
-    internals(sm).sessions.set("chat-active-old", activeOld);
+    internals(sm).projection.sessions.set("chat-active-new", activeNew);
+    internals(sm).projection.sessions.set("chat-active-old", activeOld);
     internals(sm).slotScheduler.evictIfNeeded();
-    expect(internals(sm).evictedMappings.has("chat-active-old")).toBe(true);
+    expect(internals(sm).projection.evictedMappings.has("chat-active-old")).toBe(true);
 
-    internals(sm).sessions.clear();
-    internals(sm).evictedMappings.clear();
+    internals(sm).projection.sessions.clear();
+    internals(sm).projection.evictedMappings.clear();
     internals(sm).slotScheduler.activeCount = 1;
     const active = makeSessionRecord("chat-active", { status: "active", lastActivity: 10 });
     const suspended = makeSessionRecord("chat-suspended", { status: "suspended", lastActivity: 20 });
-    internals(sm).sessions.set("chat-active", active);
-    internals(sm).sessions.set("chat-suspended", suspended);
+    internals(sm).projection.sessions.set("chat-active", active);
+    internals(sm).projection.sessions.set("chat-suspended", suspended);
     internals(sm).slotScheduler.evictIfNeeded();
-    expect(internals(sm).evictedMappings.has("chat-suspended")).toBe(true);
+    expect(internals(sm).projection.evictedMappings.has("chat-suspended")).toBe(true);
 
     await sm.shutdown();
   });
@@ -6970,7 +6972,7 @@ describe("SessionManager edge coverage", () => {
 
     internals(sm).slotScheduler.pendingQueue.length = 0;
     const active = makeSessionRecord("chat-same", { status: "active" });
-    internals(sm).sessions.set("chat-same", active);
+    internals(sm).projection.sessions.set("chat-same", active);
     internals(sm).slotScheduler.activeCount = 1;
     expect(internals(sm).slotScheduler.acquireActiveSlot("chat-same", makeMessage("chat-same"))).toBe(false);
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-same")).toBe(true);
@@ -6989,7 +6991,7 @@ describe("SessionManager edge coverage", () => {
     internals(sm).slotScheduler.activeCount = 0;
     internals(sm).slotScheduler.drainPendingQueue();
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    expect(internals(sm).sessions.has("chat-held")).toBe(true);
+    expect(internals(sm).projection.sessions.has("chat-held")).toBe(true);
 
     const emptyShift = internals(makeManager());
     emptyShift.slotScheduler.pendingQueue.push({
@@ -7028,7 +7030,7 @@ describe("SessionManager edge coverage", () => {
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-bad-suspend" }));
     await sm.handleCommand("chat-bad-suspend", "session:suspend");
-    const suspended = internals(sm).sessions.get("chat-bad-suspend")?.suspending;
+    const suspended = internals(sm).projection.sessions.get("chat-bad-suspend")?.suspending;
     if (suspended) await suspended;
 
     expect(badSuspend.suspend).toHaveBeenCalledTimes(1);
@@ -7038,14 +7040,14 @@ describe("SessionManager edge coverage", () => {
   it("deduplicates explicit state notifications and skips reaffirm when no callback exists", async () => {
     const states: SessionState[] = [];
     const withCallback = makeManager({ onStateChange: (_chatId, state) => states.push(state) });
-    internals(withCallback).notifySessionState("chat-state", "active");
-    internals(withCallback).notifySessionState("chat-state", "active");
+    internals(withCallback).projection.notifySessionState("chat-state", "active");
+    internals(withCallback).projection.notifySessionState("chat-state", "active");
     expect(states).toEqual(["active"]);
     await withCallback.shutdown();
 
     const withoutRuntimeCallback = makeManager();
-    internals(withoutRuntimeCallback).reaffirmRuntimeStates();
-    internals(withoutRuntimeCallback).sessions.set(
+    internals(withoutRuntimeCallback).projection.reaffirmRuntimeStates();
+    internals(withoutRuntimeCallback).projection.sessions.set(
       "chat-suspended-snapshot",
       makeSessionRecord("chat-suspended-snapshot", { status: "suspended" }),
     );
@@ -7078,7 +7080,7 @@ describe("SessionManager edge coverage", () => {
     captured.recordProviderActivity();
     expect(runtimeChanges).not.toContain("working");
 
-    internals(sm).reaffirmRuntimeStates();
+    internals(sm).projection.reaffirmRuntimeStates();
     await sm.shutdown();
   });
 
@@ -7166,12 +7168,12 @@ describe("SessionManager edge coverage", () => {
       onRuntimeStateChange: (state) => aggregateChanges.push(state),
     });
     const i = internals(sm);
-    i.sessions.set("chat-working", makeSessionRecord("chat-working", { status: "active" }));
-    i.sessions.set("chat-error", makeSessionRecord("chat-error", { status: "errored" }));
-    i.sessions.set("chat-idle", makeSessionRecord("chat-idle", { status: "active" }));
-    i.sessionRuntimeStates.set("chat-working", "working");
-    i.sessionRuntimeStates.set("chat-error", "error");
-    i.sessionRuntimeStates.set("chat-idle", "idle");
+    i.projection.sessions.set("chat-working", makeSessionRecord("chat-working", { status: "active" }));
+    i.projection.sessions.set("chat-error", makeSessionRecord("chat-error", { status: "errored" }));
+    i.projection.sessions.set("chat-idle", makeSessionRecord("chat-idle", { status: "active" }));
+    i.projection.sessionRuntimeStates.set("chat-working", "working");
+    i.projection.sessionRuntimeStates.set("chat-error", "error");
+    i.projection.sessionRuntimeStates.set("chat-idle", "idle");
 
     await vi.advanceTimersByTimeAsync(20_000);
 
@@ -7180,12 +7182,12 @@ describe("SessionManager edge coverage", () => {
       { chatId: "chat-error", state: "error" },
     ]);
 
-    i.sessionRuntimeStates.clear();
-    i.sessionRuntimeStates.set("chat-working", "working");
-    i.sessionRuntimeStates.set("chat-blocked", "blocked");
-    i.recomputeRuntimeState();
-    i.sessionRuntimeStates.set("chat-error", "error");
-    i.recomputeRuntimeState();
+    i.projection.sessionRuntimeStates.clear();
+    i.projection.sessionRuntimeStates.set("chat-working", "working");
+    i.projection.sessionRuntimeStates.set("chat-blocked", "blocked");
+    i.projection.recomputeRuntimeState();
+    i.projection.sessionRuntimeStates.set("chat-error", "error");
+    i.projection.recomputeRuntimeState();
 
     expect(aggregateChanges).toContain("blocked");
     expect(aggregateChanges).toContain("error");
@@ -7283,7 +7285,7 @@ describe("SessionManager edge coverage", () => {
     });
 
     await sm.dispatch(mockEntry({ id: 502, chatId: "chat-notice-emit-fail", messageId: "msg-notice-emit-fail" }));
-    const entry = internals(sm).sessions.get("chat-notice-emit-fail");
+    const entry = internals(sm).projection.sessions.get("chat-notice-emit-fail");
     if (!entry || !capturedMessage || !capturedToken) throw new Error("delivery was not captured");
     entry.pendingRuntimeFailureNotice = {
       event: "provider_failure_terminal",
@@ -7351,7 +7353,7 @@ describe("SessionManager edge coverage", () => {
 
     await sm.dispatch(mockEntry({ id: 505, chatId: "chat-suspend-log-fail", messageId: "msg-suspend-log-fail" }));
     await sm.handleCommand("chat-suspend-log-fail", "session:suspend");
-    const suspending = internals(sm).sessions.get("chat-suspend-log-fail")?.suspending;
+    const suspending = internals(sm).projection.sessions.get("chat-suspend-log-fail")?.suspending;
     if (suspending) await suspending;
 
     expect(warn).toHaveBeenCalledTimes(2);
@@ -7366,12 +7368,12 @@ describe("SessionManager edge coverage", () => {
       status: "active",
       handler: handler({ shutdown: badShutdown }),
     });
-    i.sessions.set("chat-unowned", record);
+    i.projection.sessions.set("chat-unowned", record);
     i.slotScheduler.activeCount = 1;
 
     i.abortUnownedRoute(record, "test_unowned_route");
 
-    expect(i.sessions.has("chat-unowned")).toBe(false);
+    expect(i.projection.sessions.has("chat-unowned")).toBe(false);
     expect(sm.activeCount).toBe(0);
     await vi.waitFor(() => expect(badShutdown).toHaveBeenCalledWith("test_unowned_route", {}));
     await sm.shutdown();
@@ -7390,7 +7392,7 @@ describe("SessionManager edge coverage", () => {
     const startManager = makeManager({ handlers: [startHandler] });
     internals(startManager).markRouteOwned = loseOwnership;
     await internals(startManager).routeMessage("chat-start-lost", makeMessage("chat-start-lost"));
-    expect(internals(startManager).sessions.has("chat-start-lost")).toBe(false);
+    expect(internals(startManager).projection.sessions.has("chat-start-lost")).toBe(false);
     await startManager.shutdown();
 
     const evictedHandler = handler({
@@ -7400,13 +7402,13 @@ describe("SessionManager edge coverage", () => {
       }),
     });
     const evictedManager = makeManager({ handlers: [evictedHandler] });
-    internals(evictedManager).evictedMappings.set("chat-evicted-lost", {
+    internals(evictedManager).projection.evictedMappings.set("chat-evicted-lost", {
       claudeSessionId: "old-evicted",
       lastActivity: 1,
     });
     internals(evictedManager).markRouteOwned = loseOwnership;
     await internals(evictedManager).routeMessage("chat-evicted-lost", makeMessage("chat-evicted-lost"));
-    expect(internals(evictedManager).sessions.has("chat-evicted-lost")).toBe(false);
+    expect(internals(evictedManager).projection.sessions.has("chat-evicted-lost")).toBe(false);
     await evictedManager.shutdown();
 
     const suspendedRecord = makeSessionRecord("chat-resume-lost", {
@@ -7419,10 +7421,10 @@ describe("SessionManager edge coverage", () => {
       }),
     });
     const resumeManager = makeManager();
-    internals(resumeManager).sessions.set("chat-resume-lost", suspendedRecord);
+    internals(resumeManager).projection.sessions.set("chat-resume-lost", suspendedRecord);
     internals(resumeManager).markRouteOwned = loseOwnership;
     await internals(resumeManager).resumeSession(suspendedRecord, makeMessage("chat-resume-lost"));
-    expect(internals(resumeManager).sessions.has("chat-resume-lost")).toBe(false);
+    expect(internals(resumeManager).projection.sessions.has("chat-resume-lost")).toBe(false);
     await resumeManager.shutdown();
 
     const retryResumeHandler = handler({
@@ -7432,7 +7434,7 @@ describe("SessionManager edge coverage", () => {
       }),
     });
     const retryResumeManager = makeManager({ handlers: [retryResumeHandler] });
-    internals(retryResumeManager).sessions.set(
+    internals(retryResumeManager).projection.sessions.set(
       "chat-retry-resume-lost",
       makeSessionRecord("chat-retry-resume-lost", {
         retryAttempt: 1,
@@ -7443,7 +7445,7 @@ describe("SessionManager edge coverage", () => {
     );
     internals(retryResumeManager).markRouteOwned = loseOwnership;
     await internals(retryResumeManager).slotScheduler.runRetry("chat-retry-resume-lost");
-    expect(internals(retryResumeManager).sessions.has("chat-retry-resume-lost")).toBe(false);
+    expect(internals(retryResumeManager).projection.sessions.has("chat-retry-resume-lost")).toBe(false);
     await retryResumeManager.shutdown();
 
     const retryStartHandler = handler({
@@ -7453,7 +7455,7 @@ describe("SessionManager edge coverage", () => {
       }),
     });
     const retryStartManager = makeManager({ handlers: [retryStartHandler] });
-    internals(retryStartManager).sessions.set(
+    internals(retryStartManager).projection.sessions.set(
       "chat-retry-start-lost",
       makeSessionRecord("chat-retry-start-lost", {
         retryAttempt: 1,
@@ -7464,14 +7466,14 @@ describe("SessionManager edge coverage", () => {
     );
     internals(retryStartManager).markRouteOwned = loseOwnership;
     await internals(retryStartManager).slotScheduler.runRetry("chat-retry-start-lost");
-    expect(internals(retryStartManager).sessions.has("chat-retry-start-lost")).toBe(false);
+    expect(internals(retryStartManager).projection.sessions.has("chat-retry-start-lost")).toBe(false);
     await retryStartManager.shutdown();
   });
 
   it("drains active and control pending queue branches, including asynchronous requeue failures", async () => {
     const activeManager = makeManager();
     const activeInternals = internals(activeManager);
-    activeInternals.sessions.set("chat-active-drain", makeSessionRecord("chat-active-drain", { status: "active" }));
+    activeInternals.projection.sessions.set("chat-active-drain", makeSessionRecord("chat-active-drain", { status: "active" }));
     activeInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-active-drain",
       message: null,
@@ -7491,7 +7493,7 @@ describe("SessionManager edge coverage", () => {
 
     const activeInboxManager = makeManager();
     const activeInboxInternals = internals(activeInboxManager);
-    activeInboxInternals.sessions.set(
+    activeInboxInternals.projection.sessions.set(
       "chat-active-inbox-drain",
       makeSessionRecord("chat-active-inbox-drain", { status: "active" }),
     );
@@ -7516,7 +7518,7 @@ describe("SessionManager edge coverage", () => {
     const controlManager = makeManager();
     const controlInternals = internals(controlManager);
     const suspended = makeSessionRecord("chat-control-drain", { status: "suspended" });
-    controlInternals.sessions.set("chat-control-drain", suspended);
+    controlInternals.projection.sessions.set("chat-control-drain", suspended);
     controlInternals.slotScheduler.pendingQueue.push({
       chatId: "chat-control-drain",
       message: null,
@@ -7572,7 +7574,7 @@ describe("SessionManager edge coverage", () => {
       retryHeadMessage: head,
       deferredMessages: [firstTail, secondTail],
     });
-    i.sessions.set(chatId, retrying);
+    i.projection.sessions.set(chatId, retrying);
 
     await i.slotScheduler.runRetry(chatId);
 
@@ -7593,7 +7595,7 @@ describe("SessionManager edge coverage", () => {
     };
     const sm = makeManager({ maxSessions: 1, subprocessProbe });
     const i = internals(sm);
-    i.sessions.set(
+    i.projection.sessions.set(
       "chat-live-subprocess",
       makeSessionRecord("chat-live-subprocess", {
         status: "active",
@@ -7603,12 +7605,12 @@ describe("SessionManager edge coverage", () => {
 
     i.slotScheduler.evictIfNeeded();
 
-    expect(i.evictedMappings.has("chat-live-subprocess")).toBe(true);
+    expect(i.projection.evictedMappings.has("chat-live-subprocess")).toBe(true);
     await sm.shutdown();
 
     const noCandidate = makeManager({ maxSessions: 1 });
     const noCandidateInternals = internals(noCandidate);
-    noCandidateInternals.sessions.set(
+    noCandidateInternals.projection.sessions.set(
       "chat-working-only",
       makeSessionRecord("chat-working-only", {
         status: "active",
@@ -7623,7 +7625,7 @@ describe("SessionManager edge coverage", () => {
 
     noCandidateInternals.slotScheduler.evictIfNeeded();
 
-    expect(noCandidateInternals.sessions.has("chat-working-only")).toBe(true);
+    expect(noCandidateInternals.projection.sessions.has("chat-working-only")).toBe(true);
     await noCandidate.shutdown();
   });
 });

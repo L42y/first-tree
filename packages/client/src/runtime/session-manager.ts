@@ -62,7 +62,7 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
-import { createResultSink, type Trigger } from "./result-sink.js";
+import { createResultSink } from "./result-sink.js";
 import {
   ResetReplayAuthority,
   type ResetFenceReleaseVerdict,
@@ -82,7 +82,10 @@ import {
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
 } from "./runtime-notice.js";
-import { SessionRegistry } from "./session-registry.js";
+import {
+  SessionProjectionAuthority,
+  type RuntimeSyncActiveSet,
+} from "./session-projection-authority.js";
 
 type SessionEntry = {
   chatId: string;
@@ -216,7 +219,6 @@ export type SessionManagerShutdownOptions = {
 };
 
 type SessionCommandType = "session:suspend" | "session:resume" | "session:terminate";
-type RuntimeSyncActiveSet = ReadonlySet<string> | null;
 
 /** Re-exported for agent-slot / wire callers; owned by ResetReplayAuthority. */
 export type { ResetFenceReleaseVerdict } from "./reset-replay-authority.js";
@@ -454,9 +456,6 @@ type SessionManagerConfig = {
  * - Concurrency limit on simultaneously active sessions
  * - Registry persistence for crash recovery
  */
-/** Maximum number of evicted session mappings to retain for resume recovery. */
-const MAX_EVICTED_MAPPINGS = 500;
-
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
 
 /**
@@ -467,23 +466,6 @@ const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
  * (they exit on the cheap already-bound check).
  */
 const TREE_RERESOLVE_INTERVAL_MS = 60_000;
-
-/**
- * Base interval for re-affirming per-(agent,chat) runtime so the server-side
- * `runtime_state_at` stays inside its freshness window during a long turn.
- * Kept at 1/3 of the server's `RUNTIME_STALE_MS` (60 s) so a single dropped
- * frame doesn't let a live turn flap to idle — matches the approved spec
- * (proposals/hub-agent-status-working-freshness.20260525.md §6.1 §10). The
- * actual fire time is jittered ±20 % around this base to prevent
- * thundering-herd alignment across hundreds of clients restarting at once.
- */
-const RUNTIME_REAFFIRM_BASE_MS = 20_000;
-const RUNTIME_REAFFIRM_JITTER_RATIO = 0.2;
-
-function jitteredReaffirmDelay(): number {
-  const offset = (Math.random() * 2 - 1) * RUNTIME_REAFFIRM_BASE_MS * RUNTIME_REAFFIRM_JITTER_RATIO;
-  return RUNTIME_REAFFIRM_BASE_MS + offset;
-}
 
 /** Structured terminal provider-failure events that feed the durable runtime notice. */
 function isTerminalProviderFailureSessionEvent(event: SessionEvent): boolean {
@@ -543,22 +525,13 @@ export function encodeResilienceMessage(eventName: string, payload: Record<strin
 }
 
 export class SessionManager {
-  private readonly sessions = new Map<string, SessionEntry>();
-  private readonly evictedMappings = new Map<string, { claudeSessionId: string; lastActivity: number }>();
   private readonly config: SessionManagerConfig;
   private readonly inboxDelivery: InboxDeliveryCoordinator;
-  /** Last lazy Context-Tree re-resolution attempt (epoch ms); see `TREE_RERESOLVE_INTERVAL_MS`. */
-  private lastTreeResolveAttemptAt = 0;
   /**
-   * Current trigger (messageId + senderId) per chat — the message that kicked
-   * off the current or most-recent turn. The result-sink clears it at turn end.
-   * It no longer drives an outbound reply: the per-turn final-text mirror is
-   * retired, so `forwardResult` does not deliver anything (a human-visible reply
-   * is a deliberate `chat send` / `chat ask` the agent issues). Maintained
-   * entirely by the runtime: handlers never touch this map.
+   * Unique owner of session-map membership, evicted resume mappings, current
+   * trigger, SessionRegistry persistence timing, and runtime/state projection.
    */
-  private readonly currentTrigger = new Map<string, Trigger>();
-  private readonly registry: SessionRegistry | null;
+  private readonly projection: SessionProjectionAuthority<SessionEntry>;
   /**
    * Unique owner of route-transition fencing, teardown debt, route producers,
    * handler retire/shutdown coalescing, and operator-suspend quarantine.
@@ -576,20 +549,28 @@ export class SessionManager {
   private readonly slotScheduler: SlotSchedulerAuthority;
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
   private shuttingDown = false;
-  private readonly lastReportedStates = new Map<string, SessionState>();
-  private readonly sessionRuntimeStates = new Map<string, RuntimeState>();
-  /** Chats held specifically for a fresh bind, never same-socket recovery. */
-  private readonly runtimeProofRecoveryChats = new Set<string>();
-  private lastReportedRuntimeState: RuntimeState | null = null;
-  private runtimeReaffirmTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: SessionManagerConfig) {
     this.config = config;
-    this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
+    this.projection = new SessionProjectionAuthority<SessionEntry>(
+      {
+        log: config.log,
+        onStateChange: () => this.config.onStateChange,
+        onSessionRuntimeChange: () => this.config.onSessionRuntimeChange,
+        onRuntimeStateChange: () => this.config.onRuntimeStateChange,
+        hasProcessingOwnedWork: (chatId) => this.inboxDelivery.hasProcessingOwnedWork(chatId),
+        drainPendingOnIdle: () => {
+          if (this.slotScheduler.pendingQueue.length > 0) this.slotScheduler.drainPendingQueue();
+        },
+        hasRuntimeSyncForceKeepExtra: (chatId) => this.hasRuntimeSyncForceKeepExtra(chatId),
+        completeBindRecovery: (chatId) => this.inboxDelivery.completeBindRecovery(chatId),
+      },
+      { registryPath: config.registryPath },
+    );
     this.routeTeardown = new RouteTeardownAuthority({
       log: config.log,
       isShuttingDown: () => this.shuttingDown,
-      getSession: (chatId) => this.sessions.get(chatId),
+      getSession: (chatId) => this.projection.sessions.get(chatId),
       createHandler: () => this.createHandler(),
       invalidateDeliveryAdmission: (chatId) => this.slotScheduler.invalidateDeliveryAdmission(chatId),
       runtimeProvider: () => this.runtimeProvider(),
@@ -604,15 +585,15 @@ export class SessionManager {
         recoverChat: () => this.config.recoverChat,
         probeFencedSettlement: () => this.config.probeFencedSettlement,
         onSessionRuntimeChange: () => this.config.onSessionRuntimeChange,
-        projectSessionRuntime: (chatId) => this.projectSessionRuntime(chatId),
+        projectSessionRuntime: (chatId) => this.projection.projectSessionRuntime(chatId),
         rotateFreshStartNonce: (chatId) => {
-          this.registry?.rotateFreshStartNonce(chatId);
+          this.projection.rotateFreshStartNonce(chatId);
         },
         persistRegistryThrowing: () => {
-          this.persistRegistry({ throwOnFailure: true });
+          this.projection.persistRegistry({ throwOnFailure: true });
         },
         markResetNonceDurable: (chatId) => {
-          this.registry?.markResetNonceDurable(chatId);
+          this.projection.markResetNonceDurable(chatId);
         },
       },
       { replayFencePath: config.replayFencePath },
@@ -623,7 +604,7 @@ export class SessionManager {
       postRuntimeFailureNotice: async (chatId, payload) => {
         await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
       },
-      onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
+      onWorkChanged: (chatId) => this.projection.projectSessionRuntime(chatId),
       onDeliveriesCommitted: (chatId, messageIds) => this.resetReplay.reconcileReplayFences(chatId, messageIds),
       log: config.log,
     });
@@ -636,12 +617,12 @@ export class SessionManager {
       workingGraceSec: () => this.config.session.working_grace_seconds,
       hasLiveSubprocessProbe: (chatId) => this.config.subprocessProbe?.hasLiveSubprocess(chatId) === true,
       isProviderRouteAdmissionFenced: (chatId) => this.resetReplay.isProviderRouteAdmissionFenced(chatId),
-      getSession: (chatId) => this.sessions.get(chatId),
-      sessionsValues: () => this.sessions.values(),
-      sessionsEntries: () => this.sessions.entries(),
-      sessionCount: () => this.sessions.size,
+      getSession: (chatId) => this.projection.sessions.get(chatId),
+      sessionsValues: () => this.projection.sessions.values(),
+      sessionsEntries: () => this.projection.sessions.entries(),
+      sessionCount: () => this.projection.sessions.size,
       deleteSession: (chatId) => {
-        this.sessions.delete(chatId);
+        this.projection.sessions.delete(chatId);
       },
       inbox: this.inboxDelivery,
       routeTeardown: this.routeTeardown,
@@ -659,9 +640,9 @@ export class SessionManager {
       createHandler: () => this.createHandler(),
       buildSessionContext: (chatId, lease) => this.buildSessionContext(chatId, lease),
       createDeliveryToken: (chatId, lease) => this.createDeliveryToken(chatId, lease),
-      setCurrentTrigger: (chatId, message) => this.setCurrentTrigger(chatId, message),
-      notifySessionState: (chatId, state) => this.notifySessionState(chatId, state),
-      projectSessionRuntime: (chatId, opts) => this.projectSessionRuntime(chatId, opts),
+      setCurrentTrigger: (chatId, message) => this.projection.setCurrentTrigger(chatId, message),
+      notifySessionState: (chatId, state) => this.projection.notifySessionState(chatId, state),
+      projectSessionRuntime: (chatId, opts) => this.projection.projectSessionRuntime(chatId, opts),
       adoptResumeReceipt: (entry, message, receipt, lostReason) =>
         this.adoptResumeReceipt(entry as SessionEntry, message, receipt, lostReason),
       markRouteOwned: (chatId, message, route) => this.markRouteOwned(chatId, message, route),
@@ -674,7 +655,7 @@ export class SessionManager {
       teardownTerminalSessionFailure: (entry, message, handling) =>
         this.teardownTerminalSessionFailure(entry as SessionEntry, message, handling),
       drainDeferredMessages: (entry) => this.drainDeferredMessages(entry as SessionEntry),
-      persistRegistry: () => this.persistRegistry(),
+      persistRegistry: () => this.projection.persistRegistry(),
       failSessionForRecovery: (chatId, reason, sessionId) =>
         this.failSessionForRecovery(chatId, reason, sessionId),
       retryClassificationForEntry: (entry) => this.retryClassificationForEntry(entry as SessionEntry),
@@ -682,18 +663,18 @@ export class SessionManager {
       previousAvailable: (entry) => previousAvailable(entry as SessionEntry),
       normalizeResumeReceipt,
       normalizeStartReceipt,
-      addEvictedMapping: (chatId, mapping) => this.addEvictedMapping(chatId, mapping),
+      addEvictedMapping: (chatId, mapping) => this.projection.addEvictedMapping(chatId, mapping),
       deleteEvictedMapping: (chatId) => {
-        this.evictedMappings.delete(chatId);
+        this.projection.evictedMappings.delete(chatId);
       },
       deleteSessionRuntimeState: (chatId) => {
-        this.sessionRuntimeStates.delete(chatId);
+        this.projection.sessionRuntimeStates.delete(chatId);
       },
-      getSessionRuntimeState: (chatId) => this.sessionRuntimeStates.get(chatId),
+      getSessionRuntimeState: (chatId) => this.projection.sessionRuntimeStates.get(chatId),
       deleteCurrentTrigger: (chatId) => {
-        this.currentTrigger.delete(chatId);
+        this.projection.currentTrigger.delete(chatId);
       },
-      recomputeRuntimeState: () => this.recomputeRuntimeState(),
+      recomputeRuntimeState: () => this.projection.recomputeRuntimeState(),
     });
     this.slotScheduler.startIdleEviction();
     // Independent of `evictIdle` (which early-continues on freshly-active
@@ -701,18 +682,10 @@ export class SessionManager {
     // server-side `runtime_state_at` stays inside the freshness window.
     // Jittered setTimeout (rearmed each tick) instead of setInterval so
     // many clients don't align on the same instant.
-    if (config.onSessionRuntimeChange) {
-      const armReaffirm = () => {
-        this.runtimeReaffirmTimer = setTimeout(() => {
-          this.reaffirmRuntimeStates();
-          armReaffirm();
-        }, jitteredReaffirmDelay());
-      };
-      armReaffirm();
-    }
+    this.projection.startRuntimeReaffirm();
 
     // Load persisted sessions (all start as suspended)
-    this.loadPersistedSessions();
+    this.projection.loadPersistedSessions();
   }
 
   updateTransport(sdk: FirstTreeHubSDK, agentConfigCache?: AgentConfigCache): void {
@@ -747,7 +720,7 @@ export class SessionManager {
       !this.shuttingDown &&
       (this.slotScheduler.admissionGenerations.get(chatId) ?? 0) === admissionGeneration &&
       !this.resetReplay.isProviderRouteAdmissionFenced(chatId);
-    const suspending = this.sessions.get(chatId)?.suspending;
+    const suspending = this.projection.sessions.get(chatId)?.suspending;
     if (suspending) await suspending;
     const isRecoveryRedelivery = this.inboxDelivery.takeRecoveryActivationReady(chatId);
 
@@ -995,7 +968,7 @@ export class SessionManager {
     }
 
     if (command === "session:suspend") {
-      const session = this.sessions.get(chatId);
+      const session = this.projection.sessions.get(chatId);
       this.slotScheduler.invalidateDeliveryAdmission(chatId);
       if (session) this.slotScheduler.clearRetryState(session);
       if (session?.activeSlotHeld) {
@@ -1008,12 +981,12 @@ export class SessionManager {
       } else {
         await this.inboxDelivery.prepareOperatorSuspend(chatId);
       }
-      this.projectSessionRuntime(chatId);
+      this.projection.projectSessionRuntime(chatId);
       return;
     }
 
     if (command === "session:resume") {
-      const session = this.sessions.get(chatId);
+      const session = this.projection.sessions.get(chatId);
       if (session?.suspending) await session.suspending;
       if (this.routeTeardown.isProviderAdmissionRestartRequired(chatId)) {
         throw this.routeTeardown.quarantineRestartRequiredError(chatId, "provider admission");
@@ -1022,7 +995,7 @@ export class SessionManager {
         this.slotScheduler.drainPendingQueue();
         return;
       }
-      const current = this.sessions.get(chatId);
+      const current = this.projection.sessions.get(chatId);
       if (current?.retryAttempt && current.status === "suspended" && !current.activeSlotHeld) {
         this.slotScheduler.triggerImmediateRetry(chatId);
       } else if (
@@ -1033,13 +1006,13 @@ export class SessionManager {
         this.config.log.info({ chatId }, "resume command received");
         await this.resumeSession(current, undefined, "fresh");
       }
-      this.projectSessionRuntime(chatId);
+      this.projection.projectSessionRuntime(chatId);
       this.slotScheduler.drainPendingQueue();
       return;
     }
 
     if (command === "session:terminate") {
-      const session = this.sessions.get(chatId);
+      const session = this.projection.sessions.get(chatId);
       // NOTE: there is deliberately NO no-work early return. Empty memory
       // (no session, mapping, queue, custody, failure marker, debt, or
       // producer) proves nothing about the DISK registry — a mapping
@@ -1132,11 +1105,11 @@ export class SessionManager {
           }
         }
 
-        this.sessions.delete(chatId);
-        this.evictedMappings.delete(chatId);
-        this.sessionRuntimeStates.delete(chatId);
-        this.lastReportedStates.delete(chatId);
-        this.currentTrigger.delete(chatId);
+        this.projection.sessions.delete(chatId);
+        this.projection.evictedMappings.delete(chatId);
+        this.projection.sessionRuntimeStates.delete(chatId);
+        this.projection.lastReportedStates.delete(chatId);
+        this.projection.currentTrigger.delete(chatId);
 
         this.slotScheduler.clearPendingQueueForChat(chatId);
 
@@ -1146,7 +1119,7 @@ export class SessionManager {
         // redelivery cannot open the server's no-progress circuit.
         await this.inboxDelivery.drainForTerminate(chatId, { requestNow: false });
 
-        this.recomputeRuntimeState();
+        this.projection.recomputeRuntimeState();
         this.flushTerminateRegistry(chatId);
         this.slotScheduler.drainPendingQueue();
       })();
@@ -1178,51 +1151,33 @@ export class SessionManager {
 
   /** Chat IDs this client still holds locally and should report to runtime sync. */
   getHeldChatIds(activeChatIds: RuntimeSyncActiveSet = null): string[] {
-    const ids = new Set<string>();
-    for (const id of this.sessions.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
-    for (const id of this.evictedMappings.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
+    const extraHeldIds: string[] = [];
     // Unresolved teardown debt keeps the chat held: the handler is not
     // confirmed stopped, so the server must keep this chat in the sync set —
     // dropping it would lose the reconcile retry channel for the debt.
-    for (const id of this.routeTeardown.pendingTeardowns.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
+    for (const id of this.routeTeardown.pendingTeardowns.keys()) extraHeldIds.push(id);
     // In-flight route producers hold the chat the same way: a canceled
     // start/resume can still materialize late, so the server must keep the
     // chat in the sync set until the producer settles and its
     // materialization is confirmed stopped.
-    for (const id of this.routeTeardown.routeProducers.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
-    for (const id of this.routeTeardown.quarantinedSessions.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
+    for (const id of this.routeTeardown.routeProducers.keys()) extraHeldIds.push(id);
+    for (const id of this.routeTeardown.quarantinedSessions.keys()) extraHeldIds.push(id);
     // Unresolved Reset retirement (in-flight terminate, failed durable flush,
     // or parked Reset-fence debt awaiting an exact receipted terminal
     // disposition) force-keeps the chat: the server must retain reconcile
     // authority until mapping deletion + Reset nonce are durably written and
     // parked debt is released.
-    for (const id of this.resetReplay.terminatingChats.keys()) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
-    for (const id of this.resetReplay.terminatePersistFailures) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
-    for (const id of this.resetReplay.awaitingResetFenceRelease) {
-      if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
-    }
+    for (const id of this.resetReplay.terminatingChats.keys()) extraHeldIds.push(id);
+    for (const id of this.resetReplay.terminatePersistFailures) extraHeldIds.push(id);
+    for (const id of this.resetReplay.awaitingResetFenceRelease) extraHeldIds.push(id);
     // An armed Reset generation holds the chat too: between `applied` and the
     // exact accepted terminal disposition (`finalized` or `aborted`) the server
     // must keep reconcile authority even when nothing is parked behind the
     // fence yet.
     for (const id of this.resetReplay.resetGenerations.keys()) {
-      if (this.resetReplay.hasArmedResetGeneration(id) && this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+      if (this.resetReplay.hasArmedResetGeneration(id)) extraHeldIds.push(id);
     }
-    return [...ids];
+    return this.projection.getHeldChatIds(activeChatIds, extraHeldIds);
   }
 
   /**
@@ -1264,14 +1219,11 @@ export class SessionManager {
     this.shuttingDown = true;
     this.config.subprocessProbe?.stop();
     this.slotScheduler.stopIdleEviction();
-    if (this.runtimeReaffirmTimer) {
-      clearTimeout(this.runtimeReaffirmTimer);
-      this.runtimeReaffirmTimer = null;
-    }
+    this.projection.stopRuntimeReaffirm();
 
     // Cancel any pending transient-retry timers — shutdown must not leave
     // setTimeouts armed that fire after the manager is gone.
-    for (const session of this.sessions.values()) {
+    for (const session of this.projection.sessions.values()) {
       if (session.retryTimer) {
         clearTimeout(session.retryTimer);
         session.retryTimer = null;
@@ -1280,7 +1232,7 @@ export class SessionManager {
     this.resetReplay.clearTimersOnShutdown();
 
     const attemptedHandlers = new Set<AgentHandler>();
-    const shutdowns = [...this.sessions.values()].map((session) => {
+    const shutdowns = [...this.projection.sessions.values()].map((session) => {
       // Fence new delivery admissions, but do NOT bump routeTransitionGeneration
       // or retire the handler yet: already-issued DeliveryTokens need a stable
       // settlement lease through settleProviderEntered notice-before-ACK.
@@ -1347,7 +1299,7 @@ export class SessionManager {
     // pre-provider work (e.g. config refresh) can finish and the wait below
     // cannot hang manager shutdown.
     const shutdownReason = reason ?? "manager_shutdown";
-    for (const session of this.sessions.values()) {
+    for (const session of this.projection.sessions.values()) {
       this.routeTeardown.invalidateRouteTransition(session, shutdownReason);
     }
 
@@ -1363,7 +1315,7 @@ export class SessionManager {
     // observed face: shutdown stays best-effort and never blocks on a
     // handler that will not die.
     await Promise.allSettled([
-      ...[...this.sessions.values()]
+      ...[...this.projection.sessions.values()]
         .map((session) => session.suspending)
         .filter((pending): pending is Promise<void> => pending !== null),
       ...[...this.routeTeardown.routeProducers.values()].flatMap((producers) => [...producers]),
@@ -1390,31 +1342,28 @@ export class SessionManager {
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
     if (reportSuspendedSessions) {
       // Report active sessions as suspended before clearing.
-      for (const [chatId, session] of this.sessions) {
+      for (const [chatId, session] of this.projection.sessions) {
         if (session.status === "active") {
-          this.notifySessionState(chatId, "suspended");
+          this.projection.notifySessionState(chatId, "suspended");
         }
       }
     }
 
     if (opts.clearPersistedRegistry) {
-      this.sessions.clear();
-      this.evictedMappings.clear();
+      this.projection.sessions.clear();
+      this.projection.evictedMappings.clear();
     }
 
     // Persist final state — flush synchronously so the last batch reaches
     // disk before dispose() tears the timer down. For destructive runtime
     // switches, the cleared maps make this an authoritative empty registry.
-    this.persistRegistry({ immediate: true });
-    this.registry?.dispose();
+    this.projection.persistRegistry({ immediate: true });
+    this.projection.disposeRegistry();
 
-    this.sessions.clear();
-    this.evictedMappings.clear();
-    this.runtimeProofRecoveryChats.clear();
+    this.projection.sessions.clear();
+    this.projection.evictedMappings.clear();
     this.resetReplay.clearResetLedgersOnShutdown();
-    this.lastReportedStates.clear();
-    this.sessionRuntimeStates.clear();
-    this.lastReportedRuntimeState = null;
+    this.projection.clearProjectionLedgers();
     this.slotScheduler.resetActiveCount();
   }
 
@@ -1423,7 +1372,7 @@ export class SessionManager {
   }
 
   get totalCount(): number {
-    return this.sessions.size;
+    return this.projection.sessions.size;
   }
 
   /**
@@ -1434,7 +1383,7 @@ export class SessionManager {
    */
   getQuietGateSnapshot(): { activeCount: number; lastActivityMs: number } {
     let lastActivityMs = 0;
-    for (const entry of this.sessions.values()) {
+    for (const entry of this.projection.sessions.values()) {
       if (entry.lastActivity > lastActivityMs) lastActivityMs = entry.lastActivity;
     }
     return { activeCount: this.slotScheduler.activeCount, lastActivityMs };
@@ -1442,17 +1391,12 @@ export class SessionManager {
 
   /** Return the current aggregate runtime state, or null if no sessions have reported. */
   getAggregateRuntimeState(): RuntimeState | null {
-    return this.lastReportedRuntimeState;
+    return this.projection.getAggregateRuntimeState();
   }
 
   /** Return all current session states for full state sync after reconnect. */
   getSessionStates(activeChatIds: RuntimeSyncActiveSet = null): Array<{ chatId: string; state: SessionState }> {
-    return [...this.sessions.entries()]
-      .filter(([chatId]) => this.shouldIncludeInRuntimeSync(chatId, activeChatIds))
-      .map(([chatId, entry]) => ({
-        chatId,
-        state: entry.status,
-      }));
+    return this.projection.getSessionStates(activeChatIds);
   }
 
   /**
@@ -1464,7 +1408,7 @@ export class SessionManager {
    * actually gone.
    */
   getEvictedChatIds(activeChatIds: RuntimeSyncActiveSet = null): string[] {
-    return [...this.evictedMappings.keys()].filter((chatId) => this.shouldIncludeInRuntimeSync(chatId, activeChatIds));
+    return this.projection.getEvictedChatIds(activeChatIds);
   }
 
   /**
@@ -1474,36 +1418,27 @@ export class SessionManager {
    * establish fresh ownership.
    */
   noteBindRecoveryComplete(): void {
-    for (const chatId of this.runtimeProofRecoveryChats) {
-      this.inboxDelivery.completeBindRecovery(chatId);
-      this.projectSessionRuntime(chatId);
-    }
-    this.runtimeProofRecoveryChats.clear();
+    this.projection.noteBindRecoveryComplete();
   }
 
   // ---- Internal -----------------------------------------------------------
 
   private hasHealthyLiveHandler(chatId: string): boolean {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     return entry?.status === "active" && entry.suspending === null;
   }
 
   private hasPendingTransientRetry(chatId: string): boolean {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     return Boolean(entry && entry.retryAttempt > 0);
   }
 
   private hasLocalRecoveryRisk(chatId: string): boolean {
-    return this.evictedMappings.has(chatId) || this.sessions.get(chatId)?.status === "evicted";
+    return this.projection.evictedMappings.has(chatId) || this.projection.sessions.get(chatId)?.status === "evicted";
   }
 
-  private shouldIncludeInRuntimeSync(chatId: string, activeChatIds: RuntimeSyncActiveSet): boolean {
-    if (activeChatIds === null) return true;
-    if (activeChatIds.has(chatId)) return true;
-    return this.hasRuntimeSyncForceKeep(chatId);
-  }
-
-  private hasRuntimeSyncForceKeep(chatId: string): boolean {
+  /** Force-keep ledgers owned outside SessionProjectionAuthority. */
+  private hasRuntimeSyncForceKeepExtra(chatId: string): boolean {
     if (this.routeTeardown.quarantinedSessions.has(chatId)) return true;
     // Unresolved teardown debt force-keeps the chat: its handler is not
     // confirmed stopped, so dropping the chat from the held report would
@@ -1517,7 +1452,6 @@ export class SessionManager {
     // authority until the successful terminate retry clears the fence.
     if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return true;
     if (this.slotScheduler.hasQueuedChat(chatId)) return true;
-    if (this.hasPendingTransientRetry(chatId)) return true;
     return this.inboxDelivery.hasUnsettledWork(chatId);
   }
 
@@ -1573,7 +1507,7 @@ export class SessionManager {
       return false;
     }
 
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     if (!entry) return false;
     if (expectedEntry && entry !== expectedEntry) return false;
     if (mutationLeaseValid && !mutationLeaseValid()) return false;
@@ -1583,12 +1517,12 @@ export class SessionManager {
 
   private emitSessionEvent(chatId: string, event: SessionEvent, expectedEntry: SessionEntry | null = null): void {
     this.config.onSessionEvent?.(chatId, event);
-    const mutationLeaseValid = expectedEntry ? () => this.sessions.get(chatId) === expectedEntry : null;
+    const mutationLeaseValid = expectedEntry ? () => this.projection.sessions.get(chatId) === expectedEntry : null;
     this.captureRuntimeFailureNotice(chatId, event, mutationLeaseValid, expectedEntry);
   }
 
   private clearPendingRuntimeFailureNotice(chatId: string): void {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     if (entry) entry.pendingRuntimeFailureNotice = null;
   }
 
@@ -1601,7 +1535,7 @@ export class SessionManager {
     // session-scoped pending state. Recovery/redelivery must retry that notice
     // before any ACK — never treat a notice-failure marker as ACK-eligible.
     if (reason === "runtime_failure_notice_delivery_failed") {
-      const pending = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
+      const pending = this.projection.sessions.get(chatId)?.pendingRuntimeFailureNotice;
       if (pending && shouldPostProviderFailureRuntimeNotice(pending)) {
         this.inboxDelivery.markNoticeRequired(chatId, messages, pending);
       }
@@ -1611,7 +1545,7 @@ export class SessionManager {
   }
 
   private pendingRuntimeSessionProofFailure(chatId: string): ProviderRetryEventPayload | null {
-    const payload = this.sessions.get(chatId)?.pendingRuntimeFailureNotice;
+    const payload = this.projection.sessions.get(chatId)?.pendingRuntimeFailureNotice;
     return payload && isRuntimeSessionProofFailure(payload) ? payload : null;
   }
 
@@ -1630,7 +1564,7 @@ export class SessionManager {
     reasonCode?: string,
     mutationLeaseValid: (() => boolean) | null = null,
   ): Promise<boolean> {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     const payload = entry?.pendingRuntimeFailureNotice;
     const proofReason = reasonCode ?? (payload && isRuntimeSessionProofFailure(payload) ? payload.reasonCode : null);
     if (!proofReason) return false;
@@ -1643,12 +1577,12 @@ export class SessionManager {
     );
     if (!held) return false;
 
-    if (entry && payload && this.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
+    if (entry && payload && this.projection.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
       entry.pendingRuntimeFailureNotice = null;
     }
-    this.runtimeProofRecoveryChats.add(chatId);
+    this.projection.runtimeProofRecoveryChats.add(chatId);
     if (entry) this.fenceSessionForRuntimeSessionProofRecovery(chatId, proofReason);
-    this.projectSessionRuntime(chatId);
+    this.projection.projectSessionRuntime(chatId);
 
     const recover = this.config.recoverRuntimeSessionProof;
     if (!recover) {
@@ -1668,30 +1602,30 @@ export class SessionManager {
   }
 
   private fenceSessionForRuntimeSessionProofRecovery(chatId: string, reasonCode: string): void {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     if (!entry) return;
     const reason = `runtime_session_proof:${reasonCode}`;
     this.routeTeardown.invalidateRouteTransition(entry, reason);
     this.slotScheduler.clearRetryState(entry);
     const resumeSessionId = resumableProviderSessionId(entry.claudeSessionId, entry.retryFromEvicted?.claudeSessionId);
     if (resumeSessionId) {
-      this.addEvictedMapping(chatId, {
+      this.projection.addEvictedMapping(chatId, {
         claudeSessionId: resumeSessionId,
         lastActivity: entry.lastActivity,
       });
     }
     this.slotScheduler.releaseActiveSlot(entry);
     void this.routeTeardown.shutdownHandler(entry.handler, reason);
-    this.sessions.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
-    this.currentTrigger.delete(chatId);
-    this.notifySessionState(chatId, "errored");
+    this.projection.sessions.delete(chatId);
+    this.projection.sessionRuntimeStates.delete(chatId);
+    this.projection.currentTrigger.delete(chatId);
+    this.projection.notifySessionState(chatId, "errored");
     this.config.log.warn(
       { chatId, reasonCode },
       "session fenced until a fresh runtime-session bind restores HTTP proof",
     );
-    this.recomputeRuntimeState();
-    this.persistRegistry();
+    this.projection.recomputeRuntimeState();
+    this.projection.persistRegistry();
     this.slotScheduler.drainPendingQueue();
   }
 
@@ -1713,20 +1647,20 @@ export class SessionManager {
     chatId: string,
     mutationLeaseValid: (() => boolean) | null = null,
   ): Promise<RuntimeFailureNoticePostResult> {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     const payload = entry?.pendingRuntimeFailureNotice;
     if (!entry || !payload) return { kind: "posted" };
 
     try {
       await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
       if (mutationLeaseValid && !mutationLeaseValid()) return { kind: "posted" };
-      if (this.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
+      if (this.projection.sessions.get(chatId) === entry && entry.pendingRuntimeFailureNotice === payload) {
         entry.pendingRuntimeFailureNotice = null;
       }
       return { kind: "posted" };
     } catch (err) {
       if (mutationLeaseValid && !mutationLeaseValid()) return { kind: "failed" };
-      if (this.sessions.get(chatId) !== entry || entry.pendingRuntimeFailureNotice !== payload) {
+      if (this.projection.sessions.get(chatId) !== entry || entry.pendingRuntimeFailureNotice !== payload) {
         return { kind: "failed" };
       }
       const noticeFailure = classifyProviderFailure(err, {
@@ -1760,12 +1694,12 @@ export class SessionManager {
     if (!this.inboxDelivery.hasRecoveryDebt(chatId)) return false;
     this.config.log.info({ chatId, reason }, "resume deferred because chat has recovery debt");
     await this.inboxDelivery.recoverIfNeeded(chatId, reason);
-    this.projectSessionRuntime(chatId);
+    this.projection.projectSessionRuntime(chatId);
     return true;
   }
 
   private failSessionForRecovery(chatId: string, reason: string, sessionId?: string): void {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     if (!entry) return;
 
     this.routeTeardown.invalidateRouteTransition(entry, reason);
@@ -1776,7 +1710,7 @@ export class SessionManager {
       entry.retryFromEvicted?.claudeSessionId,
     );
     if (resumeSessionId) {
-      this.addEvictedMapping(chatId, {
+      this.projection.addEvictedMapping(chatId, {
         claudeSessionId: resumeSessionId,
         lastActivity: entry.lastActivity,
       });
@@ -1785,28 +1719,28 @@ export class SessionManager {
     this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
 
     this.inboxDelivery.prepareEvict(chatId, reason);
-    this.sessions.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
-    this.currentTrigger.delete(chatId);
-    this.notifySessionState(chatId, "errored");
+    this.projection.sessions.delete(chatId);
+    this.projection.sessionRuntimeStates.delete(chatId);
+    this.projection.currentTrigger.delete(chatId);
+    this.projection.notifySessionState(chatId, "errored");
     this.config.log.warn({ chatId, reason }, "session failed locally; recovery will use a fresh handler");
-    this.recomputeRuntimeState();
-    this.persistRegistry();
+    this.projection.recomputeRuntimeState();
+    this.projection.persistRegistry();
     this.slotScheduler.drainPendingQueue();
   }
 
   private abortUnownedRoute(entry: SessionEntry, reason: string): void {
     const { chatId } = entry;
-    if (this.sessions.get(chatId) !== entry) return;
+    if (this.projection.sessions.get(chatId) !== entry) return;
     this.config.log.warn({ chatId, reason }, "handler route completed after inbox custody was cleared");
     this.routeTeardown.invalidateRouteTransition(entry, reason);
     this.slotScheduler.releaseActiveSlot(entry);
     this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, reason);
-    this.sessions.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
-    this.currentTrigger.delete(chatId);
-    this.recomputeRuntimeState();
-    this.persistRegistry();
+    this.projection.sessions.delete(chatId);
+    this.projection.sessionRuntimeStates.delete(chatId);
+    this.projection.currentTrigger.delete(chatId);
+    this.projection.recomputeRuntimeState();
+    this.projection.persistRegistry();
     this.slotScheduler.drainPendingQueue();
   }
 
@@ -1853,7 +1787,7 @@ export class SessionManager {
     if (retryReason) {
       this.warnRejectedErrorCompletion(chatId, outcome, retryReason);
       this.retryDeliveryTurn(chatId, messages, retryReason);
-      this.projectSessionRuntime(chatId);
+      this.projection.projectSessionRuntime(chatId);
       return "retry";
     }
     if (outcome.status === "success") {
@@ -1870,12 +1804,12 @@ export class SessionManager {
         );
         if (held) return "retry";
         this.retryDeliveryTurn(chatId, messages, "runtime_session_proof_hold_failed");
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
         return "retry";
       }
       if (noticeResult.kind === "failed") {
         this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
         return "retry";
       }
     }
@@ -1884,7 +1818,7 @@ export class SessionManager {
     // the ledger through a confirmed ACK; recovery debt, prefix gaps, and
     // ACK rejections keep custody and surface as "retry".
     const disposition = await this.inboxDelivery.finishTurn(chatId, messages, outcome);
-    this.projectSessionRuntime(chatId);
+    this.projection.projectSessionRuntime(chatId);
     return disposition;
   }
 
@@ -1918,7 +1852,7 @@ export class SessionManager {
         // Processing-start is a route mutation — fenced by shuttingDown.
         if (terminalReported || !mutationValid()) return;
         this.inboxDelivery.markProcessingStarted(chatId, messages);
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
         // Head membership proof: open live inject for same-chat tails that
         // arrived while start/resume still owns routeTransition (e.g. Pi
         // awaiting agent_settled). Pre-proof FIFO stays deferred until here.
@@ -1931,7 +1865,7 @@ export class SessionManager {
       retry: (messages, reason) => {
         if (!claimTerminal("retry")) return;
         this.retryDeliveryTurn(chatId, messages, reason);
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
       },
       terminalRejected: async (messages, reason, evidence) => {
         if (!claimTerminal("terminalRejected")) return;
@@ -1952,16 +1886,16 @@ export class SessionManager {
           );
           if (held) return;
           this.retryDeliveryTurn(chatId, messages, "runtime_session_proof_hold_failed");
-          this.projectSessionRuntime(chatId);
+          this.projection.projectSessionRuntime(chatId);
           return;
         }
         if (noticeResult.kind === "failed") {
           this.retryDeliveryTurn(chatId, messages, "runtime_failure_notice_delivery_failed");
-          this.projectSessionRuntime(chatId);
+          this.projection.projectSessionRuntime(chatId);
           return;
         }
         await this.inboxDelivery.terminalRejected(chatId, messages, reason, evidence);
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
       },
     };
   }
@@ -2010,7 +1944,7 @@ export class SessionManager {
     if (ownership === "owned" && receipt.mode === "processing") {
       this.inboxDelivery.markProcessingStarted(chatId, message);
     }
-    this.projectSessionRuntime(chatId);
+    this.projection.projectSessionRuntime(chatId);
     return ownership;
   }
 
@@ -2078,7 +2012,7 @@ export class SessionManager {
       this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
       return;
     }
-    const existing = this.sessions.get(chatId);
+    const existing = this.projection.sessions.get(chatId);
 
     // A terminal decision closes route admission before its durable event is
     // confirmed. New delivery waits for teardown instead of reviving the same
@@ -2154,8 +2088,8 @@ export class SessionManager {
     // slot's whole life. A tree configured later is still picked up within
     // TREE_RERESOLVE_INTERVAL_MS on the next new session.
     const now = Date.now();
-    if (now - this.lastTreeResolveAttemptAt < TREE_RERESOLVE_INTERVAL_MS) return;
-    this.lastTreeResolveAttemptAt = now;
+    if (now - this.projection.lastTreeResolveAttemptAt < TREE_RERESOLVE_INTERVAL_MS) return;
+    this.projection.lastTreeResolveAttemptAt = now;
 
     const resolve =
       this.config.resolveContextTreeBinding ??
@@ -2206,7 +2140,7 @@ export class SessionManager {
     // The settle also made the route selection stale: another path may have
     // created the session meanwhile. Re-dispatch through routeMessage's
     // selection instead of creating a duplicate entry (or overwriting one).
-    if (this.sessions.has(chatId)) {
+    if (this.projection.sessions.has(chatId)) {
       await this.routeMessage(chatId, message, deliveryKind);
       return;
     }
@@ -2218,11 +2152,11 @@ export class SessionManager {
     if (!this.slotScheduler.acquireActiveSlot(chatId, message, deliveryKind)) return;
 
     // Check for prior evicted session mapping
-    const storedEvicted = this.evictedMappings.get(chatId);
+    const storedEvicted = this.projection.evictedMappings.get(chatId);
     const evictedSessionId = resumableProviderSessionId(storedEvicted?.claudeSessionId);
     const evicted =
       storedEvicted && evictedSessionId ? { ...storedEvicted, claudeSessionId: evictedSessionId } : undefined;
-    if (storedEvicted && !evicted) this.evictedMappings.delete(chatId);
+    if (storedEvicted && !evicted) this.projection.evictedMappings.delete(chatId);
 
     // Step 6: thread the AgentConfigCache to the handler so it can read the
     // current per-agent runtime config when launching its sub-process.
@@ -2255,20 +2189,20 @@ export class SessionManager {
       retryFromEvicted: evicted ?? null,
     };
 
-    this.sessions.set(chatId, entry);
+    this.projection.sessions.set(chatId, entry);
     this.slotScheduler.claimActiveSlot(entry);
     const transition = this.routeTeardown.beginRouteTransition(entry, handler, evicted ? "resume" : "start");
     const mutationValid = () => this.routeTeardown.isRouteAdoptionValid(entry, transition);
     const settlementValid = () => this.routeTeardown.isDeliverySettlementLeaseValid(entry, transition);
     const routeLeases = { mutationValid, settlementValid };
     const ctx = this.buildSessionContext(chatId, routeLeases);
-    if (evicted) this.evictedMappings.delete(chatId);
+    if (evicted) this.projection.evictedMappings.delete(chatId);
 
     // Report `active` before runtime projection. `session:runtime` frames are
     // active-gated on the server, so the state row must exist before a fresh
     // delivery projects this chat to working.
-    this.notifySessionState(chatId, "active");
-    this.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
+    this.projection.notifySessionState(chatId, "active");
+    this.projection.projectSessionRuntime(chatId, { drainPendingOnIdle: false });
     // Settle callback for the route producer, assigned as the FIRST
     // statement inside the try below: a throw before registration leaves no
     // producer behind, and everything after registration is covered by the
@@ -2279,7 +2213,7 @@ export class SessionManager {
       // start can still materialize late, and terminate / manager shutdown
       // join this before they may ack/return (see routeProducers).
       settleRouteProducer = this.routeTeardown.registerRouteProducer(chatId);
-      this.setCurrentTrigger(chatId, message);
+      this.projection.setCurrentTrigger(chatId, message);
       const token = this.createDeliveryToken(chatId, routeLeases);
       if (evicted) {
         const receipt = normalizeResumeReceipt(await handler.resume(message, evicted.claudeSessionId, ctx, token));
@@ -2307,7 +2241,7 @@ export class SessionManager {
         return;
       }
       this.drainDeferredMessages(entry);
-      this.persistRegistry();
+      this.projection.persistRegistry();
     } catch (err) {
       if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
         this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_start_stale_failure");
@@ -2327,7 +2261,7 @@ export class SessionManager {
         classification,
         attemptedMessage: message,
       });
-      if (this.sessions.get(chatId) !== entry) return;
+      if (this.projection.sessions.get(chatId) !== entry) return;
       if (handling.kind === "terminal") await this.teardownTerminalSessionFailure(entry, message, handling);
     } finally {
       settleRouteProducer();
@@ -2350,14 +2284,14 @@ export class SessionManager {
       await entry.suspending;
     }
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_suspend")) return;
-    if (this.sessions.get(entry.chatId) !== entry) return;
+    if (this.projection.sessions.get(entry.chatId) !== entry) return;
     if (this.routeTeardown.isProviderAdmissionRestartRequired(entry.chatId)) {
       throw this.routeTeardown.quarantineRestartRequiredError(entry.chatId, "provider admission");
     }
     if (await this.recoverDebtBeforeResume(entry.chatId, "session_resume:recovery_debt")) return;
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_recovery")) return;
     if (
-      this.sessions.get(entry.chatId) !== entry ||
+      this.projection.sessions.get(entry.chatId) !== entry ||
       (entry.status !== "suspended" && entry.status !== "evicted") ||
       entry.activeSlotHeld ||
       entry.routeTransition !== null
@@ -2391,7 +2325,7 @@ export class SessionManager {
     // running. Abort instead; the route callers treat the failure with
     // resume's existing error semantics (the terminate clears admission and
     // pending delivery state on its own).
-    if (this.sessions.get(entry.chatId) !== entry) {
+    if (this.projection.sessions.get(entry.chatId) !== entry) {
       // The entry was replaced while this resume waited — the new owner
       // routes the chat; keep the delivery in recovery custody.
       if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_entry_replaced");
@@ -2432,8 +2366,8 @@ export class SessionManager {
     const ctx = this.buildSessionContext(entry.chatId, routeLeases);
     entry.lastActivity = Date.now();
 
-    this.notifySessionState(entry.chatId, "active");
-    this.projectSessionRuntime(entry.chatId, { drainPendingOnIdle: false });
+    this.projection.notifySessionState(entry.chatId, "active");
+    this.projection.projectSessionRuntime(entry.chatId, { drainPendingOnIdle: false });
     // Settle callback for the route producer, assigned as the FIRST
     // statement inside the try below: a throw before registration leaves no
     // producer behind, and everything after registration is covered by the
@@ -2443,7 +2377,7 @@ export class SessionManager {
       // Track the route producer: a canceled resume can still materialize
       // late, and terminate / manager shutdown join this before ack/return.
       settleRouteProducer = this.routeTeardown.registerRouteProducer(entry.chatId);
-      if (message) this.setCurrentTrigger(entry.chatId, message);
+      if (message) this.projection.setCurrentTrigger(entry.chatId, message);
       // Mirror the pattern in `startNewSession` (line 449): the handler may
       // return a DIFFERENT sessionId than the one passed in — e.g. when the
       // claude-code handler detects a stale SDK transcript and falls
@@ -2469,7 +2403,7 @@ export class SessionManager {
       }
       this.drainDeferredMessages(entry);
       this.config.log.info({ chatId: entry.chatId, sessionId: entry.claudeSessionId }, "session resumed");
-      this.persistRegistry();
+      this.projection.persistRegistry();
     } catch (err) {
       if (!this.routeTeardown.isCurrentRouteTransition(entry, transition)) {
         this.routeTeardown.discardStaleRouteTransition(entry.chatId, transition, "session_resume_stale_failure");
@@ -2488,7 +2422,7 @@ export class SessionManager {
         classification,
         attemptedMessage: message ?? null,
       });
-      if (this.sessions.get(entry.chatId) !== entry) return;
+      if (this.projection.sessions.get(entry.chatId) !== entry) return;
       if (handling.kind === "terminal") await this.teardownTerminalSessionFailure(entry, message ?? null, handling);
     } finally {
       settleRouteProducer();
@@ -2564,9 +2498,9 @@ export class SessionManager {
       // state` therefore stays `active` for the entire retry window.
       this.slotScheduler.releaseActiveSlot(entry);
       entry.status = "suspended";
-      this.sessionRuntimeStates.delete(chatId);
-      this.projectSessionRuntime(chatId);
-      this.recomputeRuntimeState();
+      this.projection.sessionRuntimeStates.delete(chatId);
+      this.projection.projectSessionRuntime(chatId);
+      this.projection.recomputeRuntimeState();
 
       this.config.log.info(
         {
@@ -2626,8 +2560,8 @@ export class SessionManager {
     // remains on the entry for terminal teardown.
     this.slotScheduler.clearRetryAttemptState(entry);
     entry.status = "errored";
-    this.notifySessionState(chatId, "errored");
-    this.projectSessionRuntime(chatId);
+    this.projection.notifySessionState(chatId, "errored");
+    this.projection.projectSessionRuntime(chatId);
     // Same `safe in logs but NOT chat` boundary as the transient `rawError`
     // path above: the error message can legitimately echo back a git remote
     // URL with embedded credentials or a token-bearing SDK request, and this
@@ -2645,7 +2579,7 @@ export class SessionManager {
     const terminalMutationGeneration = entry.routeTransitionGeneration;
     const terminalMutationLeaseValid = () =>
       !this.shuttingDown &&
-      this.sessions.get(chatId) === entry &&
+      this.projection.sessions.get(chatId) === entry &&
       entry.routeTransitionGeneration === terminalMutationGeneration &&
       entry.status === "errored";
     const terminalEventPersisted = await this.emitConfirmedSessionEvent(
@@ -2670,7 +2604,7 @@ export class SessionManager {
     mutationLeaseValid: (() => boolean) | null = null,
   ): Promise<boolean> {
     const captureLeaseValid = () =>
-      (!expectedEntry || this.sessions.get(chatId) === expectedEntry) && (!mutationLeaseValid || mutationLeaseValid());
+      (!expectedEntry || this.projection.sessions.get(chatId) === expectedEntry) && (!mutationLeaseValid || mutationLeaseValid());
     if (this.config.confirmSessionEvent) {
       try {
         await this.config.confirmSessionEvent(chatId, event);
@@ -2696,7 +2630,7 @@ export class SessionManager {
     handling: Extract<SessionFailureHandling, { kind: "terminal" }>,
   ): Promise<void> {
     const chatId = entry.chatId;
-    if (this.sessions.get(chatId) !== entry) return;
+    if (this.projection.sessions.get(chatId) !== entry) return;
     this.routeTeardown.invalidateRouteTransition(entry, "session_terminal_failure");
     const hasDeferredTail = entry.deferredMessages.length > 0;
     const hasRecoveryDebt = this.inboxDelivery.hasRecoveryDebt(chatId);
@@ -2708,7 +2642,7 @@ export class SessionManager {
         completion: "consumed",
         reason: `session_failure_terminal:${handling.reasonCode}`,
       });
-      if (this.sessions.get(chatId) !== entry) return;
+      if (this.projection.sessions.get(chatId) !== entry) return;
       if (hasDeferredTail || this.inboxDelivery.hasRecoveryDebt(chatId)) {
         await this.inboxDelivery.drainForTerminate(chatId);
       }
@@ -2716,22 +2650,22 @@ export class SessionManager {
       await this.inboxDelivery.drainForTerminate(chatId);
     }
 
-    if (this.sessions.get(chatId) !== entry) return;
+    if (this.projection.sessions.get(chatId) !== entry) return;
     // Terminal cleanup previously left the handler's stop unconfirmed
     // (register-only debt that lingered until a terminate). Register-then-
     // shutdown instead: the debt mirrors the real shutdown timeline — a
     // confirmed stop drops it immediately, a failure keeps it retryable.
     this.routeTeardown.detachHandlerWithPendingTeardown(chatId, entry.handler, "session_terminal_failure");
-    this.sessions.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
-    this.currentTrigger.delete(chatId);
-    this.recomputeRuntimeState();
+    this.projection.sessions.delete(chatId);
+    this.projection.sessionRuntimeStates.delete(chatId);
+    this.projection.currentTrigger.delete(chatId);
+    this.projection.recomputeRuntimeState();
     this.slotScheduler.releaseActiveSlot(entry);
     // Converge the registry like every other sessions.delete path: the
     // resumable mapping for this chat must not linger on disk. This
     // debounced write is hygiene only — a Reset terminate still carries its
     // own synchronous crash boundary (flushTerminateRegistry).
-    this.persistRegistry();
+    this.projection.persistRegistry();
     this.slotScheduler.drainPendingQueue();
   }
 
@@ -2762,7 +2696,7 @@ export class SessionManager {
    * this proof while the route producer may still be awaiting settlement.
    */
   private markRouteInjectReady(chatId: string): void {
-    const entry = this.sessions.get(chatId);
+    const entry = this.projection.sessions.get(chatId);
     if (!entry || entry.routeTransition === null) return;
     // Waiting/backoff retries have no transition and never reach here. An
     // in-flight retry transition that has proven membership may open live
@@ -2784,7 +2718,7 @@ export class SessionManager {
       this.retryDeliveryTurn(chatId, message, "active_inject_route_invalidated");
       return;
     }
-    this.setCurrentTrigger(chatId, message);
+    this.projection.setCurrentTrigger(chatId, message);
     const attempt = this.createDeliveryAttempt(chatId, { mutationValid, settlementValid });
     let receipt: HandlerRouteReceipt;
     try {
@@ -2805,7 +2739,7 @@ export class SessionManager {
       return;
     }
     entry.lastActivity = Date.now();
-    this.projectSessionRuntime(chatId);
+    this.projection.projectSessionRuntime(chatId);
     this.config.log.debug({ chatId }, "message injected");
   }
 
@@ -2826,7 +2760,7 @@ export class SessionManager {
         this.retryDeliveryTurn(entry.chatId, queued.slice(index), "deferred_inject_recovery_pending");
         break;
       }
-      this.setCurrentTrigger(entry.chatId, message);
+      this.projection.setCurrentTrigger(entry.chatId, message);
       const attempt = this.createDeliveryAttempt(entry.chatId, { mutationValid, settlementValid });
       try {
         const receipt = normalizeRouteReceipt(routeLease.handler.inject(message, attempt.token));
@@ -2850,12 +2784,7 @@ export class SessionManager {
         break;
       }
     }
-    this.projectSessionRuntime(entry.chatId);
-  }
-
-  private setCurrentTrigger(chatId: string, message: SessionMessage): void {
-    if (!message.id) return;
-    this.currentTrigger.set(chatId, { messageId: message.id, senderId: message.senderId });
+    this.projection.projectSessionRuntime(entry.chatId);
   }
 
   /**
@@ -2920,8 +2849,8 @@ export class SessionManager {
       entry.routeInjectReady = false;
       entry.status = "suspended";
       this.slotScheduler.releaseActiveSlot(entry);
-      this.sessionRuntimeStates.delete(entry.chatId);
-      this.recomputeRuntimeState();
+      this.projection.sessionRuntimeStates.delete(entry.chatId);
+      this.projection.recomputeRuntimeState();
       entry.suspending = (async () => {
         let settled = false;
         let timedOut = false;
@@ -2968,9 +2897,9 @@ export class SessionManager {
             if (entry.handlerStoppedBySuspend !== entry.handler) {
               this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
             }
-            if (this.sessions.get(entry.chatId) === entry) {
-              this.sessions.delete(entry.chatId);
-              this.currentTrigger.delete(entry.chatId);
+            if (this.projection.sessions.get(entry.chatId) === entry) {
+              this.projection.sessions.delete(entry.chatId);
+              this.projection.currentTrigger.delete(entry.chatId);
             }
           }
           return;
@@ -3006,14 +2935,14 @@ export class SessionManager {
           if (entry.handlerStoppedBySuspend !== entry.handler) {
             this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
           }
-          if (this.sessions.get(entry.chatId) === entry) {
-            this.sessions.delete(entry.chatId);
-            this.currentTrigger.delete(entry.chatId);
+          if (this.projection.sessions.get(entry.chatId) === entry) {
+            this.projection.sessions.delete(entry.chatId);
+            this.projection.currentTrigger.delete(entry.chatId);
           }
         }
       })();
-      this.persistRegistry();
-      this.notifySessionState(entry.chatId, "suspended");
+      this.projection.persistRegistry();
+      this.projection.notifySessionState(entry.chatId, "suspended");
       if (opts.drainQueue !== false) this.slotScheduler.drainPendingQueue();
       return;
     }
@@ -3032,8 +2961,8 @@ export class SessionManager {
     entry.status = "suspended";
     this.slotScheduler.releaseActiveSlot(entry);
     // Clear per-session runtime state on suspend
-    this.sessionRuntimeStates.delete(entry.chatId);
-    this.recomputeRuntimeState();
+    this.projection.sessionRuntimeStates.delete(entry.chatId);
+    this.projection.recomputeRuntimeState();
     entry.suspending = prepare
       .then(async () => {
         if (canceledTransition || this.routeTeardown.isHandlerRetired(entry.handler)) {
@@ -3088,39 +3017,16 @@ export class SessionManager {
           if (entry.handlerStoppedBySuspend !== entry.handler) {
             this.routeTeardown.registerPendingTeardown(entry.chatId, entry.handler);
           }
-          if (this.sessions.get(entry.chatId) === entry) {
-            this.sessions.delete(entry.chatId);
-            this.currentTrigger.delete(entry.chatId);
+          if (this.projection.sessions.get(entry.chatId) === entry) {
+            this.projection.sessions.delete(entry.chatId);
+            this.projection.currentTrigger.delete(entry.chatId);
           }
         }
       });
-    this.persistRegistry();
-    this.notifySessionState(entry.chatId, "suspended");
+    this.projection.persistRegistry();
+    this.projection.notifySessionState(entry.chatId, "suspended");
 
     if (opts.drainQueue !== false) this.slotScheduler.drainPendingQueue();
-  }
-
-  /** Add an evicted mapping, pruning the oldest if over capacity. */
-  private addEvictedMapping(chatId: string, mapping: { claudeSessionId: string; lastActivity: number }): void {
-    const resumableSessionId = resumableProviderSessionId(mapping.claudeSessionId);
-    if (!resumableSessionId) {
-      this.evictedMappings.delete(chatId);
-      return;
-    }
-    this.evictedMappings.set(chatId, { ...mapping, claudeSessionId: resumableSessionId });
-    if (this.evictedMappings.size > MAX_EVICTED_MAPPINGS) {
-      // Map iteration order is insertion order — first key is the oldest
-      const oldest = this.evictedMappings.keys().next().value;
-      if (oldest !== undefined) this.evictedMappings.delete(oldest);
-    }
-  }
-
-  /** Notify per-session state change to the server via callback. Deduplicates redundant reports. */
-  private notifySessionState(chatId: string, state: SessionState): void {
-    if (!this.config.onStateChange) return;
-    if (this.lastReportedStates.get(chatId) === state) return;
-    this.lastReportedStates.set(chatId, state);
-    this.config.onStateChange(chatId, state);
   }
 
   private buildSessionContext(
@@ -3177,7 +3083,7 @@ export class SessionManager {
 
     const forwardResult = createResultSink({
       clearTrigger: () => {
-        this.currentTrigger.delete(chatId);
+        this.projection.currentTrigger.delete(chatId);
       },
       log,
     });
@@ -3216,10 +3122,10 @@ export class SessionManager {
       },
       log,
       chatId,
-      freshStartNonce: () => this.registry?.getFreshStartNonce(chatId),
+      freshStartNonce: () => this.projection.getFreshStartNonce(chatId),
       recordProviderActivity: () => {
         if (mutationValid && !mutationValid()) return;
-        const entry = this.sessions.get(chatId);
+        const entry = this.projection.sessions.get(chatId);
         if (entry && entry.status === "active") {
           entry.lastActivity = Date.now();
         }
@@ -3263,7 +3169,7 @@ export class SessionManager {
       retryTurn: (messages, reason) => {
         if (mutationValid && !mutationValid()) return;
         this.retryDeliveryTurn(chatId, messages, reason);
-        this.projectSessionRuntime(chatId);
+        this.projection.projectSessionRuntime(chatId);
       },
       hasPendingDelivery: (messages) => {
         const batch = Array.isArray(messages) ? messages : [messages];
@@ -3283,13 +3189,13 @@ export class SessionManager {
       },
       replaceSessionId: (sessionId, reason) => {
         if (mutationValid && !mutationValid()) return;
-        const entry = this.sessions.get(chatId);
+        const entry = this.projection.sessions.get(chatId);
         if (!entry) return;
         const previousSessionId = entry.claudeSessionId;
         entry.claudeSessionId = sessionId;
         entry.lastActivity = Date.now();
         this.config.log.info({ chatId, previousSessionId, sessionId, reason }, "session id replaced by handler");
-        this.persistRegistry();
+        this.projection.persistRegistry();
       },
       buildAgentEnv: (parentEnv) => buildAgentEnv(parentEnv, envCtx),
       formatInboundContent: (message) => formatInboundContent(message, participants),
@@ -3317,49 +3223,6 @@ export class SessionManager {
     this.captureRuntimeFailureNotice(chatId, event, mutationLeaseValid);
   }
 
-  private projectSessionRuntime(chatId: string, opts: { drainPendingOnIdle?: boolean } = {}): void {
-    const session = this.sessions.get(chatId);
-    const state = this.projectedRuntimeState(chatId, session ?? null);
-    if (!state) {
-      if (this.sessionRuntimeStates.delete(chatId)) this.recomputeRuntimeState();
-      return;
-    }
-    const previous = this.sessionRuntimeStates.get(chatId);
-    if (previous === state) return;
-    this.sessionRuntimeStates.set(chatId, state);
-    this.config.onSessionRuntimeChange?.(chatId, state);
-    this.recomputeRuntimeState();
-    if (state === "idle" && opts.drainPendingOnIdle !== false && this.slotScheduler.pendingQueue.length > 0) {
-      this.slotScheduler.drainPendingQueue();
-    }
-  }
-
-  private projectedRuntimeState(chatId: string, session: SessionEntry | null): RuntimeState | null {
-    if (!session) return null;
-    if (session.status === "errored") return "error";
-    if (session.status !== "active") return null;
-    return this.inboxDelivery.hasProcessingOwnedWork(chatId) ? "working" : "idle";
-  }
-
-  /**
-   * Re-affirm working / blocked / error sessions so the server-side
-   * freshness stamp doesn't lapse mid-turn. Reports only — does NOT
-   * touch `lastActivity` (that governs idle eviction and must not be
-   * reset by a liveness ping). `idle` is deliberately omitted: the
-   * server treats it as the fail-closed default after the stale window
-   * expires, so re-affirming idle is pure wire noise.
-   */
-  private reaffirmRuntimeStates(): void {
-    if (!this.config.onSessionRuntimeChange) return;
-    for (const [chatId, session] of this.sessions) {
-      if (session.status !== "active" && session.status !== "errored") continue;
-      const state = this.sessionRuntimeStates.get(chatId);
-      if (state === "working" || state === "error") {
-        this.config.onSessionRuntimeChange(chatId, state);
-      }
-    }
-  }
-
   /**
    * Per-chat runtime snapshot for `fullStateSync` after reconnect. Lets
    * the agent-slot re-report the *real* per-chat runtime on a network
@@ -3370,37 +3233,7 @@ export class SessionManager {
   getSessionRuntimeStates(
     activeChatIds: RuntimeSyncActiveSet = null,
   ): Array<{ chatId: string; runtimeState: RuntimeState }> {
-    const out: Array<{ chatId: string; runtimeState: RuntimeState }> = [];
-    for (const [chatId, session] of this.sessions) {
-      if (!this.shouldIncludeInRuntimeSync(chatId, activeChatIds)) continue;
-      const runtimeState = this.projectedRuntimeState(chatId, session);
-      if (!runtimeState) continue;
-      out.push({ chatId, runtimeState });
-    }
-    return out;
-  }
-
-  /** Aggregate per-session runtime states: error > blocked > working > idle. */
-  private recomputeRuntimeState(): void {
-    if (!this.config.onRuntimeStateChange) return;
-
-    let aggregate: RuntimeState = "idle";
-    for (const state of this.sessionRuntimeStates.values()) {
-      if (state === "error") {
-        aggregate = "error";
-        break;
-      }
-      if (state === "blocked") {
-        aggregate = "blocked";
-      } else if (state === "working" && aggregate !== "blocked") {
-        aggregate = "working";
-      }
-    }
-
-    if (aggregate !== this.lastReportedRuntimeState) {
-      this.lastReportedRuntimeState = aggregate;
-      this.config.onRuntimeStateChange(aggregate);
-    }
+    return this.projection.getSessionRuntimeStates(activeChatIds);
   }
 
   private extractMessage(entry: InboxEntryWithMessage): SessionMessage {
@@ -3421,65 +3254,4 @@ export class SessionManager {
     };
   }
 
-  private loadPersistedSessions(): void {
-    if (!this.registry) return;
-
-    const { entries } = this.registry.loadSnapshot();
-    let loadedCount = 0;
-    for (const [chatId, data] of entries) {
-      // All persisted sessions become evicted mappings on load.
-      // Handlers are allocated lazily when a message arrives (startNewSession
-      // checks evictedMappings and calls handler.resume instead of start).
-      const resumableSessionId = resumableProviderSessionId(data.claudeSessionId);
-      if (!resumableSessionId) {
-        this.config.log.warn({ chatId }, "ignoring persisted session mapping without a resumable provider session id");
-        continue;
-      }
-      this.addEvictedMapping(chatId, {
-        claudeSessionId: resumableSessionId,
-        lastActivity: data.lastActivity,
-      });
-      loadedCount++;
-    }
-
-    if (loadedCount > 0) {
-      this.config.log.info({ count: loadedCount }, "loaded persisted session mappings");
-    }
-  }
-
-  private persistRegistry(opts: { immediate?: boolean; throwOnFailure?: boolean } = {}): void {
-    if (!this.registry) return;
-
-    const entries = new Map<string, { claudeSessionId: string; lastActivity: number; status: string }>();
-    for (const [chatId, session] of this.sessions) {
-      const resumableSessionId = resumableProviderSessionId(
-        session.claudeSessionId,
-        session.retryFromEvicted?.claudeSessionId,
-      );
-      if (!resumableSessionId) continue;
-      entries.set(chatId, {
-        claudeSessionId: resumableSessionId,
-        lastActivity: session.lastActivity,
-        status: session.status,
-      });
-    }
-    // Include evicted mappings for crash recovery
-    for (const [chatId, mapping] of this.evictedMappings) {
-      const resumableSessionId = resumableProviderSessionId(mapping.claudeSessionId);
-      if (!resumableSessionId) continue;
-      entries.set(chatId, {
-        claudeSessionId: resumableSessionId,
-        lastActivity: mapping.lastActivity,
-        status: "evicted",
-      });
-    }
-    // On shutdown we MUST write synchronously: the alternative is
-    // `save()` (debounced 1s) followed by `dispose()`, which races the
-    // process exit and silently drops the last mapping batch.
-    // `throwOnFailure` (Reset terminate) additionally surfaces write failure
-    // to the caller instead of swallowing it.
-    if (opts.throwOnFailure) this.registry.flushOrThrow(entries);
-    else if (opts.immediate) this.registry.flush(entries);
-    else this.registry.save(entries);
-  }
 }

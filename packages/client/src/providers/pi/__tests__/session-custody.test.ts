@@ -995,7 +995,7 @@ describe("Pi handler → SessionManager custody", () => {
     );
     await started;
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
@@ -1063,7 +1063,7 @@ describe("Pi handler → SessionManager custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), dispatchPromise]);
@@ -1218,7 +1218,7 @@ describe("Pi handler → SessionManager custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
@@ -1284,7 +1284,7 @@ describe("Pi handler → SessionManager custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
@@ -1368,7 +1368,7 @@ describe("Pi handler → SessionManager custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
@@ -1459,7 +1459,7 @@ describe("Pi handler → SessionManager custody", () => {
     await vi.waitFor(() => expect(Number(readFileSync(bashStartFile, "utf8")) || 0).toBe(1));
 
     await sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
@@ -1609,7 +1609,7 @@ describe("Pi handler → SessionManager custody", () => {
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
 
     const suspendPromise = sm.handleCommand(chatId, "session:suspend");
-    const suspending = (sm as unknown as { sessions: Map<string, { suspending: Promise<void> | null }> }).sessions.get(
+    const suspending = (sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }).projection.sessions.get(
       chatId,
     )?.suspending;
     releaseRefresh?.();
