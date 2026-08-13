@@ -399,6 +399,69 @@ describe("tree tree command action", () => {
     expect(readMockOutput(stderr)).toContain("docs/");
   });
 
+  /** Clone a real checkout at `<base>/context-tree` from a fresh origin. */
+  function makeDeclaredBindingFixture(): { checkout: string; originA: string; originB: string } {
+    const seed = makeTreeFixture();
+    const base = makeTempDir("ft-tree-upstream-guard-");
+    const originA = join(base, "origin-a.git");
+    const originB = join(base, "origin-b.git");
+    const checkout = join(base, "context-tree");
+    execFileSync("git", ["init", "--bare", "-b", "main", originA], { stdio: "ignore" });
+    execFileSync("git", ["init", "--bare", "-b", "main", originB], { stdio: "ignore" });
+    git(seed, "remote", "add", "origin", originA);
+    git(seed, "push", "-u", "origin", "main");
+    execFileSync("git", ["clone", originA, checkout], { stdio: "ignore" });
+    return { checkout, originA, originB };
+  }
+
+  function expectBindingMismatch(checkout: string, options: Record<string, unknown>, mismatch: string): void {
+    const headBefore = git(checkout, "rev-parse", "HEAD");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null): never => {
+      throw new ProcessExit(typeof code === "number" ? code : 0);
+    });
+    process.chdir(checkout);
+
+    expect(() => runTreeTreeCommand(context(commandWithOptions(options)))).toThrow(ProcessExit);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(readMockOutput(stdout)).toBe("");
+    const errorPayload = JSON.parse(readMockOutput(stderr));
+    expect(errorPayload.ok).toBe(false);
+    expect(errorPayload.error.code).toBe("TREE_TREE_BINDING_MISMATCH");
+    expect(errorPayload.error.message).toContain(mismatch);
+    expect(git(checkout, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(git(checkout, "status", "--porcelain")).toBe("");
+  }
+
+  it("fails closed when the same-named branch tracks a different remote or ref", () => {
+    const { checkout, originA, originB } = makeDeclaredBindingFixture();
+
+    // Same branch name "main", origin URL matches — but the branch upstream
+    // points at a different remote, so the argument-free pull would refresh
+    // from the wrong Tree.
+    git(checkout, "remote", "add", "other", originB);
+    git(checkout, "config", "branch.main.remote", "other");
+    git(checkout, "config", "branch.main.merge", "refs/heads/main");
+    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream remote mismatch");
+
+    // Same for a same-named branch tracking a different ref on the right
+    // remote.
+    git(checkout, "config", "branch.main.remote", "origin");
+    git(checkout, "config", "branch.main.merge", "refs/heads/other-main");
+    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream mismatch");
+  });
+
+  it("fails closed when the expected branch has no configured upstream", () => {
+    const { checkout, originA } = makeDeclaredBindingFixture();
+    git(checkout, "config", "--unset", "branch.main.remote");
+    git(checkout, "config", "--unset", "branch.main.merge");
+
+    // No silent fall-through to reading the local copy as authoritative.
+    expectBindingMismatch(checkout, { expectRemote: originA, expectBranch: "main" }, "upstream mismatch");
+  });
+
   it("prints the selected subtree with repo-root ancestor context in human mode", () => {
     const root = makeTreeFixture();
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
