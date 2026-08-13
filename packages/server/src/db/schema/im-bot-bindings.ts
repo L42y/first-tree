@@ -16,6 +16,8 @@ export const imBotBindings = pgTable(
       .references(() => agents.uuid, { onDelete: "restrict" }),
     appId: text("app_id"),
     botOpenId: text("bot_open_id"),
+    botName: text("bot_name"),
+    botAvatarUrl: text("bot_avatar_url"),
     tenantKey: text("tenant_key"),
     appSecretCipher: text("app_secret_cipher"),
     registrationStateCipher: text("registration_state_cipher"),

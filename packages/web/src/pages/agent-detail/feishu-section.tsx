@@ -13,6 +13,10 @@ import { Section } from "../../components/ui/section.js";
 import { ConfigRow } from "./flat-section.js";
 import { useAgentDetailContext } from "./layout-context.js";
 
+type FeishuSectionProps = {
+  onOpenProfileEdit?: () => void;
+};
+
 function bindingLabel(status: string, connectionStatus: string): string {
   if (status === "active" && connectionStatus === "connected") return "Connected";
   if (status === "provisioning") return "Waiting for confirmation";
@@ -20,7 +24,27 @@ function bindingLabel(status: string, connectionStatus: string): string {
   return status;
 }
 
-export function FeishuSection() {
+function VisibilityRequirement({ onOpenProfileEdit }: FeishuSectionProps) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: "var(--sp-3) 0" }}>
+      <div>
+        <div className="text-body font-medium" style={{ color: "var(--fg)" }}>
+          Organization visibility is required
+        </div>
+        <div className="text-caption" style={{ color: "var(--fg-4)", marginTop: "var(--sp-1)" }}>
+          Only organization-visible Agents can connect to a Feishu Bot.
+        </div>
+      </div>
+      {onOpenProfileEdit && (
+        <Button size="xs" variant="outline" onClick={onOpenProfileEdit}>
+          Change visibility
+        </Button>
+      )}
+    </div>
+  );
+}
+
+export function FeishuSection({ onOpenProfileEdit }: FeishuSectionProps = {}) {
   const ctx = useAgentDetailContext();
   const queryClient = useQueryClient();
   const query = useQuery({
@@ -30,6 +54,8 @@ export function FeishuSection() {
     refetchInterval: (state) => (state.state.data?.binding?.status === "provisioning" ? 2_000 : 10_000),
   });
   const binding = query.data?.binding ?? null;
+  const canConnect = ctx.agent.visibility === "organization";
+  const visibilityBlocked = !canConnect && (!binding || binding.status === "error");
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-feishu-binding", ctx.uuid] });
   const start = useMutation({
     mutationFn: () => startAgentFeishuRegistration(ctx.uuid, `${ctx.agent.displayName} · First Tree`),
@@ -49,25 +75,57 @@ export function FeishuSection() {
     <Section
       headingLevel={3}
       title="Feishu"
-      description="Connect a dedicated Feishu Bot to this Agent. One Bot and Feishu chat map to one First Tree task."
+      description="Connect a dedicated Feishu Bot to this Agent."
       action={
         ctx.canManageAgent && !binding ? (
-          <Button size="xs" variant="outline" disabled={start.isPending} onClick={() => start.mutate()}>
+          <Button size="xs" variant="outline" disabled={start.isPending || !canConnect} onClick={() => start.mutate()}>
             <QrCode className="h-3.5 w-3.5" /> {start.isPending ? "Preparing…" : "Connect Bot"}
           </Button>
         ) : null
       }
     >
+      {visibilityBlocked && <VisibilityRequirement onOpenProfileEdit={onOpenProfileEdit} />}
       {!binding ? (
-        <div className="text-body" style={{ padding: "var(--sp-3) 0", color: "var(--fg-3)" }}>
-          No Feishu Bot is connected. First Tree will prepare the app and show a QR code; you only confirm in Feishu.
-        </div>
+        canConnect ? (
+          <div className="text-body" style={{ padding: "var(--sp-3) 0", color: "var(--fg-3)" }}>
+            No Feishu Bot is connected. First Tree will prepare the app and show a QR code; you only confirm in Feishu.
+          </div>
+        ) : null
       ) : (
         <>
           <ConfigRow
             label="Bot"
-            value={binding.appId ? <span className="mono">{binding.appId}</span> : "Creating app…"}
-            description={binding.lastErrorMessage ?? undefined}
+            value={
+              binding.botName ? (
+                <span className="flex min-w-0 items-center gap-2">
+                  {binding.botAvatarUrl && (
+                    <img
+                      src={binding.botAvatarUrl}
+                      alt=""
+                      className="h-7 w-7 shrink-0 rounded-[var(--radius-chip)] object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  )}
+                  <span className="truncate">{binding.botName}</span>
+                </span>
+              ) : binding.appId ? (
+                <span className="mono">{binding.appId}</span>
+              ) : (
+                "Creating app…"
+              )
+            }
+            description={
+              (binding.botName && binding.appId) || binding.lastErrorMessage ? (
+                <span className="flex flex-col gap-1">
+                  {binding.botName && binding.appId && (
+                    <span>
+                      App ID: <span className="mono">{binding.appId}</span>
+                    </span>
+                  )}
+                  {binding.lastErrorMessage && <span>{binding.lastErrorMessage}</span>}
+                </span>
+              ) : undefined
+            }
             meta={
               <DenseBadge tone={binding.status === "error" ? "error" : binding.status === "active" ? "accent" : "warn"}>
                 {bindingLabel(binding.status, binding.connectionStatus)}
@@ -77,7 +135,12 @@ export function FeishuSection() {
               ctx.canManageAgent ? (
                 <div className="flex gap-1">
                   {binding.status === "error" && (
-                    <Button size="xs" variant="outline" disabled={start.isPending} onClick={() => start.mutate()}>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={start.isPending || !canConnect}
+                      onClick={() => start.mutate()}
+                    >
                       Retry
                     </Button>
                   )}

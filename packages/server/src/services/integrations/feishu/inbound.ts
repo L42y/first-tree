@@ -21,6 +21,7 @@ import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
 import { convertFeishuContent } from "./content.js";
 import { type FeishuResourceDownloader, hydrateFeishuResources } from "./resource-hydrator.js";
+import { safeFeishuErrorContext } from "./safe-error.js";
 import { externalAuthorIdentity, type FeishuChatMembersReader, type FeishuSenderNameResolver } from "./sender-name.js";
 
 const log = createLogger("feishu-inbound");
@@ -140,7 +141,10 @@ export async function ingestFeishuMessage(
   } catch (error) {
     if (await findExistingMessage(db, binding.id, input.messageId)) return { state: "duplicate" };
     await unclaimEvent(db, eventId, eventPlatform).catch((unclaimError) => {
-      log.warn({ bindingId: binding.id, eventId, err: unclaimError }, "Failed to release Feishu event claim");
+      log.warn(
+        { bindingId: binding.id, eventId, ...safeFeishuErrorContext(unclaimError) },
+        "Failed to release Feishu event claim",
+      );
     });
     throw error;
   }
@@ -292,5 +296,5 @@ function readString(record: Record<string, unknown> | null, key: string): string
 }
 
 export function logFeishuInboundFailure(bindingId: string, error: unknown): void {
-  log.error({ bindingId, err: error }, "Feishu inbound message failed");
+  log.error({ bindingId, ...safeFeishuErrorContext(error) }, "Feishu inbound message failed");
 }

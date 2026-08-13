@@ -13,12 +13,24 @@ import { decryptCredentials, encryptCredentials } from "../../crypto.js";
 import type { Notifier } from "../../notifier.js";
 import { Client, createLarkChannel, type LarkChannel, LoggerLevel, registerApp } from "./channel-sdk.js";
 import { ingestFeishuMessage, logFeishuInboundFailure } from "./inbound.js";
+import { safeFeishuErrorContext, safeFeishuErrorMessage } from "./safe-error.js";
 import { createFeishuSenderNameResolver } from "./sender-name.js";
 
 const log = createLogger("feishu-manager");
 const LEASE_MS = 45_000;
 const CLAIM_INTERVAL_MS = 15_000;
 const REGISTRATION_QR_TIMEOUT_MS = 20_000;
+const BOT_PROFILE_TIMEOUT_MS = 5_000;
+// The SDK's generic request logger may receive transport errors that include
+// Authorization headers. Callers record redacted operation context instead.
+const SILENT_FEISHU_CLIENT_LOGGER = {
+  fatal: () => undefined,
+  error: () => undefined,
+  warn: () => undefined,
+  info: () => undefined,
+  debug: () => undefined,
+  trace: () => undefined,
+};
 
 type BindingRow = typeof imBotBindings.$inferSelect;
 type RegistrationEntry = {
@@ -46,7 +58,17 @@ export type FeishuIntegrationManager = {
 export type FeishuSdkDependencies = {
   registerApp: typeof registerApp;
   createLarkChannel: typeof createLarkChannel;
-  createClient: (options: ConstructorParameters<typeof Client>[0]) => Pick<Client, "im">;
+  createClient: (options: ConstructorParameters<typeof Client>[0]) => Pick<Client, "im" | "request">;
+};
+
+type FeishuBotInfoResponse = {
+  code?: number;
+  msg?: string;
+  bot?: {
+    app_name?: string;
+    avatar_url?: string;
+    open_id?: string;
+  };
 };
 
 export function createFeishuIntegrationManager(input: {
@@ -61,6 +83,7 @@ export function createFeishuIntegrationManager(input: {
     claimIntervalMs?: number;
     initialClaimDelayMs?: number;
     registrationQrTimeoutMs?: number;
+    botProfileTimeoutMs?: number;
   };
 }): FeishuIntegrationManager {
   const { db, notifier, encryptionKey, instanceId, attachmentObjectQuota } = input;
@@ -68,6 +91,7 @@ export function createFeishuIntegrationManager(input: {
   const claimIntervalMs = input.timings?.claimIntervalMs ?? CLAIM_INTERVAL_MS;
   const initialClaimDelayMs = input.timings?.initialClaimDelayMs ?? 2_000;
   const registrationQrTimeoutMs = input.timings?.registrationQrTimeoutMs ?? REGISTRATION_QR_TIMEOUT_MS;
+  const botProfileTimeoutMs = input.timings?.botProfileTimeoutMs ?? BOT_PROFILE_TIMEOUT_MS;
   const sdk: FeishuSdkDependencies = input.sdk ?? {
     registerApp,
     createLarkChannel,
@@ -105,6 +129,8 @@ export function createFeishuIntegrationManager(input: {
       agentId: row.agentId,
       appId: row.appId,
       botOpenId: row.botOpenId,
+      botName: row.botName,
+      botAvatarUrl: row.botAvatarUrl,
       tenantKey: row.tenantKey,
       status: row.status,
       connectionStatus: row.connectionStatus,
@@ -296,8 +322,8 @@ export function createFeishuIntegrationManager(input: {
       .set({
         status: "error",
         connectionStatus: "error",
-        lastErrorCode: readErrorCode(error),
-        lastErrorMessage: safeErrorMessage(error),
+        lastErrorCode: safeFeishuErrorContext(error).errorCode,
+        lastErrorMessage: safeFeishuErrorMessage(error),
         updatedAt: new Date(),
       })
       .where(
@@ -394,7 +420,7 @@ export function createFeishuIntegrationManager(input: {
         .returning();
       if (claimed && !channels.has(claimed.id)) {
         await connectClaimed(claimed).catch((error) =>
-          log.warn({ bindingId: claimed.id, err: error }, "Feishu connection failed"),
+          log.warn({ bindingId: claimed.id, ...safeFeishuErrorContext(error) }, "Feishu connection failed"),
         );
       }
     }
@@ -403,12 +429,18 @@ export function createFeishuIntegrationManager(input: {
   async function connectClaimed(row: BindingRow): Promise<void> {
     if (!row.appId || !row.appSecretCipher) throw new Error("Feishu binding has no credentials");
     const { appSecret } = decryptSecret(row.appSecretCipher);
-    const client = sdk.createClient({ appId: row.appId, appSecret, loggerLevel: LoggerLevel.warn });
+    const client = sdk.createClient({
+      appId: row.appId,
+      appSecret,
+      loggerLevel: LoggerLevel.warn,
+      logger: SILENT_FEISHU_CLIENT_LOGGER,
+    });
     const channel = sdk.createLarkChannel({
       appId: row.appId,
       appSecret,
       includeRawEvent: true,
       loggerLevel: LoggerLevel.warn,
+      logger: SILENT_FEISHU_CLIENT_LOGGER,
       source: "first-tree",
       policy: { requireMention: false, dmMode: "open", respondToMentionAll: false },
       handshakeTimeoutMs: 15_000,
@@ -461,7 +493,7 @@ export function createFeishuIntegrationManager(input: {
       await channel.connect();
       const botOpenId = channel.botIdentity?.openId;
       if (!botOpenId) throw new Error("Feishu Channel connected without Bot identity");
-      await db
+      const [activated] = await db
         .update(imBotBindings)
         .set({
           botOpenId,
@@ -478,7 +510,27 @@ export function createFeishuIntegrationManager(input: {
             eq(imBotBindings.connectionOwnerInstanceId, instanceId),
             eq(imBotBindings.connectionEpoch, row.connectionEpoch),
           ),
-        );
+        )
+        .returning({ id: imBotBindings.id });
+      if (!activated) throw new Error("Feishu connection ownership changed before activation");
+
+      try {
+        const botProfile = await getBotProfile(client, botOpenId, botProfileTimeoutMs);
+        await db
+          .update(imBotBindings)
+          .set({ ...botProfile, updatedAt: new Date() })
+          .where(
+            and(
+              eq(imBotBindings.id, row.id),
+              eq(imBotBindings.connectionOwnerInstanceId, instanceId),
+              eq(imBotBindings.connectionEpoch, row.connectionEpoch),
+              eq(imBotBindings.status, "active"),
+              eq(imBotBindings.botOpenId, botOpenId),
+            ),
+          );
+      } catch (error) {
+        log.warn({ bindingId: row.id, ...safeFeishuErrorContext(error) }, "Failed to load Feishu Bot profile");
+      }
     } catch (error) {
       channels.delete(row.id);
       await channel.disconnect().catch(() => undefined);
@@ -522,8 +574,8 @@ export function createFeishuIntegrationManager(input: {
       .update(imBotBindings)
       .set({
         connectionStatus: "error",
-        lastErrorCode: readErrorCode(error),
-        lastErrorMessage: safeErrorMessage(error),
+        lastErrorCode: safeFeishuErrorContext(error).errorCode,
+        lastErrorMessage: safeFeishuErrorMessage(error),
         updatedAt: new Date(),
       })
       .where(
@@ -610,11 +662,17 @@ export function createFeishuIntegrationManager(input: {
     start() {
       stopped = false;
       initialTimer = setTimeout(
-        () => void claimAndMaintain().catch((error) => log.error({ err: error }, "initial Feishu claim failed")),
+        () =>
+          void claimAndMaintain().catch((error) =>
+            log.error({ ...safeFeishuErrorContext(error) }, "initial Feishu claim failed"),
+          ),
         initialClaimDelayMs,
       );
       timer = setInterval(
-        () => void claimAndMaintain().catch((error) => log.error({ err: error }, "Feishu lease maintenance failed")),
+        () =>
+          void claimAndMaintain().catch((error) =>
+            log.error({ ...safeFeishuErrorContext(error) }, "Feishu lease maintenance failed"),
+          ),
         claimIntervalMs,
       );
     },
@@ -645,6 +703,52 @@ export function createFeishuIntegrationManager(input: {
   };
 }
 
+async function getBotProfile(
+  client: Pick<Client, "request">,
+  expectedOpenId: string,
+  timeoutMs: number,
+): Promise<{ botName: string | null; botAvatarUrl: string | null }> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = await Promise.race([
+      client.request<FeishuBotInfoResponse>({
+        method: "GET",
+        url: "/open-apis/bot/v3/info",
+        signal: controller.signal,
+      }),
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(new Error("Timed out loading Feishu Bot profile"));
+        }, timeoutMs);
+      }),
+    ]);
+    if (response.code !== 0 || !response.bot) {
+      throw new Error(`Feishu Bot info failed: ${response.msg ?? `code ${response.code ?? "unknown"}`}`);
+    }
+    if (response.bot.open_id !== expectedOpenId) {
+      throw new Error("Feishu Bot info did not match the connected Bot identity");
+    }
+    const botName = response.bot.app_name?.trim() || null;
+    const botAvatarUrl = normalizeHttpUrl(response.bot.avatar_url);
+    return { botName, botAvatarUrl };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function normalizeHttpUrl(value: string | undefined): string | null {
+  const candidate = value?.trim();
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function readCliCapability(metadata: Record<string, unknown> | null | undefined): {
   available: boolean;
   sdkVersion?: string | null;
@@ -666,15 +770,4 @@ function tenantKeyFromRaw(raw: unknown): string | null {
   const event = root.event && typeof root.event === "object" ? (root.event as Record<string, unknown>) : root;
   const sender = event.sender && typeof event.sender === "object" ? (event.sender as Record<string, unknown>) : null;
   return typeof sender?.tenant_key === "string" ? sender.tenant_key : null;
-}
-
-function safeErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.slice(0, 2_000);
-}
-
-function readErrorCode(error: unknown): string | null {
-  if (!error || typeof error !== "object") return null;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" || typeof code === "number" ? String(code) : null;
 }
