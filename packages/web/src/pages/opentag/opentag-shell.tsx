@@ -162,11 +162,10 @@ function StepMarker({ done, active, index }: { done: boolean; active: boolean; i
         height: "var(--sp-5)",
         borderRadius: "var(--radius-full)",
         border: done || active ? "none" : "var(--hairline) solid var(--border-strong)",
-        // Completion is the one place this rail earns color: a done step is a
-        // success fact, while the active step stays neutral like every other
-        // everyday-action surface.
-        background: done ? "var(--primary)" : active ? "var(--bg-active)" : "transparent",
-        color: done ? "var(--primary-on)" : active ? "var(--fg)" : "var(--fg-3)",
+        // Keep progress neutral: the active step carries the strongest
+        // emphasis while completed steps recede into the background.
+        background: active ? "var(--primary)" : done ? "var(--bg-active)" : "transparent",
+        color: active ? "var(--primary-on)" : "var(--fg-3)",
       }}
     >
       {done ? <Check className="h-3 w-3" /> : index + 1}
@@ -193,8 +192,7 @@ function CompactProgress({ activeIndex, total }: { activeIndex: number; total: n
           style={{
             height: "var(--sp-1)",
             borderRadius: "var(--radius-full)",
-            background:
-              index < activeIndex ? "var(--primary)" : index === activeIndex ? "var(--bg-active)" : "var(--border)",
+            background: index <= activeIndex ? "var(--primary)" : "var(--border)",
           }}
         />
       ))}

@@ -394,7 +394,7 @@ export function OpenTagPage(): ReactElement | null {
                 {readinessError}
               </FlowHint>
               <div className="flex">
-                <Button type="button" variant="cta" onClick={() => void healReadiness()}>
+                <Button type="button" variant="outline" onClick={() => void healReadiness()}>
                   Try again
                 </Button>
               </div>
