@@ -55,12 +55,16 @@ gates.
 4. **Readiness.** Block `/me`, then create. The Agent must appear in the URL
    immediately — that URL is the only durable recovery anchor this route has —
    and the page must say the team could not be refreshed while offering a
-   retry. Confirm nothing offers to create another Agent from there: no create
+   retry. The Feishu handoff must not be reachable in this state: no Bot
+   registration, no QR, no binding request in the network log, because
+   finishing here would leave the workspace still believing this member has no
+   Agent. Confirm nothing offers to create another Agent either: no create
    action and no way back to the Template choice. Then **reload with `/me`
    still blocked**, and confirm the same Agent is still the subject, the retry
    is still there, and creation is still not on offer; a UUID that only lived
    in memory would be lost here and the bare entry would invite a second
-   Agent. Unblock `/me`, retry, and confirm the readiness fact is now current.
+   Agent. Unblock `/me`, retry, and confirm the readiness fact is now current
+   and that only then does the Feishu step appear.
    Finally visit `/` and confirm the member is not sent into onboarding.
 5. **Lost response.** Re-run the create against the same handle to simulate a
    response that never arrived. The retry must be refused rather than

@@ -142,10 +142,13 @@ export function OpenTagPage(): ReactElement | null {
       const existing = await recoverCreatedAgent(handle, organizationId);
       if (existing) setRecoverableAgent({ uuid: existing.uuid, displayName: existing.displayName });
     },
-    onSuccess: async (created) => {
+    onSuccess: (created) => {
       queryClient.setQueryData(["agent", created.uuid], created);
-      await queryClient.invalidateQueries({ queryKey: ["agents"] });
+      // Anchor first, genuinely before anything slower. An active `agents`
+      // refetch can take a while, and a reload during that await would leave
+      // the browser at the bare entry with the Agent already created.
       goToAgent(created.uuid);
+      void queryClient.invalidateQueries({ queryKey: ["agents"] });
     },
   });
 
@@ -195,9 +198,13 @@ export function OpenTagPage(): ReactElement | null {
     create.reset();
   };
 
+  // The handoff stays closed until readiness is current. Otherwise the member
+  // could connect a Bot and finish this surface while `/` still believes they
+  // have no Agent — the very gate this boundary exists to keep honest.
+  const feishuReady = step === "connect-feishu" && !!agentUuid && readinessSettled;
   const feishuQuery = useQuery({
     ...feishuBindingQueryOptions(agentUuid ?? ""),
-    enabled: step === "connect-feishu" && !!agentUuid,
+    enabled: feishuReady,
   });
   const startFeishu = useMutation({
     mutationFn: () => startAgentFeishuRegistration(agentUuid ?? "", `${agent?.displayName ?? "Agent"} · First Tree`),
@@ -272,19 +279,27 @@ export function OpenTagPage(): ReactElement | null {
           }
         />
       )}
-      {readinessError && (
-        <div className="flex flex-col" style={{ margin: "0 0 var(--sp-4)", gap: "var(--sp-3)" }}>
-          <FlowHint tone="error" role="alert">
-            {readinessError}
-          </FlowHint>
-          <div className="flex">
-            <Button type="button" variant="outline" onClick={() => void healReadiness()}>
-              Try again
-            </Button>
-          </div>
+      {step === "connect-feishu" && !readinessSettled && (
+        <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
+          {readinessError ? (
+            <>
+              <FlowHint tone="error" role="alert">
+                {readinessError}
+              </FlowHint>
+              <div className="flex">
+                <Button type="button" variant="cta" onClick={() => void healReadiness()}>
+                  Try again
+                </Button>
+              </div>
+            </>
+          ) : (
+            <p className="text-caption text-muted-foreground" role="status" style={{ margin: 0 }}>
+              Finishing up…
+            </p>
+          )}
         </div>
       )}
-      {step === "connect-feishu" && agent && agentUuid && (
+      {feishuReady && agent && agentUuid && (
         <StepConnectFeishu
           agentDisplayName={agent.displayName}
           agentUuid={agentUuid}

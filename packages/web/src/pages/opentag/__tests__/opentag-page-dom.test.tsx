@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import type { Agent, FeishuBotBinding } from "@first-tree/shared";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
@@ -162,11 +162,14 @@ async function flush(times = 3): Promise<void> {
   }
 }
 
+let lastQueryClient: QueryClient | null = null;
+
 async function renderAt(route: string): Promise<HTMLElement> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+  lastQueryClient = queryClient;
   await act(async () => {
     root?.render(
       <QueryClientProvider client={queryClient}>
@@ -327,11 +330,20 @@ describe("OpenTag entry — choosing the Agent", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     expect(container.textContent).toContain("couldn't refresh your team");
-    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+    // The handoff itself stays closed: connecting a Bot here would let the
+    // member finish while `/` still believes they have no Agent.
+    expect(container.textContent).not.toContain("Feishu Bot for Ada assistant");
+    expect(api.getAgentFeishuBinding).not.toHaveBeenCalled();
     const labels = [...container.querySelectorAll("button")].map((b) => b.textContent ?? "");
     expect(labels.some((label) => label.includes("Create Agent"))).toBe(false);
     expect(labels.some((label) => label.includes("Review Agent"))).toBe(false);
     expect(api.createAgent).not.toHaveBeenCalled();
+
+    // Once readiness is current, the handoff opens.
+    refreshMeStrict.mockResolvedValue(undefined);
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    const ready = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    expect(ready.textContent).toContain("Feishu Bot for Ada assistant");
   });
 
   it("leaves nothing behind when the member turns back before creating", async () => {
@@ -585,7 +597,15 @@ describe("OpenTag entry — choosing the Computer", () => {
     await click(button(container, "Create Agent"));
 
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-1", runtimeProvider: "codex" });
-    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+    // The URL is anchored on the new Agent straight away — the `agents`
+    // invalidation kicked off here must never stand between the create and the
+    // only durable record of what was created.
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+    expect(container.textContent).not.toContain("Review Agent");
+
+    // The handoff itself opens on the next read, once readiness is current.
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    expect((await renderAt(`/opentag?agent=${AGENT_UUID}`)).textContent).toContain("Feishu Bot for Ada assistant");
   });
 
   it("requires an explicit choice between several Computers, then creates on the chosen one", async () => {
@@ -614,7 +634,36 @@ describe("OpenTag entry — choosing the Computer", () => {
     await click(button(chosen, "Create Agent"));
 
     expect(api.createAgent.mock.calls[0]?.[0]).toMatchObject({ clientId: "client-2", runtimeProvider: "codex" });
-    expect(chosen.textContent).toContain("Feishu Bot for Ada assistant");
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("anchors the Agent in the URL even while the agents list is still refetching", async () => {
+    // The failure this guards: `onSuccess` awaiting the invalidation before
+    // navigating. A slow refetch then leaves the browser at the bare entry with
+    // the Agent already created — reload there and it is orphaned.
+    computerMock.value = readyComputer();
+    api.createAgent.mockResolvedValue(agentRow());
+    api.getAgent.mockResolvedValue(agentRow());
+
+    const container = await atComputerStep();
+    // An active `agents` observer that never settles its refetch. Only an
+    // active query makes `invalidateQueries` wait, which is the whole point.
+    const client = lastQueryClient;
+    if (!client) throw new Error("no QueryClient");
+    let calls = 0;
+    const observer = new QueryObserver(client, {
+      queryKey: ["agents"],
+      queryFn: () => (calls++ === 0 ? Promise.resolve([]) : new Promise(() => {})),
+    });
+    const unsubscribe = observer.subscribe(() => undefined);
+    await flush();
+
+    await click(button(container, "Create Agent"));
+
+    expect(api.createAgent).toHaveBeenCalledTimes(1);
+    expect(client.isFetching({ queryKey: ["agents"] })).toBe(1);
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+    unsubscribe();
   });
 
   it("does not offer to create on a Computer with no coding agent", async () => {
@@ -648,6 +697,11 @@ describe("OpenTag entry — choosing the Computer", () => {
 });
 
 describe("OpenTag entry — the Feishu handoff", () => {
+  beforeEach(() => {
+    // The handoff only opens once membership readiness is authoritative.
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+  });
+
   it("goes straight to Feishu for an existing Agent on reload", async () => {
     api.getAgent.mockResolvedValue(agentRow());
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
