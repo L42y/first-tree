@@ -108,7 +108,7 @@ describe("inviteParticipantsToChat", () => {
       app.db,
       target.id,
       admin.organizationId,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
 
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [] });
@@ -134,7 +134,7 @@ describe("inviteParticipantsToChat", () => {
       app.db,
       target.id,
       admin.organizationId,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
 
     await expect(

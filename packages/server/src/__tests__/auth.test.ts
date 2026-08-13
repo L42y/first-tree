@@ -149,7 +149,7 @@ describe("Admin Auth", () => {
       );
     });
 
-    it("repairs an unexpected zero-membership self-service account before issuing password-login tokens", async () => {
+    it("stops an unexpected zero-membership self-service account at password-login repair", async () => {
       const app = getApp();
       const account = await createTestAdmin(app, { username: `login-repair-${crypto.randomUUID().slice(0, 8)}` });
       await app.db.update(members).set({ status: "removed" }).where(eq(members.id, account.memberId));
@@ -160,15 +160,13 @@ describe("Admin Auth", () => {
         payload: { username: account.username, password: account.password },
       });
 
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ accessToken: expect.any(String), refreshToken: expect.any(String) });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ code: "membership-repair-required" });
       const activeMemberships = await app.db
         .select({ id: members.id, organizationId: members.organizationId })
         .from(members)
         .where(and(eq(members.userId, account.userId), eq(members.status, "active")));
-      expect(activeMemberships).toHaveLength(1);
-      expect(activeMemberships[0]?.id).not.toBe(account.memberId);
-      expect(activeMemberships[0]?.organizationId).not.toBe(account.organizationId);
+      expect(activeMemberships).toHaveLength(0);
     });
 
     // Regression: services/team/default-membership.ts::pickDefaultMembership picks the most-recently-
@@ -277,7 +275,7 @@ describe("Admin Auth", () => {
       );
     });
 
-    it("repairs an unexpected zero-membership self-service account before rotating refresh tokens", async () => {
+    it("stops an unexpected zero-membership self-service account at refresh repair", async () => {
       const app = getApp();
       const account = await createTestAdmin(app, { username: `refresh-repair-${crypto.randomUUID().slice(0, 8)}` });
       await app.db.update(members).set({ status: "removed" }).where(eq(members.id, account.memberId));
@@ -288,17 +286,16 @@ describe("Admin Auth", () => {
         payload: { refreshToken: account.refreshToken },
       });
 
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ accessToken: expect.any(String), refreshToken: expect.any(String) });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ code: "membership-repair-required" });
       const activeMemberships = await app.db
         .select({ id: members.id })
         .from(members)
         .where(and(eq(members.userId, account.userId), eq(members.status, "active")));
-      expect(activeMemberships).toHaveLength(1);
-      expect(activeMemberships[0]?.id).not.toBe(account.memberId);
+      expect(activeMemberships).toHaveLength(0);
     });
 
-    it("keeps a suspended account closed, then repairs membership on reactivation", async () => {
+    it("keeps a suspended account closed and requires membership repair after reactivation", async () => {
       const app = getApp();
       const account = await createTestAdmin(app, { username: `reactivate-repair-${crypto.randomUUID().slice(0, 8)}` });
       await app.db.update(members).set({ status: "removed" }).where(eq(members.id, account.memberId));
@@ -316,14 +313,15 @@ describe("Admin Auth", () => {
 
       await app.db.update(users).set({ status: "active" }).where(eq(users.id, account.userId));
       const reactivated = await refresh();
-      expect(reactivated.statusCode).toBe(200);
+      expect(reactivated.statusCode).toBe(401);
+      expect(reactivated.json()).toMatchObject({ code: "membership-repair-required" });
 
       const membershipRows = await app.db
         .select({ id: members.id, status: members.status })
         .from(members)
         .where(eq(members.userId, account.userId));
       expect(membershipRows).toContainEqual({ id: account.memberId, status: "removed" });
-      expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(1);
+      expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(0);
     });
   });
 
@@ -341,7 +339,7 @@ describe("Admin Auth", () => {
       expect(row?.issuer).toBe("first-tree-local");
     });
 
-    it("repairs an unexpected zero-membership self-service account before connect-token exchange", async () => {
+    it("stops an unexpected zero-membership self-service account at connect-token repair", async () => {
       const app = getApp();
       const account = await createTestAdmin(app, { username: `connect-repair-${crypto.randomUUID().slice(0, 8)}` });
       const minted = await generateConnectToken(app.db, account.userId, EXPIRIES, "http://localhost");
@@ -354,14 +352,13 @@ describe("Admin Auth", () => {
         payload: { token: minted.token },
       });
 
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toMatchObject({ accessToken: expect.any(String), refreshToken: expect.any(String) });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ code: "membership-repair-required" });
       const activeMemberships = await app.db
         .select({ id: members.id })
         .from(members)
         .where(and(eq(members.userId, account.userId), eq(members.status, "active")));
-      expect(activeMemberships).toHaveLength(1);
-      expect(activeMemberships[0]?.id).not.toBe(account.memberId);
+      expect(activeMemberships).toHaveLength(0);
     });
   });
 });

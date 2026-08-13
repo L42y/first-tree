@@ -80,6 +80,47 @@ function observeHandshakeClose(
   });
 }
 
+function completeHandshake(
+  baseUrl: string,
+  token: string,
+  organizationId: string,
+): Promise<{ kind: "admitted" } | { kind: "closed"; code: number } | { kind: "http"; statusCode: number }> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`${baseUrl}/${encodeURIComponent(organizationId)}/ws/?token=${encodeURIComponent(token)}`);
+    let admitted = false;
+    let settled = false;
+    const finish = (
+      result: { kind: "admitted" } | { kind: "closed"; code: number } | { kind: "http"; statusCode: number },
+    ) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error("timed out waiting for admin WS handshake"));
+    }, 5_000);
+    ws.on("message", (raw) => {
+      const frame = JSON.parse(raw.toString()) as { type?: string };
+      if (frame.type !== "admin:connected") return;
+      admitted = true;
+      ws.close();
+    });
+    ws.once("unexpected-response", (_request, response) => {
+      clearTimeout(timeout);
+      response.resume();
+      finish({ kind: "http", statusCode: response.statusCode ?? 0 });
+    });
+    ws.once("close", (code) => {
+      clearTimeout(timeout);
+      finish(admitted ? { kind: "admitted" } : { kind: "closed", code });
+    });
+    ws.once("error", (error) => {
+      if (!settled) reject(error);
+    });
+  });
+}
+
 describe("Admin WS membership lifecycle", () => {
   const openApps: FastifyInstance[] = [];
 
@@ -98,6 +139,44 @@ describe("Admin WS membership lifecycle", () => {
 
     expect(outcome.code).toBe(4403);
     expect(outcome.frameTypes).not.toContain("admin:connected");
+  });
+
+  it("isolates valid admin WebSocket handshake limits by verified user behind one IP", async () => {
+    const app = await createTestApp();
+    openApps.push(app);
+    const wsBaseUrl = await listenApp(app);
+    const first = await createTestAdmin(app, { username: `ws-limit-first-${crypto.randomUUID().slice(0, 8)}` });
+    const second = await createTestAdmin(app, { username: `ws-limit-second-${crypto.randomUUID().slice(0, 8)}` });
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await expect(completeHandshake(wsBaseUrl, first.accessToken, first.organizationId)).resolves.toEqual({
+        kind: "admitted",
+      });
+    }
+    await expect(completeHandshake(wsBaseUrl, first.accessToken, first.organizationId)).resolves.toEqual({
+      kind: "http",
+      statusCode: 429,
+    });
+    await expect(completeHandshake(wsBaseUrl, second.accessToken, second.organizationId)).resolves.toEqual({
+      kind: "admitted",
+    });
+  });
+
+  it("keeps repeated invalid admin WebSocket tokens capped by client IP", async () => {
+    const app = await createTestApp();
+    openApps.push(app);
+    const wsBaseUrl = await listenApp(app);
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await expect(completeHandshake(wsBaseUrl, `invalid-${attempt}`, DEFAULT_ORG_ID)).resolves.toEqual({
+        kind: "closed",
+        code: 4001,
+      });
+    }
+    await expect(completeHandshake(wsBaseUrl, "invalid-over-limit", DEFAULT_ORG_ID)).resolves.toEqual({
+      kind: "http",
+      statusCode: 429,
+    });
   });
 
   it("evicts a suspended account before sending the next protected Team frame", async () => {
@@ -120,7 +199,7 @@ describe("Admin WS membership lifecycle", () => {
     expect(observedTypes).not.toContain("suspended-account-probe");
   });
 
-  for (const boundary of ["personal-team", "invitation-required"] as const) {
+  for (const boundary of ["repair-required", "invitation-required"] as const) {
     it(`closes an already-open socket across replicas after admin removal at the ${boundary} boundary`, async () => {
       const appOptions = boundary === "invitation-required" ? { allowedOrganizationId: DEFAULT_ORG_ID } : {};
       const mutationApp = await createTestApp(appOptions);
@@ -166,7 +245,7 @@ describe("Admin WS membership lifecycle", () => {
         .select({ id: members.id })
         .from(members)
         .where(and(eq(members.userId, target.userId), eq(members.status, "active")));
-      expect(activeMemberships).toHaveLength(boundary === "personal-team" ? 1 : 0);
+      expect(activeMemberships).toHaveLength(0);
     });
   }
 

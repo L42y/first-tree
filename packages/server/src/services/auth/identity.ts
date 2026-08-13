@@ -60,6 +60,25 @@ export class IdentityMismatchError extends Error {
   }
 }
 
+export class IdentityAccountInactiveError extends Error {
+  constructor() {
+    super("Account is suspended");
+    this.name = "IdentityAccountInactiveError";
+  }
+}
+
+async function lockActiveIdentityUser(db: DbLike, userId: string): Promise<{ passwordHash: string }> {
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for("no key update")
+    .limit(1);
+  if (!user) throw new Error("External identity mutation references a missing user");
+  if (user.status !== "active") throw new IdentityAccountInactiveError();
+  return { passwordHash: user.passwordHash };
+}
+
 export function isUsableLegacyPasswordHash(passwordHash: string): boolean {
   return /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(passwordHash);
 }
@@ -151,6 +170,7 @@ export async function linkExternalIdentity(
 ): Promise<"linked" | "already-linked"> {
   try {
     return await db.transaction(async (tx) => {
+      await lockActiveIdentityUser(tx, userId);
       const [bySubject] = await tx
         .select({ userId: authIdentities.userId })
         .from(authIdentities)
@@ -159,7 +179,7 @@ export async function linkExternalIdentity(
       if (bySubject && bySubject.userId !== userId) throw new IdentityConflictError();
       if (bySubject) {
         await updateIdentitySnapshot(tx, userId, profile);
-        return "already-linked";
+        return "already-linked" as const;
       }
 
       const [byProvider] = await tx
@@ -172,7 +192,7 @@ export async function linkExternalIdentity(
         // Under READ COMMITTED, an identical concurrent link can become
         // visible between the subject and provider lookups.
         await updateIdentitySnapshot(tx, userId, profile);
-        return "already-linked";
+        return "already-linked" as const;
       }
       await tx.insert(authIdentities).values(identityValues(userId, profile));
       return "linked";
@@ -181,26 +201,32 @@ export async function linkExternalIdentity(
     const constraint = uniqueViolationConstraint(error);
     if (errorField(error, "code") !== PG_UNIQUE_VIOLATION) throw error;
     if (constraint === "uq_auth_identities_provider_identifier") {
-      const [winner] = await db
-        .select({ userId: authIdentities.userId })
-        .from(authIdentities)
-        .where(and(eq(authIdentities.provider, profile.provider), eq(authIdentities.identifier, profile.subject)))
-        .limit(1);
-      if (!winner) throw error;
-      if (winner.userId !== userId) throw new IdentityConflictError();
-      await updateIdentitySnapshot(db, userId, profile);
-      return "already-linked";
+      return db.transaction(async (tx) => {
+        await lockActiveIdentityUser(tx, userId);
+        const [winner] = await tx
+          .select({ userId: authIdentities.userId })
+          .from(authIdentities)
+          .where(and(eq(authIdentities.provider, profile.provider), eq(authIdentities.identifier, profile.subject)))
+          .limit(1);
+        if (!winner) throw error;
+        if (winner.userId !== userId) throw new IdentityConflictError();
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
+      });
     }
     if (constraint === "uq_auth_identities_user_provider") {
-      const [current] = await db
-        .select({ identifier: authIdentities.identifier })
-        .from(authIdentities)
-        .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, profile.provider)))
-        .limit(1);
-      if (!current) throw error;
-      if (current.identifier !== profile.subject) throw new IdentityConflictError();
-      await updateIdentitySnapshot(db, userId, profile);
-      return "already-linked";
+      return db.transaction(async (tx) => {
+        await lockActiveIdentityUser(tx, userId);
+        const [current] = await tx
+          .select({ identifier: authIdentities.identifier })
+          .from(authIdentities)
+          .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, profile.provider)))
+          .limit(1);
+        if (!current) throw error;
+        if (current.identifier !== profile.subject) throw new IdentityConflictError();
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
+      });
     }
     throw error;
   }
@@ -215,12 +241,7 @@ export async function unlinkExternalIdentity(
   targetIdentityId: string,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    const [user] = await tx
-      .select({ passwordHash: users.passwordHash })
-      .from(users)
-      .where(eq(users.id, userId))
-      .for("no key update");
-    if (!user) throw new Error("Cannot disconnect authentication provider for a missing user");
+    const user = await lockActiveIdentityUser(tx, userId);
     const identities = await tx
       .select({
         id: authIdentities.id,

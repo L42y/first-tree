@@ -7,7 +7,7 @@ import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
 import { organizations } from "../../db/schema/organizations.js";
 import { users } from "../../db/schema/users.js";
-import { ConflictError, NotFoundError } from "../../errors.js";
+import { ConflictError, NotFoundError, UnauthorizedError } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
 import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
 import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
@@ -34,7 +34,7 @@ export type MemberStatus = (typeof MEMBER_STATUSES)[keyof typeof MEMBER_STATUSES
 export type MembershipLifecycleUser = Awaited<ReturnType<typeof lockMembershipLifecycleUser>>;
 
 export const MEMBERSHIP_RECOVERY_POLICIES = {
-  PERSONAL_TEAM: "personal-team",
+  REPAIR_REQUIRED: "repair-required",
   INVITATION_REQUIRED: "invitation-required",
 } as const;
 
@@ -48,7 +48,7 @@ export type MembershipRecoveryPolicy = (typeof MEMBERSHIP_RECOVERY_POLICIES)[key
 export function membershipRecoveryPolicy(allowedOrganizationId: string | null | undefined): MembershipRecoveryPolicy {
   return allowedOrganizationId
     ? MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED
-    : MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM;
+    : MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: needed for cross-schema compatibility with transaction clients.
@@ -134,6 +134,13 @@ async function syncUserDisplayNameInternal<T>(
   // concurrent membership FK insert, avoiding a lock-upgrade deadlock while
   // still making the later contender observe and update the earlier row.
   const user = await lockMembershipLifecycleUser(db, userId);
+  if (user.status !== "active") {
+    throw new UnauthorizedError("User not found or suspended", {
+      "auth.failure_reason": "user_suspended",
+      "auth.user_id": userId,
+      "auth.user_status": user.status,
+    });
+  }
   const effectiveDisplayName = requestedDisplayName ?? user.displayName;
   if (requestedDisplayName !== undefined) {
     await db.update(users).set({ displayName: effectiveDisplayName }).where(eq(users.id, userId));
@@ -681,16 +688,16 @@ export async function createPersonalTeamInTransaction(
 }
 
 export type AccountMembershipResolution =
-  | { kind: "active"; organizationId: string; teamCreated: boolean }
+  | { kind: "active"; organizationId: string }
+  | { kind: "repair-required" }
   | { kind: "invitation-required" }
   | { kind: "account-inactive" };
 
 /**
  * Resolve a live Team membership at an account/lifecycle boundary. The stable
- * user row serializes concurrent retries and final-membership transitions:
- * once one contender creates the personal Team, every later contender reuses
- * its active membership. A discriminated result keeps account suspension
- * distinct from the invitation boundary even across lock-wait races.
+ * user row serializes the decision with concurrent membership transitions.
+ * Zero-membership accounts stop at an explicit repair or invitation boundary;
+ * only the external-account OAuth bootstrap may create a personal Team.
  */
 export async function ensureActiveMembershipOrRepair(
   db: Database,
@@ -715,18 +722,11 @@ export async function resolveMembershipAfterLifecycleLock(
     .where(and(eq(members.userId, user.id), eq(members.status, MEMBER_STATUSES.ACTIVE)))
     .orderBy(desc(members.createdAt))
     .limit(1);
-  if (primary) return { kind: "active", organizationId: primary.organizationId, teamCreated: false };
+  if (primary) return { kind: "active", organizationId: primary.organizationId };
   if (recoveryPolicy === MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED) {
     return { kind: "invitation-required" };
   }
-
-  const team = await createPersonalTeamInTransaction(db, {
-    userId: user.id,
-    username: user.username,
-    teamDisplayName: `${user.displayName.slice(0, 193)}'s team`,
-    userDisplayName: user.displayName,
-  });
-  return { kind: "active", organizationId: team.organizationId, teamCreated: true };
+  return { kind: "repair-required" };
 }
 
 function sanitizeOrgSlug(raw: string): string {
@@ -907,10 +907,9 @@ export async function selfCreateOrganization(
 ): Promise<{ organizationId: string; memberId: string; name: string; displayName: string }> {
   return db.transaction(async (tx) => {
     // Capture the authority that caused this request before waiting on the
-    // lifecycle user lock. A concurrent final leave/removal may replace that
-    // membership with an automatic personal-Team repair while this request is
-    // queued. The replacement is valid for a newly-started request, but it must
-    // not retroactively authorize this stale one.
+    // lifecycle user lock. A concurrent final leave/removal may invalidate that
+    // membership while this request is queued; later membership repair must not
+    // retroactively authorize this stale request.
     const preLockAuthorities = await tx
       .select({ id: members.id })
       .from(members)

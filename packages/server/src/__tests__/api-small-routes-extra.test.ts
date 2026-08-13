@@ -230,7 +230,7 @@ beforeEach(() => {
     organizationId: "org_1",
     role: "admin",
   });
-  routeMocks.membershipRecoveryPolicy.mockReturnValue("personal-team");
+  routeMocks.membershipRecoveryPolicy.mockReturnValue("repair-required");
   routeMocks.ensureMembership.mockResolvedValue({ id: "member_joined", organizationId: "org_join", role: "member" });
   routeMocks.findActiveByToken.mockResolvedValue(null);
   routeMocks.listActiveMemberships.mockResolvedValue([]);
@@ -630,7 +630,7 @@ describe("small API route handlers", () => {
     expect(routeMocks.leaveOrganization).toHaveBeenCalledWith(
       expect.anything(),
       "member_leave",
-      "personal-team",
+      "repair-required",
       appBase.notifier,
     );
     await expect(

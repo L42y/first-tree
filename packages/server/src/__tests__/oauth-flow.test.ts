@@ -637,6 +637,72 @@ describe("GitHub account-link return path", () => {
     }
   });
 
+  it("rejects a link callback after the signed-state account is suspended", async () => {
+    const app = getApp();
+    const target = await createTestAdmin(app, { username: `link-suspended-${randomUUID().slice(0, 8)}` });
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
+      intent: "link",
+      provider: "github",
+      userId: target.userId,
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId));
+    const restore = stubGithubAppOauth({ githubId: 77_200_003, login: "suspended-link" });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
+        headers: { cookie: oauthStateCookie(app, nonce) },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/settings/integrations/github?error=account-inactive");
+      await expect(
+        app.db.select().from(authIdentities).where(eq(authIdentities.userId, target.userId)),
+      ).resolves.toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects an unlink callback after the signed-state account is suspended", async () => {
+    const app = getApp();
+    const target = await createTestAdmin(app, { username: `unlink-suspended-${randomUUID().slice(0, 8)}` });
+    const identityId = randomUUID();
+    const githubId = 77_200_004;
+    await app.db.insert(authIdentities).values({
+      id: identityId,
+      userId: target.userId,
+      provider: "github",
+      identifier: String(githubId),
+      metadata: { accountName: "suspended-unlink" },
+    });
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/account", {
+      intent: "unlink",
+      provider: "github",
+      userId: target.userId,
+      targetIdentityId: identityId,
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId));
+    const restore = stubGithubAppOauth({ githubId, login: "suspended-unlink" });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
+        headers: { cookie: oauthStateCookie(app, nonce) },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/settings/account?error=account-inactive");
+      await expect(
+        app.db.select({ id: authIdentities.id }).from(authIdentities).where(eq(authIdentities.id, identityId)),
+      ).resolves.toEqual([{ id: identityId }]);
+    } finally {
+      restore();
+    }
+  });
+
   it("keeps a canceled account link side-effect free and preserves a retry route", async () => {
     const app = getApp();
     const target = await createTestAdmin(app, { username: `link-cancel-${randomUUID().slice(0, 8)}` });

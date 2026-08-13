@@ -236,10 +236,23 @@ describe("Admin WS route edge paths", () => {
 
     await orgWsRoutes(makeNotifier(handlers), JWT_SECRET)(app as never);
 
-    expect(getRouteOptions()).toEqual({
+    const options = getRouteOptions() as {
+      websocket: boolean;
+      config: { rateLimit: { max: number; timeWindow: string; keyGenerator: (request: unknown) => Promise<string> } };
+    };
+    expect(options).toMatchObject({
       websocket: true,
       config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
     });
+    const firstUserKey = await options.config.rateLimit.keyGenerator(
+      request(await signToken({ sub: "user-1", type: "access" })),
+    );
+    const secondUserKey = await options.config.rateLimit.keyGenerator(
+      request(await signToken({ sub: "user-2", type: "access" })),
+    );
+    expect(firstUserKey).toBe("user:user-1");
+    expect(secondUserKey).toBe("user:user-2");
+    expect(await options.config.rateLimit.keyGenerator(request("invalid"))).toBe("ip:127.0.0.1");
   });
 
   it("rejects missing, malformed, wrong-type, and non-member handshakes", async () => {

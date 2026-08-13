@@ -13,6 +13,7 @@ import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
 import { createMember, deleteMember } from "../services/team/member.js";
 import {
+  ensureMembership,
   leaveOrganization,
   MEMBERSHIP_RECOVERY_POLICIES,
   selfCreateOrganization,
@@ -284,7 +285,7 @@ describe("Multi-org self-service", () => {
         userId: admin.userId,
         username: admin.username,
       },
-      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
       "Concurrent Leave Escape Team",
     );
   });
@@ -302,9 +303,132 @@ describe("Multi-org self-service", () => {
     await expectAdditionalTeamCreationRejectedAfterMembershipLoss(
       app,
       { userId: target.userId, username },
-      (db) => deleteMember(db, target.id, host.organizationId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      (db) => deleteMember(db, target.id, host.organizationId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
       "Concurrent Removal Escape Team",
     );
+  });
+
+  it("does not create an additional Team after account suspension wins the user fence", async () => {
+    const app = getApp();
+    const account = await createTestAdmin(app, { username: `org-suspend-${crypto.randomUUID().slice(0, 8)}` });
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suspensionApplicationName = `create_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const creationApplicationName = `create_after_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const suspensionDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, suspensionApplicationName));
+    const creationDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, creationApplicationName));
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let releaseBlocker = (): void => undefined;
+    const blockerRelease = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let blockerReady = (): void => undefined;
+    const ready = new Promise<void>((resolve) => {
+      blockerReady = resolve;
+    });
+    try {
+      const holder = blocker.begin(async (tx) => {
+        await tx.unsafe("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [account.userId]);
+        blockerReady();
+        await blockerRelease;
+      });
+      await ready;
+
+      const suspension = Promise.resolve(
+        suspensionDb.update(users).set({ status: "suspended" }).where(eq(users.id, account.userId)),
+      );
+      await waitForPostgresLockWait(observer, suspensionApplicationName);
+      const teamDisplayName = `Suspended Create ${crypto.randomUUID().slice(0, 8)}`;
+      const creation = selfCreateOrganization(creationDb, {
+        userId: account.userId,
+        username: account.username,
+        displayName: teamDisplayName,
+      });
+      await waitForPostgresLockWait(observer, creationApplicationName);
+
+      releaseBlocker();
+      await holder;
+      await suspension;
+      await expect(creation).rejects.toThrow(/suspended/i);
+      await expect(
+        app.db
+          .select({ id: organizations.id })
+          .from(organizations)
+          .where(eq(organizations.displayName, teamDisplayName)),
+      ).resolves.toEqual([]);
+    } finally {
+      releaseBlocker();
+      await suspensionDb.end();
+      await creationDb.end();
+      await blocker.end();
+      await observer.end();
+    }
+  });
+
+  it("does not join another Team after account suspension wins the user fence", async () => {
+    const app = getApp();
+    const account = await createTestAdmin(app, { username: `join-suspend-${crypto.randomUUID().slice(0, 8)}` });
+    const destinationId = `org-join-suspend-${crypto.randomUUID().slice(0, 8)}`;
+    await app.db.insert(organizations).values({
+      id: destinationId,
+      name: `join-suspend-${crypto.randomUUID().slice(0, 8)}`,
+      displayName: "Suspended Join Destination",
+    });
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suspensionApplicationName = `join_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const joinApplicationName = `join_after_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const suspensionDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, suspensionApplicationName));
+    const joinDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, joinApplicationName));
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let releaseBlocker = (): void => undefined;
+    const blockerRelease = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let blockerReady = (): void => undefined;
+    const ready = new Promise<void>((resolve) => {
+      blockerReady = resolve;
+    });
+    try {
+      const holder = blocker.begin(async (tx) => {
+        await tx.unsafe("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [account.userId]);
+        blockerReady();
+        await blockerRelease;
+      });
+      await ready;
+
+      const suspension = Promise.resolve(
+        suspensionDb.update(users).set({ status: "suspended" }).where(eq(users.id, account.userId)),
+      );
+      await waitForPostgresLockWait(observer, suspensionApplicationName);
+      const joining = ensureMembership(joinDb, {
+        userId: account.userId,
+        organizationId: destinationId,
+        role: "member",
+        displayName: "Stale Join Snapshot",
+        username: account.username,
+      });
+      await waitForPostgresLockWait(observer, joinApplicationName);
+
+      releaseBlocker();
+      await holder;
+      await suspension;
+      await expect(joining).rejects.toThrow(/suspended/i);
+      await expect(
+        app.db
+          .select({ id: members.id })
+          .from(members)
+          .where(and(eq(members.userId, account.userId), eq(members.organizationId, destinationId))),
+      ).resolves.toEqual([]);
+    } finally {
+      releaseBlocker();
+      await suspensionDb.end();
+      await joinDb.end();
+      await blocker.end();
+      await observer.end();
+    }
   });
 
   it("lets an additional-Team creation that holds the user fence commit before final leave", async () => {
@@ -313,15 +437,15 @@ describe("Multi-org self-service", () => {
     await expectAdditionalTeamCreationWinsBeforeMembershipLoss(
       app,
       { userId: admin.userId, username: admin.username },
-      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      (db) => leaveOrganization(db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
       "Creation Wins Before Leave",
     );
   });
 
-  it("allows a newly-started additional-Team request after final-loss repair", async () => {
+  it("rejects a newly-started additional-Team request after final membership loss", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `org-after-repair-${crypto.randomUUID().slice(0, 8)}` });
-    await leaveOrganization(app.db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM);
+    await leaveOrganization(app.db, admin.memberId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED);
 
     await expect(
       selfCreateOrganization(app.db, {
@@ -329,16 +453,16 @@ describe("Multi-org self-service", () => {
         username: admin.username,
         displayName: "Fresh Request After Repair",
       }),
-    ).resolves.toMatchObject({ displayName: "Fresh Request After Repair" });
+    ).rejects.toThrow("An active Team membership is required to create another Team");
 
     const activeMemberships = await app.db
       .select({ id: members.id })
       .from(members)
       .where(and(eq(members.userId, admin.userId), eq(members.status, "active")));
-    expect(activeMemberships).toHaveLength(2);
+    expect(activeMemberships).toHaveLength(0);
   });
 
-  it("serializes simultaneous losses of a multi-Team user's final two memberships into one repair", async () => {
+  it("serializes simultaneous losses of a multi-Team user's final two memberships", async () => {
     const app = getApp();
     const account = await createTestAdmin(app, { username: `multi-final-${crypto.randomUUID().slice(0, 8)}` });
     const second = await selfCreateOrganization(app.db, {
@@ -348,8 +472,8 @@ describe("Multi-org self-service", () => {
     });
 
     await Promise.all([
-      leaveOrganization(app.db, account.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
-      leaveOrganization(app.db, second.memberId, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      leaveOrganization(app.db, account.memberId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
+      leaveOrganization(app.db, second.memberId, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
     ]);
 
     const membershipRows = await app.db
@@ -362,10 +486,10 @@ describe("Multi-org self-service", () => {
         { id: second.memberId, status: "left" },
       ]),
     );
-    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(1);
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(0);
   });
 
-  it("repairs an admin-removed final membership without reusing the removed identity", async () => {
+  it("keeps an admin-removed final membership at the repair boundary", async () => {
     const app = getApp();
     const host = await createTestAdmin(app, { username: `remove-host-${crypto.randomUUID().slice(0, 8)}` });
     const target = await createMember(app.db, host.organizationId, {
@@ -396,13 +520,10 @@ describe("Multi-org self-service", () => {
       organizationId: host.organizationId,
       status: "removed",
     });
-    const activeMemberships = membershipRows.filter((membership) => membership.status === "active");
-    expect(activeMemberships).toHaveLength(1);
-    expect(activeMemberships[0]?.organizationId).not.toBe(host.organizationId);
-    expect(activeMemberships[0]?.agentId).not.toBe(target.agentId);
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(0);
   });
 
-  it("retries a concurrent final admin removal without creating a second repair Team", async () => {
+  it("retries a concurrent final admin removal without creating a Team", async () => {
     const app = getApp();
     const host = await createTestAdmin(app, { username: `remove-retry-host-${crypto.randomUUID().slice(0, 8)}` });
     const target = await createMember(app.db, host.organizationId, {
@@ -424,7 +545,7 @@ describe("Multi-org self-service", () => {
       .select({ id: members.id, status: members.status })
       .from(members)
       .where(eq(members.userId, target.userId));
-    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(1);
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(0);
     expect(membershipRows.filter((membership) => membership.id === target.id)).toEqual([
       { id: target.id, status: "removed" },
     ]);
@@ -515,7 +636,7 @@ describe("Multi-org self-service", () => {
     expect(meBody.memberships[0]?.organizationId).not.toBe(admin.organizationId);
   });
 
-  it("repairs a final self-leave with exactly one personal Team across retries", async () => {
+  it("keeps a final self-leave at the repair boundary across retries", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, {
       username: `final-leave-${crypto.randomUUID().slice(0, 8)}`,
@@ -539,25 +660,15 @@ describe("Multi-org self-service", () => {
       organizationId: admin.organizationId,
       status: "left",
     });
-    const activeMemberships = membershipRows.filter((membership) => membership.status === "active");
-    expect(activeMemberships).toHaveLength(1);
-    expect(activeMemberships[0]?.organizationId).not.toBe(admin.organizationId);
-
-    const [personalTeam] = await app.db
-      .select({ displayName: organizations.displayName })
-      .from(organizations)
-      .where(eq(organizations.id, activeMemberships[0]?.organizationId ?? ""));
-    expect(personalTeam?.displayName).toBe("Test Admin's team");
+    expect(membershipRows.filter((membership) => membership.status === "active")).toHaveLength(0);
 
     const me = await app.inject({
       method: "GET",
       url: "/api/v1/me",
       headers: { authorization: `Bearer ${admin.accessToken}` },
     });
-    expect(me.statusCode).toBe(200);
-    expect(me.json<{ memberships: Array<{ organizationId: string }> }>().memberships).toEqual([
-      expect.objectContaining({ organizationId: activeMemberships[0]?.organizationId }),
-    ]);
+    expect(me.statusCode).toBe(403);
+    expect(me.json()).toMatchObject({ code: "membership-repair-required" });
   });
 
   it("POST /me/memberships/:memberId/leave hides memberships owned by another user", async () => {

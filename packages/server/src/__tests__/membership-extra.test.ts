@@ -22,11 +22,11 @@ describe("membership service edge coverage", () => {
       app.db,
       admin.memberId,
       MEMBER_STATUSES.REMOVED,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
 
     await expect(
-      deactivateMembership(app.db, admin.memberId, MEMBER_STATUSES.LEFT, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+      deactivateMembership(app.db, admin.memberId, MEMBER_STATUSES.LEFT, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
     ).rejects.toThrow(/not active/);
   });
 
@@ -75,7 +75,9 @@ describe("membership service edge coverage", () => {
             from: () => ({
               where: () =>
                 Object.assign(Promise.resolve([]), {
-                  for: () => ({ limit: async () => [{ id: "user-1", displayName: "Retry User" }] }),
+                  for: () => ({
+                    limit: async () => [{ id: "user-1", displayName: "Retry User", status: "active" }],
+                  }),
                   limit: async () => [],
                   orderBy: async () => [],
                 }),

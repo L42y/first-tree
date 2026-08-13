@@ -1,6 +1,6 @@
 ---
 id: final-membership-repair-boundaries
-description: Validate that losing the final active Team membership repairs only within self-service authority and otherwise stops at an invitation boundary.
+description: Validate that losing the final active Team membership stops at an explicit repair or invitation boundary.
 areas: [cross-surface]
 surfaces: [server, web]
 ---
@@ -12,8 +12,8 @@ surfaces: [server, web]
 Confirm that an authenticated human cannot continue into a normal Team workspace
 without a live membership, while preserving the deployment's authority model:
 
-- a normal self-service deployment converges final membership loss to one safe
-  personal Team;
+- a normal self-service deployment stops final membership loss at an explicit
+  repair boundary without creating a Team;
 - an invitation-only deployment creates no Team and presents an explicit
   invitation or sign-in boundary until an authorized membership exists;
 - users who still have another active membership keep that Team and their Web
@@ -45,12 +45,13 @@ after real self-leave or admin removal.
 
 1. In self-service mode, leave the user's only Team from the Web Team menu.
    Verify the departed membership and its human mirror are retained as inactive
-   history, exactly one active personal-Team membership exists afterward, and
-   the browser never renders the departed Team workspace during navigation.
-   Refresh the page and verify `/me` resolves to the repaired membership.
+   history, no active membership or Team is created, and the browser never
+   renders the departed Team workspace. Verify `/me` and refresh fail closed at
+   the explicit membership-repair boundary.
 2. Have an administrator remove another user's final membership. With the
    target's existing browser session still open, verify the old Team becomes
-   inaccessible immediately and the target converges to one repaired Team.
+   inaccessible immediately and the target enters the repair boundary without
+   creating a Team.
    Verify the old human mirror is suspended, its display identity is retained,
    managed agents are unpinned and reassigned to the fallback administrator,
    and no agent or membership history is deleted.
@@ -59,12 +60,12 @@ after real self-leave or admin removal.
    and a remembered selected Team falls back only when that selection is no
    longer backed by a live membership.
 4. Exercise simultaneous loss of the final two memberships and retry the final
-   leave/removal request. Verify the account converges to exactly one personal
-   Team and duplicate retries do not create additional Teams or human mirrors.
+   leave/removal request. Verify the account has zero active memberships and
+   duplicate retries do not create Teams or human mirrors.
    Start an additional-Team creation request before the loss transaction and
-   verify it cannot borrow the repaired membership as retroactive authority;
-   after refreshing membership state, a newly started request may create an
-   additional Team normally.
+   verify it cannot borrow later repair as retroactive authority. A request
+   started after final loss must also remain rejected until an authorized live
+   membership exists.
 5. In invitation-only mode, repeat final self-leave and admin removal. Verify no
    personal Team or active human mirror is created, `/me` and token refresh
    return the invitation boundary, and the browser clears normal Team state and
@@ -75,11 +76,13 @@ after real self-leave or admin removal.
    administrator-restore boundary without redemption; have an administrator
    restore that stable row, then verify membership-backed navigation resumes.
 6. Create or locate an unexpected legacy account with zero active memberships.
-   In self-service mode, verify password, OAuth, connect-token, or refresh
-   re-entry repairs once and then `/me` exposes only the new live membership.
-   In invitation-only mode, verify each re-entry path stays at the invitation
-   boundary with no Team side effects. A suspended account must stay closed;
-   only after explicit reactivation may the applicable repair policy run.
+   In self-service mode, verify password, connect-token, refresh, and ordinary
+   account re-entry stay at the membership-repair boundary with no Team side
+   effects. Verify only the eligible solo OAuth bootstrap may create a personal
+   Team. In invitation-only mode, verify every re-entry path stays at the
+   invitation boundary with no Team side effects. A suspended account must stay
+   closed, and explicit reactivation still requires authorized membership
+   repair before normal navigation resumes.
 7. Probe unsupported physical lifecycle routes for Team deletion/reactivation
    and account deletion/reactivation. Verify they remain unavailable and do not
    change memberships, users, Teams, or identity mirrors.
@@ -97,7 +100,7 @@ that no organization or active membership was inserted.
 
 - `PASS` requires every exercised Team-scoped surface to be backed by a live
   membership and no hidden Team creation in invitation-only mode.
-- A duplicate personal Team, stale Team workspace render, identity deletion,
+- Any unauthorized Team creation, stale Team workspace render, identity deletion,
   orphaned managed agent, or token/selection-based authorization is `FAIL`.
 - Missing invitation configuration, inability to create task-owned lifecycle
   fixtures, or unavailable browser/session evidence is `BLOCKED` for the

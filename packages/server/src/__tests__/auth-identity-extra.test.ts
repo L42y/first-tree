@@ -1,8 +1,9 @@
 import { githubExternalProfile, googleExternalProfile } from "@first-tree/shared";
 import bcrypt from "bcrypt";
 import { eq } from "drizzle-orm";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
-import { connectDatabase } from "../db/connection.js";
+import { connectDatabase, sslOptions } from "../db/connection.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { users } from "../db/schema/users.js";
 import { requireAgent } from "../middleware/require-identity.js";
@@ -26,6 +27,25 @@ import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 const ENCRYPTION_KEY = "0".repeat(64);
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type FROM pg_stat_activity
+      WHERE datname = current_database() AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
+}
 
 describe("auth identity extra coverage", () => {
   const getApp = useTestApp();
@@ -390,6 +410,64 @@ describe("auth identity extra coverage", () => {
     } finally {
       await firstDb.end();
       await secondDb.end();
+    }
+  });
+
+  it("rejects a unique-conflict fallback after suspension wins the stable user fence", async () => {
+    const app = getApp();
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const target = await createTestAdmin(app, { username: `link-fallback-suspend-${crypto.randomUUID().slice(0, 8)}` });
+    const subject = `gh-link-fallback-${crypto.randomUUID()}`;
+    const profile = githubExternalProfile({
+      id: subject,
+      login: "stale-fallback-profile",
+      metadata: { marker: "stale-fallback" },
+    });
+    const linkApplicationName = `identity_link_${crypto.randomUUID().slice(0, 8)}`;
+    const suspensionApplicationName = `identity_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const linkDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, linkApplicationName));
+    const suspensionDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, suspensionApplicationName));
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const winnerId = uuidv7();
+    let blockerCommitted = false;
+    try {
+      await blocker`BEGIN`;
+      await blocker`
+        INSERT INTO auth_identities (id, user_id, provider, identifier, metadata)
+        VALUES (${winnerId}, ${target.userId}, 'github', ${subject}, ${JSON.stringify({ marker: "winner" })}::jsonb)
+      `;
+
+      const linking = linkExternalIdentity(linkDb, target.userId, profile).then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await waitForPostgresLockWait(observer, linkApplicationName);
+      const suspension = Promise.resolve(
+        suspensionDb.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId)),
+      );
+      await waitForPostgresLockWait(observer, suspensionApplicationName);
+
+      await blocker`COMMIT`;
+      blockerCommitted = true;
+      await suspension;
+      const result = await linking;
+
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected")
+        expect(result.error).toMatchObject({ message: expect.stringMatching(/suspended/i) });
+      const [stored] = await app.db
+        .select({ metadata: authIdentities.metadata })
+        .from(authIdentities)
+        .where(eq(authIdentities.id, winnerId));
+      expect(stored?.metadata).toEqual({ marker: "winner" });
+    } finally {
+      if (!blockerCommitted) await blocker`ROLLBACK`;
+      await linkDb.end();
+      await suspensionDb.end();
+      await blocker.end();
+      await observer.end();
     }
   });
 

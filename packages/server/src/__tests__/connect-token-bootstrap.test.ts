@@ -518,7 +518,7 @@ describe("POST /me/connect-tokens bootstrap command", () => {
       expect(res.json<{ error: string }>().error).toMatch(/suspended/);
     });
 
-    it("repairs a short connect code exchange when all memberships were removed after mint", async () => {
+    it("stops a short connect code exchange at repair when all memberships were removed after mint", async () => {
       const app = getApp();
       const admin = await createTestAdmin(app);
       const minted = await app.inject({
@@ -535,16 +535,13 @@ describe("POST /me/connect-tokens bootstrap command", () => {
         payload: { token: body.token },
       });
 
-      expect(res.statusCode).toBe(200);
-      expect(res.json<{ accessToken: string; refreshToken: string }>()).toMatchObject({
-        accessToken: expect.any(String),
-        refreshToken: expect.any(String),
-      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toMatchObject({ code: "membership-repair-required" });
       const activeMemberships = await app.db
         .select({ id: members.id })
         .from(members)
         .where(and(eq(members.userId, admin.userId), eq(members.status, "active")));
-      expect(activeMemberships).toHaveLength(1);
+      expect(activeMemberships).toHaveLength(0);
     });
 
     it("does not repair a short connect code exchange in invitation-only mode", async () => {

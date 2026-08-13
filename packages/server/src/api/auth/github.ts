@@ -12,6 +12,7 @@ import {
   findOrCreateGithubAccount,
   type GithubProfile,
   type GithubTokenBundle,
+  IdentityAccountInactiveError,
   IdentityConflictError,
   IdentityMismatchError,
   LastIdentityError,
@@ -373,6 +374,8 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
         app.log.info({ event: "identity.unlinked", provider: "github", userId: stateUserId }, "Identity unlinked");
         return reply.redirect(`${ACCOUNT_RETURN_PATH}?connection=github-unlinked`, 302);
       } catch (error) {
+        if (error instanceof IdentityAccountInactiveError)
+          return reply.redirect(withQueryParam(next, "error", "account-inactive"), 302);
         if (error instanceof IdentityConflictError)
           return reply.redirect(withQueryParam(next, "error", "identity-conflict"), 302);
         if (error instanceof IdentityMismatchError)

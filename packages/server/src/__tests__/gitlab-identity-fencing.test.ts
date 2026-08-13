@@ -262,7 +262,7 @@ describe("GitLab identity authority fencing", () => {
             app.db,
             fixture.admin.memberId,
             MEMBER_STATUSES.LEFT,
-            MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+            MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
           )
     ).then(() => {
       transitionSettled = true;
@@ -593,7 +593,7 @@ describe("GitLab identity authority fencing", () => {
           app.db,
           fixture.admin.memberId,
           MEMBER_STATUSES.LEFT,
-          MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+          MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
         );
       }
       transitionSettled = true;

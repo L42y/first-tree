@@ -8,6 +8,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   findOrCreateUserFromExternalAccount,
+  IdentityAccountInactiveError,
   IdentityConflictError,
   IdentityMismatchError,
   LastIdentityError,
@@ -138,6 +139,8 @@ export async function googleOauthRoutes(app: FastifyInstance): Promise<void> {
         app.log.info({ event: "identity.unlinked", provider: "google", userId: verified.userId }, "Identity unlinked");
         return reply.redirect(`${ACCOUNT_RETURN_PATH}?connection=google-unlinked`, 302);
       } catch (error) {
+        if (error instanceof IdentityAccountInactiveError)
+          return reply.redirect(`${ACCOUNT_RETURN_PATH}?error=account-inactive`, 302);
         if (error instanceof IdentityConflictError)
           return reply.redirect(`${ACCOUNT_RETURN_PATH}?error=identity-conflict`, 302);
         if (error instanceof IdentityMismatchError)

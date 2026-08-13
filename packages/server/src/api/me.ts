@@ -21,7 +21,7 @@ import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { ConflictError, ForbiddenError, NotFoundError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../errors.js";
 import { requireUser } from "../scope/require-user.js";
 import {
   listAgentsManagedByUser,
@@ -323,7 +323,14 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       // repair transition. If anything changed while the later projections
       // were built, fail closed and let the client retry instead of returning
       // a Team whose membership is already revoked.
-      await lockMembershipLifecycleUser(tx, userId);
+      const lockedUser = await lockMembershipLifecycleUser(tx, userId);
+      if (lockedUser.status !== "active") {
+        throw new UnauthorizedError("User not found or suspended", {
+          "auth.failure_reason": "user_suspended",
+          "auth.user_id": userId,
+          "auth.user_status": lockedUser.status,
+        });
+      }
       const current = await tx
         .select({ id: members.id })
         .from(members)

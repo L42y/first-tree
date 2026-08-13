@@ -685,7 +685,7 @@ describe("GitLab Stage 3 personnel routing", () => {
       app.db,
       setup.admin.memberId,
       MEMBER_STATUSES.LEFT,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
     const [leftLink] = await app.db.select().from(gitlabIdentityLinks).where(eq(gitlabIdentityLinks.id, setup.link.id));
     expect(leftLink).toMatchObject({ state: "suspended" });
@@ -766,7 +766,7 @@ describe("GitLab Stage 3 personnel routing", () => {
       app.db,
       setup.admin.memberId,
       MEMBER_STATUSES.LEFT,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
     expect((await app.db.select().from(gitlabEntityChatMappings).where(mappingScope)).every((row) => !row.active)).toBe(
       true,
@@ -820,7 +820,7 @@ describe("GitLab Stage 3 personnel routing", () => {
       app.db,
       setup.admin.memberId,
       setup.admin.organizationId,
-      MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
     );
     const [link] = await app.db.select().from(gitlabIdentityLinks).where(eq(gitlabIdentityLinks.id, setup.link.id));
     expect(link).toMatchObject({ state: "suspended" });

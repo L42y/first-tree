@@ -1047,7 +1047,7 @@ describe("Members API", () => {
         // member held by repair. A table-wide repair transaction would next
         // wait for that admin while retaining the target, forming a cycle.
         const removal = memberService
-          .deleteMember(removalDb, target.id, organization.id, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM)
+          .deleteMember(removalDb, target.id, organization.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED)
           .then(
             (value) => ({ status: "fulfilled" as const, value }),
             (error: unknown) => ({ status: "rejected" as const, error }),
@@ -1142,7 +1142,7 @@ describe("Members API", () => {
       });
 
       await expect(
-        memberService.deleteMember(app.db, target.id, org.id, MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM),
+        memberService.deleteMember(app.db, target.id, org.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
       ).rejects.toThrow(/another admin/i);
     });
 
@@ -1155,7 +1155,7 @@ describe("Members API", () => {
           app.db,
           admin.memberId,
           admin.organizationId,
-          MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+          MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
         ),
       ).rejects.toThrow(/last admin/i);
     });

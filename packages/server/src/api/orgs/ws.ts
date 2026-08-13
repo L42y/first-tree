@@ -1,6 +1,6 @@
 import { AGENT_STATUSES, AGENT_VISIBILITY, type AgentChatStatus } from "@first-tree/shared";
 import { and, eq, inArray, ne, or } from "drizzle-orm";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { jwtVerify } from "jose";
 import type { WebSocket } from "ws";
 import type { Database } from "../../db/connection.js";
@@ -19,10 +19,31 @@ import { getChatAgentStatuses } from "../../services/chat/sessions/status.js";
 import type { Notifier } from "../../services/notifier.js";
 
 const log = createLogger("OrgWs");
-const ADMIN_WS_ROUTE_OPTIONS = {
-  websocket: true,
-  config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
-} as const;
+
+function adminWsRouteOptions(secret: Uint8Array) {
+  return {
+    websocket: true,
+    config: {
+      rateLimit: {
+        max: 60,
+        timeWindow: "1 minute",
+        keyGenerator: async (request: FastifyRequest): Promise<string> => {
+          const token = (request.query as Record<string, string | undefined>).token;
+          if (token) {
+            try {
+              const { payload } = await jwtVerify(token, secret);
+              if (payload.type === "access" && typeof payload.sub === "string") return `user:${payload.sub}`;
+            } catch {
+              // Invalid and expired credentials remain in the unauthenticated
+              // client-IP bucket so hostile handshakes are still capped.
+            }
+          }
+          return `ip:${request.ip}`;
+        },
+      },
+    },
+  } as const;
+}
 
 /**
  * Class B — `/api/v1/orgs/:orgId/ws`. Real-time admin push channel.
@@ -321,7 +342,7 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string): (app: Fastif
   }
 
   return async (app: FastifyInstance): Promise<void> => {
-    app.get<{ Params: { orgId: string } }>("/", ADMIN_WS_ROUTE_OPTIONS, async (socket, request) => {
+    app.get<{ Params: { orgId: string } }>("/", adminWsRouteOptions(secret), async (socket, request) => {
       const ua = request.headers["user-agent"];
       startWsConnectionSpan(socket, {
         remoteIp: request.ip,

@@ -130,7 +130,7 @@ describe("GET /api/v1/me", () => {
         removalDb,
         account.memberId,
         MEMBER_STATUSES.REMOVED,
-        MEMBERSHIP_RECOVERY_POLICIES.PERSONAL_TEAM,
+        MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
       );
       await waitForApplicationLock(observer, removalApplicationName);
 
@@ -157,6 +157,57 @@ describe("GET /api/v1/me", () => {
     }
   });
 
+  it("never returns a Team snapshot after the account is suspended during response construction", async () => {
+    const app = getApp();
+    const account = await createTestAdmin(app, { username: `me-suspend-race-${crypto.randomUUID().slice(0, 8)}` });
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const suspensionApplicationName = `me_suspension_${crypto.randomUUID().slice(0, 8)}`;
+    const suspensionDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, suspensionApplicationName));
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    let releaseBlocker = (): void => undefined;
+    const blockerRelease = new Promise<void>((resolve) => {
+      releaseBlocker = resolve;
+    });
+    let blockerReady = (): void => undefined;
+    const ready = new Promise<void>((resolve) => {
+      blockerReady = resolve;
+    });
+    try {
+      const blockingTransaction = blocker.begin(async (tx) => {
+        await tx.unsafe("SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE", [account.userId]);
+        blockerReady();
+        await blockerRelease;
+      });
+      await ready;
+
+      const suspension = Promise.resolve(
+        suspensionDb.update(users).set({ status: "suspended" }).where(eq(users.id, account.userId)),
+      );
+      await waitForApplicationLock(observer, suspensionApplicationName);
+
+      const meResponse = app.inject({
+        method: "GET",
+        url: "/api/v1/me",
+        headers: { authorization: `Bearer ${account.accessToken}` },
+      });
+      await waitForMeLifecycleLock(observer, suspensionApplicationName);
+      releaseBlocker();
+      await blockingTransaction;
+      await suspension;
+      const response = await meResponse;
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toMatchObject({ error: "User not found or suspended" });
+    } finally {
+      releaseBlocker();
+      await suspensionDb.end();
+      await blocker.end();
+      await observer.end();
+    }
+  });
+
   it("rejects unauthenticated request", async () => {
     const app = getApp();
     const res = await app.inject({
@@ -171,11 +222,12 @@ describe("first Team provisioning surface", () => {
   const getApp = useTestApp();
 
   /**
-   * Sign-in owns the personal Team, so nothing creates a Team together with a
-   * first Agent; Agent creation is Team-scoped (`POST /orgs/:orgId/agents`) for
-   * every caller. Routing resolves before auth, so this is a tripwire against
-   * re-registering that exact path — not a claim about behavior. What the
-   * invariant itself rests on is asserted in `oauth-bootstrap.test.ts`.
+   * Eligible solo OAuth bootstrap owns the personal Team, so nothing creates a
+   * Team together with a first Agent; Agent creation is Team-scoped
+   * (`POST /orgs/:orgId/agents`) for every caller. Routing resolves before auth,
+   * so this is a tripwire against re-registering that exact path — not a claim
+   * about behavior. The bootstrap exception is asserted in
+   * `oauth-bootstrap.test.ts`.
    */
   it("does not route the retired user-scoped first-Team Agent path", async () => {
     const app = getApp();

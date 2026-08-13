@@ -278,7 +278,7 @@ export async function signTokensForActiveUser(
         [`${attrPrefix}.user_status`]: user.status,
       });
     }
-    if (membership.kind === "invitation-required") {
+    if (membership.kind === "invitation-required" || membership.kind === "repair-required") {
       throw new UnauthorizedError(
         attrPrefix === "auth.login" ? "No organization membership found" : "No active membership",
         {
