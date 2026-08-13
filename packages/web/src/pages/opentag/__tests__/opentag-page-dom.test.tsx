@@ -1136,7 +1136,13 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     // new intent and must not fire the request again.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      api.getAgentFeishuBinding.mockResolvedValue({ binding: feishuBinding({ registrationUrl: "https://f.test/c" }) });
+      // The same Computer throughout: this is about re-renders, not a move.
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: feishuBinding({
+          registrationUrl: "https://f.test/c",
+          cli: { state: "missing", version: null, clientId: "client-1" },
+        }),
+      });
       const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
       expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
 
@@ -1372,6 +1378,10 @@ describe("OpenTag entry — whose setup this step is finishing", () => {
       // to do, and the outstanding half is the member's own confirmation.
       expect(container.textContent).not.toContain("Try again");
       expect(container.textContent).not.toContain("Try the automatic setup again");
+      // And the heading must not contradict the row right beside it, which
+      // reports the Computer as ready.
+      expect(container.textContent).toContain("Feishu hasn't confirmed the Bot yet");
+      expect(container.textContent).not.toContain("Computer is still preparing");
     } finally {
       vi.useRealTimers();
     }
@@ -1420,6 +1430,69 @@ describe("OpenTag entry — whose setup this step is finishing", () => {
       // Both halves are outstanding, so the panel keeps naming both.
       expect(container.textContent).toContain("Preparing First Tree for Feishu…");
       expect(container.textContent).not.toContain("Finishing Agent tools…");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("OpenTag entry — the Agent's Feishu tools across a change of Computer", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("asks again for the machine the Agent moved to", async () => {
+    // The Task the server keeps is keyed to one Agent on one Computer. A guard
+    // that only remembered "we asked once" would leave a member who moved their
+    // Agent waiting for a check nobody requested on the new machine.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
+      });
+      await renderAt(`/opentag?agent=${AGENT_UUID}`);
+      expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
+
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-2" } }),
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(11_000);
+      });
+      await flush();
+
+      expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(2);
+      expect(api.createAgentFeishuSetupChat).toHaveBeenLastCalledWith(AGENT_UUID, { retry: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops offering a way out once the handoff works, however it got there", async () => {
+    // The Agent can recover on its own after a failed request. Leaving the
+    // recovery up would sit beside an invitation to go and use a Bot that is
+    // already working.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getAgentFeishuBinding.mockResolvedValue({
+        binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
+      });
+      api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
+
+      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+      await flush();
+      expect(container.textContent).toContain("You are not stuck here.");
+
+      api.getAgentFeishuBinding.mockResolvedValue({ binding: usableBinding() });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(11_000);
+      });
+      await flush();
+
+      expect(container.textContent).not.toContain("You are not stuck here.");
+      expect(container.textContent).not.toContain("taking longer");
+      expect(container.textContent).toContain("a private message or an exact group mention");
     } finally {
       vi.useRealTimers();
     }

@@ -1,6 +1,7 @@
 import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
+import { feishuStepDelayedCopy } from "../copy.js";
 import {
   classifyOpenTagAgent,
   isFeishuHandoffUsable,
@@ -286,13 +287,14 @@ describe("what the Feishu step is showing and what it offers", () => {
   });
 
   it("offers nothing once the handoff actually works", () => {
-    // A long wait that ended well is not a problem to recover from.
-    const state = resolveOpenTagFeishuStep({
-      binding: { ...BINDING, cli: READY_CLI },
-      callFailed: false,
-      slow: true,
-    });
-    expect(state.recovery).toBe("none");
+    // A long wait that ended well is not a problem to recover from — and
+    // neither is one that started with a failed request and then converged.
+    // The Agent may well have recovered on its own; offering a way out beside
+    // an invitation to go and use the Bot would contradict it.
+    const usable = { ...BINDING, cli: READY_CLI };
+    expect(resolveOpenTagFeishuStep({ binding: usable, callFailed: false, slow: true }).recovery).toBe("none");
+    expect(resolveOpenTagFeishuStep({ binding: usable, callFailed: true, slow: false }).recovery).toBe("none");
+    expect(resolveOpenTagFeishuStep({ binding: usable, callFailed: true, slow: true }).recovery).toBe("none");
   });
 });
 
@@ -336,5 +338,21 @@ describe("when the Feishu handoff is genuinely usable", () => {
   it("refuses a ready Computer with no reachable Bot", () => {
     expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
     expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(false);
+  });
+});
+
+describe("what the delayed step says is outstanding", () => {
+  it("names the Computer only while the Computer is the thing left", () => {
+    expect(feishuStepDelayedCopy(true, false).lead).toContain("Your Feishu Bot is connected.");
+    expect(feishuStepDelayedCopy(false, false).lead).toContain("still preparing the tools");
+  });
+
+  it("does not claim the Computer is busy when the rows beside it say it is ready", () => {
+    // The Bot-stuck state reports a ready Agent in its readiness row and
+    // withholds the retry. A heading saying the Computer is still preparing
+    // would contradict both.
+    const copy = feishuStepDelayedCopy(false, true);
+    expect(copy.lead).not.toContain("still preparing");
+    expect(copy.lead).toContain("Feishu hasn't confirmed the Bot yet");
   });
 });

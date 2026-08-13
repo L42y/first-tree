@@ -14,7 +14,7 @@ import {
 } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
-import { feishuToolsDelayedCopy } from "./copy.js";
+import { feishuStepDelayedCopy } from "./copy.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
@@ -261,17 +261,25 @@ export function OpenTagPage(): ReactElement | null {
     mutationFn: (args: { retry: boolean }) => createAgentFeishuSetupChat(agentUuid ?? "", args),
   });
   const prepareToolsMutate = prepareTools.mutate;
-  const prepareToolsSettled = prepareTools.isPending || prepareTools.isSuccess || prepareTools.isError;
   // Ownership, not readability, licenses this. An admin may legitimately open a
   // teammate's Agent here, but their visit is not that member's setup: starting
   // work on somebody else's Computer just by looking at a page is a side effect
   // nobody asked for. The same rule already governs the reads and the stamp
   // below.
   const preparesTools = feishuReady && ownsUrlAgent && !!binding && binding.cli.state !== "ready";
+  // Asked once per Agent and Computer, not once per page. The Task the server
+  // creates is keyed to that exact pair, so an Agent that moves machine while
+  // this page is open needs the check on the new one — and a mutation flag that
+  // only remembers "we asked something, once" would leave that member waiting
+  // for work nobody requested.
+  const toolsIdentity = binding ? `${agentUuid ?? ""}:${binding.cli.clientId ?? "unbound"}` : null;
+  const [askedToolsFor, setAskedToolsFor] = useState<string | null>(null);
   useEffect(() => {
-    if (!preparesTools || prepareToolsSettled) return;
+    if (!preparesTools || !toolsIdentity || prepareTools.isPending) return;
+    if (askedToolsFor === toolsIdentity) return;
+    setAskedToolsFor(toolsIdentity);
     prepareToolsMutate({ retry: false });
-  }, [preparesTools, prepareToolsSettled, prepareToolsMutate]);
+  }, [preparesTools, toolsIdentity, askedToolsFor, prepareTools.isPending, prepareToolsMutate]);
 
   // The clock starts when the member commits to Feishu, not when the automatic
   // request goes out. Both halves can strand somebody — a Bot that is never
@@ -420,7 +428,7 @@ export function OpenTagPage(): ReactElement | null {
   // would keep asking for something the member already did.
   const feishuHeading =
     step === "connect-feishu" && feishuReady && feishuStep.recovery === "offered"
-      ? feishuToolsDelayedCopy(!!binding && isFeishuBotReachable(binding))
+      ? feishuStepDelayedCopy(!!binding && isFeishuBotReachable(binding), feishuStep.tools.state === "ready")
       : undefined;
 
   return (

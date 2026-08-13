@@ -211,11 +211,16 @@ export function resolveOpenTagFeishuStep(input: {
             ? { state: "recoverable", reason: "slow" }
             : { state: "preparing" };
 
-  // A finished handoff has nothing to recover from, and a wait that has not run
-  // long yet is still an ordinary wait. A failed request is neither: it is
-  // established, so it never waits for the clock.
-  const stranded = input.slow && !isFeishuHandoffUsable(input.binding);
-  const recovery = input.callFailed || stranded ? "offered" : "none";
+  // A finished handoff has nothing to recover from — including one that got
+  // there after a failed request, because the Agent may well have recovered on
+  // its own. Readiness outranks the history that produced it, or the member
+  // would be offered a way out of something that already worked, beside an
+  // invitation to go and use it.
+  //
+  // Short of that, a wait that has not run long yet is still an ordinary wait,
+  // while a failed request is established and never waits for the clock.
+  const usable = isFeishuHandoffUsable(input.binding);
+  const recovery = !usable && (input.callFailed || input.slow) ? "offered" : "none";
   return { tools, recovery, canRetryTools: recovery === "offered" && !toolsReady };
 }
 
