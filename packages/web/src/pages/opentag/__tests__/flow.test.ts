@@ -1,7 +1,8 @@
 import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
+import { isFeishuHandoffUsable } from "../../../features/feishu/binding-view.js";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
-import { classifyOpenTagAgent, isFeishuHandoffUsable, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
+import { classifyOpenTagAgent, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
 
 const ORG = "org-1";
 

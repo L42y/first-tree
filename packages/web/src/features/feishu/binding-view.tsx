@@ -57,6 +57,15 @@ export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
 }
 
 /**
+ * Whether the Agent's Feishu handoff is configured to carry work. Both halves
+ * have to hold: the Bot must receive messages and the CLI must be ready to
+ * answer them. Agent lifecycle is a separate caller-owned constraint.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  return !!binding && isFeishuBotReachable(binding) && binding.cli.state === "ready";
+}
+
+/**
  * The registration QR the member scans in Feishu, plus the same destination as
  * a link for anyone who is already signed in on this device.
  */

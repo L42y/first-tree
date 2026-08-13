@@ -2,6 +2,7 @@ import type {
   Agent,
   AgentResourcesOutput,
   AgentRuntimeConfig,
+  FeishuBotBinding,
   UsageAgentSummary,
   UsageTurnsResponse,
 } from "@first-tree/shared";
@@ -9,6 +10,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Outlet, Route, Routes } from "react-router";
 import { ResourceTypeSection } from "./agent-detail/capability-section.js";
+import { FeishuSection } from "./agent-detail/feishu-section.js";
 import type { AgentDetailContext } from "./agent-detail/layout-context.js";
 import { PromptTab } from "./agent-detail/prompt-tab.js";
 import { ResourcesTab } from "./agent-detail/resources-tab.js";
@@ -380,6 +382,26 @@ const CONFIG: AgentRuntimeConfig = {
   updatedBy: "member-self",
 };
 
+const FEISHU_BINDING: FeishuBotBinding = {
+  id: "binding-preview",
+  agentId: UUID,
+  appId: "cli_preview",
+  botOpenId: "ou_preview",
+  botName: "Vega · First Tree",
+  botAvatarUrl: null,
+  tenantKey: "tenant-preview",
+  status: "active",
+  connectionStatus: "connected",
+  grantedScopes: [],
+  registrationUrl: null,
+  registrationExpiresAt: null,
+  lastConnectedAt: NOW,
+  lastEventAt: NOW,
+  lastErrorCode: null,
+  lastErrorMessage: null,
+  cli: { state: "ready", version: "1.2.3", clientId: "client-preview" },
+};
+
 // Usage tab sample data — crafted to exercise the slimmed Recent turns table:
 // a long chat title (truncates), a non-default model (claude-haiku) next to the
 // dominant one, and big token counts (compact in-cell, exact on hover).
@@ -465,6 +487,7 @@ function buildClient(): QueryClient {
     },
   });
   client.setQueryData(["agent-resources", UUID], RESOURCES);
+  client.setQueryData(["agent-feishu-binding", UUID], { binding: FEISHU_BINDING });
   client.setQueryData(["usage-summary", UUID, "30d"], USAGE_SUMMARY);
   client.setQueryData(["usage-turns", UUID, "30d", 10], USAGE_TURNS);
   return client;
@@ -496,6 +519,17 @@ export function AgentDetailPreviewPage() {
             Seeded resource and runtime content for visual QA. Validate the shared shell, responsive navigation, and
             keyboard behavior on the real Agent Detail route rather than duplicating them here.
           </p>
+
+          <h2 className="text-title m-0" style={{ color: "var(--fg)", marginTop: "var(--sp-8)" }}>
+            Channels section
+          </h2>
+          <p className="text-body" style={{ color: "var(--fg-3)", marginTop: "var(--sp-1)" }}>
+            The aggregate state answers whether teammates can reach this Agent and receive a reply before technical Bot
+            and CLI details.
+          </p>
+          <div style={{ marginTop: "var(--sp-4)", marginBottom: "var(--sp-8)" }}>
+            <TabHost element={<FeishuSection poll={false} />} />
+          </div>
 
           <h2 className="text-title m-0" style={{ color: "var(--fg)", marginTop: "var(--sp-8)" }}>
             Repositories section

@@ -11,6 +11,7 @@ import { ToastProvider } from "./components/ui/toast.js";
 import { PulseProvider } from "./hooks/pulse-context.js";
 import { useMobileExperienceState } from "./hooks/use-mobile-experience.js";
 import { useContextTreeSetupPreviewBootstrapState } from "./hooks/use-server-channel.js";
+import { ChannelsTab } from "./pages/agent-detail/channels-tab.js";
 import { ProfileTab } from "./pages/agent-detail/profile-tab.js";
 import { PromptTab } from "./pages/agent-detail/prompt-tab.js";
 import { RepositoriesTab } from "./pages/agent-detail/repositories-tab.js";
@@ -512,6 +513,7 @@ export function App() {
                   <Route path="agents/:uuid" element={<AgentDetailPage />}>
                     <Route index element={<Navigate to="profile" replace />} />
                     <Route path="profile" element={<ProfileTab />} />
+                    <Route path="channels" element={<ChannelsTab />} />
                     <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
                     <Route path="runtime" element={<RuntimeTab />} />
                     <Route path="prompt" element={<PromptTab />} />

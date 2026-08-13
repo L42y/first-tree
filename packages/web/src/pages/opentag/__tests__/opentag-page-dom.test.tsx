@@ -1260,7 +1260,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     expect(container.textContent).not.toContain("Preparing this computer in the background");
     expect(button(container, "Try again").disabled).toBe(false);
     // Leaving lands on the Agent's own page — the one permanent repair entry.
-    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)?.textContent).toContain("Finish later");
     // Leaving does not finish onboarding, and it is not the first task.
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("has its first task from Feishu");
@@ -1317,7 +1317,7 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
 
       expect(container.textContent).toContain("You are not stuck here.");
       expect(button(container, "Try again").disabled).toBe(false);
-      expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)).not.toBeNull();
+      expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)).not.toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -1428,7 +1428,9 @@ describe("OpenTag entry — whose setup this step is finishing", () => {
       });
       await flush();
 
-      expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+      expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)?.textContent).toContain(
+        "Finish later",
+      );
       // Retrying the automatic preparation would be a lie: it has nothing left
       // to do, and the outstanding half is the member's own confirmation.
       expect(container.textContent).not.toContain("Try again");
@@ -1547,7 +1549,7 @@ describe("OpenTag entry — an Agent with no Computer to prepare", () => {
     expect(container.textContent).toContain("This agent has no computer yet.");
     expect(container.textContent).not.toContain("Preparing this computer in the background");
     // Offered immediately, and only the way out that can actually help.
-    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)?.textContent).toContain("Finish later");
     expect(container.textContent).not.toContain("Try again");
     // And nothing is asked of a Computer that does not exist.
     expect(api.createAgentFeishuSetupChat).not.toHaveBeenCalled();
@@ -1578,7 +1580,7 @@ describe("OpenTag entry — a Bot that failed", () => {
     await flush();
 
     expect(container.querySelector("[role='alert']")?.textContent).toContain("Feishu rejected the Bot credentials.");
-    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)?.textContent).toContain("Finish later");
     // The one standing heading has to hold here too: confirming is not the
     // outstanding action, and this member could not do it anyway.
     expect(container.textContent).not.toContain("Confirm the Bot in Feishu");
@@ -1610,7 +1612,7 @@ describe("OpenTag entry — retrying is scoped to the half it retries", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/channels']`)?.textContent).toContain("Finish later");
     expect(container.textContent).not.toContain("Try again");
     // One ensure call for the Computer, and nothing beyond it.
     expect(api.createAgentFeishuSetupChat).toHaveBeenCalledTimes(1);
