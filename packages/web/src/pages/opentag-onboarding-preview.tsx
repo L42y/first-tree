@@ -287,7 +287,15 @@ function RailGroup({
 
 function MobileProgress({ activeIndex }: { activeIndex: number }): ReactElement {
   return (
-    <div className="mb-10 grid grid-cols-4" style={{ gap: "var(--sp-2)" }} aria-label={`Step ${activeIndex + 1} of 4`}>
+    <div
+      className="mb-10 grid grid-cols-4"
+      role="progressbar"
+      aria-label="OpenTag setup progress"
+      aria-valuemin={1}
+      aria-valuemax={4}
+      aria-valuenow={activeIndex + 1}
+      style={{ gap: "var(--sp-2)" }}
+    >
       {PREVIEW_STEPS.map((step, index) => (
         <span
           key={step}
