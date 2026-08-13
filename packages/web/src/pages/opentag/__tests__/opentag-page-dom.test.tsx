@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import type { ComputerConnection } from "../../../features/agent-setup/use-computer-connection.js";
+import { FIRST_USE_POLL_MS } from "../first-use.js";
 import { OpenTagPage } from "../opentag-page.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -905,10 +906,40 @@ describe("OpenTag entry — real first use in Feishu", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
     // "We could not check" is not "not used yet", and it is certainly not
-    // "used" — the member stays where they were, and the poll retries.
+    // "used" — the member stays where they were.
     expect(markOnboardingCompleted).not.toHaveBeenCalled();
     expect(container.textContent).toContain("The Bot is connected.");
     expect(container.textContent).not.toContain("has its first task from Feishu");
+  });
+
+  it("recovers from a failed task read on the next poll", async () => {
+    // The half of the failure contract that the assertions above cannot show:
+    // a read error must be a pause, not a dead end. If the poll stopped at the
+    // first error, one transient 500 would strand the member on this step for
+    // the rest of the session with no way to retry — there is no button here,
+    // because the fact this waits on arrives from Feishu.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+      meChats.listMeChats.mockRejectedValueOnce(new ApiError(500, "boom"));
+      meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+      chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+      expect(meChats.listMeChats).toHaveBeenCalledTimes(1);
+      expect(markOnboardingCompleted).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIRST_USE_POLL_MS + 1_000);
+      });
+      await flush();
+
+      expect(meChats.listMeChats.mock.calls.length).toBeGreaterThan(1);
+      expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("converges on a reload after first use without creating anything a second time", async () => {
