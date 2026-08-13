@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -5,6 +6,7 @@ import {
   auditAuthorityBoundary,
   createClientBoundaryProgram,
   createInMemoryProgram,
+  createOverlaidClientProgram,
   fixtureDiagnostics,
   formatViolation,
   HOST_FILE,
@@ -565,6 +567,293 @@ describe("SessionRuntime authority boundary", () => {
       expect(diagnostics, diagnostics.join("\n")).toEqual([]);
       expect(violations, kinds(violations).join("\n")).toEqual([]);
     });
+  });
+
+  describe("compile-valid write-capability fixtures", () => {
+    it("catches a raw closure that pops the private pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            qaLeakPendingQueueMutator(): () => PendingMessage | undefined {
+              return () => this.pendingQueue.pop();
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakPendingQueueMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a constructor wrapper that stores the live pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          class QaLedgerBox<T> {
+            constructor(readonly value: T) {}
+          }
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            qaLeakPendingQueueBox(): QaLedgerBox<unknown[]> {
+              return new QaLedgerBox(this.pendingQueue);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" &&
+            hit.member === "qaLeakPendingQueueBox" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a frozen object capability that pops the private pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            qaLeakPendingQueueCapability(): { pop: () => PendingMessage | undefined } {
+              return Object.freeze({ pop: () => this.pendingQueue.pop() });
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakPendingQueueCapability" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches a nested slot-state mutator closure", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type SlotState = { deferredMessages: Array<{ id: string }> };
+          export class SlotSchedulerAuthority {
+            private slotBySession = new WeakMap<object, SlotState>();
+            private peekSlot(entry: object): SlotState | undefined {
+              return this.slotBySession.get(entry);
+            }
+            qaLeakDeferredMutator(entry: object): () => void {
+              return () => {
+                this.peekSlot(entry)?.deferredMessages.push({ id: "x" });
+              };
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakDeferredMutator" &&
+            /deferredMessages/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches bind of a container mutator on pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            qaBindPendingQueuePop(): () => PendingMessage | undefined {
+              return this.pendingQueue.pop.bind(this.pendingQueue);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaBindPendingQueuePop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("passes a read-only observation closure, detached copy, and fresh accumulator", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            observeLength(): () => number {
+              return () => this.pendingQueue.length;
+            }
+            copyLater(): () => Array<{ chatId: string }> {
+              return () => [...this.pendingQueue];
+            }
+            accumulateLater(): () => string[] {
+              return () => {
+                const out: string[] = [];
+                for (const item of this.pendingQueue) out.push(item.chatId);
+                return out;
+              };
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
+
+    it("catches the coordinator leaks when overlaid on the actual SlotSchedulerAuthority source", () => {
+      const original = readFileSync(join(clientRoot, "src/runtime/slot-scheduler-authority.ts"), "utf8");
+      const patched = original
+        .replace(
+          "export class SlotSchedulerAuthority {",
+          `class QaLedgerBox<T> {\n  constructor(readonly value: T) {}\n}\n\nexport class SlotSchedulerAuthority {`,
+        )
+        .replace(
+          /\n}\n$/,
+          `
+  qaLeakPendingQueueMutator(): () => PendingMessage | undefined {
+    return () => this.pendingQueue.pop();
+  }
+  qaLeakPendingQueueBox(): QaLedgerBox<unknown[]> {
+    return new QaLedgerBox(this.pendingQueue);
+  }
+  qaLeakPendingQueueCapability(): { pop: () => PendingMessage | undefined } {
+    return Object.freeze({ pop: () => this.pendingQueue.pop() });
+  }
+  qaLeakDeferredMutator(entry: SlotSchedulerSessionEntry): () => void {
+    return () => {
+      this.peekSlot(entry)?.deferredMessages.push({} as SessionMessage);
+    };
+  }
+  qaBindPendingQueuePop(): () => PendingMessage | undefined {
+    return this.pendingQueue.pop.bind(this.pendingQueue);
+  }
+}
+`,
+        );
+      expect(patched, "overlay must differ from frozen source").not.toEqual(original);
+      const program = createOverlaidClientProgram(clientRoot, {
+        "slot-scheduler-authority.ts": patched,
+      });
+      const diagnostics = fixtureDiagnostics(program, { "slot-scheduler-authority.ts": patched });
+      const violations = auditAuthorityBoundary(program, { requireCompleteInventory: true });
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakPendingQueueMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-identity-escape" &&
+            hit.member === "qaLeakPendingQueueBox" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakPendingQueueCapability" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakDeferredMutator" &&
+            /deferredMessages/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaBindPendingQueuePop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    }, 30_000);
   });
 
   describe("clean fixture", () => {

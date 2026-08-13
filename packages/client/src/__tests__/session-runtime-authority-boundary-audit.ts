@@ -136,7 +136,9 @@ const SESSION_ENTRY_TYPE_NAMES = new Set([
 ]);
 
 /** Newly added public methods are not implicitly trusted; these names keep accepted live observations. */
-const ACCEPTED_RETURN_CONTRACTS: Record<string, Partial<Record<string, "session-iterator" | "replay-fence-writer">>> = {
+type AcceptedReturnContract = "session-iterator" | "replay-fence-writer" | "route-producer-settle";
+
+const ACCEPTED_RETURN_CONTRACTS: Record<string, Partial<Record<string, AcceptedReturnContract>>> = {
   SessionProjectionAuthority: {
     sessionsValues: "session-iterator",
     sessionsEntries: "session-iterator",
@@ -144,7 +146,43 @@ const ACCEPTED_RETURN_CONTRACTS: Record<string, Partial<Record<string, "session-
   ResetReplayAuthority: {
     createHandlerReplayFenceWriter: "replay-fence-writer",
   },
+  RouteTeardownAuthority: {
+    registerRouteProducer: "route-producer-settle",
+  },
 };
+
+const READONLY_CONTAINER_METHODS = new Set([
+  "has",
+  "get",
+  "keys",
+  "values",
+  "entries",
+  "forEach",
+  "includes",
+  "indexOf",
+  "lastIndexOf",
+  "at",
+  "slice",
+  "map",
+  "filter",
+  "flatMap",
+  "find",
+  "findIndex",
+  "some",
+  "every",
+  "reduce",
+  "reduceRight",
+  "concat",
+  "join",
+  "flat",
+  "toSorted",
+  "toReversed",
+  "toSpliced",
+  "toString",
+  "toLocaleString",
+  "valueOf",
+  "with",
+]);
 
 /** Map.get / iteration values that are promises, primitives, or host SessionEntry — not live inner containers. */
 const SAFE_VALUE_LEDGERS = new Set([
@@ -206,6 +244,34 @@ export function createClientBoundaryProgram(clientRoot: string): ts.Program {
   }
   const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, clientRoot, { noEmit: true }, configPath);
   return ts.createProgram(parsed.fileNames, { ...parsed.options, noEmit: true });
+}
+
+export function createOverlaidClientProgram(clientRoot: string, overlays: Record<string, string>): ts.Program {
+  const configPath = ts.findConfigFile(clientRoot, ts.sys.fileExists, "tsconfig.json");
+  if (!configPath) {
+    throw new Error(`client tsconfig.json not found under ${clientRoot}`);
+  }
+  const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (configFile.error) {
+    throw new Error(ts.flattenDiagnosticMessageText(configFile.error.messageText, "\n"));
+  }
+  const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, clientRoot, { noEmit: true }, configPath);
+  const options = { ...parsed.options, noEmit: true };
+  const defaultHost = ts.createCompilerHost(options, true);
+  const overlayByBase = new Map(Object.entries(overlays).map(([name, text]) => [basename(name), text]));
+  const host: ts.CompilerHost = {
+    ...defaultHost,
+    fileExists: (fileName) => overlayByBase.has(basename(fileName)) || defaultHost.fileExists(fileName),
+    readFile: (fileName) => overlayByBase.get(basename(fileName)) ?? defaultHost.readFile(fileName),
+    getSourceFile: (fileName, languageVersion, onError, shouldCreate) => {
+      const overlay = overlayByBase.get(basename(fileName));
+      if (overlay !== undefined) {
+        return ts.createSourceFile(fileName, overlay, languageVersion, true, ts.ScriptKind.TS);
+      }
+      return defaultHost.getSourceFile(fileName, languageVersion, onError, shouldCreate);
+    },
+  };
+  return ts.createProgram(parsed.fileNames, options, host);
 }
 
 export function createInMemoryProgram(files: Record<string, string>): ts.Program {
@@ -911,7 +977,8 @@ type OriginTaint = {
     | "live-iterator"
     | "store"
     | "timer"
-    | "quarantine-record";
+    | "quarantine-record"
+    | "write-capability";
   name: string;
   via?: string;
 };
@@ -996,7 +1063,7 @@ function containsMutableContainer(type: ts.Type, checker: ts.TypeChecker): boole
 
 class ClassProvenanceAnalysis {
   private readonly ledgers: ReadonlySet<string>;
-  private readonly contract: Partial<Record<string, "session-iterator" | "replay-fence-writer">>;
+  private readonly contract: Partial<Record<string, AcceptedReturnContract>>;
   private readonly methodByName = new Map<string, ts.MethodDeclaration | ts.GetAccessorDeclaration>();
   private readonly summary = new Map<string, Provenance>();
   private readonly inFlight = new Set<string>();
@@ -1023,10 +1090,33 @@ class ClassProvenanceAnalysis {
   publicEscapeFindings(member: ts.MethodDeclaration | ts.GetAccessorDeclaration, methodName: string): AuditViolation[] {
     const provenance = this.summarizeMember(member, methodName);
     const findings: AuditViolation[] = [];
-    const allowedIterator = this.contract[methodName] === "session-iterator";
+    const contract = this.contract[methodName];
+    const allowedIterator = contract === "session-iterator";
     for (const taint of provenance.taints) {
       if (allowedIterator && taint.kind === "live-iterator" && taint.name === "sessions") continue;
-      if (this.contract[methodName] === "replay-fence-writer" && taint.kind === "store") continue;
+      if (
+        contract === "replay-fence-writer" &&
+        (taint.kind === "store" || (taint.kind === "write-capability" && taint.name === "replayFence"))
+      ) {
+        continue;
+      }
+      if (
+        contract === "route-producer-settle" &&
+        taint.kind === "write-capability" &&
+        taint.name === "routeProducers"
+      ) {
+        continue;
+      }
+      if (taint.kind === "write-capability") {
+        findings.push({
+          kind: "ledger-write-capability-escape",
+          file: fileLabel(this.source),
+          className: this.className,
+          member: methodName,
+          detail: `public method returns a callable that can mutate private ${taint.name}`,
+        });
+        continue;
+      }
       findings.push({
         kind: "ledger-identity-escape",
         file: fileLabel(this.source),
@@ -1135,15 +1225,24 @@ class ClassProvenanceAnalysis {
       for (const prop of current.properties) {
         if (ts.isSpreadAssignment(prop)) {
           taints.push(...this.exprProvenance(prop.expression, owner).taints);
-        } else if (ts.isPropertyAssignment(prop) && !ts.isFunctionLike(prop.initializer)) {
+        } else if (ts.isPropertyAssignment(prop)) {
           taints.push(...this.exprProvenance(prop.initializer, owner).taints);
         } else if (ts.isShorthandPropertyAssignment(prop)) {
           taints.push(...this.exprProvenance(prop.name, owner).taints);
+        } else if (
+          ts.isMethodDeclaration(prop) ||
+          ts.isGetAccessorDeclaration(prop) ||
+          ts.isSetAccessorDeclaration(prop)
+        ) {
+          taints.push(...this.callableProvenance(prop, owner).taints);
         }
       }
       return { taints: uniqueTaints(taints), freshContainer: taints.length === 0 };
     }
-    if (ts.isNewExpression(current)) return FRESH_PROVENANCE;
+    if (ts.isNewExpression(current)) return this.newExpressionProvenance(current, owner);
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      return this.callableProvenance(current, owner);
+    }
     if (ts.isCallExpression(current)) return this.callProvenance(current, owner);
     if (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
       return this.memberProvenance(current, owner);
@@ -1184,6 +1283,10 @@ class ClassProvenanceAnalysis {
         const arg = call.arguments[0];
         return arg ? this.exprProvenance(arg, owner) : FRESH_PROVENANCE;
       }
+      if (method === "bind" && ts.isPropertyAccessExpression(callee.expression)) {
+        const bound = this.capabilityFromReceiver(callee.expression.name.text, callee.expression.expression, owner);
+        if (bound) return bound;
+      }
       if (DETACH_METHODS.has(method)) {
         const receiver = this.exprProvenance(callee.expression, owner);
         if (method === "map" || method === "flatMap") {
@@ -1220,7 +1323,11 @@ class ClassProvenanceAnalysis {
       }
     }
     const argTaints: OriginTaint[] = [];
-    for (const arg of call.arguments) argTaints.push(...this.exprProvenance(arg, owner).taints);
+    for (const arg of call.arguments) {
+      const unwrapped = unwrap(arg);
+      if (ts.isArrowFunction(unwrapped) || ts.isFunctionExpression(unwrapped)) continue;
+      argTaints.push(...this.exprProvenance(arg, owner).taints);
+    }
     if (isPrimitiveLike(this.checker.getTypeAtLocation(call))) return FRESH_PROVENANCE;
     if (argTaints.length > 0) return { taints: uniqueTaints(argTaints), freshContainer: false };
     return EMPTY_PROVENANCE;
@@ -1529,6 +1636,128 @@ class ClassProvenanceAnalysis {
   private isThisReceiver(node: ts.Expression): boolean {
     const current = followInitializer(node, this.checker, new Set());
     return current.kind === ts.SyntaxKind.ThisKeyword;
+  }
+
+  private newExpressionProvenance(
+    expr: ts.NewExpression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const ctor = unwrap(expr.expression);
+    const name = ts.isIdentifier(ctor) ? ctor.text : "";
+    if (name === "Promise" || name === "Error") return FRESH_PROVENANCE;
+    if (name === "Set" || name === "Map" || name === "Array" || name === "WeakSet") {
+      const arg = expr.arguments?.[0];
+      if (!arg || ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) return FRESH_PROVENANCE;
+      return { taints: this.detachIterableIdentity(this.exprProvenance(arg, owner), arg), freshContainer: true };
+    }
+    const argTaints: OriginTaint[] = [];
+    for (const arg of expr.arguments ?? []) {
+      if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) continue;
+      argTaints.push(...this.exprProvenance(arg, owner).taints);
+    }
+    if (argTaints.length > 0) return { taints: uniqueTaints(argTaints), freshContainer: false };
+    return FRESH_PROVENANCE;
+  }
+
+  private callableProvenance(
+    fn:
+      | ts.ArrowFunction
+      | ts.FunctionExpression
+      | ts.MethodDeclaration
+      | ts.GetAccessorDeclaration
+      | ts.SetAccessorDeclaration,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const parts: Provenance[] = [];
+    if (!fn.body) return FRESH_PROVENANCE;
+    const visit = (node: ts.Node): void => {
+      if (ts.isReturnStatement(node) && node.expression) parts.push(this.exprProvenance(node.expression, owner));
+      if (ts.isYieldExpression(node) && node.expression) parts.push(this.exprProvenance(node.expression, owner));
+      const write = this.mutationAt(node, owner);
+      if (write) parts.push(write);
+      ts.forEachChild(node, visit);
+    };
+    if (ts.isBlock(fn.body)) visit(fn.body);
+    else {
+      parts.push(this.exprProvenance(fn.body, owner));
+      const write = this.mutationAt(unwrap(fn.body), owner);
+      if (write) parts.push(write);
+    }
+    return parts.length === 0 ? FRESH_PROVENANCE : mergeProvenance(parts);
+  }
+
+  private mutationAt(node: ts.Node, owner: ts.MethodDeclaration | ts.GetAccessorDeclaration): Provenance | undefined {
+    if (ts.isCallExpression(node)) {
+      const callee = unwrap(node.expression);
+      if (ts.isPropertyAccessExpression(callee)) {
+        return this.capabilityFromReceiver(callee.name.text, callee.expression, owner);
+      }
+    }
+    if (ts.isBinaryExpression(node) && ASSIGNMENT_KINDS.has(node.operatorToken.kind)) {
+      return this.capabilityFromAssigned(node.left, owner);
+    }
+    if (ts.isDeleteExpression(node)) return this.capabilityFromAssigned(node.expression, owner);
+    if (
+      (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+      (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)
+    ) {
+      return this.capabilityFromAssigned(node.operand, owner);
+    }
+    return undefined;
+  }
+
+  private capabilityFromAssigned(
+    target: ts.Expression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance | undefined {
+    const found = this.exprProvenance(target, owner).taints.filter(
+      (taint) =>
+        taint.kind === "ledger" ||
+        taint.kind === "slot-field" ||
+        taint.kind === "nested-container" ||
+        taint.kind === "slot-state" ||
+        taint.kind === "route-state" ||
+        taint.kind === "store" ||
+        taint.kind === "timer",
+    );
+    if (found.length === 0) return undefined;
+    return {
+      taints: uniqueTaints(found.map((taint) => ({ kind: "write-capability" as const, name: taint.name }))),
+      freshContainer: false,
+    };
+  }
+
+  private capabilityFromReceiver(
+    method: string,
+    receiver: ts.Expression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance | undefined {
+    const recv = this.exprProvenance(receiver, owner);
+    const storage = recv.taints.filter(
+      (taint) =>
+        taint.kind === "ledger" ||
+        taint.kind === "slot-field" ||
+        taint.kind === "nested-container" ||
+        taint.kind === "slot-state" ||
+        taint.kind === "route-state" ||
+        taint.kind === "store" ||
+        taint.kind === "timer",
+    );
+    if (storage.length === 0) return undefined;
+    if (CONTAINER_MUTATORS.has(method)) {
+      return {
+        taints: uniqueTaints(storage.map((taint) => ({ kind: "write-capability" as const, name: taint.name }))),
+        freshContainer: false,
+      };
+    }
+    const storeLike = storage.filter((taint) => taint.kind === "store" || taint.kind === "timer");
+    if (storeLike.length > 0 && !READONLY_CONTAINER_METHODS.has(method)) {
+      return {
+        taints: uniqueTaints(storeLike.map((taint) => ({ kind: "write-capability" as const, name: taint.name }))),
+        freshContainer: false,
+      };
+    }
+    return undefined;
   }
 }
 
