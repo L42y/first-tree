@@ -66,7 +66,7 @@ function AgentDetailPageView() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
-  const { memberId, role } = useAuth();
+  const { memberId, role, onboardingCompletedAt, currentMembership } = useAuth();
   // Narrow web viewports trade the local navigation rail for a section selector.
   const isNarrow = useWorkspaceViewport() === "narrow";
   const agentQuery = useQuery({
@@ -166,6 +166,10 @@ function AgentDetailPageView() {
   const [bindClientOpen, setBindClientOpen] = useState(false);
   const [bindClientSelected, setBindClientSelected] = useState<string>("");
   const [bindClientError, setBindClientError] = useState<string | null>(null);
+  const firstTeamAgentContinuation =
+    onboardingCompletedAt === null ? currentMembership?.firstTeamAgentContinuation : null;
+  const continuesFirstTeamAgent =
+    firstTeamAgentContinuation?.agentId === uuid && firstTeamAgentContinuation.status === "active";
   const clientsQuery = useQuery({
     queryKey: ["clients"],
     queryFn: listClients,
@@ -180,6 +184,9 @@ function AgentDetailPageView() {
       setBindClientOpen(false);
       setBindClientSelected("");
       setBindClientError(null);
+      if (continuesFirstTeamAgent) {
+        navigate(`/agents/${encodeURIComponent(uuid)}/profile`, { replace: true });
+      }
     },
     onError: (err) => setBindClientError(err instanceof Error ? err.message : String(err)),
   });

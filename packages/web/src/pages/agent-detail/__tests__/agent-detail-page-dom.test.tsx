@@ -343,6 +343,7 @@ async function renderDom(
   child: ReactElement,
   setup?: (queryClient: QueryClient) => void | Promise<void>,
   routeChildren?: {
+    profile?: ReactElement;
     prompt?: ReactElement;
     capabilities?: ReactElement;
     repositories?: ReactElement;
@@ -366,7 +367,7 @@ async function renderDom(
           <ToastProvider>
             <Routes>
               <Route path="/agents/:uuid" element={<AgentDetailPage />}>
-                <Route path="profile" element={child} />
+                <Route path="profile" element={routeChildren?.profile ?? child} />
                 <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
                 <Route path="prompt" element={routeChildren?.prompt ?? child} />
                 <Route path="capabilities" element={routeChildren?.capabilities ?? child} />
@@ -1556,7 +1557,66 @@ describe("AgentDetailPage", () => {
     await click(exactButtonByText(document.body, "Assign"));
     await waitForCondition(() => agentMocks.updateAgent.mock.calls.length > 0, "Expected bind mutation");
     expect(agentMocks.updateAgent).toHaveBeenCalledWith("agent-1", { clientId: "client-1" });
+    expect(first.container.textContent).toContain("Execution");
     await act(async () => first.root.unmount());
+  });
+
+  it("continues the exact first Team Agent from Runtime setup to its channel entry after first bind", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({
+      online: false,
+      clientId: null,
+      offlineSince: null,
+    });
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ clientId: null, runtimeState: null }));
+    agentMocks.updateAgent.mockResolvedValueOnce(agent({ clientId: "client-1", runtimeState: null }));
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />, undefined, {
+      profile: <LocationEchoWithBack />,
+    });
+    await waitForText(view.container, "No computer assigned");
+    await click(buttonByText(view.container, "Choose computer"));
+    await waitForText(document.body, "gandy-macbook");
+    await click(buttonByText(document.body, "gandy-macbook"));
+    await click(exactButtonByText(document.body, "Assign"));
+
+    await waitForText(view.container, "/agents/agent-1/profile");
+    expect(agentMocks.updateAgent).toHaveBeenCalledWith("agent-1", { clientId: "client-1" });
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("keeps a failed first-Team Runtime bind retryable before continuing to the channel entry", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
+    const { RuntimeTab } = await import("../runtime-tab.js");
+    agentConfigMocks.getAgentClientStatus.mockResolvedValueOnce({
+      online: false,
+      clientId: null,
+      offlineSince: null,
+    });
+    agentMocks.getAgent.mockResolvedValueOnce(agent({ clientId: null, runtimeState: null }));
+    agentMocks.updateAgent
+      .mockRejectedValueOnce(new Error("bind unavailable"))
+      .mockResolvedValueOnce(agent({ clientId: "client-1", runtimeState: null }));
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />, undefined, {
+      profile: <LocationEchoWithBack />,
+    });
+    await waitForText(view.container, "No computer assigned");
+    await click(buttonByText(view.container, "Choose computer"));
+    await waitForText(document.body, "gandy-macbook");
+    await click(buttonByText(document.body, "gandy-macbook"));
+    await click(exactButtonByText(document.body, "Assign"));
+
+    await waitForText(document.body, "bind unavailable");
+    expect(view.container.textContent).toContain("Execution");
+
+    await click(exactButtonByText(document.body, "Assign"));
+    await waitForText(view.container, "/agents/agent-1/profile");
+    expect(agentMocks.updateAgent).toHaveBeenCalledTimes(2);
+
+    await act(async () => view.root.unmount());
   });
 
   it("switches an agent runtime from the Runtime tab", async () => {
