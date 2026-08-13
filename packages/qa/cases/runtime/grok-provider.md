@@ -84,7 +84,7 @@ that case and the run-local plan, not this one.
   like any other failure: redelivery only when the turn is replay-safe, consumed-terminal when user-visible output
   or tool side effects already happened — never an unconditional abort/redelivery.
 - Discovery version gate: host-local model discovery resolves the binary through the launch-verified supported range
-  (`>=0.2.117 <0.3.0`), never the existence-only probe path; an out-of-range `grok` degrades the catalog to
+  (`>=0.2.117 <2.0.0`), never the existence-only probe path; an out-of-range `grok` degrades the catalog to
   `unavailable` instead of spawning the ACP handshake.
 - Context Tree I/O: in a chat whose agent has a bound Context Tree, have the agent read a tree node and edit a tree
   file; the Context tab must record repo-qualified read/write evidence for the native Grok file tools

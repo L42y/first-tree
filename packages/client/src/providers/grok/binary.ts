@@ -23,12 +23,15 @@ import {
 export { GROK_INSTALL_COMMAND };
 
 /**
- * Supported Grok Build CLI range for this integration. Verified against
- * `grok 0.2.117 (f1c06093089f)`; a resolved binary outside the range is a
- * deterministic configuration failure, never a transient one.
+ * Supported Grok Build CLI range for this integration. Live-verified against
+ * `grok 0.2.117 (f1c06093089f)`; the 1.x line is accepted because the official
+ * 1.0.0–1.0.3 changelog carries no ACP breaking changes. The exclusive 2.0.0
+ * ceiling keeps future unverified majors fail closed: a resolved binary
+ * outside the range is a deterministic configuration failure, never a
+ * transient one.
  */
 export const GROK_MIN_SUPPORTED_VERSION = "0.2.117";
-export const GROK_MAX_EXCLUSIVE_VERSION = "0.3.0";
+export const GROK_MAX_EXCLUSIVE_VERSION = "2.0.0";
 
 /**
  * `grok --version` smoke-check ceiling. Mirrors the cursor bound: a cold

@@ -261,7 +261,7 @@ available until the Client has the required pre-admission Job Object
 supervisor.
 
 The `grok` runtime drives an operator-installed Grok Build CLI
-(`>=0.2.117 <0.3.0`) over ACP on macOS or Linux. Install it with the official
+(`>=0.2.117 <2.0.0`) over ACP on macOS or Linux. Install it with the official
 script (`curl -fsSL https://x.ai/cli/install.sh | bash`), complete
 provider-owned authentication with `grok login`, and run
 `first-tree daemon probe` after installation to force immediate
