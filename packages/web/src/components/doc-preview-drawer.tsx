@@ -16,6 +16,7 @@ import { downloadAttachment, fetchAttachmentText, sha256Hex } from "../api/attac
 import { listChatMessages } from "../api/chats.js";
 import { attachmentIdFromHref } from "../lib/doc-preview-links.js";
 import { isNavigableWebHref } from "../lib/safe-href.js";
+import { ATTACHMENT_RETENTION_NOTE, isAttachmentGoneError } from "../lib/use-image-src.js";
 import { cn } from "../lib/utils.js";
 import { docAttachmentRefQueryKey, docMessageAttachmentRefsQueryKey } from "../pages/workspace/center/chat-view.js";
 import { Button } from "./ui/button.js";
@@ -290,7 +291,13 @@ export function DocPreviewDrawer() {
     try {
       await downloadAttachment(docAttachmentId, docRef?.filename ?? "document.md");
     } catch (error) {
-      setDownloadError(error instanceof Error ? error.message : "Download failed");
+      setDownloadError(
+        isAttachmentGoneError(error)
+          ? `Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).`
+          : error instanceof Error
+            ? error.message
+            : "Download failed",
+      );
     }
   }, [docAttachmentId, docRef]);
 
@@ -458,7 +465,11 @@ export function DocPreviewDrawer() {
           </div>
         ) : previewQuery.isError ? (
           <div className="rounded-[var(--radius-panel)] border border-error bg-error-soft p-4 text-body text-error">
-            {previewQuery.error instanceof Error ? previewQuery.error.message : "Unable to load document"}
+            {isAttachmentGoneError(previewQuery.error)
+              ? `Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).`
+              : previewQuery.error instanceof Error
+                ? previewQuery.error.message
+                : "Unable to load document"}
           </div>
         ) : previewQuery.data?.kind === "too-large" ? (
           <div className="rounded-[var(--radius-panel)] border border-border bg-bg-sunken p-4 text-body text-fg-2">

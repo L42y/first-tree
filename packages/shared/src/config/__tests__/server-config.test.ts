@@ -476,6 +476,31 @@ describe("server config", () => {
     ).rejects.toThrow(/organizationObjectQuota/);
   });
 
+  it("keeps attachment retention deletion off unless explicitly enabled", async () => {
+    const defaultDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+
+    const defaultConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: defaultDir,
+    });
+
+    expect(defaultConfig.attachments.retention).toBeUndefined();
+
+    resetConfig();
+    const enabledDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED", "true");
+
+    const enabledConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: enabledDir,
+    });
+
+    expect(enabledConfig.attachments.retention).toEqual({ deleteEnabled: true });
+  });
+
   it("accepts operator-provided production server secrets without writing generated YAML", async () => {
     const configDir = makeTempConfigDir();
     const jwtSecret = "operator-jwt-secret";

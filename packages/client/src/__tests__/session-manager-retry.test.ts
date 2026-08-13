@@ -1,6 +1,14 @@
-import { parseProviderRetryEventMessage, type SessionEvent, type SessionState } from "@first-tree/shared";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  type InboxEntryWithMessage,
+  parseProviderRetryEventMessage,
+  type SessionEvent,
+  type SessionState,
+} from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
-import type { FirstTreeHubSDK } from "../cloud/sdk.js";
+import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
 import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
 import { SessionManager } from "../runtime/session-manager.js";
@@ -30,6 +38,7 @@ function mockSdk(): { sdk: FirstTreeHubSDK; sendMessage: ReturnType<typeof vi.fn
 
 function makeManager(opts: {
   handlers: AgentHandler[];
+  sdk?: FirstTreeHubSDK;
   ackEntry?: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
   onStateChange?: (chatId: string, state: SessionState) => void;
@@ -54,7 +63,7 @@ function makeManager(opts: {
       delegateMention: null,
       metadata: {},
     },
-    sdk: mockSdk().sdk,
+    sdk: opts.sdk ?? mockSdk().sdk,
     log: silentLogger(),
     ackEntry: opts.ackEntry ?? vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
     recoverChat: opts.recoverChat,
@@ -256,6 +265,71 @@ describe("SessionManager: transient session retry", () => {
     expect(recovered.start).toHaveBeenCalled();
 
     await sm.shutdown();
+  });
+
+  it("clears the previous 404 transient availability set when a retry re-materializes attachments", async () => {
+    const imageId = "11111111-1111-4111-8111-111111111111";
+    const home = mkdtempSync(join(tmpdir(), "ft-retry-attachment-"));
+    vi.stubEnv("FIRST_TREE_HOME", home);
+    try {
+      const fetchAttachment = vi
+        .fn()
+        .mockRejectedValueOnce(new SdkError(404, "Not Found"))
+        .mockResolvedValue({ bytes: Buffer.from("png bytes") });
+      const sdk = { ...mockSdk().sdk, fetchAttachment } as unknown as FirstTreeHubSDK;
+
+      const firstMessages: SessionMessage[] = [];
+      const retryMessages: SessionMessage[] = [];
+      const failing: AgentHandler = {
+        start: vi.fn(async (message: SessionMessage) => {
+          firstMessages.push(message);
+          throw new FakeRateLimit("rate limited");
+        }),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const recovered: AgentHandler = {
+        start: vi.fn(async (message: SessionMessage) => {
+          retryMessages.push(message);
+          return { sessionId: "session-after-retry", route: { kind: "owned" as const, mode: "queued" as const } };
+        }),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const sm = makeManager({ handlers: [failing, recovered], sdk });
+
+      const base = mockEntry({ id: 1, chatId: "chat-retry-att" });
+      await sm.dispatch({
+        ...base,
+        message: {
+          ...base.message,
+          format: "file",
+          content: { imageId, mimeType: "image/png", filename: "one.png" },
+        },
+      } as InboxEntryWithMessage);
+
+      // First pass: the eager fetch 404'd, so the message carries the
+      // transient unavailable set.
+      expect(firstMessages).toHaveLength(1);
+      expect(firstMessages[0]?.unavailableAttachmentIds?.has(imageId)).toBe(true);
+
+      // Immediate retry on the same message instance: the fetch now succeeds,
+      // so the stale 404 verdict must be gone.
+      await sm.dispatch(mockEntry({ id: 2, chatId: "chat-retry-att" }));
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+      expect(retryMessages).toHaveLength(1);
+      expect(retryMessages[0]?.unavailableAttachmentIds).toBeUndefined();
+
+      await sm.shutdown();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("parks managed-Skill unsafe resume retries past the old exhaustion boundary and drains head then tail once", async () => {

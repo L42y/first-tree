@@ -1,6 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import { createLogger } from "../observability/index.js";
-import { backfillExternalAttachmentsToPostgres, sweepOrphanAttachments } from "./attachment.js";
+import {
+  backfillExternalAttachmentsToPostgres,
+  sweepExpiredMessageAttachments,
+  sweepOrphanAttachments,
+} from "./attachment.js";
 import * as inboxService from "./chat/inbox.js";
 import { createCronScheduler } from "./chat/scheduled-jobs/scheduler.js";
 import * as chatArchiveService from "./chat/workspace/archive.js";
@@ -10,6 +14,9 @@ import * as presenceService from "./runtime/presence.js";
 import { backfillSkillResourceBundles } from "./skill-bundle.js";
 
 const log = createLogger("BackgroundTasks");
+
+/** The 14-day message-attachment retention sweep runs once at startup and then every 24 hours — deliberately separate from the hourly orphan-sweep timer. */
+const ATTACHMENT_RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 export type BackgroundTasks = {
   start(): void;
@@ -29,6 +36,7 @@ export function createBackgroundTasks(
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let archiveSweepTimer: ReturnType<typeof setInterval> | null = null;
   let attachmentSweepTimer: ReturnType<typeof setInterval> | null = null;
+  let attachmentRetentionTimer: ReturnType<typeof setInterval> | null = null;
   const cronScheduler = options.cronSchedulerEnabled === false ? null : createCronScheduler(app);
 
   async function maintainAttachments(): Promise<void> {
@@ -103,6 +111,22 @@ export function createBackgroundTasks(
         60 * 60 * 1000,
       );
 
+      const sweepAttachmentRetention = async (): Promise<void> => {
+        await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, {
+          deleteEnabled: app.config.attachments.retention?.deleteEnabled ?? false,
+        });
+      };
+      attachmentRetentionTimer = setInterval(async () => {
+        try {
+          await sweepAttachmentRetention();
+        } catch (err) {
+          log.error({ err }, "attachment retention sweep failed");
+        }
+      }, ATTACHMENT_RETENTION_SWEEP_INTERVAL_MS);
+      sweepAttachmentRetention().catch((err) => {
+        log.error({ err }, "initial attachment retention sweep failed");
+      });
+
       cronScheduler?.start();
 
       presenceService.heartbeatInstance(app.db, instanceId).catch((err) => {
@@ -130,6 +154,10 @@ export function createBackgroundTasks(
       if (attachmentSweepTimer) {
         clearInterval(attachmentSweepTimer);
         attachmentSweepTimer = null;
+      }
+      if (attachmentRetentionTimer) {
+        clearInterval(attachmentRetentionTimer);
+        attachmentRetentionTimer = null;
       }
     },
   };

@@ -1,8 +1,9 @@
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ChevronLeft, ChevronRight, Download, X } from "lucide-react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { downloadAttachment } from "../../api/attachments.js";
-import { useImageSrc } from "../../lib/use-image-src.js";
+import { ATTACHMENT_RETENTION_NOTE, isAttachmentGoneError, useImageSrc } from "../../lib/use-image-src.js";
+import { useToast } from "./toast.js";
 
 /**
  * One image in a lightbox set. Either an `imageId` (resolved from the org
@@ -42,6 +43,15 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
   const open = index !== null && index >= 0 && index < images.length;
   const current = open ? images[index] : undefined;
   const multi = images.length > 1;
+  const { addToast } = useToast();
+  // Images whose row is gone server-side (404) report upward — via the view's
+  // resolve state or a failed download on a warm-cache hit — so the Download
+  // control disables instead of firing a request that is guaranteed to fail.
+  const [goneIds, setGoneIds] = useState<ReadonlySet<string>>(new Set());
+  const markGone = useCallback((imageId: string) => {
+    setGoneIds((prev) => (prev.has(imageId) ? prev : new Set(prev).add(imageId)));
+  }, []);
+  const currentGone = current?.imageId !== undefined && goneIds.has(current.imageId);
 
   const close = useCallback(() => onIndexChange(null), [onIndexChange]);
   const step = useCallback(
@@ -55,7 +65,21 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
   const onDownload = useCallback(() => {
     if (!current) return;
     if (current.imageId) {
-      void downloadAttachment(current.imageId, current.filename);
+      const imageId = current.imageId;
+      downloadAttachment(imageId, current.filename).catch((error: unknown) => {
+        if (isAttachmentGoneError(error)) {
+          markGone(imageId);
+          addToast({
+            title: `Couldn't download "${current.filename}"`,
+            description: `Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).`,
+          });
+          return;
+        }
+        addToast({
+          title: "Download failed",
+          description: `"${current.filename}" couldn't be downloaded. Try again.`,
+        });
+      });
       return;
     }
     if (current.dataSrc) {
@@ -68,7 +92,7 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
       a.click();
       a.remove();
     }
-  }, [current]);
+  }, [current, markGone, addToast]);
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(next) => !next && close()}>
@@ -89,7 +113,7 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
         >
           <DialogPrimitive.Title className="sr-only">{current?.filename ?? "Image"}</DialogPrimitive.Title>
 
-          {current ? <LightboxImageView key={index} image={current} /> : null}
+          {current ? <LightboxImageView key={index} image={current} onGone={markGone} /> : null}
 
           {/* Top-right: download + close */}
           {current ? (
@@ -97,8 +121,10 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
               <button
                 type="button"
                 onClick={onDownload}
+                disabled={currentGone}
                 aria-label="Download original"
-                className="lightbox-control flex h-9 w-9 items-center justify-center rounded-[var(--radius-input)]"
+                title={currentGone ? `Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).` : undefined}
+                className="lightbox-control flex h-9 w-9 items-center justify-center rounded-[var(--radius-input)] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Download className="h-5 w-5" />
               </button>
@@ -154,14 +180,22 @@ export function ImageLightbox({ images, index, onIndexChange }: ImageLightboxPro
  * index without threading resolution state up. Fits the viewport; never
  * upscaled past its natural size.
  */
-function LightboxImageView({ image }: { image: LightboxImage }) {
+function LightboxImageView({ image, onGone }: { image: LightboxImage; onGone?: (imageId: string) => void }) {
   const refState = useImageSrc(image.dataSrc ? undefined : image.imageId);
   const src = image.dataSrc ?? (refState.kind === "hit" ? refState.src : undefined);
+
+  useEffect(() => {
+    if (refState.kind === "gone" && image.imageId) onGone?.(image.imageId);
+  }, [refState.kind, image.imageId, onGone]);
 
   if (!src) {
     return (
       <span className="text-body" style={{ color: "var(--fg-on-vivid)" }}>
-        {refState.kind === "miss" ? `Couldn't load "${image.filename}"` : "…"}
+        {refState.kind === "gone"
+          ? `"${image.filename}" expired or unavailable — ${ATTACHMENT_RETENTION_NOTE}`
+          : refState.kind === "miss"
+            ? `Couldn't load "${image.filename}"`
+            : "…"}
       </span>
     );
   }

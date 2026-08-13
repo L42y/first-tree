@@ -14,6 +14,7 @@ import {
   TRUSTED_SYSTEM_SENDER_NAMES,
 } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
+import { ATTACHMENT_UNAVAILABLE_NOTE } from "./attachment-availability.js";
 import { findAttachmentFile } from "./attachment-store.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity, SessionMessage } from "./handler.js";
@@ -384,6 +385,23 @@ function renderForLLM(message: SessionMessage): string {
 }
 
 /**
+ * Placeholder line for an attachment whose bytes never made it to disk. When
+ * this delivery's fetch pass saw a 404 the row is gone server-side and the
+ * note carries the retention window; anything else (transient failure, never
+ * attempted) keeps the generic device-availability wording.
+ */
+function unavailableAttachmentNote(
+  unavailableIds: ReadonlySet<string> | undefined,
+  attachmentId: string,
+  kind: "File" | "Image",
+  filename: string,
+): string {
+  return unavailableIds?.has(attachmentId)
+    ? `\n[${kind} "${filename}" expired or unavailable — ${ATTACHMENT_UNAVAILABLE_NOTE}]`
+    : `\n[${kind} "${filename}" not available on this device]`;
+}
+
+/**
  * A text note listing the on-disk paths of any document/file attachments on
  * this message (`metadata.attachments`, non-image), so a shell-capable agent
  * can open them. Returns null when there are none. Generic image refs are
@@ -401,14 +419,18 @@ export function renderDocumentAttachmentsForLLM(message: SessionMessage): string
   for (const ref of refs) {
     const path = findAttachmentFile(message.chatId, ref.attachmentId, ref.filename);
     lines.push(
-      path ? `\nFilename: ${ref.filename}\nPath: ${path}` : `\n[File "${ref.filename}" not available on this device]`,
+      path
+        ? `\nFilename: ${ref.filename}\nPath: ${path}`
+        : unavailableAttachmentNote(message.unavailableAttachmentIds, ref.attachmentId, "File", ref.filename),
     );
   }
   return lines.join("\n");
 }
 
 /** Render generic image attachments as local paths for the receiving agent. */
-export function renderImageAttachmentsForLLM(message: Pick<SessionMessage, "chatId" | "metadata">): string | null {
+export function renderImageAttachmentsForLLM(
+  message: Pick<SessionMessage, "chatId" | "metadata" | "unavailableAttachmentIds">,
+): string | null {
   const refs = imageAttachmentRefsFromMetadata(message.metadata ?? undefined);
   if (refs.length === 0) return null;
   const lines: string[] = [
@@ -419,7 +441,9 @@ export function renderImageAttachmentsForLLM(message: Pick<SessionMessage, "chat
   for (const ref of refs) {
     const path = findImagePath(message.chatId, ref.attachmentId, ref.mimeType);
     lines.push(
-      path ? `\nFilename: ${ref.filename}\nPath: ${path}` : `\n[Image "${ref.filename}" not available on this device]`,
+      path
+        ? `\nFilename: ${ref.filename}\nPath: ${path}`
+        : unavailableAttachmentNote(message.unavailableAttachmentIds, ref.attachmentId, "Image", ref.filename),
     );
   }
   return lines.join("\n");
@@ -446,7 +470,7 @@ function renderFileMessageForLLM(message: SessionMessage): string | null {
       lines.push(
         path
           ? `\nFilename: ${att.filename}\nPath: ${path}`
-          : `\n[Image "${att.filename}" not available on this device]`,
+          : unavailableAttachmentNote(message.unavailableAttachmentIds, att.imageId, "Image", att.filename),
       );
     }
     return lines.join("\n");
@@ -457,7 +481,12 @@ function renderFileMessageForLLM(message: SessionMessage): string | null {
     const path = findImagePath(message.chatId, content.imageId, content.mimeType);
     return path
       ? `An image was shared in this chat. Use the Read tool / shell to open it before responding.\n\nFilename: ${content.filename}\nPath: ${path}`
-      : `[Image "${content.filename}" not available on this device]`;
+      : unavailableAttachmentNote(
+          message.unavailableAttachmentIds,
+          content.imageId,
+          "Image",
+          content.filename,
+        ).trimStart();
   }
 
   return null;
@@ -478,6 +507,9 @@ export async function formatInboundContent(message: SessionMessage, participants
           ? renderImageAttachmentsForLLM({
               chatId: message.chatId,
               metadata: p.metadata,
+              // Preceding request images were fetched in this delivery's
+              // pass, so the current message carries their 404 verdicts.
+              unavailableAttachmentIds: message.unavailableAttachmentIds,
             })
           : null;
       if (imageNote) text = `${text}\n\n${imageNote}`;

@@ -36,6 +36,7 @@ const agentMocks = vi.hoisted(() => ({
 }));
 
 const attachmentMocks = vi.hoisted(() => ({
+  downloadAttachment: vi.fn(),
   fetchAttachmentBase64: vi.fn(),
   uploadAttachment: vi.fn(),
   uploadImageAttachment: vi.fn(),
@@ -554,6 +555,7 @@ beforeEach(() => {
   agentStatusMocks.fetchChatAgentStatuses.mockResolvedValue([]);
   agentMocks.getAgentSkills.mockResolvedValue({ skills: [] });
   attachmentMocks.fetchAttachmentBase64.mockResolvedValue({ base64: "image-base64", mimeType: "image/png" });
+  attachmentMocks.downloadAttachment.mockReset();
   attachmentMocks.uploadImageAttachment.mockResolvedValue({ id: IMAGE_ID, mimeType: "image/png", size: 3 });
   chatMocks.getChat.mockResolvedValue(chatDetail());
   chatMocks.getChatTokenUsage.mockResolvedValue({
@@ -871,6 +873,104 @@ describe("ChatView extra DOM branches", () => {
     await waitForText(container, '[Image "missing.png" failed to load]');
     await waitForText(container, "Persisted agent final text remains visible");
     expect(container.querySelector('button[aria-label$="agent final messages"]')).toBeNull();
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders an explicit expired note for a server-reclaimed image (404)", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const { ApiError } = await import("../../../../api/client.js");
+    attachmentMocks.fetchAttachmentBase64.mockRejectedValueOnce(new ApiError(404, "Not Found"));
+    const page = messages([
+      message({
+        id: "msg-image-expired",
+        senderId: "agent-1",
+        format: "file",
+        content: { imageId: IMAGE_ID, mimeType: "image/png", filename: "expired.png", size: 3 },
+        source: "api",
+        createdAt: "2026-05-28T12:02:00.000Z",
+      }),
+    ]);
+    const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (client) =>
+      seedChat(client, chatDetail(), page),
+    );
+
+    await waitForText(
+      container,
+      '[Image "expired.png" expired or unavailable — Cloud message attachments are retained for 14 days]',
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("splits file-chip download failures: 404 marks expired, other errors toast", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const { ApiError } = await import("../../../../api/client.js");
+    const fileRef = (id: string, filename: string) => ({
+      attachmentId: id,
+      kind: "file" as const,
+      mimeType: "text/csv",
+      filename,
+      size: 12,
+    });
+    const page = messages([
+      message({
+        id: "msg-file-expired",
+        senderId: "agent-1",
+        content: "expired file",
+        metadata: { attachments: [fileRef("44444444-4444-4444-8444-444444444444", "expired.csv")] },
+        source: "api",
+        createdAt: "2026-05-28T12:02:00.000Z",
+      }),
+      message({
+        id: "msg-file-flaky",
+        senderId: "agent-1",
+        content: "flaky file",
+        metadata: { attachments: [fileRef("55555555-5555-4555-8555-555555555555", "flaky.csv")] },
+        source: "api",
+        createdAt: "2026-05-28T12:03:00.000Z",
+      }),
+    ]);
+    attachmentMocks.downloadAttachment.mockImplementation(async (id: string) => {
+      throw id === "44444444-4444-4444-8444-444444444444"
+        ? new ApiError(404, "Not Found")
+        : new ApiError(500, "Server Error");
+    });
+    const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (client) =>
+      seedChat(client, chatDetail(), page),
+    );
+
+    // 404 → the chip disables, switches to its error state, and exposes the
+    // retention note through aria-label + tooltip. No toast for an expected
+    // expiry.
+    const expiredButton = container.querySelector('button[aria-label="Download expired.csv"]');
+    await click(expiredButton);
+    await waitForCondition(() => {
+      const button = container.querySelector<HTMLButtonElement>('button:disabled[aria-label^="expired.csv"]');
+      return button?.getAttribute("aria-label")?.includes("no longer available") ?? false;
+    }, "expected the chip to disable with the no-longer-available aria-label");
+    expect(
+      container.querySelector(
+        '[title="Attachment expired or unavailable (Cloud message attachments are retained for 14 days)."]',
+      ),
+    ).not.toBeNull();
+    expect(container.textContent).not.toContain("Download failed");
+
+    // A second activation attempt cannot fire another download.
+    const disabledButton = container.querySelector('button:disabled[aria-label^="expired.csv"]');
+    await click(disabledButton);
+    expect(
+      attachmentMocks.downloadAttachment.mock.calls.filter(
+        (call: unknown[]) => call[0] === "44444444-4444-4444-8444-444444444444",
+      ),
+    ).toHaveLength(1);
+
+    // 5xx → ordinary failure toast; the chip stays downloadable (not gone).
+    const flakyButton = container.querySelector('button[aria-label="Download flaky.csv"]');
+    await click(flakyButton);
+    await waitForText(container, "Download failed");
+    expect(container.textContent).toContain('"flaky.csv"');
+    expect(container.querySelector('button:not(:disabled)[aria-label="Download flaky.csv"]')).not.toBeNull();
 
     await act(async () => root.unmount());
   });

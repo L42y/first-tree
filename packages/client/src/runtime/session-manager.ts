@@ -33,6 +33,7 @@ import {
   formatInboundContent,
   resolveSenderLabel,
 } from "./agent-io.js";
+import { isAttachmentGoneError } from "./attachment-availability.js";
 import { findAttachmentFile, writeAttachmentFile } from "./attachment-store.js";
 import { type ContextTreeBinding, resolveAgentContextTreeBinding } from "./bootstrap.js";
 import type { SessionConfig } from "./config.js";
@@ -944,6 +945,12 @@ export class SessionManager {
    * duplicates and cached refs consume no budget.
    */
   private async ensureImagesLocal(message: SessionMessage): Promise<void> {
+    // Drop any 404 verdicts from a previous delivery attempt of this same
+    // message instance (retry path): the set is rebuilt from this pass only.
+    delete message.unavailableAttachmentIds;
+    // Attachment ids whose fetch answered 404 this delivery — attached to the
+    // message below so renderers can say "expired or unavailable".
+    const goneIds = new Set<string>();
     const legacyImageRefs =
       message.format === "file" && isImageBatchRefContent(message.content)
         ? message.content.attachments
@@ -988,6 +995,7 @@ export class SessionManager {
             base64: bytes.toString("base64"),
           });
         } catch (err) {
+          if (isAttachmentGoneError(err)) goneIds.add(ref.imageId);
           this.config.log.warn(
             { chatId: message.chatId, imageId: ref.imageId, err },
             "eager image fetch failed — message will render a placeholder",
@@ -1013,6 +1021,7 @@ export class SessionManager {
             base64: bytes.toString("base64"),
           });
         } catch (err) {
+          if (isAttachmentGoneError(err)) goneIds.add(ref.attachmentId);
           this.config.log.warn(
             { chatId: message.chatId, attachmentId: ref.attachmentId, err },
             "eager attachment fetch failed — agent will not see this file",
@@ -1020,6 +1029,7 @@ export class SessionManager {
         }
       }),
     );
+    if (goneIds.size > 0) message.unavailableAttachmentIds = goneIds;
   }
 
   /**
@@ -3808,6 +3818,12 @@ export class SessionManager {
     ) {
       return;
     }
+
+    // Re-materialize the retried head message's attachments: local cache hits
+    // skip the network, still-missing bytes re-fetch, and the transient 404
+    // availability set is rebuilt from this attempt instead of reusing the
+    // failed delivery's verdicts. Control retries carry no head message.
+    if (retryHeadMessage) await this.ensureImagesLocal(retryHeadMessage);
 
     // Fresh handler — the old one may have closed its SDK transport. But the
     // replaced handler must be CONFIRMED stopped before the fresh one is
