@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-
+import { canonicalGitRepoIdentity } from "@first-tree/shared";
 import type { Command } from "commander";
 import {
   type ContextTreeReadSnapshotIdentity,
@@ -13,7 +13,7 @@ import type { CommandContext, SubcommandModule } from "../types.js";
 import { classifyContextContent } from "./content-class.js";
 import type { NodeMetadata } from "./context-document.js";
 import { readNodeMetadata } from "./context-document.js";
-import { asString, findGitRoot, normalizeRemoteForMatch, readGitRemoteUrl, runCommand } from "./shared.js";
+import { asString, findGitRoot, readGitRemoteUrl, runCommand } from "./shared.js";
 
 export type ContextTreeNode = {
   kind: "directory" | "file";
@@ -446,6 +446,40 @@ type ValidatedBindingIdentity = {
 };
 
 /**
+ * Compare a checkout's origin against the declared remote at binding
+ * strength, via the shared canonical identity (host + full namespace path,
+ * including nested GitLab groups): two explicit HTTPS origins compare the
+ * full origin (a self-managed non-default port is part of the identity);
+ * HTTPS ↔ SSH/scp mixes compare by host + full path, and an SSH transport
+ * port never counts as a web port. Unparsable input fails closed.
+ */
+function sameDeclaredRemote(actual: string, expected: string): boolean {
+  const left = canonicalGitRepoIdentity(actual);
+  const right = canonicalGitRepoIdentity(expected);
+  if (!left || !right) {
+    // Unparsable on both sides (e.g. identical local filesystem paths): only
+    // an exact raw match is the same repository; anything else fails closed.
+    return left === null && right === null && actual.trim() === expected.trim();
+  }
+  if (left.canonical !== right.canonical) return false;
+
+  const leftOrigin = httpsRemoteOrigin(actual);
+  const rightOrigin = httpsRemoteOrigin(expected);
+  if (leftOrigin !== null && rightOrigin !== null) return leftOrigin === rightOrigin;
+  return true;
+}
+
+function httpsRemoteOrigin(value: string): string | null {
+  if (!value.includes("://")) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" ? url.origin.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fail-closed binding guard for an existing checkout. The Tree always lands
  * at `<agentHome>/context-tree`, so a same-path checkout left by a previous
  * binding is indistinguishable by location alone: before any content or
@@ -477,7 +511,7 @@ function assertCheckoutMatchesDeclaredBinding(
 
   const mismatches: string[] = [];
   const actualRemote = readGitRemoteUrl(repoRoot);
-  if (actualRemote === undefined || normalizeRemoteForMatch(actualRemote) !== normalizeRemoteForMatch(expectRemote)) {
+  if (actualRemote === undefined || !sameDeclaredRemote(actualRemote, expectRemote)) {
     mismatches.push("origin");
   }
   const currentBranch = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).trim();

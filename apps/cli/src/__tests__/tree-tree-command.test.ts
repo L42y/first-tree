@@ -505,6 +505,51 @@ describe("tree tree command action", () => {
     expect(output).not.toContain("reading local copy");
   });
 
+  it("accepts equivalent nested-namespace remotes across HTTPS, scp-like, and ssh:// transports", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    // The retained checkout's origin is a nested GitLab HTTPS URL; the
+    // declared remote may arrive in any equivalent transport spelling.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.com/group/subgroup/tree.git");
+
+    for (const declared of [
+      "git@gitlab.com:group/subgroup/tree.git",
+      "ssh://git@gitlab.com/group/subgroup/tree.git",
+      "https://gitlab.com/group/subgroup/tree.git",
+    ]) {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      process.chdir(checkout);
+
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: declared, expectBranch: "main" }, ["docs"])));
+
+      expect(process.exitCode, `declared remote rejected: ${declared}`).toBeUndefined();
+      expect(readMockOutput(stderr)).toContain("docs/");
+      expect(readMockOutput(stdout)).toBe("");
+    }
+  });
+
+  it("fails closed on a different host, a different path, or a different HTTPS port", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.com/group/subgroup/tree.git");
+
+    for (const declared of [
+      "git@gitlab.example.com:group/subgroup/tree.git",
+      "git@gitlab.com:group/other/tree.git",
+      "https://gitlab.com:8443/group/subgroup/tree.git",
+    ]) {
+      expectBindingMismatch(checkout, { expectRemote: declared, expectBranch: "main" }, "origin mismatch");
+    }
+
+    // Two explicit HTTPS origins with different non-default ports are
+    // different Trees even on the same host and path.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:8443/group/subgroup/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com:9443/group/subgroup/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
   it("prints the selected subtree with repo-root ancestor context in human mode", () => {
     const root = makeTreeFixture();
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
