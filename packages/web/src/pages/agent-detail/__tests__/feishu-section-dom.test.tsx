@@ -196,7 +196,7 @@ describe("Feishu Agent Detail section", () => {
     });
     const qr = await renderSection();
     expect(qr.querySelector("svg")).not.toBeNull();
-    expect(qr.querySelector("svg title")?.textContent).toBe("Feishu Bot registration QR code");
+    expect(qr.querySelector("svg title")?.textContent).toBe("Feishu bot registration QR code");
     expect(qr.querySelector('a[href="https://open.feishu.cn/register?code=test"]')).not.toBeNull();
 
     await act(async () => roots.pop()?.unmount());

@@ -7,9 +7,14 @@ import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
 import { useComputerConnection } from "../../features/agent-setup/use-computer-connection.js";
-import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
+import {
+  feishuBindingQueryKey,
+  feishuBindingQueryOptions,
+  isFeishuBotReachable,
+} from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
+import { OPENTAG_FIRST_TASK_COMPLETE_COPY } from "./copy.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
@@ -118,6 +123,7 @@ export function OpenTagPage(): ReactElement | null {
     if (facts.state !== "unavailable" || !agentUuid) return;
     setRejectedAgent(true);
     setDraft(null);
+    setDraftStage("focus");
     navigate(opentagEntryPath(), { replace: true });
   }, [facts.state, agentUuid, navigate]);
   const agent = facts.state === "resolved" ? (agentQuery.data ?? null) : null;
@@ -126,6 +132,7 @@ export function OpenTagPage(): ReactElement | null {
   // purpose: nothing here exists server-side, so a reload has nothing to
   // recover and re-asking two questions is cheaper than any draft store.
   const [draft, setDraft] = useState<OpenTagDraft | null>(null);
+  const [draftStage, setDraftStage] = useState<"focus" | "runtime">("focus");
   // Set only when a repeated create collided with an Agent this member already
   // manages under the exact handle OpenTag derived. It is offered, never taken
   // automatically — the name is a hint, not proof of what happened.
@@ -206,7 +213,7 @@ export function OpenTagPage(): ReactElement | null {
     try {
       await refreshMeStrict();
     } catch {
-      setReadinessError("Your Agent is ready, but we couldn't refresh your team.");
+      setReadinessError("Your agent is ready, but we couldn't refresh your team.");
     }
   }, [refreshMeStrict]);
   useEffect(() => {
@@ -232,7 +239,7 @@ export function OpenTagPage(): ReactElement | null {
     enabled: feishuReady,
   });
   const startFeishu = useMutation({
-    mutationFn: () => startAgentFeishuRegistration(agentUuid ?? "", `${agent?.displayName ?? "Agent"} · First Tree`),
+    mutationFn: () => startAgentFeishuRegistration(agentUuid ?? "", `${agent?.displayName ?? "agent"} · OpenTag`),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: feishuBindingQueryKey(agentUuid ?? "") }),
   });
 
@@ -243,6 +250,7 @@ export function OpenTagPage(): ReactElement | null {
   // the key: a re-registered Bot asks the question again rather than serving
   // the previous Bot's answer.
   const binding = feishuQuery.data?.binding ?? null;
+  const botReachable = !!binding && isFeishuBotReachable(binding);
   const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
   // Ownership, not readability, is what licenses the stamp below.
   //
@@ -270,7 +278,7 @@ export function OpenTagPage(): ReactElement | null {
   const firstUseQuery = useQuery({
     queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
     queryFn: ({ signal }) => scanFirstUse(signal),
-    enabled: feishuReady && ownsUrlAgent && !!botBindingId,
+    enabled: feishuReady && ownsUrlAgent && botReachable && !!botBindingId,
     // A failed read must stay "we don't know", never "not used yet" — and never
     // a blank frame. The poll below is the retry.
     retry: false,
@@ -302,14 +310,14 @@ export function OpenTagPage(): ReactElement | null {
     completeMutate();
   }, [ownsUrlAgent, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
 
-  const step = resolveOpenTagStep(facts, firstUse);
+  const step = resolveOpenTagStep(facts, botReachable);
 
   // The draft only describes the pre-creation choices, so an Agent in the URL
   // always supersedes it — including an Agent that turns out to be unusable,
   // where keeping the draft would push the member straight back into the
   // create step and the conflict they just came from.
   const draftStep: OpenTagStepId | null =
-    step === "choose-agent" && !agentUuid ? (draft ? "set-up-runtime" : "choose-agent") : step;
+    step === "choose-agent" && !agentUuid && draftStage === "runtime" && draft ? "set-up-runtime" : step;
   const computer = useComputerConnection(draftStep === "set-up-runtime", {
     requireExplicitSelectionWhenMultiple: true,
   });
@@ -323,19 +331,13 @@ export function OpenTagPage(): ReactElement | null {
   const shellStep: OpenTagStepId = draftStep ?? (facts.state === "team-unreadable" ? "choose-agent" : "set-up-runtime");
 
   const completedSteps = OPENTAG_STEPS.slice(0, OPENTAG_STEPS.indexOf(shellStep));
-  // The summary reflects what has been decided so far — the draft before the
-  // Agent exists, the Agent itself afterwards.
-  const handoff = agent
-    ? { agentDisplayName: agent.displayName, responsibility: draft?.templateName ?? null }
-    : draft
-      ? { agentDisplayName: draft.displayName, responsibility: draft.templateName }
-      : null;
+  const stepCopy = step === "use-in-feishu" && firstUseChatId ? OPENTAG_FIRST_TASK_COMPLETE_COPY : undefined;
 
   return (
-    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} handoff={handoff}>
+    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} stepCopy={stepCopy}>
       {facts.state === "unreadable" && (
         <OpenTagRecoverableError
-          message="We couldn't load your Agent. Nothing was lost — it and its setup are still there."
+          message="We couldn't load your agent. Nothing was lost — it and its setup are still there."
           onRetry={() => void agentQuery.refetch()}
         />
       )}
@@ -350,12 +352,14 @@ export function OpenTagPage(): ReactElement | null {
           {rejectedAgent && <WrongAgentNotice />}
           <StepChooseAgent
             defaultAgentName={user?.username ? `${user.username} assistant` : "Assistant"}
+            initialDraft={draft}
             onContinue={(next) => {
               // A new Template/name decision invalidates anything the previous
               // one produced — including a "Continue with …" candidate that
               // belongs to the old handle.
               clearRecoveryState();
               setDraft(next);
+              setDraftStage("runtime");
             }}
           />
         </>
@@ -363,11 +367,12 @@ export function OpenTagPage(): ReactElement | null {
       {draftStep === "set-up-runtime" && draft && (
         <StepSetUpRuntime
           computer={computer}
+          draft={draft}
           pending={create.isPending}
           error={create.error instanceof Error ? create.error.message : null}
           onBack={() => {
             clearRecoveryState();
-            setDraft(null);
+            setDraftStage("focus");
           }}
           onUseComputer={(clientId, runtimeProvider) => create.mutate({ draft, clientId, runtimeProvider })}
           recovery={
@@ -404,7 +409,6 @@ export function OpenTagPage(): ReactElement | null {
       {feishuReady && step === "connect-feishu" && agent && agentUuid && (
         <StepConnectFeishu
           agentDisplayName={agent.displayName}
-          agentUuid={agentUuid}
           binding={binding}
           loading={feishuQuery.isPending}
           // A failed read is not "no Bot". Offering Connect here could start a
@@ -416,10 +420,11 @@ export function OpenTagPage(): ReactElement | null {
           onConnect={() => startFeishu.mutate()}
         />
       )}
-      {step === "use-in-feishu" && agent && firstUseChatId && (
+      {step === "use-in-feishu" && agent && (
         <StepUseInFeishu
           agentDisplayName={agent.displayName}
           chatId={firstUseChatId}
+          readFailed={firstUseQuery.isError}
           settled={completeSettled}
           failed={completeFailed}
           onRetry={completeReset}
@@ -436,13 +441,10 @@ function WrongAgentNotice(): ReactElement {
       role="status"
       style={{
         margin: "0 0 var(--sp-4)",
-        padding: "var(--sp-2_5) var(--sp-3)",
-        borderRadius: "var(--radius-input)",
-        border: "var(--hairline) solid var(--border)",
         color: "var(--fg-3)",
       }}
     >
-      That Agent isn't available in this team anymore. Pick what your new Agent should do to start again.
+      That agent isn't available in this team anymore. Pick what your new agent should do to start again.
     </p>
   );
 }

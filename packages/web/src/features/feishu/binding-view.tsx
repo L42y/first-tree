@@ -63,9 +63,9 @@ export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
 export function FeishuRegistrationQr({ registrationUrl }: { registrationUrl: string }): ReactElement {
   return (
     <div className="flex flex-col items-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4) 0" }}>
-      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu Bot registration QR code" />
+      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu bot registration QR code" />
       <div className="text-label text-center" style={{ color: "var(--fg-3)" }}>
-        Scan with Feishu and confirm creating the Bot. This page updates automatically.
+        Scan with Feishu and confirm creating the bot. This page updates automatically.
       </div>
       <Button size="xs" variant="outline" asChild>
         <a href={registrationUrl} target="_blank" rel="noreferrer">

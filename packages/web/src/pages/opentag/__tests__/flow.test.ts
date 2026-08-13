@@ -140,41 +140,30 @@ describe("classifyOpenTagAgent", () => {
 });
 
 describe("resolveOpenTagStep", () => {
-  const notUsedYet = { state: "absent" } as const;
-
   it("starts at the Agent choice with no Agent, and recovers there from a wrong Agent", () => {
-    expect(resolveOpenTagStep({ state: "none" }, notUsedYet)).toBe("choose-agent");
-    expect(resolveOpenTagStep({ state: "unavailable" }, notUsedYet)).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "none" }, false)).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "unavailable" }, true)).toBe("choose-agent");
   });
 
   it("holds the step until the authoritative read settles", () => {
-    expect(resolveOpenTagStep({ state: "loading" }, notUsedYet)).toBeNull();
-    expect(resolveOpenTagStep({ state: "unreadable" }, notUsedYet)).toBeNull();
-    expect(resolveOpenTagStep({ state: "team-unreadable" }, notUsedYet)).toBeNull();
+    expect(resolveOpenTagStep({ state: "loading" }, false)).toBeNull();
+    expect(resolveOpenTagStep({ state: "unreadable" }, false)).toBeNull();
+    expect(resolveOpenTagStep({ state: "team-unreadable" }, false)).toBeNull();
   });
 
-  it("sends an existing Agent straight to Feishu", () => {
+  it("keeps an existing Agent on bot setup until genuine reachability", () => {
     // Both setup choices already happened at creation, so there is nothing
-    // between an existing Agent and its Bot.
-    expect(resolveOpenTagStep({ state: "resolved" }, notUsedYet)).toBe("connect-feishu");
+    // between an existing Agent and its bot, but provisioning is still Step 3.
+    expect(resolveOpenTagStep({ state: "resolved" }, false)).toBe("connect-feishu");
   });
 
-  it("only ends the journey once the Agent has a real Feishu Task", () => {
-    expect(resolveOpenTagStep({ state: "resolved" }, { state: "present", chatId: "chat-1" })).toBe("use-in-feishu");
+  it("enters the real-first-use step only when the bot is genuinely reachable", () => {
+    expect(resolveOpenTagStep({ state: "resolved" }, true)).toBe("use-in-feishu");
   });
 
-  it("keeps the member on the Bot step while first use is unknown", () => {
-    // A read that has not landed, or one that failed, is not evidence that
-    // nothing happened — but it is certainly not evidence that it did, and
-    // this is the branch that decides whether onboarding gets completed.
-    expect(resolveOpenTagStep({ state: "resolved" }, { state: "unknown" })).toBe("connect-feishu");
-  });
-
-  it("cannot end the journey for an Agent that is not usable here", () => {
-    // Defence in depth against a first-use answer outliving the Agent it was
-    // read for: a deleted or foreign Agent restarts, whatever was cached.
-    expect(resolveOpenTagStep({ state: "unavailable" }, { state: "present", chatId: "chat-1" })).toBe("choose-agent");
-    expect(resolveOpenTagStep({ state: "unreadable" }, { state: "present", chatId: "chat-1" })).toBeNull();
+  it("cannot advance a bot belonging to an Agent that is not usable here", () => {
+    expect(resolveOpenTagStep({ state: "unavailable" }, true)).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "unreadable" }, true)).toBeNull();
   });
 });
 
