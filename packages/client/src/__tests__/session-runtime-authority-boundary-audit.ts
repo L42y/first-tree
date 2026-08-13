@@ -423,10 +423,24 @@ function isPrivateMember(member: ts.ClassElement | ts.ParameterDeclaration): boo
   return Boolean(ts.getModifiers(member)?.some((mod) => mod.kind === ts.SyntaxKind.PrivateKeyword));
 }
 
-function isPublicSurface(member: ts.ClassElement): boolean {
+function isPublicSurface(member: ts.ClassElement | ts.ParameterDeclaration): boolean {
   if (!ts.canHaveModifiers(member)) return true;
   const mods = ts.getModifiers(member);
   return !mods?.some((mod) => mod.kind === ts.SyntaxKind.PrivateKeyword || mod.kind === ts.SyntaxKind.ProtectedKeyword);
+}
+
+function isParameterProperty(param: ts.ParameterDeclaration): boolean {
+  if (!ts.canHaveModifiers(param)) return false;
+  const mods = ts.getModifiers(param);
+  return Boolean(
+    mods?.some(
+      (mod) =>
+        mod.kind === ts.SyntaxKind.PrivateKeyword ||
+        mod.kind === ts.SyntaxKind.PublicKeyword ||
+        mod.kind === ts.SyntaxKind.ProtectedKeyword ||
+        mod.kind === ts.SyntaxKind.ReadonlyKeyword,
+    ),
+  );
 }
 
 function classInstanceProperties(
@@ -511,6 +525,33 @@ function auditLedgers(
   }
 }
 
+function auditPublicPropertyLike(
+  source: ts.SourceFile,
+  className: string,
+  checker: ts.TypeChecker,
+  analysis: ClassProvenanceAnalysis,
+  member: ts.PropertyDeclaration | ts.ParameterDeclaration,
+  violations: AuditViolation[],
+): void {
+  if (!member.name) return;
+  const name = staticName(member.name);
+  if (!name) return;
+  const type = checker.getTypeAtLocation(member);
+  const escaped = forbiddenEscapeName(type, checker);
+  if (escaped) {
+    violations.push({
+      kind: "public-return-forbidden-type",
+      file: fileLabel(source),
+      className,
+      member: name,
+      detail: `public property has type ${checker.typeToString(type, member, ts.TypeFormatFlags.NoTruncation)} (escape: ${escaped})`,
+    });
+  }
+  for (const hit of analysis.publicEscapeFindings(member, name)) {
+    violations.push(hit);
+  }
+}
+
 function auditPublicReturns(
   source: ts.SourceFile,
   cls: ts.ClassDeclaration,
@@ -519,6 +560,7 @@ function auditPublicReturns(
   violations: AuditViolation[],
 ): void {
   const analysis = new ClassProvenanceAnalysis(source, cls, className, checker);
+  const auditedNames = new Set<string>();
   for (const member of cls.members) {
     if (!member.name || ts.isPrivateIdentifier(member.name)) continue;
     if (!isPublicSurface(member)) continue;
@@ -526,20 +568,8 @@ function auditPublicReturns(
     if (!name) continue;
 
     if (ts.isPropertyDeclaration(member)) {
-      const type = checker.getTypeAtLocation(member);
-      const escaped = forbiddenEscapeName(type, checker);
-      if (escaped) {
-        violations.push({
-          kind: "public-return-forbidden-type",
-          file: fileLabel(source),
-          className,
-          member: name,
-          detail: `public property has type ${checker.typeToString(type, member, ts.TypeFormatFlags.NoTruncation)} (escape: ${escaped})`,
-        });
-      }
-      for (const hit of analysis.publicEscapeFindings(member, name)) {
-        violations.push(hit);
-      }
+      auditedNames.add(name);
+      auditPublicPropertyLike(source, className, checker, analysis, member, violations);
       continue;
     }
 
@@ -560,6 +590,17 @@ function auditPublicReturns(
     }
     for (const hit of analysis.publicEscapeFindings(member, name)) {
       violations.push(hit);
+    }
+  }
+
+  for (const member of cls.members) {
+    if (!ts.isConstructorDeclaration(member)) continue;
+    for (const param of member.parameters) {
+      if (!isParameterProperty(param) || !isPublicSurface(param) || !param.name) continue;
+      const name = staticName(param.name);
+      if (!name || auditedNames.has(name)) continue;
+      auditedNames.add(name);
+      auditPublicPropertyLike(source, className, checker, analysis, param, violations);
     }
   }
 }
@@ -1003,7 +1044,11 @@ type Provenance = {
 };
 
 type FunctionOwner = ts.MethodDeclaration | ts.GetAccessorDeclaration;
-type ProvenanceOwner = FunctionOwner | ts.PropertyDeclaration;
+type ProvenanceOwner = FunctionOwner | ts.PropertyDeclaration | ts.ParameterDeclaration;
+
+function isPropertyLikeOwner(member: ProvenanceOwner): member is ts.PropertyDeclaration | ts.ParameterDeclaration {
+  return ts.isPropertyDeclaration(member) || ts.isParameter(member);
+}
 
 type SourceLookup = { kind: "present"; expr: ts.Expression } | { kind: "missing" } | { kind: "unknown" };
 
@@ -1155,7 +1200,7 @@ class ClassProvenanceAnalysis {
           file: fileLabel(this.source),
           className: this.className,
           member: methodName,
-          detail: `public ${ts.isPropertyDeclaration(member) ? "property" : "method"} returns a callable that can mutate private ${taint.name}`,
+          detail: `public ${isPropertyLikeOwner(member) ? "property" : "method"} returns a callable that can mutate private ${taint.name}`,
         });
         continue;
       }
@@ -1164,10 +1209,10 @@ class ClassProvenanceAnalysis {
         file: fileLabel(this.source),
         className: this.className,
         member: methodName,
-        detail: `public ${ts.isPropertyDeclaration(member) ? "property" : "method"} returns private ${taint.kind} ${taint.name}`,
+        detail: `public ${isPropertyLikeOwner(member) ? "property" : "method"} returns private ${taint.kind} ${taint.name}`,
       });
     }
-    const signature = ts.isPropertyDeclaration(member) ? undefined : this.checker.getSignatureFromDeclaration(member);
+    const signature = isPropertyLikeOwner(member) ? undefined : this.checker.getSignatureFromDeclaration(member);
     const returnType = signature ? this.checker.getReturnTypeOfSignature(signature) : undefined;
     if (
       returnType &&
@@ -1195,7 +1240,7 @@ class ClassProvenanceAnalysis {
     if (this.inFlight.has(methodName)) return EMPTY_PROVENANCE;
     this.inFlight.add(methodName);
     let provenance: Provenance;
-    if (ts.isPropertyDeclaration(member)) {
+    if (isPropertyLikeOwner(member)) {
       const parts: Provenance[] = [];
       if (member.initializer) parts.push(this.exprProvenance(member.initializer, member));
       for (const assigned of this.constructorAssignedValues(methodName)) {
@@ -1215,7 +1260,7 @@ class ClassProvenanceAnalysis {
   }
 
   private isUnanalyzedCallableProperty(member: ProvenanceOwner, methodName: string): boolean {
-    if (!ts.isPropertyDeclaration(member) || member.initializer) return false;
+    if (!isPropertyLikeOwner(member) || member.initializer) return false;
     if (!typeIsCallable(this.checker.getTypeAtLocation(member))) return false;
     return this.constructorAssignedValues(methodName).length === 0;
   }
@@ -1848,7 +1893,8 @@ class ClassProvenanceAnalysis {
       }
       if (ts.isParameter(declaration) && this.paramTaintStack.length === 0) parts.push(EMPTY_PROVENANCE);
     }
-    if (!ts.isPropertyDeclaration(owner) && owner.body) {
+    if (ts.isMethodDeclaration(owner) || ts.isGetAccessorDeclaration(owner)) {
+      if (!owner.body) return mergeProvenance(parts);
       const visit = (node: ts.Node): void => {
         if (ts.isFunctionLike(node) && node !== owner) return;
         if (

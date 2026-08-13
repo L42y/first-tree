@@ -606,6 +606,78 @@ describe("SessionRuntime authority boundary", () => {
       ).toBe(false);
     });
 
+    it("catches a constructor parameter property that pops pendingQueue", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            constructor(
+              public leak: () => PendingMessage | undefined,
+              public observeParam: () => number,
+            ) {
+              this.leak = () => this.pendingQueue.pop();
+              this.observeParam = () => this.pendingQueue.length;
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "leak" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some((hit) => hit.member === "observeParam"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
+    });
+
+    it("rejects an unanalyzed public constructor parameter property", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            constructor(public leak: () => PendingMessage | undefined) {}
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "leak" &&
+            /no analyzed initializer or constructor assignment/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
     it("catches a constructor assignment onto a public callable property that pops pendingQueue", () => {
       const files = {
         "host.ts": `
@@ -1426,10 +1498,16 @@ describe("SessionRuntime authority boundary", () => {
           `  leakCtor: () => PendingMessage | undefined;
   observeCtor: () => number;
   copyCtor: () => PendingMessage[];
-  constructor(private readonly deps: SlotSchedulerAuthorityDeps) {
+  constructor(
+    private readonly deps: SlotSchedulerAuthorityDeps,
+    public leakParam?: () => PendingMessage | undefined,
+    public observeParam?: () => number,
+  ) {
     this.leakCtor = () => this.pendingQueue.pop();
     this.observeCtor = () => this.pendingQueue.length;
     this.copyCtor = () => [...this.pendingQueue];
+    this.leakParam = () => this.pendingQueue.pop();
+    this.observeParam = () => this.pendingQueue.length;
   }`,
         )
         .replace(
@@ -1640,6 +1718,19 @@ describe("SessionRuntime authority boundary", () => {
       ).toBe(true);
       expect(
         violations.some((hit) => hit.member === "observeCtor" || hit.member === "copyCtor"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "leakParam" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some((hit) => hit.member === "observeParam"),
         kinds(violations).join("\n"),
       ).toBe(false);
       expect(
