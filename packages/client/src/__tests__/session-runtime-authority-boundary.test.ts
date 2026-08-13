@@ -1007,6 +1007,48 @@ describe("SessionRuntime authority boundary", () => {
             qaLeakRestAt(): () => PendingMessage | undefined {
               return this.qaRestAt(() => this.pendingQueue.pop());
             }
+            private qaProbeRestPop<T>(...values: T[]): T {
+              return values.pop()!;
+            }
+            qaProbeLeakRestPop(): () => PendingMessage | undefined {
+              return this.qaProbeRestPop(() => this.pendingQueue.pop());
+            }
+            private qaProbeRestShift<T>(...values: T[]): T {
+              return values.shift()!;
+            }
+            qaProbeLeakRestShift(): () => PendingMessage | undefined {
+              return this.qaProbeRestShift(() => this.pendingQueue.pop());
+            }
+            private qaProbeDestructuredDefault<T>(
+              value: T,
+              { selected = value }: { selected?: T } = {},
+            ): T {
+              return selected;
+            }
+            qaProbeLeakDestructuredDefault(): () => PendingMessage | undefined {
+              return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop(), {});
+            }
+            qaProbeLeakDestructuredOmitted(): () => PendingMessage | undefined {
+              return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop());
+            }
+            private qaProbeRenamedDestructured<T>(
+              value: T,
+              { selected: picked = value }: { selected?: T } = {},
+            ): T {
+              return picked;
+            }
+            qaProbeLeakRenamedDestructured(): () => PendingMessage | undefined {
+              return this.qaProbeRenamedDestructured(() => this.pendingQueue.pop(), {});
+            }
+            private qaProbeNestedDestructured<T>(
+              value: T,
+              { wrap: { selected = value } = {} }: { wrap?: { selected?: T } } = {},
+            ): T {
+              return selected;
+            }
+            qaProbeLeakNestedDestructured(): () => PendingMessage | undefined {
+              return this.qaProbeNestedDestructured(() => this.pendingQueue.pop(), { wrap: {} });
+            }
           }
           export class SessionRuntime {
             constructor(private scheduler: SlotSchedulerAuthority) {}
@@ -1050,6 +1092,60 @@ describe("SessionRuntime authority boundary", () => {
           (hit) =>
             hit.kind === "ledger-write-capability-escape" &&
             hit.member === "qaLeakRestAt" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRestPop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRestShift" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakDestructuredDefault" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakDestructuredOmitted" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRenamedDestructured" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakNestedDestructured" &&
             /pendingQueue/.test(hit.detail),
         ),
         kinds(violations).join("\n"),
@@ -1102,6 +1198,33 @@ describe("SessionRuntime authority boundary", () => {
             }
             detachedAt(): number | undefined {
               return [this.pendingQueue.length].at(0);
+            }
+            private qaProbeRestPop<T>(...values: T[]): T {
+              return values.pop()!;
+            }
+            copyRestPop(): () => PendingMessage[] {
+              return this.qaProbeRestPop(() => [...this.pendingQueue]);
+            }
+            freshRestPop(): number {
+              return this.qaProbeRestPop(this.pendingQueue.length);
+            }
+            private qaProbeRestShift<T>(...values: T[]): T {
+              return values.shift()!;
+            }
+            freshRestShift(): number {
+              return this.qaProbeRestShift(this.pendingQueue.length);
+            }
+            private qaProbeDestructuredDefault<T>(
+              value: T,
+              { selected = value }: { selected?: T } = {},
+            ): T {
+              return selected;
+            }
+            overrideDestructured(): () => PendingMessage | undefined {
+              return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop(), { selected: () => undefined });
+            }
+            freshDestructured(): () => number {
+              return this.qaProbeDestructuredDefault(() => this.pendingQueue.length, {});
             }
           }
           export class SessionRuntime {
@@ -1306,6 +1429,63 @@ describe("SessionRuntime authority boundary", () => {
   qaDetachedAt(): number | undefined {
     return [this.pendingQueue.length].at(0);
   }
+  private qaProbeRestPop<T>(...values: T[]): T {
+    return values.pop()!;
+  }
+  qaProbeLeakRestPop(): () => PendingMessage | undefined {
+    return this.qaProbeRestPop(() => this.pendingQueue.pop());
+  }
+  private qaProbeRestShift<T>(...values: T[]): T {
+    return values.shift()!;
+  }
+  qaProbeLeakRestShift(): () => PendingMessage | undefined {
+    return this.qaProbeRestShift(() => this.pendingQueue.pop());
+  }
+  private qaProbeDestructuredDefault<T>(
+    value: T,
+    { selected = value }: { selected?: T } = {},
+  ): T {
+    return selected;
+  }
+  qaProbeLeakDestructuredDefault(): () => PendingMessage | undefined {
+    return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop(), {});
+  }
+  qaProbeLeakDestructuredOmitted(): () => PendingMessage | undefined {
+    return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop());
+  }
+  private qaProbeRenamedDestructured<T>(
+    value: T,
+    { selected: picked = value }: { selected?: T } = {},
+  ): T {
+    return picked;
+  }
+  qaProbeLeakRenamedDestructured(): () => PendingMessage | undefined {
+    return this.qaProbeRenamedDestructured(() => this.pendingQueue.pop(), {});
+  }
+  private qaProbeNestedDestructured<T>(
+    value: T,
+    { wrap: { selected = value } = {} }: { wrap?: { selected?: T } } = {},
+  ): T {
+    return selected;
+  }
+  qaProbeLeakNestedDestructured(): () => PendingMessage | undefined {
+    return this.qaProbeNestedDestructured(() => this.pendingQueue.pop(), { wrap: {} });
+  }
+  qaCopyRestPop(): () => PendingMessage[] {
+    return this.qaProbeRestPop(() => [...this.pendingQueue]);
+  }
+  qaFreshRestPop(): number {
+    return this.qaProbeRestPop(this.pendingQueue.length);
+  }
+  qaFreshRestShift(): number {
+    return this.qaProbeRestShift(this.pendingQueue.length);
+  }
+  qaOverrideDestructured(): () => PendingMessage | undefined {
+    return this.qaProbeDestructuredDefault(() => this.pendingQueue.pop(), { selected: () => undefined });
+  }
+  qaFreshDestructured(): () => number {
+    return this.qaProbeDestructuredDefault(() => this.pendingQueue.length, {});
+  }
 }
 `,
         );
@@ -1441,7 +1621,12 @@ describe("SessionRuntime authority boundary", () => {
             hit.member === "qaUndefinedDefaultFresh" ||
             hit.member === "qaCopyRestAt" ||
             hit.member === "qaFreshRestAt" ||
-            hit.member === "qaDetachedAt",
+            hit.member === "qaDetachedAt" ||
+            hit.member === "qaCopyRestPop" ||
+            hit.member === "qaFreshRestPop" ||
+            hit.member === "qaFreshRestShift" ||
+            hit.member === "qaOverrideDestructured" ||
+            hit.member === "qaFreshDestructured",
         ),
         kinds(violations).join("\n"),
       ).toBe(false);
@@ -1477,6 +1662,60 @@ describe("SessionRuntime authority boundary", () => {
           (hit) =>
             hit.kind === "ledger-write-capability-escape" &&
             hit.member === "qaLeakRestAt" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRestPop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRestShift" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakDestructuredDefault" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakDestructuredOmitted" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakRenamedDestructured" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaProbeLeakNestedDestructured" &&
             /pendingQueue/.test(hit.detail),
         ),
         kinds(violations).join("\n"),

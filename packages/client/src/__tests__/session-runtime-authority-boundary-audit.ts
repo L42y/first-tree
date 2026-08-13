@@ -988,6 +988,8 @@ type Provenance = {
   freshContainer: boolean;
 };
 
+type SourceLookup = { kind: "present"; expr: ts.Expression } | { kind: "missing" } | { kind: "unknown" };
+
 const EMPTY_PROVENANCE: Provenance = { taints: [], freshContainer: false };
 const FRESH_PROVENANCE: Provenance = { taints: [], freshContainer: true };
 
@@ -1212,32 +1214,30 @@ class ClassProvenanceAnalysis {
         const rest = actual.slice(index);
         const provenance =
           rest.length === 0 ? FRESH_PROVENANCE : mergeProvenance(rest.map((arg) => this.exprProvenance(arg, caller)));
-        this.bindParameterName(param.name, provenance, map);
+        this.bindBindingName(param.name, provenance, map, callee, undefined, caller);
         break;
       }
       const explicit = actual[index];
-      if (explicit) {
-        const explicitProv = this.exprProvenance(explicit, caller);
-        // JS evaluates the initializer when the actual value is undefined, not
-        // merely when the argument node is absent. A type that cannot be
-        // undefined must not take the initializer path.
-        if (!param.initializer || !this.expressionMayBeUndefined(explicit)) {
-          this.bindParameterName(param.name, explicitProv, map);
-          continue;
-        }
-        this.paramTaintStack.push(map);
-        try {
-          const initProv = this.exprProvenance(param.initializer, callee);
-          this.bindParameterName(param.name, mergeProvenance([explicitProv, initProv]), map);
-        } finally {
-          this.paramTaintStack.pop();
-        }
+      // JS evaluates a default when the actual is missing or undefined, not
+      // merely when the argument node is absent.
+      if (explicit && (!param.initializer || !this.expressionMayBeUndefined(explicit))) {
+        this.bindBindingName(param.name, this.exprProvenance(explicit, caller), map, callee, explicit, caller);
         continue;
+      }
+      if (explicit) {
+        this.bindBindingName(param.name, this.exprProvenance(explicit, caller), map, callee, explicit, caller);
       }
       if (!param.initializer) continue;
       this.paramTaintStack.push(map);
       try {
-        this.bindParameterName(param.name, this.exprProvenance(param.initializer, callee), map);
+        this.bindBindingName(
+          param.name,
+          this.exprProvenance(param.initializer, callee),
+          map,
+          callee,
+          param.initializer,
+          callee,
+        );
       } finally {
         this.paramTaintStack.pop();
       }
@@ -1253,23 +1253,145 @@ class ClassProvenanceAnalysis {
     return typeIncludesUndefined(this.checker.getTypeAtLocation(expr));
   }
 
-  private bindParameterName(name: ts.BindingName, provenance: Provenance, map: Map<ts.Symbol, Provenance>): void {
+  private bindBindingName(
+    name: ts.BindingName,
+    provenance: Provenance,
+    map: Map<ts.Symbol, Provenance>,
+    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    source: ts.Expression | undefined,
+    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): void {
     if (ts.isIdentifier(name)) {
       const symbol = this.checker.getSymbolAtLocation(name);
-      if (symbol) map.set(symbol, provenance);
+      if (!symbol) return;
+      const prev = map.get(symbol);
+      map.set(symbol, prev ? mergeProvenance([prev, provenance]) : provenance);
       return;
     }
     if (ts.isArrayBindingPattern(name)) {
-      for (const element of name.elements) {
-        if (ts.isBindingElement(element)) this.bindParameterName(element.name, provenance, map);
-      }
+      this.bindArrayPattern(name, provenance, map, initOwner, source, sourceOwner);
       return;
     }
     if (ts.isObjectBindingPattern(name)) {
-      for (const element of name.elements) {
-        if (ts.isBindingElement(element)) this.bindParameterName(element.name, provenance, map);
+      this.bindObjectPattern(name, provenance, map, initOwner, source, sourceOwner);
+    }
+  }
+
+  private bindObjectPattern(
+    pattern: ts.ObjectBindingPattern,
+    provenance: Provenance,
+    map: Map<ts.Symbol, Provenance>,
+    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    source: ts.Expression | undefined,
+    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): void {
+    for (const element of pattern.elements) {
+      if (!ts.isBindingElement(element)) continue;
+      if (element.dotDotDotToken) {
+        this.bindBindingName(element.name, provenance, map, initOwner, source, sourceOwner);
+        continue;
+      }
+      const propName = staticName(element.propertyName ?? element.name);
+      const lookup = this.objectSourceProperty(source, propName);
+      const elementProv = this.bindingElementProvenance(provenance, element, lookup, map, initOwner, sourceOwner);
+      const nestedSource =
+        lookup.kind === "present" ? lookup.expr : lookup.kind === "missing" ? element.initializer : undefined;
+      this.bindBindingName(element.name, elementProv, map, initOwner, nestedSource, sourceOwner);
+    }
+  }
+
+  private bindArrayPattern(
+    pattern: ts.ArrayBindingPattern,
+    provenance: Provenance,
+    map: Map<ts.Symbol, Provenance>,
+    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    source: ts.Expression | undefined,
+    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): void {
+    let index = 0;
+    for (const element of pattern.elements) {
+      if (ts.isOmittedExpression(element)) {
+        index++;
+        continue;
+      }
+      if (!ts.isBindingElement(element)) continue;
+      if (element.dotDotDotToken) {
+        this.bindBindingName(element.name, provenance, map, initOwner, source, sourceOwner);
+        continue;
+      }
+      const lookup = this.arraySourceElement(source, index);
+      const elementProv = this.bindingElementProvenance(provenance, element, lookup, map, initOwner, sourceOwner);
+      const nestedSource =
+        lookup.kind === "present" ? lookup.expr : lookup.kind === "missing" ? element.initializer : undefined;
+      this.bindBindingName(element.name, elementProv, map, initOwner, nestedSource, sourceOwner);
+      index++;
+    }
+  }
+
+  private bindingElementProvenance(
+    container: Provenance,
+    element: ts.BindingElement,
+    lookup: SourceLookup,
+    map: Map<ts.Symbol, Provenance>,
+    initOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    sourceOwner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const parts: Provenance[] = [];
+    if (lookup.kind === "present") {
+      parts.push(this.exprProvenance(lookup.expr, sourceOwner));
+      if (element.initializer && this.expressionMayBeUndefined(lookup.expr)) {
+        parts.push(this.evalBindingInitializer(element.initializer, map, initOwner));
+      }
+    } else if (lookup.kind === "missing") {
+      if (element.initializer) parts.push(this.evalBindingInitializer(element.initializer, map, initOwner));
+      else parts.push(container);
+    } else {
+      parts.push(container);
+      if (element.initializer) parts.push(this.evalBindingInitializer(element.initializer, map, initOwner));
+    }
+    return parts.length === 0 ? FRESH_PROVENANCE : mergeProvenance(parts);
+  }
+
+  private evalBindingInitializer(
+    initializer: ts.Expression,
+    map: Map<ts.Symbol, Provenance>,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    this.paramTaintStack.push(map);
+    try {
+      return this.exprProvenance(initializer, owner);
+    } finally {
+      this.paramTaintStack.pop();
+    }
+  }
+
+  private objectSourceProperty(source: ts.Expression | undefined, name: string | undefined): SourceLookup {
+    if (!name) return { kind: "unknown" };
+    if (!source) return { kind: "missing" };
+    const obj = unwrap(source);
+    if (obj.kind === ts.SyntaxKind.UndefinedKeyword || ts.isVoidExpression(obj)) return { kind: "missing" };
+    if (!ts.isObjectLiteralExpression(obj)) return { kind: "unknown" };
+    if (obj.properties.some((prop) => ts.isSpreadAssignment(prop))) return { kind: "unknown" };
+    for (const prop of obj.properties) {
+      if (ts.isPropertyAssignment(prop) && staticName(prop.name) === name) {
+        return { kind: "present", expr: prop.initializer };
+      }
+      if (ts.isShorthandPropertyAssignment(prop) && prop.name.text === name) {
+        return { kind: "present", expr: prop.name };
       }
     }
+    return { kind: "missing" };
+  }
+
+  private arraySourceElement(source: ts.Expression | undefined, index: number): SourceLookup {
+    if (!source) return { kind: "missing" };
+    const arr = unwrap(source);
+    if (arr.kind === ts.SyntaxKind.UndefinedKeyword || ts.isVoidExpression(arr)) return { kind: "missing" };
+    if (!ts.isArrayLiteralExpression(arr)) return { kind: "unknown" };
+    if (arr.elements.some((element) => ts.isSpreadElement(element))) return { kind: "unknown" };
+    const element = arr.elements[index];
+    if (!element || ts.isOmittedExpression(element)) return { kind: "missing" };
+    return { kind: "present", expr: element };
   }
 
   private bindingsKey(bindings: Map<ts.Symbol, Provenance>): string {
@@ -1409,35 +1531,16 @@ class ClassProvenanceAnalysis {
         const bound = this.capabilityFromReceiver(callee.expression.name.text, callee.expression.expression, owner);
         if (bound) return bound;
       }
-      if (method === "at" && this.isArrayLikeReceiver(callee.expression)) {
+      if (this.isArrayLikeReceiver(callee.expression)) {
+        if (DETACH_METHODS.has(method)) {
+          return this.arrayDetachProvenance(callee.expression, method, call, owner);
+        }
+        // Unknown non-primitive standard calls on a tainted array fail closed
+        // as element selection (at/pop/shift/find/…) unless already proven detached.
         return this.arrayElementSelectionProvenance(callee.expression, call, owner);
       }
       if (DETACH_METHODS.has(method)) {
-        const receiver = this.exprProvenance(callee.expression, owner);
-        if (method === "map" || method === "flatMap") {
-          const element: Provenance = {
-            taints: receiver.taints.filter(
-              (taint) =>
-                taint.kind === "nested-container" ||
-                taint.kind === "slot-state" ||
-                taint.kind === "route-state" ||
-                taint.kind === "quarantine-record" ||
-                taint.kind === "store",
-            ),
-            freshContainer: false,
-          };
-          const callbackTaints: OriginTaint[] = [];
-          for (const arg of call.arguments) {
-            if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
-              callbackTaints.push(...this.functionCallbackProvenance(arg, element, owner).taints);
-            }
-          }
-          return { taints: uniqueTaints(callbackTaints), freshContainer: true };
-        }
-        const nested = receiver.taints.filter(
-          (taint) => taint.kind !== "ledger" && taint.kind !== "slot-field" && taint.kind !== "live-iterator",
-        );
-        return { taints: uniqueTaints(nested), freshContainer: true };
+        return this.arrayDetachProvenance(callee.expression, method, call, owner);
       }
       if (method === "get" || method === "values" || method === "entries" || method === "keys") {
         return this.containerMethodProvenance(callee.expression, method, owner);
@@ -1502,6 +1605,39 @@ class ClassProvenanceAnalysis {
       return { taints: [{ kind: "live-iterator", name: ledger.name, via: method }], freshContainer: false };
     }
     return recv;
+  }
+
+  private arrayDetachProvenance(
+    recvExpr: ts.Expression,
+    method: string,
+    call: ts.CallExpression,
+    owner: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const receiver = this.exprProvenance(recvExpr, owner);
+    if (method === "map" || method === "flatMap") {
+      const element: Provenance = {
+        taints: receiver.taints.filter(
+          (taint) =>
+            taint.kind === "nested-container" ||
+            taint.kind === "slot-state" ||
+            taint.kind === "route-state" ||
+            taint.kind === "quarantine-record" ||
+            taint.kind === "store",
+        ),
+        freshContainer: false,
+      };
+      const callbackTaints: OriginTaint[] = [];
+      for (const arg of call.arguments) {
+        if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) {
+          callbackTaints.push(...this.functionCallbackProvenance(arg, element, owner).taints);
+        }
+      }
+      return { taints: uniqueTaints(callbackTaints), freshContainer: true };
+    }
+    const nested = receiver.taints.filter(
+      (taint) => taint.kind !== "ledger" && taint.kind !== "slot-field" && taint.kind !== "live-iterator",
+    );
+    return { taints: uniqueTaints(nested), freshContainer: true };
   }
 
   private isArrayLikeReceiver(expr: ts.Expression): boolean {
