@@ -1,4 +1,13 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SOURCE_REPOS_DIRNAME } from "@first-tree/shared";
@@ -73,26 +82,27 @@ describe("ensureWorkspaceManifest", () => {
     const resolvedEmpty = JSON.parse(readFileSync(manifestPath(), "utf-8"));
     expect(resolvedEmpty.sources).toEqual([]);
 
-    ensureWorkspaceManifest(ws, null);
-    const stillResolvedEmpty = JSON.parse(readFileSync(manifestPath(), "utf-8"));
-    // Last-known-good preservation: null over a resolved-empty manifest keeps
-    // the declared (empty) list rather than reverting to absent.
-    expect(stillResolvedEmpty.sources).toEqual([]);
-
     rmSync(manifestPath());
     ensureWorkspaceManifest(ws, null);
     const unresolved = JSON.parse(readFileSync(manifestPath(), "utf-8"));
     expect("sources" in unresolved).toBe(false);
   });
 
-  it("preserves last-known sources across a transient unresolved run", () => {
+  it("omits sources on an unresolved run even when a resolved manifest exists", () => {
+    // The on-disk manifest is not a substitute authority for an unresolved
+    // source set: null always writes the key absent, never the stale list.
     ensureWorkspaceManifest(ws, ["api"]);
     ensureWorkspaceManifest(ws, null);
     expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
       tree: CONTEXT_TREE_DIRNAME,
-      sources: ["api"],
       sourcesRoot: SOURCE_REPOS_DIRNAME,
     });
+  });
+
+  it("omits sources on an unresolved run over a resolved-empty manifest", () => {
+    ensureWorkspaceManifest(ws, []);
+    ensureWorkspaceManifest(ws, null);
+    expect("sources" in JSON.parse(readFileSync(manifestPath(), "utf-8"))).toBe(false);
   });
 
   it("refills sources normally once the source set resolves again", () => {
@@ -109,6 +119,30 @@ describe("ensureWorkspaceManifest", () => {
   it("omits sources when unresolved and the existing manifest is corrupt", () => {
     mkdirSync(join(ws, ".first-tree"), { recursive: true });
     writeFileSync(manifestPath(), "{ not valid json", "utf-8");
+    ensureWorkspaceManifest(ws, null);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+  });
+
+  it("never reinterprets legacy or foreign manifest layouts as source authority", () => {
+    // A legacy flat manifest (no sourcesRoot) and a manifest with foreign
+    // extra keys are both overwritten with the canonical shape; an unresolved
+    // run keeps sources absent rather than borrowing their list.
+    mkdirSync(join(ws, ".first-tree"), { recursive: true });
+    writeFileSync(manifestPath(), `${JSON.stringify({ tree: "context-tree", sources: ["legacy-flat"] })}\n`, "utf-8");
+    ensureWorkspaceManifest(ws, null);
+    expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
+
+    writeFileSync(
+      manifestPath(),
+      `${JSON.stringify({ tree: "context-tree", sources: ["foreign"], sourcesRoot: "elsewhere", extra: true })}\n`,
+      "utf-8",
+    );
     ensureWorkspaceManifest(ws, null);
     expect(JSON.parse(readFileSync(manifestPath(), "utf-8"))).toEqual({
       tree: CONTEXT_TREE_DIRNAME,
@@ -190,69 +224,62 @@ describe("retireWorkspaceManifest", () => {
   });
   afterEach(() => {
     rmSync(ws, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   const manifestPath = () => join(ws, ".first-tree", "workspace.json");
-  const retiredPath = () => join(ws, ".first-tree", RETIRED_WORKSPACE_MANIFEST_FILENAME);
+  const retiredArchives = () =>
+    existsSync(join(ws, ".first-tree"))
+      ? readdirSync(join(ws, ".first-tree"))
+          .filter((entry) => entry.startsWith(`${RETIRED_WORKSPACE_MANIFEST_FILENAME}.`))
+          .sort()
+      : [];
+  const readArchive = (name: string) => JSON.parse(readFileSync(join(ws, ".first-tree", name), "utf-8"));
 
-  it("renames the manifest to workspace.json.retired", () => {
+  it("renames the manifest to a unique workspace.json.retired.<epoch> archive", () => {
     expect(RETIRED_WORKSPACE_MANIFEST_FILENAME).toBe("workspace.json.retired");
     ensureWorkspaceManifest(ws, ["app"]);
 
     retireWorkspaceManifest(ws);
 
     expect(existsSync(manifestPath())).toBe(false);
-    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
+    const archives = retiredArchives();
+    expect(archives).toHaveLength(1);
+    expect(readArchive(archives[0]!)).toEqual({
       tree: CONTEXT_TREE_DIRNAME,
       sources: ["app"],
       sourcesRoot: SOURCE_REPOS_DIRNAME,
     });
   });
 
-  it("overwrites a prior retired file on repeated retirements", () => {
-    mkdirSync(join(ws, ".first-tree"), { recursive: true });
-    writeFileSync(retiredPath(), "prior retired manifest\n");
-    ensureWorkspaceManifest(ws, ["api"]);
-
-    retireWorkspaceManifest(ws);
-
-    expect(existsSync(manifestPath())).toBe(false);
-    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
-      tree: CONTEXT_TREE_DIRNAME,
-      sources: ["api"],
-      sourcesRoot: SOURCE_REPOS_DIRNAME,
-    });
-  });
-
-  it("stays idempotent across a full unbind/rebind/unbind cycle", () => {
+  it("keeps both archives across an unbind/rebind/unbind cycle", () => {
     ensureWorkspaceManifest(ws, ["app"]);
     retireWorkspaceManifest(ws);
     expect(existsSync(manifestPath())).toBe(false);
-    expect(existsSync(retiredPath())).toBe(true);
+    expect(retiredArchives()).toHaveLength(1);
 
-    // Rebind writes a fresh active manifest; the second unbind must replace
-    // the archive without relying on rename-overwrites-target semantics.
+    // Rebind writes a fresh active manifest; the second unbind archives it
+    // under a fresh unique name without deleting the previous archive.
     ensureWorkspaceManifest(ws, ["web"]);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
     retireWorkspaceManifest(ws);
+
     expect(existsSync(manifestPath())).toBe(false);
-    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
-      tree: CONTEXT_TREE_DIRNAME,
-      sources: ["web"],
-      sourcesRoot: SOURCE_REPOS_DIRNAME,
-    });
+    const archives = retiredArchives();
+    expect(archives).toHaveLength(2);
+    expect(archives.map(readArchive)).toEqual([
+      { tree: CONTEXT_TREE_DIRNAME, sources: ["app"], sourcesRoot: SOURCE_REPOS_DIRNAME },
+      { tree: CONTEXT_TREE_DIRNAME, sources: ["web"], sourcesRoot: SOURCE_REPOS_DIRNAME },
+    ]);
 
     // A third retirement with no active manifest is a no-op.
     expect(() => retireWorkspaceManifest(ws)).not.toThrow();
-    expect(JSON.parse(readFileSync(retiredPath(), "utf-8"))).toEqual({
-      tree: CONTEXT_TREE_DIRNAME,
-      sources: ["web"],
-      sourcesRoot: SOURCE_REPOS_DIRNAME,
-    });
+    expect(retiredArchives()).toHaveLength(2);
   });
 
   it("is an idempotent no-op when no manifest exists", () => {
     expect(() => retireWorkspaceManifest(ws)).not.toThrow();
-    expect(existsSync(retiredPath())).toBe(false);
+    expect(retiredArchives()).toHaveLength(0);
   });
 
   it("never touches the context-tree/ checkout", () => {
@@ -265,18 +292,30 @@ describe("retireWorkspaceManifest", () => {
 
     expect(readFileSync(join(treeDir, "NODE.md"), "utf-8")).toBe("local state\n");
     expect(existsSync(manifestPath())).toBe(false);
-    expect(existsSync(retiredPath())).toBe(true);
+    expect(retiredArchives()).toHaveLength(1);
   });
 
-  it("logs and continues when the rename fails", () => {
-    // A directory at the retired path cannot be overwritten by renameSync.
+  it("logs and continues when the rename fails, losing neither the manifest nor prior archives", () => {
     ensureWorkspaceManifest(ws, ["app"]);
-    mkdirSync(join(ws, ".first-tree", RETIRED_WORKSPACE_MANIFEST_FILENAME), { recursive: true });
+    retireWorkspaceManifest(ws);
+    const priorArchive = retiredArchives()[0]!;
+
+    ensureWorkspaceManifest(ws, ["api"]);
+    // Pin the archive name and occupy it with a directory so renameSync fails.
+    vi.spyOn(Date, "now").mockReturnValue(9_999_999_999_999);
+    mkdirSync(join(ws, ".first-tree", `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.9999999999999`), { recursive: true });
     const logs: string[] = [];
 
     expect(() => retireWorkspaceManifest(ws, (msg) => logs.push(msg))).not.toThrow();
 
     expect(logs.some((line) => line.includes("workspace manifest retirement failed"))).toBe(true);
+    // The active manifest stays in place and the prior archive is intact —
+    // retirement never deletes an existing archive to make room.
     expect(existsSync(manifestPath())).toBe(true);
+    expect(JSON.parse(readFileSync(join(ws, ".first-tree", priorArchive), "utf-8"))).toEqual({
+      tree: CONTEXT_TREE_DIRNAME,
+      sources: ["app"],
+      sourcesRoot: SOURCE_REPOS_DIRNAME,
+    });
   });
 });

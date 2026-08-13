@@ -1,6 +1,6 @@
 ---
 name: first-tree-welcome
-version: 1.4.3
+version: 1.4.4
 description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for external-channel or integration messages (including Feishu), dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
@@ -281,12 +281,14 @@ GitHub App), not the goal-first ask or the first microtask.
   don't lead with "who should be involved?".
 
 You do not create or bind the tree yourself in this chat, and a result never
-earns a tree offer. Only an explicit user request — build or set up the Context
-Tree, or persist current decisions as shared team context for future agents —
-routes to a dedicated chat: SPAWN it and let
-`first-tree-seed` own repo creation, binding, and seeding there (see Spawning
-Task Chats). Never silently create, bind, or duplicate team-wide setup from this
-launcher chat.
+earns a tree offer. Route only explicit user requests, by tree state: build or
+set up the Context Tree on a missing or empty tree → SPAWN a dedicated chat
+and let `first-tree-seed` own repo creation, binding, and seeding there (see
+Spawning Task Chats); read the Context Tree → `first-tree-read`; persist
+current decisions as shared team context on a populated tree →
+`first-tree-write`, a source-backed write still behind its own source gate —
+never Seed, which refuses non-empty trees. Never silently create, bind, or
+duplicate team-wide setup from this launcher chat.
 
 ## The First In-Chat Work Loop
 
@@ -678,9 +680,11 @@ admin-only surface; involve the responsible admin.
 - Never offer to build the Context Tree from a result — not even one that
   exposed a lasting cross-module decision, and regardless of role or tree
   state. A missing or empty tree is background state, not a bridge. Only an
-  explicit user request (build or set up the Context Tree, or persist current
-  decisions as shared team context for future agents) routes to the dedicated
-  tree chat.
+  explicit user request routes, by tree state: build or set up the Context
+  Tree on a missing or empty tree → the dedicated tree chat (`first-tree-seed`);
+  read the Context Tree → `first-tree-read`; persist current decisions as
+  shared team context on a populated tree → `first-tree-write` behind its
+  source gate.
 - A first-result diff makes the PR/MR consent question the one bridge. Only
   after the user authorizes creation and live GitHub PR tracking reports missing
   coverage does the GitHub App become relevant. GitLab uses

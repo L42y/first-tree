@@ -225,6 +225,54 @@ export const FIRST_TREE_WRITE_GATE_CASES: readonly FirstTreeWriteEvalCase[] = [
     tags: ["unbound-tree", "unresolved-tree", "source-boundary"],
     tier: "gate",
   },
+  {
+    briefingMode: "minimal",
+    expected: {
+      action: "report_unbound_tree_write_gap",
+      requireVerify: false,
+      responseHints: ["no tree is bound", "no bound tree", "cannot be completed"],
+      treeDiff: "none",
+    },
+    fixture: {
+      sourceArtifact: "absent",
+      treeState: "unbound",
+    },
+    forbidden: {
+      content: [],
+      sideEffects: ["tree_write", "tree_pr"],
+    },
+    id: "unbound-no-source-explicit-write-reports-gap",
+    prompt: "Use first-tree-write to update the Context Tree with the team's latest architecture decision.",
+    provider: "codex",
+    skill: "first-tree-write",
+    status: "implemented",
+    tags: ["unbound-tree", "source-boundary"],
+    tier: "gate",
+  },
+  {
+    briefingMode: "minimal",
+    expected: {
+      action: "report_unresolved_tree_write_gap",
+      requireVerify: false,
+      responseHints: ["binding could not be confirmed", "could not confirm", "cannot be completed"],
+      treeDiff: "none",
+    },
+    fixture: {
+      sourceArtifact: "absent",
+      treeState: "unresolved",
+    },
+    forbidden: {
+      content: [],
+      sideEffects: ["tree_write", "tree_pr"],
+    },
+    id: "unresolved-no-source-explicit-write-reports-gap",
+    prompt: "Use first-tree-write to update the Context Tree with the team's latest architecture decision.",
+    provider: "codex",
+    skill: "first-tree-write",
+    status: "implemented",
+    tags: ["unbound-tree", "unresolved-tree", "source-boundary"],
+    tier: "gate",
+  },
 ];
 
 export const FIRST_TREE_WRITE_EVAL_CASES: readonly SkillEvalCase[] = [

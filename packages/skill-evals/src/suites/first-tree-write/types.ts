@@ -96,6 +96,8 @@ export type EvalMetrics = {
   postModelVerifySucceeded: boolean | null;
   runnerExitCode: number | null;
   skillFileReadObserved: boolean;
+  /** The final response asked for a source artifact/input despite a missing binding. */
+  sourceAskObserved: boolean;
   sourceRepoChanged: boolean;
   treeChanged: boolean;
   treeCliInvocationCount: number;

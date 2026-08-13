@@ -1831,4 +1831,48 @@ describe("first-tree-read stale-checkout residue access", () => {
     const explicitModified = { ...explicit, staleTreeArtifactModifiedObserved: true };
     expect(casePassed(false, explicitModified, "managed", false, false, false, true)).toBe(false);
   });
+
+  it("detects bare-path, descendant, and cwd-based stale checkout reads", () => {
+    for (const command of [
+      "cd context-tree && cat NODE.md",
+      "git -C context-tree status",
+      "ls context-tree",
+      "ls context-tree/system",
+    ]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(false, result, "managed", true)).toBe(false);
+    }
+
+    const cwdRead = staleCheckoutMetrics([
+      {
+        event: { command: "cat NODE.md", type: "tool_call", workdir: "/tmp/workspace/context-tree" },
+        type: "codex_event",
+      },
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(cwdRead.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, cwdRead, "managed", true)).toBe(false);
+  });
+
+  it("does not flag ordinary prose or unrelated paths as stale checkout access", () => {
+    for (const prose of [
+      "Inbox delivery is deduplicated at the client boundary; the Context Tree is untouched.",
+      "Inbox delivery is deduplicated at the client boundary. No binding was used.",
+    ]) {
+      const result = staleCheckoutMetrics([...managedMessage(prose)]);
+      expect(result.staleTreeArtifactAccessObserved, `prose flagged: ${prose}`).toBe(false);
+    }
+
+    const unrelatedTool = staleCheckoutMetrics([
+      staleArtifactReadEvent("cat source-repo/README.md"),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(unrelatedTool.staleTreeArtifactAccessObserved).toBe(false);
+    expect(casePassed(false, unrelatedTool, "managed", true)).toBe(true);
+  });
 });

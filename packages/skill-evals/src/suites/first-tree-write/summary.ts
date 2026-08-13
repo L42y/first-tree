@@ -217,6 +217,7 @@ export function buildGrading(
           !metrics.treeSetupGuidanceObserved &&
           !metrics.treeSetupSurfaceGuidanceObserved &&
           !metrics.unboundSetupSteeringObserved &&
+          !metrics.sourceAskObserved &&
           treeDiffPass
         : unboundSkip
           ? metrics.expectedResponseObserved &&
@@ -229,6 +230,7 @@ export function buildGrading(
               !metrics.treeSetupSurfaceGuidanceObserved &&
               !metrics.unboundSetupSteeringObserved &&
               !metrics.unboundAbsenceMentionObserved &&
+              !metrics.sourceAskObserved &&
               treeDiffPass
             : unresolvedSkip
               ? metrics.expectedResponseObserved &&

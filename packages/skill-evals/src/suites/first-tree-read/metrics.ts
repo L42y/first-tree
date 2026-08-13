@@ -544,11 +544,16 @@ function containsUnresolvedBindingMention(text: string): boolean {
  * Stale-artifact access: with an unresolved binding the last-known
  * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
  * on disk, but this session never confirmed them, so any tool-phase read or
- * reference of those paths fails the case. Model prose alone does not match:
+ * reference of those paths fails the case. The path matcher is token- and
+ * cwd-aware: it covers the manifest path, the bare `context-tree` directory
+ * and its descendants in command arguments (`cd context-tree`, `ls
+ * context-tree`, `git -C context-tree status`), and a tool call whose
+ * cwd/workdir ends with `/context-tree`. Model prose alone does not match:
  * the event must look like a tool/command interaction, mirroring the skill
  * file read detector.
  */
-const STALE_TREE_ARTIFACT_PATH = /\.first-tree\/workspace\.json|context-tree\//iu;
+const STALE_TREE_ARTIFACT_PATH =
+  /\.first-tree\/workspace\.json|(?:^|[\s/\\"'`(|;&=])context-tree(?:$|[\s/\\"'`)|;&])/iu;
 
 function containsStaleTreeArtifactAccess(event: unknown): boolean {
   if (!isRecord(event)) return false;

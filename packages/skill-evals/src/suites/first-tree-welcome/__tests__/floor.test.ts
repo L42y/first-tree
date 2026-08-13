@@ -213,7 +213,12 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).not.toContain("After value lands");
     expect(skillMarkdown).not.toContain("the qualified tree bridge");
     expect(skillMarkdown).toContain("the user explicitly asks to build\nthe team's Context Tree");
-    expect(skillMarkdown).toContain("persist current decisions as shared team context");
+    expect(skillMarkdown).toMatch(/persist current decisions as\s+shared team context/u);
+    // Explicit Tree requests route by tree state, not unconditionally to Seed:
+    // persist/write on a populated tree is a source-backed first-tree-write.
+    expect(skillMarkdown).toContain("read the Context Tree → `first-tree-read`");
+    expect(skillMarkdown).toContain("first-tree-write` behind its\n  source gate");
+    expect(skillMarkdown).toContain("never Seed, which refuses non-empty trees");
     expect(skillMarkdown).toContain("Do not inspect or surface Automatic Review");
     expect(skillMarkdown).toContain(
       "does not automatically\n  register the session project as a durable Team repository",

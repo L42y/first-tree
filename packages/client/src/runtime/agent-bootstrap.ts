@@ -120,9 +120,9 @@ export function ensureAgentBootstrap(params: AgentBootstrapParams): void {
   // tree. Runs every session (cheap + idempotent) so the manifest tracks
   // source-repo changes. Gated only on a resolved TREE binding: the manifest
   // keeps tree binding and source-set authority independent — a null source
-  // set (cache miss) omits the `sources` key (and preserves any last-known
-  // declared sources) instead of falsely claiming zero sources or skipping
-  // the write and leaving the bound tree undiscoverable. `first-tree-seed`'s
+  // set (cache miss) omits the `sources` key instead of falsely claiming
+  // zero sources, borrowing a stale on-disk list, or skipping the write and
+  // leaving the bound tree undiscoverable. `first-tree-seed`'s
   // self-check treats an empty-or-absent `manifest.sources` as valid
   // (skills/first-tree-seed, "Resolve readable sources"), so a sources-less
   // manifest does not trip it.

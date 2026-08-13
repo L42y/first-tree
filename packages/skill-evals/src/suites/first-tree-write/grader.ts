@@ -215,7 +215,19 @@ function containsUnresolvedBindingMention(text: string): boolean {
  * the event must look like a tool/command interaction, mirroring the skill
  * file read detector.
  */
-const STALE_TREE_ARTIFACT_PATH = /\.first-tree\/workspace\.json|context-tree\//iu;
+const STALE_TREE_ARTIFACT_PATH =
+  /\.first-tree\/workspace\.json|(?:^|[\s/\\"'`(|;&=])context-tree(?:$|[\s/\\"'`)|;&])/iu;
+
+/**
+ * Source-artifact ask: with no usable binding there is no write task to
+ * source, so an explicit-gap reply must never ask for a source artifact or
+ * other input. The binding gate precedes the Source Gate.
+ */
+function containsSourceAsk(text: string): boolean {
+  return /\b(?:provide|share|paste|supply|send|give)\b[^.!?\n]{0,40}\bsource\b|\bsource\s+artifact\b[^.!?\n]{0,40}\b(?:required|needed|missing)\b|\bneed\s+a\s+source\b|\bno\s+source\s+artifact\b[^.!?\n]{0,40}\b(?:ask|provide|share)\b/iu.test(
+    text,
+  );
+}
 
 function containsStaleTreeArtifactAccess(event: unknown): boolean {
   if (!isRecord(event)) return false;
@@ -437,6 +449,7 @@ export function deriveMetrics(
     postModelVerifySucceeded,
     runnerExitCode,
     skillFileReadObserved,
+    sourceAskObserved: containsSourceAsk(finalResponse),
     sourceRepoChanged: sourceRepoChanged(paths),
     staleTreeArtifactAccessObserved,
     staleTreeArtifactModifiedObserved: evalCase.fixture.treeState === "unresolved" ? artifactViolation.modified : false,
@@ -475,7 +488,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.treeSetupSurfaceGuidanceObserved &&
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundTreeArtifactsCreated &&
-      !metrics.staleTreeArtifactAccessObserved
+      !metrics.staleTreeArtifactAccessObserved &&
+      !metrics.sourceAskObserved
     );
   }
 
@@ -493,7 +507,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.staleTreeArtifactAccessObserved &&
-      !metrics.staleTreeArtifactModifiedObserved
+      !metrics.staleTreeArtifactModifiedObserved &&
+      !metrics.sourceAskObserved
     );
   }
 
@@ -586,6 +601,11 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   }
   if (unresolvedAction && metrics.unboundAbsenceMentionObserved) {
     notes.push("Unresolved-binding case claimed no Tree is bound; an unconfirmed binding is not a confirmed unbind.");
+  }
+  if ((unboundExplicit || unresolvedExplicit) && metrics.sourceAskObserved) {
+    notes.push(
+      "Explicit Tree write without a usable binding asked for a source artifact; the binding gate precedes the Source Gate, so only the binding gap may be reported.",
+    );
   }
   if (unresolvedAction && metrics.staleTreeArtifactAccessObserved) {
     notes.push(

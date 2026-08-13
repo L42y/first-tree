@@ -74,6 +74,7 @@ function baseMetrics(overrides: Partial<EvalMetrics>): EvalMetrics {
     postModelVerifySucceeded: null,
     runnerExitCode: 0,
     skillFileReadObserved: true,
+    sourceAskObserved: false,
     sourceRepoChanged: false,
     staleTreeArtifactAccessObserved: false,
     staleTreeArtifactModifiedObserved: false,
@@ -258,6 +259,65 @@ describe("first-tree-write grader", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it("fails the no-source explicit unbound write when the reply asks for a source artifact", () => {
+    const evalCase = findCase("unbound-no-source-explicit-write-reports-gap");
+    const metrics = eventMetrics(evalCase, [
+      {
+        event: {
+          text: "This Tree write cannot be completed because no Tree is bound. Please provide a source artifact to continue.",
+          type: "agent_message",
+        },
+        type: "codex_event",
+      },
+    ]);
+
+    expect(metrics.unboundGapStatementObserved).toBe(true);
+    expect(metrics.sourceAskObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
+  it("passes the no-source explicit unbound write with a gap-only reply", () => {
+    const evalCase = findCase("unbound-no-source-explicit-write-reports-gap");
+    const metrics = eventMetrics(evalCase, [
+      {
+        event: { text: "This Tree write cannot be completed because no Tree is bound.", type: "agent_message" },
+        type: "codex_event",
+      },
+    ]);
+
+    expect(metrics.unboundGapStatementObserved).toBe(true);
+    expect(metrics.sourceAskObserved).toBe(false);
+    expect(casePassed(evalCase, metrics)).toBe(true);
+  });
+
+  it("fails the no-source explicit unresolved write when the reply asks for a source artifact", () => {
+    const evalCase = findCase("unresolved-no-source-explicit-write-reports-gap");
+    const gapOnly = eventMetrics(evalCase, [
+      {
+        event: {
+          text: "This Tree write cannot be completed right now because the binding could not be confirmed.",
+          type: "agent_message",
+        },
+        type: "codex_event",
+      },
+    ]);
+    expect(gapOnly.unresolvedGapStatementObserved).toBe(true);
+    expect(gapOnly.sourceAskObserved).toBe(false);
+    expect(casePassed(evalCase, gapOnly)).toBe(true);
+
+    const withAsk = eventMetrics(evalCase, [
+      {
+        event: {
+          text: "This Tree write cannot be completed right now because the binding could not be confirmed. Share a source artifact and I will retry.",
+          type: "agent_message",
+        },
+        type: "codex_event",
+      },
+    ]);
+    expect(withAsk.sourceAskObserved).toBe(true);
+    expect(casePassed(evalCase, withAsk)).toBe(false);
   });
 
   it("fails the unbound explicit write when the model expands the gap into bind guidance", () => {
@@ -641,6 +701,31 @@ describe("first-tree-write grader", () => {
       ]);
 
       expect(metrics.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(evalCase, metrics)).toBe(false);
+    }
+  });
+
+  it("detects bare-path, descendant, and cwd-based stale checkout reads", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    for (const event of [
+      { command: "cd context-tree && cat NODE.md", type: "tool_call" },
+      { command: "git -C context-tree status", type: "tool_call" },
+      { command: "ls context-tree", type: "tool_call" },
+      { command: "ls context-tree/system", type: "tool_call" },
+      { command: "cat NODE.md", type: "tool_call", workdir: "/tmp/workspace/context-tree" },
+    ]) {
+      const metrics = eventMetrics(evalCase, [
+        { event, type: "codex_event" },
+        {
+          event: {
+            text: GOOD_THREE_BULLET_SUMMARY,
+            type: "agent_message",
+          },
+          type: "codex_event",
+        },
+      ]);
+
+      expect(metrics.staleTreeArtifactAccessObserved, `stale access not detected: ${JSON.stringify(event)}`).toBe(true);
       expect(casePassed(evalCase, metrics)).toBe(false);
     }
   });

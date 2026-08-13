@@ -106,9 +106,16 @@ describe("first-tree-write App review handoff floor", () => {
     expect(skill).toMatch(/source\s+reading and local drafting continue without it/u);
   });
 
+  it("evaluates the binding gate before the Source Gate", () => {
+    expect(skill).toMatch(/Evaluate this gate before the Source Gate below/u);
+    expect(skill).toMatch(/the Source Gate's stop-and-ask for a source artifact never applies/u);
+    // The binding gate section must physically precede the Source Gate.
+    expect(skill.indexOf("## Unbound or broken Tree binding")).toBeLessThan(skill.indexOf("## Source Gate"));
+  });
+
   it("keeps version metadata and the standalone VERSION file aligned", () => {
     const version = readFileSync(join(skillPath, "VERSION"), "utf8").trim();
-    expect(version).toBe("0.16.5");
+    expect(version).toBe("0.16.6");
     expect(skill).toContain(`version: ${version}`);
     expect(skill.split("\n").length).toBeLessThanOrEqual(500);
   });

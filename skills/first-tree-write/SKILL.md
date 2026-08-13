@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.5
+version: 0.16.6
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -16,6 +16,45 @@ source-backed write.
 Use `first-tree-read` for task-scoped tree reads before acting, except when the
 source is a current-session Audit finding whose exact snapshot context is
 already loaded. Use this skill only for source artifact -> tree edit work.
+
+## Unbound or broken Tree binding
+
+Evaluate this gate before the Source Gate below. When the trusted briefing
+reports no usable binding, the response is only the binding gap this section
+defines — the Source Gate's stop-and-ask for a source artifact never applies,
+because there is no write task to source.
+
+A missing Context Tree removes only the operations that depend on it. Nothing
+in this skill may prompt the user to bind, create, or connect a Tree merely
+because one is absent.
+
+- **Explicitly unbound:** when the trusted managed briefing explicitly states
+  there is no bound Tree, no Tree write is possible and there is no write
+  task. Continue the underlying work from the source artifact and locally
+  available inputs without Tree operations. If the user explicitly asked for
+  a Tree write, state only that this Tree write cannot be completed because
+  no Tree is bound; do not expand the absence into bind/create guidance. An
+  explicit first-time Tree creation request routes to `first-tree-seed`, not
+  this skill.
+- **Unresolved binding:** when the trusted managed briefing states the Tree
+  binding could not be confirmed, no Tree write is possible this session and
+  ordinary work continues exactly as in the explicitly-unbound case. A
+  last-known `.first-tree/workspace.json` manifest or `context-tree/`
+  checkout may still be on disk from an earlier session — never read, trust,
+  or recover from them, because this session never confirmed that binding.
+  Run no Tree commands and offer no Tree setup guidance. If the user
+  explicitly asked for a Tree write, state only that this Tree write cannot
+  be completed right now because the binding could not be confirmed; never
+  claim that no Tree is bound (that is the explicitly-unbound state) and
+  never guess a Tree.
+- **Declared but broken:** "broken" means the binding metadata, resolved
+  path, or upstream identity is malformed or inconsistent — in that case
+  keep failing closed for Tree operations — never guess a Tree. Report
+  the binding gap;
+  the broken binding blocks only the Tree write, never unrelated work.
+  A fully declared binding whose local checkout simply does not exist
+  yet is not broken: materialize it per Tree Location before drafting
+  and continue.
 
 ## Source Gate
 
@@ -73,40 +112,6 @@ runtime contract may classify a concrete artifact as a Tree-write task before
 this Skill loads; that standing classification selects this workflow but never
 bypasses its live write preflight. Authorization to publish a source PR/MR is
 not, by itself, a separate or transitive Tree write-intent rule.
-
-## Unbound or broken Tree binding
-
-A missing Context Tree removes only the operations that depend on it. Nothing
-in this skill may prompt the user to bind, create, or connect a Tree merely
-because one is absent.
-
-- **Explicitly unbound:** when the trusted managed briefing explicitly states
-  there is no bound Tree, no Tree write is possible and there is no write
-  task. Continue the underlying work from the source artifact and locally
-  available inputs without Tree operations. If the user explicitly asked for
-  a Tree write, state only that this Tree write cannot be completed because
-  no Tree is bound; do not expand the absence into bind/create guidance. An
-  explicit first-time Tree creation request routes to `first-tree-seed`, not
-  this skill.
-- **Unresolved binding:** when the trusted managed briefing states the Tree
-  binding could not be confirmed, no Tree write is possible this session and
-  ordinary work continues exactly as in the explicitly-unbound case. A
-  last-known `.first-tree/workspace.json` manifest or `context-tree/`
-  checkout may still be on disk from an earlier session — never read, trust,
-  or recover from them, because this session never confirmed that binding.
-  Run no Tree commands and offer no Tree setup guidance. If the user
-  explicitly asked for a Tree write, state only that this Tree write cannot
-  be completed right now because the binding could not be confirmed; never
-  claim that no Tree is bound (that is the explicitly-unbound state) and
-  never guess a Tree.
-- **Declared but broken:** "broken" means the binding metadata, resolved
-  path, or upstream identity is malformed or inconsistent — in that case
-  keep failing closed for Tree operations — never guess a Tree. Report
-  the binding gap;
-  the broken binding blocks only the Tree write, never unrelated work.
-  A fully declared binding whose local checkout simply does not exist
-  yet is not broken: materialize it per Tree Location before drafting
-  and continue.
 
 ## Invocation Modes
 

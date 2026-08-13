@@ -157,8 +157,9 @@ describe("ensureAgentBootstrap", () => {
     // Bound → explicitly-unbound: the runtime-generated manifest left by a
     // previously bound session is retired so the next start truly has no
     // declaration ("unbound = no manifest"). The retirement itself (rename to
-    // `workspace.json.retired`, context-tree/ untouched) is covered by the
-    // workspace-manifest tests; here we assert the bootstrap wiring.
+    // a unique `workspace.json.retired.<epoch>` archive, context-tree/
+    // untouched) is covered by the workspace-manifest tests; here we assert
+    // the bootstrap wiring.
     const sessionCtx = fakeSessionCtx();
     ensureAgentBootstrap({
       workspace,
@@ -229,8 +230,8 @@ describe("ensureAgentBootstrap", () => {
   it("writes the manifest when the tree is bound even if the source set is unresolved", () => {
     // A bound tree with an unresolved payload (cache miss) must still get a
     // manifest so the tree stays discoverable; the null source set is passed
-    // through so ensureWorkspaceManifest omits/preserves `sources` rather than
-    // claiming zero.
+    // through so ensureWorkspaceManifest omits `sources` rather than claiming
+    // zero or borrowing a stale list.
     const sessionCtx = fakeSessionCtx();
     ensureAgentBootstrap({
       workspace,
