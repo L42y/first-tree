@@ -1581,3 +1581,61 @@ describe("OpenTag entry — an Agent with no Computer to prepare", () => {
     expect(api.createAgentFeishuSetupChat).not.toHaveBeenCalled();
   });
 });
+
+describe("OpenTag entry — the Bot column agrees with the rest of the step", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("does not promise the rest is finishing when nothing is", async () => {
+    // The Bot is connected and its supporting line sits beside a panel and a
+    // row that both say preparation never started. "While the rest finishes"
+    // would be the third surface disagreeing with the other two.
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: connectedBinding({ cli: { state: "missing", version: null, clientId: "client-1" } }),
+    });
+    api.createAgentFeishuSetupChat.mockRejectedValue(new ApiError(500, "boom"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.textContent).toContain("Your Bot and its permissions are kept.");
+    expect(container.textContent).not.toContain("while the rest finishes");
+  });
+
+  it("does not promise the rest is finishing when there is no Computer", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: connectedBinding({ cli: { state: "offline", version: null, clientId: null } }),
+    });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.textContent).not.toContain("while the rest finishes");
+  });
+
+  it("does not frame a failed Bot connection as a confirmation still to come", async () => {
+    // The Computer is ready and the Bot's connection has failed. The Bot column
+    // and its row report the error; a panel saying Feishu is about to confirm
+    // it would contradict both.
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: feishuBinding({
+        status: "active",
+        connectionStatus: "error",
+        appId: "cli_1",
+        lastErrorMessage: "Feishu rejected the Bot credentials.",
+        cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
+      }),
+    });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("Feishu rejected the Bot credentials.");
+    expect(container.textContent).toContain("Feishu Bot needs attention.");
+    expect(container.textContent).not.toContain("Waiting for Feishu");
+    expect(container.textContent).not.toContain("hasn't confirmed");
+    expect(container.textContent).not.toContain("both parts finish");
+  });
+});

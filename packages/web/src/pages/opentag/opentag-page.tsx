@@ -7,11 +7,7 @@ import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
 import { useComputerConnection } from "../../features/agent-setup/use-computer-connection.js";
-import {
-  feishuBindingQueryKey,
-  feishuBindingQueryOptions,
-  isFeishuBotReachable,
-} from "../../features/feishu/binding-view.js";
+import { feishuBindingQueryKey, feishuBindingQueryOptions } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
 import { feishuStepCopy } from "./copy.js";
@@ -23,6 +19,7 @@ import {
   OPENTAG_STEPS,
   type OpenTagFirstUse,
   type OpenTagStepId,
+  resolveFeishuBotState,
   resolveOpenTagFeishuStep,
   resolveOpenTagStep,
 } from "./flow.js";
@@ -438,7 +435,7 @@ export function OpenTagPage(): ReactElement | null {
   // would keep asking for something the member already did.
   const feishuHeading =
     step === "connect-feishu" && feishuReady && feishuStep.recovery === "offered"
-      ? (feishuStepCopy(!!binding && isFeishuBotReachable(binding), feishuStep.tools).heading ?? undefined)
+      ? (feishuStepCopy(resolveFeishuBotState(binding), feishuStep.tools).heading ?? undefined)
       : undefined;
 
   return (

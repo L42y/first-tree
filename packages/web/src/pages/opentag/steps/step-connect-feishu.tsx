@@ -6,7 +6,12 @@ import { Button } from "../../../components/ui/button.js";
 import { FeishuRegistrationQr, isFeishuBotReachable } from "../../../features/feishu/binding-view.js";
 import { FlowHint } from "../../onboarding/flow-ui.js";
 import { feishuStepCopy, OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
-import { isFeishuHandoffUsable, type OpenTagFeishuStepState, type OpenTagToolsPrep } from "../flow.js";
+import {
+  isFeishuHandoffUsable,
+  type OpenTagFeishuStepState,
+  type OpenTagToolsPrep,
+  resolveFeishuBotState,
+} from "../flow.js";
 
 /**
  * The focused Feishu step: one Bot for this one Agent.
@@ -68,7 +73,7 @@ export function StepConnectFeishu({
         {binding ? (
           <div className="grid md:grid-cols-2">
             <div className="flex flex-col justify-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4)" }}>
-              <BotColumn binding={binding} starting={starting} onConnect={onConnect} />
+              <BotColumn binding={binding} starting={starting} onConnect={onConnect} tools={step.tools} />
             </div>
             {/* The divider is horizontal while the columns are stacked, so the
                 two waits never read as one continuous list on a phone. */}
@@ -167,10 +172,12 @@ function BotColumn({
   binding,
   starting,
   onConnect,
+  tools,
 }: {
   binding: FeishuBotBinding;
   starting: boolean;
   onConnect: () => void;
+  tools: OpenTagToolsPrep;
 }): ReactElement {
   if (binding.status === "error") {
     return (
@@ -205,7 +212,12 @@ function BotColumn({
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
           {isFeishuHandoffUsable(binding)
             ? "Message it in Feishu — a private message or an exact group mention starts the first task."
-            : "Your Bot and its permissions are kept while the rest finishes."}
+            : // "the rest finishes" is only true while something still is
+              // finishing. Nothing is, once preparation failed or has no
+              // Computer to run on.
+              tools.state === "preparing" || (tools.state === "recoverable" && tools.reason === "slow")
+              ? "Your Bot and its permissions are kept while the rest finishes."
+              : "Your Bot and its permissions are kept."}
         </p>
       </div>
     );
@@ -251,9 +263,8 @@ function ToolsPanel({
   onRetryTools: () => void;
 }): ReactElement {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
-  const botReachable = isFeishuBotReachable(binding);
   // The same derivation the page heading uses, so the two cannot disagree.
-  const header = feishuStepCopy(botReachable, step.tools).panel;
+  const header = feishuStepCopy(resolveFeishuBotState(binding), step.tools).panel;
 
   return (
     <>

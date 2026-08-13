@@ -6,7 +6,9 @@ import {
   classifyOpenTagAgent,
   isFeishuHandoffUsable,
   type OpenTagAgentRead,
+  type OpenTagBotState,
   type OpenTagToolsPrep,
+  resolveFeishuBotState,
   resolveOpenTagFeishuStep,
   resolveOpenTagStep,
 } from "../flow.js";
@@ -344,13 +346,13 @@ describe("when the Feishu handoff is genuinely usable", () => {
 
 describe("what the Feishu step says about itself", () => {
   const TOOLS: OpenTagToolsPrep[] = [
-    { state: "idle" },
     { state: "preparing" },
     { state: "ready" },
     { state: "unavailable" },
     { state: "recoverable", reason: "slow" },
     { state: "recoverable", reason: "failed" },
   ];
+  const BOTS: OpenTagBotState[] = ["waiting", "reachable", "failed"];
 
   /** Language that promises work is under way on the Agent's Computer. */
   const CLAIMS_WORK_UNDERWAY = [
@@ -359,6 +361,13 @@ describe("what the Feishu step says about itself", () => {
     "Finishing Agent tools",
     "Preparing this Computer",
   ];
+  /** Language that frames the Bot as merely unconfirmed. */
+  const CLAIMS_BOT_MERELY_WAITING = ["hasn't confirmed", "Waiting for Feishu", "both parts finish"];
+
+  function said(bot: OpenTagBotState, tools: OpenTagToolsPrep): string {
+    const { heading, panel } = feishuStepCopy(bot, tools);
+    return `${heading?.why ?? ""} ${heading?.lead ?? ""} ${panel?.title ?? ""} ${panel?.lead ?? ""}`;
+  }
 
   it("never claims the Computer is busy when it is done, missing, or was never asked", () => {
     // Three surfaces report the same two facts — the page heading, the panel
@@ -366,46 +375,94 @@ describe("what the Feishu step says about itself", () => {
     // to contradict each other, so this pins every combination at once.
     for (const tools of TOOLS) {
       if (tools.state === "preparing" || (tools.state === "recoverable" && tools.reason === "slow")) continue;
-      for (const botReachable of [true, false]) {
-        const { heading, panel } = feishuStepCopy(botReachable, tools);
-        const said = `${heading?.why ?? ""} ${heading?.lead ?? ""} ${panel?.title ?? ""} ${panel?.lead ?? ""}`;
+      for (const bot of BOTS) {
         for (const claim of CLAIMS_WORK_UNDERWAY) {
-          expect(`${tools.state}/${botReachable}: ${said}`).not.toContain(claim);
+          expect(`${tools.state}/${bot}: ${said(bot, tools)}`).not.toContain(claim);
         }
       }
     }
   });
 
+  it("never frames a failed Bot as one the member simply has not confirmed", () => {
+    // The Bot column and its readiness row report the error; a panel promising
+    // that Feishu is about to confirm it says the opposite of both.
+    for (const tools of TOOLS) {
+      for (const claim of CLAIMS_BOT_MERELY_WAITING) {
+        expect(`${tools.state}: ${said("failed", tools)}`).not.toContain(claim);
+      }
+    }
+  });
+
   it("says nothing at all once both halves are done", () => {
-    const done = feishuStepCopy(true, { state: "ready" });
+    const done = feishuStepCopy("reachable", { state: "ready" });
     expect(done.heading).toBeNull();
     expect(done.panel).toBeNull();
   });
 
   it("keeps the standing heading while waiting is still ordinary", () => {
-    expect(feishuStepCopy(true, { state: "preparing" }).heading).toBeNull();
-    expect(feishuStepCopy(false, { state: "preparing" }).heading).toBeNull();
+    expect(feishuStepCopy("reachable", { state: "preparing" }).heading).toBeNull();
+    expect(feishuStepCopy("waiting", { state: "preparing" }).heading).toBeNull();
   });
 
   it("reports a request that never landed as failed, not as slow", () => {
-    const { heading, panel } = feishuStepCopy(true, { state: "recoverable", reason: "failed" });
+    const { heading, panel } = feishuStepCopy("reachable", { state: "recoverable", reason: "failed" });
     expect(heading?.why).toContain("couldn't start");
     expect(panel?.title).toContain("didn't start");
   });
 
   it("names the missing Computer rather than describing preparation", () => {
-    const { heading, panel } = feishuStepCopy(true, { state: "unavailable" });
+    const { heading, panel } = feishuStepCopy("reachable", { state: "unavailable" });
     expect(heading?.why).toContain("no Computer");
     expect(panel?.title).toContain("can't be prepared");
   });
 
+  it("names the Bot failure even when the Computer is ready", () => {
+    const { heading, panel } = feishuStepCopy("failed", { state: "ready" });
+    expect(heading?.why).toContain("needs attention");
+    expect(panel?.lead).toContain("The Bot is the part that needs you.");
+  });
+
   it("keeps the approved copy for the state the contract pictures", () => {
-    const { heading, panel } = feishuStepCopy(true, { state: "recoverable", reason: "slow" });
+    const { heading, panel } = feishuStepCopy("reachable", { state: "recoverable", reason: "slow" });
     expect(heading?.why).toBe("One last part is taking longer.");
     expect(heading?.lead).toBe(
       "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply.",
     );
     expect(panel?.title).toBe("Finishing Agent tools…");
+  });
+});
+
+describe("telling the Bot's three answers apart", () => {
+  function bot(overrides: Partial<FeishuBotBinding>): FeishuBotBinding {
+    return {
+      id: "b",
+      agentId: "a",
+      appId: null,
+      botOpenId: null,
+      botName: null,
+      botAvatarUrl: null,
+      tenantKey: null,
+      status: "provisioning",
+      connectionStatus: "disconnected",
+      grantedScopes: [],
+      registrationUrl: null,
+      registrationExpiresAt: null,
+      lastConnectedAt: null,
+      lastEventAt: null,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      cli: { state: "ready", version: null, clientId: "c" },
+      ...overrides,
+    };
+  }
+
+  it("separates a failure from a confirmation that has not happened yet", () => {
+    expect(resolveFeishuBotState(bot({ status: "error" }))).toBe("failed");
+    expect(resolveFeishuBotState(bot({ status: "active", connectionStatus: "error" }))).toBe("failed");
+    expect(resolveFeishuBotState(bot({}))).toBe("waiting");
+    expect(resolveFeishuBotState(bot({ status: "active", connectionStatus: "connecting" }))).toBe("waiting");
+    expect(resolveFeishuBotState(bot({ status: "active", connectionStatus: "connected" }))).toBe("reachable");
+    expect(resolveFeishuBotState(null)).toBe("waiting");
   });
 });
 

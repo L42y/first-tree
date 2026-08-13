@@ -251,6 +251,22 @@ export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean
 }
 
 /**
+ * The Bot half, as the surfaces that describe it need to tell it apart.
+ *
+ * Reachability alone is two answers to a three-answer question: a Bot that
+ * failed and a Bot the member has not confirmed yet are both "not reachable",
+ * and describing the first as a wait is how a page ends up framing an error as
+ * a duration.
+ */
+export type OpenTagBotState = "waiting" | "reachable" | "failed";
+
+export function resolveFeishuBotState(binding: FeishuBotBinding | null): OpenTagBotState {
+  if (!binding) return "waiting";
+  if (binding.status === "error" || binding.connectionStatus === "error") return "failed";
+  return binding.status === "active" && binding.connectionStatus === "connected" ? "reachable" : "waiting";
+}
+
+/**
  * Where an Agent in the URL puts the member, or `null` while the facts have not
  * settled. An existing Agent is past both setup choices, so it lands on Feishu;
  * anything unusable starts over from the Agent choice, where nothing has been

@@ -1,4 +1,4 @@
-import type { OpenTagStepId, OpenTagToolsPrep } from "./flow.js";
+import type { OpenTagBotState, OpenTagStepId, OpenTagToolsPrep } from "./flow.js";
 
 /**
  * Member-facing strings for the `/opentag` entry, kept out of the components
@@ -60,9 +60,8 @@ export const OPENTAG_FEISHU_READINESS_COPY = {
   toolsLabel: "Agent tools",
   recoveryTitle: "You are not stuck here.",
   recoveryLead: "Try the automatic setup again, or finish later and repair it from this Agent's settings.",
-  // When the automatic setup cannot help — there is no Computer to prepare, or
-  // the outstanding half is the member's own confirmation in Feishu — the only
-  // honest offer left is to leave and pick it up from the Agent's own page.
+  // When the Computer is already done, the automatic setup has nothing left to
+  // retry — the outstanding half is the member's own confirmation in Feishu.
   recoveryLeadFinishOnly: "Finish later and pick this up from this Agent's settings whenever you're ready.",
   tryAgain: "Try again",
   finishLater: "Finish later",
@@ -83,7 +82,7 @@ export const OPENTAG_FEISHU_READINESS_COPY = {
  * left to narrate.
  */
 export function feishuStepCopy(
-  botReachable: boolean,
+  bot: OpenTagBotState,
   tools: OpenTagToolsPrep,
 ): {
   heading: { why: string; lead: string } | null;
@@ -91,6 +90,26 @@ export function feishuStepCopy(
 } {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
   const bothWaiting = { title: copy.panelPreparingTitle, lead: copy.panelPreparingLead };
+  const botReachable = bot === "reachable";
+
+  // A Bot that failed outranks whatever the Computer is doing: it is the more
+  // severe outstanding fact, and describing it as a wait — or as something that
+  // will finish on its own — contradicts the error shown right beside this.
+  if (bot === "failed") {
+    return {
+      heading: {
+        why: "Feishu setup needs attention.",
+        lead: "Setting up the Bot didn't finish, so your Agent can't be reached in Feishu yet.",
+      },
+      panel: {
+        title: "Feishu Bot needs attention.",
+        lead:
+          tools.state === "ready"
+            ? "Your Agent is ready. The Bot is the part that needs you."
+            : "Setting up the Bot didn't finish.",
+      },
+    };
+  }
 
   switch (tools.state) {
     case "unavailable":
@@ -149,11 +168,6 @@ export function feishuStepCopy(
             },
             panel: bothWaiting,
           };
-    case "idle":
-      // No Bot means no commitment and nothing being prepared. This step has
-      // one decision left to offer, and narrating background work would invent
-      // work nobody started.
-      return { heading: null, panel: null };
     default:
       // Ordinary waiting, on one half or both.
       return {
