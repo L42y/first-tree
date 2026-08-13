@@ -1,11 +1,17 @@
 import { eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
+import { connectDatabase } from "../db/connection.js";
+import { agents } from "../db/schema/agents.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
+import { users } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
+import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
+import { createMember, deleteMember } from "../services/team/member.js";
+import { ensureMembership, leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
@@ -39,6 +45,72 @@ async function attachOrg(
     await tx.insert(members).values({ id: memberId, userId, organizationId: orgId, agentId: human.uuid, role });
   });
   return { orgId, memberId, humanAgentId };
+}
+
+async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
+  app: FastifyInstance,
+  subject: { userId: string; username: string },
+  deactivate: () => Promise<unknown>,
+  teamDisplayName: string,
+) {
+  const databaseUrl = process.env.DATABASE_URL ?? "";
+  if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+  const blockerDb = connectDatabase(databaseUrl);
+  let releaseUserLock: () => void = () => undefined;
+  let announceUserLock: () => void = () => undefined;
+  const userLockReleased = new Promise<void>((resolve) => {
+    releaseUserLock = resolve;
+  });
+  const userLockHeld = new Promise<void>((resolve) => {
+    announceUserLock = resolve;
+  });
+  const holder = blockerDb.transaction(async (tx) => {
+    await tx.select({ id: users.id }).from(users).where(eq(users.id, subject.userId)).for("no key update").limit(1);
+    announceUserLock();
+    await userLockReleased;
+  });
+
+  try {
+    await userLockHeld;
+    let deactivationSettled = false;
+    const deactivation = deactivate().finally(() => {
+      deactivationSettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    // Leave/removal must wait on the same stable user lock used by
+    // additional-Team authorization. Without it, the stale precheck can
+    // commit a third first-Team boundary after this membership loss finishes.
+    expect(deactivationSettled).toBe(false);
+
+    const creation = selfCreateOrganization(app.db, {
+      userId: subject.userId,
+      username: subject.username,
+      displayName: teamDisplayName,
+    }).then(
+      (value) => ({ status: "fulfilled" as const, value }),
+      (error: unknown) => ({ status: "rejected" as const, error }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    releaseUserLock();
+    await holder;
+    await deactivation;
+
+    const outcome = await creation;
+    expect(outcome.status).toBe("rejected");
+    if (outcome.status === "rejected") {
+      expect(outcome.error).toMatchObject({ message: expect.stringContaining("starting an Agent") });
+    }
+    expect(
+      await app.db
+        .select({ id: organizations.id })
+        .from(organizations)
+        .where(eq(organizations.displayName, teamDisplayName)),
+    ).toEqual([]);
+  } finally {
+    releaseUserLock();
+    await holder.catch(() => undefined);
+    await blockerDb.end();
+  }
 }
 
 describe("Multi-org self-service", () => {
@@ -80,6 +152,73 @@ describe("Multi-org self-service", () => {
     expect(me.statusCode).toBe(200);
     const meBody = me.json<{ memberships: Array<{ organizationId: string }> }>();
     expect(meBody.memberships.some((m) => m.organizationId === body.organization.id)).toBe(true);
+  });
+
+  it("POST /me/organizations cannot create an empty first Team", async () => {
+    const app = getApp();
+    const userId = uuidv7();
+    await app.db.insert(users).values({
+      id: userId,
+      username: `teamless-org-create-${crypto.randomUUID().slice(0, 8)}`,
+      passwordHash: "test",
+      displayName: "Team-less Creator",
+    });
+    const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/me/organizations",
+      headers: { authorization: `Bearer ${tokens.accessToken}` },
+      payload: { displayName: "Empty First Team" },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string }>().error).toContain("starting an Agent");
+    const created = await app.db
+      .select({ id: organizations.id })
+      .from(organizations)
+      .where(eq(organizations.displayName, "Empty First Team"));
+    expect(created).toHaveLength(0);
+
+    await expect(
+      selfCreateOrganization(app.db, {
+        userId,
+        username: `teamless-org-create-${userId.slice(0, 8)}`,
+        displayName: "Service Escape Team",
+      }),
+    ).rejects.toThrow("starting an Agent");
+  });
+
+  it("serializes additional-Team authority behind a concurrent last-membership leave", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `org-race-${crypto.randomUUID().slice(0, 8)}` });
+    await expectAdditionalTeamCreationRejectedAfterMembershipLoss(
+      app,
+      {
+        userId: admin.userId,
+        username: admin.username,
+      },
+      () => leaveOrganization(app.db, admin.memberId),
+      "Concurrent Leave Escape Team",
+    );
+  });
+
+  it("serializes additional-Team authority behind a concurrent final-membership removal", async () => {
+    const app = getApp();
+    const host = await createTestAdmin(app, { username: `org-host-${crypto.randomUUID().slice(0, 8)}` });
+    const username = `org-remove-${crypto.randomUUID().slice(0, 8)}`;
+    const target = await createMember(app.db, host.organizationId, {
+      username,
+      displayName: "Removal Target",
+      role: "member",
+    });
+
+    await expectAdditionalTeamCreationRejectedAfterMembershipLoss(
+      app,
+      { userId: target.userId, username },
+      () => deleteMember(app.db, target.id, host.organizationId),
+      "Concurrent Removal Escape Team",
+    );
   });
 
   it("POST /me/organizations disambiguates display names that derive the same slug", async () => {
@@ -142,6 +281,10 @@ describe("Multi-org self-service", () => {
       headers: { authorization: `Bearer ${admin.accessToken}` },
       payload: { displayName: "Second" },
     });
+    await app.db
+      .update(agents)
+      .set({ metadata: { firstTeamAgentContinuation: { agentId: "transferred-first-agent" } } })
+      .where(eq(agents.uuid, admin.humanAgentUuid));
 
     const leaveRes = await app.inject({
       method: "POST",
@@ -165,6 +308,19 @@ describe("Multi-org self-service", () => {
     const meBody = me.json<{ memberships: Array<{ organizationId: string }> }>();
     expect(meBody.memberships.length).toBe(1);
     expect(meBody.memberships[0]?.organizationId).not.toBe(admin.organizationId);
+
+    await ensureMembership(app.db, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      role: "member",
+      displayName: "Ignored stale label",
+      username: admin.username,
+    });
+    const [restoredMirror] = await app.db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(eq(agents.uuid, admin.humanAgentUuid));
+    expect(restoredMirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
   });
 
   it("POST /me/memberships/:memberId/leave hides memberships owned by another user", async () => {

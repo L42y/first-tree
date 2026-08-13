@@ -5,7 +5,7 @@ import {
   parseLandingCampaignTrialChatMetadata,
 } from "@first-tree/shared";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
@@ -153,16 +153,31 @@ async function startCampaignInOrg(
 
 async function startCampaignWithoutOrganization(
   app: ReturnType<ReturnType<typeof useTestApp>>,
-  admin: Awaited<ReturnType<typeof createTestAdmin>>,
+  caller: { accessToken: string },
   campaign = "production-scan",
   repoUrl = "https://github.com/acme/backend",
 ) {
   return app.inject({
     method: "POST",
     url: START_URL,
-    headers: { authorization: `Bearer ${admin.accessToken}` },
+    headers: { authorization: `Bearer ${caller.accessToken}` },
     payload: { campaign, repoUrl },
   });
+}
+
+async function createTeamlessCaller(
+  app: ReturnType<ReturnType<typeof useTestApp>>,
+  displayName = "Teamless Quickstart Owner",
+): Promise<{ userId: string; accessToken: string }> {
+  const userId = uuidv7();
+  await app.db.insert(users).values({
+    id: userId,
+    username: `quickstart-${crypto.randomUUID().slice(0, 8)}`,
+    displayName,
+    passwordHash: INVALID_BCRYPT_PLACEHOLDER,
+  });
+  const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
+  return { userId, accessToken: tokens.accessToken };
 }
 
 async function createRunnableOrgAgent(
@@ -220,12 +235,19 @@ async function countTrialChatsForUser(app: ReturnType<ReturnType<typeof useTestA
 
 describe("POST /me/landing-campaigns/start", () => {
   const getApp = useTestApp({
+    agentFirstOnboardingEnabled: true,
     growthLandingPagesEnabled: true,
     landingCampaignServiceUserId: SERVICE_USER_ID,
     landingCampaignServiceOrgId: SERVICE_ORG_ID,
     landingCampaignClientId: OFFICIAL_CLIENT_ID,
   });
   const getDisabledApp = useTestApp({
+    landingCampaignServiceUserId: SERVICE_USER_ID,
+    landingCampaignServiceOrgId: SERVICE_ORG_ID,
+    landingCampaignClientId: OFFICIAL_CLIENT_ID,
+  });
+  const getAgentFirstDisabledApp = useTestApp({
+    growthLandingPagesEnabled: true,
     landingCampaignServiceUserId: SERVICE_USER_ID,
     landingCampaignServiceOrgId: SERVICE_ORG_ID,
     landingCampaignClientId: OFFICIAL_CLIENT_ID,
@@ -282,6 +304,14 @@ describe("POST /me/landing-campaigns/start", () => {
     landingCampaignClientId: OFFICIAL_CLIENT_ID,
     landingCampaignMaxTrialsPerUserPer24Hours: 1,
   });
+  const getInvitationOnlyApp = useTestApp({
+    agentFirstOnboardingEnabled: true,
+    growthLandingPagesEnabled: true,
+    landingCampaignServiceUserId: SERVICE_USER_ID,
+    landingCampaignServiceOrgId: SERVICE_ORG_ID,
+    landingCampaignClientId: OFFICIAL_CLIENT_ID,
+    allowedOrganizationId: "invite-only-landing-campaign-org",
+  });
 
   it("parses legacy trial chat metadata with estimated token defaults", () => {
     const trial = parseLandingCampaignTrialChatMetadata({
@@ -330,6 +360,38 @@ describe("POST /me/landing-campaigns/start", () => {
         ),
       );
     expect(trialAgents).toHaveLength(0);
+  });
+
+  it("does not create a Team-less campaign Team while Agent-first onboarding is disabled", async () => {
+    const app = getAgentFirstDisabledApp();
+    const caller = await createTeamlessCaller(app, "Gated Quickstart Owner");
+
+    const res = await startCampaignWithoutOrganization(app, caller);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toMatchObject({ error: "Active membership not found" });
+    expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toEqual([]);
+  });
+
+  it("rechecks the disabled gate under the lifecycle lock if membership disappears", async () => {
+    const app = getAgentFirstDisabledApp();
+    const caller = await createTestAdmin(app, { username: `gated-race-${crypto.randomUUID().slice(0, 8)}` });
+    await seedOfficialRuntime(app, caller.organizationId);
+    const originalTransaction = app.db.transaction.bind(app.db);
+    const transaction = vi.spyOn(app.db, "transaction").mockImplementationOnce(async (callback, config) => {
+      await app.db.update(members).set({ status: "removed" }).where(eq(members.userId, caller.userId));
+      return originalTransaction(callback, config);
+    });
+
+    try {
+      const res = await startCampaignWithoutOrganization(app, caller);
+
+      expect(res.statusCode).toBe(404);
+      expect(res.json()).toMatchObject({ error: "Active membership not found" });
+      expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toHaveLength(1);
+    } finally {
+      transaction.mockRestore();
+    }
   });
 
   it("requires the official runtime config before provisioning anything", async () => {
@@ -672,6 +734,78 @@ describe("POST /me/landing-campaigns/start", () => {
       .where(eq(agents.uuid, body.agentUuid))
       .limit(1);
     expect(trialAgent?.organizationId).toBe(admin.organizationId);
+  });
+
+  it("atomically creates a Team and campaign trial Agent for an authenticated Team-less caller", async () => {
+    const app = getApp();
+    const caller = await createTeamlessCaller(app);
+    await seedOfficialRuntime(app, "");
+
+    const res = await startCampaignWithoutOrganization(app, caller);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ chatId: string; agentUuid: string }>();
+    const callerMemberships = await app.db.select().from(members).where(eq(members.userId, caller.userId));
+    expect(callerMemberships).toHaveLength(1);
+    expect(callerMemberships[0]).toMatchObject({ role: "admin", status: "active" });
+    const [humanMirror] = await app.db
+      .select()
+      .from(agents)
+      .where(eq(agents.uuid, callerMemberships[0]?.agentId ?? ""));
+    expect(humanMirror).toMatchObject({ type: "human", organizationId: callerMemberships[0]?.organizationId });
+    const [trialAgent] = await app.db.select().from(agents).where(eq(agents.uuid, body.agentUuid));
+    expect(trialAgent).toMatchObject({
+      organizationId: callerMemberships[0]?.organizationId,
+      visibility: "organization",
+      clientId: OFFICIAL_CLIENT_ID,
+    });
+  });
+
+  it("rolls back the Team when trial Agent provisioning fails inside the first-Team transaction", async () => {
+    const app = getApp();
+    const caller = await createTeamlessCaller(app, "Rollback Quickstart Owner");
+    await seedOfficialRuntime(app, "");
+    // The ownership/org preflight remains valid, but createAgent rejects a
+    // retired Runtime after the new Team and service member have been staged.
+    await app.db.update(clients).set({ retiredAt: new Date() }).where(eq(clients.id, OFFICIAL_CLIENT_ID));
+
+    const res = await startCampaignWithoutOrganization(app, caller);
+
+    expect(res.statusCode).toBe(410);
+    expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toEqual([]);
+    expect(
+      await app.db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.displayName, "Rollback Quickstart Owner's team")),
+    ).toEqual([]);
+  });
+
+  it("serializes concurrent Team-less Quickstart starts onto one Team, trial Agent, and chat", async () => {
+    const app = getApp();
+    const caller = await createTeamlessCaller(app, "Concurrent Quickstart Owner");
+    await seedOfficialRuntime(app, "");
+
+    const [first, second] = await Promise.all([
+      startCampaignWithoutOrganization(app, caller),
+      startCampaignWithoutOrganization(app, caller),
+    ]);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toHaveLength(1);
+  });
+
+  it("does not bypass invitation-only deployment policy for a Team-less Quickstart caller", async () => {
+    const app = getInvitationOnlyApp();
+    const caller = await createTeamlessCaller(app, "Uninvited Quickstart Owner");
+    await seedOfficialRuntime(app, "");
+
+    const res = await startCampaignWithoutOrganization(app, caller);
+
+    expect(res.statusCode).toBe(403);
+    expect(await app.db.select().from(members).where(eq(members.userId, caller.userId))).toEqual([]);
   });
 
   it("falls back from colliding service and trial agent names and repairs the service member", async () => {

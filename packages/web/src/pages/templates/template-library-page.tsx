@@ -7,6 +7,7 @@ import { listAgentTemplates } from "../../api/agent-templates.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { FirstTreeLogo } from "../../components/first-tree-logo.js";
 import { Button } from "../../components/ui/button.js";
+import { UserMenu } from "../../components/user-menu.js";
 
 function TemplateCard({ template }: { template: AgentTemplatePublicTemplate }) {
   return (
@@ -53,7 +54,7 @@ export function TemplateLibraryPage() {
 
   return (
     <div className="landing-marketing min-h-screen overflow-y-auto bg-background text-foreground">
-      <header className="px-4 py-3">
+      <header className="flex items-center justify-between px-4 py-3">
         <Link
           to="/"
           className="inline-flex items-center gap-2 rounded-[var(--radius-input)] px-2 py-1 text-body text-fg-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -61,6 +62,7 @@ export function TemplateLibraryPage() {
           <FirstTreeLogo width={20} height={24} />
           First Tree
         </Link>
+        {isAuthenticated ? <UserMenu /> : null}
       </header>
 
       <main className="mx-auto w-full max-w-3xl px-4 pb-16 pt-8">

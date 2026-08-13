@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 
-import type { OrgContextTreeFeaturesOutput, OrgContextTreeOutput, TeamSetupCapabilities } from "@first-tree/shared";
+import type {
+  MeMembership,
+  OrgContextTreeFeaturesOutput,
+  OrgContextTreeOutput,
+  TeamSetupCapabilities,
+} from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -38,6 +43,7 @@ const authMock = vi.hoisted(() => ({
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z" as string | null,
+    currentMembership: null as MeMembership | null,
     restoreOnboarding: vi.fn(async () => undefined),
   },
 }));
@@ -123,7 +129,9 @@ function facts(overrides: Partial<SetupFacts> = {}): SetupFacts {
     hasUsableAgent: true,
     hasPersonalAgent: true,
     onboardingSuppressedAt: "2026-07-23T00:00:00.000Z",
+    onboardingSuppressedReason: "completed",
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+    firstTeamAgentContinuation: null,
     workspaceWillEnterOnboarding: false,
     computers: {
       state: "ready",
@@ -324,6 +332,7 @@ beforeEach(() => {
     onboardingStep: "completed",
     onboardingDismissedAt: null,
     onboardingCompletedAt: "2026-07-23T00:00:00.000Z",
+    currentMembership: null,
     restoreOnboarding: vi.fn(async () => undefined),
   };
 });
@@ -1782,5 +1791,62 @@ describe("Settings Setup overview", () => {
     expect(onboardingEventMocks.reportOnboardingEvent).toHaveBeenCalledWith("resumed", { source: "settings" });
     expect(view.host.querySelector("[data-location]")?.textContent).toBe("/onboarding");
     await act(async () => view.root.unmount());
+  });
+
+  it("resumes an Agent-first creator at the exact Agent Runtime", async () => {
+    const agentFirst = facts({
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+      firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+    });
+
+    const agent = rowFor("agent", agentFirst);
+    expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
+    expect(agent.action).toEqual({ label: "Resume setup", to: "/agents/agent-first-1/runtime" });
+  });
+
+  it("retires the Agent-first setup action after onboarding completes", async () => {
+    const completed = facts({
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "completed",
+      onboardingCompletedAt: "2026-08-12T01:00:00.000Z",
+      firstTeamAgentContinuation: { agentId: "agent-first-1", status: "active" },
+    });
+
+    expect(rowFor("agent", completed).action).toEqual({ label: "View", to: "/team" });
+  });
+
+  it("does not misclassify a promoted invitee as an Agent-first creator", async () => {
+    const invitee = facts({
+      role: "admin",
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+      firstTeamAgentContinuation: null,
+    });
+
+    expect(rowFor("agent", invitee).action).toEqual({
+      label: "Resume setup",
+      to: "/onboarding",
+      intent: "resume-onboarding",
+    });
+  });
+
+  it("keeps personal-Agent setup resumable for a Member who first used a Team Agent", async () => {
+    const invitee = facts({
+      role: "member",
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: "2026-08-12T00:00:00.000Z",
+      onboardingSuppressedReason: "invitee_skip",
+      onboardingCompletedAt: null,
+    });
+
+    const agent = rowFor("agent", invitee);
+    expect(agent.status).toMatchObject({ label: "Available", detail: "Managed by you" });
+    expect(agent.action).toEqual({ label: "Resume setup", to: "/onboarding", intent: "resume-onboarding" });
   });
 });

@@ -1,5 +1,76 @@
 import { describe, expect, it } from "vitest";
-import { kickoffOnboardingSchema, onboardingEventSchema, treeSetupKickoffSchema } from "../schemas/me-extras.js";
+import {
+  kickoffOnboardingSchema,
+  meMembershipSchema,
+  onboardingEventSchema,
+  provisionFirstTeamAgentSchema,
+  treeSetupKickoffSchema,
+} from "../schemas/me-extras.js";
+
+describe("provisionFirstTeamAgentSchema", () => {
+  it("requires a stable UUID-v7 request identity, one Template, and keeps the body user-scoped", () => {
+    const templateId = "0190f000-0000-7000-8000-000000000002";
+    expect(
+      provisionFirstTeamAgentSchema.parse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        name: "pr-engineer",
+        templateIds: [templateId],
+      }),
+    ).toEqual({ requestId: "0190f000-0000-7000-8000-000000000001", name: "pr-engineer", templateIds: [templateId] });
+    expect(provisionFirstTeamAgentSchema.safeParse({ name: "pr-engineer" }).success).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "3d594650-3436-4f87-9f5a-8ac4d3f7f6b3",
+        name: "pr-engineer",
+        templateIds: [templateId],
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [templateId],
+        organizationId: "org-hidden-in-body",
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      provisionFirstTeamAgentSchema.safeParse({
+        requestId: "0190f000-0000-7000-8000-000000000001",
+        templateIds: [templateId, "0190f000-0000-7000-8000-000000000003"],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("meMembershipSchema", () => {
+  it("projects the exact first-Team Agent continuation without changing legacy memberships", () => {
+    const base = {
+      id: "member-1",
+      organizationId: "org-1",
+      organizationName: "Acme",
+      role: "admin",
+      agentId: "human-1",
+      orgHasOtherMembers: false,
+      hasUsableAgent: true,
+      hasPersonalAgent: true,
+      onboardingSuppressedAt: null,
+      onboardingSuppressedReason: null,
+      onboardingCompletedAt: null,
+    };
+    expect(meMembershipSchema.parse(base).firstTeamAgentContinuation).toBeUndefined();
+    expect(
+      meMembershipSchema.parse({
+        ...base,
+        firstTeamAgentContinuation: { agentId: "agent-1", status: "active" },
+      }).firstTeamAgentContinuation,
+    ).toEqual({ agentId: "agent-1", status: "active" });
+  });
+});
 
 describe("kickoffOnboardingSchema", () => {
   it("accepts a natural onboarding kickoff without an internal kind discriminator", () => {

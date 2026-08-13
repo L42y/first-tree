@@ -44,7 +44,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
     let discovery: Awaited<ReturnType<typeof fetchDiscovery>>;
     try {
       discovery = await fetchDiscovery(app.config.oidc.issuer);
-    } catch (error) {
+    } catch {
       // Do not log provider-controlled error details to prevent log injection
       app.log.error({ event: "oauth.discovery_failed", provider: "oidc" }, "OIDC discovery failed at start");
       // Redirect through /auth/complete with bounded error instead of returning raw 503 JSON
@@ -315,6 +315,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
         ip: request.ip,
         userAgent: request.headers["user-agent"] ?? "",
+        agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
       });
     } catch (error) {
       if (error instanceof OAuthBootstrapError) return redirectError(reply, error.code, verified.next);
@@ -329,7 +330,9 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       accountCreated: account.created ? "1" : "0",
       callbackIntent: "sign-in",
       provider: "oidc",
-      org: bootstrap.organizationId,
+      // Omitted only for the gated Agent-first solo path. The default flow
+      // returns the personal Team created during bootstrap.
+      ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
       ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
     }).toString();
 

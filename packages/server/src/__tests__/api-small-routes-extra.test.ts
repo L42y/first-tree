@@ -539,7 +539,7 @@ describe("small API route handlers", () => {
     });
     expect(routeMocks.selfCreateOrganization).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ userDisplayName: "Alice", username: "alice" }),
+      expect.objectContaining({ username: "alice" }),
     );
 
     const missingUser = makeApp({ ...appBase, db: makeQueuedSelectDb([[]]) });

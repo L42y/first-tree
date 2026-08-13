@@ -58,6 +58,22 @@ function OAuthStartRedirect({ next }: { next: string }) {
 }
 
 /**
+ * Where a signed-in user with no Team is sent. Everything behind this guard is
+ * org-scoped, so there is nothing for them to render there; the Template
+ * library is the Team-less entry point — picking a Template is the first step
+ * of creating the Team Agent that creates the Team.
+ *
+ * It lives outside this guard (a public route), so redirecting here cannot
+ * loop. Exported as the single place the entry destination is named.
+ */
+export const NO_TEAM_ENTRY_PATH = "/templates";
+
+/** User-scoped routes that remain valid before the first Team exists. */
+export function isTeamlessAuthenticatedPath(pathname: string): boolean {
+  return pathname === "/quickstart" || pathname === "/settings/account";
+}
+
+/**
  * Route guard for everything behind the dashboard chrome.
  *
  * Behavior matrix (unauthenticated visitor):
@@ -66,14 +82,15 @@ function OAuthStartRedirect({ next }: { next: string }) {
  *                           location in router state so LoginPage can send
  *                           the user back there after auth succeeds
  *
- * Authenticated users always pass through to the matched child route, so
- * landing on `/` still produces the WorkspacePage as before. We render
- * landing inline (rather than redirecting to a `/landing` URL) so the
- * marketing entry point and the workspace share the canonical `/` URL —
- * the path the user typed never changes between auth states.
+ * Authenticated users pass through to the matched child route, so landing on
+ * `/` still produces the WorkspacePage as before — unless they have no Team at
+ * all, which every route under this guard depends on. We render landing inline
+ * (rather than redirecting to a `/landing` URL) so the marketing entry point
+ * and the workspace share the canonical `/` URL — the path the user typed
+ * never changes between auth states.
  */
 export function RequireAuth() {
-  const { isAuthenticated, meLoaded } = useAuth();
+  const { isAuthenticated, meLoaded, hasNoTeam } = useAuth();
   const location = useLocation();
   if (!isAuthenticated) {
     if (location.pathname === "/") {
@@ -99,5 +116,11 @@ export function RequireAuth() {
   // populate the org id before the dashboard mounts and fires its first wave
   // of requests.
   if (!meLoaded) return <LandingFallback />;
+  // Most dashboard routes are Team-scoped, but Quickstart is an explicit
+  // first-Agent entry and Account remains user-scoped. Keep those two escape
+  // hatches mounted; redirect every other Team-less destination.
+  if (hasNoTeam && !isTeamlessAuthenticatedPath(location.pathname)) {
+    return <Navigate to={NO_TEAM_ENTRY_PATH} replace />;
+  }
   return <Outlet />;
 }

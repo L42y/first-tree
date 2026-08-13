@@ -1,107 +1,107 @@
 ---
 id: registration-first-run-onboarding
-description: Validate that a brand-new user can register, complete admin first-run onboarding, and reach a working first chat, including the machine and runtime gates the journey waits on.
+description: Validate that a brand-new user may remain Team-less after authentication and creates the first Team only at an explicit Agent-start boundary.
 areas: [cross-surface]
-surfaces: [server, web, client]
+surfaces: [server, web]
 ---
 
-# Registration And Admin First-Run Onboarding
+# Registration And First-Agent Entry
 
 ## Goal
 
-Confirm that somebody with no First Tree account can arrive, sign up, and finish
-the admin first-run journey to a usable workspace:
+Confirm the current first-run lifecycle for a genuinely new identity:
 
-- registration creates a fresh user, org and human agent, and lands on onboarding;
-- the team step confirms the org that sign-in already created, renaming it only
-  when the prefilled name is actually edited;
-- the connect-computer step blocks until a client reports in with a ready runtime,
-  then unblocks;
-- the create-agent step binds the agent to that client and waits for it to come
-  online before offering to start;
-- the kickoff chat is created once and the user lands in the workspace with
-  onboarding stamped complete;
-- from that workspace, the current Team menu exposes the Team-scoped path for
-  using an external agent without taking configuration ownership away from
-  Settings.
+- authentication creates the user account but no Team, membership, or human mirror;
+- ordinary browsing and Template discovery remain write-free;
+- an explicit Template confirmation creates the Team, Admin membership, human
+  mirror, unbound organization-visible Team Agent, and Template adoption in one
+  transaction;
+- a known landing-campaign Quickstart instead creates the Team and
+  service-managed trial Agent atomically, then opens its trial chat;
+- a campaign action that needs the user's own Agent preserves its handoff and
+  routes a Team-less caller through first-Agent selection, never into a hosted
+  trial;
+- Account and Sign out remain reachable while the user has no Team.
 
-Deterministic tests own copy, field rendering, per-step readiness logic, and the
-kickoff contract itself. This case owns what those tests cannot prove: that the
-whole sequence connects for a genuinely new identity, that each gate opens on
-real state rather than on a stubbed prop, and that the degraded branches a real
-user hits are reachable and honest.
-
-`member-work-mode-onboarding` covers the *invited member* paths; this case is the
-first user, who becomes an admin and creates the team.
+This case owns the cross-surface behavior that deterministic auth, provisioning,
+rollback, and route tests cannot prove in one real browser journey. Runtime
+binding/readiness after an unbound Team Agent exists is a separate journey.
 
 ## Preconditions
 
-- A server stack where the caller can observe the database, since some gates are
-  driven by rows the browser cannot write.
-- **Registration**: First Tree has no password sign-up. Use a real Google/GitHub
-  identity, or the localhost-only `auth/github/dev-callback` stub, which requires
-  a non-production `NODE_ENV` plus explicit `FIRST_TREE_DEV_CALLBACK_ENABLED`.
-  Never expect this stub on a deployed environment — it must 404 there.
-- Each attempt needs an identity that has **never signed in before**. Reusing one
-  signs in as the earlier user and silently validates nothing.
-- A connected client is required from step 2 onward. Either run a real daemon
-  against the stack, or seed the `clients` row it would write.
+- A disposable stack whose database can be inspected.
+- A previously unseen identity. Use real OAuth or the localhost-only GitHub dev
+  callback with its explicit non-production gate; never expect that callback in
+  a deployed environment.
+- At least one active public Agent Template.
+- For the Quickstart branch, a configured official campaign Runtime.
 
-## Scenario
+## Scenario A — Template confirmation
 
-1. Sign up with a previously unseen identity. Verify a user, an organization and
-   a human agent are created, the browser lands on `/onboarding`, and the team
-   name is prefilled from the identity.
-2. Continue past the team step. The organization and the caller's active `admin`
-   membership already exist from sign-in; this screen loads that row rather than
-   creating one, and leaving the prefilled name unchanged performs **no write at
-   all**. Verify it is that same org, and do not expect a creation here — a
-   correct run that accepts the prefilled name would otherwise be failed. Repeat
-   with an edited name and verify only the display name changes
-   (`PATCH /orgs/:orgId`), leaving org identity and membership untouched.
-3. On connect-computer, verify **Continue stays disabled** while no client is
-   connected, and that the page offers a bootstrap command plus a paste-able
-   agent prompt. This negative half matters: a gate that is open by accident
-   would not be visible in a passing happy path.
-4. Bring a client online reporting a ready runtime. Verify the step names the
-   host, lists the detected coding agent, and enables Continue. If the client's
-   heartbeat then goes stale, verify the step honestly regresses to
-   "your computer isn't connected" rather than staying green — the server sweeps
-   connected clients older than `presenceCleanupSeconds`.
-5. Create the first agent. Verify it is bound to that client with the chosen
-   runtime and visibility, and that the flow waits for presence rather than
-   claiming success. With no daemon actually binding, verify the "taking longer
-   than usual" branch appears and offers both **Keep waiting** and
-   **I'll finish later**.
-6. Bring the agent online. Verify the flow advances on its own to the start-chat
-   screen.
-7. Start the chat. Verify the browser lands on the workspace at `/?c=<chatId>`,
-   the kickoff chat exists exactly once, its first message addresses the new
-   agent, and the membership carries `onboarding_completed_at` with
-   `onboarding_suppressed_reason='completed'`.
-8. Open the current Team menu. Verify **Use your own agent** appears in the
-   **Current team** section, **Create team** remains under **Add team**, and no
-   manual **Join with invite link** action is offered there. Activate the new
-   action and verify it lands on
-   `/settings/context#coding-agent-access`, where the Context Tree settings page
-   opens the **Coding agent setup** section and owns its setup state. This menu
-   check does not replace the
-   separate `/invite/:token` join-path contract.
+1. Sign in with the unseen identity. Verify `/me` is authoritative with zero
+   active memberships and that no organization, membership, or human mirror was
+   created for the user.
+2. Browse the Template library, reload it, and open Account. Verify the database
+   remains unchanged and the user menu supports Sign out.
+3. Choose one Template and confirm **Create Team Agent**. Verify one transaction
+   creates exactly one Team, active Admin membership, matching human mirror,
+   unbound organization-visible Agent, adopted Template configuration, Team
+   Resources, and bindings.
+4. Verify the browser opens the new Agent continuation and does not enter the
+   standalone Admin onboarding or show the legacy Team naming step. The
+   membership suppresses that legacy auto-open without marking Runtime setup as
+   complete. Revisit `/onboarding` and Settings → Setup: neither direct entry nor
+   an advertised Resume action may reopen the Team naming / duplicate-Agent flow.
+5. Repeat the same request identity and verify it resolves the same Team and
+   Agent. Submit a different request identity or intent and verify it conflicts
+   rather than impersonating a retry. Race two identical confirmations and
+   verify one Team and Agent exist.
+6. Force Template adoption to fail and verify no Team, membership, mirror,
+   Agent, Resource, or binding survives.
+
+## Scenario B — known Quickstart
+
+1. Sign in through a preserved known `/quickstart` return URL with another new
+   identity. Verify the browser reaches Quickstart rather than the generic
+   Team-less Template redirect.
+2. Start the trial without an organization selector. Verify Team, caller Admin
+   membership and human mirror, tenant-local service membership, and managed
+   trial Agent commit together before chat bootstrap.
+3. Race/retry the same campaign and repository. Verify one Team, one trial
+   Agent, and one keyed trial chat.
+4. Repeat on an invitation-only deployment and verify the Team-less start is
+   refused without partial rows.
+
+## Scenario C — campaign action
+
+1. Open a configured campaign action URL as a new Team-less user. Verify it does
+   not call the trial-start endpoint, stores only the validated handoff, and
+   routes to Template selection instead of the org-scoped legacy onboarding
+   route.
+2. Confirm a Template. Verify the first Team Agent is created atomically and the
+   stored action remains available for the later Runtime/setup continuation.
+3. Re-open the action after the user's Agent is connectable. Verify one task chat
+   is created or reused and the handoff clears only after that chat exists.
+
+## Legacy Cohort Preservation
+
+Exercise an existing membership still routed to standalone onboarding. Verify
+its Team selection, connect-computer, Agent creation/readiness, kickoff chat,
+and completion stamps retain their prior behavior. The new user-scoped first-
+Team endpoint must not create another Agent or Team for this cohort.
 
 ## Evidence
 
-A credible result names the identity used, shows the workspace landing with the
-kickoff chat, quotes the membership row's onboarding stamps, and shows the
-current Team menu plus the resulting coding-agent access URL. For any gate
-claimed to have blocked, show the disabled state, not only the later success.
+Keep redacted completion URLs, relevant `/me` projections and network calls,
+stable resource IDs, browser-visible Account/Sign-out access, and database row
+counts before and after each atomic boundary. Never retain OAuth codes, tokens,
+cookies, provider subjects, private repository contents, or report keys.
 
-## Limitations
+## Result Rules
 
-- Seeding `clients` / `agent_presence` instead of running a daemon proves the
-  product's reaction to that state, not the daemon's own registration handshake,
-  heartbeat or capability probe. Those belong to client/runtime validation. A
-  seeded row must mirror what the real write produces — `runtime_state` is
-  `idle` on bind, never a value outside `runtimeStateSchema` — or the journey
-  advances through a state no daemon can reach.
-- The journey is not idempotent. Every attempt leaves a new user, org, agent and
-  chat behind, so run it where accumulating rows is acceptable.
+`PASS` requires all executed branches to preserve the declared zero-Team and
+atomicity boundaries with no duplicate or partial resources. `FAIL` includes an
+empty Team at sign-in, a post-confirmation redirect into legacy Team naming, a
+dropped Quickstart/action handoff, a false retry, a duplicate first Team/Agent,
+or loss of Account/Sign-out access. `BLOCKED` means the required fresh identity,
+Template, official Runtime, or database visibility is unavailable.

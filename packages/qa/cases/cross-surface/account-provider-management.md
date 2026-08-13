@@ -13,8 +13,8 @@ Validate Google and GitHub as equal sign-in providers and verify that connection
 
 ## Scenarios
 
-1. Sign in with a new Google account. Verify one user, personal team, admin membership, and human agent are created; repeat sign-in and verify the same user ID is reused.
-2. Sign in with a new GitHub account. Verify the created resource shape matches Google and the existing GitHub completion URL still works.
+1. Sign in with a new Google account. Verify one user is created with zero Team memberships and no human mirror; repeat sign-in and verify the same user ID is reused without provisioning resources.
+2. Sign in with a new GitHub account. Verify the same Team-less resource shape as Google and that the existing GitHub completion URL still works.
 3. Use Google and GitHub accounts that expose the same email. Verify separate First Tree users are created and no email-based merge occurs.
 4. From a GitHub-only user's Settings → Account page, connect Google. Verify user, organization, membership, agents, and active First Tree tokens remain unchanged.
 5. Attempt to connect a Google or GitHub identity already owned by another user. Verify `identity-conflict`, no identity movement, and no resource changes.

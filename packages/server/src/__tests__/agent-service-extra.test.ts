@@ -40,6 +40,7 @@ describe("agent service extra coverage", () => {
         publicKey: "kept",
         runtimeSession: { tokenHash: "secret" },
         runtimeSwitch: { leaseId: "hidden" },
+        firstTeamAgentContinuation: { agentId: "agent-1" },
       }),
     ).toEqual({ publicKey: "kept" });
     expect(() => assertUserAgentMetadataHasNoReservedKeys({ runtimeSession: {} })).toThrow(
@@ -290,7 +291,13 @@ describe("agent service extra coverage", () => {
     });
     await app.db
       .update(agents)
-      .set({ metadata: { publicKey: "old", runtimeSession: { tokenHash: "kept" } } })
+      .set({
+        metadata: {
+          publicKey: "old",
+          runtimeSession: { tokenHash: "kept" },
+          firstTeamAgentContinuation: { agentId: "agent-first-1" },
+        },
+      })
       .where(eq(agents.uuid, agent.uuid));
 
     const updated = await updateAgent(app.db, agent.uuid, {
@@ -302,6 +309,7 @@ describe("agent service extra coverage", () => {
     expect(updated.metadata).toMatchObject({
       publicKey: "new",
       runtimeSession: { tokenHash: "kept" },
+      firstTeamAgentContinuation: { agentId: "agent-first-1" },
     });
   });
 

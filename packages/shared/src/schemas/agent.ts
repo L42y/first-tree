@@ -47,7 +47,13 @@ export type AgentSource = z.infer<typeof agentSourceSchema>;
 export const agentStatusSchema = z.enum(["active", "suspended"]);
 export type AgentStatus = z.infer<typeof agentStatusSchema>;
 
-export const RESERVED_AGENT_METADATA_KEYS = ["runtimeSwitch", "runtimeSession"] as const;
+export const FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY = "firstTeamAgentContinuation" as const;
+
+export const RESERVED_AGENT_METADATA_KEYS = [
+  "runtimeSwitch",
+  "runtimeSession",
+  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
+] as const;
 
 const reservedAgentMetadataKeySet: ReadonlySet<string> = new Set(RESERVED_AGENT_METADATA_KEYS);
 
@@ -59,12 +65,23 @@ export function findReservedAgentMetadataKey(metadata: Record<string, unknown> |
   return null;
 }
 
+const firstTeamAgentContinuationSchema = z.object({ agentId: z.string().min(1) }).strict();
+export type FirstTeamAgentContinuation = z.infer<typeof firstTeamAgentContinuationSchema>;
+
+export function getFirstTeamAgentContinuation(metadata: unknown): FirstTeamAgentContinuation | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const parsed = firstTeamAgentContinuationSchema.safeParse(
+    (metadata as Record<string, unknown>)[FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY],
+  );
+  return parsed.success ? parsed.data : null;
+}
+
 export const userAgentMetadataSchema = z.record(z.string(), z.unknown()).superRefine((metadata, ctx) => {
   const key = findReservedAgentMetadataKey(metadata);
   if (!key) return;
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
-    message: `metadata.${key} is reserved for First Tree internal runtime state`,
+    message: `metadata.${key} is reserved for First Tree internal state`,
     path: [key],
   });
 });
@@ -104,19 +121,25 @@ export function isReservedAgentName(name: string): boolean {
   return RESERVED_AGENT_NAMES_SET.has(name);
 }
 
+/**
+ * The user-supplied agent slug, shared by every create surface so the portal,
+ * the Admin API, and the first-Team-Agent provisioning route reject exactly
+ * the same names.
+ */
+export const agentNameSchema = z
+  .string()
+  .min(1)
+  .max(AGENT_NAME_MAX_LENGTH)
+  .regex(
+    AGENT_NAME_REGEX,
+    "Must start with a letter or digit and contain only lowercase letters, digits, hyphens (-), and underscores (_). Max 64 chars.",
+  )
+  .refine((n) => !isReservedAgentName(n), {
+    message: "That agent name is reserved — pick a different one.",
+  });
+
 export const createAgentSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .max(AGENT_NAME_MAX_LENGTH)
-    .regex(
-      AGENT_NAME_REGEX,
-      "Must start with a letter or digit and contain only lowercase letters, digits, hyphens (-), and underscores (_). Max 64 chars.",
-    )
-    .refine((n) => !isReservedAgentName(n), {
-      message: "That agent name is reserved — pick a different one.",
-    })
-    .optional(),
+  name: agentNameSchema.optional(),
   type: agentTypeSchema,
   /**
    * Post-Phase 2 the DB enforces `NOT NULL`; the service layer defaults

@@ -36,12 +36,14 @@ export function QuickstartPage() {
   const location = useLocation();
   const {
     organizationId,
+    hasNoTeam,
     refreshMe,
     meLoaded,
     onboardingStep,
     onboardingDismissedAt,
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
+    currentMembership,
   } = useAuth();
   const { enabled: growthLandingPagesEnabled, settled } = useGrowthLandingPagesState();
   // The trial chat is selected with the normal workspace `?c=` param so
@@ -84,50 +86,67 @@ export function QuickstartPage() {
   const actionCampaign = actionHandoff ? getCampaign(actionHandoff.campaign) : null;
 
   const startStartedRef = useRef(false);
+  const startNeedsManualRetryRef = useRef(false);
   const [startError, setStartError] = useState<string | null>(null);
 
-  const startTrial = useCallback(async () => {
-    // `legacyChatId` guards alongside `chatId`: a legacy `?chat=` link is a
-    // selected chat being canonicalized, never a launch trigger — even if a
-    // stale campaign intent lingers in sessionStorage. `actionHandoff` guards too
-    // so a fix link can never start a trial even transiently.
-    if (
-      chatId ||
-      legacyChatId ||
-      actionHandoff ||
-      !intent ||
-      !campaign ||
-      startStartedRef.current ||
-      !growthLandingPagesEnabled
-    )
-      return;
-    startStartedRef.current = true;
-    setStartError(null);
-    try {
-      const { chatId: trialChatId } = await startLandingCampaign({
-        ...(organizationId ? { organizationId } : {}),
-        campaign: intent.campaign,
-        repoUrl: intent.url,
-        ...(intent.attribution ? { attribution: intent.attribution } : {}),
-      });
-      clearCampaignIntent();
-      await refreshMe();
-      navigate(`/quickstart?c=${encodeURIComponent(trialChatId)}`, { replace: true });
-    } catch (err) {
-      startStartedRef.current = false;
-      setStartError(err instanceof Error ? err.message : "Couldn't open your trial chat. Please try again.");
-    }
-  }, [
-    chatId,
-    legacyChatId,
-    actionHandoff,
-    intent,
-    campaign,
-    organizationId,
-    growthLandingPagesEnabled,
-    refreshMe,
-    navigate,
-  ]);
+  const startTrial = useCallback(
+    async (manualRetry = false) => {
+      // `legacyChatId` guards alongside `chatId`: a legacy `?chat=` link is a
+      // selected chat being canonicalized, never a launch trigger — even if a
+      // stale campaign intent lingers in sessionStorage. `actionHandoff` guards too
+      // so a fix link can never start a trial even transiently.
+      if (
+        chatId ||
+        legacyChatId ||
+        actionHandoff ||
+        !intent ||
+        !campaign ||
+        startStartedRef.current ||
+        (!manualRetry && startNeedsManualRetryRef.current) ||
+        !growthLandingPagesEnabled
+      )
+        return;
+      startStartedRef.current = true;
+      startNeedsManualRetryRef.current = false;
+      setStartError(null);
+      try {
+        const { chatId: trialChatId } = await startLandingCampaign({
+          ...(organizationId ? { organizationId } : {}),
+          campaign: intent.campaign,
+          repoUrl: intent.url,
+          ...(intent.attribution ? { attribution: intent.attribution } : {}),
+        });
+        clearCampaignIntent();
+        await refreshMe();
+        navigate(`/quickstart?c=${encodeURIComponent(trialChatId)}`, { replace: true });
+      } catch (err) {
+        // A Team-less start crosses its provisioning transaction before quota,
+        // resource binding, and chat bootstrap finish. A later failure is
+        // therefore ambiguous: the Team may already exist even though no chat
+        // opened. Re-read the account authority before exposing retry or other
+        // first-Team entry points.
+        if (hasNoTeam) await refreshMe();
+        // `/me` reconciliation can change callback dependencies and rerun the
+        // auto-start effect. Keep this failed attempt manual-only so it cannot
+        // immediately launch a second request before the user presses Retry.
+        startNeedsManualRetryRef.current = true;
+        startStartedRef.current = false;
+        setStartError(err instanceof Error ? err.message : "Couldn't open your trial chat. Please try again.");
+      }
+    },
+    [
+      chatId,
+      legacyChatId,
+      actionHandoff,
+      intent,
+      campaign,
+      organizationId,
+      hasNoTeam,
+      growthLandingPagesEnabled,
+      refreshMe,
+      navigate,
+    ],
+  );
 
   useEffect(() => {
     if (!settled || !growthLandingPagesEnabled) return;
@@ -150,9 +169,13 @@ export function QuickstartPage() {
     actionStartedRef.current = true;
     setActionError(null);
     try {
-      const { agent } = await getNewChatDefaultCandidates({});
+      const exactAgentId = currentMembership?.firstTeamAgentContinuation?.agentId;
+      const { agent } = await getNewChatDefaultCandidates(exactAgentId ? { cachedAgentId: exactAgentId } : {});
       if (!agent) {
         throw new Error("No connected agent yet. Connect your computer, then open this campaign action link again.");
+      }
+      if (exactAgentId && agent.uuid !== exactAgentId) {
+        throw new Error("Your first agent is not connected yet. Finish its Runtime setup, then try again.");
       }
       const created = await createMeTaskChat({
         mode: "task",
@@ -179,15 +202,19 @@ export function QuickstartPage() {
       actionStartedRef.current = false;
       setActionError(err instanceof Error ? err.message : "Couldn't start the campaign task. Please try again.");
     }
-  }, [actionHandoff, actionCampaign, navigate]);
+  }, [actionHandoff, actionCampaign, currentMembership?.firstTeamAgentContinuation?.agentId, navigate]);
 
   useEffect(() => {
     if (!actionHandoff || !actionCampaign || !settled || !growthLandingPagesEnabled || !meLoaded) return;
+    const firstTeamContinuation = currentMembership?.firstTeamAgentContinuation;
     writeCampaignActionHandoffFlag({
       campaign: actionHandoff.campaign,
       repoUrl: actionHandoff.url,
       reportKey: actionHandoff.reportKey,
       repoSlug: actionHandoff.repoSlug,
+      ...(firstTeamContinuation && organizationId
+        ? { targetOrganizationId: organizationId, targetAgentId: firstTeamContinuation.agentId }
+        : {}),
     });
     // Direct-chat eligibility is `shouldLeaveOnboarding` — the membership is
     // terminally done (past connect, has a personal agent, AND carries the
@@ -196,7 +223,9 @@ export function QuickstartPage() {
     // auto-entry suppressor — using it here would misroute dismissed-but-
     // incomplete members into the direct-chat path. `meLoaded` is re-checked
     // in the guard above because both gates return false on unloaded /me.
-    if (
+    if (firstTeamContinuation && firstTeamContinuation.status !== "deleted") {
+      void startActionChat();
+    } else if (
       shouldLeaveOnboarding({
         meLoaded,
         onboardingStep,
@@ -206,6 +235,13 @@ export function QuickstartPage() {
       })
     ) {
       void startActionChat();
+    } else if (hasNoTeam) {
+      // A campaign action needs the user's own Agent, but choosing that
+      // responsibility is still an explicit product decision. Preserve the
+      // handoff and route through first-Agent Template selection; after the
+      // atomic provision that surface opens the exact Agent Runtime and the
+      // Agent header consumes this action only for that target.
+      navigate("/templates", { replace: true });
     } else {
       navigate("/onboarding", { replace: true });
     }
@@ -219,6 +255,9 @@ export function QuickstartPage() {
     onboardingDismissedAt,
     onboardingCompletedAt,
     currentOrgHasPersonalAgent,
+    currentMembership,
+    organizationId,
+    hasNoTeam,
     navigate,
     startActionChat,
   ]);
@@ -232,7 +271,7 @@ export function QuickstartPage() {
   }, [chatId, legacyChatId, navigate]);
 
   const retryStart = useCallback(() => {
-    void startTrial();
+    void startTrial(true);
   }, [startTrial]);
 
   const retryActionChat = useCallback(() => {

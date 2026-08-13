@@ -70,7 +70,12 @@ export type SetupFacts = {
   hasUsableAgent: boolean;
   hasPersonalAgent: boolean;
   onboardingSuppressedAt: string | null;
+  onboardingSuppressedReason: "finish_later" | "completed" | "invitee_skip" | null;
   onboardingCompletedAt: string | null;
+  firstTeamAgentContinuation: {
+    agentId: string;
+    status: "active" | "suspended" | "deleted";
+  } | null;
   workspaceWillEnterOnboarding: boolean;
   computers: Fact<{ connected: number; saved: number; connectedHostname: string | null }>;
   repositories: Fact<number>;
@@ -488,7 +493,13 @@ function combineContextTreeAndReviewStatus(
 export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
   const isAdmin = facts.role === "admin";
   const reliesOnTeamAgent = facts.hasUsableAgent && !facts.hasPersonalAgent;
-  const resumeSetup = facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null;
+  const agentFirstContinuation = facts.onboardingCompletedAt ? null : facts.firstTeamAgentContinuation;
+  const agentFirstRuntimePath =
+    agentFirstContinuation && agentFirstContinuation.status !== "deleted"
+      ? `/agents/${encodeURIComponent(agentFirstContinuation.agentId)}/runtime`
+      : null;
+  const resumeSetup =
+    facts.onboardingSuppressedAt !== null && facts.onboardingCompletedAt === null && !agentFirstContinuation;
 
   const computerStatus =
     facts.computers.state === "loading"
@@ -563,8 +574,11 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
             kind: "attention",
           },
       action: facts.hasUsableAgent
-        ? { label: "Start a chat", to: facts.workspaceWillEnterOnboarding ? "/onboarding" : "/" }
-        : { label: "Set up", to: "/onboarding" },
+        ? {
+            label: agentFirstRuntimePath ? "Resume setup" : "Start a chat",
+            to: agentFirstRuntimePath ?? (facts.workspaceWillEnterOnboarding ? "/onboarding" : "/"),
+          }
+        : { label: "Set up", to: agentFirstRuntimePath ?? (agentFirstContinuation ? "/templates" : "/onboarding") },
     },
     {
       key: "computer",
@@ -591,11 +605,15 @@ export function buildSetupRows(facts: SetupFacts): SetupRowModel[] {
               detail: facts.hasUsableAgent ? "Optional while a team agent is available" : "No agent managed by you",
               kind: facts.hasUsableAgent ? "optional" : "attention",
             },
-      action: resumeSetup
-        ? { label: "Resume setup", to: "/onboarding", intent: "resume-onboarding" }
-        : facts.hasPersonalAgent
-          ? { label: "View", to: "/team" }
-          : { label: "Set up", to: "/onboarding" },
+      action: agentFirstRuntimePath
+        ? { label: "Resume setup", to: agentFirstRuntimePath }
+        : agentFirstContinuation
+          ? { label: "Set up", to: "/templates" }
+          : resumeSetup
+            ? { label: "Resume setup", to: "/onboarding", intent: "resume-onboarding" }
+            : facts.hasPersonalAgent
+              ? { label: "View", to: "/team" }
+              : { label: "Set up", to: "/onboarding" },
     },
     {
       key: "repositories",
@@ -648,6 +666,7 @@ export function SettingsSetupPage() {
     onboardingStep,
     onboardingDismissedAt,
     onboardingCompletedAt,
+    currentMembership,
     restoreOnboarding,
   } = useAuth();
 
@@ -699,7 +718,9 @@ export function SettingsSetupPage() {
     hasUsableAgent: currentOrgHasUsableAgent,
     hasPersonalAgent: currentOrgHasPersonalAgent,
     onboardingSuppressedAt: onboardingDismissedAt,
+    onboardingSuppressedReason: currentMembership?.onboardingSuppressedReason ?? null,
     onboardingCompletedAt,
+    firstTeamAgentContinuation: currentMembership?.firstTeamAgentContinuation ?? null,
     workspaceWillEnterOnboarding: shouldEnterOnboarding({
       meLoaded,
       onboardingStep,

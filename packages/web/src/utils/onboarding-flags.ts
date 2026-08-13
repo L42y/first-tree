@@ -165,9 +165,9 @@ const LEGACY_SCAN_FIX_HANDOFF_KEY = "onboarding:scanFixHandoff";
 
 /**
  * Campaign action captured by /quickstart (`action=<configured action>`).
- * Global like `agentUuid` (the fix link carries no org); consumed and cleared
- * by the onboarding start-chat completion, kept by `finishLater`. The durable
- * fallback is the fix link itself — the user can always re-click it.
+ * Initially user-scoped because the fix link carries no Team. First-Team
+ * confirmation binds it to the exact provisioned Team and Agent before any
+ * Agent detail surface may consume it. The durable fallback is the fix link.
  */
 export type StoredCampaignActionHandoff = {
   campaign: KnownLandingCampaignSlug;
@@ -180,6 +180,9 @@ export type StoredCampaignActionHandoff = {
    * dedup until they re-click the fix link).
    */
   repoSlug?: string;
+  /** Exact first-Team continuation target. Absent only on legacy/standalone onboarding handoffs. */
+  targetOrganizationId?: string;
+  targetAgentId?: string;
 };
 
 function parseStoredCampaignActionHandoff(raw: string, campaign?: unknown): StoredCampaignActionHandoff | null {
@@ -197,11 +200,19 @@ function parseStoredCampaignActionHandoff(raw: string, campaign?: unknown): Stor
     }
     const repoSlug =
       typeof o.repoSlug === "string" && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(o.repoSlug) ? o.repoSlug : undefined;
+    const targetOrganizationId =
+      typeof o.targetOrganizationId === "string" && o.targetOrganizationId.length > 0
+        ? o.targetOrganizationId
+        : undefined;
+    const targetAgentId =
+      typeof o.targetAgentId === "string" && o.targetAgentId.length > 0 ? o.targetAgentId : undefined;
+    if (Boolean(targetOrganizationId) !== Boolean(targetAgentId)) throw new Error("partially scoped campaign handoff");
     return {
       campaign: resolvedCampaign,
       repoUrl: o.repoUrl,
       reportKey: o.reportKey,
       ...(repoSlug ? { repoSlug } : {}),
+      ...(targetOrganizationId && targetAgentId ? { targetOrganizationId, targetAgentId } : {}),
     };
   } catch {
     return null;
