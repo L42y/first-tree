@@ -1073,6 +1073,12 @@ function typeHasName(type: ts.Type, checker: ts.TypeChecker, names: Set<string>)
   return false;
 }
 
+function typeIsCallable(type: ts.Type): boolean {
+  if (type.getCallSignatures().length > 0) return true;
+  if (type.isUnion() || type.isIntersection()) return type.types.some(typeIsCallable);
+  return false;
+}
+
 function containsMutableContainer(type: ts.Type, checker: ts.TypeChecker): boolean {
   const names = new Set<string>();
   collectTypeNames(type, checker, new Set(), names);
@@ -1098,7 +1104,7 @@ class ClassProvenanceAnalysis {
 
   constructor(
     private readonly source: ts.SourceFile,
-    cls: ts.ClassDeclaration,
+    private readonly cls: ts.ClassDeclaration,
     private readonly className: string,
     private readonly checker: ts.TypeChecker,
   ) {
@@ -1117,6 +1123,15 @@ class ClassProvenanceAnalysis {
   publicEscapeFindings(member: ProvenanceOwner, methodName: string): AuditViolation[] {
     const provenance = this.summarizeMember(member, methodName);
     const findings: AuditViolation[] = [];
+    if (this.isUnanalyzedCallableProperty(member, methodName)) {
+      findings.push({
+        kind: "ledger-write-capability-escape",
+        file: fileLabel(this.source),
+        className: this.className,
+        member: methodName,
+        detail: "public callable property has no analyzed initializer or constructor assignment",
+      });
+    }
     const contract = this.contract[methodName];
     const allowedIterator = contract === "session-iterator";
     for (const taint of provenance.taints) {
@@ -1181,7 +1196,12 @@ class ClassProvenanceAnalysis {
     this.inFlight.add(methodName);
     let provenance: Provenance;
     if (ts.isPropertyDeclaration(member)) {
-      provenance = member.initializer ? this.exprProvenance(member.initializer, member) : FRESH_PROVENANCE;
+      const parts: Provenance[] = [];
+      if (member.initializer) parts.push(this.exprProvenance(member.initializer, member));
+      for (const assigned of this.constructorAssignedValues(methodName)) {
+        parts.push(this.exprProvenance(assigned, member));
+      }
+      provenance = parts.length > 0 ? mergeProvenance(parts) : FRESH_PROVENANCE;
     } else {
       const returns = this.returnExpressions(member);
       provenance =
@@ -1192,6 +1212,43 @@ class ClassProvenanceAnalysis {
     this.inFlight.delete(methodName);
     this.summary.set(methodName, provenance);
     return provenance;
+  }
+
+  private isUnanalyzedCallableProperty(member: ProvenanceOwner, methodName: string): boolean {
+    if (!ts.isPropertyDeclaration(member) || member.initializer) return false;
+    if (!typeIsCallable(this.checker.getTypeAtLocation(member))) return false;
+    return this.constructorAssignedValues(methodName).length === 0;
+  }
+
+  private constructorAssignedValues(propertyName: string): ts.Expression[] {
+    const out: ts.Expression[] = [];
+    for (const member of this.cls.members) {
+      if (!ts.isConstructorDeclaration(member) || !member.body) continue;
+      const visit = (node: ts.Node): void => {
+        if (ts.isBinaryExpression(node) && ASSIGNMENT_KINDS.has(node.operatorToken.kind)) {
+          if (this.assignsThisProperty(node.left, propertyName)) out.push(node.right);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(member.body);
+    }
+    return out;
+  }
+
+  private assignsThisProperty(left: ts.Expression, propertyName: string): boolean {
+    const current = unwrap(left);
+    if (
+      ts.isPropertyAccessExpression(current) &&
+      this.isThisReceiver(current.expression) &&
+      current.name.text === propertyName
+    ) {
+      return true;
+    }
+    if (ts.isElementAccessExpression(current) && this.isThisReceiver(current.expression)) {
+      const key = resolveConstString(current.argumentExpression, this.checker);
+      return key.kind === "literal" && key.value === propertyName;
+    }
+    return false;
   }
 
   private summarizeBoundMember(
