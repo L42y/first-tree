@@ -866,22 +866,50 @@ describe("OpenTag entry — real first use in Feishu", () => {
     chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
 
     expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
-    // The destination is withheld until the stamp lands: an unstamped
-    // membership can still be sent back into setup, so this frame must not
-    // advertise a door that bounces.
-    expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
-    expect(container.textContent).toContain("Finishing up…");
-
-    await flush();
-
     // The handoff destination is the task itself, in the workspace.
     expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
     // The Bot step is over — offering to connect one here would be a second
     // registration for an Agent that is already working.
     expect(container.textContent).not.toContain("Connect Bot");
+  });
+
+  it("withholds the destination until the completion stamp lands", async () => {
+    // An unstamped membership can still be sent back into setup, so the
+    // terminal step must not advertise a door that bounces. Asserting that on
+    // whichever frame the stamp happens not to have settled yet is a race;
+    // holding the stamp open here makes the state the test's to choose.
+    let landStamp: (() => void) | null = null;
+    markOnboardingCompleted.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          landStamp = () => resolve(undefined);
+        }),
+    );
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    // The task is already stated as fact — it is real — but the way in is not
+    // offered while the workspace has not been told setup is finished.
+    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
+    expect(container.textContent).toContain("Finishing up…");
+
+    if (!landStamp) throw new Error("the completion stamp was never issued");
+    await act(async () => {
+      (landStamp as () => void)();
+    });
+    await flush();
+
+    expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Finishing up…");
   });
 
   it("cannot be completed by a Feishu task belonging to another Agent", async () => {
