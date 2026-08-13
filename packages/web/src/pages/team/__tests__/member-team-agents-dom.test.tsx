@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -86,7 +87,12 @@ async function renderPage(): Promise<{ container: HTMLElement; root: Root }> {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <TeamPage />
+        <MemoryRouter initialEntries={["/team"]}>
+          <Routes>
+            <Route path="/team" element={<TeamPage />} />
+            <Route path={OPENTAG_ENTRY_PATH} element={<div>Existing OpenTag flow</div>} />
+          </Routes>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
   });
@@ -179,6 +185,37 @@ describe("Member Team Agents page", () => {
     expect(container.textContent).not.toContain("Computer");
     expect(container.textContent).not.toContain("Runtime");
     expect(container.querySelector(".member-team-agent-grid")).toBeNull();
+    expect([...container.querySelectorAll("a")].some((link) => link.textContent === "Create a Team Agent")).toBe(true);
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps creation secondary to ready-agent use while routing keyboard users into the existing OpenTag flow", async () => {
+    agentApi.listAgents.mockResolvedValue({ items: [agent(1, { displayName: "Atlas" })], nextCursor: null });
+    agentApi.getAgentFeishuBinding.mockResolvedValue({ binding: binding(1) });
+
+    const { container, root } = await renderPage();
+    const messageLink = container.querySelector<HTMLAnchorElement>('a[href^="https://applink.feishu.cn/"]');
+    const createLink = [...container.querySelectorAll<HTMLAnchorElement>("a")].find(
+      (link) => link.textContent === "Create a Team Agent",
+    );
+
+    expect(messageLink?.className).toContain("bg-primary");
+    expect(createLink?.getAttribute("href")).toBe(OPENTAG_ENTRY_PATH);
+    expect(createLink?.className).toContain("text-label");
+    expect(createLink?.style.color).toBe("var(--fg-3)");
+    expect(
+      messageLink && createLink
+        ? Boolean(messageLink.compareDocumentPosition(createLink) & Node.DOCUMENT_POSITION_FOLLOWING)
+        : false,
+    ).toBe(true);
+
+    createLink?.focus();
+    expect(document.activeElement).toBe(createLink);
+
+    await act(async () => createLink?.click());
+    await flush();
+    expect(container.textContent).toContain("Existing OpenTag flow");
 
     await act(async () => root.unmount());
   });

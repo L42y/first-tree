@@ -1,7 +1,8 @@
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { ExternalLink, MessageCircle } from "lucide-react";
 import type { ReactElement } from "react";
+import { Link } from "react-router";
 import { listAgents } from "../../api/agents.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Avatar } from "../../components/avatar.js";
@@ -138,8 +139,23 @@ export function MemberTeamAgentsPage(): ReactElement {
             <GroupUseHint />
           </>
         )}
+        <CreateTeamAgentEntry />
       </div>
     </>
+  );
+}
+
+function CreateTeamAgentEntry(): ReactElement {
+  return (
+    <Button
+      asChild
+      variant="link"
+      size="sm"
+      className="h-auto self-start p-0 text-label"
+      style={{ color: "var(--fg-3)" }}
+    >
+      <Link to={OPENTAG_ENTRY_PATH}>Create a Team Agent</Link>
+    </Button>
   );
 }
 
