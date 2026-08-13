@@ -320,6 +320,10 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(lastLocation).toBe("/opentag");
     expect(container.textContent).toContain("already taken");
 
+    // Creating and continuing are mutually exclusive, so they share one
+    // pending state rather than both being live at once.
+    expect(button(container, "Create Agent").disabled).toBe(false);
+
     await click(button(container, "Continue with Ada assistant"));
     // Readiness is refreshed before moving, or a fast visit to `/` bounces the
     // member into `/onboarding` for an Agent they already have.
@@ -365,6 +369,13 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(container.textContent).toContain("isn't available in this team anymore");
     expect(container.textContent).toContain("What should it do?");
     expect(container.textContent).not.toContain("Create Agent");
+
+    // The rejected Agent leaves the URL, so the restart it advertises can
+    // actually reach the Computer step instead of looping on the first screen.
+    expect(lastLocation).toBe("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    expect(container.textContent).toContain("Studio Mac");
   });
 
   it("surfaces a name clash it cannot attribute to this member", async () => {
@@ -443,6 +454,29 @@ describe("OpenTag entry — choosing the Agent", () => {
     expect(container.textContent).toContain("isn't available in this team anymore");
     expect(container.textContent).toContain("Team Assistant");
     expect(api.createAgent).not.toHaveBeenCalled();
+    expect(lastLocation).toBe("/opentag");
+  });
+
+  it("does not carry a recovery candidate into a different Template decision", async () => {
+    api.createAgent.mockRejectedValue(
+      new ApiError(409, "Agent name is already taken", undefined, "agent_name_conflict"),
+    );
+    api.listManagedAgents.mockResolvedValue([{ ...agentRow(), name: "ada-assistant", displayName: "Ada assistant" }]);
+    computerMock.value = readyComputer();
+
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
+    expect(container.textContent).toContain("Continue with Ada assistant");
+
+    // Changing the decision invalidates what the previous one produced.
+    await click(button(container, "Choose a different teammate"));
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+
+    expect(container.textContent).not.toContain("Continue with Ada assistant");
+    expect(container.textContent).not.toContain("already taken");
   });
 
   it("keeps the Agent and offers a retry when the read fails for an unrelated reason", async () => {

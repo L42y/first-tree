@@ -56,6 +56,10 @@ export function OpenTagPage(): ReactElement | null {
     if (!target) navigate(opentagEntryPath(), { replace: true });
   }, [target, navigate]);
 
+  // Remembered across the URL rewrite below, so the member is told why they are
+  // back at the start even though the rejected Agent is no longer in the URL.
+  const [rejectedAgent, setRejectedAgent] = useState(false);
+
   const agentQuery = useQuery({
     queryKey: ["agent", agentUuid],
     queryFn: () => getAgent(agentUuid ?? ""),
@@ -83,6 +87,16 @@ export function OpenTagPage(): ReactElement | null {
     agent: agentQuery.data ?? null,
   });
   const step = resolveOpenTagStep(facts);
+
+  // An Agent this flow cannot use has to leave the URL, not just stop being
+  // rendered: while it is still there the restart it offers cannot advance,
+  // because a fresh draft is only allowed to move once no Agent is targeted.
+  useEffect(() => {
+    if (facts.state !== "unavailable" || !agentUuid) return;
+    setRejectedAgent(true);
+    setDraft(null);
+    navigate(opentagEntryPath(), { replace: true });
+  }, [facts.state, agentUuid, navigate]);
   const agent = facts.state === "resolved" ? (agentQuery.data ?? null) : null;
 
   // What the member has chosen but not yet created. Plain component state on
@@ -152,22 +166,24 @@ export function OpenTagPage(): ReactElement | null {
 
   // The recovered Agent was created by the request whose response was lost, so
   // the current `/me` still says this member has no Agent. Refresh before
-  // moving: navigating first leaves a fast visit to `/` bouncing into
-  // `/onboarding`, and swallows a failed refresh.
+  // moving, or a fast visit to `/` bounces them into `/onboarding`.
+  //
+  // This is best-effort by construction: the shared `refreshMe` is `fetchMe`,
+  // which is deliberately fail-soft and swallows a failed `/me` read, so this
+  // flow cannot observe a failure to report or retry. The cost of a silent
+  // miss is one misrouted visit to the workspace root, not lost work, so it
+  // does not justify a second, strict readiness path through shared auth.
   const [continuing, setContinuing] = useState(false);
-  const [continueError, setContinueError] = useState<string | null>(null);
   const continueWithRecovered = async (uuid: string): Promise<void> => {
     setContinuing(true);
-    setContinueError(null);
-    try {
-      await refreshMe();
-    } catch {
-      setContinueError("We couldn't refresh your team. Try again.");
-      setContinuing(false);
-      return;
-    }
+    await refreshMe();
     setContinuing(false);
     navigate(opentagEntryPath(uuid), { replace: true });
+  };
+
+  const clearRecoveryState = (): void => {
+    setRecoverableAgent(null);
+    create.reset();
   };
 
   const feishuQuery = useQuery({
@@ -213,25 +229,34 @@ export function OpenTagPage(): ReactElement | null {
       )}
       {draftStep === "choose-agent" && (
         <>
-          {facts.state === "unavailable" && <WrongAgentNotice />}
+          {rejectedAgent && <WrongAgentNotice />}
           <StepChooseAgent
             defaultAgentName={user?.username ? `${user.username} assistant` : "Assistant"}
-            onContinue={setDraft}
+            onContinue={(next) => {
+              // A new Template/name decision invalidates anything the previous
+              // one produced — including a "Continue with …" candidate that
+              // belongs to the old handle.
+              clearRecoveryState();
+              setDraft(next);
+            }}
           />
         </>
       )}
       {draftStep === "set-up-runtime" && draft && (
         <StepSetUpRuntime
           computer={computer}
-          pending={create.isPending}
-          error={continueError ?? (create.error instanceof Error ? create.error.message : null)}
-          onBack={() => setDraft(null)}
+          pending={create.isPending || continuing}
+          error={create.error instanceof Error ? create.error.message : null}
+          onBack={() => {
+            clearRecoveryState();
+            setDraft(null);
+          }}
           onUseComputer={(clientId, runtimeProvider) => create.mutate({ draft, clientId, runtimeProvider })}
           recovery={
             recoverableAgent
               ? {
                   displayName: recoverableAgent.displayName,
-                  pending: continuing,
+                  pending: continuing || create.isPending,
                   onContinue: () => void continueWithRecovered(recoverableAgent.uuid),
                 }
               : null
