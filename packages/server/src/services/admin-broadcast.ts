@@ -7,7 +7,7 @@
  */
 
 export type AdminBroadcastPayload = Record<string, unknown>;
-export type AdminBroadcaster = (payload: AdminBroadcastPayload) => void;
+export type AdminBroadcaster = (payload: AdminBroadcastPayload) => Promise<void> | void;
 
 let localBroadcaster: AdminBroadcaster | null = null;
 
@@ -22,7 +22,7 @@ export function resetAdminBroadcaster(): void {
 export function broadcastToAdmins(payload: AdminBroadcastPayload): void {
   if (!localBroadcaster) return;
   try {
-    localBroadcaster(payload);
+    void Promise.resolve(localBroadcaster(payload)).catch(() => {});
   } catch {
     // fire-and-forget
   }

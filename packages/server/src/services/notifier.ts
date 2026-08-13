@@ -60,6 +60,12 @@ const DAEMON_CLIENT_COMMAND_RESULT_CHANNEL = "daemon_client_command_results";
  * to every chat member), this channel is user-scoped.
  */
 const ME_CHATS_CHANNEL = "me_chats_changed";
+/**
+ * A membership row left the active roster. Carries a compact JSON payload so
+ * every replica can evict sockets that were authorized by that row. The
+ * database remains authoritative; this notification is only the fast path.
+ */
+const MEMBERSHIP_CHANGED_CHANNEL = "membership_changes";
 
 export type ConfigChangeHandler = (channel: string) => void;
 export type SessionStateChangeHandler = (payload: {
@@ -169,6 +175,7 @@ export type DaemonClientCommandResultPayload = {
 };
 export type DaemonClientCommandResultHandler = (payload: DaemonClientCommandResultPayload) => void;
 export type MeChatsChangedHandler = (payload: { humanAgentId: string; organizationId: string }) => void;
+export type MembershipChangedHandler = (payload: { memberId: string; organizationId: string }) => void;
 
 /**
  * Per-socket push handler for the WS data plane. When a NOTIFY arrives on
@@ -221,6 +228,8 @@ export type Notifier = {
    * touching another member's sockets.
    */
   notifyMeChatsChanged(humanAgentId: string, organizationId: string): Promise<void>;
+  /** Evict admin sockets authorized by a membership that is no longer active. */
+  notifyMembershipChanged(memberId: string, organizationId: string): Promise<void>;
   /** Agent runtime route changed: fan local WS detach/pin handling to every server replica. */
   notifyAgentRouteChange(payload: AgentRouteChangePayload): Promise<void>;
   /**
@@ -260,6 +269,8 @@ export type Notifier = {
   onChatUpdated(handler: ChatUpdatedChangeHandler): void;
   /** Register a handler for per-user me-chats invalidations (pin / engagement). */
   onMeChatsChanged(handler: MeChatsChangedHandler): void;
+  /** Register a handler for membership lifecycle invalidations. */
+  onMembershipChanged(handler: MembershipChangedHandler): void;
   /** Register a handler for agent runtime route changes. */
   onAgentRouteChange(handler: AgentRouteChangeHandler): void;
   /** Register a handler for cross-replica daemon reverse commands. */
@@ -283,6 +294,7 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
   const chatAudienceHandlers: ChatAudienceChangeHandler[] = [];
   const chatUpdatedHandlers: ChatUpdatedChangeHandler[] = [];
   const meChatsChangedHandlers: MeChatsChangedHandler[] = [];
+  const membershipChangedHandlers: MembershipChangedHandler[] = [];
   const agentRouteHandlers: AgentRouteChangeHandler[] = [];
   const daemonClientCommandHandlers: DaemonClientCommandHandler[] = [];
   const daemonClientCommandResultHandlers: DaemonClientCommandResultHandler[] = [];
@@ -296,6 +308,7 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
   let unlistenChatAudienceFn: (() => Promise<void>) | null = null;
   let unlistenChatUpdatedFn: (() => Promise<void>) | null = null;
   let unlistenMeChatsChangedFn: (() => Promise<void>) | null = null;
+  let unlistenMembershipChangedFn: (() => Promise<void>) | null = null;
   let unlistenAgentRouteFn: (() => Promise<void>) | null = null;
   let unlistenDaemonClientCommandFn: (() => Promise<void>) | null = null;
   let unlistenDaemonClientCommandResultFn: (() => Promise<void>) | null = null;
@@ -438,6 +451,15 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
       }
     },
 
+    async notifyMembershipChanged(memberId: string, organizationId: string) {
+      try {
+        await listenClient`SELECT pg_notify(${MEMBERSHIP_CHANGED_CHANNEL}, ${JSON.stringify({ memberId, organizationId })})`;
+      } catch {
+        // Fire-and-forget. Every broadcast also revalidates live membership,
+        // so a missed NOTIFY cannot preserve Team data-plane authorization.
+      }
+    },
+
     async notifyAgentRouteChange(payload: AgentRouteChangePayload) {
       try {
         await listenClient`SELECT pg_notify(${AGENT_ROUTE_CHANNEL}, ${JSON.stringify(payload)})`;
@@ -516,6 +538,10 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
 
     onMeChatsChanged(handler: MeChatsChangedHandler) {
       meChatsChangedHandlers.push(handler);
+    },
+
+    onMembershipChanged(handler: MembershipChangedHandler) {
+      membershipChangedHandlers.push(handler);
     },
 
     onAgentRouteChange(handler: AgentRouteChangeHandler) {
@@ -693,6 +719,23 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
       });
       unlistenMeChatsChangedFn = meChatsChangedResult.unlisten;
 
+      const membershipChangedResult = await listenClient.listen(MEMBERSHIP_CHANGED_CHANNEL, (payload) => {
+        try {
+          const parsed = JSON.parse(payload) as { memberId?: unknown; organizationId?: unknown };
+          if (typeof parsed.memberId !== "string" || typeof parsed.organizationId !== "string") return;
+          for (const handler of membershipChangedHandlers) {
+            try {
+              handler({ memberId: parsed.memberId, organizationId: parsed.organizationId });
+            } catch {
+              // One replica-local handler must not poison the remaining fan-out.
+            }
+          }
+        } catch {
+          // Ignore malformed external NOTIFY payloads.
+        }
+      });
+      unlistenMembershipChangedFn = membershipChangedResult.unlisten;
+
       const agentRouteResult = await listenClient.listen(AGENT_ROUTE_CHANNEL, (payload) => {
         if (!payload) return;
         try {
@@ -837,6 +880,10 @@ export function createNotifier(listenClient: postgres.Sql): Notifier {
       if (unlistenMeChatsChangedFn) {
         await unlistenMeChatsChangedFn();
         unlistenMeChatsChangedFn = null;
+      }
+      if (unlistenMembershipChangedFn) {
+        await unlistenMembershipChangedFn();
+        unlistenMembershipChangedFn = null;
       }
       if (unlistenAgentRouteFn) {
         await unlistenAgentRouteFn();

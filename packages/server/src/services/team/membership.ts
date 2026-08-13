@@ -7,10 +7,11 @@ import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
 import { organizations } from "../../db/schema/organizations.js";
 import { users } from "../../db/schema/users.js";
-import { ConflictError, NotFoundError } from "../../errors.js";
+import { ConflictError, NotFoundError, UnauthorizedError } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
 import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
 import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
+import type { Notifier } from "../notifier.js";
 import { forceDisconnect } from "../runtime/connection-manager.js";
 import * as presenceService from "../runtime/presence.js";
 import { suspendGitlabLinksForMembership } from "../scm/gitlab/identities.js";
@@ -30,6 +31,25 @@ export const MEMBER_STATUSES = {
 } as const;
 
 export type MemberStatus = (typeof MEMBER_STATUSES)[keyof typeof MEMBER_STATUSES];
+export type MembershipLifecycleUser = Awaited<ReturnType<typeof lockMembershipLifecycleUser>>;
+
+export const MEMBERSHIP_RECOVERY_POLICIES = {
+  REPAIR_REQUIRED: "repair-required",
+  INVITATION_REQUIRED: "invitation-required",
+} as const;
+
+export type MembershipRecoveryPolicy = (typeof MEMBERSHIP_RECOVERY_POLICIES)[keyof typeof MEMBERSHIP_RECOVERY_POLICIES];
+
+/**
+ * `allowedOrganizationId` is an entry gate, not a Team-creation authority.
+ * Keep the conversion in the lifecycle layer so every route makes the same
+ * deployment decision at the point where a final membership can disappear.
+ */
+export function membershipRecoveryPolicy(allowedOrganizationId: string | null | undefined): MembershipRecoveryPolicy {
+  return allowedOrganizationId
+    ? MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED
+    : MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED;
+}
 
 // biome-ignore lint/suspicious/noExplicitAny: needed for cross-schema compatibility with transaction clients.
 type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
@@ -43,9 +63,9 @@ type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
 export async function lockMembershipLifecycleUser(
   db: DbLike,
   userId: string,
-): Promise<{ id: string; username: string; displayName: string }> {
+): Promise<{ id: string; username: string; displayName: string; status: string }> {
   const [user] = await db
-    .select({ id: users.id, username: users.username, displayName: users.displayName })
+    .select({ id: users.id, username: users.username, displayName: users.displayName, status: users.status })
     .from(users)
     .where(eq(users.id, userId))
     .for("no key update")
@@ -114,6 +134,13 @@ async function syncUserDisplayNameInternal<T>(
   // concurrent membership FK insert, avoiding a lock-upgrade deadlock while
   // still making the later contender observe and update the earlier row.
   const user = await lockMembershipLifecycleUser(db, userId);
+  if (user.status !== "active") {
+    throw new UnauthorizedError("User not found or suspended", {
+      "auth.failure_reason": "user_suspended",
+      "auth.user_id": userId,
+      "auth.user_status": user.status,
+    });
+  }
   const effectiveDisplayName = requestedDisplayName ?? user.displayName;
   if (requestedDisplayName !== undefined) {
     await db.update(users).set({ displayName: effectiveDisplayName }).where(eq(users.id, userId));
@@ -147,40 +174,50 @@ type CreateMembershipForUser = {
 };
 
 /** Insert (or reactivate) a `members` row for `userId` in `organizationId`. */
-export async function ensureMembership(db: Database, data: CreateMembershipForUser) {
-  return db.transaction(async (tx) => {
-    return syncCurrentUserDisplayName(tx, data.userId, async (effectiveDisplayName) => {
-      const [existing] = await tx
-        .select()
-        .from(members)
-        .where(and(eq(members.userId, data.userId), eq(members.organizationId, data.organizationId)))
-        .limit(1);
+export async function ensureMembership(
+  db: Database,
+  data: CreateMembershipForUser,
+): Promise<typeof members.$inferSelect> {
+  return db.transaction((tx) => ensureMembershipInTransaction(tx, data));
+}
 
-      if (existing) {
-        if (existing.status === MEMBER_STATUSES.LEFT) {
-          // Rejoin starts a fresh onboarding lifecycle for this stable row.
-          await reactivateMembershipRows(tx, existing, {
-            username: data.username,
-            resetOnboarding: true,
-          });
-          return {
-            ...existing,
-            status: MEMBER_STATUSES.ACTIVE,
-            onboardingSuppressedAt: null,
-            onboardingSuppressedReason: null,
-            onboardingCompletedAt: null,
-          };
-        }
-        if (existing.status === MEMBER_STATUSES.REMOVED) {
-          throw new ConflictError(
-            `Membership for user "${data.userId}" was removed by an admin and must be restored by an admin.`,
-          );
-        }
-        return existing;
+export async function ensureMembershipInTransaction(
+  db: DbLike,
+  data: CreateMembershipForUser,
+): Promise<typeof members.$inferSelect> {
+  return syncCurrentUserDisplayName(db, data.userId, async (effectiveDisplayName) => {
+    const [existing] = await db
+      .select()
+      .from(members)
+      .where(and(eq(members.userId, data.userId), eq(members.organizationId, data.organizationId)))
+      .limit(1);
+
+    if (existing) {
+      if (existing.status === MEMBER_STATUSES.LEFT) {
+        // Rejoin starts a fresh onboarding lifecycle for this stable row.
+        await reactivateMembershipRows(db, existing, {
+          username: data.username,
+          role: data.role,
+          resetOnboarding: true,
+        });
+        return {
+          ...existing,
+          role: data.role,
+          status: MEMBER_STATUSES.ACTIVE,
+          onboardingSuppressedAt: null,
+          onboardingSuppressedReason: null,
+          onboardingCompletedAt: null,
+        };
       }
+      if (existing.status === MEMBER_STATUSES.REMOVED) {
+        throw new ConflictError(
+          `Membership for user "${data.userId}" was removed by an admin and must be restored by an admin.`,
+        );
+      }
+      return existing;
+    }
 
-      return insertNewMembershipRows(tx, data, effectiveDisplayName);
-    });
+    return insertNewMembershipRows(db, data, effectiveDisplayName);
   });
 }
 
@@ -388,7 +425,9 @@ export async function deactivateMembership(
   db: Database,
   memberId: string,
   status: typeof MEMBER_STATUSES.LEFT | typeof MEMBER_STATUSES.REMOVED,
-) {
+  recoveryPolicy: MembershipRecoveryPolicy,
+  notifier?: Notifier,
+): Promise<typeof members.$inferSelect> {
   const { existing, transferredAgentIds } = await db.transaction(async (tx) => {
     // Read the org up-front (unlocked) so the admin lock below is scoped to it,
     // then lock the active-admin set in a deterministic order — identical lock
@@ -400,7 +439,7 @@ export async function deactivateMembership(
       .where(eq(members.id, memberId))
       .limit(1);
     if (!targetRef) throw new NotFoundError(`Membership "${memberId}" not found`);
-    await lockMembershipLifecycleUser(tx, targetRef.userId);
+    const lockedUser = await lockMembershipLifecycleUser(tx, targetRef.userId);
 
     const [projectedFallback] = await tx
       .select({ id: members.id })
@@ -488,12 +527,14 @@ export async function deactivateMembership(
       .set({ status: AGENT_STATUSES.SUSPENDED, clientId: null, updatedAt: new Date() })
       .where(eq(agents.uuid, existing.agentId));
     await recomputeWatcherChats(tx, watcherChatIds);
+    await resolveMembershipAfterLifecycleLock(tx, lockedUser, recoveryPolicy);
     return { existing, transferredAgentIds };
   });
 
   // After commit: drop any live runtime presence for the reassigned agents so
   // they re-evaluate binding under their new manager instead of the departed
   // member's client.
+  await notifier?.notifyMembershipChanged(existing.id, existing.organizationId);
   for (const agentId of transferredAgentIds) {
     forceDisconnect(agentId, "member_left");
     await presenceService.unbindAgent(db, agentId);
@@ -613,14 +654,31 @@ type CreatePersonalTeamInput = {
  * that looks like a private sandbox. Users can rename via Step 1 of the
  * onboarding flow or Settings.
  */
-export async function createPersonalTeam(db: Database, input: CreatePersonalTeamInput) {
+export type CreatePersonalTeamResult = {
+  organizationId: string;
+  slug: string;
+  displayName: string;
+  memberId: string;
+};
+
+export async function createPersonalTeam(
+  db: Database,
+  input: CreatePersonalTeamInput,
+): Promise<CreatePersonalTeamResult> {
+  return db.transaction((tx) => createPersonalTeamInTransaction(tx, input));
+}
+
+export async function createPersonalTeamInTransaction(
+  db: DbLike,
+  input: CreatePersonalTeamInput,
+): Promise<CreatePersonalTeamResult> {
   const baseSlug = sanitizeOrgSlug(input.username);
   const displayName = input.teamDisplayName;
 
   const orgId = uuidv7();
   const slug = await insertOrgWithSlugRetry(db, orgId, baseSlug, displayName);
 
-  const member = await ensureMembership(db, {
+  const member = await ensureMembershipInTransaction(db, {
     userId: input.userId,
     organizationId: orgId,
     role: "admin",
@@ -629,6 +687,48 @@ export async function createPersonalTeam(db: Database, input: CreatePersonalTeam
   });
 
   return { organizationId: orgId, slug, displayName, memberId: member.id };
+}
+
+export type AccountMembershipResolution =
+  | { kind: "active"; organizationId: string }
+  | { kind: "repair-required" }
+  | { kind: "invitation-required" }
+  | { kind: "account-inactive" };
+
+/**
+ * Resolve a live Team membership at an account/lifecycle boundary. The stable
+ * user row serializes the decision with concurrent membership transitions.
+ * Zero-membership accounts stop at an explicit repair or invitation boundary;
+ * only the external-account OAuth bootstrap may create a personal Team.
+ */
+export async function ensureActiveMembershipOrRepair(
+  db: Database,
+  userId: string,
+  recoveryPolicy: MembershipRecoveryPolicy,
+): Promise<AccountMembershipResolution> {
+  return db.transaction(async (tx) => {
+    const user = await lockMembershipLifecycleUser(tx, userId);
+    return resolveMembershipAfterLifecycleLock(tx, user, recoveryPolicy);
+  });
+}
+
+export async function resolveMembershipAfterLifecycleLock(
+  db: DbLike,
+  user: MembershipLifecycleUser,
+  recoveryPolicy: MembershipRecoveryPolicy,
+): Promise<AccountMembershipResolution> {
+  if (user.status !== "active") return { kind: "account-inactive" };
+  const [primary] = await db
+    .select({ organizationId: members.organizationId })
+    .from(members)
+    .where(and(eq(members.userId, user.id), eq(members.status, MEMBER_STATUSES.ACTIVE)))
+    .orderBy(desc(members.createdAt))
+    .limit(1);
+  if (primary) return { kind: "active", organizationId: primary.organizationId };
+  if (recoveryPolicy === MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED) {
+    return { kind: "invitation-required" };
+  }
+  return { kind: "repair-required" };
 }
 
 function sanitizeOrgSlug(raw: string): string {
@@ -728,9 +828,14 @@ export async function countActiveMembersByOrgs(db: Database, organizationIds: st
  * Pick the most recently joined active membership — used after OAuth login
  * when the user already has at least one team but no `next` was specified.
  */
-export async function pickPrimaryMembership(db: Database, userId: string) {
-  const rows = await listActiveMemberships(db, userId);
-  return rows[0] ?? null;
+export async function pickPrimaryMembership(db: DbLike, userId: string): Promise<{ organizationId: string } | null> {
+  const [row] = await db
+    .select({ organizationId: members.organizationId })
+    .from(members)
+    .where(and(eq(members.userId, userId), eq(members.status, MEMBER_STATUSES.ACTIVE)))
+    .orderBy(desc(members.createdAt))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -769,8 +874,13 @@ export async function findActiveMembership(db: Database, userId: string, organiz
  * predicate now drops every watcher anchored to this member, removing
  * the chats from their `/me/chats` watching list.
  */
-export async function leaveOrganization(db: Database, memberId: string) {
-  return deactivateMembership(db, memberId, MEMBER_STATUSES.LEFT);
+export async function leaveOrganization(
+  db: Database,
+  memberId: string,
+  recoveryPolicy: MembershipRecoveryPolicy,
+  notifier?: Notifier,
+): Promise<typeof members.$inferSelect> {
+  return deactivateMembership(db, memberId, MEMBER_STATUSES.LEFT, recoveryPolicy, notifier);
 }
 
 /**
@@ -796,16 +906,38 @@ export async function leaveOrganization(db: Database, memberId: string) {
 export async function selfCreateOrganization(
   db: Database,
   data: { userId: string; username: string; displayName: string },
-) {
+): Promise<{ organizationId: string; memberId: string; name: string; displayName: string }> {
   return db.transaction(async (tx) => {
+    // Capture the authority that caused this request before waiting on the
+    // lifecycle user lock. A concurrent final leave/removal may invalidate that
+    // membership while this request is queued; later membership repair must not
+    // retroactively authorize this stale request.
+    const preLockAuthorities = await tx
+      .select({ id: members.id })
+      .from(members)
+      .where(and(eq(members.userId, data.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)))
+      .orderBy(asc(members.id));
+    if (preLockAuthorities.length === 0) {
+      throw new ConflictError("An active Team membership is required to create another Team");
+    }
+
     return syncCurrentUserDisplayName(tx, data.userId, async (effectiveDisplayName) => {
-      const [activeMembership] = await tx
+      const [activeAuthority] = await tx
         .select({ id: members.id })
         .from(members)
-        .where(and(eq(members.userId, data.userId), eq(members.status, MEMBER_STATUSES.ACTIVE)))
+        .where(
+          and(
+            eq(members.userId, data.userId),
+            eq(members.status, MEMBER_STATUSES.ACTIVE),
+            inArray(
+              members.id,
+              preLockAuthorities.map((membership) => membership.id),
+            ),
+          ),
+        )
         .limit(1);
-      if (!activeMembership) {
-        throw new ConflictError("An active Team membership is required to create another Team");
+      if (!activeAuthority) {
+        throw new ConflictError("Team creation authority changed; retry after refreshing your memberships");
       }
 
       const orgId = uuidv7();

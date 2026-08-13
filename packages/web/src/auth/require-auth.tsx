@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
+import { Button } from "../components/ui/button.js";
 import { isKnownCampaign } from "../pages/quickstart/campaigns.js";
 import { beginAuthAttempt } from "./auth-analytics.js";
 import { useAuth } from "./auth-context.js";
@@ -20,6 +21,43 @@ const LandingPage = lazy(() => import("../pages/landing/index.js").then((m) => (
  * even if the chunk takes a few hundred ms over slow 3G.
  */
 const LandingFallback = () => <div className="landing-marketing min-h-screen bg-background" />;
+
+function TeamAccessBoundary({
+  reason,
+  onRetry,
+  onSignOut,
+}: {
+  reason: "reconciling" | "invite-required" | "membership-repair-required" | "unavailable" | null;
+  onRetry: () => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const invitationRequired = reason === "invite-required";
+  const title = reason === "reconciling" ? "Team access changed" : "Workspace unavailable";
+  const detail = invitationRequired
+    ? "This server requires an invitation. Ask a Team administrator for an allowed invitation, then try again."
+    : reason === "membership-repair-required"
+      ? "Your Team access needs repair. Try again; if it remains unavailable, ask a Team administrator for help."
+      : reason === "reconciling"
+        ? "We’re checking your current Team access."
+        : "We couldn’t verify your Team access. No workspace data has been opened.";
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div className="w-full max-w-md text-center">
+        <p className="text-label font-medium text-fg-3">First Tree</p>
+        <h1 className="mt-3 text-title font-semibold text-fg">{title}</h1>
+        <p className="mt-3 text-body text-fg-2">{detail}</p>
+        <div className="mt-6 flex justify-center gap-3">
+          <Button type="button" onClick={() => void onRetry()}>
+            Try again
+          </Button>
+          <Button type="button" variant="outline" onClick={onSignOut}>
+            Sign out
+          </Button>
+        </div>
+      </div>
+    </main>
+  );
+}
 
 /**
  * The scan funnel's own login handoff. A logged-out visitor who arrives at
@@ -73,7 +111,7 @@ function OAuthStartRedirect({ next }: { next: string }) {
  * the path the user typed never changes between auth states.
  */
 export function RequireAuth() {
-  const { isAuthenticated, meLoaded } = useAuth();
+  const { currentMembership, isAuthenticated, logout, meBoundary, meLoaded, refreshMe } = useAuth();
   const location = useLocation();
   if (!isAuthenticated) {
     if (location.pathname === "/") {
@@ -99,5 +137,9 @@ export function RequireAuth() {
   // populate the org id before the dashboard mounts and fires its first wave
   // of requests.
   if (!meLoaded) return <LandingFallback />;
+  // `/me` rejects this state and AuthProvider clears the session if an older
+  // server ever returns it. Keep the route guard fail-closed during that state
+  // transition so no Team-scoped child can mount from account identity alone.
+  if (!currentMembership) return <TeamAccessBoundary reason={meBoundary} onRetry={refreshMe} onSignOut={logout} />;
   return <Outlet />;
 }

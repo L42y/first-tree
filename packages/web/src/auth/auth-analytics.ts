@@ -22,6 +22,8 @@ export type AuthFailureReason =
   | "invite-invalid"
   | "invite-not-allowed"
   | "invite-required"
+  | "account-inactive"
+  | "membership-restore-required"
   | "membership-unresolved"
   | "missing_tokens"
   | "session_bootstrap_failed"
@@ -55,6 +57,8 @@ const CALLBACK_FAILURE_REASONS = new Set<AuthFailureReason>([
   "invite-invalid",
   "invite-not-allowed",
   "invite-required",
+  "account-inactive",
+  "membership-restore-required",
   "membership-unresolved",
 ]);
 

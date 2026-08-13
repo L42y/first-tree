@@ -30,6 +30,7 @@ const routeMocks = {
   listAgentTurns: vi.fn(),
   listActiveMemberships: vi.fn(),
   leaveOrganization: vi.fn(),
+  membershipRecoveryPolicy: vi.fn(),
   recoverAgentRuntimeSwitch: vi.fn(),
   recordRedemption: vi.fn(),
   requireAgent: vi.fn(),
@@ -113,6 +114,7 @@ function mockRouteDependencies(): void {
     ensureMembership: routeMocks.ensureMembership,
     leaveOrganization: routeMocks.leaveOrganization,
     listActiveMemberships: routeMocks.listActiveMemberships,
+    membershipRecoveryPolicy: routeMocks.membershipRecoveryPolicy,
     selfCreateOrganization: routeMocks.selfCreateOrganization,
   }));
   vi.doMock("../services/onboarding-kickoff.js", () => ({
@@ -228,6 +230,7 @@ beforeEach(() => {
     organizationId: "org_1",
     role: "admin",
   });
+  routeMocks.membershipRecoveryPolicy.mockReturnValue("repair-required");
   routeMocks.ensureMembership.mockResolvedValue({ id: "member_joined", organizationId: "org_join", role: "member" });
   routeMocks.findActiveByToken.mockResolvedValue(null);
   routeMocks.listActiveMemberships.mockResolvedValue([]);
@@ -623,7 +626,13 @@ describe("small API route handlers", () => {
       leaveReply,
     );
     expect(leaveReply.code).toBe(204);
-    expect(routeMocks.leaveOrganization).toHaveBeenCalledWith(expect.anything(), "member_leave");
+    expect(routeMocks.membershipRecoveryPolicy).toHaveBeenCalledWith(undefined);
+    expect(routeMocks.leaveOrganization).toHaveBeenCalledWith(
+      expect.anything(),
+      "member_leave",
+      "repair-required",
+      appBase.notifier,
+    );
     await expect(
       route(leave.routes, "POST", "/me/memberships/:memberId/leave").handler(
         { params: { memberId: "member_other" }, user: { userId: "user_1" } },

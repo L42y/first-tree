@@ -7,12 +7,16 @@ import {
   normalizeExternalProfile,
 } from "@first-tree/shared";
 import { and, eq } from "drizzle-orm";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Database } from "../../db/connection.js";
 import { authIdentities } from "../../db/schema/auth-identities.js";
 import { members } from "../../db/schema/members.js";
 import { users } from "../../db/schema/users.js";
 import { uuidv7 } from "../../uuid.js";
 import { decryptValue } from "../crypto.js";
+
+// biome-ignore lint/suspicious/noExplicitAny: transaction and root clients expose the same schema operations.
+type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
 
 export type GithubProfile = {
   githubId: string;
@@ -56,6 +60,25 @@ export class IdentityMismatchError extends Error {
   }
 }
 
+export class IdentityAccountInactiveError extends Error {
+  constructor() {
+    super("Account is suspended");
+    this.name = "IdentityAccountInactiveError";
+  }
+}
+
+async function lockActiveIdentityUser(db: DbLike, userId: string): Promise<{ passwordHash: string }> {
+  const [user] = await db
+    .select({ passwordHash: users.passwordHash, status: users.status })
+    .from(users)
+    .where(eq(users.id, userId))
+    .for("no key update")
+    .limit(1);
+  if (!user) throw new Error("External identity mutation references a missing user");
+  if (user.status !== "active") throw new IdentityAccountInactiveError();
+  return { passwordHash: user.passwordHash };
+}
+
 export function isUsableLegacyPasswordHash(passwordHash: string): boolean {
   return /^\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}$/.test(passwordHash);
 }
@@ -86,14 +109,21 @@ export async function findOrCreateUserFromExternalAccount(
     .limit(1);
 
   if (existing) {
-    await updateIdentitySnapshot(db, existing.userId, profile);
-    const [user] = await db
-      .select({ username: users.username, displayName: users.displayName })
-      .from(users)
-      .where(eq(users.id, existing.userId))
-      .limit(1);
-    if (!user) throw new Error("External identity references a missing user");
-    return { userId: existing.userId, ...user, created: false };
+    return db.transaction(async (tx) => {
+      // Serialize provider-snapshot writes with account suspension on the
+      // stable user row. Suspended accounts still resolve to the shared OAuth
+      // bootstrap boundary, but their provider credentials and profile
+      // metadata remain byte-for-byte unchanged until explicit reactivation.
+      const [user] = await tx
+        .select({ username: users.username, displayName: users.displayName, status: users.status })
+        .from(users)
+        .where(eq(users.id, existing.userId))
+        .for("no key update")
+        .limit(1);
+      if (!user) throw new Error("External identity references a missing user");
+      if (user.status === "active") await updateIdentitySnapshot(tx, existing.userId, profile);
+      return { userId: existing.userId, username: user.username, displayName: user.displayName, created: false };
+    });
   }
 
   const userId = uuidv7();
@@ -140,6 +170,7 @@ export async function linkExternalIdentity(
 ): Promise<"linked" | "already-linked"> {
   try {
     return await db.transaction(async (tx) => {
+      await lockActiveIdentityUser(tx, userId);
       const [bySubject] = await tx
         .select({ userId: authIdentities.userId })
         .from(authIdentities)
@@ -147,8 +178,8 @@ export async function linkExternalIdentity(
         .limit(1);
       if (bySubject && bySubject.userId !== userId) throw new IdentityConflictError();
       if (bySubject) {
-        await updateIdentitySnapshot(tx as unknown as Database, userId, profile);
-        return "already-linked";
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
       }
 
       const [byProvider] = await tx
@@ -160,8 +191,8 @@ export async function linkExternalIdentity(
         if (byProvider.identifier !== profile.subject) throw new IdentityConflictError();
         // Under READ COMMITTED, an identical concurrent link can become
         // visible between the subject and provider lookups.
-        await updateIdentitySnapshot(tx as unknown as Database, userId, profile);
-        return "already-linked";
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
       }
       await tx.insert(authIdentities).values(identityValues(userId, profile));
       return "linked";
@@ -170,26 +201,32 @@ export async function linkExternalIdentity(
     const constraint = uniqueViolationConstraint(error);
     if (errorField(error, "code") !== PG_UNIQUE_VIOLATION) throw error;
     if (constraint === "uq_auth_identities_provider_identifier") {
-      const [winner] = await db
-        .select({ userId: authIdentities.userId })
-        .from(authIdentities)
-        .where(and(eq(authIdentities.provider, profile.provider), eq(authIdentities.identifier, profile.subject)))
-        .limit(1);
-      if (!winner) throw error;
-      if (winner.userId !== userId) throw new IdentityConflictError();
-      await updateIdentitySnapshot(db, userId, profile);
-      return "already-linked";
+      return db.transaction(async (tx) => {
+        await lockActiveIdentityUser(tx, userId);
+        const [winner] = await tx
+          .select({ userId: authIdentities.userId })
+          .from(authIdentities)
+          .where(and(eq(authIdentities.provider, profile.provider), eq(authIdentities.identifier, profile.subject)))
+          .limit(1);
+        if (!winner) throw error;
+        if (winner.userId !== userId) throw new IdentityConflictError();
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
+      });
     }
     if (constraint === "uq_auth_identities_user_provider") {
-      const [current] = await db
-        .select({ identifier: authIdentities.identifier })
-        .from(authIdentities)
-        .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, profile.provider)))
-        .limit(1);
-      if (!current) throw error;
-      if (current.identifier !== profile.subject) throw new IdentityConflictError();
-      await updateIdentitySnapshot(db, userId, profile);
-      return "already-linked";
+      return db.transaction(async (tx) => {
+        await lockActiveIdentityUser(tx, userId);
+        const [current] = await tx
+          .select({ identifier: authIdentities.identifier })
+          .from(authIdentities)
+          .where(and(eq(authIdentities.userId, userId), eq(authIdentities.provider, profile.provider)))
+          .limit(1);
+        if (!current) throw error;
+        if (current.identifier !== profile.subject) throw new IdentityConflictError();
+        await updateIdentitySnapshot(tx, userId, profile);
+        return "already-linked" as const;
+      });
     }
     throw error;
   }
@@ -204,12 +241,7 @@ export async function unlinkExternalIdentity(
   targetIdentityId: string,
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    const [user] = await tx
-      .select({ passwordHash: users.passwordHash })
-      .from(users)
-      .where(eq(users.id, userId))
-      .for("no key update");
-    if (!user) throw new Error("Cannot disconnect authentication provider for a missing user");
+    const user = await lockActiveIdentityUser(tx, userId);
     const identities = await tx
       .select({
         id: authIdentities.id,
@@ -288,12 +320,13 @@ export async function refreshGithubInstallIdentity(
     // membership and provider-unlink mutations. A concurrent unlink/replace
     // must finish before this transaction evaluates the exact provider subject.
     const [user] = await tx
-      .select({ id: users.id, username: users.username, displayName: users.displayName })
+      .select({ id: users.id, username: users.username, displayName: users.displayName, status: users.status })
       .from(users)
       .where(eq(users.id, input.userId))
       .for("no key update")
       .limit(1);
     if (!user) return { ok: false, reason: "identity-mismatch", expectedGithubLogin: null };
+    if (user.status !== "active") return { ok: false, reason: "not-admin", expectedGithubLogin: null };
 
     const [membership] = await tx
       .select({ role: members.role, status: members.status })
@@ -394,7 +427,7 @@ function identityValues(userId: string, profile: ExternalAccountProfile) {
   };
 }
 
-async function updateIdentitySnapshot(db: Database, userId: string, profile: ExternalAccountProfile): Promise<void> {
+async function updateIdentitySnapshot(db: DbLike, userId: string, profile: ExternalAccountProfile): Promise<void> {
   const [current] = await db
     .select({ metadata: authIdentities.metadata })
     .from(authIdentities)

@@ -285,9 +285,15 @@ describe("official Feishu QR registration", () => {
     await app.feishuIntegration.revoke(a.agent.uuid);
   });
 
-  it("activates and maintains the connection while Bot profile enrichment is pending", async () => {
+  it("maintains the provisioning lease while connection and Bot profile enrichment are pending", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    const connectStarted = deferred<void>();
+    const connectCompletion = deferred<void>();
+    sdkMocks.connect.mockImplementationOnce(() => {
+      connectStarted.resolve();
+      return connectCompletion.promise;
+    });
     sdkMocks.request.mockImplementationOnce(() => new Promise(() => undefined));
     const manager = createFeishuIntegrationManager({
       db: app.db,
@@ -297,8 +303,8 @@ describe("official Feishu QR registration", () => {
       instanceId: "profile-timeout-test",
       sdk: feishuSdk,
       timings: {
-        initialClaimDelayMs: 1,
-        claimIntervalMs: 5,
+        initialClaimDelayMs: 60_000,
+        claimIntervalMs: 20,
         leaseMs: 500,
         botProfileTimeoutMs: 80,
       },
@@ -310,11 +316,32 @@ describe("official Feishu QR registration", () => {
         organizationId: a.organizationId,
         displayName: "Agent A · First Tree",
       });
+      await connectStarted.promise;
+      const [provisioning] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      expect(provisioning).toMatchObject({
+        status: "provisioning",
+        connectionStatus: "connecting",
+        connectionOwnerInstanceId: "profile-timeout-test",
+      });
+      if (!provisioning?.connectionLeaseExpiresAt) throw new Error("expected the provisioning lease");
+      const initialLeaseExpiry = provisioning.connectionLeaseExpiresAt.getTime();
+
+      await waitFor(async () => {
+        const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.id, provisioning.id));
+        return (
+          sdkMocks.disconnect.mock.calls.length > 0 ||
+          (row?.connectionLeaseExpiresAt?.getTime() ?? 0) > initialLeaseExpiry
+        );
+      });
+      const [renewed] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.id, provisioning.id));
+      expect(renewed?.connectionLeaseExpiresAt?.getTime()).toBeGreaterThan(initialLeaseExpiry);
+      expect(sdkMocks.disconnect).not.toHaveBeenCalled();
+
+      connectCompletion.resolve();
       await waitFor(async () => {
         const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
         return row?.status === "active" && row.connectionStatus === "connected";
       });
-      await new Promise((resolve) => setTimeout(resolve, 25));
 
       const [maintained] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
       expect(maintained).toMatchObject({
@@ -326,6 +353,7 @@ describe("official Feishu QR registration", () => {
       expect(sdkMocks.createLarkChannel).toHaveBeenCalledTimes(1);
       expect(sdkMocks.disconnect).not.toHaveBeenCalled();
     } finally {
+      connectCompletion.resolve();
       await new Promise((resolve) => setTimeout(resolve, 70));
       await manager.stop();
     }

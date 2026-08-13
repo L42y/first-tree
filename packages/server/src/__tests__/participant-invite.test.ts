@@ -19,6 +19,7 @@ import {
 } from "../services/chat/membership/invite.js";
 import { sendMessage } from "../services/chat/message.js";
 import * as memberService from "../services/team/member.js";
+import { MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
 
 /**
@@ -103,7 +104,12 @@ describe("inviteParticipantsToChat", () => {
       displayName: "Invite Removed",
       role: "member",
     });
-    await memberService.deleteMember(app.db, target.id, admin.organizationId);
+    await memberService.deleteMember(
+      app.db,
+      target.id,
+      admin.organizationId,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
+    );
 
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [] });
     await expect(
@@ -124,7 +130,12 @@ describe("inviteParticipantsToChat", () => {
       displayName: "Legacy Removed",
       role: "member",
     });
-    await memberService.deleteMember(app.db, target.id, admin.organizationId);
+    await memberService.deleteMember(
+      app.db,
+      target.id,
+      admin.organizationId,
+      MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
+    );
 
     await expect(
       createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [target.agentId] }),

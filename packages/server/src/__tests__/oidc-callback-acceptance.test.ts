@@ -222,6 +222,42 @@ describe("OIDC callback — acceptance", () => {
     expect(rowsAfterSecond[0]?.userId).toBe(firstUserId);
   });
 
+  it("redirects a suspended returning account to the shared inactive-account boundary without tokens", async () => {
+    const subject = `sub-suspended-${crypto.randomUUID()}`;
+    mockVerifyIdToken.mockResolvedValue(baseClaims(subject, { name: "Suspended OIDC User" }));
+    const first = await buildCallbackRequest(app);
+    const firstResponse = await app.inject({ method: "GET", url: first.url, headers: { cookie: first.cookie } });
+    expect(firstResponse.statusCode).toBe(302);
+    const [identity] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.identifier, JSON.stringify([ISSUER, subject])));
+    if (!identity) throw new Error("Expected OIDC identity");
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, identity.userId));
+
+    mockVerifyIdToken.mockResolvedValue(
+      baseClaims(subject, {
+        name: "Suspended OIDC User After",
+        email: "oidc-after@example.com",
+        email_verified: true,
+        picture: "https://avatars.example/oidc-after.png",
+      }),
+    );
+    const second = await buildCallbackRequest(app);
+    const response = await app.inject({ method: "GET", url: second.url, headers: { cookie: second.cookie } });
+    const fragment = parseFragment(response.headers.location as string);
+
+    expect(response.statusCode).toBe(302);
+    expect(fragment.get("error")).toBe("account-inactive");
+    expect(fragment.get("access")).toBeNull();
+    expect(fragment.get("refresh")).toBeNull();
+    const [identityAfterSuspendedSignIn] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.id, identity.id));
+    expect(identityAfterSuspendedSignIn).toEqual(identity);
+  });
+
   it("isolates identities: same verified email but different subjects create distinct users", async () => {
     mockVerifyIdToken.mockResolvedValueOnce(baseClaims("sub-A", { email: "shared@example.com", email_verified: true }));
     const a = await buildCallbackRequest(app);

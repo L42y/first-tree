@@ -1,13 +1,15 @@
-import { githubExternalProfile } from "@first-tree/shared";
+import { githubExternalProfile, googleExternalProfile } from "@first-tree/shared";
 import bcrypt from "bcrypt";
 import { eq } from "drizzle-orm";
+import postgres from "postgres";
 import { describe, expect, it } from "vitest";
-import { connectDatabase } from "../db/connection.js";
+import { connectDatabase, sslOptions } from "../db/connection.js";
 import { authIdentities } from "../db/schema/auth-identities.js";
 import { users } from "../db/schema/users.js";
 import { requireAgent } from "../middleware/require-identity.js";
 import { requireUser } from "../scope/require-user.js";
 import {
+  findOrCreateGithubAccount,
   findOrCreateUserFromExternalAccount,
   findOrCreateUserFromGithub,
   getStoredGithubAccessToken,
@@ -17,13 +19,33 @@ import {
   isUsableLegacyPasswordHash,
   LastIdentityError,
   linkExternalIdentity,
+  refreshGithubInstallIdentity,
   unlinkExternalIdentity,
 } from "../services/auth/identity.js";
 import { encryptValue } from "../services/crypto.js";
 import { uuidv7 } from "../uuid.js";
-import { useTestApp } from "./helpers.js";
+import { createTestAdmin, useTestApp } from "./helpers.js";
 
 const ENCRYPTION_KEY = "0".repeat(64);
+
+function databaseUrlWithApplicationName(url: string, applicationName: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set("application_name", applicationName);
+  return parsed.toString();
+}
+
+async function waitForPostgresLockWait(observer: ReturnType<typeof postgres>, applicationName: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await observer<{ wait_event_type: string | null }[]>`
+      SELECT wait_event_type FROM pg_stat_activity
+      WHERE datname = current_database() AND application_name = ${applicationName}
+    `;
+    if (rows.some((row) => row.wait_event_type === "Lock")) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for PostgreSQL lock: ${applicationName}`);
+}
 
 describe("auth identity extra coverage", () => {
   const getApp = useTestApp();
@@ -101,6 +123,150 @@ describe("auth identity extra coverage", () => {
       .where(eq(authIdentities.userId, created.userId));
     await expect(getStoredGithubAccessToken(app.db, created.userId, ENCRYPTION_KEY)).resolves.toBeNull();
     await expect(getStoredGithubAccessToken(app.db, "missing-user", ENCRYPTION_KEY)).resolves.toBeNull();
+  });
+
+  it("keeps GitHub, Google, and OIDC identity snapshots immutable while their account is suspended", async () => {
+    const app = getApp();
+    const suffix = crypto.randomUUID();
+    const github = await findOrCreateGithubAccount(
+      app.db,
+      {
+        githubId: `gh-suspended-${suffix}`,
+        login: "github-before",
+        email: "github-before@example.com",
+        displayName: "GitHub Before",
+        avatarUrl: "https://avatars.example/before.png",
+      },
+      { encryptedAccessToken: "encrypted-github-before" },
+    );
+    const google = await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({
+        sub: `google-suspended-${suffix}`,
+        name: "Google Before",
+        email: "google-before@example.com",
+        emailVerified: true,
+        picture: "https://avatars.example/google-before.png",
+      }),
+    );
+    const oidcSubject = JSON.stringify(["https://issuer.example", `oidc-suspended-${suffix}`]);
+    const oidc = await findOrCreateUserFromExternalAccount(app.db, {
+      provider: "oidc",
+      subject: oidcSubject,
+      usernameCandidates: ["oidc-before"],
+      displayName: "OIDC Before",
+      email: "oidc-before@example.com",
+      avatarUrl: "https://avatars.example/oidc-before.png",
+      metadata: { issuer: "https://issuer.example", sub: `oidc-suspended-${suffix}`, marker: "before" },
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, github.userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, google.userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, oidc.userId));
+    const before = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.provider, "github"));
+    const githubBefore = before.find((identity) => identity.userId === github.userId);
+    const [googleBefore] = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, google.userId));
+    const [oidcBefore] = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, oidc.userId));
+
+    await findOrCreateGithubAccount(
+      app.db,
+      {
+        githubId: `gh-suspended-${suffix}`,
+        login: "github-after",
+        email: "github-after@example.com",
+        displayName: "GitHub After",
+        avatarUrl: "https://avatars.example/after.png",
+      },
+      { encryptedAccessToken: "encrypted-github-after", encryptedRefreshToken: "encrypted-refresh-after" },
+    );
+    await findOrCreateUserFromExternalAccount(
+      app.db,
+      googleExternalProfile({
+        sub: `google-suspended-${suffix}`,
+        name: "Google After",
+        email: "google-after@example.com",
+        emailVerified: true,
+        picture: "https://avatars.example/google-after.png",
+      }),
+    );
+    await findOrCreateUserFromExternalAccount(app.db, {
+      provider: "oidc",
+      subject: oidcSubject,
+      usernameCandidates: ["oidc-after"],
+      displayName: "OIDC After",
+      email: "oidc-after@example.com",
+      avatarUrl: "https://avatars.example/oidc-after.png",
+      metadata: { issuer: "https://issuer.example", sub: `oidc-suspended-${suffix}`, marker: "after" },
+    });
+
+    const after = await app.db
+      .select({
+        userId: authIdentities.userId,
+        email: authIdentities.email,
+        metadata: authIdentities.metadata,
+        updatedAt: authIdentities.updatedAt,
+      })
+      .from(authIdentities);
+    expect(after.find((identity) => identity.userId === github.userId)).toEqual(githubBefore);
+    expect(after.find((identity) => identity.userId === google.userId)).toEqual(googleBefore);
+    expect(after.find((identity) => identity.userId === oidc.userId)).toEqual(oidcBefore);
+  });
+
+  it("rejects a suspended GitHub installation refresh without mutating its stored credential snapshot", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `install-suspended-${crypto.randomUUID().slice(0, 8)}` });
+    await linkExternalIdentity(
+      app.db,
+      admin.userId,
+      githubExternalProfile({
+        id: "github-install-suspended",
+        login: "install-before",
+        email: "install-before@example.com",
+        metadata: { accessToken: "encrypted-install-before" },
+      }),
+    );
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, admin.userId));
+    const [before] = await app.db.select().from(authIdentities).where(eq(authIdentities.userId, admin.userId));
+
+    const result = await refreshGithubInstallIdentity(app.db, {
+      userId: admin.userId,
+      organizationId: admin.organizationId,
+      profile: {
+        githubId: "github-install-suspended",
+        login: "install-after",
+        email: "install-after@example.com",
+        displayName: "Install After",
+        avatarUrl: "https://avatars.example/install-after.png",
+      },
+      tokens: { encryptedAccessToken: "encrypted-install-after", encryptedRefreshToken: "refresh-after" },
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: "not-admin" });
+    const [after] = await app.db.select().from(authIdentities).where(eq(authIdentities.userId, admin.userId));
+    expect(after).toEqual(before);
   });
 
   it("falls back to a uuid-based username suffix after repeated unique violations", async () => {
@@ -244,6 +410,64 @@ describe("auth identity extra coverage", () => {
     } finally {
       await firstDb.end();
       await secondDb.end();
+    }
+  });
+
+  it("rejects a unique-conflict fallback after suspension wins the stable user fence", async () => {
+    const app = getApp();
+    const databaseUrl = process.env.DATABASE_URL ?? "";
+    if (!databaseUrl) throw new Error("DATABASE_URL is required for the concurrency test");
+    const target = await createTestAdmin(app, { username: `link-fallback-suspend-${crypto.randomUUID().slice(0, 8)}` });
+    const subject = `gh-link-fallback-${crypto.randomUUID()}`;
+    const profile = githubExternalProfile({
+      id: subject,
+      login: "stale-fallback-profile",
+      metadata: { marker: "stale-fallback" },
+    });
+    const linkApplicationName = `identity_link_${crypto.randomUUID().slice(0, 8)}`;
+    const suspensionApplicationName = `identity_suspend_${crypto.randomUUID().slice(0, 8)}`;
+    const linkDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, linkApplicationName));
+    const suspensionDb = connectDatabase(databaseUrlWithApplicationName(databaseUrl, suspensionApplicationName));
+    const blocker = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const observer = postgres(databaseUrl, { max: 1, ...sslOptions(databaseUrl) });
+    const winnerId = uuidv7();
+    let blockerCommitted = false;
+    try {
+      await blocker`BEGIN`;
+      await blocker`
+        INSERT INTO auth_identities (id, user_id, provider, identifier, metadata)
+        VALUES (${winnerId}, ${target.userId}, 'github', ${subject}, ${JSON.stringify({ marker: "winner" })}::jsonb)
+      `;
+
+      const linking = linkExternalIdentity(linkDb, target.userId, profile).then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (error: unknown) => ({ status: "rejected" as const, error }),
+      );
+      await waitForPostgresLockWait(observer, linkApplicationName);
+      const suspension = Promise.resolve(
+        suspensionDb.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId)),
+      );
+      await waitForPostgresLockWait(observer, suspensionApplicationName);
+
+      await blocker`COMMIT`;
+      blockerCommitted = true;
+      await suspension;
+      const result = await linking;
+
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected")
+        expect(result.error).toMatchObject({ message: expect.stringMatching(/suspended/i) });
+      const [stored] = await app.db
+        .select({ metadata: authIdentities.metadata })
+        .from(authIdentities)
+        .where(eq(authIdentities.id, winnerId));
+      expect(stored?.metadata).toEqual({ marker: "winner" });
+    } finally {
+      if (!blockerCommitted) await blocker`ROLLBACK`;
+      await linkDb.end();
+      await suspensionDb.end();
+      await blocker.end();
+      await observer.end();
     }
   });
 

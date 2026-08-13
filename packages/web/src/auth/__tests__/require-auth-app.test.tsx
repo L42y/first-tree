@@ -15,6 +15,7 @@ const authMock = vi.hoisted(() => ({
     user: null,
     memberships: [] as MeMembership[],
     currentMembership: null as MeMembership | null,
+    meBoundary: null as "reconciling" | "invite-required" | "membership-repair-required" | "unavailable" | null,
     organizationId: null,
     memberId: null,
     role: null,
@@ -32,6 +33,7 @@ const authMock = vi.hoisted(() => ({
     adoptTokens: async () => undefined,
     selectOrganization: async () => undefined,
     refreshMe: async () => undefined,
+    refreshMeStrict: async () => undefined,
     logout: () => undefined,
   },
 }));
@@ -77,7 +79,28 @@ describe("RequireAuth", () => {
     authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: false };
     expect(renderRoute("/settings")).not.toContain("Settings");
 
-    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true };
+    authMock.value = {
+      ...authMock.value,
+      isAuthenticated: true,
+      meLoaded: true,
+      currentMembership: { organizationId: "org-1" } as MeMembership,
+    };
     expect(renderRoute("/settings")).toContain("Settings");
+  });
+
+  it("does not mount Team-scoped routes from an authenticated empty-membership snapshot", () => {
+    authMock.value = {
+      ...authMock.value,
+      isAuthenticated: true,
+      meLoaded: true,
+      currentMembership: null,
+      meBoundary: "invite-required",
+    };
+
+    const html = renderRoute("/settings");
+    expect(html).not.toContain("Settings");
+    expect(html).toContain("requires an invitation");
+    expect(html).toContain("Try again");
+    expect(html).toContain("Sign out");
   });
 });
