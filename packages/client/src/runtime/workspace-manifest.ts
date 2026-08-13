@@ -44,13 +44,21 @@ export const CONTEXT_TREE_DIRNAME = "context-tree";
 export const RETIRED_WORKSPACE_MANIFEST_FILENAME = `${WORKSPACE_MANIFEST_FILENAME}.retired`;
 
 /**
- * Archive name for one retirement: a unique `workspace.json.retired.<epoch-ms>`
- * suffix so the rename target never pre-exists. Deleting a fixed archive
- * before the rename would lose the previous recoverable copy when the rename
- * itself fails, and rename-overwrites-target semantics are POSIX-only.
+ * Archive name for one retirement, probed to be collision-free:
+ * `workspace.json.retired.<epoch-ms>`, with a `.N` suffix when that name is
+ * already taken (a same-millisecond unbind→rebind→unbind would otherwise
+ * overwrite the old archive on POSIX and fail outright on Windows, leaving
+ * the active manifest behind). Deleting a fixed archive before the rename
+ * would lose the previous recoverable copy when the rename itself fails, and
+ * rename-overwrites-target semantics are POSIX-only.
  */
-function retiredManifestArchiveName(): string {
-  return `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.${Date.now()}`;
+function retiredManifestArchiveName(stateDir: string): string {
+  const base = `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.${Date.now()}`;
+  if (!existsSync(join(stateDir, base))) return base;
+  for (let suffix = 1; ; suffix += 1) {
+    const candidate = `${base}.${suffix}`;
+    if (!existsSync(join(stateDir, candidate))) return candidate;
+  }
 }
 
 /**
@@ -73,7 +81,7 @@ export function retireWorkspaceManifest(workspace: string, log?: (msg: string) =
     const stateDir = join(workspace, WORKSPACE_STATE_DIRNAME);
     const manifestPath = join(stateDir, WORKSPACE_MANIFEST_FILENAME);
     if (!existsSync(manifestPath)) return;
-    renameSync(manifestPath, join(stateDir, retiredManifestArchiveName()));
+    renameSync(manifestPath, join(stateDir, retiredManifestArchiveName(stateDir)));
   } catch (err) {
     log?.(`workspace manifest retirement failed: ${err instanceof Error ? err.message : String(err)}`);
   }

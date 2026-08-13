@@ -278,6 +278,26 @@ describe("first-tree-write grader", () => {
     expect(casePassed(evalCase, metrics)).toBe(false);
   });
 
+  it("fails when an earlier delivery asks for a source even though the final text is gap-only", () => {
+    const evalCase = findCase("unbound-no-source-explicit-write-reports-gap");
+    const metrics = eventMetrics(evalCase, [
+      {
+        argv: ["chat", "ask", "user", "-F", "ask.md"],
+        body: "Please share a source artifact so I can update the tree.",
+        phase: "model",
+        type: "first_tree_call",
+      },
+      {
+        event: { text: "This Tree write cannot be completed because no Tree is bound.", type: "agent_message" },
+        type: "codex_event",
+      },
+    ]);
+
+    expect(metrics.unboundGapStatementObserved).toBe(true);
+    expect(metrics.sourceAskObserved).toBe(true);
+    expect(casePassed(evalCase, metrics)).toBe(false);
+  });
+
   it("passes the no-source explicit unbound write with a gap-only reply", () => {
     const evalCase = findCase("unbound-no-source-explicit-write-reports-gap");
     const metrics = eventMetrics(evalCase, [
@@ -745,6 +765,25 @@ describe("first-tree-write grader", () => {
     expect(metrics.staleTreeArtifactAccessObserved).toBe(false);
     expect(metrics.ordinarySummaryShapeObserved).toBe(true);
     expect(casePassed(evalCase, metrics)).toBe(true);
+  });
+
+  it("does not flag query-string usages of the checkout name as path access", () => {
+    const evalCase = findCase("unresolved-tree-skips-write");
+    for (const command of ["rg -n 'context-tree' README.md", "git log --grep=context-tree"]) {
+      const metrics = eventMetrics(evalCase, [
+        { event: { command, type: "tool_call" }, type: "codex_event" },
+        {
+          event: {
+            text: GOOD_THREE_BULLET_SUMMARY,
+            type: "agent_message",
+          },
+          type: "codex_event",
+        },
+      ]);
+
+      expect(metrics.staleTreeArtifactAccessObserved, `query token flagged: ${command}`).toBe(false);
+      expect(casePassed(evalCase, metrics)).toBe(true);
+    }
   });
 
   it("fails the unresolved ordinary source task when the reply mentions the binding state", () => {

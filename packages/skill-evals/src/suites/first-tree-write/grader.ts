@@ -211,12 +211,28 @@ function containsUnresolvedBindingMention(text: string): boolean {
  * Stale-artifact access: with an unresolved binding the last-known
  * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
  * on disk, but this session never confirmed them, so any tool-phase read or
- * reference of those paths fails the case. Model prose alone does not match:
+ * reference of those paths fails the case. Detection is split so query
+ * strings do not false-positive: (a) cwd/workdir fields naming the checkout
+ * root or a descendant, and (b) the checkout directory used as a command
+ * path argument (`cd context-tree`, `git -C context-tree status`,
+ * `context-tree/NODE.md`). A quoted or `--flag=value` query token such as
+ * `rg -n 'context-tree' README.md` or `git log --grep=context-tree` is not
+ * a path access and does not match. Model prose alone does not match either:
  * the event must look like a tool/command interaction, mirroring the skill
  * file read detector.
  */
-const STALE_TREE_ARTIFACT_PATH =
-  /\.first-tree\/workspace\.json|(?:^|[\s/\\"'`(|;&=])context-tree(?:$|[\s/\\"'`)|;&])/iu;
+const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree\/workspace\.json/iu;
+const STALE_TREE_ARTIFACT_CWD =
+  /"(?:cwd|workdir|worktree|currentDir|current_dir)":"[^"]*\/?context-tree(?:\/[^"]*)?"/iu;
+const STALE_TREE_ARTIFACT_ARG = /(?:^|[\s/(,;&|])context-tree(?:$|[\s/),;&|"'`])/iu;
+
+function isStaleTreeArtifactPath(value: string): boolean {
+  return (
+    STALE_TREE_ARTIFACT_MANIFEST.test(value) ||
+    STALE_TREE_ARTIFACT_CWD.test(value) ||
+    STALE_TREE_ARTIFACT_ARG.test(value)
+  );
+}
 
 /**
  * Source-artifact ask: with no usable binding there is no write task to
@@ -234,7 +250,7 @@ function containsStaleTreeArtifactAccess(event: unknown): boolean {
   if (eventType(event) !== "codex_event") return false;
 
   const nestedEvent = event.event;
-  if (!findStringValue(nestedEvent, (value) => STALE_TREE_ARTIFACT_PATH.test(value))) {
+  if (!findStringValue(nestedEvent, (value) => isStaleTreeArtifactPath(value))) {
     return false;
   }
 
@@ -378,6 +394,7 @@ export function deriveMetrics(
   const firstTreeArgv: string[][] = [];
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const modelOutputTexts: string[] = [];
+  const chatBodies: string[] = [];
 
   for (const event of events) {
     if (containsSkillFileRead(event)) {
@@ -397,6 +414,11 @@ export function deriveMetrics(
 
       if (type === "first_tree_call") {
         firstTreeArgv.push([...argv]);
+        // Shim-recorded chat bodies are teammate-visible output; scan them
+        // for a source ask even when the final console text stays clean.
+        if (argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] ?? "")) {
+          if (typeof event.body === "string") chatBodies.push(event.body);
+        }
       }
 
       if (type === "first_tree_result" && typeof event.exitCode === "number") {
@@ -449,7 +471,10 @@ export function deriveMetrics(
     postModelVerifySucceeded,
     runnerExitCode,
     skillFileReadObserved,
-    sourceAskObserved: containsSourceAsk(finalResponse),
+    // A source ask anywhere in the model phase fails the explicit gap: an
+    // earlier assistant message or a delivered chat body counts even when
+    // the final console text is gap-only.
+    sourceAskObserved: [...modelOutputTexts, ...chatBodies].some((text) => containsSourceAsk(text)),
     sourceRepoChanged: sourceRepoChanged(paths),
     staleTreeArtifactAccessObserved,
     staleTreeArtifactModifiedObserved: evalCase.fixture.treeState === "unresolved" ? artifactViolation.modified : false,

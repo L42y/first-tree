@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -12,6 +13,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SOURCE_REPOS_DIRNAME } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Delegating mock so the retirement failure-path test can inject a rename
+// failure; every other call passes through to the real implementation.
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, renameSync: vi.fn(actual.renameSync) };
+});
+
 import {
   CONTEXT_TREE_DIRNAME,
   ensureWorkspaceManifest,
@@ -277,6 +286,28 @@ describe("retireWorkspaceManifest", () => {
     expect(retiredArchives()).toHaveLength(2);
   });
 
+  it("never collides on a same-millisecond unbind/rebind/unbind", () => {
+    // Lock the clock: both retirements probe the same epoch name, so the
+    // second must fall back to a `.1` suffix instead of overwriting (POSIX)
+    // or failing (Windows).
+    vi.spyOn(Date, "now").mockReturnValue(9_000_000_000_000);
+    ensureWorkspaceManifest(ws, ["app"]);
+    retireWorkspaceManifest(ws);
+    ensureWorkspaceManifest(ws, ["web"]);
+    retireWorkspaceManifest(ws);
+
+    expect(existsSync(manifestPath())).toBe(false);
+    const archives = retiredArchives();
+    expect(archives).toEqual([
+      `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.9000000000000`,
+      `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.9000000000000.1`,
+    ]);
+    expect(archives.map(readArchive)).toEqual([
+      { tree: CONTEXT_TREE_DIRNAME, sources: ["app"], sourcesRoot: SOURCE_REPOS_DIRNAME },
+      { tree: CONTEXT_TREE_DIRNAME, sources: ["web"], sourcesRoot: SOURCE_REPOS_DIRNAME },
+    ]);
+  });
+
   it("is an idempotent no-op when no manifest exists", () => {
     expect(() => retireWorkspaceManifest(ws)).not.toThrow();
     expect(retiredArchives()).toHaveLength(0);
@@ -295,18 +326,21 @@ describe("retireWorkspaceManifest", () => {
     expect(retiredArchives()).toHaveLength(1);
   });
 
-  it("logs and continues when the rename fails, losing neither the manifest nor prior archives", () => {
+  it("logs and continues when the rename fails, losing neither the manifest nor prior archives", async () => {
     ensureWorkspaceManifest(ws, ["app"]);
     retireWorkspaceManifest(ws);
     const priorArchive = retiredArchives()[0]!;
 
     ensureWorkspaceManifest(ws, ["api"]);
-    // Pin the archive name and occupy it with a directory so renameSync fails.
-    vi.spyOn(Date, "now").mockReturnValue(9_999_999_999_999);
-    mkdirSync(join(ws, ".first-tree", `${RETIRED_WORKSPACE_MANIFEST_FILENAME}.9999999999999`), { recursive: true });
+    // Force the rename itself to fail (a locked manifest on a shared host);
+    // the archive name probe would otherwise always find a free target.
+    const renameSpy = vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error("EACCES: permission denied");
+    });
     const logs: string[] = [];
 
     expect(() => retireWorkspaceManifest(ws, (msg) => logs.push(msg))).not.toThrow();
+    renameSpy.mockRestore();
 
     expect(logs.some((line) => line.includes("workspace manifest retirement failed"))).toBe(true);
     // The active manifest stays in place and the prior archive is intact —

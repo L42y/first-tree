@@ -1875,4 +1875,16 @@ describe("first-tree-read stale-checkout residue access", () => {
     expect(unrelatedTool.staleTreeArtifactAccessObserved).toBe(false);
     expect(casePassed(false, unrelatedTool, "managed", true)).toBe(true);
   });
+
+  it("does not flag query-string usages of the checkout name as path access", () => {
+    for (const command of ["rg -n 'context-tree' README.md", "git log --grep=context-tree"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `query token flagged: ${command}`).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
 });
