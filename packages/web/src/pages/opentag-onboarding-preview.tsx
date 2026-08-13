@@ -62,8 +62,8 @@ const STEP_META: Record<
     group: "Create Agent",
     railTitle: "Set up its Runtime",
     railDetail: "Computer & Coding Agent",
-    title: "Connect your first Computer",
-    lead: "Install the OpenTag client on the Computer where this Agent will run.",
+    title: "Connect your Computer",
+    lead: "Connect or choose the Computer where your Agent will work. We'll use an available Coding Agent on it.",
   },
   feishu: {
     number: 3,
@@ -412,7 +412,7 @@ function ComputerReadyStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: 
         <span>
           <span className="block text-subtitle font-semibold">Gandy's MacBook</span>
           <span className="mt-1 block text-body" style={{ color: "var(--fg-3)" }}>
-            OpenTag client connected
+            Computer connected
           </span>
         </span>
       </div>
@@ -432,14 +432,17 @@ function ComputerRecoveryStep(): ReactElement {
     <div className="flex flex-col" style={{ gap: "var(--sp-6)" }}>
       <div className="flex flex-col" style={{ gap: "var(--sp-3)" }}>
         <p className="text-label font-semibold uppercase" style={{ margin: 0, color: "var(--fg-2)" }}>
-          Set up your first Computer
+          Connect your Computer
         </p>
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
-          Install the OpenTag client on the Computer where the Agent should work. The Agent has not been created yet.
+          Connect the Computer where you want this Agent to work.
+        </p>
+        <p className="text-label font-medium" style={{ margin: 0, color: "var(--fg-2)" }}>
+          Open Terminal on that Computer and run:
         </p>
         <CommandBox command={PREVIEW_CONNECT_COMMAND} />
       </div>
-      <PreviewStatusRow state="waiting" label="Waiting for this Computer to connect…" />
+      <PreviewStatusRow state="waiting" label="Waiting for your Computer to connect…" />
       <Button type="button" variant="link" className="h-auto w-fit p-0 text-label">
         Back to Focus & name
       </Button>
