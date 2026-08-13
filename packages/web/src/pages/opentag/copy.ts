@@ -1,4 +1,4 @@
-import type { OpenTagStepId } from "./flow.js";
+import type { OpenTagStepId, OpenTagToolsPrep } from "./flow.js";
 
 /**
  * Member-facing strings for the `/opentag` entry, kept out of the components
@@ -50,38 +50,6 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
   },
 };
 
-/**
- * The one heading this entry swaps at runtime.
- *
- * Connecting to Feishu has two halves that finish independently, and once the
- * Agent's own tools are the only thing left the ordinary heading would keep
- * asking the member for a confirmation they already gave. The lead names the
- * Bot only when it really is connected, so this never reports a half of the
- * handoff that has not happened.
- */
-export function feishuStepDelayedCopy(botReachable: boolean, toolsReady: boolean): { why: string; lead: string } {
-  if (botReachable) {
-    return {
-      why: "One last part is taking longer.",
-      lead: "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply.",
-    };
-  }
-  // Calling this the last part would be wrong while the Bot is still
-  // outstanding — the member has a confirmation of their own left to give.
-  if (toolsReady) {
-    // And naming the Computer would be worse: it is done, and the rows beside
-    // this heading say so.
-    return {
-      why: "This is taking longer than usual.",
-      lead: "Your Agent is ready. Feishu hasn't confirmed the Bot yet.",
-    };
-  }
-  return {
-    why: "This is taking longer than usual.",
-    lead: "Your Agent's Computer is still preparing the tools it needs to reply in Feishu.",
-  };
-}
-
 /** Member-facing strings for the two things Step 3 is waiting on. */
 export const OPENTAG_FEISHU_READINESS_COPY = {
   panelPreparingTitle: "Preparing First Tree for Feishu…",
@@ -92,23 +60,105 @@ export const OPENTAG_FEISHU_READINESS_COPY = {
   toolsLabel: "Agent tools",
   recoveryTitle: "You are not stuck here.",
   recoveryLead: "Try the automatic setup again, or finish later and repair it from this Agent's settings.",
-  // When the Computer is already done, the automatic setup has nothing left to
-  // retry — the outstanding half is the member's own confirmation in Feishu.
+  // When the automatic setup cannot help — there is no Computer to prepare, or
+  // the outstanding half is the member's own confirmation in Feishu — the only
+  // honest offer left is to leave and pick it up from the Agent's own page.
   recoveryLeadFinishOnly: "Finish later and pick this up from this Agent's settings whenever you're ready.",
   tryAgain: "Try again",
   finishLater: "Finish later",
 } as const;
 
 /**
- * The readiness panel's own header.
+ * Everything the Feishu step says about itself, derived in one place from one
+ * state.
  *
- * It narrows to the Computer only once the Computer is the thing left. While
- * the member still owes a confirmation in Feishu, naming the tools would
- * report one half as the whole remaining job.
+ * The step reports the same two facts three times over — a page heading, a
+ * panel header, and the readiness rows — and three separate derivations of the
+ * same thing is how they came to contradict each other. Deriving all of them
+ * from the resolved state is what keeps "the automatic setup didn't start"
+ * from appearing under "First Tree will keep checking this Computer".
+ *
+ * `heading` is null while the standing step heading is still the right
+ * question, and `panel` is null once both halves are done and there is nothing
+ * left to narrate.
  */
-export function feishuReadinessPanelCopy(botReachable: boolean, toolsReady: boolean): { title: string; lead: string } {
+export function feishuStepCopy(
+  botReachable: boolean,
+  tools: OpenTagToolsPrep,
+): {
+  heading: { why: string; lead: string } | null;
+  panel: { title: string; lead: string } | null;
+} {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
-  return botReachable && !toolsReady
-    ? { title: copy.panelDelayedTitle, lead: copy.panelDelayedLead }
-    : { title: copy.panelPreparingTitle, lead: copy.panelPreparingLead };
+  const bothWaiting = { title: copy.panelPreparingTitle, lead: copy.panelPreparingLead };
+
+  switch (tools.state) {
+    case "unavailable":
+      return {
+        heading: {
+          why: "This Agent has no Computer yet.",
+          lead: "Feishu work runs on the Agent's own Computer. You can give it one from this Agent's settings.",
+        },
+        panel: {
+          title: "Agent tools can't be prepared yet.",
+          lead: "There is no Computer for this Agent to prepare them on.",
+        },
+      };
+    case "ready":
+      // The Computer is done. Anything that named it as outstanding would sit
+      // directly above a row reporting it ready.
+      return botReachable
+        ? { heading: null, panel: null }
+        : {
+            heading: {
+              why: "This is taking longer than usual.",
+              lead: "Your Agent is ready. Feishu hasn't confirmed the Bot yet.",
+            },
+            panel: { title: "Waiting for Feishu…", lead: "Your Agent is ready. Confirming the Bot is the last part." },
+          };
+    case "recoverable":
+      if (tools.reason === "failed") {
+        // A request that never landed is not a duration, and nothing is being
+        // checked in the background — so neither the heading nor the panel may
+        // describe work in progress.
+        return {
+          heading: {
+            why: "We couldn't start the setup.",
+            lead: botReachable
+              ? "Your Feishu Bot is connected. First Tree couldn't start preparing your Agent's Computer."
+              : "First Tree couldn't start preparing your Agent's Computer.",
+          },
+          panel: {
+            title: "Agent tools didn't start.",
+            lead: "Trying again asks your Agent to prepare this Computer.",
+          },
+        };
+      }
+      return botReachable
+        ? {
+            heading: {
+              why: "One last part is taking longer.",
+              lead: "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply.",
+            },
+            panel: { title: copy.panelDelayedTitle, lead: copy.panelDelayedLead },
+          }
+        : {
+            heading: {
+              why: "This is taking longer than usual.",
+              lead: "Your Agent's Computer is still preparing the tools it needs to reply in Feishu.",
+            },
+            panel: bothWaiting,
+          };
+    case "idle":
+      // No Bot means no commitment and nothing being prepared. This step has
+      // one decision left to offer, and narrating background work would invent
+      // work nobody started.
+      return { heading: null, panel: null };
+    default:
+      // Ordinary waiting, on one half or both.
+      return {
+        heading: null,
+        panel: botReachable ? { title: copy.panelDelayedTitle, lead: copy.panelDelayedLead } : bothWaiting,
+      };
+  }
 }

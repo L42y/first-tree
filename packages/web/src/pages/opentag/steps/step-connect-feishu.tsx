@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { FeishuRegistrationQr, isFeishuBotReachable } from "../../../features/feishu/binding-view.js";
 import { FlowHint } from "../../onboarding/flow-ui.js";
-import { feishuReadinessPanelCopy, OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
+import { feishuStepCopy, OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
 import { isFeishuHandoffUsable, type OpenTagFeishuStepState, type OpenTagToolsPrep } from "../flow.js";
 
 /**
@@ -252,13 +252,12 @@ function ToolsPanel({
 }): ReactElement {
   const copy = OPENTAG_FEISHU_READINESS_COPY;
   const botReachable = isFeishuBotReachable(binding);
-  const toolsReady = step.tools.state === "ready";
-  const settled = toolsReady && botReachable;
-  const header = feishuReadinessPanelCopy(botReachable, toolsReady);
+  // The same derivation the page heading uses, so the two cannot disagree.
+  const header = feishuStepCopy(botReachable, step.tools).panel;
 
   return (
     <>
-      {!settled && (
+      {header && (
         <div>
           <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
             {header.title}
@@ -399,8 +398,8 @@ function toolsReadiness(binding: FeishuBotBinding, tools: OpenTagToolsPrep): Rea
       detail: binding.cli.version ? `Ready on this Computer · ${binding.cli.version}` : "Ready on this Computer",
     };
   }
-  if (binding.cli.state === "offline") {
-    return { tone: "attention", status: "not ready", detail: "This Agent has no connected Computer." };
+  if (tools.state === "unavailable") {
+    return { tone: "attention", status: "not ready", detail: "This Agent has no Computer yet." };
   }
   if (tools.state === "recoverable") {
     return {

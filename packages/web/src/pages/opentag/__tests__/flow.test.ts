@@ -1,11 +1,12 @@
 import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
-import { feishuStepDelayedCopy } from "../copy.js";
+import { feishuStepCopy } from "../copy.js";
 import {
   classifyOpenTagAgent,
   isFeishuHandoffUsable,
   type OpenTagAgentRead,
+  type OpenTagToolsPrep,
   resolveOpenTagFeishuStep,
   resolveOpenTagStep,
 } from "../flow.js";
@@ -341,18 +342,105 @@ describe("when the Feishu handoff is genuinely usable", () => {
   });
 });
 
-describe("what the delayed step says is outstanding", () => {
-  it("names the Computer only while the Computer is the thing left", () => {
-    expect(feishuStepDelayedCopy(true, false).lead).toContain("Your Feishu Bot is connected.");
-    expect(feishuStepDelayedCopy(false, false).lead).toContain("still preparing the tools");
+describe("what the Feishu step says about itself", () => {
+  const TOOLS: OpenTagToolsPrep[] = [
+    { state: "idle" },
+    { state: "preparing" },
+    { state: "ready" },
+    { state: "unavailable" },
+    { state: "recoverable", reason: "slow" },
+    { state: "recoverable", reason: "failed" },
+  ];
+
+  /** Language that promises work is under way on the Agent's Computer. */
+  const CLAIMS_WORK_UNDERWAY = [
+    "still preparing",
+    "keep checking this Computer",
+    "Finishing Agent tools",
+    "Preparing this Computer",
+  ];
+
+  it("never claims the Computer is busy when it is done, missing, or was never asked", () => {
+    // Three surfaces report the same two facts — the page heading, the panel
+    // header, and the rows. Deriving them separately is exactly how they came
+    // to contradict each other, so this pins every combination at once.
+    for (const tools of TOOLS) {
+      if (tools.state === "preparing" || (tools.state === "recoverable" && tools.reason === "slow")) continue;
+      for (const botReachable of [true, false]) {
+        const { heading, panel } = feishuStepCopy(botReachable, tools);
+        const said = `${heading?.why ?? ""} ${heading?.lead ?? ""} ${panel?.title ?? ""} ${panel?.lead ?? ""}`;
+        for (const claim of CLAIMS_WORK_UNDERWAY) {
+          expect(`${tools.state}/${botReachable}: ${said}`).not.toContain(claim);
+        }
+      }
+    }
   });
 
-  it("does not claim the Computer is busy when the rows beside it say it is ready", () => {
-    // The Bot-stuck state reports a ready Agent in its readiness row and
-    // withholds the retry. A heading saying the Computer is still preparing
-    // would contradict both.
-    const copy = feishuStepDelayedCopy(false, true);
-    expect(copy.lead).not.toContain("still preparing");
-    expect(copy.lead).toContain("Feishu hasn't confirmed the Bot yet");
+  it("says nothing at all once both halves are done", () => {
+    const done = feishuStepCopy(true, { state: "ready" });
+    expect(done.heading).toBeNull();
+    expect(done.panel).toBeNull();
+  });
+
+  it("keeps the standing heading while waiting is still ordinary", () => {
+    expect(feishuStepCopy(true, { state: "preparing" }).heading).toBeNull();
+    expect(feishuStepCopy(false, { state: "preparing" }).heading).toBeNull();
+  });
+
+  it("reports a request that never landed as failed, not as slow", () => {
+    const { heading, panel } = feishuStepCopy(true, { state: "recoverable", reason: "failed" });
+    expect(heading?.why).toContain("couldn't start");
+    expect(panel?.title).toContain("didn't start");
+  });
+
+  it("names the missing Computer rather than describing preparation", () => {
+    const { heading, panel } = feishuStepCopy(true, { state: "unavailable" });
+    expect(heading?.why).toContain("no Computer");
+    expect(panel?.title).toContain("can't be prepared");
+  });
+
+  it("keeps the approved copy for the state the contract pictures", () => {
+    const { heading, panel } = feishuStepCopy(true, { state: "recoverable", reason: "slow" });
+    expect(heading?.why).toBe("One last part is taking longer.");
+    expect(heading?.lead).toBe(
+      "Your Feishu Bot is connected. Your Agent's Computer is still preparing the tools it needs to reply.",
+    );
+    expect(panel?.title).toBe("Finishing Agent tools…");
+  });
+});
+
+describe("an Agent with no Computer to prepare", () => {
+  const OFFLINE: FeishuBotBinding = {
+    id: "binding-1",
+    agentId: "agent-1",
+    appId: "cli_1",
+    botOpenId: null,
+    botName: null,
+    botAvatarUrl: null,
+    tenantKey: null,
+    status: "active",
+    connectionStatus: "connected",
+    grantedScopes: [],
+    registrationUrl: null,
+    registrationExpiresAt: null,
+    lastConnectedAt: null,
+    lastEventAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    cli: { state: "offline", version: null, clientId: null },
+  };
+
+  it("does not wait out a clock for something that cannot start", () => {
+    // No Computer is established, like a failed request — not suspected, like a
+    // slow one. Sitting on the 90-second timer would leave the member watching
+    // preparation that can never begin.
+    const state = resolveOpenTagFeishuStep({ binding: OFFLINE, callFailed: false, slow: false });
+    expect(state.tools).toEqual({ state: "unavailable" });
+    expect(state.recovery).toBe("offered");
+  });
+
+  it("does not offer to retry what has nowhere to run", () => {
+    const state = resolveOpenTagFeishuStep({ binding: OFFLINE, callFailed: false, slow: true });
+    expect(state.canRetryTools).toBe(false);
   });
 });

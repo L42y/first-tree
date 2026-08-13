@@ -14,7 +14,7 @@ import {
 } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
-import { feishuStepDelayedCopy } from "./copy.js";
+import { feishuStepCopy } from "./copy.js";
 import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
@@ -266,7 +266,12 @@ export function OpenTagPage(): ReactElement | null {
   // work on somebody else's Computer just by looking at a page is a side effect
   // nobody asked for. The same rule already governs the reads and the stamp
   // below.
-  const preparesTools = feishuReady && ownsUrlAgent && !!binding && binding.cli.state !== "ready";
+  //
+  // There also has to be a Computer to prepare. `offline` means none is bound
+  // at all, so the Task would be keyed to no machine and reach nobody — the
+  // step says so instead, and the fix for it lives on the Agent's own page.
+  const preparesTools =
+    feishuReady && ownsUrlAgent && !!binding && (binding.cli.state === "missing" || binding.cli.state === "unknown");
   // Asked once per Agent and Computer, not once per page. The Task the server
   // creates is keyed to that exact pair, so an Agent that moves machine while
   // this page is open needs the check on the new one — and a mutation flag that
@@ -433,7 +438,7 @@ export function OpenTagPage(): ReactElement | null {
   // would keep asking for something the member already did.
   const feishuHeading =
     step === "connect-feishu" && feishuReady && feishuStep.recovery === "offered"
-      ? feishuStepDelayedCopy(!!binding && isFeishuBotReachable(binding), feishuStep.tools.state === "ready")
+      ? (feishuStepCopy(!!binding && isFeishuBotReachable(binding), feishuStep.tools).heading ?? undefined)
       : undefined;
 
   return (

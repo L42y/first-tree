@@ -151,6 +151,8 @@ export type OpenTagToolsPrep =
   | { state: "preparing" }
   /** The Agent can call Feishu from this Computer. */
   | { state: "ready" }
+  /** There is no Computer to prepare, so preparation cannot start at all. */
+  | { state: "unavailable" }
   /** Waiting is no longer enough: offer a retry and a way out. */
   | { state: "recoverable"; reason: "slow" | "failed" };
 
@@ -205,11 +207,16 @@ export function resolveOpenTagFeishuStep(input: {
       ? { state: "idle" }
       : toolsReady
         ? { state: "ready" }
-        : input.callFailed
-          ? { state: "recoverable", reason: "failed" }
-          : input.slow
-            ? { state: "recoverable", reason: "slow" }
-            : { state: "preparing" };
+        : // No Computer at all is not a slow Computer. Nothing is being
+          // prepared, nothing will be, and every surface reading this state has
+          // to say so rather than describe work in progress.
+          cliState === "offline"
+          ? { state: "unavailable" }
+          : input.callFailed
+            ? { state: "recoverable", reason: "failed" }
+            : input.slow
+              ? { state: "recoverable", reason: "slow" }
+              : { state: "preparing" };
 
   // A finished handoff has nothing to recover from — including one that got
   // there after a failed request, because the Agent may well have recovered on
@@ -217,11 +224,17 @@ export function resolveOpenTagFeishuStep(input: {
   // would be offered a way out of something that already worked, beside an
   // invitation to go and use it.
   //
-  // Short of that, a wait that has not run long yet is still an ordinary wait,
-  // while a failed request is established and never waits for the clock.
+  // Short of that, a wait that has not run long yet is still an ordinary wait.
+  // A failed request and a missing Computer are both established rather than
+  // suspected, so neither waits for the clock.
   const usable = isFeishuHandoffUsable(input.binding);
-  const recovery = !usable && (input.callFailed || input.slow) ? "offered" : "none";
-  return { tools, recovery, canRetryTools: recovery === "offered" && !toolsReady };
+  const established = input.callFailed || tools.state === "unavailable";
+  const recovery = !usable && (established || input.slow) ? "offered" : "none";
+  // Retrying is only honest while there is a Computer that could still finish.
+  // Without one, the thing to fix is elsewhere and this button would just fail
+  // again in the same way.
+  const canRetryTools = recovery === "offered" && !toolsReady && tools.state !== "unavailable";
+  return { tools, recovery, canRetryTools };
 }
 
 /**

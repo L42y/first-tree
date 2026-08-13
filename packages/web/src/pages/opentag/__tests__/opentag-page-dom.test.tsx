@@ -1196,7 +1196,13 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.textContent).toContain("One last part is taking longer");
+    // A request that never landed is reported as failed, not as a duration —
+    // and nothing on the page may claim the Computer is being worked on, since
+    // the row right there says the setup never started.
+    expect(container.textContent).toContain("We couldn't start the setup.");
+    expect(container.textContent).toContain("Agent tools didn't start.");
+    expect(container.textContent).not.toContain("taking longer");
+    expect(container.textContent).not.toContain("keep checking this Computer");
     expect(container.textContent).toContain("You are not stuck here.");
     expect(button(container, "Try again").disabled).toBe(false);
     // Leaving lands on the Agent's own page — the one permanent repair entry.
@@ -1218,9 +1224,10 @@ describe("OpenTag entry — preparing the Agent's own Feishu tools", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     await flush();
 
-    expect(container.textContent).toContain("This is taking longer than usual.");
+    expect(container.textContent).toContain("We couldn't start the setup.");
     expect(container.textContent).not.toContain("One last part is taking longer");
     expect(container.textContent).not.toContain("Your Feishu Bot is connected.");
+    expect(container.textContent).not.toContain("still preparing");
     // The member's own half is still in front of them, and still recoverable.
     expect(container.textContent).toContain("Scan with Feishu");
     expect(button(container, "Try again").disabled).toBe(false);
@@ -1542,5 +1549,35 @@ describe("OpenTag entry — a failed request belongs to the Computer it was aske
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("OpenTag entry — an Agent with no Computer to prepare", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("names the missing Computer instead of narrating work on it", async () => {
+    // `offline` means no Computer is bound at all — established, not slow. The
+    // page must not describe preparation, must not wait out the clock before
+    // offering a way forward, and must not offer to retry something that has
+    // nowhere to run.
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: connectedBinding({ cli: { state: "offline", version: null, clientId: null } }),
+    });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(container.textContent).toContain("This Agent has no Computer yet.");
+    expect(container.textContent).not.toContain("still preparing");
+    expect(container.textContent).not.toContain("keep checking this Computer");
+    expect(container.textContent).not.toContain("Preparing this Computer in the background");
+    // Offered immediately, and only the way out that can actually help.
+    expect(container.querySelector(`a[href='/agents/${AGENT_UUID}/profile']`)?.textContent).toContain("Finish later");
+    expect(container.textContent).not.toContain("Try again");
+    // And nothing is asked of a Computer that does not exist.
+    expect(api.createAgentFeishuSetupChat).not.toHaveBeenCalled();
   });
 });
