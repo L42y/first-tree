@@ -8,6 +8,7 @@ import { imChatBindings } from "../../../db/schema/im-chat-bindings.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
+import type { AttachmentObjectQuota } from "../../attachment.js";
 import { decryptCredentials, encryptCredentials } from "../../crypto.js";
 import type { Notifier } from "../../notifier.js";
 import { Client, createLarkChannel, type LarkChannel, LoggerLevel, registerApp } from "./channel-sdk.js";
@@ -75,6 +76,7 @@ export function createFeishuIntegrationManager(input: {
   notifier: Notifier;
   encryptionKey: string;
   instanceId: string;
+  attachmentObjectQuota: AttachmentObjectQuota;
   sdk?: FeishuSdkDependencies;
   timings?: {
     leaseMs?: number;
@@ -84,7 +86,7 @@ export function createFeishuIntegrationManager(input: {
     botProfileTimeoutMs?: number;
   };
 }): FeishuIntegrationManager {
-  const { db, notifier, encryptionKey, instanceId } = input;
+  const { db, notifier, encryptionKey, instanceId, attachmentObjectQuota } = input;
   const leaseMs = input.timings?.leaseMs ?? LEASE_MS;
   const claimIntervalMs = input.timings?.claimIntervalMs ?? CLAIM_INTERVAL_MS;
   const initialClaimDelayMs = input.timings?.initialClaimDelayMs ?? 2_000;
@@ -449,6 +451,7 @@ export function createFeishuIntegrationManager(input: {
         const current = await requireOwnedBinding(row.id, row.connectionEpoch);
         await ingestFeishuMessage(db, notifier, current, message, {
           senderNames,
+          attachmentObjectQuota,
           readMembers: async ({ chatId, idType, pageToken }) =>
             client.im.v1.chatMembers.get({
               path: { chat_id: chatId },

@@ -33,7 +33,9 @@ export function createBackgroundTasks(
 
   async function maintainAttachments(): Promise<void> {
     const legacyAttachments = await backfillExternalAttachmentsToPostgres(app.db, app.attachmentBlobStore);
-    const legacySkills = await backfillSkillResourceBundles(app.db, app.attachmentBlobStore);
+    const legacySkills = await backfillSkillResourceBundles(app.db, app.attachmentBlobStore, {
+      maxOrganizationAttachments: app.config.attachments.organizationObjectQuota,
+    });
     const sweep = await sweepOrphanAttachments(app.db, app.attachmentBlobStore);
     if (legacyAttachments.migrated > 0 || legacySkills.migrated > 0 || sweep.deleted > 0) {
       log.info({ legacyAttachments, legacySkills, sweep }, "attachment maintenance completed");

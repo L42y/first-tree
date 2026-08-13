@@ -764,25 +764,29 @@ describe("small API route handlers", () => {
   it("skips malformed org agent pinned frames after create", async () => {
     const sendToClient = vi.fn();
     const createdAt = new Date("2026-07-08T00:00:00.000Z");
+    const createAgent = vi.fn().mockResolvedValue({
+      uuid: "agent_bad_runtime",
+      name: "bad-runtime",
+      displayName: "Bad Runtime",
+      type: "agent",
+      clientId: "client_1",
+      runtimeProvider: "not-a-runtime",
+      metadata: {},
+      createdAt,
+      updatedAt: createdAt,
+    });
     vi.doMock("../services/runtime/connection-manager.js", () => ({ sendToClient }));
     vi.doMock("../services/agents/identity.js", () => ({
-      createAgent: vi.fn().mockResolvedValue({
-        uuid: "agent_bad_runtime",
-        name: "bad-runtime",
-        displayName: "Bad Runtime",
-        type: "agent",
-        clientId: "client_1",
-        runtimeProvider: "not-a-runtime",
-        metadata: {},
-        createdAt,
-        updatedAt: createdAt,
-      }),
+      createAgent,
       resolveAvatarImageUrl: vi.fn(() => null),
       stripReservedAgentMetadata: vi.fn((metadata: unknown) => metadata ?? {}),
     }));
     const warn = vi.fn();
     const { orgAgentRoutes } = await import("../api/orgs/agents.js");
-    const { app, routes } = makeApp({ log: { warn } });
+    const { app, routes } = makeApp({
+      log: { warn },
+      config: { attachments: { organizationObjectQuota: 10_000 } },
+    });
 
     await orgAgentRoutes(app as never);
 
@@ -795,6 +799,11 @@ describe("small API route handlers", () => {
     );
 
     expect(reply.code).toBe(201);
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: "agent", name: "bad-runtime" }),
+      expect.objectContaining({ attachmentObjectQuota: { maxOrganizationAttachments: 10_000 } }),
+    );
     expect(sendToClient).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.any(Object), "agent:pinned frame failed schema validation — not sending");
   });

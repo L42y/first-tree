@@ -215,6 +215,7 @@ describe("official Feishu QR registration", () => {
     sdkMocks.request.mockImplementationOnce(() => new Promise(() => undefined));
     const manager = createFeishuIntegrationManager({
       db: app.db,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
       notifier: app.notifier,
       encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       instanceId: "profile-timeout-test",
@@ -275,6 +276,7 @@ describe("official Feishu QR registration", () => {
 
     const replica = createFeishuIntegrationManager({
       db: app.db,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
       notifier: app.notifier,
       encryptionKey,
       instanceId: "replacement-replica",
@@ -367,6 +369,7 @@ describe("official Feishu QR registration", () => {
     } as FeishuSdkDependencies;
     const manager = createFeishuIntegrationManager({
       db: app.db,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
       notifier: app.notifier,
       encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       instanceId: "registration-stop-test",
@@ -466,6 +469,7 @@ describe("official Feishu QR registration", () => {
     } as FeishuSdkDependencies;
     const manager = createFeishuIntegrationManager({
       db: app.db,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
       notifier: app.notifier,
       encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       instanceId: "registration-timeout-test",
@@ -502,6 +506,7 @@ describe("official Feishu QR registration", () => {
     } as FeishuSdkDependencies;
     const manager = createFeishuIntegrationManager({
       db: app.db,
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
       notifier: app.notifier,
       encryptionKey: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       instanceId: "registration-late-qr-test",

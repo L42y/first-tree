@@ -9,7 +9,7 @@ import {
   SUPPORTED_IMAGE_MIMES,
 } from "@first-tree/shared";
 import type { Database } from "../../../db/connection.js";
-import { createAttachment } from "../../attachment.js";
+import { type AttachmentObjectQuota, createAttachment } from "../../attachment.js";
 import type { FeishuResourceDescriptor } from "./content.js";
 
 const SUPPORTED_IMAGE_MIME_SET = new Set<string>(SUPPORTED_IMAGE_MIMES);
@@ -40,6 +40,7 @@ export async function hydrateFeishuResources(
     messageId: string;
     descriptors: readonly FeishuResourceDescriptor[];
     download: FeishuResourceDownloader;
+    attachmentObjectQuota: AttachmentObjectQuota;
   },
 ): Promise<HydratedFeishuResources> {
   const results = new Array<HydratedOne>(input.descriptors.length);
@@ -100,14 +101,18 @@ async function hydrateOne(
     });
     response.stream.once("error", (error) => hashingStream.destroy(error));
     response.stream.pipe(hashingStream);
-    const row = await createAttachment(db, {
-      organizationId: input.organizationId,
-      mimeType,
-      filename,
-      body: hashingStream,
-      ...(contentLength !== undefined ? { contentLength } : {}),
-      uploadedBy: `integration:feishu:${input.botBindingId}`,
-    });
+    const row = await createAttachment(
+      db,
+      {
+        organizationId: input.organizationId,
+        mimeType,
+        filename,
+        body: hashingStream,
+        ...(contentLength !== undefined ? { contentLength } : {}),
+        uploadedBy: `integration:feishu:${input.botBindingId}`,
+      },
+      input.attachmentObjectQuota,
+    );
     const attachment: AttachmentRef = {
       attachmentId: row.id,
       kind: descriptor.type === "image" && SUPPORTED_IMAGE_MIME_SET.has(mimeType) ? "image" : "file",

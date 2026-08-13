@@ -238,6 +238,24 @@ export const serverConfigSchema = defineConfig({
     provider: field(z.enum(["docker", "external"]).default("docker")),
   },
   /**
+   * Attachment quotas. The per-file 10 MiB cap (`MAX_ATTACHMENT_BYTES`) and
+   * the per-organization 2 GiB byte ceiling stay hard-coded; only the object
+   * count is deployment-tunable.
+   */
+  attachments: {
+    /**
+     * Maximum number of attachment objects (rows in `uploading`, `ready`, or
+     * `deleting` state) one organization may hold. The count covers every
+     * creation path — chat uploads, Feishu inbound resources, Team Skill
+     * bundle backfills, and Agent Template adoption copies all share the same
+     * pool. Default 10,000; the 2 GiB byte quota remains the storage
+     * backstop regardless of this value.
+     */
+    organizationObjectQuota: field(z.number().int().min(1).default(10_000), {
+      env: "FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT",
+    }),
+  },
+  /**
    * Transitional read/delete compatibility for attachment payloads written
    * to S3 by #2062. New uploads are PostgreSQL-backed. This block can be
    * removed in the contract release after the reverse backfill completes and

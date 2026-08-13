@@ -17,7 +17,7 @@ import { agents } from "../../../db/schema/agents.js";
 import { resources } from "../../../db/schema/resources.js";
 import { type AppErrorAttrs, BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../../errors.js";
 import { uuidv7 } from "../../../uuid.js";
-import { copyAttachmentForOrganization } from "../../attachment.js";
+import { type AttachmentObjectQuota, copyAttachmentForOrganization } from "../../attachment.js";
 import type { AttachmentBlobStore } from "../../attachment-blob-store.js";
 import { assertMutableAgentIsNotLandingCampaignTrial } from "../../landing-campaigns/guards.js";
 import type { Notifier } from "../../notifier.js";
@@ -310,6 +310,7 @@ async function adoptTemplatesInTransaction(
   addedTemplateIds: readonly string[],
   actorId: string,
   attachmentUploader: string,
+  attachmentObjectQuota: AttachmentObjectQuota,
 ): Promise<void> {
   if (addedTemplateIds.length === 0) return;
   if (!publisherOrgId) {
@@ -382,7 +383,14 @@ async function adoptTemplatesInTransaction(
   const digestByComponentKey = new Map<string, string>();
   for (const sourceId of sourceBundleIds) {
     const attachment = await withAdoptionConflictCode(() =>
-      copyAttachmentForOrganization(db, blobStore, sourceId, agent.organizationId, attachmentUploader),
+      copyAttachmentForOrganization(
+        db,
+        blobStore,
+        sourceId,
+        agent.organizationId,
+        attachmentUploader,
+        attachmentObjectQuota,
+      ),
     );
     if (!attachment.data) throw new Error("Attachment copy has no PostgreSQL bytes");
     bundleTargetBySourceId.set(sourceId, attachment.id);
@@ -432,11 +440,21 @@ export async function initializeAdoptedTemplates(
   templateIds: readonly string[],
   actorId: string,
   attachmentUploader: string,
+  attachmentObjectQuota: AttachmentObjectQuota,
 ): Promise<void> {
   if (agent.type === AGENT_TYPES.HUMAN) {
     throw new BadRequestError("Human Agents cannot adopt Agent Templates");
   }
-  await adoptTemplatesInTransaction(db, blobStore, publisherOrgId, agent, templateIds, actorId, attachmentUploader);
+  await adoptTemplatesInTransaction(
+    db,
+    blobStore,
+    publisherOrgId,
+    agent,
+    templateIds,
+    actorId,
+    attachmentUploader,
+    attachmentObjectQuota,
+  );
   // The freshly-inserted config stays version 1; only the adopted set is recorded.
   await db
     .update(agentConfigs)
@@ -460,6 +478,7 @@ export async function adoptAgentTemplates(
   actorId: string,
   attachmentUploader: string,
   input: UpdateAgentTemplates,
+  attachmentObjectQuota: AttachmentObjectQuota,
 ): Promise<AdoptAgentTemplatesResult> {
   const result = await db.transaction(async (tx) => {
     const targetDb = tx as unknown as Database;
@@ -542,6 +561,7 @@ export async function adoptAgentTemplates(
       added,
       actorId,
       attachmentUploader,
+      attachmentObjectQuota,
     );
     const [updated] = await targetDb
       .update(agentConfigs)

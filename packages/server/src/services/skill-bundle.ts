@@ -24,6 +24,7 @@ import { members } from "../db/schema/members.js";
 import { resources } from "../db/schema/resources.js";
 import { BadRequestError } from "../errors.js";
 import {
+  type AttachmentObjectQuota,
   createAttachment,
   deleteAttachmentIfUnreferenced,
   loadAttachmentMeta,
@@ -335,6 +336,7 @@ export function buildLegacySkillBundle(payload: SkillResourcePayload): Buffer {
 export async function backfillSkillResourceBundles(
   db: Database,
   blobStore: AttachmentBlobStore,
+  quota: AttachmentObjectQuota,
   batchSize = 50,
 ): Promise<{ migrated: number; skipped: number }> {
   const rows = await db
@@ -374,14 +376,18 @@ export async function backfillSkillResourceBundles(
           .limit(1);
         uploaderId = creator?.agentId ?? null;
       }
-      const attachment = await createAttachment(db, {
-        organizationId: row.organizationId,
-        mimeType: "application/zip",
-        filename: `${parsed.data.name}.zip`,
-        body,
-        contentLength: body.byteLength,
-        uploadedBy: uploaderId ?? "system:skill-resource-backfill",
-      });
+      const attachment = await createAttachment(
+        db,
+        {
+          organizationId: row.organizationId,
+          mimeType: "application/zip",
+          filename: `${parsed.data.name}.zip`,
+          body,
+          contentLength: body.byteLength,
+          uploadedBy: uploaderId ?? "system:skill-resource-backfill",
+        },
+        quota,
+      );
       attachmentId = attachment.id;
       const updated = await db
         .update(resources)
