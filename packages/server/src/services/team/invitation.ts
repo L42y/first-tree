@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { INVITATION_DEFAULT_TTL_DAYS } from "@first-tree/shared";
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import type { Database } from "../../db/connection.js";
 import { invitationRedemptions, invitations } from "../../db/schema/invitations.js";
 import { organizations } from "../../db/schema/organizations.js";
@@ -8,6 +9,9 @@ import { NotFoundError } from "../../errors.js";
 import { uuidv7 } from "../../uuid.js";
 
 const TOKEN_BYTES = 32;
+
+// biome-ignore lint/suspicious/noExplicitAny: shared query surface for Database and transaction clients.
+type DbLike = PgDatabase<PgQueryResultHKT, any, any>;
 
 /**
  * Default invite-link TTL — authoritative server-side value. Tightening
@@ -106,7 +110,7 @@ export async function rotateInvitation(db: Database, orgId: string, createdBy: s
  * "unknown" with "revoked" prevents an attacker from inferring which
  * tokens were once valid.
  */
-export async function findActiveByToken(db: Database, token: string) {
+export async function findActiveByToken(db: DbLike, token: string): Promise<typeof invitations.$inferSelect | null> {
   const now = new Date();
   const [row] = await db
     .select()
@@ -150,9 +154,9 @@ export async function previewInvitation(db: Database, token: string) {
  * (members.insert / status='active' flip) — this is the audit trail only.
  */
 export async function recordRedemption(
-  db: Database,
+  db: DbLike,
   data: { invitationId: string; userId: string; ip?: string | null; userAgent?: string | null },
-) {
+): Promise<void> {
   await db.insert(invitationRedemptions).values({
     id: uuidv7(),
     invitationId: data.invitationId,

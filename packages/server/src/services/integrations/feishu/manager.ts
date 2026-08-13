@@ -379,7 +379,7 @@ export function createFeishuIntegrationManager(input: {
               eq(imBotBindings.id, id),
               eq(imBotBindings.connectionOwnerInstanceId, instanceId),
               eq(imBotBindings.connectionEpoch, connected.epoch),
-              eq(imBotBindings.status, "active"),
+              inArray(imBotBindings.status, ["active", "provisioning"]),
             ),
           )
           .returning({ id: imBotBindings.id });

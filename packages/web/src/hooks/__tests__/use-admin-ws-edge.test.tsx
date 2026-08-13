@@ -171,7 +171,7 @@ describe("useAdminWs edge cases", () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
-  it("invalidates catch-up queries and broadcasts only reconnect opens", async () => {
+  it("invalidates catch-up queries and broadcasts only admitted reconnects", async () => {
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     const onMessage = await renderHook();
     const first = FakeWebSocket.instances[0];
@@ -179,10 +179,11 @@ describe("useAdminWs edge cases", () => {
 
     await act(async () => {
       first.open();
+      first.emit({ type: "admin:connected" });
     });
     expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-messages"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-open-requests"] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-messages"] });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-open-requests"] });
 
     await act(async () => {
       first.closeWith(1006);
@@ -194,8 +195,16 @@ describe("useAdminWs edge cases", () => {
     await act(async () => {
       second.open();
     });
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-messages"] });
+
+    await act(async () => {
+      second.emit({ type: "admin:connected" });
+    });
 
     expect(onMessage).toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-messages"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-open-requests"] });
   });
 
   it("invalidates runtime, event fallback, chat update, and malformed chat message branches", async () => {

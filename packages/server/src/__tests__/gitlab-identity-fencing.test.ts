@@ -30,7 +30,7 @@ import {
   resolveGitlabAudience,
 } from "../services/scm/gitlab/webhook.js";
 import { lockAndResolveAgentScmBindingPair } from "../services/scm/shared/attention-line.js";
-import { deactivateMembership, MEMBER_STATUSES } from "../services/team/membership.js";
+import { deactivateMembership, MEMBER_STATUSES, MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 type App = ReturnType<ReturnType<typeof useTestApp>>;
@@ -258,7 +258,12 @@ describe("GitLab identity authority fencing", () => {
             organizationId: fixture.admin.organizationId,
             linkId: fixture.link.id,
           })
-        : deactivateMembership(app.db, fixture.admin.memberId, MEMBER_STATUSES.LEFT)
+        : deactivateMembership(
+            app.db,
+            fixture.admin.memberId,
+            MEMBER_STATUSES.LEFT,
+            MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
+          )
     ).then(() => {
       transitionSettled = true;
     });
@@ -584,7 +589,12 @@ describe("GitLab identity authority fencing", () => {
           linkId: fixture.link.id,
         });
       } else {
-        await deactivateMembership(app.db, fixture.admin.memberId, MEMBER_STATUSES.LEFT);
+        await deactivateMembership(
+          app.db,
+          fixture.admin.memberId,
+          MEMBER_STATUSES.LEFT,
+          MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
+        );
       }
       transitionSettled = true;
     })();

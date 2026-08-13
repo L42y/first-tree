@@ -38,6 +38,9 @@ const CALLBACK_ERROR_COPY: Record<string, string> = {
   "invite-invalid": "This invitation link is no longer valid. Ask your team for a fresh invite.",
   "invite-not-allowed": "This invitation isn't allowed on this server.",
   "invite-required": "This server requires an invitation link to join. Ask your team for an invite.",
+  "account-inactive": "This First Tree account is suspended. Ask an administrator to reactivate it before signing in.",
+  "membership-restore-required":
+    "A Team administrator removed this membership. Ask an administrator to restore it before signing in again.",
   "membership-unresolved": "Sign-in did not complete. Please try again.",
 };
 

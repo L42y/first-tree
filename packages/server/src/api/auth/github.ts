@@ -12,6 +12,7 @@ import {
   findOrCreateGithubAccount,
   type GithubProfile,
   type GithubTokenBundle,
+  IdentityAccountInactiveError,
   IdentityConflictError,
   IdentityMismatchError,
   LastIdentityError,
@@ -19,14 +20,18 @@ import {
   refreshGithubInstallIdentity,
   unlinkExternalIdentity,
 } from "../../services/auth/identity.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import {
+  completeExternalAccountBootstrap,
+  OAuthBootstrapError,
+  oauthBootstrapBoundary,
+} from "../../services/auth/oauth/bootstrap.js";
 import {
   STATE_NONCE_COOKIE_NAME,
   STATE_NONCE_COOKIE_TTL_SECONDS,
   signOAuthState,
   verifyOAuthState,
 } from "../../services/auth/oauth/state.js";
-import { signTokensForUser } from "../../services/auth/tokens.js";
+import { signTokensForActiveUser } from "../../services/auth/tokens.js";
 import { encryptValue } from "../../services/crypto.js";
 import {
   buildAppAuthorizeUrl,
@@ -34,7 +39,7 @@ import {
   exchangeCodeForAppUserProfile,
 } from "../../services/scm/github/app.js";
 import { bindInstallationToOrg, upsertInstallationFromMetadata } from "../../services/scm/github/app-installations.js";
-import { findActiveMembership } from "../../services/team/membership.js";
+import { findActiveMembership, membershipRecoveryPolicy } from "../../services/team/membership.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
@@ -369,6 +374,8 @@ export async function githubOauthRoutes(app: FastifyInstance): Promise<void> {
         app.log.info({ event: "identity.unlinked", provider: "github", userId: stateUserId }, "Identity unlinked");
         return reply.redirect(`${ACCOUNT_RETURN_PATH}?connection=github-unlinked`, 302);
       } catch (error) {
+        if (error instanceof IdentityAccountInactiveError)
+          return reply.redirect(withQueryParam(next, "error", "account-inactive"), 302);
         if (error instanceof IdentityConflictError)
           return reply.redirect(withQueryParam(next, "error", "identity-conflict"), 302);
         if (error instanceof IdentityMismatchError)
@@ -530,6 +537,8 @@ type CallbackErrorCode =
   | "invite-invalid"
   | "invite-not-allowed"
   | "invite-required"
+  | "account-inactive"
+  | "membership-restore-required"
   | "membership-unresolved";
 
 type CallbackIntent = "sign-in" | "link" | "unlink" | "install";
@@ -851,7 +860,7 @@ async function completeOauthFlow(
       if (browserFacing)
         return redirectCallbackError(reply, error.code, next, { callbackIntent, accountCreated: account.created });
       const statusCode = error.code === "invite-invalid" ? 404 : 403;
-      return reply.status(statusCode).send({ error: oauthBootstrapErrorMessage(error.code) });
+      return reply.status(statusCode).send({ error: oauthBootstrapErrorMessage(error.code), code: error.code });
     }
     joinPath = bootstrap.joinPath;
     resolved = true;
@@ -935,7 +944,24 @@ async function completeOauthFlow(
     return reply.redirect(`/auth/complete#${fragment}`, 302);
   }
 
-  const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
+  let tokens: Awaited<ReturnType<typeof signTokensForActiveUser>>;
+  try {
+    tokens = await signTokensForActiveUser(
+      app.db,
+      userId,
+      app.config.secrets.jwtSecret,
+      app.config.auth,
+      "auth.oauth",
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+    );
+  } catch (error) {
+    const boundary = oauthBootstrapBoundary(error);
+    if (!boundary) throw error;
+    if (browserFacing) {
+      return redirectCallbackError(reply, boundary.code, next, { callbackIntent, accountCreated: account.created });
+    }
+    return reply.status(403).send({ error: oauthBootstrapErrorMessage(boundary.code), code: boundary.code });
+  }
 
   // Carry the org this callback resolved to (the invited org for an invite
   // link, an App-install target, otherwise the user's primary/personal org)
@@ -967,7 +993,9 @@ async function completeOauthFlow(
 }
 
 function oauthBootstrapErrorMessage(code: OAuthBootstrapError["code"]): string {
+  if (code === "account-inactive") return "This account is suspended";
   if (code === "invite-invalid") return "Invitation not found or no longer valid";
   if (code === "invite-not-allowed") return "Invitation is not allowed on this server";
+  if (code === "membership-restore-required") return "An administrator must restore this membership";
   return "This server requires an invitation link to join";
 }

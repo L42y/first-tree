@@ -34,6 +34,7 @@ vi.mock("../../api/client.js", () => ({
   setApiSelectedOrganizationId: apiMocks.setApiSelectedOrganizationId,
   setStoredTokens: apiMocks.setStoredTokens,
   ADMIN_WS_ORG_CHANGED_EVENT: "admin-ws:org-changed",
+  ADMIN_WS_MEMBERSHIP_CHANGED_EVENT: "admin-ws:membership-changed",
 }));
 
 vi.mock("../../api/auth.js", () => ({
@@ -190,6 +191,156 @@ describe("AuthProvider", () => {
     expect(latestAuth?.currentMembership?.organizationId).toBe("org-2");
     expect(latestAuth?.role).toBe("member");
     expect(flagsMocks.clearOnboardingJoinPath).toHaveBeenCalled();
+  });
+
+  it("fails closed instead of mounting an authenticated workspace from an empty /me membership snapshot", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    apiMocks.apiGet.mockResolvedValueOnce({
+      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+      memberships: [],
+      defaultOrganizationId: null,
+      onboarding: { step: "connect" },
+    });
+
+    await renderAuth();
+
+    expect(apiMocks.clearStoredTokens).not.toHaveBeenCalled();
+    expect(latestAuth?.isAuthenticated).toBe(true);
+    expect(latestAuth?.meAuthoritative).toBe(false);
+    expect(latestAuth?.meBoundary).toBe("membership-repair-required");
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
+  });
+
+  it("reconciles a revoked socket onto the repaired membership without rendering the old Team", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    apiMocks.apiGet.mockResolvedValueOnce({
+      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+      memberships: [{ ...MEMBERSHIPS[0], id: "member-repaired", organizationId: "org-repaired" }],
+      defaultOrganizationId: "org-repaired",
+      onboarding: { step: "connect" },
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("admin-ws:membership-changed"));
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-repaired");
+    expect(latestAuth?.meBoundary).toBeNull();
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith("org-repaired");
+  });
+
+  it("discards a pre-revocation /me that settles before membership repair", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+
+    const deferred: Array<(value: unknown) => void> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferred.push(resolve);
+        }),
+    );
+    void latestAuth?.refreshMe();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("admin-ws:membership-changed"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      deferred[0]?.({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+    });
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.meBoundary).toBe("reconciling");
+
+    await act(async () => {
+      deferred[1]?.({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: [{ ...MEMBERSHIPS[0], id: "member-repaired", organizationId: "org-repaired" }],
+        defaultOrganizationId: "org-repaired",
+        onboarding: { step: "connect" },
+      });
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-repaired");
+    expect(latestAuth?.meBoundary).toBeNull();
+  });
+
+  it("discards a pre-revocation /me that settles after membership repair", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+
+    const deferred: Array<(value: unknown) => void> = [];
+    apiMocks.apiGet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deferred.push(resolve);
+        }),
+    );
+    void latestAuth?.refreshMe();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("admin-ws:membership-changed"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      deferred[1]?.({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: [{ ...MEMBERSHIPS[0], id: "member-repaired", organizationId: "org-repaired" }],
+        defaultOrganizationId: "org-repaired",
+        onboarding: { step: "connect" },
+      });
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-repaired");
+
+    await act(async () => {
+      deferred[0]?.({
+        user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
+        memberships: MEMBERSHIPS,
+        defaultOrganizationId: "org-1",
+        onboarding: { step: "completed" },
+      });
+    });
+    expect(latestAuth?.currentMembership?.organizationId).toBe("org-repaired");
+    expect(latestAuth?.meBoundary).toBeNull();
+  });
+
+  it("enters the invitation boundary when socket reconciliation finds no allowed membership", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({
+      accessToken: tokenWithPayload({ sub: "user-1" }),
+      refreshToken: "refresh",
+    });
+    await renderAuth();
+    apiMocks.apiGet.mockRejectedValueOnce({ code: "invite-required" });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("admin-ws:membership-changed"));
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.meBoundary).toBe("invite-required");
+    expect(apiMocks.setApiSelectedOrganizationId).toHaveBeenLastCalledWith(null);
   });
 
   it("preseeds the selected organization from the stored token subject before /me settles", async () => {
@@ -483,6 +634,7 @@ describe("AuthProvider", () => {
     await renderAuth();
     expect(latestAuth?.meLoaded).toBe(true);
     expect(latestAuth?.currentMembership).toBeNull();
+    expect(latestAuth?.meBoundary).toBe("unavailable");
   });
 
   it("does not resurrect the old org when the switch fails through a 401 logout", async () => {

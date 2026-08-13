@@ -13,6 +13,7 @@ const clientMocks = vi.hoisted(() => ({
   refreshAccessToken: vi.fn(),
   getApiSelectedOrganizationId: vi.fn(),
   ADMIN_WS_ORG_CHANGED_EVENT: "admin-ws:org-changed",
+  ADMIN_WS_MEMBERSHIP_CHANGED_EVENT: "admin-ws:membership-changed",
 }));
 
 vi.mock("../../api/client.js", () => clientMocks);
@@ -22,10 +23,13 @@ type CloseHandler = ((event: CloseEvent) => void) | null;
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
+  static emitCloseEvent = true;
   onmessage: WsHandler = null;
   onopen: (() => void) | null = null;
   onclose: CloseHandler = null;
   closed = false;
+  closeCode: number | null = null;
+  closeCodes: number[] = [];
   readonly url: string;
 
   constructor(url: string) {
@@ -33,8 +37,14 @@ class FakeWebSocket {
     FakeWebSocket.instances.push(this);
   }
 
-  close(): void {
+  close(code = 1000): void {
+    if (code !== 1000 && (code < 3000 || code > 4999)) {
+      throw new DOMException("Invalid WebSocket close code", "InvalidAccessError");
+    }
     this.closed = true;
+    this.closeCode = code;
+    this.closeCodes.push(code);
+    if (FakeWebSocket.emitCloseEvent) this.onclose?.(new CloseEvent("close", { code }));
   }
 
   emit(data: unknown): void {
@@ -115,6 +125,7 @@ function makeStatus(overrides: Partial<AgentChatStatus> = {}): AgentChatStatus {
 beforeEach(() => {
   vi.resetModules();
   FakeWebSocket.instances = [];
+  FakeWebSocket.emitCloseEvent = true;
   Object.defineProperty(globalThis, "WebSocket", { configurable: true, value: FakeWebSocket });
   Object.defineProperty(window, "WebSocket", { configurable: true, value: FakeWebSocket });
   Object.defineProperty(window, "location", {
@@ -132,6 +143,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   if (root) await act(async () => root?.unmount());
   document.body.innerHTML = "";
 });
@@ -213,11 +225,23 @@ describe("useAdminWs", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-right-sidebar", "cron-jobs", "chat-9"] });
     expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-right-sidebar", "cron-jobs", "chat-1"] });
 
-    // Reconnect catch-up prefix-invalidates every cached schedule list so a
-    // frame missed during a WS gap self-heals.
+    // Reconnect catch-up prefix-invalidates every cached schedule list after
+    // the replacement socket receives protocol admission, so a frame missed
+    // during a WS gap self-heals without trusting transport open.
     invalidateSpy.mockClear();
+    vi.useFakeTimers();
     await act(async () => {
-      socket.open();
+      socket.closeWith(1013);
+      vi.advanceTimersByTime(2_000);
+    });
+    const replacement = FakeWebSocket.instances[1];
+    if (!replacement) throw new Error("replacement socket missing");
+    await act(async () => {
+      replacement.open();
+    });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["chat-right-sidebar", "cron-jobs"] });
+    await act(async () => {
+      replacement.emit({ type: "admin:connected" });
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["chat-right-sidebar", "cron-jobs"] });
   });
@@ -237,6 +261,145 @@ describe("useAdminWs", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["need-you"] });
   });
 
+  it("signals membership reconciliation and never reconnects the revoked Team socket", async () => {
+    const membershipChanged = vi.fn();
+    window.addEventListener("admin-ws:membership-changed", membershipChanged);
+    await renderHook();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("socket missing");
+    vi.useFakeTimers();
+
+    await act(async () => {
+      socket.emit({ type: "membership:changed", memberId: "member-1", organizationId: "org-1" });
+      socket.closeWith(4403);
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(membershipChanged).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    window.removeEventListener("admin-ws:membership-changed", membershipChanged);
+  });
+
+  it("backs off pre-admission authorization outages and catches up only after protocol admission", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    const membershipChanged = vi.fn();
+    window.addEventListener("admin-ws:membership-changed", membershipChanged);
+    const onMessage = await renderHook();
+    const first = FakeWebSocket.instances[0];
+    if (!first) throw new Error("socket missing");
+    vi.useFakeTimers();
+    invalidateSpy.mockClear();
+
+    await act(async () => {
+      first.open();
+    });
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      first.closeWith(1013);
+      vi.advanceTimersByTime(1_999);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    const second = FakeWebSocket.instances[1];
+    if (!second) throw new Error("second socket missing");
+
+    await act(async () => {
+      second.open();
+      second.closeWith(1013);
+      vi.advanceTimersByTime(3_999);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    const third = FakeWebSocket.instances[2];
+    if (!third) throw new Error("third socket missing");
+
+    await act(async () => {
+      third.open();
+    });
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      third.emit({ type: "admin:connected" });
+    });
+    expect(membershipChanged).not.toHaveBeenCalled();
+    expect(onMessage).toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      third.closeWith(1013);
+      vi.advanceTimersByTime(1_999);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(4);
+    window.removeEventListener("admin-ws:membership-changed", membershipChanged);
+  });
+
+  it("retries when transport opens without protocol admission", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    const onMessage = await renderHook();
+    const first = FakeWebSocket.instances[0];
+    if (!first) throw new Error("socket missing");
+    vi.useFakeTimers();
+    invalidateSpy.mockClear();
+
+    await act(async () => {
+      first.open();
+      vi.advanceTimersByTime(9_999);
+    });
+    expect(first.closed).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(first.closed).toBe(true);
+    expect(first.closeCode).toBe(4013);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_999);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+    });
+    const replacement = FakeWebSocket.instances[1];
+    if (!replacement) throw new Error("replacement socket missing");
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      replacement.open();
+      replacement.emit({ type: "admin:connected" });
+    });
+    expect(onMessage.mock.calls.filter(([message]) => message.type === "ws:reconnect")).toHaveLength(1);
+    expect(invalidateSpy.mock.calls.filter(([options]) => options?.queryKey?.[0] === "activity")).toHaveLength(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+    });
+    expect(replacement.closed).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(onMessage.mock.calls.filter(([message]) => message.type === "ws:reconnect")).toHaveLength(1);
+    expect(invalidateSpy.mock.calls.filter(([options]) => options?.queryKey?.[0] === "activity")).toHaveLength(1);
+  });
+
   it("refreshes access tokens on auth close and reconnects immediately", async () => {
     const onMessage = await renderHook();
     const first = FakeWebSocket.instances[0];
@@ -253,8 +416,56 @@ describe("useAdminWs", () => {
 
     await act(async () => {
       second?.open();
+      second?.emit({ type: "admin:connected" });
     });
     expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+  });
+
+  it("preserves reconnect catch-up through a successful auth refresh until protocol admission", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    const onMessage = await renderHook();
+    const first = FakeWebSocket.instances[0];
+    if (!first) throw new Error("socket missing");
+    vi.useFakeTimers();
+
+    await act(async () => {
+      first.open();
+      first.emit({ type: "admin:connected" });
+    });
+    onMessage.mockClear();
+    invalidateSpy.mockClear();
+    clientMocks.refreshAccessToken.mockClear();
+
+    await act(async () => {
+      first.closeWith(1006);
+      vi.advanceTimersByTime(2_000);
+    });
+    const second = FakeWebSocket.instances[1];
+    if (!second) throw new Error("replacement socket missing");
+
+    await act(async () => {
+      second.open();
+      second.closeWith(4001);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(clientMocks.refreshAccessToken).toHaveBeenCalledTimes(1);
+    const third = FakeWebSocket.instances[2];
+    if (!third) throw new Error("refreshed socket missing");
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      third.open();
+    });
+    expect(onMessage).not.toHaveBeenCalledWith({ type: "ws:reconnect" });
+    expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["activity"] });
+
+    await act(async () => {
+      third.emit({ type: "admin:connected" });
+    });
+    expect(onMessage.mock.calls.filter(([message]) => message.type === "ws:reconnect")).toHaveLength(1);
+    expect(invalidateSpy.mock.calls.filter(([options]) => options?.queryKey?.[0] === "activity")).toHaveLength(1);
   });
 
   it("skips disabled hooks and tears down the shared socket when the last subscriber unmounts", async () => {
@@ -266,6 +477,29 @@ describe("useAdminWs", () => {
     if (!socket) throw new Error("socket missing");
     await act(async () => root?.unmount());
     expect(socket.closed).toBe(true);
+  });
+
+  it("clears the admission deadline synchronously when the last subscriber unmounts", async () => {
+    await renderHook();
+    const socket = FakeWebSocket.instances[0];
+    if (!socket) throw new Error("socket missing");
+    vi.useFakeTimers();
+    FakeWebSocket.emitCloseEvent = false;
+
+    await act(async () => {
+      socket.open();
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => root?.unmount());
+    expect(socket.closeCodes).toEqual([1000]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+    });
+    expect(socket.closeCodes).toEqual([1000]);
+    expect(FakeWebSocket.instances).toHaveLength(1);
   });
 
   it("reconnects to the new org's socket when the selected org changes", async () => {
@@ -285,6 +519,33 @@ describe("useAdminWs", () => {
     expect(first.closed).toBe(true);
     const second = FakeWebSocket.instances[1];
     expect(second?.url).toBe("wss://first-tree.test/api/v1/orgs/org-2/ws/?token=access-1");
+  });
+
+  it("clears the admission deadline synchronously when the selected org changes", async () => {
+    await renderHook();
+    const first = FakeWebSocket.instances[0];
+    if (!first) throw new Error("socket missing");
+    vi.useFakeTimers();
+    FakeWebSocket.emitCloseEvent = false;
+
+    await act(async () => {
+      first.open();
+    });
+    expect(vi.getTimerCount()).toBe(1);
+
+    clientMocks.getApiSelectedOrganizationId.mockReturnValue("org-2");
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent("admin-ws:org-changed"));
+    });
+    expect(first.closeCodes).toEqual([1000]);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+    });
+    expect(first.closeCodes).toEqual([1000]);
+    expect(FakeWebSocket.instances).toHaveLength(2);
   });
 
   it("ignores the org-changed event after the workspace socket has torn down", async () => {

@@ -1,6 +1,7 @@
 import { connectTokenExchangeSchema, loginSchema, refreshTokenSchema } from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import * as authService from "../services/auth/tokens.js";
+import { membershipRecoveryPolicy } from "../services/team/membership.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
@@ -15,6 +16,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       body.password,
       app.config.secrets.jwtSecret,
       app.config.auth,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
     );
     return reply.send(result);
   });
@@ -26,6 +28,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       body.refreshToken,
       app.config.secrets.jwtSecret,
       app.config.auth,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
     );
     return reply.send(result);
   });
@@ -39,6 +42,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       app.config.secrets.jwtSecret,
       app.config.auth,
       issuer,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
     );
     return reply.send(result);
   });
