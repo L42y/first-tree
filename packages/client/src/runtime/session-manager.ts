@@ -14,7 +14,6 @@ import {
   attachmentRefsFromMetadata,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
-  INBOX_FENCE_PROBE_MAX_IDS,
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
@@ -64,8 +63,11 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
-import { ReplayFenceStore } from "./replay-fence.js";
 import { createResultSink, type Trigger } from "./result-sink.js";
+import {
+  ResetReplayAuthority,
+  type ResetFenceReleaseVerdict,
+} from "./reset-replay-authority.js";
 import {
   HandlerSuspendTimeoutError,
   RouteTeardownAuthority,
@@ -221,13 +223,8 @@ type SlotDeliveryKind = "fresh" | "recovery" | "control";
 type SessionCommandType = "session:suspend" | "session:resume" | "session:terminate";
 type RuntimeSyncActiveSet = ReadonlySet<string> | null;
 
-/**
- * This client's authoritative answer to "did the Reset fence for that
- * generation come down here?". The wire receipt is derived from it and never
- * from a caller's own bookkeeping: `accepted` / `idempotent` mean the fence
- * is lifted, `stale` means it is not.
- */
-export type ResetFenceReleaseVerdict = "accepted" | "idempotent" | "stale";
+/** Re-exported for agent-slot / wire callers; owned by ResetReplayAuthority. */
+export type { ResetFenceReleaseVerdict } from "./reset-replay-authority.js";
 
 /**
  * Resolve the directory the runtime reads markdown doc snapshots against —
@@ -465,14 +462,6 @@ type SessionManagerConfig = {
 /** Maximum number of evicted session mappings to retain for resume recovery. */
 const MAX_EVICTED_MAPPINGS = 500;
 
-/**
- * Minimum spacing between gate-triggered replay-fence reconciliations for
- * one chat. Withheld dispatches retry the server-truth readback so a
- * transient readback/clear failure converges without a process restart,
- * without turning every redelivery burst into an inbox-recovery storm.
- */
-const REPLAY_FENCE_RECONCILE_INTERVAL_MS = 30_000;
-
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
 
 /**
@@ -575,71 +564,17 @@ export class SessionManager {
    */
   private readonly currentTrigger = new Map<string, Trigger>();
   private readonly registry: SessionRegistry | null;
-  private readonly replayFence: ReplayFenceStore | null;
-  /**
-   * Set when the replay-fence store could not be loaded. Fail-closed: every
-   * dispatch is withheld as recovery debt until an operator repairs the
-   * store, because we can no longer tell safe redeliveries from unsafe ones.
-   */
-  private replayFenceUnavailable: string | null = null;
   private readonly pendingQueue: PendingMessage[] = [];
-  /** Chats whose terminate command has closed admission but is still draining cleanup.
-   *  The value is the in-flight termination promise: a duplicate terminate for
-   *  the same chat joins it instead of returning early, so every ref'd caller
-   *  acks only after the shared cleanup settles (applied:false on rejection). */
-  private readonly terminatingChats = new Map<string, Promise<void>>();
-  /**
-   * Chats whose terminate cleanup finished in memory but whose final
-   * synchronous registry flush failed. Counted as "work to do" by the
-   * terminate admission guard so a retry re-executes the full termination
-   * (and re-attempts the flush) instead of early-returning a false
-   * applied:true while the stale mapping is still on disk. Also fences
-   * every provider route admission until that retry succeeds — otherwise an
-   * intervening start can consume the pending Reset nonce that the retry
-   * later records as the durable retirement tombstone.
-   */
-  private readonly terminatePersistFailures = new Set<string>();
-  /**
-   * Chats with Reset-fence parked debt that must not admit a provider route
-   * or same-socket recoverChat until {@link releaseParkedResetFenceRecovery}
-   * runs after an exact receipted post-apply terminal disposition
-   * (`finalized` or `aborted`). Survives a failed terminate attempt (teardown /
-   * quiesce / flush) so parked rows stay parked — clearing only
-   * `terminatingChats` must not release them.
-   */
-  private readonly awaitingResetFenceRelease = new Set<string>();
-  /**
-   * THE Reset-generation authority for this client: `chatId → generation`.
-   * The manager owns it outright — no other component keeps a parallel map
-   * or decides release on its own, because only the manager knows which
-   * refs share a termination and which generation is current.
-   *
-   * A generation is created by a ref'd terminate that runs its own
-   * termination, and every later ref that JOINS that same in-flight
-   * termination is recorded as an alias of it (`refs`) rather than
-   * superseding it: concurrent Resets A and B that share one termination
-   * promise share one local outcome, so either one's exact receipted terminal
-   * disposition (`finalized` or `aborted`) is an honest release. A ref'd
-   * terminate that starts a fresh termination replaces the entry, which is
-   * what makes an older generation's aliases stale.
-   *
-   * `released` keeps the entry as a tombstone after the accepted release so
-   * a duplicate disposition for the same generation answers `idempotent`
-   * (honest: this client did release that generation) without opening a
-   * second recovery.
-   */
-  private readonly resetGenerations = new Map<string, { refs: Set<string>; released: boolean }>();
-  /**
-   * Coalesce one post-disposition recovery per chat so duplicate or
-   * concurrent release calls cannot open repeated same-socket recoverChat
-   * calls.
-   */
-  private readonly postResetFenceRecoveryScheduled = new Set<string>();
   /**
    * Unique owner of route-transition fencing, teardown debt, route producers,
    * handler retire/shutdown coalescing, and operator-suspend quarantine.
    */
   private readonly routeTeardown: RouteTeardownAuthority;
+  /**
+   * Unique owner of Reset-generation fencing, terminate-admission ledgers,
+   * and replay-fence reconciliation / post-fence recovery.
+   */
+  private readonly resetReplay: ResetReplayAuthority;
   /**
    * Per-chat single-flight registry for `runRetry` executions. An
    * overlapping trigger (timer fire + immediate delivery trigger) joins the
@@ -661,6 +596,7 @@ export class SessionManager {
 
   constructor(config: SessionManagerConfig) {
     this.config = config;
+    this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
     this.routeTeardown = new RouteTeardownAuthority({
       log: config.log,
       isShuttingDown: () => this.shuttingDown,
@@ -670,6 +606,28 @@ export class SessionManager {
       runtimeProvider: () => this.runtimeProvider(),
       emitResilienceEvent: (chatId, eventName, payload) => this.emitResilienceEvent(chatId, eventName, payload),
     });
+    this.resetReplay = new ResetReplayAuthority(
+      {
+        log: config.log,
+        isShuttingDown: () => this.shuttingDown,
+        isQuarantineRestartRequired: (chatId) => this.routeTeardown.isProviderAdmissionRestartRequired(chatId),
+        inbox: () => this.inboxDelivery,
+        recoverChat: () => this.config.recoverChat,
+        probeFencedSettlement: () => this.config.probeFencedSettlement,
+        onSessionRuntimeChange: () => this.config.onSessionRuntimeChange,
+        projectSessionRuntime: (chatId) => this.projectSessionRuntime(chatId),
+        rotateFreshStartNonce: (chatId) => {
+          this.registry?.rotateFreshStartNonce(chatId);
+        },
+        persistRegistryThrowing: () => {
+          this.persistRegistry({ throwOnFailure: true });
+        },
+        markResetNonceDurable: (chatId) => {
+          this.registry?.markResetNonceDurable(chatId);
+        },
+      },
+      { replayFencePath: config.replayFencePath },
+    );
     this.inboxDelivery = new InboxDeliveryCoordinator({
       ackEntry: config.ackEntry,
       recoverChat: config.recoverChat,
@@ -677,24 +635,9 @@ export class SessionManager {
         await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
       },
       onWorkChanged: (chatId) => this.projectSessionRuntime(chatId),
-      onDeliveriesCommitted: (chatId, messageIds) => this.reconcileReplayFences(chatId, messageIds),
+      onDeliveriesCommitted: (chatId, messageIds) => this.resetReplay.reconcileReplayFences(chatId, messageIds),
       log: config.log,
     });
-    this.registry = config.registryPath ? new SessionRegistry(config.registryPath) : null;
-    if (config.replayFencePath) {
-      this.replayFence = new ReplayFenceStore(config.replayFencePath);
-      try {
-        this.replayFence.load();
-      } catch (err) {
-        this.replayFenceUnavailable = err instanceof Error ? err.message : String(err);
-        this.config.log.error(
-          { err, path: config.replayFencePath },
-          "replay fence store failed to load; withholding all provider dispatch fail-closed",
-        );
-      }
-    } else {
-      this.replayFence = null;
-    }
     this.idleTimer = setInterval(() => this.evictIdle(), 10_000);
     // Independent of `evictIdle` (which early-continues on freshly-active
     // sessions): re-affirm working / error sessions so the
@@ -746,7 +689,7 @@ export class SessionManager {
     const admissionValid = () =>
       !this.shuttingDown &&
       (this.admissionGenerations.get(chatId) ?? 0) === admissionGeneration &&
-      !this.isProviderRouteAdmissionFenced(chatId);
+      !this.resetReplay.isProviderRouteAdmissionFenced(chatId);
     const suspending = this.sessions.get(chatId)?.suspending;
     if (suspending) await suspending;
     const isRecoveryRedelivery = this.inboxDelivery.takeRecoveryActivationReady(chatId);
@@ -756,7 +699,7 @@ export class SessionManager {
       // Never open same-socket recovery while Reset admission is fenced:
       // recoverChat would redeliver the same unacked rows into the fence and
       // trip the server's no-progress circuit.
-      !this.isProviderRouteAdmissionFenced(chatId) &&
+      !this.resetReplay.isProviderRouteAdmissionFenced(chatId) &&
       this.inboxDelivery.shouldRecoverBeforeDispatch(
         chatId,
         this.hasHealthyLiveHandler(chatId) || this.hasPendingTransientRetry(chatId),
@@ -833,8 +776,8 @@ export class SessionManager {
 
         if (!admissionValid()) {
           if (this.inboxDelivery.hasEntry(work)) {
-            if (this.isProviderRouteAdmissionFenced(chatId)) {
-              await this.parkDeliveryBehindResetAdmissionFence(chatId, message);
+            if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) {
+              await this.resetReplay.parkDeliveryBehindResetAdmissionFence(chatId, message);
             } else {
               this.retryDeliveryTurn(chatId, message, "delivery_admission_invalidated");
             }
@@ -971,7 +914,7 @@ export class SessionManager {
     if (command === "session:terminate" && this.routeTeardown.quarantinedSessions.has(chatId)) {
       throw this.routeTeardown.quarantineRestartRequiredError(chatId, "Reset");
     }
-    const inFlightTermination = this.terminatingChats.get(chatId);
+    const inFlightTermination = this.resetReplay.terminatingChats.get(chatId);
     if (inFlightTermination) {
       // A duplicate terminate joins the in-flight cleanup instead of
       // returning early: a ref'd caller (Reset apply-ack) must only resolve
@@ -1152,7 +1095,7 @@ export class SessionManager {
         this.flushTerminateRegistry(chatId);
         this.drainPendingQueue();
       })();
-      this.terminatingChats.set(chatId, termination);
+      this.resetReplay.terminatingChats.set(chatId, termination);
       try {
         await termination;
         // Local terminate succeeded (flush included). A ref'd Reset arms a
@@ -1166,39 +1109,16 @@ export class SessionManager {
         // a failure leaves room for a genuine later retry without clobbering a
         // newer in-flight termination. Parked Reset debt stays armed via
         // awaitingResetFenceRelease until releaseParkedResetFenceRecovery.
-        if (this.terminatingChats.get(chatId) === termination) {
-          this.terminatingChats.delete(chatId);
+        if (this.resetReplay.terminatingChats.get(chatId) === termination) {
+          this.resetReplay.terminatingChats.delete(chatId);
         }
       }
     }
   }
 
-  /**
-   * Durably flush the authoritative registry snapshot for a Reset
-   * terminate. The Reset apply-ack is only truthful once the mapping
-   * deletion AND the per-chat Reset fresh-start nonce are durable: a crash
-   * between ack and a debounced write would reload the stale mapping (or
-   * lose the tombstone) on restart and revive the old provider session.
-   * The flush is the CURRENT authoritative snapshot (all chats' mappings
-   * plus every Reset nonce), so other chats are preserved, and it cancels
-   * any older pending debounced snapshot so a stale write cannot resurrect
-   * the deletion or erase the tombstone later. A failed flush keeps the
-   * in-memory pending nonce for the genuine retry. A failure is recorded in
-   * terminatePersistFailures so a retry terminate re-runs the full body
-   * (and re-attempts the flush) instead of a false applied:true.
-   */
+  /** @see ResetReplayAuthority.flushTerminateRegistry */
   private flushTerminateRegistry(chatId: string): void {
-    try {
-      // Rotate once per in-flight Reset attempt before the durable write.
-      // flushOrThrow failure retains this nonce for the genuine retry.
-      this.registry?.rotateFreshStartNonce(chatId);
-      this.persistRegistry({ throwOnFailure: true });
-      this.registry?.markResetNonceDurable(chatId);
-      this.terminatePersistFailures.delete(chatId);
-    } catch (err) {
-      this.terminatePersistFailures.add(chatId);
-      throw err;
-    }
+    this.resetReplay.flushTerminateRegistry(chatId);
   }
 
   /** Chat IDs this client still holds locally and should report to runtime sync. */
@@ -1231,21 +1151,21 @@ export class SessionManager {
     // disposition) force-keeps the chat: the server must retain reconcile
     // authority until mapping deletion + Reset nonce are durably written and
     // parked debt is released.
-    for (const id of this.terminatingChats.keys()) {
+    for (const id of this.resetReplay.terminatingChats.keys()) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
-    for (const id of this.terminatePersistFailures) {
+    for (const id of this.resetReplay.terminatePersistFailures) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
-    for (const id of this.awaitingResetFenceRelease) {
+    for (const id of this.resetReplay.awaitingResetFenceRelease) {
       if (this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     // An armed Reset generation holds the chat too: between `applied` and the
     // exact accepted terminal disposition (`finalized` or `aborted`) the server
     // must keep reconcile authority even when nothing is parked behind the
     // fence yet.
-    for (const id of this.resetGenerations.keys()) {
-      if (this.hasArmedResetGeneration(id) && this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
+    for (const id of this.resetReplay.resetGenerations.keys()) {
+      if (this.resetReplay.hasArmedResetGeneration(id) && this.shouldIncludeInRuntimeSync(id, activeChatIds)) ids.add(id);
     }
     return [...ids];
   }
@@ -1305,14 +1225,7 @@ export class SessionManager {
         session.retryTimer = null;
       }
     }
-    for (const timer of this.replayFenceRetryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.replayFenceRetryTimers.clear();
-    for (const timer of this.postFenceRecoveryTimers.values()) {
-      clearTimeout(timer);
-    }
-    this.postFenceRecoveryTimers.clear();
+    this.resetReplay.clearTimersOnShutdown();
 
     const attemptedHandlers = new Set<AgentHandler>();
     const shutdowns = [...this.sessions.values()].map((session) => {
@@ -1446,9 +1359,7 @@ export class SessionManager {
     this.sessions.clear();
     this.evictedMappings.clear();
     this.runtimeProofRecoveryChats.clear();
-    this.awaitingResetFenceRelease.clear();
-    this.resetGenerations.clear();
-    this.postResetFenceRecoveryScheduled.clear();
+    this.resetReplay.clearResetLedgersOnShutdown();
     this.lastReportedStates.clear();
     this.sessionRuntimeStates.clear();
     this.lastReportedRuntimeState = null;
@@ -1552,7 +1463,7 @@ export class SessionManager {
     if ((this.routeTeardown.routeProducers.get(chatId)?.size ?? 0) > 0) return true;
     // In-flight Reset drain or failed durable Reset flush: keep reconcile
     // authority until the successful terminate retry clears the fence.
-    if (this.isProviderRouteAdmissionFenced(chatId)) return true;
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return true;
     if (this.pendingQueue.some((queued) => queued.chatId === chatId)) return true;
     if (this.hasPendingTransientRetry(chatId)) return true;
     return this.inboxDelivery.hasUnsettledWork(chatId);
@@ -1562,188 +1473,19 @@ export class SessionManager {
     this.admissionGenerations.set(chatId, (this.admissionGenerations.get(chatId) ?? 0) + 1);
   }
 
-  /**
-   * Combined provider-route admission fence for Reset: an in-flight
-   * `session:terminate` drain (`terminatingChats`), a prior Reset whose
-   * durable registry flush failed (`terminatePersistFailures`), or parked
-   * Reset-fence debt still awaiting an exact receipted terminal disposition
-   * (`awaitingResetFenceRelease`), or an armed Reset generation whose exact
-   * `finalized`/`aborted` has not been accepted yet (`resetGenerations`) — that
-   * last one fences the post-apply / pre-disposition window even when nothing
-   * was parked at apply time. Must NOT be used for the duplicate-terminate
-   * join lookup — a genuine retry terminate must still execute and clear the
-   * persistence failure. A quarantined generation normally still permits a
-   * fresh route, but a timeout that caught an unresolved start/resume
-   * transition stays fail closed until daemon restart.
-   */
-  private isProviderRouteAdmissionFenced(chatId: string): boolean {
-    return (
-      this.terminatingChats.has(chatId) ||
-      this.terminatePersistFailures.has(chatId) ||
-      this.awaitingResetFenceRelease.has(chatId) ||
-      this.hasArmedResetGeneration(chatId) ||
-      this.routeTeardown.isProviderAdmissionRestartRequired(chatId)
-    );
-  }
-
-  /**
-   * Retain coordinator custody for a delivery that hit the Reset admission
-   * fence without requesting same-socket recoverChat. Generic
-   * `retryDeliveryTurn` would immediately recover, redeliver into the same
-   * fence, and open the server's no-progress circuit after repeated identical
-   * resets. Parked debt is released once by {@link releaseParkedResetFenceRecovery}
-   * after an exact receipted post-apply terminal disposition.
-   */
-  private async parkDeliveryBehindResetAdmissionFence(
-    chatId: string,
-    messages: SessionMessage | readonly SessionMessage[],
-  ): Promise<void> {
-    const messageIds = (Array.isArray(messages) ? messages : [messages]).map((message) => message.id);
-    this.config.log.info(
-      { chatId, messageIds },
-      "parking delivery behind Reset admission fence without same-socket recovery",
-    );
-    this.awaitingResetFenceRelease.add(chatId);
-    await this.inboxDelivery.parkTurnForDeferredRecovery(chatId, messages, "reset_admission_fence");
-  }
-
-  /** Is a Reset generation armed (created and not yet released) for this chat? */
-  private hasArmedResetGeneration(chatId: string): boolean {
-    const generation = this.resetGenerations.get(chatId);
-    return generation !== undefined && !generation.released;
-  }
-
-  /**
-   * After a successful local terminate, arm the chat's Reset fence for the
-   * generation identified by `ref`.
-   *
-   * With a ref, the fence is armed UNCONDITIONALLY — even when nothing was
-   * parked at apply time. Between `applied:true` and the server's exact
-   * receipted terminal disposition (`finalized` or `aborted`) the old session
-   * is already destroyed but the server has not finished its terminal branch,
-   * so a row arriving in that window must park rather than start, resume, or
-   * inject; a zero-debt shortcut here reopened exactly that
-   * hole. Only the exact accepted release lifts it.
-   *
-   * `join` marks a ref that coalesced onto an in-flight termination: it
-   * becomes an alias of that one generation instead of superseding it,
-   * because both Resets share a single local outcome. Without `join` the ref
-   * starts a fresh generation, which retires the previous one's aliases.
-   *
-   * An unref'd terminate has no generation to arm and must never weaken one:
-   * it only keeps the legacy debt-scoped fence for chats with no armed
-   * generation. Authoritative unref'd release goes through
-   * {@link supersedeResetGeneration}.
-   */
+  /** @see ResetReplayAuthority.armParkedResetFenceRelease */
   armParkedResetFenceRelease(chatId: string, ref?: string, options?: { join?: boolean }): void {
-    if (ref !== undefined) {
-      const current = this.resetGenerations.get(chatId);
-      if (options?.join === true && current !== undefined && !current.released) {
-        current.refs.add(ref);
-      } else {
-        this.resetGenerations.set(chatId, { refs: new Set([ref]), released: false });
-      }
-      this.awaitingResetFenceRelease.add(chatId);
-      return;
-    }
-    if (this.hasArmedResetGeneration(chatId)) return;
-    if (this.terminatePersistFailures.has(chatId)) return;
-    if (!this.inboxDelivery.hasRecoveryDebt(chatId) && !this.inboxDelivery.hasUnsettledWork(chatId)) {
-      this.awaitingResetFenceRelease.delete(chatId);
-      return;
-    }
-    this.awaitingResetFenceRelease.add(chatId);
+    this.resetReplay.armParkedResetFenceRelease(chatId, ref, options);
   }
 
-  /**
-   * Release parked Reset-fence debt after an exact receipted post-apply
-   * terminal disposition — either durable eviction (`session:command:finalized`)
-   * or an abort/supersede (`session:command:aborted`) for the same generation.
-   * Must not run from terminate's `finally` or from local flush success alone.
-   *
-   * Returns this client's authoritative verdict for the caller's receipt:
-   *
-   *   - `accepted`   — `ref` is an alias of the current generation and this
-   *                    call performed the release;
-   *   - `idempotent` — that generation was already released here (duplicate
-   *                    or racing disposition), so the fence really is lifted
-   *                    but nothing was recovered twice;
-   *   - `stale`      — the ref belongs to no generation this client holds, a
-   *                    newer generation has superseded it, or another
-   *                    terminate boundary currently holds the chat closed.
-   *                    Nothing is released, so a delayed disposition cannot
-   *                    lift a newer Reset's fence and the operator's Reset
-   *                    fails closed instead of reporting a lifted fence.
-   *
-   * Without `ref` this is the legacy debt-scoped release for chats with no
-   * armed generation; it refuses (`stale`) while a generation is armed, so
-   * incidental cleanup such as a delayed stale reconcile can never release
-   * a Reset the server has not dispositioned. Authoritative unref'd callers use
-   * {@link supersedeResetGeneration}.
-   */
+  /** @see ResetReplayAuthority.releaseParkedResetFenceRecovery */
   releaseParkedResetFenceRecovery(chatId: string, ref?: string): ResetFenceReleaseVerdict {
-    const generation = this.resetGenerations.get(chatId);
-    if (ref === undefined) {
-      if (generation !== undefined && !generation.released) {
-        this.config.log.debug(
-          { chatId, armedRefs: [...generation.refs] },
-          "refusing unref'd Reset fence release while a Reset generation is armed",
-        );
-        return "stale";
-      }
-      return this.runParkedResetFenceRecovery(chatId) ? "accepted" : "stale";
-    }
-    if (generation === undefined || !generation.refs.has(ref)) {
-      this.config.log.debug(
-        { chatId, ref, armedRefs: generation ? [...generation.refs] : null },
-        "ignoring Reset finalization for a ref that is not the armed generation",
-      );
-      return "stale";
-    }
-    if (generation.released) return "idempotent";
-    if (!this.runParkedResetFenceRecovery(chatId)) return "stale";
-    generation.released = true;
-    return "accepted";
+    return this.resetReplay.releaseParkedResetFenceRecovery(chatId, ref);
   }
 
-  /**
-   * Retire whatever Reset generation this chat holds and release its parked
-   * debt. Reserved for callers with independent authority that the server
-   * already finalized — today the legacy unref'd `session:terminate`, which
-   * the server only sends after archiving. It is deliberately a separate
-   * entry point: incidental cleanup must not reach this behaviour by passing
-   * no ref.
-   */
+  /** @see ResetReplayAuthority.supersedeResetGeneration */
   supersedeResetGeneration(chatId: string, reason: string): ResetFenceReleaseVerdict {
-    const generation = this.resetGenerations.get(chatId);
-    if (generation !== undefined && !generation.released) {
-      this.config.log.info({ chatId, reason, armedRefs: [...generation.refs] }, "superseding armed Reset generation");
-    }
-    this.resetGenerations.delete(chatId);
-    return this.runParkedResetFenceRecovery(chatId) ? "accepted" : "stale";
-  }
-
-  /**
-   * Lift the chat's admission fence and, if any debt is parked behind it,
-   * open exactly one same-socket recovery. Coalesced per chat so concurrent
-   * callers cannot issue repeated recoverChat calls. Returns false when
-   * another terminate boundary (in-flight termination, failed durable flush)
-   * still holds the chat closed — the fence stays up and the caller must
-   * report the release as not done.
-   */
-  private runParkedResetFenceRecovery(chatId: string): boolean {
-    if (this.terminatingChats.has(chatId) || this.terminatePersistFailures.has(chatId)) return false;
-    if (this.postResetFenceRecoveryScheduled.has(chatId)) return true;
-    this.postResetFenceRecoveryScheduled.add(chatId);
-    this.awaitingResetFenceRelease.delete(chatId);
-    try {
-      if (this.inboxDelivery.hasRecoveryDebt(chatId) || this.inboxDelivery.hasUnsettledWork(chatId)) {
-        void this.inboxDelivery.recoverIfNeeded(chatId, "reset_admission_fence_cleared");
-      }
-      return true;
-    } finally {
-      this.postResetFenceRecoveryScheduled.delete(chatId);
-    }
+    return this.resetReplay.supersedeResetGeneration(chatId, reason);
   }
 
   private clearRetryAttemptState(entry: SessionEntry): void {
@@ -1763,279 +1505,16 @@ export class SessionManager {
     entry.deferredMessages = [];
   }
 
-  /**
-   * Crash-safe fence reconciliation driven by per-delivery server
-   * settlement truth. After a crash the local fence file can lag the
-   * server: an entry ACKed just before the crash leaves a stale chat-wide
-   * fence with no automatic cleanup. A read-only probe proves, inside the
-   * server's serialized recovery boundary, exactly which fenced message
-   * ids are settled; only those fences clear. Anything less (older server,
-   * missing probe, readback failure) keeps the fences fail-closed.
-   * Idempotent and replayable: runs on startup/rebind and on the per-chat
-   * retry loop.
-   */
+  /** @see ResetReplayAuthority.reconcileReplayFencesWithServer */
   async reconcileReplayFencesWithServer(): Promise<void> {
-    if (!this.replayFence || this.replayFenceUnavailable) return;
-    const chatIds = [...new Set(this.replayFence.snapshot().map((entry) => entry.chatId))];
-    for (const chatId of chatIds) {
-      await this.reconcileReplayFenceForChat(chatId);
-      this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
-    }
-  }
-
-  /**
-   * Fence keys the server has authoritatively proven settled. Once a key
-   * lands here its settlement fact cannot be revoked by later tail traffic;
-   * the retry loop only needs to redo the LOCAL clear, not the readback.
-   */
-  private readonly provenSettledFences = new Map<string, Set<string>>();
-  /** Per-chat retry timers for the reconciliation/clear loop. */
-  private readonly replayFenceRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  private async reconcileReplayFenceForChat(chatId: string): Promise<void> {
-    if (!this.replayFence || this.replayFenceUnavailable || !this.config.probeFencedSettlement) return;
-    const probe = this.config.probeFencedSettlement;
-    const fencedMessageIds = [
-      ...new Set(
-        this.replayFence
-          .snapshot()
-          .filter((entry) => entry.chatId === chatId)
-          .map((entry) => entry.messageId),
-      ),
-    ];
-    if (fencedMessageIds.length === 0) return;
-    // Probe in wire-sized chunks: oversized frames are rejected outright
-    // and would fail-closed forever. Settlement proof is merged ONLY when
-    // every chunk succeeds — a rejected/timed-out chunk discards the whole
-    // round and keeps every fence (fail-closed).
-    const settled = new Set<string>();
-    for (let offset = 0; offset < fencedMessageIds.length; offset += INBOX_FENCE_PROBE_MAX_IDS) {
-      const chunk = fencedMessageIds.slice(offset, offset + INBOX_FENCE_PROBE_MAX_IDS);
-      let settledIds: readonly string[];
-      try {
-        settledIds = await probe(chatId, chunk);
-      } catch (err) {
-        this.config.log.warn(
-          { err, chatId, chunkOffset: offset },
-          "replay fence settlement probe failed; discarding this round and keeping every fence (fail-closed)",
-        );
-        return;
-      }
-      // Only ids from THIS chunk may prove settlement; anything else is a
-      // protocol violation and must not clear anything.
-      const requested = new Set(chunk);
-      for (const id of settledIds) {
-        if (requested.has(id)) settled.add(id);
-        else {
-          this.config.log.warn({ chatId, id }, "fence probe returned an id outside the request chunk; ignoring it");
-        }
-      }
-    }
-    const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
-    for (const messageId of fencedMessageIds) {
-      if (settled.has(messageId)) proven.add(messageId);
-    }
-    if (proven.size > 0) {
-      this.provenSettledFences.set(chatId, proven);
-      await this.clearProvenSettledFences(chatId);
-    }
-  }
-
-  /**
-   * Clear every server-proven-settled fence for the chat, retrying local
-   * I/O failures through the loop. When the last fence goes, withheld
-   * deliveries re-enter routing and the chat's runtime projection recovers.
-   */
-  private async clearProvenSettledFences(chatId: string): Promise<void> {
-    if (!this.replayFence) return;
-    const proven = this.provenSettledFences.get(chatId);
-    if (!proven) return;
-    const clearedMessageIds: string[] = [];
-    for (const messageId of [...proven]) {
-      try {
-        this.replayFence.clear(chatId, messageId);
-        proven.delete(messageId);
-        clearedMessageIds.push(messageId);
-        this.config.log.info(
-          { chatId, messageId },
-          "cleared stale replay fence: delivery confirmed settled server-side",
-        );
-      } catch (err) {
-        this.config.log.error(
-          { err, chatId, messageId },
-          "stale replay fence could not be cleared; the retry loop will redo the local clear",
-        );
-        this.config.onSessionRuntimeChange?.(chatId, "error");
-      }
-    }
-    if (proven.size === 0) this.provenSettledFences.delete(chatId);
-    if (clearedMessageIds.length > 0) this.inboxDelivery.settleReplayFencedEntries(chatId, clearedMessageIds);
-    if (this.replayFence.hasFenceForChat(chatId)) return;
-    await this.onChatFencesCleared(chatId);
-  }
-
-  /**
-   * The single convergence point for "the last replay fence of a chat is
-   * gone" — reached from the probe loop, the committed-ACK callback, and
-   * local clear retries. Stops the retry loop and fires ONE destructive
-   * recovery so the server resets and redelivers only the still-unacked
-   * tail; the coordinator re-admits fence-withheld entries instead of
-   * deduplicating them. Already-settled heads are never re-driven.
-   */
-  private async onChatFencesCleared(chatId: string): Promise<void> {
-    this.stopReplayFenceReconcileLoop(chatId);
-    if (this.config.recoverChat && this.inboxDelivery.hasUnsettledWork(chatId)) {
-      this.beginPostFenceRecovery(chatId);
-      return;
-    }
-    this.projectSessionRuntime(chatId);
-  }
-
-  /** Chats whose post-fence-clear recovery has not yet succeeded. */
-  private readonly postFenceRecoveryDebt = new Set<string>();
-  private readonly postFenceRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly postFenceRecoveryInFlight = new Map<string, Promise<void>>();
-
-  /**
-   * Fire the ONE successful destructive recovery that redelivers the
-   * withheld tail after a fence clear, coalescing concurrent convergences
-   * and retrying failures on a timer (failures hold new admissions via the
-   * post-fence debt gate; retries are not duplicate successes).
-   */
-  private beginPostFenceRecovery(chatId: string): void {
-    if (this.shuttingDown || !this.config.recoverChat) return;
-    if (this.postFenceRecoveryInFlight.has(chatId) || this.postFenceRecoveryTimers.has(chatId)) return;
-    this.postFenceRecoveryDebt.add(chatId);
-    const recoverChat = this.config.recoverChat;
-    const inFlight = (async () => {
-      try {
-        await recoverChat(chatId);
-        this.postFenceRecoveryDebt.delete(chatId);
-        this.config.log.info({ chatId }, "post-fence-clear recovery accepted; redelivery may proceed");
-      } catch (err) {
-        this.config.log.warn({ err, chatId }, "post-fence-clear recovery failed; retrying on a timer");
-        this.armPostFenceRecoveryTimer(chatId);
-      } finally {
-        this.postFenceRecoveryInFlight.delete(chatId);
-        this.projectSessionRuntime(chatId);
-      }
-    })();
-    this.postFenceRecoveryInFlight.set(chatId, inFlight);
-    void inFlight.catch(() => {});
-  }
-
-  private armPostFenceRecoveryTimer(chatId: string): void {
-    if (this.shuttingDown) return;
-    const timer = setTimeout(() => {
-      this.postFenceRecoveryTimers.delete(chatId);
-      this.beginPostFenceRecovery(chatId);
-    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
-    this.postFenceRecoveryTimers.set(chatId, timer);
-  }
-
-  /**
-   * Start (or keep) the per-chat retry loop. The timer fires on its own —
-   * no dependence on another dispatch — and alternates between retrying
-   * local clears of server-proven fences and re-reading server truth.
-   */
-  private ensureReplayFenceReconcileLoop(chatId: string, opts: { immediate?: boolean } = {}): void {
-    if (this.shuttingDown) return;
-    if (this.replayFenceRetryTimers.has(chatId)) return;
-    if (opts.immediate !== false) {
-      void this.reconcileReplayFenceForChat(chatId).catch((err) => {
-        this.config.log.warn({ err, chatId }, "replay fence reconciliation attempt failed");
-      });
-    }
-    this.armReplayFenceRetryTimer(chatId);
-  }
-
-  private armReplayFenceRetryTimer(chatId: string): void {
-    const timer = setTimeout(() => {
-      this.replayFenceRetryTimers.delete(chatId);
-      void this.runReplayFenceReconcileLoop(chatId);
-    }, REPLAY_FENCE_RECONCILE_INTERVAL_MS);
-    this.replayFenceRetryTimers.set(chatId, timer);
-  }
-
-  private async runReplayFenceReconcileLoop(chatId: string): Promise<void> {
-    if (this.shuttingDown || !this.replayFence) return;
-    try {
-      if ((this.provenSettledFences.get(chatId)?.size ?? 0) > 0) {
-        await this.clearProvenSettledFences(chatId);
-      } else {
-        await this.reconcileReplayFenceForChat(chatId);
-      }
-    } catch (err) {
-      this.config.log.warn({ err, chatId }, "replay fence reconciliation loop iteration failed");
-    }
-    if (!this.shuttingDown && this.replayFence.hasFenceForChat(chatId)) {
-      this.armReplayFenceRetryTimer(chatId);
-    }
-  }
-
-  private stopReplayFenceReconcileLoop(chatId: string): void {
-    const timer = this.replayFenceRetryTimers.get(chatId);
-    if (timer) clearTimeout(timer);
-    this.replayFenceRetryTimers.delete(chatId);
-    this.provenSettledFences.delete(chatId);
-  }
-
-  private isChatReplayFenced(chatId: string): boolean {
-    if (this.replayFenceUnavailable) return true;
-    if (!this.replayFence) return false;
-    return this.replayFence.hasFenceForChat(chatId);
-  }
-
-  /**
-   * Clear replay fences for deliveries whose ACK committed — including the
-   * recovery/redelivery retry path, which never passes through the handler's
-   * own completion cleanup. A clear that fails to persist leaves the chat
-   * fenced; make that loudly operator-visible instead of a silent stall.
-   */
-  private reconcileReplayFences(chatId: string, messageIds: readonly string[]): void {
-    if (!this.replayFence) return;
-    const replayFence = this.replayFence;
-    // Converge only on a real fence transition: an ordinary never-fenced
-    // turn must never fire a post-fence recovery.
-    let transitioned = false;
-    const fencedMessageIds = messageIds.filter((messageId) => replayFence.isFenced(chatId, messageId));
-    if (fencedMessageIds.length > 0) {
-      // Invariant: authoritative settlement marker BEFORE any local fence
-      // clear. The ACK is already server-confirmed, so the marker must
-      // survive even if the clear below fails on I/O.
-      this.inboxDelivery.markFenceSettled(chatId, fencedMessageIds);
-    }
-    for (const messageId of messageIds) {
-      if (!this.replayFence.isFenced(chatId, messageId)) continue;
-      transitioned = true;
-      try {
-        this.replayFence.clear(chatId, messageId);
-      } catch (err) {
-        // The ACK is already confirmed server-side, so this key is proven
-        // settled; the retry loop redoes only the local clear.
-        const proven = this.provenSettledFences.get(chatId) ?? new Set<string>();
-        proven.add(messageId);
-        this.provenSettledFences.set(chatId, proven);
-        this.ensureReplayFenceReconcileLoop(chatId, { immediate: false });
-        this.config.log.error(
-          { err, chatId, messageId },
-          "replay fence could not be cleared after confirmed ACK; the retry loop will redo the local clear",
-        );
-        this.config.onSessionRuntimeChange?.(chatId, "error");
-      }
-    }
-    if (transitioned && !this.replayFence.hasFenceForChat(chatId)) {
-      void this.onChatFencesCleared(chatId).catch((err) => {
-        this.config.log.warn({ err, chatId }, "post-fence-clear convergence failed");
-      });
-    }
+    await this.resetReplay.reconcileReplayFencesWithServer();
   }
 
   private createHandler(): AgentHandler {
     const handlerCfg = {
       ...this.config.handlerConfig,
       ...(this.config.agentConfigCache ? { agentConfigCache: this.config.agentConfigCache } : {}),
-      ...(this.replayFence ? { replayFence: this.replayFence } : {}),
+      ...(this.resetReplay.replayFence ? { replayFence: this.resetReplay.replayFence } : {}),
     };
     return this.config.handlerFactory(handlerCfg);
   }
@@ -2543,14 +2022,14 @@ export class SessionManager {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
       return;
     }
-    if (this.isProviderRouteAdmissionFenced(chatId)) {
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) {
       // Race path: admission was valid earlier in dispatch but the fence
       // landed before route. Park without same-socket recovery — same policy
       // as the admissionValid fence branch above.
-      await this.parkDeliveryBehindResetAdmissionFence(chatId, message);
+      await this.resetReplay.parkDeliveryBehindResetAdmissionFence(chatId, message);
       return;
     }
-    if (this.isChatReplayFenced(chatId)) {
+    if (this.resetReplay.isChatReplayFenced(chatId)) {
       // A previous provider turn in this chat produced a non-read-only tool
       // effect before an interruption and never settled. Re-entering the
       // provider for the fenced head would replay that effect, and inbox ACK
@@ -2565,10 +2044,10 @@ export class SessionManager {
       );
       this.config.onSessionRuntimeChange?.(chatId, "error");
       this.inboxDelivery.markReplayFenceWithheld(chatId, [message.id]);
-      this.ensureReplayFenceReconcileLoop(chatId);
+      this.resetReplay.ensureReplayFenceReconcileLoop(chatId);
       return;
     }
-    if (this.postFenceRecoveryDebt.has(chatId)) {
+    if (this.resetReplay.postFenceRecoveryDebt.has(chatId)) {
       // A post-fence-clear recovery is in flight or being retried: hold
       // EVERY admission until one recovery is durably accepted. A
       // re-admitted duplicate only proves local withholding, never recovery
@@ -2705,7 +2184,7 @@ export class SessionManager {
     // The settle awaited: a terminate may have started meanwhile — or a prior
     // Reset flush may have failed — either owns the chat's delivery state now,
     // so hold instead of installing a route.
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     // The settle also made the route selection stale: another path may have
     // created the session meanwhile. Re-dispatch through routeMessage's
     // selection instead of creating a duplicate entry (or overwriting one).
@@ -2900,7 +2379,7 @@ export class SessionManager {
       if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_entry_replaced");
       return;
     }
-    if (this.isProviderRouteAdmissionFenced(entry.chatId)) {
+    if (this.resetReplay.isProviderRouteAdmissionFenced(entry.chatId)) {
       throw new Error("session resume fenced: Reset retirement pending for chat");
     }
     // Full route-selection re-validation, acting as the CAS against
@@ -3261,7 +2740,7 @@ export class SessionManager {
    */
   private rearmRetryTimer(chatId: string, entry: SessionEntry, delayMs = 5_000): void {
     if (this.shuttingDown) return;
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     if (this.sessions.get(chatId) !== entry) return;
     if (
       entry.status !== "suspended" ||
@@ -3307,7 +2786,7 @@ export class SessionManager {
 
   private async executeRetry(chatId: string): Promise<void> {
     if (this.shuttingDown) return;
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     const entry = this.sessions.get(chatId);
     if (!entry) return;
     if (
@@ -3410,7 +2889,7 @@ export class SessionManager {
     // and the retry choreography is left to whoever now owns the chat
     // (terminate clears the entry; shutdown clears the timers).
     if (this.shuttingDown) return;
-    if (this.isProviderRouteAdmissionFenced(chatId)) return;
+    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     if (
       this.sessions.get(chatId) !== entry ||
       entry.status !== "suspended" ||
@@ -3448,7 +2927,7 @@ export class SessionManager {
     // the winner's route owns the head's custody.
     if (
       this.shuttingDown ||
-      this.isProviderRouteAdmissionFenced(chatId) ||
+      this.resetReplay.isProviderRouteAdmissionFenced(chatId) ||
       this.sessions.get(chatId) !== entry ||
       entry.status !== "suspended" ||
       entry.activeSlotHeld ||

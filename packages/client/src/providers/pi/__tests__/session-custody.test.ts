@@ -2202,12 +2202,14 @@ describe("Pi handler → SessionManager custody", () => {
     expect(typeof pendingNonce).toBe("string");
     expect(pendingNonce.length).toBeGreaterThan(0);
     const sm1Internals = sm1 as unknown as {
-      terminatePersistFailures: Set<string>;
-      terminatingChats: Map<string, Promise<void>>;
+      resetReplay: {
+        terminatePersistFailures: Set<string>;
+        terminatingChats: Map<string, Promise<void>>;
+      };
       inboxDelivery: { hasRecoveryDebt(chatId: string): boolean };
     };
-    expect(sm1Internals.terminatePersistFailures.has(chatId)).toBe(true);
-    expect(sm1Internals.terminatingChats.has(chatId)).toBe(false);
+    expect(sm1Internals.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(sm1Internals.resetReplay.terminatingChats.has(chatId)).toBe(false);
     // Unresolved Reset flush must stay in held-chat force-keep reporting.
     expect(sm1.getHeldChatIds(new Set())).toContain(chatId);
 
@@ -2244,7 +2246,7 @@ describe("Pi handler → SessionManager custody", () => {
 
     await sm1.handleCommand(chatId, "session:suspend");
     await sm1.handleCommand(chatId, "session:terminate");
-    expect(sm1Internals.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(sm1Internals.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     const persisted = JSON.parse(readFileSync(registryPath, "utf8")) as {
       entries: Record<string, unknown>;
       freshStartNonces: Record<string, string>;

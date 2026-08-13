@@ -56,9 +56,11 @@ type SessionRecord = {
 type SessionManagerInternals = {
   sessions: Map<string, SessionRecord>;
   evictedMappings: Map<string, { claudeSessionId: string; lastActivity: number }>;
-  terminatingChats: Map<string, Promise<void>>;
-  terminatePersistFailures: Set<string>;
-  awaitingResetFenceRelease: Set<string>;
+  resetReplay: {
+    terminatingChats: Map<string, Promise<void>>;
+    terminatePersistFailures: Set<string>;
+    awaitingResetFenceRelease: Set<string>;
+  };
   routeTeardown: {
     pendingTeardowns: Map<string, Set<AgentHandler>>;
     quarantinedSessions: Map<
@@ -2567,7 +2569,7 @@ describe("SessionManager edge coverage", () => {
     expect(drainForTerminate).toHaveBeenCalledTimes(1);
     expect(activeHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2606,7 +2608,7 @@ describe("SessionManager edge coverage", () => {
     await terminate;
 
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2643,7 +2645,7 @@ describe("SessionManager edge coverage", () => {
     expect(drainForTerminate).toHaveBeenCalledTimes(1);
     // The fence is released, so a later terminate is a genuine retry instead
     // of a join of the dead run.
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Simulate the chat becoming known again (e.g. runtime sync re-adds the
     // evicted mapping): a fresh terminate re-executes the full cleanup.
@@ -2651,7 +2653,7 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:terminate");
     expect(drainForTerminate).toHaveBeenCalledTimes(2);
     expect(i.evictedMappings.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2699,7 +2701,7 @@ describe("SessionManager edge coverage", () => {
     expect(suspendingHandler.suspend).toHaveBeenCalledTimes(1);
     expect(suspendingHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2736,7 +2738,7 @@ describe("SessionManager edge coverage", () => {
     // apply must reject (agent-slot maps this to applied:false), not ack.
     await expect(terminate).rejects.toBe(boom);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
     expect(failingSuspendHandler.shutdown).not.toHaveBeenCalled();
 
     // Retry after the suspend settled: the recorded suspendError drives a
@@ -2748,7 +2750,7 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:terminate");
     expect(failingSuspendHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2816,14 +2818,14 @@ describe("SessionManager edge coverage", () => {
     await expect(retry).rejects.toBe(teardownBoom);
     await vi.waitFor(() => expect(retrySettled).toBe(true));
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Next retry tears down (now succeeding) and completes the apply.
     vi.mocked(targetHandler.shutdown).mockResolvedValue(undefined);
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -2907,14 +2909,14 @@ describe("SessionManager edge coverage", () => {
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry re-attempts the teardown (the one-shot gated implementation is
     // consumed, the default now resolves) and completes the apply.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3045,14 +3047,14 @@ describe("SessionManager edge coverage", () => {
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: strict teardown re-runs (now resolving) and the apply
     // completes.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3087,7 +3089,7 @@ describe("SessionManager edge coverage", () => {
     rejectSuspend?.(null);
     await expect(terminate).rejects.toThrow(/session suspend failed/);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3134,13 +3136,13 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     expect(replacementHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry: teardown succeeds and the apply completes (applied:true).
     await sm.handleCommand(chatId, "session:terminate");
     expect(replacementHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3169,7 +3171,7 @@ describe("SessionManager edge coverage", () => {
     await sm.handleCommand(chatId, "session:terminate");
     expect(stoppedHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3233,13 +3235,13 @@ describe("SessionManager edge coverage", () => {
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toBe(boom);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(victimHandler)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: strict teardown re-runs and succeeds, debt cleared.
     await sm.handleCommand(chatId, "session:terminate");
     expect(victimHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3683,13 +3685,13 @@ describe("SessionManager edge coverage", () => {
     // it runs the strict teardown and rejects on its failure.
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(startHandler)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry: strict teardown succeeds and the debt is cleared.
     await sm.handleCommand(chatId, "session:terminate");
     expect(startHandler.shutdown).toHaveBeenCalledTimes(3);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3749,7 +3751,7 @@ describe("SessionManager edge coverage", () => {
     await expect(terminate).rejects.toBe(boom);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(debtHandler)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(evictedHandler)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges: the late debt's teardown succeeds, set drained.
     await sm.handleCommand(chatId, "session:terminate");
@@ -3930,13 +3932,13 @@ describe("SessionManager edge coverage", () => {
     rejectStale?.(boom);
     await expect(terminate).rejects.toBe(boom);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(staleHandler)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(staleHandler.shutdown).toHaveBeenCalledTimes(3);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -3989,7 +3991,7 @@ describe("SessionManager edge coverage", () => {
     }
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -4068,13 +4070,13 @@ describe("SessionManager edge coverage", () => {
     rejectLateStop?.(stopBoom);
     await expect(terminate).rejects.toBe(stopBoom);
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(pendingHandler)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry converges.
     await sm.handleCommand(chatId, "session:terminate");
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(3);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await dispatch;
     await sm.shutdown();
@@ -4142,7 +4144,7 @@ describe("SessionManager edge coverage", () => {
     await terminate;
     expect(pendingHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await dispatch;
     await sm.shutdown();
@@ -4352,7 +4354,7 @@ describe("SessionManager edge coverage", () => {
     expect(freshHandler.start).not.toHaveBeenCalled();
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -4724,7 +4726,7 @@ describe("SessionManager edge coverage", () => {
     expect(freshHandler.resume).not.toHaveBeenCalled();
     expect(i.sessions.has(chatId)).toBe(false);
     expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -4953,7 +4955,7 @@ describe("SessionManager edge coverage", () => {
     await retry;
     expect(i.routeTeardown.pendingTeardowns.get(chatId)?.has(oldHandler)).toBe(true);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // No late re-arm: the terminate's in-flight window canceled the retry
     // timer, and the failed stop's failure path must not resurrect one —
@@ -5435,8 +5437,8 @@ describe("SessionManager edge coverage", () => {
       entries: Record<string, unknown>;
     };
     expect(Object.keys(persistedBeforeRetry.entries)).toContain(chatId);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // Retry: the flush succeeds, the disk deletion is durable, and a reload
     // does not resurrect the mapping.
@@ -5614,14 +5616,14 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(1);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // The recorded teardownError drives a strict re-attempt on retry even
     // though the slot was already released.
     await sm.handleCommand(chatId, "session:terminate");
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
     expect(i.sessions.has(chatId)).toBe(false);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5652,7 +5654,7 @@ describe("SessionManager edge coverage", () => {
     );
     expect(i.sessions.has(chatId)).toBe(true);
     expect(sm.getHeldChatIds()).toContain(chatId);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     // The server still has no projection for the chat, so the next reconcile
     // declares it stale again; teardown now succeeds and the entry is cleaned
@@ -5660,7 +5662,7 @@ describe("SessionManager edge coverage", () => {
     sm.applyStaleChatIds([chatId]);
     await vi.waitFor(() => expect(i.sessions.has(chatId)).toBe(false));
     expect(targetHandler.shutdown).toHaveBeenCalledTimes(2);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5698,7 +5700,7 @@ describe("SessionManager edge coverage", () => {
     // failure must fail the apply rather than inherit the swallow semantics.
     await expect(terminate).rejects.toBe(boom);
     expect(i.sessions.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
 
     await sm.shutdown();
   });
@@ -5769,7 +5771,7 @@ describe("SessionManager edge coverage", () => {
     // In-memory state is gone but the stale mapping is still on disk, and the
     // failed delete is remembered as pending work.
     expect(i.evictedMappings.has(chatId)).toBe(false);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
     let data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
     expect(Object.keys(data.entries)).toContain(chatId);
 
@@ -5777,7 +5779,7 @@ describe("SessionManager edge coverage", () => {
     // the full termination and re-attempts the flush, which now succeeds.
     await sm.handleCommand(chatId, "session:terminate");
     expect(flushSpy).toHaveBeenCalledTimes(2);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     data = JSON.parse(readFileSync(registryPath, "utf-8")) as { entries: Record<string, unknown> };
     expect(data.entries).toEqual({});
 
@@ -5826,8 +5828,8 @@ describe("SessionManager edge coverage", () => {
       throw boom;
     });
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
-    expect(i.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
     // Empty active set still force-keeps the unresolved Reset persistence boundary.
     expect(sm.getHeldChatIds(new Set())).toContain(chatId);
 
@@ -5842,7 +5844,7 @@ describe("SessionManager edge coverage", () => {
 
     // Genuine terminate retry clears the fence after a successful flush.
     await sm.handleCommand(chatId, "session:terminate");
-    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     expect(recoverChat).not.toHaveBeenCalled();
     sm.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
@@ -5912,7 +5914,7 @@ describe("SessionManager edge coverage", () => {
       throw boom;
     });
     await expect(sm.handleCommand(chatId, "session:terminate")).rejects.toBe(boom);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(true);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(true);
 
     // Intervening durable row while fence is set: park with no provider entry,
     // no ACK, and no recoverChat — even under repeated delivery attempts.
@@ -5929,7 +5931,7 @@ describe("SessionManager edge coverage", () => {
     // parked debt; recovery waits for server-confirmed finalization.
     await sm.handleCommand(chatId, "session:suspend");
     await sm.handleCommand(chatId, "session:terminate");
-    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     expect(recoverChat).not.toHaveBeenCalled();
     sm.releaseParkedResetFenceRecovery(chatId);
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
@@ -5993,17 +5995,17 @@ describe("SessionManager edge coverage", () => {
     expect(start).not.toHaveBeenCalled();
     expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
     expect(i.inboxDelivery.hasRecoveryDebt(chatId)).toBe(true);
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
 
     rejectShutdown?.(boom);
     await expect(terminate).rejects.toThrow("handler shutdown failed");
-    expect(i.terminatingChats.has(chatId)).toBe(false);
-    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     // Non-persistence failure must leave parked debt parked — no recover/provider/ACK.
     expect(recoverChat).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
     expect(ackEntry).not.toHaveBeenCalledWith(lateEntry.id);
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
 
     // Repeated delivery while still awaiting a successful Reset stays parked.
     await sm.dispatch(lateEntry);
@@ -6088,13 +6090,13 @@ describe("SessionManager edge coverage", () => {
     expect(ackEntry).not.toHaveBeenCalledWith(intervening.id);
     expect(recoverChat).not.toHaveBeenCalled();
     expect(noProgressCircuitOpen).toBe(false);
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
 
     // Successful Pause/Reset retry arms debt; simulated applied→finalized then
     // exactly one same-socket recovery (no reconnect / no circuit).
     await sm.handleCommand(chatId, "session:suspend");
     await sm.handleCommand(chatId, "session:terminate");
-    expect(i.terminatePersistFailures.has(chatId)).toBe(false);
+    expect(i.resetReplay.terminatePersistFailures.has(chatId)).toBe(false);
     expect(recoverChat).not.toHaveBeenCalled();
     order.push("applied");
     order.push("finalized");
@@ -6154,13 +6156,13 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" })).rejects.toBe(boom);
     await sm.dispatch(mockEntry({ id: 601, chatId, messageId: "msg-ref-scope" }));
     expect(ackEntry).not.toHaveBeenCalled();
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
     await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-a" });
 
     // A ref that is not the armed generation may not lift the fence.
     expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-not-armed")).toBe("stale");
     expect(recoverChat).not.toHaveBeenCalled();
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
 
     expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("accepted");
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
@@ -6173,7 +6175,7 @@ describe("SessionManager edge coverage", () => {
     await expect(sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" })).rejects.toBe(boom);
     await sm.dispatch(mockEntry({ id: 602, chatId, messageId: "msg-ref-scope-b" }));
     await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
     expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-a")).toBe("stale");
     expect(recoverChat).toHaveBeenCalledTimes(1);
 
@@ -6287,7 +6289,7 @@ describe("SessionManager edge coverage", () => {
     // Reset B is armed and holding a parked row.
     await sm.handleCommand(chatId, "session:terminate", { resetRef: "ref-b" });
     await sm.dispatch(mockEntry({ id: 620, chatId, messageId: "msg-behind-generation-b" }));
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
     expect(recoverChat).not.toHaveBeenCalled();
 
     // A reconcile result computed from older server state declares the chat
@@ -6295,10 +6297,10 @@ describe("SessionManager edge coverage", () => {
     // must NOT lift B's fence — that would redeliver into a Reset the server
     // has not finalized.
     sm.applyStaleChatIds([chatId]);
-    await vi.waitFor(() => expect(i.terminatingChats.has(chatId)).toBe(false));
+    await vi.waitFor(() => expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(recoverChat).not.toHaveBeenCalled();
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
     expect(start).not.toHaveBeenCalled();
     expect(ackEntry).not.toHaveBeenCalled();
 
@@ -6332,7 +6334,7 @@ describe("SessionManager edge coverage", () => {
     expect(i.inboxDelivery.hasUnsettledWork(chatId)).toBe(false);
     // The fence is armed anyway — the session is gone but the server has not
     // finalized, so the chat is not open for business yet.
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(true);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(true);
     expect(sm.getHeldChatIds(new Set())).toContain(chatId);
 
     const late = mockEntry({ id: 630, chatId, messageId: "msg-after-applied" });
@@ -6350,7 +6352,7 @@ describe("SessionManager edge coverage", () => {
 
     expect(sm.releaseParkedResetFenceRecovery(chatId, "ref-clean")).toBe("accepted");
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
-    expect(i.awaitingResetFenceRelease.has(chatId)).toBe(false);
+    expect(i.resetReplay.awaitingResetFenceRelease.has(chatId)).toBe(false);
 
     // The redelivered row now enters one fresh post-Reset session and settles.
     await sm.dispatch(late);
