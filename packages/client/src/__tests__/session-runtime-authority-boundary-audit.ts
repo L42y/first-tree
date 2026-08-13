@@ -1067,6 +1067,8 @@ class ClassProvenanceAnalysis {
   private readonly methodByName = new Map<string, ts.MethodDeclaration | ts.GetAccessorDeclaration>();
   private readonly summary = new Map<string, Provenance>();
   private readonly inFlight = new Set<string>();
+  private readonly boundSummary = new Map<string, Provenance>();
+  private readonly boundInFlight = new Set<string>();
   private readonly paramTaintStack: Array<Map<ts.Symbol, Provenance>> = [];
 
   constructor(
@@ -1160,6 +1162,89 @@ class ClassProvenanceAnalysis {
     this.inFlight.delete(methodName);
     this.summary.set(methodName, provenance);
     return provenance;
+  }
+
+  private summarizeBoundMember(
+    member: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    methodName: string,
+    args: readonly ts.Expression[] | undefined,
+    caller: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Provenance {
+    const bindings = this.bindCallParameters(member, args, caller);
+    if (bindings.size === 0) return this.summarizeMember(member, methodName);
+    const key = `${methodName}#${this.bindingsKey(bindings)}`;
+    const cached = this.boundSummary.get(key);
+    if (cached) return cached;
+    if (this.boundInFlight.has(key)) return mergeProvenance([...bindings.values()]);
+    this.boundInFlight.add(key);
+    this.paramTaintStack.push(bindings);
+    try {
+      const returns = this.returnExpressions(member);
+      const provenance =
+        returns.length === 0
+          ? FRESH_PROVENANCE
+          : mergeProvenance(returns.map((expr) => this.exprProvenance(expr, member)));
+      this.boundSummary.set(key, provenance);
+      return provenance;
+    } finally {
+      this.paramTaintStack.pop();
+      this.boundInFlight.delete(key);
+    }
+  }
+
+  private bindCallParameters(
+    callee: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+    args: readonly ts.Expression[] | undefined,
+    caller: ts.MethodDeclaration | ts.GetAccessorDeclaration,
+  ): Map<ts.Symbol, Provenance> {
+    const map = new Map<ts.Symbol, Provenance>();
+    const actual = args ?? [];
+    for (let index = 0; index < callee.parameters.length; index++) {
+      const param = callee.parameters[index];
+      if (!param) continue;
+      if (param.dotDotDotToken) {
+        const rest = actual.slice(index);
+        const provenance =
+          rest.length === 0 ? FRESH_PROVENANCE : mergeProvenance(rest.map((arg) => this.exprProvenance(arg, caller)));
+        this.bindParameterName(param.name, provenance, map);
+        break;
+      }
+      const arg = actual[index] ?? param.initializer;
+      if (!arg) continue;
+      this.bindParameterName(param.name, this.exprProvenance(arg, caller), map);
+    }
+    return map;
+  }
+
+  private bindParameterName(name: ts.BindingName, provenance: Provenance, map: Map<ts.Symbol, Provenance>): void {
+    if (ts.isIdentifier(name)) {
+      const symbol = this.checker.getSymbolAtLocation(name);
+      if (symbol) map.set(symbol, provenance);
+      return;
+    }
+    if (ts.isArrayBindingPattern(name)) {
+      for (const element of name.elements) {
+        if (ts.isBindingElement(element)) this.bindParameterName(element.name, provenance, map);
+      }
+      return;
+    }
+    if (ts.isObjectBindingPattern(name)) {
+      for (const element of name.elements) {
+        if (ts.isBindingElement(element)) this.bindParameterName(element.name, provenance, map);
+      }
+    }
+  }
+
+  private bindingsKey(bindings: Map<ts.Symbol, Provenance>): string {
+    const parts: string[] = [];
+    for (const [symbol, provenance] of bindings) {
+      const taints = provenance.taints
+        .map((taint) => taintKey(taint))
+        .sort()
+        .join(",");
+      parts.push(`${symbol.getName()}:${taints}:${provenance.freshContainer ? "1" : "0"}`);
+    }
+    return parts.join("|");
   }
 
   private returnExpressions(member: ts.MethodDeclaration | ts.GetAccessorDeclaration): ts.Expression[] {
@@ -1319,7 +1404,7 @@ class ClassProvenanceAnalysis {
       }
       if (this.isThisReceiver(callee.expression)) {
         const target = this.methodByName.get(method);
-        if (target) return this.summarizeMember(target, method);
+        if (target) return this.summarizeBoundMember(target, method, call.arguments, owner);
       }
     }
     const argTaints: OriginTaint[] = [];

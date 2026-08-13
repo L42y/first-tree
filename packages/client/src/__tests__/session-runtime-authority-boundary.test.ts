@@ -817,6 +817,168 @@ describe("SessionRuntime authority boundary", () => {
       expect(violations, kinds(violations).join("\n")).toEqual([]);
     });
 
+    it("catches a same-class generic identity helper that forwards a mutator", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            private qaIdentityCapability<T>(value: T): T {
+              return value;
+            }
+            qaLeakThroughSameClassIdentity(): () => PendingMessage | undefined {
+              return this.qaIdentityCapability(() => this.pendingQueue.pop());
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakThroughSameClassIdentity" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches two-hop, renamed, recursive, and wrapper-after-helper forwards", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          class QaCapabilityBox<T> {
+            constructor(readonly value: T) {}
+          }
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            private qaIdentityCapability<T>(value: T): T {
+              return value;
+            }
+            private qaForwardCapability<T>(value: T): T {
+              return this.qaIdentityCapability(value);
+            }
+            private qaForwardRenamed<T>(payload: T, usePayload = true): T {
+              return usePayload ? payload : payload;
+            }
+            private qaRecurseCapability<T>(value: T, depth: number): T {
+              if (depth <= 0) return value;
+              return this.qaRecurseCapability(value, depth - 1);
+            }
+            qaLeakTwoHop(): () => PendingMessage | undefined {
+              return this.qaForwardCapability(() => this.pendingQueue.pop());
+            }
+            qaLeakRenamed(): () => PendingMessage | undefined {
+              return this.qaForwardRenamed(() => this.pendingQueue.pop());
+            }
+            qaLeakRecursive(): () => PendingMessage | undefined {
+              return this.qaRecurseCapability(() => this.pendingQueue.pop(), 3);
+            }
+            qaLeakBoxedAfterIdentity(): QaCapabilityBox<() => PendingMessage | undefined> {
+              return new QaCapabilityBox(this.qaIdentityCapability(() => this.pendingQueue.pop()));
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakTwoHop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRenamed" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRecursive" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakBoxedAfterIdentity" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("passes identity/forwarder paths that carry read-only, detached, or fresh values", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            private qaIdentityCapability<T>(value: T): T {
+              return value;
+            }
+            private qaForwardCapability<T>(value: T): T {
+              return this.qaIdentityCapability(value);
+            }
+            observeThroughIdentity(): () => number {
+              return this.qaIdentityCapability(() => this.pendingQueue.length);
+            }
+            copyThroughForward(): () => Array<{ chatId: string }> {
+              return this.qaForwardCapability(() => [...this.pendingQueue]);
+            }
+            accumulateThroughIdentity(): () => string[] {
+              return this.qaIdentityCapability(() => {
+                const out: string[] = [];
+                for (const item of this.pendingQueue) out.push(item.chatId);
+                return out;
+              });
+            }
+            freshThroughIdentity(): number {
+              return this.qaIdentityCapability(this.pendingQueue.length);
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
+
     it("catches bind of a container mutator on pendingQueue", () => {
       const files = {
         "host.ts": `
@@ -924,6 +1086,43 @@ describe("SessionRuntime authority boundary", () => {
   qaCopyBoxed(): QaCapabilityBox<() => PendingMessage[]> {
     return new QaCapabilityBox(() => [...this.pendingQueue]);
   }
+  private qaIdentityCapability<T>(value: T): T {
+    return value;
+  }
+  private qaForwardCapability<T>(value: T): T {
+    return this.qaIdentityCapability(value);
+  }
+  private qaForwardRenamed<T>(payload: T, usePayload = true): T {
+    return usePayload ? payload : payload;
+  }
+  private qaRecurseCapability<T>(value: T, depth: number): T {
+    if (depth <= 0) return value;
+    return this.qaRecurseCapability(value, depth - 1);
+  }
+  qaLeakThroughSameClassIdentity(): () => PendingMessage | undefined {
+    return this.qaIdentityCapability(() => this.pendingQueue.pop());
+  }
+  qaLeakTwoHop(): () => PendingMessage | undefined {
+    return this.qaForwardCapability(() => this.pendingQueue.pop());
+  }
+  qaLeakRenamed(): () => PendingMessage | undefined {
+    return this.qaForwardRenamed(() => this.pendingQueue.pop());
+  }
+  qaLeakRecursive(): () => PendingMessage | undefined {
+    return this.qaRecurseCapability(() => this.pendingQueue.pop(), 3);
+  }
+  qaLeakBoxedAfterIdentity(): QaCapabilityBox<() => PendingMessage | undefined> {
+    return new QaCapabilityBox(this.qaIdentityCapability(() => this.pendingQueue.pop()));
+  }
+  qaObserveThroughIdentity(): () => number {
+    return this.qaIdentityCapability(() => this.pendingQueue.length);
+  }
+  qaCopyThroughForward(): () => PendingMessage[] {
+    return this.qaForwardCapability(() => [...this.pendingQueue]);
+  }
+  qaFreshThroughIdentity(): number {
+    return this.qaIdentityCapability(this.pendingQueue.length);
+  }
 }
 `,
         );
@@ -999,6 +1198,60 @@ describe("SessionRuntime authority boundary", () => {
       ).toBe(true);
       expect(
         violations.some((hit) => hit.member === "qaObserveBoxed" || hit.member === "qaCopyBoxed"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakThroughSameClassIdentity" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakTwoHop" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRenamed" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakRecursive" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakBoxedAfterIdentity" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.member === "qaObserveThroughIdentity" ||
+            hit.member === "qaCopyThroughForward" ||
+            hit.member === "qaFreshThroughIdentity",
+        ),
         kinds(violations).join("\n"),
       ).toBe(false);
     }, 30_000);
