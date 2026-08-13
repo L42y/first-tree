@@ -16,7 +16,6 @@ import {
 } from "../../components/ui/dialog.js";
 import { RowActionsMenu } from "../../components/ui/row-actions-menu.js";
 import { agentResourcesMutationHandlers } from "./capability-section.js";
-import { useJustSaved } from "./save-semantics.js";
 
 /**
  * One-line Template provenance inside Profile identity. The source names link
@@ -44,7 +43,6 @@ export function TemplateProvenance({
   version,
 }: TemplateProvenanceProps) {
   const queryClient = useQueryClient();
-  const { markSaved } = useJustSaved();
   const [removeTarget, setRemoveTarget] = useState<AgentTemplateAdoptionSummary | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const canEdit = canManage && agentStatus === "active";
@@ -58,7 +56,7 @@ export function TemplateProvenance({
     return templateIds.map((id) => byId.get(id) ?? missingSummary(id)).sort(compareResponsibilitySummaries);
   }, [adoptedTemplates, templateIds]);
 
-  const mutationHandlers = agentResourcesMutationHandlers(queryClient, agentUuid, { onSuccessAfter: markSaved });
+  const mutationHandlers = agentResourcesMutationHandlers(queryClient, agentUuid);
   const removeMutation = useMutation({
     mutationFn: (target: AgentTemplateAdoptionSummary) =>
       updateAgentTemplates(agentUuid, {
