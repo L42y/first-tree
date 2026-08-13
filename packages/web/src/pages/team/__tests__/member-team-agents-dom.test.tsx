@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -90,7 +90,7 @@ async function renderPage(): Promise<{ container: HTMLElement; root: Root }> {
         <MemoryRouter initialEntries={["/team"]}>
           <Routes>
             <Route path="/team" element={<TeamPage />} />
-            <Route path="/opentag" element={<div>Existing OpenTag flow</div>} />
+            <Route path={OPENTAG_ENTRY_PATH} element={<div>Existing OpenTag flow</div>} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -201,7 +201,7 @@ describe("Member Team Agents page", () => {
     );
 
     expect(messageLink?.className).toContain("bg-primary");
-    expect(createLink?.getAttribute("href")).toBe("/opentag");
+    expect(createLink?.getAttribute("href")).toBe(OPENTAG_ENTRY_PATH);
     expect(createLink?.className).toContain("text-label");
     expect(createLink?.style.color).toBe("var(--fg-3)");
     expect(

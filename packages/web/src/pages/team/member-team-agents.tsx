@@ -1,4 +1,4 @@
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { ExternalLink, MessageCircle } from "lucide-react";
 import type { ReactElement } from "react";
@@ -154,7 +154,7 @@ function CreateTeamAgentEntry(): ReactElement {
       className="h-auto self-start p-0 text-label"
       style={{ color: "var(--fg-3)" }}
     >
-      <Link to="/opentag">Create a Team Agent</Link>
+      <Link to={OPENTAG_ENTRY_PATH}>Create a Team Agent</Link>
     </Button>
   );
 }
