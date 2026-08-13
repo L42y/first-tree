@@ -80,6 +80,7 @@ describe("Feishu inbound pipeline", () => {
         stream: Readable.from([bytes]),
         headers: { "content-type": "image/png", "content-length": String(bytes.length) },
       }),
+      addReaction: vi.fn().mockResolvedValue("reaction-ack"),
       attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     };
   }
@@ -107,6 +108,10 @@ describe("Feishu inbound pipeline", () => {
     const second = await ingestFeishuMessage(app.db, app.notifier, binding, input, deps);
     expect(second).toEqual({ state: "duplicate" });
     expect(deps.downloadResource).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(deps.addReaction).toHaveBeenCalledOnce();
+      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "THUMBSUP" });
+    });
 
     const stored = await app.db.select().from(messages);
     expect(stored).toHaveLength(1);
@@ -160,6 +165,7 @@ describe("Feishu inbound pipeline", () => {
       reason: "group_without_mention",
     });
     expect(deps.downloadResource).not.toHaveBeenCalled();
+    expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
     expect(await app.db.select().from(messages)).toEqual([]);
 
@@ -189,6 +195,7 @@ describe("Feishu inbound pipeline", () => {
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, accepted, deps)).resolves.toMatchObject({
       state: "created",
     });
+    await vi.waitFor(() => expect(deps.addReaction).toHaveBeenCalledOnce());
     const [stored] = await app.db.select().from(messages);
     expect(stored?.content).toBe("work");
   });
@@ -202,7 +209,34 @@ describe("Feishu inbound pipeline", () => {
       state: "ignored",
       reason: "bot_echo",
     });
+    expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(messages)).toEqual([]);
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
+  });
+
+  it("keeps ingesting when the acknowledgement reaction fails", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    deps.addReaction.mockRejectedValueOnce(new Error("Feishu reaction unavailable"));
+
+    const result = await ingestFeishuMessage(app.db, app.notifier, binding, normalizedMessage(), deps);
+
+    expect(result.state).toBe("created");
+    await vi.waitFor(() => expect(deps.addReaction).toHaveBeenCalledOnce());
+    expect(await app.db.select().from(messages)).toHaveLength(1);
+  });
+
+  it("does not wait for the acknowledgement reaction before ingesting", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    deps.addReaction.mockImplementationOnce(() => new Promise<string>(() => undefined));
+
+    const result = await ingestFeishuMessage(app.db, app.notifier, binding, normalizedMessage(), deps);
+
+    expect(result.state).toBe("created");
+    expect(deps.addReaction).toHaveBeenCalledOnce();
+    expect(await app.db.select().from(messages)).toHaveLength(1);
   });
 });
