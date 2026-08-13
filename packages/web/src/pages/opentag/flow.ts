@@ -19,16 +19,11 @@ import { canManageAgentDetail } from "../agent-detail/access.js";
 
 /**
  * The guided path the member sees. `use-in-feishu` is the destination this
- * entry hands off to — real first use in Feishu is owned by the Feishu Task
- * lifecycle, not by this flow, so {@link resolveOpenTagStep} never selects it.
- * It stays in the sequence because hiding the last leg would misrepresent how
- * far the member still has to go.
+ * entry hands off to: the member reaches it by using their Agent in Feishu, not
+ * by pressing anything here, so this flow only ever *observes* that it happened.
  */
 export const OPENTAG_STEPS = ["choose-agent", "set-up-runtime", "connect-feishu", "use-in-feishu"] as const;
 export type OpenTagStepId = (typeof OPENTAG_STEPS)[number];
-
-/** Steps this entry can actually land on. */
-export type OpenTagActiveStepId = Exclude<OpenTagStepId, "use-in-feishu">;
 
 /** The authoritative Agent read behind the URL's `?agent=` parameter. */
 export type OpenTagAgentRead = {
@@ -114,12 +109,33 @@ export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts 
 }
 
 /**
- * Where an Agent in the URL puts the member, or `null` while the facts have not
- * settled. An existing Agent is past both setup choices, so the only step it
- * can land on is Feishu; anything unusable starts over from the Agent choice,
- * where nothing has been created yet.
+ * Whether this exact Agent has a real Feishu Task yet.
+ *
+ * `unknown` is deliberately not `absent`. A read that has not landed — or that
+ * failed — is evidence about the request, not about the member: treating it as
+ * "no Task" would be harmless here, but treating a failure as "Task" would
+ * finish onboarding for someone who has never used their Agent. Both wrong
+ * answers are kept out by making the absence of an answer its own state.
  */
-export function resolveOpenTagStep(facts: OpenTagAgentFacts): OpenTagActiveStepId | null {
+export type OpenTagFirstUse =
+  /** No answer yet: no Bot to have a Task, a read in flight, or a failed read. */
+  | { state: "unknown" }
+  /** Established: this Agent has no Feishu Task. */
+  | { state: "absent" }
+  /** Established: this Agent's Feishu Task exists, and this is its chat. */
+  | { state: "present"; chatId: string };
+
+/**
+ * Where an Agent in the URL puts the member, or `null` while the facts have not
+ * settled. An existing Agent is past both setup choices, so it lands on Feishu;
+ * anything unusable starts over from the Agent choice, where nothing has been
+ * created yet.
+ *
+ * Only a Task that is known to exist moves the member off the Bot step. A
+ * connected Bot is not first use — the tail of this journey happens in Feishu,
+ * and until it does the member still has something to finish here.
+ */
+export function resolveOpenTagStep(facts: OpenTagAgentFacts, firstUse: OpenTagFirstUse): OpenTagStepId | null {
   switch (facts.state) {
     case "none":
     case "unavailable":
@@ -129,6 +145,6 @@ export function resolveOpenTagStep(facts: OpenTagAgentFacts): OpenTagActiveStepI
     case "team-unreadable":
       return null;
     case "resolved":
-      return "connect-feishu";
+      return firstUse.state === "present" ? "use-in-feishu" : "connect-feishu";
   }
 }
