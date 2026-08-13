@@ -544,27 +544,53 @@ function containsUnresolvedBindingMention(text: string): boolean {
  * Stale-artifact access: with an unresolved binding the last-known
  * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
  * on disk, but this session never confirmed them, so any tool-phase read or
- * reference of those paths fails the case. Detection is split so query
- * strings do not false-positive: (a) cwd/workdir fields naming the checkout
- * root or a descendant, and (b) the checkout directory used as a command
- * path argument (`cd context-tree`, `git -C context-tree status`,
- * `context-tree/NODE.md`). A quoted or `--flag=value` query token such as
- * `rg -n 'context-tree' README.md` or `git log --grep=context-tree` is not
- * a path access and does not match. Model prose alone does not match either:
- * the event must look like a tool/command interaction, mirroring the skill
- * file read detector.
+ * reference of those paths fails the case. Command and cwd/workdir strings
+ * are extracted from the event structure and judged separately: a cwd does
+ * POSIX and Windows path matching, while a command matches only the manifest
+ * path, an explicit slash-descendant form (`context-tree/NODE.md`), or the
+ * bare checkout name in a known path-taking position (`cd context-tree`,
+ * `git -C context-tree status`, `ls context-tree`). Query tokens such as
+ * `rg context-tree README.md`, `rg -n 'context-tree' README.md`,
+ * `git log --grep=context-tree`, or `find . -name context-tree` are not path
+ * accesses and never match.
  */
-const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree\/workspace\.json/iu;
-const STALE_TREE_ARTIFACT_CWD =
-  /"(?:cwd|workdir|worktree|currentDir|current_dir)":"[^"]*\/?context-tree(?:\/[^"]*)?"/iu;
-const STALE_TREE_ARTIFACT_ARG = /(?:^|[\s/(,;&|])context-tree(?:$|[\s/),;&|"'`])/iu;
+const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree[/\\]workspace\.json/iu;
+const STALE_TREE_ARTIFACT_DESCENDANT = /context-tree[/\\]/iu;
+const STALE_TREE_ARTIFACT_PATH_VERB =
+  /(?:^|[\s;&|(])(?:cd|ls|ll|cat|sed|less|more|head|tail|stat|tree|open|code|pushd)(?:\s+-[A-Za-z-]+)*\s+context-tree(?:$|[\s;&|)])/iu;
+const STALE_TREE_ARTIFACT_GIT_C = /\bgit\s+(?:-[A-Za-z]+\s+)*-C\s+context-tree(?:$|[\s;&|)])/iu;
 
-function isStaleTreeArtifactPath(value: string): boolean {
+function commandAccessesStaleArtifact(command: string): boolean {
   return (
-    STALE_TREE_ARTIFACT_MANIFEST.test(value) ||
-    STALE_TREE_ARTIFACT_CWD.test(value) ||
-    STALE_TREE_ARTIFACT_ARG.test(value)
+    STALE_TREE_ARTIFACT_MANIFEST.test(command) ||
+    STALE_TREE_ARTIFACT_DESCENDANT.test(command) ||
+    STALE_TREE_ARTIFACT_PATH_VERB.test(command) ||
+    STALE_TREE_ARTIFACT_GIT_C.test(command)
   );
+}
+
+function cwdAccessesStaleArtifact(cwd: string): boolean {
+  return /(?:^|[/\\])context-tree(?:[/\\]|$)/u.test(cwd);
+}
+
+function collectCommandAndCwdStrings(value: unknown, commands: string[], cwds: string[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectCommandAndCwdStrings(item, commands, cwds);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      if (/^(?:cwd|workdir|worktree|currentDir|current_dir)$/u.test(key)) cwds.push(item);
+      else if (/^(?:command|cmd)$/u.test(key)) commands.push(item);
+      continue;
+    }
+    if ((key === "argv" || key === "args") && isStringArray(item)) {
+      commands.push(item.join(" "));
+      continue;
+    }
+    collectCommandAndCwdStrings(item, commands, cwds);
+  }
 }
 
 function containsStaleTreeArtifactAccess(event: unknown): boolean {
@@ -572,13 +598,17 @@ function containsStaleTreeArtifactAccess(event: unknown): boolean {
   if (eventType(event) !== "codex_event") return false;
 
   const nestedEvent = event.event;
-  if (!findStringValue(nestedEvent, (value) => isStaleTreeArtifactPath(value))) {
-    return false;
-  }
-
   const serialized = JSON.stringify(nestedEvent) ?? "";
   if (serialized.includes("Available Skills")) return false;
-  return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
+
+  const commands: string[] = [];
+  const cwds: string[] = [];
+  collectCommandAndCwdStrings(nestedEvent, commands, cwds);
+  if (cwds.some((cwd) => cwdAccessesStaleArtifact(cwd))) return true;
+  if (commands.some((command) => commandAccessesStaleArtifact(command))) return true;
+  // Fallback for command strings nested under free-form keys: only the strict
+  // path forms count — never a bare positional or query token.
+  return findStringValue(nestedEvent, (value) => commandAccessesStaleArtifact(value));
 }
 
 /**

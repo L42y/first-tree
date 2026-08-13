@@ -1887,4 +1887,29 @@ describe("first-tree-read stale-checkout residue access", () => {
       expect(casePassed(false, result, "managed", true)).toBe(true);
     }
   });
+
+  it("does not flag bare positional or name-query tokens as path access", () => {
+    for (const command of ["rg context-tree README.md", "find . -name context-tree"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `query token flagged: ${command}`).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
+
+  it("detects a Windows-style cwd pointing at the stale checkout", () => {
+    const result = staleCheckoutMetrics([
+      {
+        event: { command: "type NODE.md", type: "tool_call", workdir: "C:\\tmp\\context-tree" },
+        type: "codex_event",
+      },
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
 });

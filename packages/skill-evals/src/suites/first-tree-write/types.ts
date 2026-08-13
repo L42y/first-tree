@@ -96,6 +96,8 @@ export type EvalMetrics = {
   postModelVerifySucceeded: boolean | null;
   runnerExitCode: number | null;
   skillFileReadObserved: boolean;
+  /** Model-phase `chat ask` invocations. */
+  chatAskCount: number;
   /** The final response asked for a source artifact/input despite a missing binding. */
   sourceAskObserved: boolean;
   sourceRepoChanged: boolean;

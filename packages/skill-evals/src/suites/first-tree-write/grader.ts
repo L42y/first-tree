@@ -211,37 +211,70 @@ function containsUnresolvedBindingMention(text: string): boolean {
  * Stale-artifact access: with an unresolved binding the last-known
  * `.first-tree/workspace.json` manifest and `context-tree/` checkout remain
  * on disk, but this session never confirmed them, so any tool-phase read or
- * reference of those paths fails the case. Detection is split so query
- * strings do not false-positive: (a) cwd/workdir fields naming the checkout
- * root or a descendant, and (b) the checkout directory used as a command
- * path argument (`cd context-tree`, `git -C context-tree status`,
- * `context-tree/NODE.md`). A quoted or `--flag=value` query token such as
- * `rg -n 'context-tree' README.md` or `git log --grep=context-tree` is not
- * a path access and does not match. Model prose alone does not match either:
- * the event must look like a tool/command interaction, mirroring the skill
- * file read detector.
+ * reference of those paths fails the case. Command and cwd/workdir strings
+ * are extracted from the event structure and judged separately: a cwd does
+ * POSIX and Windows path matching, while a command matches only the manifest
+ * path, an explicit slash-descendant form (`context-tree/NODE.md`), or the
+ * bare checkout name in a known path-taking position (`cd context-tree`,
+ * `git -C context-tree status`, `ls context-tree`). Query tokens such as
+ * `rg context-tree README.md`, `rg -n 'context-tree' README.md`,
+ * `git log --grep=context-tree`, or `find . -name context-tree` are not path
+ * accesses and never match.
  */
-const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree\/workspace\.json/iu;
-const STALE_TREE_ARTIFACT_CWD =
-  /"(?:cwd|workdir|worktree|currentDir|current_dir)":"[^"]*\/?context-tree(?:\/[^"]*)?"/iu;
-const STALE_TREE_ARTIFACT_ARG = /(?:^|[\s/(,;&|])context-tree(?:$|[\s/),;&|"'`])/iu;
+const STALE_TREE_ARTIFACT_MANIFEST = /\.first-tree[/\\]workspace\.json/iu;
+const STALE_TREE_ARTIFACT_DESCENDANT = /context-tree[/\\]/iu;
+const STALE_TREE_ARTIFACT_PATH_VERB =
+  /(?:^|[\s;&|(])(?:cd|ls|ll|cat|sed|less|more|head|tail|stat|tree|open|code|pushd)(?:\s+-[A-Za-z-]+)*\s+context-tree(?:$|[\s;&|)])/iu;
+const STALE_TREE_ARTIFACT_GIT_C = /\bgit\s+(?:-[A-Za-z]+\s+)*-C\s+context-tree(?:$|[\s;&|)])/iu;
 
-function isStaleTreeArtifactPath(value: string): boolean {
+function commandAccessesStaleArtifact(command: string): boolean {
   return (
-    STALE_TREE_ARTIFACT_MANIFEST.test(value) ||
-    STALE_TREE_ARTIFACT_CWD.test(value) ||
-    STALE_TREE_ARTIFACT_ARG.test(value)
+    STALE_TREE_ARTIFACT_MANIFEST.test(command) ||
+    STALE_TREE_ARTIFACT_DESCENDANT.test(command) ||
+    STALE_TREE_ARTIFACT_PATH_VERB.test(command) ||
+    STALE_TREE_ARTIFACT_GIT_C.test(command)
   );
 }
 
+function cwdAccessesStaleArtifact(cwd: string): boolean {
+  return /(?:^|[/\\])context-tree(?:[/\\]|$)/u.test(cwd);
+}
+
+function collectCommandAndCwdStrings(value: unknown, commands: string[], cwds: string[]): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectCommandAndCwdStrings(item, commands, cwds);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === "string") {
+      if (/^(?:cwd|workdir|worktree|currentDir|current_dir)$/u.test(key)) cwds.push(item);
+      else if (/^(?:command|cmd)$/u.test(key)) commands.push(item);
+      continue;
+    }
+    if ((key === "argv" || key === "args") && isStringArray(item)) {
+      commands.push(item.join(" "));
+      continue;
+    }
+    collectCommandAndCwdStrings(item, commands, cwds);
+  }
+}
+
 /**
- * Source-artifact ask: with no usable binding there is no write task to
- * source, so an explicit-gap reply must never ask for a source artifact or
- * other input. The binding gate precedes the Source Gate.
+ * Source/input ask: with no usable binding there is no write task to source,
+ * so an explicit-gap reply must never ask for a source artifact or any other
+ * input. The binding gate precedes the Source Gate. Covers literal "source"
+ * asks and synonymous input requests (paste/attach/share/send + decision,
+ * design note/doc, PR, issue, commit, attachment, artifact).
  */
 function containsSourceAsk(text: string): boolean {
-  return /\b(?:provide|share|paste|supply|send|give)\b[^.!?\n]{0,40}\bsource\b|\bsource\s+artifact\b[^.!?\n]{0,40}\b(?:required|needed|missing)\b|\bneed\s+a\s+source\b|\bno\s+source\s+artifact\b[^.!?\n]{0,40}\b(?:ask|provide|share)\b/iu.test(
-    text,
+  return (
+    /\b(?:provide|share|paste|supply|send|give)\b[^.!?\n]{0,40}\bsource\b|\bsource\s+artifact\b[^.!?\n]{0,40}\b(?:required|needed|missing)\b|\bneed\s+a\s+source\b|\bno\s+source\s+artifact\b[^.!?\n]{0,40}\b(?:ask|provide|share)\b/iu.test(
+      text,
+    ) ||
+    /\b(?:paste|attach|share|send|provide|supply|give)\b[^.!?\n]{0,30}\b(?:decision|design|note|doc|pr|issue|commit|attachment|artifact)\b/iu.test(
+      text,
+    )
   );
 }
 
@@ -250,13 +283,17 @@ function containsStaleTreeArtifactAccess(event: unknown): boolean {
   if (eventType(event) !== "codex_event") return false;
 
   const nestedEvent = event.event;
-  if (!findStringValue(nestedEvent, (value) => isStaleTreeArtifactPath(value))) {
-    return false;
-  }
-
   const serialized = JSON.stringify(nestedEvent) ?? "";
   if (serialized.includes("Available Skills")) return false;
-  return /tool|exec|command|cmd|read|cat|sed/iu.test(serialized);
+
+  const commands: string[] = [];
+  const cwds: string[] = [];
+  collectCommandAndCwdStrings(nestedEvent, commands, cwds);
+  if (cwds.some((cwd) => cwdAccessesStaleArtifact(cwd))) return true;
+  if (commands.some((command) => commandAccessesStaleArtifact(command))) return true;
+  // Fallback for command strings nested under free-form keys: only the strict
+  // path forms count — never a bare positional or query token.
+  return findStringValue(nestedEvent, (value) => commandAccessesStaleArtifact(value));
 }
 
 /**
@@ -395,6 +432,7 @@ export function deriveMetrics(
   const firstTreeCommandResults: Array<{ argv: string[]; exitCode: number }> = [];
   const modelOutputTexts: string[] = [];
   const chatBodies: string[] = [];
+  let chatAskCount = 0;
 
   for (const event of events) {
     if (containsSkillFileRead(event)) {
@@ -415,9 +453,21 @@ export function deriveMetrics(
       if (type === "first_tree_call") {
         firstTreeArgv.push([...argv]);
         // Shim-recorded chat bodies are teammate-visible output; scan them
-        // for a source ask even when the final console text stays clean.
+        // for a source ask even when the final console text stays clean. The
+        // shim fills `body` only for `-F`/--file; the inline positional form
+        // (`chat ask user "…"`) carries it in argv, and `chat update` carries
+        // it after `--description` (either spelling) — mirror those here.
         if (argv[0] === "chat" && ["ask", "send", "update"].includes(argv[1] ?? "")) {
-          if (typeof event.body === "string") chatBodies.push(event.body);
+          if (argv[1] === "ask") chatAskCount += 1;
+          const recordedBody = typeof event.body === "string" ? event.body : "";
+          const argvBody =
+            argv[1] === "update"
+              ? (argv.find((arg) => arg.startsWith("--description="))?.slice("--description=".length) ??
+                  (argv.includes("--description") ? (argv[argv.indexOf("--description") + 1] ?? "") : "")) ||
+                argv.slice(2).join(" ")
+              : (argv[3] ?? "");
+          const body = recordedBody || argvBody;
+          if (body.length > 0) chatBodies.push(body);
         }
       }
 
@@ -471,6 +521,7 @@ export function deriveMetrics(
     postModelVerifySucceeded,
     runnerExitCode,
     skillFileReadObserved,
+    chatAskCount,
     // A source ask anywhere in the model phase fails the explicit gap: an
     // earlier assistant message or a delivered chat body counts even when
     // the final console text is gap-only.
@@ -504,7 +555,9 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
   if (evalCase.expected.action === "report_unbound_tree_write_gap") {
     // The explicit unbound write is graded on the anchored gap statement, not
     // the loose response-hint OR-logic: the reply must express both the
-    // blocked write and the no-binding reason, and nothing beyond it.
+    // blocked write and the no-binding reason, and nothing beyond it. With no
+    // source artifact the binding gate terminates first, so ANY chat ask
+    // fails outright.
     return (
       metrics.unboundGapStatementObserved &&
       metrics.treeCliInvocationCount === 0 &&
@@ -514,7 +567,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.unboundSetupSteeringObserved &&
       !metrics.unboundTreeArtifactsCreated &&
       !metrics.staleTreeArtifactAccessObserved &&
-      !metrics.sourceAskObserved
+      !metrics.sourceAskObserved &&
+      (evalCase.fixture.sourceArtifact !== "absent" || metrics.chatAskCount === 0)
     );
   }
 
@@ -533,7 +587,8 @@ export function casePassed(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetric
       !metrics.unboundAbsenceMentionObserved &&
       !metrics.staleTreeArtifactAccessObserved &&
       !metrics.staleTreeArtifactModifiedObserved &&
-      !metrics.sourceAskObserved
+      !metrics.sourceAskObserved &&
+      (evalCase.fixture.sourceArtifact !== "absent" || metrics.chatAskCount === 0)
     );
   }
 
@@ -630,6 +685,15 @@ export function driftNote(evalCase: FirstTreeWriteEvalCase, metrics: EvalMetrics
   if ((unboundExplicit || unresolvedExplicit) && metrics.sourceAskObserved) {
     notes.push(
       "Explicit Tree write without a usable binding asked for a source artifact; the binding gate precedes the Source Gate, so only the binding gap may be reported.",
+    );
+  }
+  if (
+    (unboundExplicit || unresolvedExplicit) &&
+    evalCase.fixture.sourceArtifact === "absent" &&
+    metrics.chatAskCount > 0
+  ) {
+    notes.push(
+      "Explicit Tree write with no source artifact sent a chat ask; the binding gap must be a statement, not a question.",
     );
   }
   if (unresolvedAction && metrics.staleTreeArtifactAccessObserved) {
