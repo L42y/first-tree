@@ -1644,6 +1644,7 @@ class ClassProvenanceAnalysis {
   ): Provenance {
     const ctor = unwrap(expr.expression);
     const name = ts.isIdentifier(ctor) ? ctor.text : "";
+    // Named constructors only: Promise/Error executors stay internal; Set/Map/Array detach identity.
     if (name === "Promise" || name === "Error") return FRESH_PROVENANCE;
     if (name === "Set" || name === "Map" || name === "Array" || name === "WeakSet") {
       const arg = expr.arguments?.[0];
@@ -1652,7 +1653,6 @@ class ClassProvenanceAnalysis {
     }
     const argTaints: OriginTaint[] = [];
     for (const arg of expr.arguments ?? []) {
-      if (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg)) continue;
       argTaints.push(...this.exprProvenance(arg, owner).taints);
     }
     if (argTaints.length > 0) return { taints: uniqueTaints(argTaints), freshContainer: false };

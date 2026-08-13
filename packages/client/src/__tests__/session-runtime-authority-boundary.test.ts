@@ -706,6 +706,117 @@ describe("SessionRuntime authority boundary", () => {
       ).toBe(true);
     });
 
+    it("catches an unknown constructor wrapping an inline pendingQueue mutator", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          class QaCapabilityBox<T> {
+            constructor(readonly value: T) {}
+          }
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            qaLeakBoxedMutator(): QaCapabilityBox<() => PendingMessage | undefined> {
+              return new QaCapabilityBox(() => this.pendingQueue.pop());
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakBoxedMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("catches an unknown constructor wrapping a private-helper mutator", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          type PendingMessage = { chatId: string };
+          class QaCapabilityBox<T> {
+            constructor(readonly value: T) {}
+          }
+          export class SlotSchedulerAuthority {
+            private pendingQueue: PendingMessage[] = [];
+            private pendingQueueMutator(): () => PendingMessage | undefined {
+              return () => this.pendingQueue.pop();
+            }
+            qaLeakBoxedHelperMutator(): QaCapabilityBox<() => PendingMessage | undefined> {
+              return new QaCapabilityBox(this.pendingQueueMutator());
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.className === "SlotSchedulerAuthority" &&
+            hit.member === "qaLeakBoxedHelperMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+    });
+
+    it("passes boxed read-only, detached copy, and fresh-accumulator closures", () => {
+      const files = {
+        "host.ts": `
+          type SessionEntry = { chatId: string };
+          class QaCapabilityBox<T> {
+            constructor(readonly value: T) {}
+          }
+          export class SlotSchedulerAuthority {
+            private pendingQueue: Array<{ chatId: string }> = [];
+            observeBoxed(): QaCapabilityBox<() => number> {
+              return new QaCapabilityBox(() => this.pendingQueue.length);
+            }
+            copyBoxed(): QaCapabilityBox<() => Array<{ chatId: string }>> {
+              return new QaCapabilityBox(() => [...this.pendingQueue]);
+            }
+            accumulateBoxed(): QaCapabilityBox<() => string[]> {
+              return new QaCapabilityBox(() => {
+                const out: string[] = [];
+                for (const item of this.pendingQueue) out.push(item.chatId);
+                return out;
+              });
+            }
+          }
+          export class SessionRuntime {
+            constructor(private scheduler: SlotSchedulerAuthority) {}
+            note(entry: SessionEntry): string {
+              return entry.chatId;
+            }
+          }
+        `,
+      };
+      const { diagnostics, violations } = auditFixture(files);
+      expect(diagnostics, diagnostics.join("\n")).toEqual([]);
+      expect(violations, kinds(violations).join("\n")).toEqual([]);
+    });
+
     it("catches bind of a container mutator on pendingQueue", () => {
       const files = {
         "host.ts": `
@@ -776,7 +887,7 @@ describe("SessionRuntime authority boundary", () => {
       const patched = original
         .replace(
           "export class SlotSchedulerAuthority {",
-          `class QaLedgerBox<T> {\n  constructor(readonly value: T) {}\n}\n\nexport class SlotSchedulerAuthority {`,
+          `class QaLedgerBox<T> {\n  constructor(readonly value: T) {}\n}\nclass QaCapabilityBox<T> {\n  constructor(readonly value: T) {}\n}\n\nexport class SlotSchedulerAuthority {`,
         )
         .replace(
           /\n}\n$/,
@@ -797,6 +908,21 @@ describe("SessionRuntime authority boundary", () => {
   }
   qaBindPendingQueuePop(): () => PendingMessage | undefined {
     return this.pendingQueue.pop.bind(this.pendingQueue);
+  }
+  private qaPendingQueueMutatorHelper(): () => PendingMessage | undefined {
+    return () => this.pendingQueue.pop();
+  }
+  qaLeakBoxedMutator(): QaCapabilityBox<() => PendingMessage | undefined> {
+    return new QaCapabilityBox(() => this.pendingQueue.pop());
+  }
+  qaLeakBoxedHelperMutator(): QaCapabilityBox<() => PendingMessage | undefined> {
+    return new QaCapabilityBox(this.qaPendingQueueMutatorHelper());
+  }
+  qaObserveBoxed(): QaCapabilityBox<() => number> {
+    return new QaCapabilityBox(() => this.pendingQueue.length);
+  }
+  qaCopyBoxed(): QaCapabilityBox<() => PendingMessage[]> {
+    return new QaCapabilityBox(() => [...this.pendingQueue]);
   }
 }
 `,
@@ -853,6 +979,28 @@ describe("SessionRuntime authority boundary", () => {
         ),
         kinds(violations).join("\n"),
       ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakBoxedMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some(
+          (hit) =>
+            hit.kind === "ledger-write-capability-escape" &&
+            hit.member === "qaLeakBoxedHelperMutator" &&
+            /pendingQueue/.test(hit.detail),
+        ),
+        kinds(violations).join("\n"),
+      ).toBe(true);
+      expect(
+        violations.some((hit) => hit.member === "qaObserveBoxed" || hit.member === "qaCopyBoxed"),
+        kinds(violations).join("\n"),
+      ).toBe(false);
     }, 30_000);
   });
 
