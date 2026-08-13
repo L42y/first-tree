@@ -178,8 +178,17 @@ export function OpenTagPage(): ReactElement | null {
   // decision without re-reading `/me`, and whose create-agent step only skips
   // itself when that same flag is true — so they could be walked into creating
   // a second Agent. Keyed by the URL Agent, so it survives a remount.
+  //
+  // Only an Agent this member manages personally can move that fact:
+  // `hasPersonalAgent` counts Agents whose `managerId` is this member. An admin
+  // continuing a teammate's Agent is a legitimate resolved shape — they may
+  // manage it and the Feishu write allows it — but the flag stays false however
+  // often `/me` is re-read, and nothing needs healing there because `/` is
+  // right that this member still has no Agent of their own. Waiting on it would
+  // hang that member on the checking state with no way forward.
   const [readinessError, setReadinessError] = useState<string | null>(null);
-  const readinessSettled = facts.state !== "resolved" || currentOrgHasPersonalAgent;
+  const ownsUrlAgent = !!agent && !!memberId && agent.managerId === memberId;
+  const readinessSettled = facts.state !== "resolved" || !ownsUrlAgent || currentOrgHasPersonalAgent;
   const healReadiness = useCallback(async (): Promise<void> => {
     setReadinessError(null);
     try {

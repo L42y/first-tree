@@ -702,6 +702,21 @@ describe("OpenTag entry — the Feishu handoff", () => {
     authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
   });
 
+  it("lets an admin with no Agent of their own continue a teammate's Agent", async () => {
+    // `hasPersonalAgent` counts only Agents this member manages, so for an
+    // admin on a teammate's Agent it stays false however often `/me` is read.
+    // Gating the handoff on it here would park them on the checking state
+    // forever — a dead end, not a wait.
+    authMock.value = { ...authMock.value, role: "admin", currentOrgHasPersonalAgent: false };
+    api.getAgent.mockResolvedValue({ ...agentRow(), managerId: "member-2" });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+    expect(container.textContent).not.toContain("Finishing up");
+    expect(refreshMeStrict).not.toHaveBeenCalled();
+  });
+
   it("goes straight to Feishu for an existing Agent on reload", async () => {
     api.getAgent.mockResolvedValue(agentRow());
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
