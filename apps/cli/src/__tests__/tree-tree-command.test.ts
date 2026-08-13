@@ -528,22 +528,23 @@ describe("tree tree command action", () => {
     }
   });
 
-  it("accepts a default-port self-managed HTTPS checkout against an scp-like declaration", () => {
+  it("fails closed when a self-managed default-port HTTPS checkout matches an SSH/scp declaration", () => {
     const { checkout } = makeDeclaredBindingFixture();
+    // Without the Team connection origin, default HTTPS port is not proof that
+    // an SSH/scp binding maps to this web instance.
     git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com/group/tree.git");
-
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    process.chdir(checkout);
-
-    runTreeTreeCommand(
-      context(
-        commandWithOptions({ expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" }, ["docs"]),
-      ),
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
+      "origin mismatch",
     );
 
-    expect(process.exitCode).toBeUndefined();
-    expect(readMockOutput(stderr)).toContain("docs/");
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
   });
 
   it("fails closed when an http checkout matches a declared https binding", () => {
@@ -553,6 +554,17 @@ describe("tree tree command action", () => {
     expectBindingMismatch(
       checkout,
       { expectRemote: "https://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("fails closed when both remotes are identical plain HTTP", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "http://gitlab.example.com/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "http://gitlab.example.com/group/tree.git", expectBranch: "main" },
       "origin mismatch",
     );
   });
@@ -568,6 +580,49 @@ describe("tree tree command action", () => {
       { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
       "origin mismatch",
     );
+
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com:9443/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("accepts equivalent self-managed SSH/scp spellings", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+
+    for (const declared of ["git@gitlab.example.com:group/tree.git", "ssh://git@gitlab.example.com/group/tree.git"]) {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      process.chdir(checkout);
+
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: declared, expectBranch: "main" }, ["docs"])));
+
+      expect(process.exitCode, `declared remote rejected: ${declared}`).toBeUndefined();
+      expect(readMockOutput(stderr)).toContain("docs/");
+      expect(readMockOutput(stdout)).toBe("");
+    }
+  });
+
+  it("accepts identical self-managed HTTPS origins including a non-default port", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:8443/group/tree.git");
+
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+    runTreeTreeCommand(
+      context(
+        commandWithOptions({ expectRemote: "https://gitlab.example.com:8443/group/tree.git", expectBranch: "main" }, [
+          "docs",
+        ]),
+      ),
+    );
+    expect(process.exitCode).toBeUndefined();
+    expect(readMockOutput(stderr)).toContain("docs/");
+    expect(readMockOutput(stdout)).toBe("");
   });
 
   it("fails closed on a different host, a different path, or a different HTTPS port", () => {

@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { canonicalGitRepoIdentity } from "@first-tree/shared";
+import { canonicalGitRepoIdentity, contextTreeRepoSchema, sameContextTreeRepository } from "@first-tree/shared";
 import type { Command } from "commander";
 import {
   type ContextTreeReadSnapshotIdentity,
@@ -446,74 +446,57 @@ type ValidatedBindingIdentity = {
 };
 
 /**
- * Compare a checkout's origin against the declared remote at binding
- * strength, via the shared canonical identity (host + full namespace path,
- * including nested GitLab groups). Transport rules:
- * - two explicit HTTPS origins compare the full origin (a self-managed
- *   non-default port is part of the identity);
- * - `http:` never crosses transports — the binding schema forbids plain HTTP,
- *   so only an identical http origin matches;
- * - HTTPS ↔ SSH/scp matches only when the HTTPS side's web identity is
- *   unambiguous: a well-known provider host (github.com / gitlab.com) or the
- *   default web port. An HTTPS side with a non-default port cannot be proven
- *   from an SSH spelling and fails closed; an SSH transport port never
- *   counts as a web port.
- * Unparsable input fails closed (identical raw strings on both sides — e.g.
- * local filesystem paths — remain the same repository).
+ * Compare a checkout's origin against the declared remote using the shared
+ * binding schema, canonical identity, and provider-aware matcher.
+ *
+ * Either side that fails `contextTreeRepoSchema` is fail-closed, except the
+ * existing local-fixture control: both canonical identities are null, neither
+ * raw value contains `://`, and the trimmed strings are exactly equal.
+ * Public GitHub/GitLab.com keep their well-known web origin, so nested
+ * GitLab.com HTTPS ↔ SSH/scp stays equivalent. Self-managed hosts omit
+ * connection origin, so HTTPS↔HTTPS compares the complete origin (port
+ * included), SSH↔SSH uses canonical identity, and mixed HTTPS↔SSH fails
+ * closed rather than guessing a Team connection origin.
  */
 function sameDeclaredRemote(actual: string, expected: string): boolean {
-  const left = canonicalGitRepoIdentity(actual);
-  const right = canonicalGitRepoIdentity(expected);
-  if (!left || !right) {
-    // Unparsable on both sides (e.g. identical local filesystem paths): only
-    // an exact raw match is the same repository; anything else fails closed.
-    return left === null && right === null && actual.trim() === expected.trim();
-  }
-  if (left.canonical !== right.canonical) return false;
-
-  const leftTransport = classifyRemoteTransport(actual);
-  const rightTransport = classifyRemoteTransport(expected);
-  if (leftTransport.kind === "other" || rightTransport.kind === "other") return false;
-  if (leftTransport.kind === "http" || rightTransport.kind === "http") {
+  const actualRaw = actual.trim();
+  const expectedRaw = expected.trim();
+  const actualParsed = contextTreeRepoSchema.safeParse(actualRaw);
+  const expectedParsed = contextTreeRepoSchema.safeParse(expectedRaw);
+  if (!actualParsed.success || !expectedParsed.success) {
     return (
-      leftTransport.kind === "http" && rightTransport.kind === "http" && leftTransport.origin === rightTransport.origin
+      canonicalGitRepoIdentity(actualRaw) === null &&
+      canonicalGitRepoIdentity(expectedRaw) === null &&
+      !actualRaw.includes("://") &&
+      !expectedRaw.includes("://") &&
+      actualRaw === expectedRaw
     );
   }
-  if (leftTransport.kind === "https" && rightTransport.kind === "https") {
-    return leftTransport.origin === rightTransport.origin;
+
+  const left = canonicalGitRepoIdentity(actualParsed.data);
+  const right = canonicalGitRepoIdentity(expectedParsed.data);
+  if (!left || !right || left.canonical !== right.canonical) return false;
+
+  if (left.host === "github.com") {
+    return sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "github",
+    });
   }
-  if (leftTransport.kind === "ssh" && rightTransport.kind === "ssh") return true;
-
-  const httpsSide = leftTransport.kind === "https" ? leftTransport : rightTransport;
-  if (httpsSide.kind !== "https") return false;
-  return !httpsSide.hasNonDefaultPort || httpsSide.host === "github.com" || httpsSide.host === "gitlab.com";
-}
-
-type RemoteTransport =
-  | { kind: "https"; origin: string; host: string; hasNonDefaultPort: boolean }
-  | { kind: "http"; origin: string }
-  | { kind: "ssh" }
-  | { kind: "other" };
-
-function classifyRemoteTransport(value: string): RemoteTransport {
-  const trimmed = value.trim();
-  if (!trimmed.includes("://")) return { kind: "ssh" };
-  try {
-    const url = new URL(trimmed);
-    if (url.protocol === "https:") {
-      return {
-        kind: "https",
-        origin: url.origin.toLowerCase(),
-        host: url.hostname.toLowerCase(),
-        hasNonDefaultPort: url.port !== "",
-      };
-    }
-    if (url.protocol === "http:") return { kind: "http", origin: url.origin.toLowerCase() };
-    if (url.protocol === "ssh:") return { kind: "ssh" };
-    return { kind: "other" };
-  } catch {
-    return { kind: "other" };
+  if (left.host === "gitlab.com") {
+    return sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "gitlab",
+      gitlabInstanceOrigin: "https://gitlab.com",
+    });
   }
+  return sameContextTreeRepository({
+    left: actualParsed.data,
+    right: expectedParsed.data,
+    provider: "gitlab",
+  });
 }
 
 /**
