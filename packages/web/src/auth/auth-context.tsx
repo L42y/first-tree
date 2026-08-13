@@ -139,8 +139,14 @@ type AuthContextValue = {
   /**
    * POST `/me/onboarding-completed`. Optimistically stamps
    * `onboardingCompletedAt` so first-run routing can settle immediately.
-   * Idempotent server-side. Called at Step 3 terminal-success points (admin
-   * Continue, invitee Confirm / Continue).
+   * Idempotent server-side.
+   *
+   * Its one caller is the `/opentag` entry, once that Agent has a real Feishu
+   * Task. That terminal fact is observed rather than pressed, so the stamp is
+   * not tied to a button and has to be issued separately. The standalone
+   * journey does not use this: its start-chat writes the same stamp inside the
+   * kickoff transaction and mirrors it with `applyOnboardingKickoffStamp`,
+   * because a second POST could fail after the chat already succeeded.
    */
   markOnboardingCompleted: () => Promise<void>;
   /**

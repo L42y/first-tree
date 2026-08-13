@@ -4,7 +4,7 @@ import { useAuth } from "../../auth/auth-context.js";
 import { FirstTreeLogo } from "../../components/first-tree-logo.js";
 import { Button } from "../../components/ui/button.js";
 import { OPENTAG_COPY, OPENTAG_RAIL_COPY, OPENTAG_STEP_COPY } from "./copy.js";
-import { OPENTAG_STEPS, type OpenTagActiveStepId, type OpenTagStepId } from "./flow.js";
+import { OPENTAG_STEPS, type OpenTagStepId } from "./flow.js";
 
 export type OpenTagHandoff = {
   agentDisplayName: string;
@@ -37,7 +37,7 @@ export function OpenTagShell({
   handoff,
   children,
 }: {
-  activeStep: OpenTagActiveStepId;
+  activeStep: OpenTagStepId;
   completedSteps: readonly OpenTagStepId[];
   handoff: OpenTagHandoff | null;
   children: ReactNode;
@@ -105,7 +105,7 @@ function StepRail({
   activeStep,
   completedSteps,
 }: {
-  activeStep: OpenTagActiveStepId;
+  activeStep: OpenTagStepId;
   completedSteps: readonly OpenTagStepId[];
 }): ReactElement {
   return (

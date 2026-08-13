@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import type { ComputerConnection } from "../../../features/agent-setup/use-computer-connection.js";
+import { FIRST_USE_POLL_MS } from "../first-use.js";
 import { OpenTagPage } from "../opentag-page.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -20,6 +21,7 @@ const MEMBER = "member-1";
 
 const refreshMe = vi.hoisted(() => vi.fn(async () => undefined));
 const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
+const markOnboardingCompleted = vi.hoisted(() => vi.fn(async () => undefined));
 
 const authMock = vi.hoisted(() => ({
   value: {
@@ -32,6 +34,7 @@ const authMock = vi.hoisted(() => ({
     logout: () => undefined,
     refreshMe,
     refreshMeStrict,
+    markOnboardingCompleted,
   },
 }));
 vi.mock("../../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
@@ -45,6 +48,12 @@ const api = vi.hoisted(() => ({
   startAgentFeishuRegistration: vi.fn(),
 }));
 vi.mock("../../../api/agents.js", () => api);
+
+const meChats = vi.hoisted(() => ({ listMeChats: vi.fn() }));
+vi.mock("../../../api/me-chats.js", () => meChats);
+
+const chats = vi.hoisted(() => ({ getChat: vi.fn() }));
+vi.mock("../../../api/chats.js", () => chats);
 
 const templates = vi.hoisted(() => ({ listAgentTemplates: vi.fn() }));
 vi.mock("../../../api/agent-templates.js", () => templates);
@@ -109,6 +118,24 @@ function feishuBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBind
     cli: { state: "unknown", version: null, clientId: null },
     ...overrides,
   };
+}
+
+/** A Bot that is provisioned and actually carrying messages. */
+function connectedBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
+  return feishuBinding({ status: "active", connectionStatus: "connected", appId: "cli_1", ...overrides });
+}
+
+// Unlike the fixtures above, these two carry only the fields the first-use read
+// consumes rather than the full `MeChatRow` / `ChatDetail` DTOs: both modules
+// are mocked, and the real rows carry dozens of fields none of this exercises.
+const NO_CHATS = { priorityRows: { pinned: [] }, rows: [], nextCursor: null };
+
+function chatPage(chatIds: string[]) {
+  return { priorityRows: { pinned: [] }, rows: chatIds.map((chatId) => ({ chatId })), nextCursor: null };
+}
+
+function feishuTaskChat(botBindingId: string) {
+  return { metadata: { source: "feishu", botBindingId, externalChatId: "oc_1", externalChatType: "p2p" } };
 }
 
 function readyComputer(): ComputerConnection {
@@ -211,9 +238,14 @@ beforeEach(() => {
     logout: () => undefined,
     refreshMe,
     refreshMeStrict,
+    markOnboardingCompleted,
   };
   refreshMe.mockClear();
   refreshMeStrict.mockReset().mockResolvedValue(undefined);
+  markOnboardingCompleted.mockReset().mockResolvedValue(undefined);
+  // No Feishu Task by default: the member has connected a Bot at most.
+  meChats.listMeChats.mockReset().mockResolvedValue(NO_CHATS);
+  chats.getChat.mockReset();
   computerMock.value = computerConnection();
   api.getAgent.mockReset();
   api.createAgent.mockReset();
@@ -808,5 +840,222 @@ describe("OpenTag entry — the Feishu handoff", () => {
 
     expect(container.textContent).toContain("Feishu is unavailable right now");
     expect(button(container, "Connect Bot").disabled).toBe(false);
+  });
+});
+
+describe("OpenTag entry — real first use in Feishu", () => {
+  beforeEach(() => {
+    authMock.value = { ...authMock.value, currentOrgHasPersonalAgent: true };
+    api.getAgent.mockResolvedValue(agentRow());
+  });
+
+  it("does not ask about first use before a Bot exists", async () => {
+    // A Bot the member has not confirmed yet cannot have carried a message, so
+    // there is nothing to poll for.
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: null });
+    await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    expect(meChats.listMeChats).not.toHaveBeenCalled();
+
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: feishuBinding({ registrationUrl: "https://f.test/c" }) });
+    await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    expect(meChats.listMeChats).not.toHaveBeenCalled();
+  });
+
+  it("leaves onboarding unfinished while a connected Bot has no task yet", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    // A connected Bot is not first use. The member is still on the step they
+    // have something to do about.
+    expect(container.textContent).toContain("The Bot is connected.");
+    expect(container.textContent).not.toContain("has its first task from Feishu");
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+  });
+
+  it("completes onboarding and hands off once this Agent's task exists", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    // The handoff destination is the task itself, in the workspace.
+    expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
+    // The Bot step is over — offering to connect one here would be a second
+    // registration for an Agent that is already working.
+    expect(container.textContent).not.toContain("Connect Bot");
+  });
+
+  it("withholds the destination until the completion stamp lands", async () => {
+    // An unstamped membership can still be sent back into setup, so the
+    // terminal step must not advertise a door that bounces. Asserting that on
+    // whichever frame the stamp happens not to have settled yet is a race;
+    // holding the stamp open here makes the state the test's to choose.
+    let landStamp: (() => void) | null = null;
+    markOnboardingCompleted.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          landStamp = () => resolve(undefined);
+        }),
+    );
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    // The task is already stated as fact — it is real — but the way in is not
+    // offered while the workspace has not been told setup is finished.
+    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
+    expect(container.textContent).toContain("Finishing up…");
+
+    if (!landStamp) throw new Error("the completion stamp was never issued");
+    await act(async () => {
+      (landStamp as () => void)();
+    });
+    await flush();
+
+    expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
+    expect(container.textContent).not.toContain("Finishing up…");
+  });
+
+  it("cannot be completed by a Feishu task belonging to another Agent", async () => {
+    // The chat matches on origin and on this Agent being a speaker — an
+    // internal collaborator in a teammate's task looks exactly like this. Only
+    // the Bot binding tells them apart, and it is someone else's.
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-neighbour"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-2"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("has its first task from Feishu");
+    expect(container.textContent).toContain("The Bot is connected.");
+  });
+
+  it("never stamps this member for a teammate's Agent, however visible its task is", async () => {
+    // An admin may continue a teammate's Agent here. If that admin also manages
+    // some other Agent the primary invited into its Feishu task, the ordinary
+    // watcher projection hands them a membership in that very task — so the
+    // list returns it and the Bot binding matches exactly. Everything about the
+    // Agent checks out; what does not is whose onboarding this is. The stamp is
+    // per-membership, and this membership does not own the setup.
+    authMock.value = { ...authMock.value, role: "admin", currentOrgHasPersonalAgent: false };
+    api.getAgent.mockResolvedValue({ ...agentRow(), managerId: "member-2" });
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    // The question is not even asked — the read that feeds the write is gated
+    // on the same fact.
+    expect(meChats.listMeChats).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("has its first task from Feishu");
+    // The Bot step itself stays available: continuing a teammate's Agent is
+    // legitimate, it just is not this member's onboarding to finish.
+    expect(container.textContent).toContain("Feishu Bot for Ada assistant");
+  });
+
+  it("does not complete onboarding when the task read fails", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockRejectedValue(new ApiError(500, "boom"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    // "We could not check" is not "not used yet", and it is certainly not
+    // "used" — the member stays where they were.
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("The Bot is connected.");
+    expect(container.textContent).not.toContain("has its first task from Feishu");
+  });
+
+  it("recovers from a failed task read on the next poll", async () => {
+    // The half of the failure contract that the assertions above cannot show:
+    // a read error must be a pause, not a dead end. If the poll stopped at the
+    // first error, one transient 500 would strand the member on this step for
+    // the rest of the session with no way to retry — there is no button here,
+    // because the fact this waits on arrives from Feishu.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+      meChats.listMeChats.mockRejectedValueOnce(new ApiError(500, "boom"));
+      meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+      chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+      const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+      expect(meChats.listMeChats).toHaveBeenCalledTimes(1);
+      expect(markOnboardingCompleted).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(FIRST_USE_POLL_MS + 1_000);
+      });
+      await flush();
+
+      expect(meChats.listMeChats.mock.calls.length).toBeGreaterThan(1);
+      expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+      expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("converges on a reload after first use without creating anything a second time", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+
+    await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+
+    // Same URL, nothing carried over: the terminal state is re-derived from the
+    // same authoritative reads rather than from anything this page remembered.
+    const reloaded = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
+
+    expect(reloaded.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(reloaded.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
+    // Nothing about the Agent is re-created, and the URL still names the one
+    // Agent this flow made.
+    expect(api.createAgent).not.toHaveBeenCalled();
+    expect(api.startAgentFeishuRegistration).not.toHaveBeenCalled();
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("holds the handoff open and retryable when the completion stamp fails", async () => {
+    api.getAgentFeishuBinding.mockResolvedValue({ binding: connectedBinding() });
+    meChats.listMeChats.mockResolvedValue(chatPage(["chat-1"]));
+    chats.getChat.mockResolvedValue(feishuTaskChat("binding-1"));
+    markOnboardingCompleted.mockRejectedValue(new ApiError(500, "boom"));
+
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    // The stamp only starts once the task read has landed, so it settles a
+    // round later than the step it is rendered in.
+    await flush();
+
+    // The task is real, so it is stated as fact — but the destination waits,
+    // because an unstamped membership can be sent straight back into setup.
+    expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("couldn't finish setting up");
+    // A failure holds until the member acts, rather than being re-fired by the
+    // first-use poll behind it.
+    expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+
+    markOnboardingCompleted.mockResolvedValue(undefined);
+    await click(button(container, "Try again"));
+
+    expect(markOnboardingCompleted).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
+    expect(container.querySelector("[role='alert']")).toBeNull();
   });
 });

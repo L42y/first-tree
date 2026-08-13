@@ -1,4 +1,4 @@
-import type { OpenTagActiveStepId, OpenTagStepId } from "./flow.js";
+import type { OpenTagStepId } from "./flow.js";
 
 /**
  * Member-facing strings for the `/opentag` entry, kept out of the components
@@ -26,8 +26,8 @@ export const OPENTAG_RAIL_COPY: Record<OpenTagStepId, { title: string; rail: str
   "use-in-feishu": { title: "Use in Feishu", rail: "Start working there" },
 };
 
-/** Heading copy for the steps this entry actually renders. */
-export const OPENTAG_STEP_COPY: Record<OpenTagActiveStepId, { why: string; lead: string }> = {
+/** Heading copy for the steps this entry renders. */
+export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: string }> = {
   "choose-agent": {
     why: "Start with the work your team already has.",
     lead: "Pick the teammate you want in Feishu. Setting up where it runs comes after the Agent is clear.",
@@ -39,5 +39,13 @@ export const OPENTAG_STEP_COPY: Record<OpenTagActiveStepId, { why: string; lead:
   "connect-feishu": {
     why: "Add one Bot for this Agent.",
     lead: "First Tree prepares a dedicated Feishu Bot. You confirm it in Feishu — your Agent and its Computer stay set up while you do.",
+  },
+  // Says only what the Task itself establishes. The shell renders this heading
+  // for the whole step, including while the completion stamp is still in flight
+  // or has failed — so anything here that declared setup finished would sit
+  // directly above copy saying it could not be finished.
+  "use-in-feishu": {
+    why: "Your Agent is working in Feishu.",
+    lead: "Keep the conversation in Feishu — its work and history are here.",
   },
 };
