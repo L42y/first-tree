@@ -32,6 +32,7 @@ import { users } from "../../db/schema/users.js";
 import { BadRequestError, ClientRetiredError, ConflictError, ForbiddenError, NotFoundError } from "../../errors.js";
 import type { OrgScope } from "../../scope/types.js";
 import { uuidv7 } from "../../uuid.js";
+import type { AttachmentObjectQuota } from "../attachment.js";
 import type { AttachmentBlobStore } from "../attachment-blob-store.js";
 import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
 import { lockWatcherProjectionForAgentChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
@@ -315,6 +316,7 @@ export async function createAgent(
     templatePublisherOrgId?: string;
     templateActorMemberId?: string;
     templateActorHumanAgentId?: string;
+    attachmentObjectQuota?: AttachmentObjectQuota;
   } = {},
 ) {
   const uuid = uuidv7();
@@ -524,6 +526,7 @@ export async function createAgent(
       // copies, and the bindings are all-or-nothing.
       if (data.templateIds && data.templateIds.length > 0) {
         if (!options.attachmentBlobStore) throw new Error("attachmentBlobStore is required for Template adoption");
+        if (!options.attachmentObjectQuota) throw new Error("attachmentObjectQuota is required for Template adoption");
         if (!options.templateActorMemberId || !options.templateActorHumanAgentId) {
           throw new Error("Template actor identity is required for Template adoption");
         }
@@ -535,6 +538,7 @@ export async function createAgent(
           data.templateIds,
           options.templateActorMemberId,
           options.templateActorHumanAgentId,
+          options.attachmentObjectQuota,
         );
       }
 

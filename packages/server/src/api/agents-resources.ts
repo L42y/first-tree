@@ -43,6 +43,7 @@ export async function agentResourcesRoutes(app: FastifyInstance): Promise<void> 
       scope.memberId,
       scope.humanAgentId,
       body,
+      { maxOrganizationAttachments: app.config.attachments.organizationObjectQuota },
     );
     return app.resourcesService.getAgentResources(request.params.uuid);
   });

@@ -75,14 +75,18 @@ export async function orgAttachmentRoutes(app: FastifyInstance): Promise<void> {
           ? Number(contentLengthHeader)
           : undefined;
 
-      const row = await createAttachment(app.db, {
-        organizationId: scope.organizationId,
-        mimeType,
-        filename,
-        body,
-        ...(parsedContentLength !== undefined ? { contentLength: parsedContentLength } : {}),
-        uploadedBy: scope.humanAgentId,
-      });
+      const row = await createAttachment(
+        app.db,
+        {
+          organizationId: scope.organizationId,
+          mimeType,
+          filename,
+          body,
+          ...(parsedContentLength !== undefined ? { contentLength: parsedContentLength } : {}),
+          uploadedBy: scope.humanAgentId,
+        },
+        { maxOrganizationAttachments: app.config.attachments.organizationObjectQuota },
+      );
 
       const response: UploadAttachmentResponse = {
         id: row.id,

@@ -101,6 +101,8 @@ export type CreateTestAppOptions = {
   /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
   agentTemplatePublisherOrgId?: string;
   gitlabEgressAllowlist?: NonNullable<Config["gitlab"]>["egressAllowlist"];
+  /** Per-organization attachment object quota. Defaults to the production default. */
+  attachmentObjectQuota?: number;
   feishuSdk?: FeishuSdkDependencies;
   /**
    * Drop `oauth.githubApp.slug` from the test config. Used by the
@@ -153,6 +155,9 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
     database: {
       url: process.env.DATABASE_URL ?? "",
       provider: "external",
+    },
+    attachments: {
+      organizationObjectQuota: opts.attachmentObjectQuota ?? 10_000,
     },
     server: {
       port: 0,

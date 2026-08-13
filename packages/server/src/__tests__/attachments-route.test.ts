@@ -23,6 +23,8 @@ import { createAdminContext, createTestAdmin, useTestApp } from "./helpers.js";
 
 type Admin = Awaited<ReturnType<typeof createTestAdmin>>;
 
+const TEST_ATTACHMENT_QUOTA = { maxOrganizationAttachments: 10_000 };
+
 function postAttachment(
   app: FastifyInstance,
   caller: Admin,
@@ -127,13 +129,17 @@ describe("attachments route — upload + capability download", () => {
   it("database-fences the old PostgreSQL-to-S3 backfill during a rolling deploy", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `storage-fence-${crypto.randomUUID().slice(0, 6)}` });
-    const stored = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "application/octet-stream",
-      filename: "postgres.bin",
-      body: Buffer.from("postgres-authoritative"),
-      uploadedBy: admin.humanAgentUuid,
-    });
+    const stored = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "application/octet-stream",
+        filename: "postgres.bin",
+        body: Buffer.from("postgres-authoritative"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
     const legacyObjectKey = `attachments/${admin.organizationId}/${stored.id}`;
 
     // This is the claim UPDATE issued by #2062's old replica before it would
@@ -235,13 +241,13 @@ describe("attachments route — upload + capability download", () => {
       uploadedBy: admin.humanAgentUuid,
     });
     const active = Array.from({ length: MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER }, (_, index) =>
-      createAttachment(app.db, input(index)),
+      createAttachment(app.db, input(index), TEST_ATTACHMENT_QUOTA),
     );
 
     await limitReached;
-    await expect(createAttachment(app.db, input(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER))).rejects.toThrow(
-      `already has ${MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER}`,
-    );
+    await expect(
+      createAttachment(app.db, input(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER), TEST_ATTACHMENT_QUOTA),
+    ).rejects.toThrow(`already has ${MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER}`);
     expect(startedCount).toBe(MAX_CONCURRENT_ATTACHMENT_UPLOADS_PER_CALLER);
 
     releaseUploads();
@@ -257,15 +263,19 @@ describe("attachments route — upload + capability download", () => {
     const id = crypto.randomUUID();
 
     await expect(
-      createAttachment(app.db, {
-        id,
-        organizationId: admin.organizationId,
-        mimeType: "application/octet-stream",
-        filename: "failed-delete.bin",
-        body: Buffer.from("three"),
-        contentLength: 3,
-        uploadedBy: admin.humanAgentUuid,
-      }),
+      createAttachment(
+        app.db,
+        {
+          id,
+          organizationId: admin.organizationId,
+          mimeType: "application/octet-stream",
+          filename: "failed-delete.bin",
+          body: Buffer.from("three"),
+          contentLength: 3,
+          uploadedBy: admin.humanAgentUuid,
+        },
+        TEST_ATTACHMENT_QUOTA,
+      ),
     ).rejects.toThrow("Content-Length does not match");
 
     expect(await app.db.select().from(attachments).where(eq(attachments.id, id))).toHaveLength(0);
@@ -274,13 +284,17 @@ describe("attachments route — upload + capability download", () => {
   it("holds attachment reference locks until the message transaction commits", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `ref-lock-${crypto.randomUUID().slice(0, 6)}` });
-    const stored = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "text/markdown",
-      filename: "locked.md",
-      body: Buffer.from("locked"),
-      uploadedBy: admin.humanAgentUuid,
-    });
+    const stored = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "text/markdown",
+        filename: "locked.md",
+        body: Buffer.from("locked"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
     const chatId = uuidv7();
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
     const metadata = {
@@ -335,13 +349,17 @@ describe("attachments route — upload + capability download", () => {
   it("holds single and batch file-content reference locks until message commit", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `file-ref-lock-${crypto.randomUUID().slice(0, 6)}` });
-    const stored = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "image/png",
-      filename: "locked.png",
-      body: Buffer.from("locked-image"),
-      uploadedBy: admin.humanAgentUuid,
-    });
+    const stored = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "image/png",
+        filename: "locked.png",
+        body: Buffer.from("locked-image"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
     const chatId = uuidv7();
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
     const ref = {
@@ -413,13 +431,17 @@ describe("attachments route — upload + capability download", () => {
       { allowRecipientlessSend: true },
     );
 
-    const stored = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "image/png",
-      filename: "actual.png",
-      body: Buffer.from("actual"),
-      uploadedBy: admin.humanAgentUuid,
-    });
+    const stored = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "image/png",
+        filename: "actual.png",
+        body: Buffer.from("actual"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
     await sendMessage(
       app.db,
       chatId,
@@ -478,20 +500,28 @@ describe("attachments route — upload + capability download", () => {
     const admin = await createTestAdmin(app, { username: `file-ref-edit-${crypto.randomUUID().slice(0, 6)}` });
     const chatId = uuidv7();
     await app.db.insert(chats).values({ id: chatId, organizationId: admin.organizationId, type: "group" });
-    const previous = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "image/png",
-      filename: "previous.png",
-      body: Buffer.from("previous"),
-      uploadedBy: admin.humanAgentUuid,
-    });
-    const replacement = await createAttachment(app.db, {
-      organizationId: admin.organizationId,
-      mimeType: "image/png",
-      filename: "replacement.png",
-      body: Buffer.from("replacement"),
-      uploadedBy: admin.humanAgentUuid,
-    });
+    const previous = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "image/png",
+        filename: "previous.png",
+        body: Buffer.from("previous"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
+    const replacement = await createAttachment(
+      app.db,
+      {
+        organizationId: admin.organizationId,
+        mimeType: "image/png",
+        filename: "replacement.png",
+        body: Buffer.from("replacement"),
+        uploadedBy: admin.humanAgentUuid,
+      },
+      TEST_ATTACHMENT_QUOTA,
+    );
     const messageId = uuidv7();
     await app.db.insert(messages).values({
       id: messageId,
@@ -623,13 +653,17 @@ describe("attachments route — upload + capability download", () => {
     expect(blankMime.statusCode).toBe(400);
 
     await expect(
-      createAttachment(app.db, {
-        organizationId: admin.organizationId,
-        mimeType: "image/png",
-        filename: " ",
-        body: Buffer.from("filename"),
-        uploadedBy: admin.humanAgentUuid,
-      }),
+      createAttachment(
+        app.db,
+        {
+          organizationId: admin.organizationId,
+          mimeType: "image/png",
+          filename: " ",
+          body: Buffer.from("filename"),
+          uploadedBy: admin.humanAgentUuid,
+        },
+        TEST_ATTACHMENT_QUOTA,
+      ),
     ).rejects.toThrow("Attachment filename is required");
   });
 
@@ -637,14 +671,18 @@ describe("attachments route — upload + capability download", () => {
     const app = getApp();
     const admin = await createTestAdmin(app, { username: `length-${crypto.randomUUID().slice(0, 6)}` });
     await expect(
-      createAttachment(app.db, {
-        organizationId: admin.organizationId,
-        mimeType: "application/octet-stream",
-        filename: "length.bin",
-        body: Buffer.from("three"),
-        contentLength: 3,
-        uploadedBy: admin.humanAgentUuid,
-      }),
+      createAttachment(
+        app.db,
+        {
+          organizationId: admin.organizationId,
+          mimeType: "application/octet-stream",
+          filename: "length.bin",
+          body: Buffer.from("three"),
+          contentLength: 3,
+          uploadedBy: admin.humanAgentUuid,
+        },
+        TEST_ATTACHMENT_QUOTA,
+      ),
     ).rejects.toThrow("Content-Length does not match");
   });
 
@@ -704,5 +742,43 @@ describe("attachments route — upload + capability download", () => {
     const second = await postAttachment(app, admin, Buffer.from("second"), { orgId: otherOrgId });
     expect(second.statusCode).toBe(201);
     expect((second.json() as { uploadedBy: string }).uploadedBy).toBe(otherMember.agentId);
+  });
+});
+
+describe("organization attachment object quota", () => {
+  const getApp = useTestApp();
+
+  it("enforces the caller-supplied object quota at the service layer", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `quota-${crypto.randomUUID().slice(0, 6)}` });
+    const quota = { maxOrganizationAttachments: 2 };
+    const input = (name: string) => ({
+      organizationId: admin.organizationId,
+      mimeType: "application/octet-stream",
+      filename: name,
+      body: Buffer.from(name),
+      uploadedBy: admin.humanAgentUuid,
+    });
+
+    await createAttachment(app.db, input("quota-1.bin"), quota);
+    await createAttachment(app.db, input("quota-2.bin"), quota);
+    await expect(createAttachment(app.db, input("quota-3.bin"), quota)).rejects.toThrow(
+      "Organization attachment quota of 2 objects exceeded",
+    );
+  });
+});
+
+describe("organization attachment object quota — route wiring", () => {
+  const getApp = useTestApp({ attachmentObjectQuota: 2 });
+
+  it("rejects the upload beyond the deployment-configured object quota", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `quota-route-${crypto.randomUUID().slice(0, 6)}` });
+
+    expect((await postAttachment(app, admin, Buffer.from("one"), { filename: "one.bin" })).statusCode).toBe(201);
+    expect((await postAttachment(app, admin, Buffer.from("two"), { filename: "two.bin" })).statusCode).toBe(201);
+    const third = await postAttachment(app, admin, Buffer.from("three"), { filename: "three.bin" });
+    expect(third.statusCode).toBe(400);
+    expect(third.json<{ error: string }>().error).toContain("Organization attachment quota of 2 objects exceeded");
   });
 });

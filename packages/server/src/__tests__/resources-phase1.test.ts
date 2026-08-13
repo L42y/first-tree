@@ -1088,14 +1088,18 @@ describe("Resources Phase 1", () => {
       body: "# Foreign",
       metadata: {},
     });
-    const foreignAttachment = await createAttachment(app.db, {
-      organizationId: other.organizationId,
-      mimeType: "application/zip",
-      filename: "foreign-bundle.zip",
-      body: bundle,
-      contentLength: bundle.byteLength,
-      uploadedBy: other.humanAgentUuid,
-    });
+    const foreignAttachment = await createAttachment(
+      app.db,
+      {
+        organizationId: other.organizationId,
+        mimeType: "application/zip",
+        filename: "foreign-bundle.zip",
+        body: bundle,
+        contentLength: bundle.byteLength,
+        uploadedBy: other.humanAgentUuid,
+      },
+      { maxOrganizationAttachments: 10_000 },
+    );
     const skillId = uuidv7();
     await app.db.insert(resources).values({
       id: skillId,
@@ -2222,14 +2226,18 @@ async function createTeamSkill(
   payload: SkillResourcePayload,
 ) {
   const bundle = buildLegacySkillBundle(payload);
-  const attachment = await createAttachment(app.db, {
-    organizationId: owner.organizationId,
-    mimeType: "application/zip",
-    filename: `${payload.name}.zip`,
-    body: bundle,
-    contentLength: bundle.byteLength,
-    uploadedBy: owner.humanAgentUuid,
-  });
+  const attachment = await createAttachment(
+    app.db,
+    {
+      organizationId: owner.organizationId,
+      mimeType: "application/zip",
+      filename: `${payload.name}.zip`,
+      body: bundle,
+      contentLength: bundle.byteLength,
+      uploadedBy: owner.humanAgentUuid,
+    },
+    { maxOrganizationAttachments: 10_000 },
+  );
   return app.resourcesService.createTeamResource(
     owner.organizationId,
     {

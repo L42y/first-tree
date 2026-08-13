@@ -14,6 +14,7 @@ import { messages } from "../../../db/schema/messages.js";
 import { processedEvents } from "../../../db/schema/processed-events.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
+import type { AttachmentObjectQuota } from "../../attachment.js";
 import { addChatParticipants } from "../../chat/membership/participants.js";
 import { sendMessage } from "../../chat/message.js";
 import { claimEvent, unclaimEvent } from "../../event-dedup.js";
@@ -40,6 +41,7 @@ export async function ingestFeishuMessage(
     senderNames: FeishuSenderNameResolver;
     readMembers: FeishuChatMembersReader;
     downloadResource: FeishuResourceDownloader;
+    attachmentObjectQuota: AttachmentObjectQuota;
   },
 ): Promise<FeishuInboundResult> {
   if (binding.status !== "active") return { state: "ignored", reason: "inactive_binding" };
@@ -85,6 +87,7 @@ export async function ingestFeishuMessage(
       messageId: input.messageId,
       descriptors,
       download: dependencies.downloadResource,
+      attachmentObjectQuota: dependencies.attachmentObjectQuota,
     });
     const content = [converted.content, ...hydrated.unavailableNotes.map((note) => `> ${note}`)]
       .filter(Boolean)
