@@ -464,6 +464,13 @@ async function chooseSelectOption(trigger: Element | null, optionText: string): 
   await click(buttonByText(document.body, optionText));
 }
 
+async function chooseComputerAndAssign(container: ParentNode, hostname = "gandy-macbook"): Promise<void> {
+  await click(buttonByText(container, "Choose computer"));
+  await waitForText(document.body, hostname);
+  await click(buttonByText(document.body, hostname));
+  await click(exactButtonByText(document.body, "Assign"));
+}
+
 beforeEach(() => {
   installBrowserStubs();
   document.body.innerHTML = "";
@@ -1576,13 +1583,24 @@ describe("AgentDetailPage", () => {
       profile: <LocationEchoWithBack />,
     });
     await waitForText(view.container, "No computer assigned");
-    await click(buttonByText(view.container, "Choose computer"));
-    await waitForText(document.body, "gandy-macbook");
-    await click(buttonByText(document.body, "gandy-macbook"));
-    await click(exactButtonByText(document.body, "Assign"));
+    await chooseComputerAndAssign(view.container);
 
     await waitForText(view.container, "/agents/agent-1/profile");
     expect(agentMocks.updateAgent).toHaveBeenCalledWith("agent-1", { clientId: "client-1" });
+
+    await act(async () => view.root.unmount());
+  });
+
+  it("recovers an already-bound first Team Agent from a Runtime reload to its channel entry", async () => {
+    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
+    const { RuntimeTab } = await import("../runtime-tab.js");
+
+    const view = await renderDom("/agents/agent-1/runtime", <RuntimeTab />, undefined, {
+      profile: <LocationEchoWithBack />,
+    });
+
+    await waitForText(view.container, "/agents/agent-1/profile");
+    expect(agentMocks.updateAgent).not.toHaveBeenCalled();
 
     await act(async () => view.root.unmount());
   });
@@ -1604,10 +1622,7 @@ describe("AgentDetailPage", () => {
       profile: <LocationEchoWithBack />,
     });
     await waitForText(view.container, "No computer assigned");
-    await click(buttonByText(view.container, "Choose computer"));
-    await waitForText(document.body, "gandy-macbook");
-    await click(buttonByText(document.body, "gandy-macbook"));
-    await click(exactButtonByText(document.body, "Assign"));
+    await chooseComputerAndAssign(view.container);
 
     await waitForText(document.body, "bind unavailable");
     expect(view.container.textContent).toContain("Execution");

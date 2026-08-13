@@ -170,6 +170,16 @@ function AgentDetailPageView() {
     onboardingCompletedAt === null ? currentMembership?.firstTeamAgentContinuation : null;
   const continuesFirstTeamAgent =
     firstTeamAgentContinuation?.agentId === uuid && firstTeamAgentContinuation.status === "active";
+  const continueFirstTeamAgentToChannel = useCallback(() => {
+    if (continuesFirstTeamAgent) {
+      navigate(`/agents/${encodeURIComponent(uuid)}/profile`, { replace: true });
+    }
+  }, [continuesFirstTeamAgent, navigate, uuid]);
+  useEffect(() => {
+    if (agentQuery.data?.clientId && location.pathname.endsWith("/runtime")) {
+      continueFirstTeamAgentToChannel();
+    }
+  }, [agentQuery.data?.clientId, continueFirstTeamAgentToChannel, location.pathname]);
   const clientsQuery = useQuery({
     queryKey: ["clients"],
     queryFn: listClients,
@@ -184,9 +194,7 @@ function AgentDetailPageView() {
       setBindClientOpen(false);
       setBindClientSelected("");
       setBindClientError(null);
-      if (continuesFirstTeamAgent) {
-        navigate(`/agents/${encodeURIComponent(uuid)}/profile`, { replace: true });
-      }
+      continueFirstTeamAgentToChannel();
     },
     onError: (err) => setBindClientError(err instanceof Error ? err.message : String(err)),
   });

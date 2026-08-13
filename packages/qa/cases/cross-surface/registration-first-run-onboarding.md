@@ -21,11 +21,14 @@ Confirm the current first-run lifecycle for a genuinely new identity:
 - a campaign action that needs the user's own Agent preserves its handoff and
   routes a Team-less caller through first-Agent selection, never into a hosted
   trial;
+- the exact first Agent continues from its one-shot Runtime bind to the existing
+  channel setup entry, including reload and bind-failure recovery;
 - Account and Sign out remain reachable while the user has no Team.
 
 This case owns the cross-surface behavior that deterministic auth, provisioning,
-rollback, and route tests cannot prove in one real browser journey. Runtime
-binding/readiness after an unbound Team Agent exists is a separate journey.
+rollback, and route tests cannot prove in one real browser journey. It covers
+only the first Runtime bind and handoff to the existing channel entry; provider
+readiness, authentication, and real channel first use remain separate journeys.
 
 ## Preconditions
 
@@ -82,6 +85,29 @@ binding/readiness after an unbound Team Agent exists is a separate journey.
    stored action remains available for the later Runtime/setup continuation.
 3. Re-open the action after the user's Agent is connectable. Verify one task chat
    is created or reused and the handoff clears only after that chat exists.
+
+## Scenario D — first Runtime bind handoff
+
+1. Continue Scenario A with the exact unbound first Team Agent and a connected
+   computer that reports at least one available Runtime artifact. Verify the
+   Runtime page shows that computer and only providers the Client reports as
+   executable; do not treat this capability snapshot as provider authentication.
+2. Assign the computer. Verify the existing member-JWT first-bind path pins the
+   Agent exactly once and the browser replaces the Runtime location with that
+   same Agent's Profile, where the existing Feishu channel setup entry is
+   visible. Verify the onboarding continuation remains pending and no completion
+   stamp is written.
+3. Repeat with the bind request failing before commit. Verify the error remains
+   on Runtime, the selection is retryable, and only a successful bind advances
+   to Profile.
+4. Repeat with the Server committing the pin while the browser loses the
+   response. Reload `/onboarding` and the Agent Runtime URL. Verify both recover
+   from the authoritative bound Agent to the same Profile/channel entry without
+   issuing another bind.
+5. Bind an ordinary unclaimed Agent with no first-Agent continuation. Verify it
+   remains on Runtime after assignment. A provider credential failure, if later
+   encountered in a real task, must remain recoverable from that chat rather
+   than appearing as Runtime readiness here.
 
 ## Legacy Cohort Preservation
 
