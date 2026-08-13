@@ -1,6 +1,6 @@
 ---
 id: opentag-entry-agent-materialization
-description: Validate the /opentag journey end to end — strict OAuth return, local draft, one atomic Agent create on a Computer-supported runtime, readiness and lost-response recovery, and the focused Feishu handoff without onboarding completion.
+description: Validate the /opentag journey end to end — strict OAuth return, local draft, one atomic Agent create on a Computer-supported runtime, readiness and lost-response recovery, the focused Feishu handoff, and terminal completion on real first use in Feishu.
 areas: [cross-surface]
 surfaces: [server, web, client]
 ---
@@ -75,27 +75,51 @@ gates.
    confirm the QR and its confirmation link. Confirm the surface calls the Bot
    connected only once the binding is genuinely reachable, and reports a
    connection error in words rather than colour alone.
-7. **No completion.** Confirm no onboarding completion or suppression stamp was
-   written for this membership at any point.
-8. **Narrow viewport.** Repeat the main path at 390 px; the current decision
-   must stay on the first screen.
+7. **No completion before real use.** Through every step above, including a
+   Bot that is provisioned and connected, confirm no onboarding completion or
+   suppression stamp was written for this membership. A connected Bot is setup,
+   not use.
+8. **Terminal first use.** From the real Feishu tenant, send this Bot a private
+   message (or an exact group mention) so ingress creates the Task. Confirm the
+   browser converges without a reload: the entry reaches its terminal state,
+   `members.onboarding_completed_at` and the `completed` suppression stamp are
+   written exactly once, and the offered destination opens that Task's chat.
+   Reload the entry and confirm it converges to the same state with no second
+   Agent, no second chat, and no second stamp.
+9. **Another Agent's task cannot finish this one.** With a second Agent bound to
+   its own Bot in the same Team, drive that Bot's Task and confirm it does not
+   complete the first Agent's membership. Repeat with the first Agent invited
+   into the second Agent's Task as an internal collaborator: being a speaker in
+   someone else's Feishu conversation must not count as this Agent's first use.
+10. **Failure honesty.** Block the chat reads while the Task exists and confirm
+    the entry neither completes nor claims the Agent is unused, and recovers
+    once the reads succeed. Then block only the completion request and confirm
+    the terminal state stays retryable and withholds the destination until the
+    stamp lands.
+11. **Narrow viewport.** Repeat the main path at 390 px; the current decision
+    must stay on the first screen.
 
 ## Evidence
 
 Database rows for the Agent, its config and its Feishu binding at each
-checkpoint; the request log around the create and the blocked `/me`; and
-screenshots of the readiness-failure state and the Feishu step. Redact tokens,
-connect codes and Bot credentials.
+checkpoint; the membership onboarding stamp columns before and after real first
+use; the Task chat's `metadata` alongside the Agent's Bot binding id; the
+request log around the create, the blocked `/me` and the blocked reads; and
+screenshots of the readiness-failure state, the Feishu step and the terminal
+state. Redact tokens, connect codes, Bot credentials and external member
+identities.
 
 ## Expected
 
 Exactly one Agent per completed journey. Every interruption leaves either
 nothing created or that one Agent, reachable again. A Computer running a
 non-default runtime completes without a dead end, and reaching a connected Bot
-does not complete onboarding — real first use happens in Feishu.
+does not complete onboarding — only a real Feishu Task belonging to this exact
+Agent does, exactly once, and a failed read never stands in for one.
 
 ## Limitations
 
-Terminal first use in Feishu is out of scope here. This case does not qualify
-the Feishu message bridge, Bot credential handling, or the Template catalog
-itself; those have their own owners.
+This case qualifies the entry's own terminal boundary, not the transport that
+produces it: the Feishu message bridge, Bot credential handling, and the
+Template catalog have their own owners. An admin continuing a teammate's Agent
+is out of scope — that member does not own the setup being stamped.

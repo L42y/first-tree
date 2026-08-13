@@ -19,15 +19,18 @@ import { FlowHint } from "../../onboarding/flow-ui.js";
 export function StepUseInFeishu({
   agentDisplayName,
   chatId,
-  completing,
+  settled,
   failed,
   onRetry,
 }: {
   agentDisplayName: string;
   /** The Feishu Task's chat — the destination this whole entry hands off to. */
   chatId: string;
-  /** The completion stamp is in flight. */
-  completing: boolean;
+  /**
+   * The completion stamp has landed. Anything else — not started yet, or in
+   * flight — is a wait, not a state the member has to be told apart.
+   */
+  settled: boolean;
   /** The completion stamp failed and the member can try it again. */
   failed: boolean;
   onRetry: () => void;
@@ -52,20 +55,20 @@ export function StepUseInFeishu({
             We couldn't finish setting up your workspace. Your Agent and its task are unaffected.
           </FlowHint>
           <div className="flex">
-            <Button type="button" variant="outline" disabled={completing} onClick={onRetry}>
-              {completing ? "Retrying…" : "Try again"}
+            <Button type="button" variant="outline" onClick={onRetry}>
+              Try again
             </Button>
           </div>
         </>
       ) : (
         <div className="flex">
-          {completing ? (
-            <Button type="button" variant="cta" disabled>
-              Finishing up…
-            </Button>
-          ) : (
+          {settled ? (
             <Button type="button" variant="cta" asChild>
               <a href={`/?c=${encodeURIComponent(chatId)}`}>Open the task</a>
+            </Button>
+          ) : (
+            <Button type="button" variant="cta" disabled>
+              Finishing up…
             </Button>
           )}
         </div>

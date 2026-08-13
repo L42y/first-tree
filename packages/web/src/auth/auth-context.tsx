@@ -135,7 +135,9 @@ type AuthContextValue = {
    * POST `/me/onboarding-completed`. Optimistically stamps
    * `onboardingCompletedAt` so first-run routing can settle immediately.
    * Idempotent server-side. Called at Step 3 terminal-success points (admin
-   * Continue, invitee Confirm / Continue).
+   * Continue, invitee Confirm / Continue) and by the `/opentag` entry once
+   * that Agent has a real Feishu Task — there the terminal fact is observed
+   * rather than pressed, so the stamp is not tied to a button.
    */
   markOnboardingCompleted: () => Promise<void>;
   /**

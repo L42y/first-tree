@@ -124,6 +124,9 @@ function connectedBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotB
   return feishuBinding({ status: "active", connectionStatus: "connected", appId: "cli_1", ...overrides });
 }
 
+// Unlike the fixtures above, these two carry only the fields the first-use read
+// consumes rather than the full `MeChatRow` / `ChatDetail` DTOs: both modules
+// are mocked, and the real rows carry dozens of fields none of this exercises.
 const NO_CHATS = { priorityRows: { pinned: [] }, rows: [], nextCursor: null };
 
 function chatPage(chatIds: string[]) {
@@ -865,6 +868,14 @@ describe("OpenTag entry — real first use in Feishu", () => {
 
     expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Ada assistant has its first task from Feishu");
+    // The destination is withheld until the stamp lands: an unstamped
+    // membership can still be sent back into setup, so this frame must not
+    // advertise a door that bounces.
+    expect(container.querySelector("a[href='/?c=chat-1']")).toBeNull();
+    expect(container.textContent).toContain("Finishing up…");
+
+    await flush();
+
     // The handoff destination is the task itself, in the workspace.
     expect(container.querySelector("a[href='/?c=chat-1']")).not.toBeNull();
     // The Bot step is over — offering to connect one here would be a second
@@ -911,6 +922,7 @@ describe("OpenTag entry — real first use in Feishu", () => {
     // Same URL, nothing carried over: the terminal state is re-derived from the
     // same authoritative reads rather than from anything this page remembered.
     const reloaded = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+    await flush();
 
     expect(reloaded.textContent).toContain("Ada assistant has its first task from Feishu");
     expect(reloaded.querySelector("a[href='/?c=chat-1']")).not.toBeNull();

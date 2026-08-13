@@ -386,7 +386,7 @@ export function OpenTagPage(): ReactElement | null {
         <StepUseInFeishu
           agentDisplayName={agent.displayName}
           chatId={firstUseChatId}
-          completing={completePending}
+          settled={completeSettled}
           failed={completeFailed}
           onRetry={completeReset}
         />
