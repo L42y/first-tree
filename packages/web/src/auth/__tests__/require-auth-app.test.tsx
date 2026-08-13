@@ -32,6 +32,7 @@ const authMock = vi.hoisted(() => ({
     adoptTokens: async () => undefined,
     selectOrganization: async () => undefined,
     refreshMe: async () => undefined,
+    refreshMeStrict: async () => undefined,
     logout: () => undefined,
   },
 }));
