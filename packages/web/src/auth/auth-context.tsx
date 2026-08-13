@@ -176,6 +176,14 @@ type AuthContextValue = {
   switchingOrg: OrgBrief | null;
   setSwitchingOrg: (org: OrgBrief | null) => void;
   refreshMe: () => Promise<void>;
+  /**
+   * Same read as {@link refreshMe}, but it REJECTS when `/me` fails instead of
+   * resolving. `refreshMe` is fail-soft so an unreachable `/me` cannot hang the
+   * dashboard; a caller that has just changed membership readiness needs the
+   * opposite, because acting on a stale `currentOrgHasPersonalAgent` can walk
+   * the member back into creating a second Agent.
+   */
+  refreshMeStrict: () => Promise<void>;
   logout: () => void;
 };
 
@@ -710,6 +718,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         switchingOrg,
         setSwitchingOrg,
         refreshMe: fetchMe,
+        refreshMeStrict: loadMe,
         logout,
       }}
     >

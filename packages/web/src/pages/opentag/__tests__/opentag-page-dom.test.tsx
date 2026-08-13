@@ -19,6 +19,7 @@ const ORG = "org-1";
 const MEMBER = "member-1";
 
 const refreshMe = vi.hoisted(() => vi.fn(async () => undefined));
+const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
 
 const authMock = vi.hoisted(() => ({
   value: {
@@ -29,6 +30,7 @@ const authMock = vi.hoisted(() => ({
     user: { username: "ada" },
     logout: () => undefined,
     refreshMe,
+    refreshMeStrict,
   },
 }));
 vi.mock("../../../auth/auth-context.js", () => ({ useAuth: () => authMock.value }));
@@ -202,8 +204,10 @@ beforeEach(() => {
     user: { username: "ada" },
     logout: () => undefined,
     refreshMe,
+    refreshMeStrict,
   };
   refreshMe.mockClear();
+  refreshMeStrict.mockReset().mockResolvedValue(undefined);
   computerMock.value = computerConnection();
   api.getAgent.mockReset();
   api.createAgent.mockReset();
@@ -280,7 +284,33 @@ describe("OpenTag entry — choosing the Agent", () => {
       runtimeProvider: "codex",
     });
     expect(api.updateAgent).not.toHaveBeenCalled();
-    expect(refreshMe).toHaveBeenCalled();
+    expect(refreshMeStrict).toHaveBeenCalled();
+    expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("does not hand over an Agent whose readiness could not be confirmed", async () => {
+    // A stale `currentOrgHasPersonalAgent` does more than misroute: `/` sends
+    // the member to `/onboarding`, which freezes its entry decision and can
+    // walk them into creating a second Agent.
+    computerMock.value = readyComputer();
+    api.createAgent.mockResolvedValue(agentRow());
+    api.getAgent.mockResolvedValue(agentRow());
+    refreshMeStrict.mockRejectedValue(new Error("me is down"));
+
+    const container = await renderAt("/opentag");
+    await click(button(container, "Review Agent"));
+    await click(button(container, "Continue"));
+    await click(button(container, "Create Agent"));
+
+    expect(api.createAgent).toHaveBeenCalledTimes(1);
+    expect(lastLocation).toBe("/opentag");
+    expect(container.textContent).toContain("couldn't refresh your team");
+
+    // The retry continues to the Agent that already exists — it never creates
+    // another one.
+    refreshMeStrict.mockResolvedValue(undefined);
+    await click(button(container, "Try again"));
+    expect(api.createAgent).toHaveBeenCalledTimes(1);
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
   });
 
@@ -327,7 +357,7 @@ describe("OpenTag entry — choosing the Agent", () => {
     await click(button(container, "Continue with Ada assistant"));
     // Readiness is refreshed before moving, or a fast visit to `/` bounces the
     // member into `/onboarding` for an Agent they already have.
-    expect(refreshMe).toHaveBeenCalled();
+    expect(refreshMeStrict).toHaveBeenCalled();
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
   });
 

@@ -44,7 +44,7 @@ export function OpenTagPage(): ReactElement | null {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const location = useLocation();
-  const { organizationId, memberId, role, user, meAuthoritative, refreshMe } = useAuth();
+  const { organizationId, memberId, role, user, meAuthoritative, refreshMeStrict } = useAuth();
 
   // One parser for the browser route and the OAuth `next`, so a URL this app
   // would never build is not a URL this page will act on. Anything else is
@@ -59,6 +59,9 @@ export function OpenTagPage(): ReactElement | null {
   // Remembered across the URL rewrite below, so the member is told why they are
   // back at the start even though the rejected Agent is no longer in the URL.
   const [rejectedAgent, setRejectedAgent] = useState(false);
+  // An Agent that exists but whose readiness read failed: held here so the
+  // retry continues to it instead of creating another one.
+  const [pendingAgentUuid, setPendingAgentUuid] = useState<string | null>(null);
 
   const agentQuery = useQuery({
     queryKey: ["agent", agentUuid],
@@ -144,13 +147,7 @@ export function OpenTagPage(): ReactElement | null {
     onSuccess: async (created) => {
       queryClient.setQueryData(["agent", created.uuid], created);
       await queryClient.invalidateQueries({ queryKey: ["agents"] });
-      // The selected Team now has this member's Agent, which the workspace
-      // entry gate reads from `/me`; without this a later visit to the
-      // workspace would still be bounced into standalone onboarding.
-      await refreshMe();
-      // Replace, not push: the pre-Agent URL is no longer a state the member
-      // should be able to go back into and create a second Agent from.
-      navigate(opentagEntryPath(created.uuid), { replace: true });
+      await goToAgent(created.uuid);
     },
   });
 
@@ -164,25 +161,40 @@ export function OpenTagPage(): ReactElement | null {
     requireExplicitSelectionWhenMultiple: true,
   });
 
-  // The recovered Agent was created by the request whose response was lost, so
-  // the current `/me` still says this member has no Agent. Refresh before
-  // moving, or a fast visit to `/` bounces them into `/onboarding`.
-  //
-  // This is best-effort by construction: the shared `refreshMe` is `fetchMe`,
-  // which is deliberately fail-soft and swallows a failed `/me` read, so this
-  // flow cannot observe a failure to report or retry. The cost of a silent
-  // miss is one misrouted visit to the workspace root, not lost work, so it
-  // does not justify a second, strict readiness path through shared auth.
+  // Both paths below hand the member an Agent that the current `/me` does not
+  // know about yet. Navigating on a stale `currentOrgHasPersonalAgent` does not
+  // merely misroute them once: `/` sends them to `/onboarding`, which freezes
+  // its entry decision without re-reading `/me`, and whose create-agent step
+  // only skips itself when that same flag is true — so they can be walked into
+  // creating a second Agent. The refresh therefore has to be authoritative, and
+  // the move waits for it.
   const [continuing, setContinuing] = useState(false);
-  const continueWithRecovered = async (uuid: string): Promise<void> => {
+  const [readinessError, setReadinessError] = useState<string | null>(null);
+  const goToAgent = async (uuid: string): Promise<void> => {
     setContinuing(true);
-    await refreshMe();
+    setReadinessError(null);
+    try {
+      await refreshMeStrict();
+    } catch {
+      // The Agent exists; only the readiness read failed. Keep the member here
+      // with a retry rather than sending them somewhere that would offer to
+      // create another one.
+      setReadinessError("Your Agent is ready, but we couldn't refresh your team. Try again.");
+      setPendingAgentUuid(uuid);
+      setContinuing(false);
+      return;
+    }
     setContinuing(false);
+    setPendingAgentUuid(null);
+    // Replace, not push: the pre-Agent URL is no longer a state the member
+    // should be able to go back into and create a second Agent from.
     navigate(opentagEntryPath(uuid), { replace: true });
   };
 
   const clearRecoveryState = (): void => {
     setRecoverableAgent(null);
+    setReadinessError(null);
+    setPendingAgentUuid(null);
     create.reset();
   };
 
@@ -224,7 +236,7 @@ export function OpenTagPage(): ReactElement | null {
       {facts.state === "team-unreadable" && (
         <OpenTagRecoverableError
           message="We couldn't load your team. Nothing has been created yet."
-          onRetry={() => void refreshMe()}
+          onRetry={() => void refreshMeStrict().catch(() => undefined)}
         />
       )}
       {draftStep === "choose-agent" && (
@@ -246,7 +258,8 @@ export function OpenTagPage(): ReactElement | null {
         <StepSetUpRuntime
           computer={computer}
           pending={create.isPending || continuing}
-          error={create.error instanceof Error ? create.error.message : null}
+          error={readinessError ?? (create.error instanceof Error ? create.error.message : null)}
+          readinessRetry={pendingAgentUuid ? () => void goToAgent(pendingAgentUuid) : null}
           onBack={() => {
             clearRecoveryState();
             setDraft(null);
@@ -257,7 +270,7 @@ export function OpenTagPage(): ReactElement | null {
               ? {
                   displayName: recoverableAgent.displayName,
                   pending: continuing || create.isPending,
-                  onContinue: () => void continueWithRecovered(recoverableAgent.uuid),
+                  onContinue: () => void goToAgent(recoverableAgent.uuid),
                 }
               : null
           }
