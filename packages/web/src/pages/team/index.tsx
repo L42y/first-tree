@@ -37,6 +37,7 @@ import {
   readAgentFilterPreference,
   writeAgentFilterPreference,
 } from "./agent-filter.js";
+import { MemberTeamAgentsPage } from "./member-team-agents.js";
 import { type AgentRow, type HumanRow, type RowAction, TeamTable } from "./team-table.js";
 
 /**
@@ -97,6 +98,12 @@ export async function fetchAllAgents(
 }
 
 export function TeamPage() {
+  const { role } = useAuth();
+  if (role !== "admin") return <MemberTeamAgentsPage />;
+  return <TeamManagementPage />;
+}
+
+function TeamManagementPage() {
   const { role, memberId, refreshMe } = useAuth();
   const isAdmin = role === "admin";
   const navigate = useNavigate();

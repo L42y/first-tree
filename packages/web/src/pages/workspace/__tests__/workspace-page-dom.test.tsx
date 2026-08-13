@@ -10,6 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const authMock = vi.hoisted(() => ({
   value: {
     meLoaded: true,
+    role: "admin" as "admin" | "member",
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: "2026-05-28T00:00:00.000Z" as string | null,
@@ -190,6 +191,15 @@ async function renderDom(initialEntry: string, element: ReactElement): Promise<{
               </>
             }
           />
+          <Route
+            path="/team"
+            element={
+              <>
+                <LocationProbe />
+                <div>Team Agents route</div>
+              </>
+            }
+          />
         </Routes>
       </MemoryRouter>,
     );
@@ -236,6 +246,7 @@ beforeEach(() => {
   viewportMock.value = "xl";
   authMock.value = {
     meLoaded: true,
+    role: "admin",
     onboardingStep: "completed",
     onboardingDismissedAt: null,
     onboardingCompletedAt: "2026-05-28T00:00:00.000Z",
@@ -396,6 +407,7 @@ describe("WorkspacePage DOM behavior", () => {
     const { WorkspacePage } = await import("../index.js");
     authMock.value = {
       meLoaded: true,
+      role: "admin",
       onboardingStep: "connect",
       onboardingDismissedAt: null,
       onboardingCompletedAt: null,
@@ -409,11 +421,32 @@ describe("WorkspacePage DOM behavior", () => {
 
     authMock.value = {
       meLoaded: true,
+      role: "admin",
       onboardingStep: "completed",
       onboardingDismissedAt: null,
       onboardingCompletedAt: "2026-05-28T00:00:00.000Z",
       currentOrgHasUsableAgent: true,
       currentOrgHasPersonalAgent: true,
     };
+  });
+
+  it("defaults a member's bare root to Team Agents while preserving direct chat deep links", async () => {
+    const { WorkspacePage } = await import("../index.js");
+    authMock.value = {
+      ...authMock.value,
+      role: "member",
+      currentOrgHasPersonalAgent: false,
+      onboardingCompletedAt: null,
+    };
+
+    const bare = await renderDom("/", <WorkspacePage />);
+    expect(bare.container.textContent).toContain("Team Agents route");
+    expect(bare.container.querySelector('[data-testid="location"]')?.textContent).toBe("/team");
+    await act(async () => bare.root.unmount());
+
+    const deepLink = await renderDom("/?c=chat-1", <WorkspacePage />);
+    expect(deepLink.container.textContent).toContain("center:chat-1");
+    expect(deepLink.container.textContent).not.toContain("Team Agents route");
+    await act(async () => deepLink.root.unmount());
   });
 });
