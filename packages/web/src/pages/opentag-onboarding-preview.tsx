@@ -1,5 +1,6 @@
 import { orderRuntimeProvidersByPreference, type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
-import { ArrowRight, Bot, Check, CircleCheck, ExternalLink, MessageSquareText } from "lucide-react";
+import { ArrowRight, Check, ExternalLink } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
 import { type ReactElement, type ReactNode, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import type { HubClient } from "../api/activity.js";
@@ -8,7 +9,6 @@ import { Button } from "../components/ui/button.js";
 import { Input } from "../components/ui/input.js";
 import { OptionCard } from "../components/ui/option-card.js";
 import { resolveComputerSelection, resolveRuntimeSelection } from "../features/agent-setup/computer-selection.js";
-import { FeishuRegistrationQr } from "../features/feishu/binding-view.js";
 import { CommandBox, FlowHint } from "./onboarding/flow-ui.js";
 import "./opentag-onboarding-preview-brand.css";
 
@@ -77,18 +77,18 @@ const STEP_META: Record<
   feishu: {
     number: 3,
     group: "Start in Feishu",
-    railTitle: "Add to Feishu",
-    railDetail: "Connect one bot",
+    railTitle: "Add it to Feishu",
+    railDetail: "Connect its bot",
     title: "Add OpenTag to Feishu",
-    lead: "OpenTag prepares a dedicated Feishu Bot for this Agent. Confirm it in Feishu when you are ready.",
+    lead: "Create the bot, then confirm it in Feishu.",
   },
   "first-task": {
     number: 4,
     group: "Start in Feishu",
-    railTitle: "First task",
-    railDetail: "Start working there",
-    title: "Send your first task to @OpenTag",
-    lead: "Message @OpenTag privately or mention it exactly in a group to start working with your Agent.",
+    railTitle: "Start working together",
+    railDetail: "First task",
+    title: "Send your first task",
+    lead: "Send the bot a private message, or @mention it in a group. This page updates automatically.",
   },
 };
 
@@ -127,6 +127,7 @@ const PREVIEW_SERVER_BOOTSTRAP_COMMAND =
   "curl -fsSL https://download.first-tree.ai/releases/prod/install.sh | sh\n" +
   "~/.local/bin/first-tree login ft_preview_only";
 const PREVIEW_FEISHU_URL = "https://open.feishu.cn/app/preview-only-registration";
+const PREVIEW_FIRST_USE_CHAT_ID = "preview-first-feishu-task";
 
 const PREVIEW_COMPUTERS = [
   previewComputer("preview-macbook", "Gandy's MacBook", "darwin", "2026-08-13T10:00:00.000Z"),
@@ -184,7 +185,7 @@ export function OpenTagOnboardingPreviewPage(): ReactElement {
             : undefined
         }
       >
-        <PreviewShell step={step} viewport={viewport}>
+        <PreviewShell step={step} state={state} viewport={viewport}>
           <StepContent
             step={step}
             state={state}
@@ -208,14 +209,23 @@ export function OpenTagOnboardingPreviewPage(): ReactElement {
 
 function PreviewShell({
   step,
+  state,
   viewport,
   children,
 }: {
   step: PreviewStep;
+  state: PreviewState;
   viewport: PreviewViewport;
   children: ReactNode;
 }): ReactElement {
   const meta = STEP_META[step];
+  const pageCopy =
+    step === "first-task" && state === "completed"
+      ? {
+          title: "Your first task is ready",
+          lead: "Keep the conversation in Feishu. You can follow the work and its full history here.",
+        }
+      : meta;
   const mobile = viewport === "mobile";
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -248,13 +258,13 @@ function PreviewShell({
             Step {meta.number} of 4 · {meta.group}
           </p>
           <h1 className="text-title font-semibold" style={{ margin: "var(--sp-3) 0 var(--sp-3)", color: "var(--fg)" }}>
-            {meta.title}
+            {pageCopy.title}
           </h1>
           <p
             className="text-body"
             style={{ margin: "0 0 var(--sp-8)", color: "var(--fg-3)", maxWidth: "var(--sp-95)" }}
           >
-            {meta.lead}
+            {pageCopy.lead}
           </p>
           {children}
         </main>
@@ -378,7 +388,7 @@ function StepContent({
       return state === "provisioning" ? (
         <FeishuProvisioningStep />
       ) : (
-        <FeishuReadyStep mobile={viewport === "mobile"} onAdvance={() => onAdvance("first-task")} />
+        <FeishuReadyStep mobile={viewport === "mobile"} onConnect={() => onStateChange("provisioning")} />
       );
     case "first-task":
       return state === "completed" ? <FirstTaskCompletedStep /> : <FirstTaskWaitingStep />;
@@ -639,22 +649,11 @@ function ComputerSelectionStep({
   );
 }
 
-function FeishuReadyStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: () => void }): ReactElement {
+function FeishuReadyStep({ mobile, onConnect }: { mobile: boolean; onConnect: () => void }): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
-      <div className="flex items-start" style={{ gap: "var(--sp-4)" }}>
-        <span className="surface-sunken inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-panel)]">
-          <Bot className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <span>
-          <span className="block text-subtitle font-semibold">OpenTag Bot for gandy2025 assistant</span>
-          <span className="mt-1 block text-body" style={{ color: "var(--fg-3)" }}>
-            One dedicated Bot will carry this Agent into Feishu.
-          </span>
-        </span>
-      </div>
       <div className="flex">
-        <Button type="button" variant="cta" className={mobile ? "w-full" : undefined} onClick={onAdvance}>
+        <Button type="button" variant="cta" className={mobile ? "w-full" : undefined} onClick={onConnect}>
           Add OpenTag to Feishu <ArrowRight className="h-4 w-4" />
         </Button>
       </div>
@@ -665,30 +664,36 @@ function FeishuReadyStep({ mobile, onAdvance }: { mobile: boolean; onAdvance: ()
 function FeishuProvisioningStep(): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
-      <FeishuRegistrationQr registrationUrl={PREVIEW_FEISHU_URL} />
-      <PreviewStatusRow state="waiting" label="Waiting for Feishu to confirm the Bot…" />
+      <PreviewFeishuRegistrationQr />
+      <PreviewStatusRow state="waiting" label="Waiting for Feishu to confirm the bot…" />
+    </div>
+  );
+}
+
+function PreviewFeishuRegistrationQr(): ReactElement {
+  return (
+    <div className="flex flex-col items-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4) 0" }}>
+      <QRCodeSVG
+        value={PREVIEW_FEISHU_URL}
+        className="h-[var(--sp-45)] w-[var(--sp-45)]"
+        title="Feishu bot registration QR code"
+      />
+      <div className="text-label text-center" style={{ color: "var(--fg-3)" }}>
+        Scan with Feishu and confirm creating the bot. This page updates automatically.
+      </div>
+      <Button size="xs" variant="outline" asChild>
+        <a href={PREVIEW_FEISHU_URL} target="_blank" rel="noreferrer">
+          Open confirmation page <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </Button>
     </div>
   );
 }
 
 function FirstTaskWaitingStep(): ReactElement {
   return (
-    <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
-      <div className="flex items-start" style={{ gap: "var(--sp-4)" }}>
-        <span className="surface-sunken inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--radius-panel)]">
-          <MessageSquareText className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <span>
-          <span className="block text-subtitle font-semibold">@OpenTag is ready in Feishu</span>
-          <span className="mt-1 block text-body" style={{ color: "var(--fg-3)" }}>
-            Send a private message, or mention the Bot exactly in a group.
-          </span>
-        </span>
-      </div>
-      <PreviewStatusRow state="waiting" label="Waiting for your first message to @OpenTag…" />
-      <Button type="button" variant="outline" className="w-fit">
-        Open Feishu <ExternalLink className="h-4 w-4" />
-      </Button>
+    <div className="flex flex-col" style={{ gap: "var(--sp-5)" }}>
+      <PreviewStatusRow state="waiting" label="Waiting for the first message…" />
     </div>
   );
 }
@@ -696,20 +701,11 @@ function FirstTaskWaitingStep(): ReactElement {
 function FirstTaskCompletedStep(): ReactElement {
   return (
     <div className="flex flex-col" style={{ gap: "var(--sp-7)" }}>
-      <div className="flex items-start" style={{ gap: "var(--sp-4)" }}>
-        <CircleCheck className="h-8 w-8 shrink-0" style={{ color: "var(--fg)" }} aria-hidden="true" />
-        <span>
-          <span className="block text-title font-semibold">First task received</span>
-          <span className="mt-1 block text-body" style={{ color: "var(--fg-3)" }}>
-            A real Feishu message created the Agent's first Task. OpenTag setup is complete.
-          </span>
-        </span>
-      </div>
-      <LabeledDetail label="First message">
-        Summarize today's launch discussion and turn it into owners and next steps.
-      </LabeledDetail>
-      <Button type="button" variant="cta" className="w-fit">
-        Open first task <ArrowRight className="h-4 w-4" />
+      <PreviewStatusRow state="ok" label="gandy2025 assistant received its first task from Feishu." />
+      <Button asChild className="w-fit">
+        <a href={`/?c=${encodeURIComponent(PREVIEW_FIRST_USE_CHAT_ID)}`}>
+          View task <ArrowRight className="h-4 w-4" />
+        </a>
       </Button>
     </div>
   );
@@ -746,7 +742,7 @@ function PreviewStatusRow({ state, label }: { state: "waiting" | "ok"; label: Re
       style={{ gap: "var(--sp-2)", color: "var(--fg-3)" }}
     >
       {state === "ok" ? (
-        <Check className="h-3.5 w-3.5" aria-hidden="true" />
+        <Check className="h-3.5 w-3.5" style={{ color: "var(--success)" }} aria-hidden="true" />
       ) : (
         <span
           aria-hidden="true"
