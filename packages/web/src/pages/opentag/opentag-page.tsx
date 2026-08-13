@@ -251,11 +251,14 @@ export function OpenTagPage(): ReactElement | null {
   //
   // The member id is in the key for the same reason: a cached answer belongs to
   // whoever it was read for.
-  // One scan per (member, Agent, Bot), reused across polls so its verdict cache
-  // survives them; any of the three changing throws the whole thing away.
+  // One scan per (Agent, Bot), reused across polls so its verdict cache
+  // survives them; either changing throws the whole thing away. It is not keyed
+  // by member because what it remembers — which chat carries which Bot
+  // binding — is the same answer whoever asks. Who may act on that answer is
+  // decided by the ownership gate and the query key, not here.
   const scanFirstUse = useMemo(
     () => createOpenTagFirstUseScan(agentUuid ?? "", botBindingId ?? ""),
-    [agentUuid, botBindingId, memberId],
+    [agentUuid, botBindingId],
   );
   const firstUseQuery = useQuery({
     queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
