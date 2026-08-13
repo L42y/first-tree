@@ -192,35 +192,6 @@ describe("AuthProvider", () => {
     expect(flagsMocks.clearOnboardingJoinPath).toHaveBeenCalled();
   });
 
-  it("reports hasNoTeam only once an authoritative /me proves the caller belongs to nothing", async () => {
-    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
-    apiMocks.apiGet.mockResolvedValue({
-      user: { id: "user-1", username: "gandy", displayName: "Gandy", avatarUrl: null },
-      memberships: [],
-      defaultOrganizationId: null,
-      onboarding: { step: "connect", dismissedAt: null, completedAt: null },
-    });
-
-    await renderAuth();
-
-    expect(latestAuth?.meAuthoritative).toBe(true);
-    expect(latestAuth?.hasNoTeam).toBe(true);
-    expect(latestAuth?.organizationId).toBeNull();
-  });
-
-  it("does not report hasNoTeam when /me failed, even though memberships are empty", async () => {
-    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
-    apiMocks.apiGet.mockRejectedValue(new Error("network"));
-
-    await renderAuth();
-
-    // An unreachable /me leaves memberships empty too. Treating that as "no
-    // Team" would eject a real member out of their workspace.
-    expect(latestAuth?.meLoaded).toBe(true);
-    expect(latestAuth?.meAuthoritative).toBe(false);
-    expect(latestAuth?.hasNoTeam).toBe(false);
-  });
-
   it("preseeds the selected organization from the stored token subject before /me settles", async () => {
     localStorage.setItem("first-tree:selectedOrganizationId:user-1", "org-2");
     apiMocks.getStoredTokens.mockReturnValue({

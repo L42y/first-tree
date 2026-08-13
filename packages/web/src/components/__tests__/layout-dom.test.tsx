@@ -10,7 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 const authMock = vi.hoisted(() => ({
   value: {
-    organizationId: "org-1" as string | null,
+    organizationId: "org-1",
     role: "admin" as const,
     user: { id: "user-self", username: "gandy", displayName: "Gandy", avatarUrl: null },
     memberships: [],
@@ -199,7 +199,6 @@ beforeEach(() => {
   clientMocks.get.mockResolvedValue([{ id: "org-1", name: "acme", displayName: "Acme", role: "admin" }]);
   disconnectMock.value = { rows: [], firstHostname: null };
   versionMock.value = false;
-  authMock.value.organizationId = "org-1";
   authMock.value.logout.mockClear();
   authMock.value.selectOrganization.mockClear();
 });
@@ -210,18 +209,6 @@ afterEach(() => {
 });
 
 describe("Layout", () => {
-  it("does not mount or open the org command palette before a Team is selected", async () => {
-    authMock.value.organizationId = null;
-    const { container, root } = await renderLayout("/settings");
-
-    expect(container.querySelector('button[aria-label="Jump to… (⌘K)"]')).toBeNull();
-    await keyDown("k", { metaKey: true });
-    expect(container.querySelector('[role="dialog"][aria-label="Mock command palette"]')).toBeNull();
-    expect(container.querySelector('[data-testid="user-menu"]')).not.toBeNull();
-
-    await act(async () => root.unmount());
-  });
-
   it("renders wide chrome, opens the command palette by button and keyboard, and handles hover styling", async () => {
     const { container, root } = await renderLayout("/context");
 

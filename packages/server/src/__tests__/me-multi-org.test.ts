@@ -2,7 +2,6 @@ import { eq, inArray } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { describe, expect, it } from "vitest";
 import { connectDatabase } from "../db/connection.js";
-import { agents } from "../db/schema/agents.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
@@ -11,7 +10,7 @@ import { createAgent } from "../services/agents/identity.js";
 import { signTokensForUser } from "../services/auth/tokens.js";
 import { rotateInvitation } from "../services/team/invitation.js";
 import { createMember, deleteMember } from "../services/team/member.js";
-import { ensureMembership, leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
+import { leaveOrganization, selfCreateOrganization } from "../services/team/membership.js";
 import { uuidv7 } from "../uuid.js";
 import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 
@@ -98,7 +97,9 @@ async function expectAdditionalTeamCreationRejectedAfterMembershipLoss(
     const outcome = await creation;
     expect(outcome.status).toBe("rejected");
     if (outcome.status === "rejected") {
-      expect(outcome.error).toMatchObject({ message: expect.stringContaining("starting an Agent") });
+      expect(outcome.error).toMatchObject({
+        message: expect.stringContaining("An active Team membership is required"),
+      });
     }
     expect(
       await app.db
@@ -154,14 +155,14 @@ describe("Multi-org self-service", () => {
     expect(meBody.memberships.some((m) => m.organizationId === body.organization.id)).toBe(true);
   });
 
-  it("POST /me/organizations cannot create an empty first Team", async () => {
+  it("POST /me/organizations refuses a caller with no active Team membership", async () => {
     const app = getApp();
     const userId = uuidv7();
     await app.db.insert(users).values({
       id: userId,
-      username: `teamless-org-create-${crypto.randomUUID().slice(0, 8)}`,
+      username: `no-membership-org-create-${crypto.randomUUID().slice(0, 8)}`,
       passwordHash: "test",
-      displayName: "Team-less Creator",
+      displayName: "No Membership Creator",
     });
     const tokens = await signTokensForUser(app.config.secrets.jwtSecret, userId, app.config.auth);
 
@@ -173,7 +174,7 @@ describe("Multi-org self-service", () => {
     });
 
     expect(res.statusCode).toBe(409);
-    expect(res.json<{ error: string }>().error).toContain("starting an Agent");
+    expect(res.json<{ error: string }>().error).toContain("An active Team membership is required");
     const created = await app.db
       .select({ id: organizations.id })
       .from(organizations)
@@ -183,10 +184,10 @@ describe("Multi-org self-service", () => {
     await expect(
       selfCreateOrganization(app.db, {
         userId,
-        username: `teamless-org-create-${userId.slice(0, 8)}`,
+        username: `no-membership-org-create-${userId.slice(0, 8)}`,
         displayName: "Service Escape Team",
       }),
-    ).rejects.toThrow("starting an Agent");
+    ).rejects.toThrow("An active Team membership is required");
   });
 
   it("serializes additional-Team authority behind a concurrent last-membership leave", async () => {
@@ -281,10 +282,6 @@ describe("Multi-org self-service", () => {
       headers: { authorization: `Bearer ${admin.accessToken}` },
       payload: { displayName: "Second" },
     });
-    await app.db
-      .update(agents)
-      .set({ metadata: { firstTeamAgentContinuation: { agentId: "transferred-first-agent" } } })
-      .where(eq(agents.uuid, admin.humanAgentUuid));
 
     const leaveRes = await app.inject({
       method: "POST",
@@ -308,19 +305,6 @@ describe("Multi-org self-service", () => {
     const meBody = me.json<{ memberships: Array<{ organizationId: string }> }>();
     expect(meBody.memberships.length).toBe(1);
     expect(meBody.memberships[0]?.organizationId).not.toBe(admin.organizationId);
-
-    await ensureMembership(app.db, {
-      userId: admin.userId,
-      organizationId: admin.organizationId,
-      role: "member",
-      displayName: "Ignored stale label",
-      username: admin.username,
-    });
-    const [restoredMirror] = await app.db
-      .select({ metadata: agents.metadata })
-      .from(agents)
-      .where(eq(agents.uuid, admin.humanAgentUuid));
-    expect(restoredMirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
   });
 
   it("POST /me/memberships/:memberId/leave hides memberships owned by another user", async () => {

@@ -32,14 +32,7 @@ import { computeWorking } from "../chat/sessions/status.js";
 import { notifyRecipients } from "../notifier.js";
 import { sendToClient } from "../runtime/connection-manager.js";
 import { pickDefaultMembership } from "../team/default-membership.js";
-import {
-  createPersonalTeam,
-  lockMembershipLifecycleUser,
-  MEMBER_STATUSES,
-  personalTeamDisplayName,
-  reactivateMembership,
-  syncCurrentUserDisplayName,
-} from "../team/membership.js";
+import { MEMBER_STATUSES, reactivateMembership, syncCurrentUserDisplayName } from "../team/membership.js";
 import { assertOfficialLandingCampaignClient, assertTrialQuota, isLandingCampaignServiceOrg } from "./guards.js";
 import {
   buildLandingCampaignAgentMetadata,
@@ -122,7 +115,7 @@ async function resolveCallerMembership(
   db: Database,
   userId: string,
   organizationId?: string,
-): Promise<ActiveMembership | null> {
+): Promise<ActiveMembership> {
   const rows = await db
     .select({
       id: members.id,
@@ -142,16 +135,10 @@ async function resolveCallerMembership(
         return picked ? rows.find((row) => row.id === picked.id) : undefined;
       })();
 
-  return selected ?? null;
-}
-
-function assertCallerCanStartLandingCampaign(app: FastifyInstance, caller: ActiveMembership): void {
-  if (caller.role !== "admin") {
-    throw new ForbiddenError("Only organization admins can start a First Tree landing campaign trial.");
+  if (!selected) {
+    throw new NotFoundError("Active membership not found");
   }
-  if (isLandingCampaignServiceOrg(app.config, caller.organizationId)) {
-    throw new ForbiddenError("Landing campaign trials cannot be started in the First Tree service organization.");
-  }
+  return selected;
 }
 
 async function resolveAvailableServiceAgentName(db: Database, orgId: string): Promise<string> {
@@ -332,8 +319,7 @@ async function ensureTrialAgent(
 async function provisionTrialAgent(
   app: FastifyInstance,
   input: {
-    userId: string;
-    organizationId?: string;
+    organizationId: string;
     serviceUserId: string;
     officialClientId: string;
     runtimeProvider: RuntimeProvider;
@@ -341,53 +327,23 @@ async function provisionTrialAgent(
     skillSet: LandingCampaignSkillSet;
   },
 ): Promise<{
-  caller: ActiveMembership;
   serviceMember: typeof members.$inferSelect;
   trialAgent: Awaited<ReturnType<typeof ensureTrialAgent>>;
 }> {
+  const lockKey = `${input.organizationId}:${input.campaign}`;
   return app.db.transaction(async (tx) => {
-    // Drizzle's transaction callback exposes the same runtime query surface as
-    // `Database`, but its inferred type omits the app's relational-query
-    // decoration. The provisioning helpers use only query-builder methods.
-    const db = tx as unknown as Database;
-    // The stable user row is the serialization point shared by every
-    // first-Team entry. Two Quickstart tabs therefore cannot mint two Teams.
-    const lockedUser = await lockMembershipLifecycleUser(db, input.userId);
-
-    let caller = await resolveCallerMembership(db, input.userId, input.organizationId);
-    if (!caller) {
-      // Supplying a Team id is an existing-Team request, never permission to
-      // create a replacement when that membership cannot be resolved.
-      if (input.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
-        throw new NotFoundError("Active membership not found");
-      }
-      if (app.config.access?.allowedOrganizationId) {
-        throw new ForbiddenError("This server requires an invitation link to join a team.");
-      }
-      const team = await createPersonalTeam(db, {
-        userId: input.userId,
-        username: lockedUser.username,
-        teamDisplayName: personalTeamDisplayName(lockedUser.displayName),
-        userDisplayName: lockedUser.displayName,
-      });
-      caller = await resolveCallerMembership(db, input.userId, team.organizationId);
-      if (!caller) throw new Error("Unexpected: created Team has no active caller membership");
-    }
-
-    assertCallerCanStartLandingCampaign(app, caller);
-
-    const lockKey = `${caller.organizationId}:${input.campaign}`;
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('landing_campaign_trial'), hashtext(${lockKey}))`);
-    const serviceMember = await ensureServiceMember(db, caller.organizationId, input.serviceUserId);
+    const db = tx as unknown as Database;
+    const serviceMember = await ensureServiceMember(db, input.organizationId, input.serviceUserId);
     const trialAgent = await ensureTrialAgent(db, {
-      organizationId: caller.organizationId,
+      organizationId: input.organizationId,
       serviceMemberId: serviceMember.id,
       officialClientId: input.officialClientId,
       runtimeProvider: input.runtimeProvider,
       campaign: input.campaign,
       skillSet: input.skillSet,
     });
-    return { caller, serviceMember, trialAgent };
+    return { serviceMember, trialAgent };
   });
 }
 
@@ -570,20 +526,17 @@ export async function startLandingCampaignTrial(
   const skillSet = getLandingCampaignSkillSet(body.campaign);
   if (!skillSet) throw new NotFoundError(`Landing campaign "${body.campaign}" not found`);
   const repo = parseRepo(body.repoUrl);
-  // Preserve the existing authorization-before-runtime-config behavior for
-  // callers who already have a Team. A Team-less caller intentionally falls
-  // through so the validated official runtime can participate in the atomic
-  // first-Team transaction below.
-  const existingCaller = await resolveCallerMembership(app.db, userId, body.organizationId);
-  if (existingCaller) {
-    assertCallerCanStartLandingCampaign(app, existingCaller);
-  } else if (body.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
-    throw new NotFoundError("Active membership not found");
+  const caller = await resolveCallerMembership(app.db, userId, body.organizationId);
+  if (caller.role !== "admin") {
+    throw new ForbiddenError("Only organization admins can start a First Tree landing campaign trial.");
   }
+  if (isLandingCampaignServiceOrg(app.config, caller.organizationId)) {
+    throw new ForbiddenError("Landing campaign trials cannot be started in the First Tree service organization.");
+  }
+
   await assertOfficialLandingCampaignClient(app.db, config.clientId, config.serviceUserId, config.serviceOrgId);
-  const { caller, serviceMember, trialAgent } = await provisionTrialAgent(app, {
-    userId,
-    ...(body.organizationId ? { organizationId: body.organizationId } : {}),
+  const { serviceMember, trialAgent } = await provisionTrialAgent(app, {
+    organizationId: caller.organizationId,
     serviceUserId: config.serviceUserId,
     officialClientId: config.clientId,
     runtimeProvider: config.runtimeProvider,

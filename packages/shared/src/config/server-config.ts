@@ -140,16 +140,6 @@ export const serverConfigSchema = defineConfig({
   channel: field(z.enum(["dev", "staging", "prod"]).default("dev"), {
     env: "FIRST_TREE_CHANNEL",
   }),
-  opentag: {
-    /**
-     * Enables the Agent-first onboarding entry only after its Runtime,
-     * channel, and first-use continuation can ship as one reachable flow.
-     * Off by default so partial rollout cannot strand a new account.
-     */
-    agentFirstOnboardingEnabled: field(z.boolean().default(false), {
-      env: "FIRST_TREE_OPENTAG_AGENT_FIRST_ONBOARDING_ENABLED",
-    }),
-  },
   growth: {
     /**
      * Enables the Cloud side of public growth funnels handed off from website

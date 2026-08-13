@@ -1,6 +1,4 @@
 import { z } from "zod";
-import { agentNameSchema, agentVisibilitySchema } from "./agent.js";
-import { agentTemplateIdsSchema } from "./agent-template.js";
 import { landingCampaignActionContextSchema } from "./landing-campaign.js";
 
 /**
@@ -124,7 +122,7 @@ export type KickoffOnboardingResult = z.infer<typeof kickoffOnboardingResultSche
  * stream alongside server-emitted events (`team_created`, `dismissed`).
  *
  * Server emits:
- *   - `team_created`           — when an explicit first-Agent start creates the Team
+ *   - `team_created`           — at OAuth callback when joinPath === "solo"
  *   - `dismissed`              — when PATCH /me/onboarding flips dismissed
  *
  * Web reports:
@@ -194,68 +192,5 @@ export const meMembershipSchema = z.object({
   onboardingSuppressedAt: z.string().nullable(),
   onboardingSuppressedReason: z.enum(["finish_later", "completed", "invitee_skip"]).nullable(),
   onboardingCompletedAt: z.string().nullable(),
-  firstTeamAgentContinuation: z
-    .object({
-      agentId: z.string(),
-      status: z.enum(["active", "suspended", "deleted"]),
-    })
-    .nullable()
-    .optional(),
 });
 export type MeMembership = z.infer<typeof meMembershipSchema>;
-
-/**
- * Stable conflict codes for the first-Team Agent boundary. A generic 409 may
- * also describe an atomic creation failure (for example an Agent name
- * collision), so the Web must branch only on this exact race identity.
- */
-export const PROVISION_FIRST_TEAM_AGENT_ERROR_CODES = {
-  REQUEST_CONFLICT: "first_team_agent_request_conflict",
-} as const;
-export type ProvisionFirstTeamAgentErrorCode =
-  (typeof PROVISION_FIRST_TEAM_AGENT_ERROR_CODES)[keyof typeof PROVISION_FIRST_TEAM_AGENT_ERROR_CODES];
-
-/**
- * Body of `POST /me/team-agents` — the user-scoped provisioning call a signed-in
- * user makes when they confirm their first Team Agent. It is user-scoped (Class
- * A) rather than org-scoped because the starting state has no organization at
- * all: browsing and signing in no longer mint an empty Team, so the Team is
- * created by this call. Existing-Team Agent creation remains exclusively on
- * the Team-scoped `POST /orgs/:orgId/agents` surface.
- */
-export const provisionFirstTeamAgentSchema = z
-  .object({
-    /**
-     * Stable UUID v7 generated once for this explicit confirmation. The
-     * server derives the Agent identity from it, so only the same logical
-     * request can resolve a completed retry.
-     */
-    requestId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i),
-    name: agentNameSchema.optional(),
-    displayName: z.string().min(1).max(200).optional(),
-    templateIds: agentTemplateIdsSchema.refine((ids) => ids.length === 1, {
-      message: "First Team Agent provisioning requires exactly one Template.",
-    }),
-  })
-  .strict();
-export type ProvisionFirstTeamAgent = z.infer<typeof provisionFirstTeamAgentSchema>;
-
-/**
- * Result of `POST /me/team-agents`. `teamCreated` / `agentCreated` are false on
- * a converged retry: the call is idempotent, so a repeat resolves the same
- * first Team and first Agent instead of minting a second one.
- */
-export const provisionFirstTeamAgentResultSchema = z.object({
-  organizationId: z.string(),
-  memberId: z.string(),
-  teamCreated: z.boolean(),
-  agentCreated: z.boolean(),
-  agent: z.object({
-    uuid: z.string(),
-    name: z.string().nullable(),
-    displayName: z.string(),
-    visibility: agentVisibilitySchema,
-    clientId: z.string().nullable(),
-  }),
-});
-export type ProvisionFirstTeamAgentResult = z.infer<typeof provisionFirstTeamAgentResultSchema>;

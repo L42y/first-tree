@@ -122,7 +122,6 @@ describe("OIDC callback — acceptance", () => {
     const { createTestApp } = (await import("./helpers.js")) as { createTestApp: CreateTestApp };
     app = await createTestApp({
       authMode: "oidc-required",
-      agentFirstOnboardingEnabled: true,
       oidc: { issuer: ISSUER, clientId: "test-oidc-client-id", clientSecret: "test-oidc-client-secret" },
     });
   });
@@ -179,6 +178,25 @@ describe("OIDC callback — acceptance", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.identifier).toBe(JSON.stringify([ISSUER, "sub-success"]));
     expect(rows[0]?.email).toBe("alice@example.com");
+
+    // A solo sign-in owns a personal Team from the callback onward, and the
+    // callback carries it so the SPA activates it instead of a stale
+    // last-used selection. Everything behind the workspace guard is
+    // org-scoped, so an omitted `org` here would land the new user nowhere.
+    const memberships = await app.db
+      .select()
+      .from(members)
+      .where(eq(members.userId, rows[0]?.userId ?? ""));
+    expect(memberships).toHaveLength(1);
+    const membership = memberships[0];
+    expect(membership).toMatchObject({ role: "admin", status: "active" });
+    expect(fragment.get("org")).toBe(membership?.organizationId);
+    expect(fragment.get("orgPinned")).toBe("1");
+    const [organization] = await app.db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, membership?.organizationId ?? ""));
+    expect(organization?.displayName).toBe("Alice's team");
   });
 
   it("converges on (issuer, sub): a second sign-in with the same subject reuses the same user", async () => {
@@ -579,12 +597,12 @@ describe("OIDC callback — acceptance", () => {
     const usersAfter = await app.db.select({ id: users.id }).from(users);
     expect(usersAfter.length - userCountBefore).toBe(1);
 
-    // No membership at all: first sign-in mints no Team, and IdP org/group/role
-    // claims must not conjure one either.
+    // Exactly 1 new membership should have been created (the ordinary first-login personal org).
+    // No additional memberships should have been created from IdP claims.
     const membersAfter = await app.db.select({ id: members.id, userId: members.userId }).from(members);
     const newMemberships = membersAfter.filter((m) => !membersBefore.some((b) => b.id === m.id));
-    expect(newMemberships).toEqual([]);
-    expect(userId).toBeDefined();
+    expect(newMemberships).toHaveLength(1);
+    expect(newMemberships[0]?.userId).toBe(userId);
 
     // Verify the identity metadata does NOT persist org/group/role IdP claims
     const metadata = identity?.metadata as Record<string, unknown>;
@@ -598,7 +616,7 @@ describe("OIDC callback — acceptance", () => {
   it("returning multi-Team user: extra IdP claims do not mutate existing org/member/role state", async () => {
     const { createPersonalTeam } = await import("../services/team/membership.js");
 
-    // First sign-in: creates the user only — sign-in no longer mints a Team.
+    // First sign-in: creates the user + Team1 (personal org via bootstrap).
     mockVerifyIdToken.mockResolvedValue(
       baseClaims("returning-sub", { email: "returning@example.com", email_verified: true, name: "Returning User" }),
     );
@@ -613,30 +631,21 @@ describe("OIDC callback — acceptance", () => {
     );
     const userId = identity?.userId;
     expect(userId).toBeDefined();
-    if (!userId) throw new Error("Expected returning OIDC identity to resolve a user");
 
     // Fetch user info needed for createPersonalTeam.
     const [userRow] = await app.db
       .select({ username: users.username, displayName: users.displayName })
       .from(users)
-      .where(eq(users.id, userId))
+      .where(eq(users.id, userId!))
       .limit(1);
     expect(userRow).toBeDefined();
-    if (!userRow) throw new Error("Expected returning OIDC user row");
 
-    // Give the user the two Teams this case is about. Both are created
-    // explicitly now that sign-in provisions none.
+    // Create Team2 (second membership) for the same user.
     await createPersonalTeam(app.db, {
-      userId,
-      username: `${userRow.username}-team1`,
-      teamDisplayName: "First Team",
-      userDisplayName: userRow.displayName,
-    });
-    await createPersonalTeam(app.db, {
-      userId,
-      username: `${userRow.username}-team2`,
+      userId: userId!,
+      username: `${userRow!.username}-team2`,
       teamDisplayName: "Second Team",
-      userDisplayName: userRow.displayName,
+      userDisplayName: userRow!.displayName,
     });
 
     // Snapshot exact org + member rows BEFORE the returning callback.
@@ -644,7 +653,7 @@ describe("OIDC callback — acceptance", () => {
     const membersBefore = await app.db
       .select({ id: members.id, userId: members.userId, orgId: members.organizationId, role: members.role })
       .from(members)
-      .where(eq(members.userId, userId));
+      .where(eq(members.userId, userId!));
     expect(membersBefore).toHaveLength(2); // Must have 2 teams before the callback.
 
     // Second sign-in: IdP returns extra org/groups/roles claims that must be ignored.
@@ -669,7 +678,7 @@ describe("OIDC callback — acceptance", () => {
     const membersAfter = await app.db
       .select({ id: members.id, userId: members.userId, orgId: members.organizationId, role: members.role })
       .from(members)
-      .where(eq(members.userId, userId));
+      .where(eq(members.userId, userId!));
     expect(membersAfter).toEqual(membersBefore);
   });
 });

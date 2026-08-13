@@ -40,9 +40,6 @@ const DEFAULT_AUTH = {
   user: { id: "preview-human", displayName: "Gandy", username: "gandy2025", avatarUrl: null },
   memberships: [],
   currentMembership: null,
-  // Preview pages render a fully set-up Team; `memberships` is only empty
-  // because these fixtures do not model the roster.
-  hasNoTeam: false,
   organizationId: "org-preview",
   memberId: "member-preview",
   role: "admin",

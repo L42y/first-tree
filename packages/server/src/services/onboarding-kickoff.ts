@@ -120,7 +120,7 @@ export type KickoffOnboardingArgs = {
    * How the membership's onboarding state is stamped once the chat exists:
    *   - "completed"    — terminal completion (audit stamp + suppressor,
    *     reason="completed"), the single-chat start-chat default;
-   *   - "invitee_skip" — legacy wire name for a Team-agent start: suppress auto-open only
+   *   - "invitee_skip" — team-agent start: suppress auto-open only
    *     (reason="invitee_skip"), never completion, so the member's personal
    *     agent setup stays pending and resumable;
    *   - "none"         — stamp nothing (support/background chats that defer

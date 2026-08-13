@@ -83,7 +83,6 @@ export type CreateTestAppOptions = {
   /** Document review (docloop) routes. Defaults to enabled in tests. */
   docsEnabled?: boolean;
   growthLandingPagesEnabled?: boolean;
-  agentFirstOnboardingEnabled?: boolean;
   landingCampaignServiceUserId?: string;
   landingCampaignServiceOrgId?: string;
   landingCampaignClientId?: string;
@@ -127,9 +126,6 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
   };
   const config: Config = {
     channel: opts.channel ?? "dev",
-    opentag: {
-      agentFirstOnboardingEnabled: opts.agentFirstOnboardingEnabled ?? false,
-    },
     growth: {
       landingPagesEnabled: opts.growthLandingPagesEnabled ?? false,
       landingCampaignMaxAgentTurns: opts.landingCampaignMaxAgentTurns ?? 1,

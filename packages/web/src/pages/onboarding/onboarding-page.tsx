@@ -33,27 +33,12 @@ import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
  * Context access does not write onboarding completion.
  */
 export function OnboardingPage() {
-  const {
-    meLoaded,
-    role,
-    onboardingStep,
-    onboardingDismissedAt,
-    onboardingCompletedAt,
-    currentOrgHasPersonalAgent,
-    currentMembership,
-  } = useAuth();
+  const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
+    useAuth();
   const leaveDecision = useRef<boolean | null>(null);
 
   if (!meLoaded) {
     return <div className="min-h-screen bg-background" />;
-  }
-  const firstTeamContinuation = onboardingCompletedAt ? null : currentMembership?.firstTeamAgentContinuation;
-  if (firstTeamContinuation) {
-    const destination =
-      firstTeamContinuation.status === "deleted"
-        ? "/templates"
-        : `/agents/${encodeURIComponent(firstTeamContinuation.agentId)}/runtime`;
-    return <Navigate to={destination} replace />;
   }
   if (leaveDecision.current === null) {
     leaveDecision.current = shouldLeaveOnboarding({
