@@ -1209,9 +1209,18 @@ class ClassProvenanceAnalysis {
         this.bindParameterName(param.name, provenance, map);
         break;
       }
-      const arg = actual[index] ?? param.initializer;
-      if (!arg) continue;
-      this.bindParameterName(param.name, this.exprProvenance(arg, caller), map);
+      const explicit = actual[index];
+      if (explicit) {
+        this.bindParameterName(param.name, this.exprProvenance(explicit, caller), map);
+        continue;
+      }
+      if (!param.initializer) continue;
+      this.paramTaintStack.push(map);
+      try {
+        this.bindParameterName(param.name, this.exprProvenance(param.initializer, callee), map);
+      } finally {
+        this.paramTaintStack.pop();
+      }
     }
     return map;
   }
@@ -1494,6 +1503,7 @@ class ClassProvenanceAnalysis {
         }
       }
       if (typeHasName(this.checker.getTypeAtLocation(recvExpr), this.checker, new Set(["Array", "ReadonlyArray"]))) {
+        if (recv.taints.length > 0) return { taints: recv.taints, freshContainer: false };
         return FRESH_PROVENANCE;
       }
       if (recv.taints.some((taint) => taint.kind === "ledger")) {
