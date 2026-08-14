@@ -1,4 +1,4 @@
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { feishuBotChatUrl, selectReadyTeamAgents, teamAgentResponsibility } from "../member-team-agents.js";
 
@@ -39,7 +39,7 @@ function binding(index: number, overrides: Partial<FeishuBotBinding> = {}): Feis
     tenantKey: overrides.tenantKey ?? "tenant-1",
     status: overrides.status ?? "active",
     connectionStatus: overrides.connectionStatus ?? "connected",
-    grantedScopes: overrides.grantedScopes ?? [],
+    grantedScopes: overrides.grantedScopes ?? [...FEISHU_REQUIRED_SCOPES],
     registrationUrl: overrides.registrationUrl ?? null,
     registrationExpiresAt: overrides.registrationExpiresAt ?? null,
     lastConnectedAt: overrides.lastConnectedAt ?? NOW,

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { type Agent, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
+import { type Agent, FEISHU_REQUIRED_SCOPES, type FeishuBotBinding, OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -57,7 +57,7 @@ function binding(index: number, overrides: Partial<FeishuBotBinding> = {}): Feis
     tenantKey: "tenant-1",
     status: overrides.status ?? "active",
     connectionStatus: overrides.connectionStatus ?? "connected",
-    grantedScopes: [],
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     registrationUrl: null,
     registrationExpiresAt: null,
     lastConnectedAt: NOW,

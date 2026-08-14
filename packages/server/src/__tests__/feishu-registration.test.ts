@@ -284,6 +284,7 @@ describe("official Feishu QR registration", () => {
         "im:message",
         "im:message:send_as_bot",
         "im:message.group_at_msg:readonly",
+        "im:message.group_msg",
         "im:message.p2p_msg:readonly",
         "im:chat.members:read",
         "im:chat:readonly",
@@ -790,6 +791,90 @@ describe("official Feishu QR registration", () => {
 
     await vi.waitFor(() => expect(sdkMocks.addReaction).toHaveBeenCalledWith("om_acknowledge", "Get"));
     expect(await app.db.select().from(messages)).toHaveLength(1);
+    await app.feishuIntegration.revoke(a.agent.uuid);
+  });
+
+  it("keeps ignored all-group traffic from updating connection activity or creating side effects", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    await app.feishuIntegration.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      return row?.status === "active";
+    });
+
+    const messageHandler = sdkMocks.handlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    await messageHandler?.({ ...receivedMessage("ignored_group"), chatType: "group", chatId: "oc_unrelated" });
+
+    const [stored] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+    expect(stored?.lastEventAt).toBeNull();
+    expect(await app.db.select().from(messages)).toEqual([]);
+    expect(await app.db.select().from(imChatBindings)).toEqual([]);
+    expect(sdkMocks.addReaction).not.toHaveBeenCalled();
+    await app.feishuIntegration.revoke(a.agent.uuid);
+  });
+
+  it("accepts a group reply when the provider identifies the Bot by open_bot_id beside an App id", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    await app.feishuIntegration.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      return row?.status === "active";
+    });
+
+    const messageHandler = sdkMocks.handlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    const chatId = "oc_direct_reply";
+    await messageHandler?.({
+      ...receivedMessage("activate_reply"),
+      chatType: "group",
+      chatId,
+      mentionedBot: true,
+      mentions: [{ key: "@_user_1", openId: "ou_created_bot", name: "Bot", isBot: true }],
+    });
+
+    sdkMocks.request.mockResolvedValueOnce({
+      code: 0,
+      msg: "ok",
+      data: {
+        items: [
+          {
+            chat_id: chatId,
+            sender: {
+              id: "cli_created",
+              id_type: "app_id",
+              sender_type: "app",
+              open_bot_id: "ou_created_bot",
+            },
+          },
+        ],
+      },
+    });
+    await messageHandler?.({
+      ...receivedMessage("direct_reply"),
+      chatType: "group",
+      chatId,
+      replyToMessageId: "om_bot_parent",
+    });
+
+    expect(await app.db.select().from(messages)).toHaveLength(2);
+    expect(sdkMocks.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        url: "/open-apis/im/v1/messages/om_bot_parent",
+        signal: expect.any(AbortSignal),
+      }),
+    );
     await app.feishuIntegration.revoke(a.agent.uuid);
   });
 

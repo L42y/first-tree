@@ -3,11 +3,13 @@ import { isDeepStrictEqual } from "node:util";
 import {
   type FeishuOutboundMediaIdentity,
   feishuOutboundIntentRequestSchema,
+  feishuReferenceContextSchema,
   MESSAGE_SOURCES,
   readFeishuMessageMetadata,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { imBotBindings } from "../../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../../db/schema/im-chat-bindings.js";
 import { messages } from "../../db/schema/messages.js";
@@ -105,6 +107,13 @@ async function assertReplyTarget(
 
 /** Agent-runtime-only credential and immutable intent endpoints for direct official lark-cli use. */
 export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/feishu/messages/:firstTreeMessageId/reference-context", async (request, reply) => {
+    const identity = requireAgent(request);
+    const params = z.object({ firstTreeMessageId: z.string().uuid() }).parse(request.params);
+    const context = await app.feishuIntegration.getReferenceContext(identity.uuid, params.firstTreeMessageId);
+    return reply.send(feishuReferenceContextSchema.parse(context));
+  });
+
   app.post("/feishu/credentials", async (request, reply) => {
     const identity = requireAgent(request);
     const grant = await app.feishuIntegration.getCliGrant(identity.uuid);

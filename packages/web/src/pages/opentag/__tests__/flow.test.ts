@@ -1,4 +1,4 @@
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import { isFeishuHandoffUsable } from "../../../features/feishu/binding-view.js";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
@@ -199,7 +199,7 @@ describe("when the Feishu handoff is genuinely usable", () => {
     tenantKey: null,
     status: "active",
     connectionStatus: "connected",
-    grantedScopes: [],
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     registrationUrl: null,
     registrationExpiresAt: null,
     lastConnectedAt: null,
@@ -233,5 +233,9 @@ describe("when the Feishu handoff is genuinely usable", () => {
 
   it("refuses a ready Computer with no reachable Bot", () => {
     expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
+  });
+
+  it("refuses a reachable Bot whose required permissions are stale", () => {
+    expect(isFeishuHandoffUsable({ ...usable, grantedScopes: ["im:message"] })).toBe(false);
   });
 });

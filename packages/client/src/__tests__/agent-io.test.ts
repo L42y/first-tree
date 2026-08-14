@@ -193,6 +193,117 @@ describe("formatInboundContent", () => {
     }
   });
 
+  it("renders transient Feishu thread context before the current message without treating it as canonical history", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-context",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "current question",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "available",
+        scope: "thread",
+        messages: [
+          {
+            externalMessageId: "om_1",
+            senderId: "ou_alice",
+            senderName: "Alice",
+            isBot: false,
+            content: "first detail",
+            sentAt: "2026-08-14T02:00:00.000Z",
+          },
+          {
+            externalMessageId: "om_2",
+            senderId: "ou_bot",
+            senderName: "Helper Bot",
+            isBot: true,
+            content: "earlier answer",
+            sentAt: "2026-08-14T02:01:00.000Z",
+          },
+        ],
+        truncated: true,
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain("[Earlier in Feishu thread — reference context, not complete history]");
+    expect(out.indexOf("first detail")).toBeLessThan(out.indexOf("earlier answer"));
+    expect(out).toContain("[Only the most recent bounded Feishu context is shown]");
+    expect(out.indexOf("[Now — message that woke you]")).toBeLessThan(out.indexOf("current question"));
+  });
+
+  it("renders a stable unavailable marker while preserving the current Feishu trigger", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-unavailable",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "still handle this",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "unavailable",
+        scope: "chat",
+        messages: [],
+        truncated: false,
+        reason: "provider_unavailable",
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain("[Earlier in Feishu chat — reference context, not complete history]");
+    expect(out).toContain("Earlier Feishu context could not be loaded");
+    expect(out).toContain("still handle this");
+  });
+
+  it("caps rendered Feishu reference context at 64 KiB while retaining the newest message", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-oversized",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "current question",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "available",
+        scope: "thread",
+        messages: [
+          {
+            externalMessageId: "om_large",
+            senderId: "ou_alice",
+            senderName: "Alice",
+            isBot: false,
+            content: `newest ${"界".repeat(30_000)}`,
+            sentAt: "2026-08-14T02:00:00.000Z",
+          },
+        ],
+        truncated: false,
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    const block = out.slice(0, out.indexOf("[Now — message that woke you]"));
+    expect(Buffer.byteLength(block, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(block).toContain("[From: Alice");
+    expect(block).toContain("newest");
+    expect(block).toContain("[Only the most recent bounded Feishu context is shown]");
+  });
+
   it("adds the trusted Ask agent reply contract without changing the visible question", async () => {
     setCliBinding({ binName: "first-tree-staging", packageName: "first-tree-staging" });
     const human = { ...mkParticipant("human-1", "liuchao", "Liu Chao"), type: "human" };

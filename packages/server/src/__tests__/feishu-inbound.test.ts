@@ -82,6 +82,7 @@ describe("Feishu inbound pipeline", () => {
         headers: { "content-type": "image/png", "content-length": String(bytes.length) },
       }),
       addReaction: vi.fn().mockResolvedValue("reaction-ack"),
+      readParentMessage: vi.fn().mockResolvedValue(null),
       attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     };
   }
@@ -163,7 +164,7 @@ describe("Feishu inbound pipeline", () => {
 
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, ignoredInput, deps)).resolves.toEqual({
       state: "ignored",
-      reason: "group_without_mention",
+      reason: "group_without_trigger",
     });
     expect(deps.downloadResource).not.toHaveBeenCalled();
     expect(deps.addReaction).not.toHaveBeenCalled();
@@ -178,7 +179,7 @@ describe("Feishu inbound pipeline", () => {
     });
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, otherBotMention, deps)).resolves.toEqual({
       state: "ignored",
-      reason: "group_without_mention",
+      reason: "group_without_trigger",
     });
     expect(await app.db.select().from(messages)).toEqual([]);
 
@@ -213,6 +214,135 @@ describe("Feishu inbound pipeline", () => {
     expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(messages)).toEqual([]);
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
+  });
+
+  it("accepts a direct reply to this Bot and rejects unverifiable or foreign parents", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    const chatId = "oc_reply_group";
+    await ingestFeishuMessage(
+      app.db,
+      app.notifier,
+      binding,
+      normalizedMessage({
+        messageId: "om_activate_reply_chat",
+        chatId,
+        chatType: "group",
+        mentionedBot: true,
+        mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Bot", isBot: true }],
+      }),
+      deps,
+    );
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId,
+      sender: { id: "cli_bot", idType: "app_id", senderType: "app", openBotId: "ou_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_direct_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_bot_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toMatchObject({ state: "created" });
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId,
+      sender: { id: "cli_other", idType: "app_id", senderType: "app", openBotId: "ou_other_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_foreign_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_other_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId: "oc_other_group",
+      sender: { id: "cli_bot", idType: "app_id", senderType: "app", openBotId: "ou_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_cross_chat_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_cross_chat_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+
+    deps.readParentMessage.mockRejectedValueOnce(new Error("provider unavailable"));
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_unverified_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_unknown_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+    expect(await app.db.select().from(messages)).toHaveLength(2);
+  });
+
+  it("keeps an activated thread awake without another mention or parent lookup", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    const chatId = "oc_thread_group";
+    const rootId = "om_thread_root";
+    const threadId = "omt_active_thread";
+    const first = normalizedMessage({
+      messageId: rootId,
+      chatId,
+      chatType: "group",
+      threadId,
+      mentionedBot: true,
+      mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Bot", isBot: true }],
+    });
+    await expect(ingestFeishuMessage(app.db, app.notifier, binding, first, deps)).resolves.toMatchObject({
+      state: "created",
+    });
+
+    const followUp = normalizedMessage({
+      messageId: "om_thread_follow_up",
+      chatId,
+      chatType: "group",
+      threadId,
+      rootId,
+      mentionedBot: false,
+    });
+    await expect(ingestFeishuMessage(app.db, app.notifier, binding, followUp, deps)).resolves.toMatchObject({
+      state: "created",
+    });
+    expect(deps.readParentMessage).not.toHaveBeenCalled();
+    expect(await app.db.select().from(messages)).toHaveLength(2);
+    expect(await app.db.select().from(imChatBindings)).toHaveLength(1);
   });
 
   it("keeps the existing Bot inbound path active while a permission update is awaiting confirmation", async () => {

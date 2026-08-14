@@ -1,4 +1,4 @@
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { type FeishuBotBinding, hasCurrentFeishuRequiredScopes } from "@first-tree/shared";
 import { ExternalLink } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { ReactElement } from "react";
@@ -71,7 +71,12 @@ export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
  * answer them. Agent lifecycle is a separate caller-owned constraint.
  */
 export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
-  return !!binding && isFeishuBotReachable(binding) && binding.cli.state === "ready";
+  return (
+    !!binding &&
+    isFeishuBotReachable(binding) &&
+    hasCurrentFeishuRequiredScopes(binding.grantedScopes) &&
+    binding.cli.state === "ready"
+  );
 }
 
 /**

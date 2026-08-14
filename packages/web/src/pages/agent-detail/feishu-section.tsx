@@ -1,4 +1,4 @@
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, type FeishuBotBinding, hasCurrentFeishuRequiredScopes } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, CircleCheck, CircleMinus, Clock3, MessageSquare, QrCode, Unplug } from "lucide-react";
 import {
@@ -31,8 +31,8 @@ export type FeishuChannelState = "not-connected" | "setup-incomplete" | "ready" 
 /**
  * One user-value verdict for the whole channel. A reachable Bot is only half
  * of the promise: the Agent also needs its official CLI before it can reply.
- * Granted scopes are deliberately not interpreted here; the live connection
- * and CLI capability are the existing contracts that prove current use.
+ * The live connection, current permission bundle, and CLI capability must all
+ * hold before a surface promises that the handoff can carry work.
  */
 export function feishuChannelState(binding: FeishuBotBinding | null, agentStatus: Agent["status"]): FeishuChannelState {
   if (agentStatus !== "active") return "needs-attention";
@@ -101,9 +101,11 @@ function ChannelSummary({ binding, agentStatus }: { binding: FeishuBotBinding | 
           color: "var(--state-idle)",
           title: "Setup incomplete",
           detail:
-            binding && isFeishuBotReachable(binding)
-              ? "The Bot is reachable. Finish the Agent setup before teammates send it a task."
-              : "Finish connecting the Bot before teammates send this Agent a task.",
+            binding && !hasCurrentFeishuRequiredScopes(binding.grantedScopes)
+              ? "The Bot is online with its existing access. Update permissions to enable replies and thread context."
+              : binding && isFeishuBotReachable(binding)
+                ? "The Bot is reachable. Finish the Agent setup before teammates send it a task."
+                : "Finish connecting the Bot before teammates send this Agent a task.",
         };
     }
   })();
@@ -287,6 +289,14 @@ export function FeishuSection({ onOpenProfile, poll = true }: FeishuSectionProps
               ) : null
             }
           />
+          {!hasCurrentFeishuRequiredScopes(binding.grantedScopes) && (
+            <ConfigRow
+              label="Permissions"
+              value="Update required"
+              description="Allow this Bot to receive group replies, continue active threads, and load bounded chat context."
+              meta={<DenseBadge tone="warn">Action needed</DenseBadge>}
+            />
+          )}
           {ctx.canManageAgent && binding.registrationUrl && binding.status === "provisioning" && (
             <FeishuRegistrationQr registrationUrl={binding.registrationUrl} />
           )}
