@@ -395,6 +395,10 @@ const RECONNECT_MAX_MS = 30_000;
 const WS_CONNECT_TIMEOUT_MS = 10_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const INBOX_ACK_CONFIRM_TIMEOUT_MS = 3_000;
+const INBOX_ACK_MAX_SENDS = 2;
+const INBOX_ACK_PENDING_CAP = 1024;
+const INBOX_ACK_TIMEOUT_CLOSE_CODE = 1011;
+const INBOX_ACK_TIMEOUT_CLOSE_REASON = "inbox ack timeout";
 const INBOX_RECOVER_CONFIRM_TIMEOUT_MS = 3_000;
 const SESSION_EVENT_CONFIRM_TIMEOUT_MS = 3_000;
 const INBOX_RECOVER_TIMEOUT_CLOSE_CODE = 1011;
@@ -537,6 +541,8 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
    * limiter window. Cleared after one use.
    */
   private nextReconnectMinDelayMs = 0;
+  /** Guards the shared ACK confirm fail-close so a timeout and cap hit close the socket once. */
+  private inboxAckFailCloseStarted = false;
   private closing = false;
   private registered = false;
   /**
@@ -687,9 +693,9 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
 
   /**
    * Ack a delivered inbox entry over the WS data plane. New servers confirm
-   * ACKs with a correlated response; until then this keeps an in-memory retry
-   * record and resolves only after the server accepts/rejects it. Legacy
-   * servers keep the old fire-and-forget behaviour.
+   * ACKs with a correlated response; confirmed ACKs send at most twice on the
+   * same socket (initial + one retry) and never replay across a new socket.
+   * Legacy servers keep the old fire-and-forget behaviour.
    */
   sendInboxAck(entryId: number, agentId?: string): Promise<void> {
     if (!this.serverSupportsInboxAckConfirm) {
@@ -699,6 +705,13 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
 
     const existing = this.pendingInboxAcks.get(entryId);
     if (existing) return existing.promise;
+
+    if (this.pendingInboxAcks.size >= INBOX_ACK_PENDING_CAP) {
+      const pending = this.createPendingInboxAck(entryId, agentId);
+      this.pendingInboxAcks.set(entryId, pending);
+      this.failCloseInboxAckConfirmations("inbox ack timeout");
+      return pending.promise;
+    }
 
     const pending = this.createPendingInboxAck(entryId, agentId);
     this.pendingInboxAcks.set(entryId, pending);
@@ -932,6 +945,11 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       return;
     }
 
+    if (pending.attempts >= INBOX_ACK_MAX_SENDS) {
+      this.failCloseInboxAckConfirmations("inbox ack timeout");
+      return;
+    }
+
     this.clearPendingInboxAckTimer(pending);
     if (pending.firstSentAt === 0) pending.firstSentAt = Date.now();
     pending.attempts += 1;
@@ -963,8 +981,30 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
         },
         "inbox:ack confirmation timed out",
       );
+      if (pending.attempts >= INBOX_ACK_MAX_SENDS) {
+        this.failCloseInboxAckConfirmations("inbox ack timeout");
+        return;
+      }
       this.sendPendingInboxAck(pending, true);
     }, INBOX_ACK_CONFIRM_TIMEOUT_MS);
+  }
+
+  private failCloseInboxAckConfirmations(reason: string): void {
+    if (this.inboxAckFailCloseStarted) return;
+    this.inboxAckFailCloseStarted = true;
+    this.rejectAllPendingInboxAcks(reason);
+    this.nextReconnectMinDelayMs = Math.max(this.nextReconnectMinDelayMs, RECONNECT_MAX_MS);
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN || this.closing) return;
+    this.wsLogger.warn(
+      {
+        closeCode: INBOX_ACK_TIMEOUT_CLOSE_CODE,
+        pendingCap: INBOX_ACK_PENDING_CAP,
+        ackEvent: "inbox_ack_timeout_reconnect",
+      },
+      "inbox:ack confirmation exhausted — closing socket to force bind recovery",
+    );
+    ws.close(INBOX_ACK_TIMEOUT_CLOSE_CODE, INBOX_ACK_TIMEOUT_CLOSE_REASON);
   }
 
   private flushPendingInboxAcks(): void {
@@ -1471,6 +1511,7 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
 
       ws.on("open", async () => {
         this.ws = ws;
+        this.inboxAckFailCloseStarted = false;
         // Capability negotiation is per-connection: never carry a previous
         // server's Reset support into the register frame of a socket that may
         // have landed on a rolled-back replica.
@@ -1557,13 +1598,13 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
       ws.on("close", (code) => {
         this.stopHeartbeat();
         this.clearAuthRefreshTimer();
-        this.clearPendingInboxAckTimers();
         this.clearPendingInboxRecoverTimers();
         this.clearPendingSessionEventTimers();
         const wasRegistered = this.registered;
         this.registered = false;
         this.socketBoundAgentIds.clear();
         this.rejectAllPendingBinds("WebSocket closed");
+        this.rejectAllPendingInboxAcks("WebSocket closed");
         this.rejectAllPendingInboxRecovers("WebSocket closed");
         this.rejectAllPendingInboxFenceProbes("WebSocket closed");
         this.rejectAllPendingSessionEvents("WebSocket closed");

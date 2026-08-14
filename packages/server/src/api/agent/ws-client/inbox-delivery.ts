@@ -14,6 +14,7 @@ import type { ClientWsConnectionContext } from "./connection-context.js";
 const INBOX_BACKLOG_BATCH_LIMIT = 50;
 const INBOX_BACKLOG_REPAIR_INTERVAL_MS = 30_000;
 const INBOX_RECOVER_NO_PROGRESS_LIMIT = 2;
+const INBOX_ACK_DELIVERY_SNAPSHOT_LIMIT = 8;
 
 export type InboxDeliveryCoordinator = ReturnType<typeof createInboxDeliveryCoordinator>;
 
@@ -145,6 +146,14 @@ export function createInboxDeliveryCoordinator(
       if (bucket && bucket.entryIds.size === 0) byChat?.delete(owner.chatKey);
       if (byChat && byChat.size === 0) inboxInFlightByAgent.delete(owner.agentId);
     }
+  }
+
+  function snapshotCurrentSocketDeliverySet(entryId: number): number[] {
+    const owner = inboxInFlightOwnersByEntryId.get(entryId);
+    if (!owner) return [];
+    const bucket = inboxInFlightByAgent.get(owner.agentId)?.get(owner.chatKey);
+    if (!bucket) return [];
+    return [...bucket.entryIds].sort((left, right) => left - right).slice(0, INBOX_ACK_DELIVERY_SNAPSHOT_LIMIT);
   }
 
   function addInboxInFlight(agentId: string, chatId: string | null, entryId: number): void {
@@ -426,6 +435,7 @@ export function createInboxDeliveryCoordinator(
             app.db,
             entryId,
             routedBoundAgents.map((a) => a.inboxId),
+            snapshotCurrentSocketDeliverySet(entryId),
           );
           if (!ackResult.ok) {
             if (ref) {

@@ -27,7 +27,7 @@ async function ackAll(
   inboxId: string,
 ) {
   for (const e of entries) {
-    await ackEntryByIdForBoundAgents(app.db, e.id, [inboxId]);
+    await ackEntryByIdForBoundAgents(app.db, e.id, [inboxId], [e.id]);
   }
 }
 
