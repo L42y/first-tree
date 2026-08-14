@@ -423,8 +423,11 @@ export function registerDaemonStartCommand(daemon: Command): void {
         });
 
         const runtimeInstallRunner = createRuntimeInstallRunner({
-          installClaude: () => installClaudeRuntime(),
-          installCodex: () => installCodexRuntime(),
+          // npm stderr is retained in the installer result. Keep raw chunks
+          // off supervisor streams; the runner emits one bounded, redacted
+          // terminal diagnostic through the daemon logger instead.
+          installClaude: () => installClaudeRuntime("latest", () => undefined),
+          installCodex: () => installCodexRuntime("latest", () => undefined),
           reprobe: async (provider) => {
             const entry = provider === "codex" ? await probeCodexCapability() : await probeClaudeCodeCapability();
             await capabilityRefresher.setProviderEntry(provider, entry);
