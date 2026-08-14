@@ -84,7 +84,10 @@ function configureTreeLocalCommand(command: Command): void {
     .command("resolve")
     .description("Resolve and validate the active Agent Workspace Local Context root.")
     .requiredOption("--intent <read|write>", "operation intent used for invalid-tree handling")
-    .option("--ensure", "create or mechanically repair the minimal Local Context scaffold")
+    .option(
+      "--ensure",
+      "create the minimal Local Context scaffold when absent (write intent may also mechanically repair an existing one)",
+    )
     .allowExcessArguments(false)
     .action(() => runLocalResolve(resolveCommand));
 }

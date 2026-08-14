@@ -249,9 +249,11 @@ function createFileIfAbsent(path: string, content: string): void {
   }
 }
 
-function ensureDirectDirectory(parentReal: string, path: string, label: string): string {
+function ensureDirectDirectory(parentReal: string, path: string, label: string): { created: boolean; real: string } {
+  let created = false;
   try {
     mkdirSync(path, { mode: 0o700 });
+    created = true;
   } catch (error) {
     if (!(typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "EEXIST")) {
       throw error;
@@ -264,7 +266,7 @@ function ensureDirectDirectory(parentReal: string, path: string, label: string):
       `${label} must be a real direct descendant of its trusted parent.`,
     );
   }
-  return real;
+  return { created, real };
 }
 
 function ensureScaffold(
@@ -272,17 +274,27 @@ function ensureScaffold(
   treeRoot: string,
   agentName: string,
   scaffold: LocalContextScaffold,
+  intent: LocalContextIntent,
 ): void {
-  const rootReal = ensureDirectDirectory(workspaceReal, treeRoot, "Local Context root");
-  const membersReal = ensureDirectDirectory(rootReal, join(rootReal, "members"), "Local Context members directory");
+  // The atomic mkdir result owns first materialization: only the call that
+  // actually creates the Local root may scaffold it for any intent. An
+  // EEXIST root is an existing Tree — a read intent must not create, rewrite,
+  // or repair any scaffold bytes (an interrupted writer's gaps surface via
+  // inspect + tree verify as LOCAL_CONTEXT_TREE_INVALID); only write intent
+  // may mechanically repair it.
+  const root = ensureDirectDirectory(workspaceReal, treeRoot, "Local Context root");
+  if (!root.created && intent === "read") {
+    return;
+  }
+  const members = ensureDirectDirectory(root.real, join(root.real, "members"), "Local Context members directory");
   createFileIfAbsent(join(treeRoot, "NODE.md"), scaffold.rootNode);
-  createFileIfAbsent(join(membersReal, "NODE.md"), scaffold.membersIndex);
+  createFileIfAbsent(join(members.real, "NODE.md"), scaffold.membersIndex);
   const memberDir = ensureDirectDirectory(
-    membersReal,
-    join(membersReal, agentName),
+    members.real,
+    join(members.real, agentName),
     "Local Context Agent member directory",
   );
-  createFileIfAbsent(join(memberDir, "NODE.md"), scaffold.memberNode);
+  createFileIfAbsent(join(memberDir.real, "NODE.md"), scaffold.memberNode);
 }
 
 function inspectLocalContextTreeUnchecked(treeRoot: string): LocalContextTreeStats {
@@ -492,7 +504,7 @@ async function resolveLocalContextUnchecked(
     throw new LocalContextError("LOCAL_CONTEXT_MISSING", "Local Context does not exist; retry with --ensure.");
   }
   if (options.ensure) {
-    ensureScaffold(workspaceReal, localRoot, options.agentName, options.scaffold);
+    ensureScaffold(workspaceReal, localRoot, options.agentName, options.scaffold, options.intent);
   }
 
   const localRootReal = requireRealDirectory(localRoot, "Local Context root");

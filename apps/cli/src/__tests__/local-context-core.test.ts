@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -113,6 +122,35 @@ describe("Local Context resolve guard", () => {
     });
 
     expect(readFileSync(join(value.localRoot, "business.txt"), "utf8")).toBe("keep me\n");
+    expect(verifyTreeRoot(value.localRoot).ok).toBe(true);
+  });
+
+  it("read intent never repairs an existing Local root; write intent does", async () => {
+    const value = fixture();
+    // An interrupted or concurrent writer left an existing Local root whose
+    // required scaffold entries are missing. Read resolve must fail closed
+    // without recreating any of them (the atomic create/EEXIST ownership
+    // means this call did not create the root, so no repair is allowed).
+    mkdirSync(value.localRoot);
+
+    await expect(
+      resolveLocalContext(options(value), {
+        readBinding: async () => ({ status: "unbound" }),
+        recordRemoteBinding: vi.fn(),
+        verifyTree: verifyTreeRoot,
+      }),
+    ).rejects.toMatchObject({ code: "LOCAL_CONTEXT_TREE_INVALID" });
+    expect(existsSync(join(value.localRoot, "NODE.md"))).toBe(false);
+    expect(existsSync(join(value.localRoot, "members"))).toBe(false);
+
+    // Write intent performs the mechanical repair and verifies.
+    const repaired = await resolveLocalContext(options(value, "write"), {
+      readBinding: async () => ({ status: "unbound" }),
+      recordRemoteBinding: vi.fn(),
+      verifyTree: verifyTreeRoot,
+    });
+    expect(repaired.verified).toBe(true);
+    expect(readFileSync(join(value.localRoot, "NODE.md"), "utf8")).toContain("agent-local");
     expect(verifyTreeRoot(value.localRoot).ok).toBe(true);
   });
 
