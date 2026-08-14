@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { defaultHome } from "@first-tree/shared/config";
 import { describe, expect, it } from "vitest";
@@ -151,25 +154,60 @@ describe("renderPlist — channel identity baked into plist text", () => {
   });
 });
 
-describe("renderLaunchdWrapper — launcher script execs the resolved CLI", () => {
+describe("renderLaunchdWrapper — launcher script supervises the resolved CLI", () => {
   it("starts with a /bin/sh shebang", () => {
     expect(renderLaunchdWrapper(FAKE_BIN_INVOCATION)).toMatch(/^#!\/bin\/sh\n/);
   });
 
-  it("execs the bin invocation with the daemon args", () => {
+  it("invokes the bin with the daemon args", () => {
     expect(renderLaunchdWrapper(FAKE_BIN_INVOCATION)).toContain(
-      "exec /usr/local/bin/first-tree-dev daemon start --no-interactive",
+      "/usr/local/bin/first-tree-dev daemon start --no-interactive",
     );
   });
 
-  it("execs the node interpreter + script for the node invocation", () => {
+  it("invokes the node interpreter + script for the node invocation", () => {
     const wrapper = renderLaunchdWrapper({
       kind: "node",
       program: "/usr/bin/node",
       args: ["/opt/first-tree/dist/cli/index.mjs"],
     });
-    expect(wrapper).toContain("exec /usr/bin/node /opt/first-tree/dist/cli/index.mjs daemon start --no-interactive");
+    expect(wrapper).toContain("/usr/bin/node /opt/first-tree/dist/cli/index.mjs daemon start --no-interactive");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "restarts exit 75 inside the live wrapper without waiting for launchd to respawn it",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "first-tree-launchd-wrapper-"));
+      const daemon = join(dir, "fake daemon");
+      const wrapperPath = join(dir, "First Tree");
+      const countPath = join(dir, "count");
+      try {
+        writeFileSync(
+          daemon,
+          `#!/bin/sh
+count=0
+if [ -f "$FIRST_TREE_TEST_COUNT" ]; then count=$(cat "$FIRST_TREE_TEST_COUNT"); fi
+count=$((count + 1))
+printf '%s' "$count" > "$FIRST_TREE_TEST_COUNT"
+if [ "$count" -eq 1 ]; then exit 75; fi
+exit 0
+`,
+          { mode: 0o755 },
+        );
+        writeFileSync(wrapperPath, renderLaunchdWrapper({ kind: "bin", program: daemon }), { mode: 0o755 });
+
+        const result = spawnSync("/bin/sh", [wrapperPath], {
+          env: { ...process.env, FIRST_TREE_TEST_COUNT: countPath },
+          encoding: "utf8",
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(countPath, "utf8")).toBe("2");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("renderWindowsTaskXml — channel identity baked into Task Scheduler text", () => {

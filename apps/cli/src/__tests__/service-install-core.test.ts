@@ -259,7 +259,7 @@ describe("service install helpers", () => {
       program: "/opt/My Node/node",
       args: ["/tmp/cli path/index.mjs"],
     });
-    expect(wrapper).toContain('exec "/opt/My Node/node" "/tmp/cli path/index.mjs" daemon start --no-interactive');
+    expect(wrapper).toContain('"/opt/My Node/node" "/tmp/cli path/index.mjs" daemon start --no-interactive');
 
     const unit = renderSystemdUnit({ kind: "bin", program: "/usr/local/bin/first tree" });
     expect(unit).toContain('ExecStart="/usr/local/bin/first tree" daemon start --no-interactive');
@@ -371,6 +371,17 @@ describe("service install helpers", () => {
       pid: 123,
       detail: "pid 123",
       configuredHome: process.env.FIRST_TREE_HOME,
+    });
+
+    spawnSyncMock.mockReturnValueOnce({
+      status: 0,
+      stdout: "state = not running\nlast exit code = 75: EX_TEMPFAIL\n",
+      stderr: "",
+    });
+    expect(getClientServiceStatus()).toMatchObject({
+      platform: "launchd",
+      state: "inactive",
+      detail: "state = not running",
     });
 
     spawnSyncMock.mockReturnValueOnce({ status: 3, stdout: "", stderr: "Could not find service" });
@@ -805,8 +816,9 @@ describe("service install helpers", () => {
       unitPath: plistPath,
     });
     expect(readFileSync(wrapperPath, "utf-8")).toContain(
-      `exec ${process.execPath} ${process.argv[1]} daemon start --no-interactive`,
+      `${process.execPath} ${process.argv[1]} daemon start --no-interactive`,
     );
+    expect(readFileSync(wrapperPath, "utf-8")).toContain('if [ "$status" -ne 75 ]');
     expect(readFileSync(plistPath, "utf-8")).toContain(`<string>${wrapperPath}</string>`);
     expect(spawnSyncMock.mock.calls.map((call) => [call[0], call[1]])).toEqual([
       ["launchctl", ["bootout", `gui/501/${channelConfig.launchdLabel}`]],
@@ -833,8 +845,9 @@ describe("service install helpers", () => {
       unitPath: plistPath,
     });
     expect(readFileSync(wrapperPath, "utf-8")).toContain(
-      `exec ${process.execPath} ${process.argv[1]} daemon start --no-interactive`,
+      `${process.execPath} ${process.argv[1]} daemon start --no-interactive`,
     );
+    expect(readFileSync(wrapperPath, "utf-8")).toContain('if [ "$status" -ne 75 ]');
     expect(readFileSync(plistPath, "utf-8")).toContain(`<string>${wrapperPath}</string>`);
     expect(spawnSyncMock.mock.calls.map((call) => [call[0], call[1]])).toEqual([
       ["launchctl", ["print", `gui/501/${channelConfig.launchdLabel}`]],
