@@ -95,6 +95,56 @@ describe("buildCatalogModelOptions", () => {
     expect(items.map((o) => o.value)).toEqual(["", "kimi-code/k3", CUSTOM_MODEL_OPTION_VALUE]);
     expect(items[0]?.hint).toBeUndefined();
   });
+
+  it("builds the three Cursor Auto optimization modes in Cursor's order with exact parameterized ids", () => {
+    const items = buildCatalogModelOptions(CURSOR_CATALOG, "", "cursor");
+    expect(items.map((o) => o.value)).toEqual([
+      "",
+      "auto-smart[optimize_for=intelligence]",
+      "auto-smart[optimize_for=balanced]",
+      "auto-smart[optimize_for=cost]",
+      "gpt-5.3-codex-high",
+      "composer-1",
+      CUSTOM_MODEL_OPTION_VALUE,
+    ]);
+    expect(items[1]?.label).toBe("Auto · Intelligence");
+    expect(items[2]?.label).toBe("Auto · Balance");
+    expect(items[3]?.label).toBe("Auto · Cost");
+  });
+
+  it("keeps the Cursor Auto options when the catalog is empty or unavailable", () => {
+    const items = buildCatalogModelOptions({ models: [], defaultModelId: null }, "", "cursor");
+    expect(items.map((o) => o.value)).toEqual([
+      "",
+      "auto-smart[optimize_for=intelligence]",
+      "auto-smart[optimize_for=balanced]",
+      "auto-smart[optimize_for=cost]",
+      CUSTOM_MODEL_OPTION_VALUE,
+    ]);
+  });
+
+  it("does not duplicate a Cursor Auto value already in the catalog or currently saved", () => {
+    const catalog = {
+      models: [{ id: "auto-smart[optimize_for=cost]", label: "Auto Cost (catalog)" }, { id: "composer-1" }],
+      defaultModelId: null,
+    };
+    const items = buildCatalogModelOptions(catalog, "auto-smart[optimize_for=balanced]", "cursor");
+    expect(items.map((o) => o.value)).toEqual([
+      "",
+      "auto-smart[optimize_for=intelligence]",
+      "auto-smart[optimize_for=balanced]",
+      "auto-smart[optimize_for=cost]",
+      "composer-1",
+      CUSTOM_MODEL_OPTION_VALUE,
+    ]);
+    // A saved preset value renders as the preset row, never as a "custom" row.
+    expect(items.some((o) => o.hint === "custom")).toBe(false);
+  });
+
+  it("does not leak the Cursor Auto options into other providers", () => {
+    const items = buildCatalogModelOptions(GROK_CATALOG, "", "grok");
+    expect(items.map((o) => o.value)).toEqual(["", "grok-4-heavy", "grok-code-fast-1", CUSTOM_MODEL_OPTION_VALUE]);
+  });
 });
 
 describe("ModelSection — daemon catalog", () => {
@@ -369,5 +419,90 @@ describe("ModelSection — daemon catalog", () => {
       option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(saved).toEqual(["grok-code-fast-1"]);
+  });
+});
+
+describe("ModelSection — Cursor Auto optimization modes", () => {
+  it("saves the exact parameterized id when an Auto option is clicked (loaded catalog)", async () => {
+    providerModelsMocks.getProviderModels.mockResolvedValue(CURSOR_CATALOG);
+    const saved: string[] = [];
+    const el = await renderWithQuery(
+      <ModelSection value="" onChange={(v) => saved.push(v)} provider="cursor" clientId="c1" />,
+    );
+
+    await flushUntil(() => {
+      const b = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+      return !!b && !b.disabled;
+    });
+    await act(async () => {
+      el.querySelector('button[aria-label="Model"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Auto · Intelligence");
+    expect(body).toContain("Auto · Balance");
+    expect(body).toContain("Auto · Cost");
+    const option = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((b) =>
+      b.textContent?.includes("Auto · Balance"),
+    );
+    expect(option).toBeDefined();
+    await act(async () => {
+      option?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(saved).toEqual(["auto-smart[optimize_for=balanced]"]);
+  });
+
+  it("offers the Auto options while the catalog is still loading", async () => {
+    providerModelsMocks.getProviderModels.mockImplementation(() => new Promise<ProviderModelCatalog>(() => {}));
+    const el = await renderWithQuery(<ModelSection value="" onChange={() => {}} provider="cursor" clientId="c1" />);
+
+    await flushUntil(() => el.querySelector('button[aria-label="Model"]') !== null);
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+    expect(trigger?.disabled).toBe(false);
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Auto · Intelligence");
+    expect(body).toContain("Auto · Balance");
+    expect(body).toContain("Auto · Cost");
+    expect(body).toContain("(unset — inherits local)");
+    expect(body).toContain("Custom model id…");
+  });
+
+  it("offers the Auto options when the catalog is unavailable", async () => {
+    providerModelsMocks.getProviderModels.mockResolvedValue(null);
+    const el = await renderWithQuery(<ModelSection value="" onChange={() => {}} provider="cursor" clientId="c1" />);
+
+    await flushUntil(
+      () =>
+        el
+          .querySelector('[role="img"]')
+          ?.getAttribute("aria-label")
+          ?.includes("Couldn't read this computer's model list") ?? false,
+    );
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+    expect(trigger?.disabled).toBe(false);
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Auto · Intelligence");
+    expect(body).toContain("Auto · Balance");
+    expect(body).toContain("Auto · Cost");
+    expect(body).toContain("(unset — inherits local)");
+    expect(body).toContain("Custom model id…");
+  });
+
+  it("describes the Router scope and billing in the Cursor help copy", async () => {
+    providerModelsMocks.getProviderModels.mockResolvedValue(CURSOR_CATALOG);
+    const el = await renderWithQuery(<ModelSection value="" onChange={() => {}} provider="cursor" clientId="c1" />);
+
+    await flushUntil(() => el.querySelector('button[aria-label="Model"]') !== null);
+    // helpText rides the ? icon's aria-label, not inline text (see ConfigRow).
+    const help = el.querySelector('[role="img"]')?.getAttribute("aria-label") ?? "";
+    expect(help).toContain("Cursor Teams/Enterprise");
+    expect(help).toContain("verbatim");
+    expect(help).toContain("no silent fallback");
+    expect(help).toContain("bundled Auto pricing");
   });
 });

@@ -120,6 +120,32 @@ describe("cursor provider — DEFAULT + Custom model picker", () => {
     expect(el.querySelector('button[aria-label="Model"]')).not.toBeNull();
   });
 
+  it("offers the three Cursor Auto optimization modes without a bound computer and saves the exact id", async () => {
+    const saved: string[] = [];
+    const el = await render(<ModelSection value="" onChange={(v) => saved.push(v)} provider="cursor" />);
+
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="Model"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const body = document.body.textContent ?? "";
+    expect(body).toContain("Auto · Intelligence");
+    expect(body).toContain("Auto · Balance");
+    expect(body).toContain("Auto · Cost");
+    expect(body).toContain("(unset — inherits local)");
+    expect(body).toContain("Custom model id…");
+
+    const cost = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((b) =>
+      b.textContent?.includes("Auto · Cost"),
+    );
+    expect(cost).toBeDefined();
+    await act(async () => {
+      cost?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(saved).toEqual(["auto-smart[optimize_for=cost]"]);
+  });
+
   it("keeps the dropdown for claude/codex providers (no free-form regression)", async () => {
     const el = await render(<ModelSection value="opus" onChange={() => {}} provider="claude-code" />);
     expect(el.querySelector('input[aria-label="Model"]')).toBeNull();
