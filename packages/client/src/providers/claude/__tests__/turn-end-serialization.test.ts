@@ -22,11 +22,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  * ordering.) This test proves the property by stalling the hook.
  */
 
-let releaseForward: (() => void) | null = null;
-const forwardStalled = new Promise<void>((resolve) => {
-  releaseForward = resolve;
-});
-
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
   const fakeQuery = {
     [Symbol.asyncIterator]() {
@@ -98,6 +93,15 @@ function buildCache() {
 
 describe("claude-code handler — turn_end serialization (race guard)", () => {
   it("blocks the next turn's events until the current turn_end has been emitted", async () => {
+    // Test-local stall: the completion hook holds (simulating a slow
+    // round-trip) until this test releases it. Kept inside the test
+    // lifecycle so a failing assertion can never strand a module-scoped gate
+    // or leave a background consumer alive past afterAll's workspace removal.
+    let releaseForward!: () => void;
+    const forwardStalled = new Promise<void>((resolve) => {
+      releaseForward = resolve;
+    });
+
     const sendMessage = vi.fn();
     // The completion hook holds (simulating a slow round-trip) until released.
     const forwardResult = vi.fn().mockImplementation(async () => {
@@ -137,35 +141,53 @@ describe("claude-code handler — turn_end serialization (race guard)", () => {
       forwardResult,
     };
 
-    const startPromise = handler.start(
-      { id: "m1", chatId: "chat-1", senderId: "u", format: "text", content: "hi", metadata: null },
-      ctx,
-      deliveryTokenFromSessionContext(ctx),
-    );
+    let startPromise: Promise<unknown> | null = null;
+    let suspended = false;
+    try {
+      startPromise = handler.start(
+        { id: "m1", chatId: "chat-1", senderId: "u", format: "text", content: "hi", metadata: null },
+        ctx,
+        deliveryTokenFromSessionContext(ctx),
+      );
 
-    // Wait until the completion hook was invoked (turn 1 result arrived), then
-    // hold briefly to prove no turn-2 events were emitted while we stalled.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(forwardResult).toHaveBeenCalledTimes(1);
-    // The mirror is retired — no chat message is ever sent.
-    expect(sendMessage).not.toHaveBeenCalled();
-    expect(emitted.filter((e) => e.kind !== "turn_end")).toEqual([]);
+      // Explicit readiness instead of a wall-clock guess: wait until turn 1's
+      // completion hook was invoked (its result arrived and the hook is now
+      // stalled), then yield one immediate turn — a fire-and-forget
+      // regression would get the chance to pull the second SDK message and
+      // turn the assertions below red.
+      await vi.waitFor(() => expect(forwardResult).toHaveBeenCalledTimes(1));
+      await new Promise((r) => setImmediate(r));
+      // The mirror is retired — no chat message is ever sent.
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(emitted.filter((e) => e.kind !== "turn_end")).toEqual([]);
 
-    // Release the hook — turn_end should fire, THEN turn 2 tool_use pending.
-    releaseForward?.();
+      // Release the hook — turn_end should fire, THEN turn 2 tool_use pending.
+      releaseForward();
 
-    await startPromise;
-    await handler.suspend();
-    await new Promise((r) => setImmediate(r));
+      await startPromise;
+      startPromise = null;
+      await handler.suspend();
+      suspended = true;
+      await new Promise((r) => setImmediate(r));
 
-    const kinds = emitted.map((e) => e.kind);
-    const turnEndIdx = kinds.indexOf("turn_end");
-    const nextTurnToolIdx = kinds.indexOf("tool_call");
+      const kinds = emitted.map((e) => e.kind);
+      const turnEndIdx = kinds.indexOf("turn_end");
+      const nextTurnToolIdx = kinds.indexOf("tool_call");
 
-    expect(turnEndIdx).toBeGreaterThanOrEqual(0);
-    expect(nextTurnToolIdx).toBeGreaterThanOrEqual(0);
-    // The cardinal invariant: turn_end from turn 1 strictly precedes every
-    // event from turn 2.
-    expect(turnEndIdx).toBeLessThan(nextTurnToolIdx);
+      expect(turnEndIdx).toBeGreaterThanOrEqual(0);
+      expect(nextTurnToolIdx).toBeGreaterThanOrEqual(0);
+      // The cardinal invariant: turn_end from turn 1 strictly precedes every
+      // event from turn 2.
+      expect(turnEndIdx).toBeLessThan(nextTurnToolIdx);
+    } finally {
+      // Idempotent teardown: unblock the hook, let start/suspend settle, and
+      // drain pending immediates so no background consumer outlives the test
+      // into afterAll's workspace removal. Cleanup-only rejections are
+      // swallowed here; real failures already surfaced above.
+      releaseForward();
+      if (startPromise) await startPromise.catch(() => {});
+      if (!suspended) await handler.suspend().catch(() => {});
+      await new Promise((r) => setImmediate(r));
+    }
   });
 });
