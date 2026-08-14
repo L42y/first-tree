@@ -176,6 +176,7 @@ export type {
   ClientConnectionConfig,
   ProviderModelsListCommand,
   RuntimeAuthCommand,
+  RuntimeInstallCommand,
   ServerWelcome,
   SessionCommand,
 } from "./runtime/client-connection.js";
