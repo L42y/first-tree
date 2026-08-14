@@ -2,7 +2,9 @@ import type { Command } from "commander";
 import { fail } from "../../cli/output.js";
 import { ensureFreshAccessToken, resolveServerUrl } from "../../core/bootstrap.js";
 import { cliFetch } from "../../core/cli-fetch.js";
+import { checkFeishuChatContext } from "../../core/feishu-chat-context.js";
 import { print } from "../../core/output.js";
+import { createSdk } from "../_shared/local-agent.js";
 import { resolveAgent } from "../_shared/resolve-agent.js";
 
 export function registerChatOpenCommand(chat: Command): void {
@@ -12,6 +14,18 @@ export function registerChatOpenCommand(chat: Command): void {
     .option("--server <url>", "First Tree server URL")
     .action(async (agentName: string, options: { server?: string }) => {
       try {
+        // Agent-session precondition. `chat open` runs on the user scope and
+        // drives an interactive REPL, so the server has no chat id to gate on
+        // and no way to tell an operator terminal from an agent. Only consult
+        // it when both agent-session variables are exported — that is the one
+        // shape where the refusal is correct, and it keeps the check off a
+        // human operator's machine that may have no agent configured at all.
+        const sessionChatId = process.env.FIRST_TREE_CHAT_ID;
+        if (sessionChatId && process.env.FIRST_TREE_AGENT_ID) {
+          const refusal = await checkFeishuChatContext(createSdk(), sessionChatId, "open");
+          if (refusal) fail(refusal.code, refusal.message, 2);
+        }
+
         const serverUrl = resolveServerUrl(options.server);
         const adminToken = await ensureFreshAccessToken();
         const headers = {

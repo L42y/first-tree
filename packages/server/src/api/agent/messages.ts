@@ -7,6 +7,7 @@ import { expiryToSeconds, signAgentOutboxToken } from "../../services/auth/token
 import * as chatService from "../../services/chat/conversation.js";
 import * as messageService from "../../services/chat/message.js";
 import { notifyRecipients } from "../../services/notifier.js";
+import { assertAgentSendableChat } from "./feishu-chat-guard.js";
 
 const editMessageSchema = z.object({
   format: z.string().optional(),
@@ -45,6 +46,12 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
       // to require explicit source — it would break unaudited third-
       // party integrations.
       const body = sendMessageSchema.parse(request.body);
+      // Feishu boundary for `chat send` AND `chat ask` (same route; `chat ask`
+      // is just `format: "request"`). Applied here rather than inside
+      // `messageService.sendMessage`, which the Feishu bridge itself reuses —
+      // see `feishu-chat-guard.ts` for the collision and the runtime-notice
+      // exemption this call honours.
+      await assertAgentSendableChat(app.db, request.params.chatId, body);
       const { message: msg, recipients } = await messageService.sendMessage(
         app.db,
         request.params.chatId,

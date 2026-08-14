@@ -3,6 +3,7 @@ import type { MessageFormat } from "@first-tree/shared";
 import type { Command } from "commander";
 import { fail, success } from "../../cli/output.js";
 import { captureOutboundDocs } from "../../core/doc-capture.js";
+import { checkFeishuChatContext } from "../../core/feishu-chat-context.js";
 import { createSdk, handleSdkError } from "../_shared/local-agent.js";
 import { guardInlineDescription, readStdin } from "./_shared/io.js";
 import { buildRequestMetadata } from "./_shared/request.js";
@@ -139,6 +140,13 @@ export function registerChatCreateCommand(chat: Command): void {
         }
 
         const sdk = createSdk(options.agent);
+
+        // The server cannot enforce this one: `POST /agent/chats` never
+        // receives the originating chat. Refuse client-side so a Feishu-bound
+        // session does not spawn a First Tree chat its humans cannot see.
+        const refusal = await checkFeishuChatContext(sdk, process.env.FIRST_TREE_CHAT_ID, "create");
+        if (refusal) fail(refusal.code, refusal.message, 2);
+
         // KNOWN GAP (follow-up #1069), out of scope for this PR: no chat exists
         // yet, so the upload org can't be resolved from a chat — doc capture is a
         // pass-through for `chat create`'s initial message (doc mentions render as

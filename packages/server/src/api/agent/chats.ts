@@ -33,6 +33,7 @@ import {
 } from "../../services/scm/gitlab/entity-follow.js";
 import { resolveAgentScmBindingPair } from "../../services/scm/shared/attention-line.js";
 import { sendFollowResult } from "../github-entity-reply.js";
+import { assertAgentMutableChat, isFeishuBridgedChat } from "./feishu-chat-guard.js";
 
 const log = createLogger("AgentChatsRoute");
 
@@ -172,6 +173,10 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
     const detail = await chatService.getChatDetail(app.db, request.params.chatId, identity.uuid);
     return {
       ...serializeChat(detail),
+      // Live bridge state, so an agent-side precondition (`chat create` /
+      // `chat open`) can consult the same authority the write boundary uses
+      // instead of the stale `metadata.source` label.
+      externalChannel: (await isFeishuBridgedChat(app.db, request.params.chatId)) ? "feishu" : null,
       participants: detail.participants.map((p) => ({
         ...p,
         joinedAt: p.joinedAt.toISOString(),
@@ -254,6 +259,10 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
           "MODE_FIELD_DEPRECATED: the `mode` field is no longer accepted. Participant mode is derived server-side from chat type + agent type. Remove this field from your request.",
       });
     }
+
+    // Feishu boundary for `chat invite`: pulling another agent into a bridged
+    // chat only widens a room the Feishu humans cannot see.
+    await assertAgentMutableChat(app.db, request.params.chatId);
 
     const body = addParticipantSchema.parse(request.body);
     const participants = await chatService.addParticipant(app.db, request.params.chatId, identity.uuid, body);

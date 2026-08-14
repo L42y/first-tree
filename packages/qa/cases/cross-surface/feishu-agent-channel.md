@@ -1,6 +1,6 @@
 ---
 id: feishu-agent-channel
-description: Validate a Bot-bound Agent's Feishu registration, inbound message and attachment projection, agentic official lark-cli egress, and read-only Web task end to end.
+description: Validate a Bot-bound Agent's Feishu registration, inbound message and attachment projection, agentic official lark-cli egress, the agent-side First Tree chat-tool boundary, and read-only Web task end to end.
 areas: [cross-surface]
 surfaces: [server, client, cli, web]
 ---
@@ -11,7 +11,8 @@ surfaces: [server, client, cli, web]
 
 Confirm that one disposable Feishu Bot belongs to exactly one First Tree Agent and that a real Feishu conversation uses
 the canonical First Tree message, Inbox, attachment, and chat-history paths. The run must also prove that internal
-collaborators cannot borrow the primary Agent's Bot identity and that the Web projection remains read-only.
+collaborators cannot borrow the primary Agent's Bot identity, that the Agent cannot answer the conversation through
+First Tree's own chat tools, and that the Web projection remains read-only.
 
 ## Preconditions
 
@@ -77,6 +78,18 @@ collaborators cannot borrow the primary Agent's Bot identity and that the Web pr
   First Tree message through shared `sendMessage`, gives other speakers only `notify=false` context, and uses that
   message id as the Feishu idempotency key. Reusing the same message id with changed content, target, or media bytes must
   be rejected. Confirm the temporary credential environment is private, is available only to A, and is deleted after use.
+- From Agent A's session inside the bound task, attempt every First Tree chat tool. `chat send`, `chat ask` and
+  `chat invite` must be refused before anything is written, each naming the Feishu reply path (record the delivery with
+  `feishu intent`, then send with the official `lark-cli --as bot`) rather than only refusing; `chat create` and
+  `chat open` must be refused locally with the same guidance. `chat update --topic/--description`, `chat list`,
+  `chat history`, `feishu intent`, `feishu credential-env` and the agent's own archive/read state must keep working.
+  Confirm no refused command left a message, participant or chat behind. Repeat from Agent B and confirm the boundary is
+  a property of the chat, not of the Bot-owning Agent.
+- With the guard active, force a provider terminal failure for Agent A in the bound task (for example, invalid provider
+  credentials). Confirm the operator-facing runtime notice still lands in First Tree chat history — an agent that cannot
+  run at all must not also go silent — while ordinary agent sends in the same chat remain refused.
+- Detach the chat binding, then retry `chat send` in the same chat. It must succeed: the boundary follows the live
+  binding, not the chat's `feishu` origin label, so a detached conversation returns to being an ordinary First Tree chat.
 - Open the bound task in Web. Confirm messages, author attribution and attachments remain readable, while direct message,
   rename, membership, join/leave and other structural mutations are absent and rejected by direct Web API calls. Personal
   read, pin and archive state must continue to work.
@@ -95,8 +108,9 @@ delivery, and all disposable provider resources are removed.
 `FAIL`: a reproducible product defect creates/wakes on an unrelated unmentioned group message, fails to wake on a verified
 Bot reply or activated-thread continuation, persists provider reference context as canonical history, attributes an
 external human as a First Tree member, loses a triggered message when one resource fails, exposes A's Bot credential to
-B, bypasses canonical message creation, duplicates a same-id send inside the provider window, or permits a Web structural
-mutation.
+B, bypasses canonical message creation, duplicates a same-id send inside the provider window, permits a Web structural
+mutation, lets an Agent answer a bridged conversation through First Tree's own chat tools, blocks the Bot's own outbound
+delivery or the provider-failure runtime notice, or keeps refusing after the binding detaches.
 
 `BLOCKED`: official QR creation, disposable tenant/chat, inbound provider connectivity, official `lark-cli`, a
 provider-backed Agent turn, or the two-replica environment cannot be established. Deterministic product tests alone do
