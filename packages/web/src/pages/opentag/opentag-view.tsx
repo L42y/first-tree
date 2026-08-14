@@ -87,7 +87,7 @@ export function OpenTagView({
         data-opentag-statuses
         className="opentag-statuses grid grid-cols-2"
         style={{
-          gap: "var(--sp-10)",
+          gap: "var(--opentag-status-gap)",
           marginBottom: pageState === "add-to-feishu" ? "calc(var(--opentag-status-bottom) + var(--sp-5))" : undefined,
         }}
       >
@@ -323,7 +323,7 @@ function ChoicePopover({
     <Popover
       align="end"
       panelAriaLabel={label}
-      panelClassName="surface-overlay w-[var(--sp-90)] p-3"
+      panelClassName="opentag-choice-panel surface-overlay w-[var(--sp-90)] p-3"
       trigger={({ toggle, open }) => (
         <Button
           type="button"
@@ -343,7 +343,7 @@ function ChoicePopover({
 
 function ChoiceList({ children }: { children: ReactElement | Array<ReactElement | null> }): ReactElement {
   return (
-    <div className="flex flex-col" style={{ gap: "var(--sp-1)" }}>
+    <div className="opentag-choice-list flex flex-col" style={{ gap: "var(--sp-1)" }}>
       {children}
     </div>
   );
@@ -385,7 +385,7 @@ function ActionSurface({ children, qr = false }: { children: ReactNode; qr?: boo
       className="flex w-full items-center text-opentag-action"
       style={{
         minHeight: qr ? "var(--opentag-action-qr-height)" : "var(--opentag-action-height)",
-        padding: "var(--sp-8)",
+        padding: "var(--opentag-action-padding)",
         borderRadius: "var(--radius-opentag-action)",
         background: "var(--opentag-action)",
         color: "var(--opentag-action-fg)",
