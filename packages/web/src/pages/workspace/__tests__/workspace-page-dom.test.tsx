@@ -118,15 +118,18 @@ vi.mock("../center/index.js", () => ({
     narrow,
     onShowConversations,
     initialParticipantIds,
+    postCreateAgentId,
   }: {
     selectedChatId: string | null;
     onSelectChat: (chatId: string) => void;
     narrow: boolean;
     onShowConversations: (() => void) | null;
     initialParticipantIds: string[];
+    postCreateAgentId?: string | null;
   }) => (
     <section data-testid="center-panel">
-      center:{selectedChatId ?? "none"}:{narrow ? "narrow" : "wide"}:{initialParticipantIds.join("|") || "no-with"}
+      center:{selectedChatId ?? "none"}:{narrow ? "narrow" : "wide"}:{initialParticipantIds.join("|") || "no-with"}:
+      {postCreateAgentId ?? "no-created"}
       <button type="button" onClick={() => onSelectChat("chat-from-center")}>
         Center select
       </button>
@@ -156,7 +159,10 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderDom(initialEntry: string, element: ReactElement): Promise<{ container: HTMLElement; root: Root }> {
+async function renderDom(
+  initialEntry: string | { pathname: string; search: string; state: unknown },
+  element: ReactElement,
+): Promise<{ container: HTMLElement; root: Root }> {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -252,6 +258,20 @@ afterEach(() => {
 });
 
 describe("WorkspacePage DOM behavior", () => {
+  it("passes only explicit post-create navigation state to the draft", async () => {
+    const { WorkspacePage } = await import("../index.js");
+    const created = await renderDom(
+      { pathname: "/", search: "?c=draft&with=agent-1", state: { newAgentId: "agent-1" } },
+      <WorkspacePage />,
+    );
+    expect(created.container.textContent).toContain("center:draft:wide:agent-1:agent-1");
+    await act(async () => created.root.unmount());
+
+    const directChat = await renderDom("/?c=draft&with=agent-1", <WorkspacePage />);
+    expect(directChat.container.textContent).toContain("center:draft:wide:agent-1:no-created");
+    await act(async () => directChat.root.unmount());
+  });
+
   it("preserves canonical URL params and exposes list-driven URL transitions", async () => {
     const { WorkspacePage } = await import("../index.js");
     const { container, root } = await renderDom(

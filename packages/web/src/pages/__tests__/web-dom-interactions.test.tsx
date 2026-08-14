@@ -913,14 +913,25 @@ describe("web DOM interaction coverage", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(PROD_BOOTSTRAP_COMMAND);
   });
 
-  it("offers managed seeded Agents the existing Feishu Channels path as a secondary draft action", async () => {
+  it("offers the existing Feishu Channels path only for an explicit managed post-create draft", async () => {
     const { NewChatDraft } = await import("../workspace/conversations/new-chat-draft.js");
-    const managed = await renderDom(<NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-1"]} />);
+    const managed = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-1"]} postCreateAgentId="agent-1" />,
+    );
     await waitForText("Add to Feishu", managed.container);
     expect(managed.container.querySelector<HTMLAnchorElement>('a[href="/agents/agent-1/channels"]')).not.toBeNull();
     await unmountRoot(managed.root);
 
-    const unmanaged = await renderDom(<NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-2"]} />);
+    const ordinaryDirectChat = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-1"]} />,
+    );
+    await waitForText("Nova", ordinaryDirectChat.container);
+    expect(ordinaryDirectChat.container.textContent).not.toContain("Add to Feishu");
+    await unmountRoot(ordinaryDirectChat.root);
+
+    const unmanaged = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-2"]} postCreateAgentId="agent-2" />,
+    );
     await waitForText("Design Critique", unmanaged.container);
     expect(unmanaged.container.textContent).not.toContain("Add to Feishu");
   });

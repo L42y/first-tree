@@ -83,6 +83,7 @@ export function NewChatDraft({
   onCreated,
   onShowConversations = null,
   initialParticipantIds,
+  postCreateAgentId = null,
   mobile = false,
 }: {
   onCreated: (chatId: string) => void;
@@ -99,6 +100,9 @@ export function NewChatDraft({
    *  e.g. the Team page "Chat" action). Takes precedence over the default
    *  agent seed; only applied once, on first mount of an empty draft. */
   initialParticipantIds?: string[];
+  /** Explicit navigation state from a successful ordinary Team Agent create.
+   *  A generic one-Agent draft must not infer this setup affordance. */
+  postCreateAgentId?: string | null;
 }) {
   const queryClient = useQueryClient();
   const { agentId: myAgentId, memberId: myMemberId, organizationId, user } = useAuth();
@@ -363,20 +367,20 @@ export function NewChatDraft({
     return Array.from(byId.values());
   }, [knownAgents, triggerSearchPage?.items, agentIdentity, myAgentId, myMemberId]);
 
-  // `?c=draft&with=<uuid>` is also the post-create landing path. When it
-  // points at one Agent managed by the viewer, expose the existing long-term
-  // Channels surface as a quiet secondary action; the composer remains the
-  // primary task and private-Agent authorization continues to be enforced by
-  // Agent Detail rather than widened here.
+  // The explicit post-create navigation state keeps this action out of
+  // generic `?c=draft&with=<uuid>` entry points (Team-row Chat, hovercards,
+  // Agent Detail). The composer remains primary and private-Agent
+  // authorization continues to be enforced by Agent Detail.
   const feishuTarget = useMemo(() => {
+    if (!postCreateAgentId) return null;
     if (initialParticipantIds?.length !== 1 || chips.length !== 1) return null;
     const targetId = initialParticipantIds[0];
-    if (!targetId || chips[0] !== targetId) return null;
+    if (!targetId || targetId !== postCreateAgentId || chips[0] !== targetId) return null;
     const candidate = knownAgents.get(targetId);
     const row = knownAgentRows.get(targetId);
     if (!candidate?.managedByMe || row?.type !== "agent") return null;
     return { uuid: targetId };
-  }, [chips, initialParticipantIds, knownAgents, knownAgentRows]);
+  }, [chips, initialParticipantIds, knownAgents, knownAgentRows, postCreateAgentId]);
 
   useEffect(() => {
     if (seededDefaultRef.current) return;

@@ -542,7 +542,9 @@ describe("TeamPage", () => {
     );
     // The create flow navigates straight to the first Workspace draft, and
     // the draft-open event only fires on this path.
-    expect(routerMocks.navigate).toHaveBeenCalledWith("/?c=draft&with=created-agent");
+    expect(routerMocks.navigate).toHaveBeenCalledWith("/?c=draft&with=created-agent", {
+      state: { newAgentId: "created-agent" },
+    });
     expect(analyticsMocks.trackEvent).toHaveBeenCalledWith("agent_create_draft_open", { template_count: 2 });
 
     await click(exactButton(container, "Invite link"));

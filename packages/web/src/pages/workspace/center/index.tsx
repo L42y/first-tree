@@ -23,6 +23,7 @@ export function CenterPanel({
   narrow,
   onShowConversations,
   initialParticipantIds,
+  postCreateAgentId = null,
   presentation = "workspace",
   isTrial = false,
 }: {
@@ -45,6 +46,10 @@ export function CenterPanel({
    *  page "Chat" action pre-selects that agent). Takes precedence over the
    *  default-delegate seed. */
   initialParticipantIds?: string[];
+  /** Agent created immediately before this draft navigation. Kept separate
+   *  from the generic `?with=` seed so ordinary direct-chat entry points do
+   *  not inherit post-create setup actions. */
+  postCreateAgentId?: string | null;
   presentation?: "workspace" | "mobile";
 }) {
   const { organizationId } = useAuth();
@@ -66,6 +71,7 @@ export function CenterPanel({
         onCreated={onSelectChat}
         onShowConversations={onShowConversations}
         initialParticipantIds={initialParticipantIds}
+        postCreateAgentId={postCreateAgentId}
         mobile={presentation === "mobile"}
       />
     );
