@@ -260,6 +260,14 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // Authorize BEFORE the Feishu boundary. `addParticipant` below re-checks
+    // membership inside the invite service, but that is too late for this
+    // route: running the bridged-chat guard first would answer "is this chat
+    // bound to Feishu?" to a caller who is not even a participant, turning the
+    // 403 into an oracle over guessed chat UUIDs. Checking membership here
+    // makes the two failures indistinguishable to an outsider.
+    await chatService.assertParticipant(app.db, request.params.chatId, identity.uuid);
+
     // Feishu boundary for `chat invite`: pulling another agent into a bridged
     // chat only widens a room the Feishu humans cannot see.
     await assertAgentMutableChat(app.db, request.params.chatId);

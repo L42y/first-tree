@@ -82,6 +82,7 @@ import {
   orgContextTreeOutputSchema,
   type PublishDocRequest,
   type PublishDocResponse,
+  type RuntimeNoticeRequest,
   type RuntimeProvider,
   type SendMessage,
   type UnfollowChatGitlabEntityResponse,
@@ -429,6 +430,24 @@ export class FirstTreeHubSDK {
     return this.requestJson<Message>(`/api/v1/agent/chats/${chatId}/messages`, {
       method: "POST",
       body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Publish an operator-facing runtime notice ("the provider failed", "the
+   * usage limit is reached").
+   *
+   * Its own endpoint rather than a decorated `sendMessage`: a runtime notice is
+   * exempt from the Feishu-bridged chat write boundary, and that exemption is
+   * granted by which route is called, not by anything in the body. The server
+   * authors the delivery profile and the stored `runtimeNotice` marker, so only
+   * the text travels — the endpoint rejects an attempt to pass `purpose` or
+   * `metadata`.
+   */
+  async postRuntimeNotice(chatId: string, content: string): Promise<Message> {
+    return this.requestJson<Message>(`/api/v1/agent/chats/${encodeURIComponent(chatId)}/runtime-notices`, {
+      method: "POST",
+      body: JSON.stringify({ content } satisfies RuntimeNoticeRequest),
     });
   }
 

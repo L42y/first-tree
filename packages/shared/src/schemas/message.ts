@@ -415,7 +415,43 @@ export type MessagePurpose = z.infer<typeof messagePurposeSchema>;
  * false on every other message.
  */
 export const AGENT_FINAL_TEXT_METADATA_KEY = "agentFinalText";
+
+/**
+ * Metadata flag marking a STORED message as an operator-facing runtime notice
+ * ("the provider failed", "the usage limit is reached") rather than anything
+ * the agent chose to say.
+ *
+ * SERVER-OWNED, like `AGENT_FINAL_TEXT_METADATA_KEY`. The server strips any
+ * inbound client-supplied value on every ordinary write path and re-stamps it
+ * only for the dedicated runtime-notice route. That matters because the flag
+ * carries authority: a runtime notice is exempt from the Feishu-bridged chat
+ * write boundary, so honoring it from a request body would let any agent
+ * credential mint its own exemption.
+ */
 export const RUNTIME_NOTICE_METADATA_KEY = "runtimeNotice";
+
+/**
+ * Upper bound on a runtime notice's text. The longest notice the runtime
+ * composes today is a provider-failure lead plus a 500-character redacted
+ * provider preview; this leaves generous headroom while keeping the dedicated
+ * route from becoming a general-purpose writing surface.
+ */
+export const RUNTIME_NOTICE_MAX_LENGTH = 4_000;
+
+/**
+ * Body of `POST /api/v1/agent/chats/:chatId/runtime-notices`.
+ *
+ * Deliberately carries ONLY the notice text: `source`, `format`, `purpose` and
+ * every metadata marker are authored by the server. `.strict()` makes an
+ * attempt to smuggle those fields a 400 rather than a silent drop, so a caller
+ * that still believes it can shape the stored row fails loudly.
+ */
+export const runtimeNoticeRequestSchema = z
+  .object({
+    content: z.string().min(1).max(RUNTIME_NOTICE_MAX_LENGTH),
+  })
+  .strict();
+export type RuntimeNoticeRequest = z.infer<typeof runtimeNoticeRequestSchema>;
 
 /** True when a stored message's metadata marks it as an agent final-text mirror. */
 export function isAgentFinalTextMetadata(metadata: Record<string, unknown> | null | undefined): boolean {

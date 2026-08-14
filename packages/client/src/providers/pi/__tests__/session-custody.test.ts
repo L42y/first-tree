@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, SessionEvent } from "@first-tree/shared";
-import { encodeProviderRetryEventMessage, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
+import { encodeProviderRetryEventMessage } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { silentLogger } from "../../../__tests__/_logger-helpers.js";
 import { mockEntry } from "../../../__tests__/test-helpers.js";
@@ -360,10 +360,11 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("exhausted_retry");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi" });
     const sdk = {
       register: vi.fn(),
-      sendMessage,
+      sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+      postRuntimeNotice,
       sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
       getChatContext: vi.fn().mockResolvedValue(null),
     } as unknown as FirstTreeHubSDK;
@@ -405,22 +406,16 @@ describe("Pi handler → SessionRuntime custody", () => {
     await sm.dispatch(mockEntry({ id: 77, chatId: "chat-pi-exhausted", messageId: "msg-pi-exhausted", content: "go" }));
 
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage).toHaveBeenCalledWith(
-      "chat-pi-exhausted",
-      expect.objectContaining({
-        source: "api",
-        format: "text",
-        metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
-        purpose: "agent-final-text",
-      }),
-    );
-    const notice = String(sendMessage.mock.calls[0]?.[1].content);
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    // The dedicated runtime-notice endpoint carries only the chat id and the
+    // text; the server authors the delivery profile and the stored marker.
+    expect(postRuntimeNotice).toHaveBeenCalledWith("chat-pi-exhausted", expect.any(String));
+    const notice = String(postRuntimeNotice.mock.calls[0]?.[1]);
     expect(notice).toContain("Pi could not run this turn");
     expect(notice).not.toContain("provider overloaded");
     expect(notice).not.toContain("temporary provider blip");
     expect(ackEntry).toHaveBeenCalledWith(77);
-    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    const noticeOrder = postRuntimeNotice.mock.invocationCallOrder[0];
     const ackOrder = ackEntry.mock.invocationCallOrder[0];
     expect(noticeOrder).toBeTypeOf("number");
     expect(ackOrder).toBeTypeOf("number");
@@ -432,14 +427,15 @@ describe("Pi handler → SessionRuntime custody", () => {
   function makePiSessionRuntime(input: {
     specs: ProviderProcessSpec[];
     ackEntry: ReturnType<typeof mockAckEntry>;
-    sendMessage: ReturnType<typeof vi.fn>;
+    postRuntimeNotice: ReturnType<typeof vi.fn>;
     onHandler?: (handler: ReturnType<typeof createPiHandler>) => void;
     recoverChat?: (chatId: string) => Promise<void>;
     registryPath?: string;
   }): SessionRuntime {
     const sdk = {
       register: vi.fn(),
-      sendMessage: input.sendMessage,
+      sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+      postRuntimeNotice: input.postRuntimeNotice,
       sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
       getChatContext: vi.fn().mockResolvedValue(null),
     } as unknown as FirstTreeHubSDK;
@@ -490,13 +486,13 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("bash_hold_until_abort");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-shutdown" });
     const shutdownCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
 
     const sm = makePiSessionRuntime({
       specs,
       ackEntry,
-      sendMessage,
+      postRuntimeNotice,
       onHandler: (handler) => {
         const original = handler.shutdown.bind(handler);
         handler.shutdown = async (reason, opts) => {
@@ -530,8 +526,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
     expect(ackEntry).toHaveBeenCalledTimes(1);
     expect(ackEntry).toHaveBeenCalledWith(88);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    const noticeOrder = postRuntimeNotice.mock.invocationCallOrder[0];
     const ackOrder = ackEntry.mock.invocationCallOrder[0];
     expect(noticeOrder as number).toBeLessThan(ackOrder as number);
     // Deferred start receipt must not adopt/resurrect after manager drain.
@@ -542,8 +538,8 @@ describe("Pi handler → SessionRuntime custody", () => {
   it("deferred resume race: manager shutdown settles accepted token without resume adoption", async () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-resume" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-resume" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     await sm.dispatch(mockEntry({ id: 70, chatId: "chat-pi-resume-race", messageId: "msg-first", content: "first" }));
     expect(ackEntry).toHaveBeenCalledWith(70);
@@ -565,8 +561,8 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(ackEntry).toHaveBeenCalledWith(71);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 71)).toHaveLength(1);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    const noticeOrder = postRuntimeNotice.mock.invocationCallOrder[0];
     const ack71Index = ackEntry.mock.calls.findIndex((call) => call[0] === 71);
     const ack71Order = ackEntry.mock.invocationCallOrder[ack71Index];
     expect(noticeOrder as number).toBeLessThan(ack71Order as number);
@@ -579,10 +575,11 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("preflight_capacity");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
     const sdk = {
       register: vi.fn(),
-      sendMessage,
+      sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+      postRuntimeNotice,
       sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
       getChatContext: vi.fn().mockResolvedValue(null),
     } as unknown as FirstTreeHubSDK;
@@ -667,7 +664,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     const sessionEvents: SessionEvent[] = [];
     const registryPath = join(workspaceRoot, "sessions-deferred.json");
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-deferred" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-deferred" });
     const forwardCalls: string[] = [];
     const mutationCalls: string[] = [];
 
@@ -759,7 +756,8 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       sdk: {
         register: vi.fn(),
-        sendMessage,
+        sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+        postRuntimeNotice,
         sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
         getChatContext: vi.fn().mockResolvedValue(null),
       } as unknown as FirstTreeHubSDK,
@@ -778,8 +776,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     await dispatchPromise;
 
     expect(ackEntry).toHaveBeenCalledWith(92);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const noticeOrder = sendMessage.mock.invocationCallOrder[0];
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    const noticeOrder = postRuntimeNotice.mock.invocationCallOrder[0];
     const ackOrder = ackEntry.mock.invocationCallOrder[0];
     expect(noticeOrder as number).toBeLessThan(ackOrder as number);
     // Non-terminal session events must not cross the drain fence.
@@ -809,8 +807,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("prompt_write_tool_no_response");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-write-gap" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-write-gap" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({
@@ -830,8 +828,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(Number(readFileSync(bashStartCountFile, "utf8")) || 0).toBe(1);
     expect(ackEntry).toHaveBeenCalledTimes(1);
     expect(ackEntry).toHaveBeenCalledWith(93);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice.mock.invocationCallOrder[0] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[0] as number,
     );
     expect(sm.totalCount).toBe(0);
@@ -842,8 +840,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("prompt_accepted_no_events");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-no-events" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-no-events" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({
@@ -861,8 +859,8 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
     expect(ackEntry).toHaveBeenCalledWith(94);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice.mock.invocationCallOrder[0] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[0] as number,
     );
     expect(sm.totalCount).toBe(0);
@@ -882,7 +880,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     const sessionEvents: SessionEvent[] = [];
     const registryPath = join(workspaceRoot, "sessions-operator-suspend-deferred.json");
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-deferred" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-deferred" });
     const forwardCalls: string[] = [];
     const mutationCalls: string[] = [];
 
@@ -978,7 +976,8 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       sdk: {
         register: vi.fn(),
-        sendMessage,
+        sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+        postRuntimeNotice,
         sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
         getChatContext: vi.fn().mockResolvedValue(null),
       } as unknown as FirstTreeHubSDK,
@@ -1002,8 +1001,8 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(ackEntry).toHaveBeenCalledWith(97);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 97)).toHaveLength(1);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice.mock.invocationCallOrder[0] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[0] as number,
     );
     expect(sessionEvents.some((event) => event.kind === "assistant_text")).toBe(false);
@@ -1032,13 +1031,13 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("prompt_write_tool_no_response");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-suspend" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-operator-suspend" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const suspendCalls: Array<{ reason?: string; opts?: { settleProviderEntered?: boolean } }> = [];
     const sm = makePiSessionRuntime({
       specs,
       ackEntry,
-      sendMessage,
+      postRuntimeNotice,
       recoverChat,
       onHandler: (handler) => {
         const original = handler.suspend.bind(handler);
@@ -1071,8 +1070,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     expect(suspendCalls.some((call) => call.opts?.settleProviderEntered === true)).toBe(true);
     expect(ackEntry).toHaveBeenCalledWith(96);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 96)).toHaveLength(1);
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice.mock.invocationCallOrder[0] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[0] as number,
     );
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(1);
@@ -1115,7 +1114,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     };
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "unused" });
     const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
@@ -1145,7 +1144,8 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       sdk: {
         register: vi.fn(),
-        sendMessage,
+        sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+        postRuntimeNotice,
         sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
         getChatContext: vi.fn().mockResolvedValue(null),
       } as unknown as FirstTreeHubSDK,
@@ -1172,7 +1172,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
     expect(ackEntry).not.toHaveBeenCalled();
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(postRuntimeNotice).not.toHaveBeenCalled();
 
     await sm.shutdown();
   });
@@ -1184,9 +1184,9 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("happy");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-active-inject" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-active-inject" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, recoverChat });
     const chatId = "chat-pi-active-inject-suspend";
 
     await sm.dispatch(
@@ -1223,10 +1223,10 @@ describe("Pi handler → SessionRuntime custody", () => {
     ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 111)).toHaveLength(1);
     const injectAckIndex = ackEntry.mock.calls.findIndex((call) => call[0] === 111);
-    expect(sendMessage.mock.invocationCallOrder[0] as number).toBeLessThan(
+    expect(postRuntimeNotice.mock.invocationCallOrder[0] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[injectAckIndex] as number,
     );
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
@@ -1253,11 +1253,11 @@ describe("Pi handler → SessionRuntime custody", () => {
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       await recoverGate;
     });
-    const sendMessage = vi
+    const postRuntimeNotice = vi
       .fn()
       .mockRejectedValueOnce(new Error("runtime notice store offline"))
       .mockResolvedValue({ id: "runtime-notice-after-recovery" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, recoverChat });
     const chatId = "chat-pi-active-inject-notice-recover";
     const injectEntry = mockEntry({
       id: 113,
@@ -1289,7 +1289,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 113)).toHaveLength(0);
     expect(recoverChat).toHaveBeenCalledWith(chatId);
     expect(
@@ -1311,8 +1311,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     await sm.dispatch(injectEntry);
     await vi.waitFor(() => expect(ackEntry.mock.calls.filter((call) => call[0] === 113)).toHaveLength(1));
 
-    expect(sendMessage).toHaveBeenCalledTimes(2);
-    expect(sendMessage.mock.invocationCallOrder[1] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(2);
+    expect(postRuntimeNotice.mock.invocationCallOrder[1] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 113)] as number,
     );
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
@@ -1333,12 +1333,12 @@ describe("Pi handler → SessionRuntime custody", () => {
       await recoverGate;
     });
     // Notice #1 (suspend) fails; #2 (after recovery #1) fails; #3 (after recovery #2) succeeds.
-    const sendMessage = vi
+    const postRuntimeNotice = vi
       .fn()
       .mockRejectedValueOnce(new Error("runtime notice store offline"))
       .mockRejectedValueOnce(new Error("runtime notice store still offline"))
       .mockResolvedValue({ id: "runtime-notice-after-recovery-2" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, recoverChat });
     const chatId = "chat-pi-active-inject-notice-recover-twice";
     const injectEntry = mockEntry({
       id: 119,
@@ -1373,7 +1373,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     ).projection.sessions.get(chatId)?.suspending;
     await Promise.all([suspending ?? Promise.resolve(), injectPromise]);
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(1);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 119)).toHaveLength(0);
     expect(recoverChat).toHaveBeenCalledTimes(1);
     expect(hasDebt()).toBe(true);
@@ -1383,7 +1383,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     // Redelivery after recovery #1 — notice #2 fails; must not ACK or re-enter Pi.
     await sm.dispatch(injectEntry);
-    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(postRuntimeNotice).toHaveBeenCalledTimes(2));
     await Promise.resolve();
     await Promise.resolve();
     expect(ackEntry.mock.calls.filter((call) => call[0] === 119)).toHaveLength(0);
@@ -1406,8 +1406,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     // Redelivery after recovery #2 — notice #3 succeeds; sole ACK after notice.
     await sm.dispatch(injectEntry);
     await vi.waitFor(() => expect(ackEntry.mock.calls.filter((call) => call[0] === 119)).toHaveLength(1));
-    expect(sendMessage).toHaveBeenCalledTimes(3);
-    expect(sendMessage.mock.invocationCallOrder[2] as number).toBeLessThan(
+    expect(postRuntimeNotice).toHaveBeenCalledTimes(3);
+    expect(postRuntimeNotice.mock.invocationCallOrder[2] as number).toBeLessThan(
       ackEntry.mock.invocationCallOrder[ackEntry.mock.calls.findIndex((call) => call[0] === 119)] as number,
     );
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsBeforeInject + 1);
@@ -1428,8 +1428,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockImplementation(async () => {
       await recoverGate;
     });
-    const sendMessage = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, recoverChat });
+    const postRuntimeNotice = vi.fn().mockRejectedValue(new Error("runtime notice store offline"));
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, recoverChat });
     const chatId = "chat-pi-active-inject-notice-fail-persist";
     const injectEntry = mockEntry({
       id: 121,
@@ -1471,7 +1471,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     // After recovery #1, redelivery notice fails again → debt, no ACK, no Pi replay.
     await sm.dispatch(injectEntry);
-    await vi.waitFor(() => expect(sendMessage.mock.calls.length).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(postRuntimeNotice.mock.calls.length).toBeGreaterThanOrEqual(2));
     await Promise.resolve();
     await Promise.resolve();
     expect(ackEntry.mock.calls.filter((call) => call[0] === 121)).toHaveLength(0);
@@ -1493,7 +1493,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     // Recovery #2 completes; next redelivery notice still fails → still requestable.
     await sm.dispatch(injectEntry);
-    await vi.waitFor(() => expect(sendMessage.mock.calls.length).toBeGreaterThanOrEqual(3));
+    await vi.waitFor(() => expect(postRuntimeNotice.mock.calls.length).toBeGreaterThanOrEqual(3));
     await Promise.resolve();
     await Promise.resolve();
     expect(ackEntry.mock.calls.filter((call) => call[0] === 121)).toHaveLength(0);
@@ -1544,7 +1544,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     };
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "unused" });
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
     const sm = new SessionRuntime({
       session: {
@@ -1575,7 +1575,8 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       sdk: {
         register: vi.fn(),
-        sendMessage,
+        sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+        postRuntimeNotice,
         sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
         getChatContext: vi.fn().mockResolvedValue(null),
       } as unknown as FirstTreeHubSDK,
@@ -1617,7 +1618,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
     expect(ackEntry.mock.calls.filter((call) => call[0] === 115)).toHaveLength(0);
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(postRuntimeNotice).not.toHaveBeenCalled();
     expect(recoverChat).toHaveBeenCalledWith(chatId);
 
     await sm.shutdown();
@@ -1648,7 +1649,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     };
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "unused" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "unused" });
     const sm = new SessionRuntime({
       session: {
         idle_timeout: 300,
@@ -1678,7 +1679,8 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       sdk: {
         register: vi.fn(),
-        sendMessage,
+        sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+        postRuntimeNotice,
         sendToAgent: vi.fn().mockResolvedValue({ id: "msg-dm" }),
         getChatContext: vi.fn().mockResolvedValue(null),
       } as unknown as FirstTreeHubSDK,
@@ -1704,7 +1706,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(0);
     expect(ackEntry).not.toHaveBeenCalled();
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(postRuntimeNotice).not.toHaveBeenCalled();
     expect(sm.totalCount).toBe(0);
     expect(sm.activeCount).toBe(0);
   });
@@ -1713,8 +1715,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("bash_hold_until_abort");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-steer" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-steer" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1760,8 +1762,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("hold_get_state_until_gate");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-fifo" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-fifo" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1805,8 +1807,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("get_state_fail");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-prereadiness" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-prereadiness" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1844,8 +1846,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     setPiTestMode("hold_get_state_until_gate");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-suspend-defer" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-suspend-defer" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const headPromise = sm.dispatch(
       mockEntry({
@@ -1884,8 +1886,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     writeFileSync(getStateFailRemainFile, "1");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-steer" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-steer" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     // First dispatch returns after the transient failure schedules retry — it
     // does not await the winning retry turn. Observe custody via wire counts/ACK.
@@ -1930,8 +1932,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     writeFileSync(promptGateFile, "0");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-fifo" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-retry-fifo" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     void sm.dispatch(
       mockEntry({
@@ -1972,8 +1974,8 @@ describe("Pi handler → SessionRuntime custody", () => {
   it("suspend/resume keeps the persisted Pi session identity across spawns", async () => {
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     await sm.dispatch(mockEntry({ id: 301, chatId: "chat-pi-continuity", messageId: "msg-cont-1", content: "first" }));
     expect(ackEntry).toHaveBeenCalledWith(301);
@@ -1994,8 +1996,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     const registryPath = join(workspaceRoot, "sessions-reset.json");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, registryPath });
 
     await sm.dispatch(
       mockEntry({ id: 311, chatId: "chat-pi-reset", messageId: "msg-reset-1", content: "before reset" }),
@@ -2033,8 +2035,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     writeFileSync(getStateFailRemainFile, "1");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-reidentity" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi-reidentity" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice });
 
     const dispatchPromise = sm.dispatch(
       mockEntry({ id: 321, chatId: "chat-pi-reidentity", messageId: "msg-reidentity", content: "run sleep 60" }),
@@ -2058,8 +2060,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     const registryPath = join(workspaceRoot, "sessions-reset-flush.json");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, registryPath });
 
     await sm.dispatch(
       mockEntry({ id: 331, chatId: "chat-pi-reset-flush", messageId: "msg-flush-1", content: "before reset" }),
@@ -2106,8 +2108,8 @@ describe("Pi handler → SessionRuntime custody", () => {
     const specs: ProviderProcessSpec[] = [];
     // Persistent ACK failure leaves the settled first row as recovery debt.
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("ack offline"));
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
-    const sm1 = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const sm1 = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, registryPath });
 
     const chatId = "chat-pi-reset-redelivery";
     const messageId = "msg-reset-redelivery";
@@ -2151,7 +2153,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     // New SessionRuntime (client restart): in-memory terminal ledger is gone.
     // Same durable inbox row is redelivered; ACK is available this time.
     const ackEntry2 = mockAckEntry();
-    const sm2 = makePiSessionRuntime({ specs, ackEntry: ackEntry2, sendMessage, registryPath });
+    const sm2 = makePiSessionRuntime({ specs, ackEntry: ackEntry2, postRuntimeNotice, registryPath });
     await sm2.dispatch(mockEntry({ id: entryId, chatId, messageId, content: "settled but unacked" }));
     expect(ackEntry2).toHaveBeenCalledWith(entryId);
 
@@ -2169,7 +2171,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     const registryPath = join(workspaceRoot, "sessions-reset-fence.json");
     const specs: ProviderProcessSpec[] = [];
     const ackEntry = mockAckEntry();
-    const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
+    const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
     let consecutiveNoProgressResets = 0;
     let lastResetSignature: string | null = null;
     let noProgressCircuitOpen = false;
@@ -2183,7 +2185,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         throw new Error("recover_failed: no-progress circuit open");
       }
     });
-    const sm1 = makePiSessionRuntime({ specs, ackEntry, sendMessage, registryPath, recoverChat });
+    const sm1 = makePiSessionRuntime({ specs, ackEntry, postRuntimeNotice, registryPath, recoverChat });
     const chatId = "chat-pi-reset-fence";
 
     await sm1.dispatch(mockEntry({ id: 351, chatId, messageId: "msg-fence-old", content: "establish identity" }));

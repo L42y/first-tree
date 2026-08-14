@@ -78,21 +78,30 @@ First Tree's own chat tools, and that the Web projection remains read-only.
   First Tree message through shared `sendMessage`, gives other speakers only `notify=false` context, and uses that
   message id as the Feishu idempotency key. Reusing the same message id with changed content, target, or media bytes must
   be rejected. Confirm the temporary credential environment is private, is available only to A, and is deleted after use.
-- From Agent A's session inside the bound task, attempt every First Tree chat tool. `chat send`, `chat ask` and
-  `chat invite` must be refused before anything is written, each naming the Feishu reply path (record the delivery with
-  `feishu intent`, then send with the official `lark-cli --as bot`) rather than only refusing; `chat create` and
-  `chat open` must be refused locally with the same guidance. `chat update --topic/--description`, `chat list`,
-  `chat history`, `feishu intent`, `feishu credential-env` and the agent's own archive/read state must keep working.
-  Confirm no refused command left a message, participant or chat behind. Repeat from Agent B and confirm the boundary is
-  a property of the chat, not of the Bot-owning Agent.
+- From Agent A's session inside the bound task, attempt every First Tree chat tool. The boundary blocks messages and
+  membership changes, not all writes: `chat send`, `chat ask` and `chat invite` must be refused before anything is
+  written, each naming the Feishu reply path (record the delivery with `feishu intent`, then send with the official
+  `lark-cli --as bot`) rather than only refusing; `chat create` and `chat open` must be refused locally with the same
+  guidance. `chat update --topic/--description`, `chat list`, `chat history`, `feishu intent`, `feishu credential-env`
+  and the agent's own archive/read state must keep working. Confirm no refused command left a message, participant or
+  chat behind. Repeat from Agent B and confirm the boundary is a property of the chat, not of the Bot-owning Agent.
+- Confirm a refusal requires membership first: from an Agent that is not a participant, target the bound chat's UUID and
+  confirm the error is indistinguishable from the same attempt against an ordinary chat it also does not belong to, so
+  the boundary cannot be used to discover which chats are Feishu-bound.
+- Run `chat create --agent <another local agent>` from inside the bound session. It must refuse without creating
+  anything, even though that other Agent cannot see the originating chat — the origin check runs as the session Agent,
+  and an inconclusive answer must refuse rather than proceed.
 - With the guard active, force a provider terminal failure for Agent A in the bound task (for example, invalid provider
   credentials). Confirm the operator-facing runtime notice still lands in First Tree chat history — an agent that cannot
-  run at all must not also go silent — while ordinary agent sends in the same chat remain refused.
+  run at all must not also go silent — while ordinary agent sends in the same chat remain refused. Then confirm the
+  exemption cannot be borrowed: an ordinary agent send that decorates itself with the runtime-notice metadata and the
+  silent delivery purpose must still be refused, and must not persist that marker even in an unbridged chat.
 - Detach the chat binding, then retry `chat send` in the same chat. It must succeed: the boundary follows the live
   binding, not the chat's `feishu` origin label, so a detached conversation returns to being an ordinary First Tree chat.
 - Open the bound task in Web. Confirm messages, author attribution and attachments remain readable, while direct message,
   rename, membership, join/leave and other structural mutations are absent and rejected by direct Web API calls. Personal
-  read, pin and archive state must continue to work.
+  read, pin and archive state must continue to work. After detaching the binding, confirm Web structural writes are
+  accepted again — Web and the agent scope must release the chat at the same moment.
 - Revoke the binding and confirm credentials are cleared, the Channel disconnects, chat bindings detach, and later
   ingress/resource/CLI operations fail closed without deleting historical canonical messages or attachments.
 - Delete every disposable Feishu document, spreadsheet, Base app, calendar, event, task and attachment created by the
@@ -109,8 +118,10 @@ delivery, and all disposable provider resources are removed.
 Bot reply or activated-thread continuation, persists provider reference context as canonical history, attributes an
 external human as a First Tree member, loses a triggered message when one resource fails, exposes A's Bot credential to
 B, bypasses canonical message creation, duplicates a same-id send inside the provider window, permits a Web structural
-mutation, lets an Agent answer a bridged conversation through First Tree's own chat tools, blocks the Bot's own outbound
-delivery or the provider-failure runtime notice, or keeps refusing after the binding detaches.
+mutation, lets an Agent answer a bridged conversation through First Tree's own chat tools, lets a request body mint its
+own runtime-notice exemption, reveals a chat's Feishu binding to a non-member through the refusal, blocks the Bot's own
+outbound delivery or the provider-failure runtime notice, blocks `chat update` or personal state, or keeps refusing in
+either scope after the binding detaches.
 
 `BLOCKED`: official QR creation, disposable tenant/chat, inbound provider connectivity, official `lark-cli`, a
 provider-backed Agent turn, or the two-replica environment cannot be established. Deterministic product tests alone do

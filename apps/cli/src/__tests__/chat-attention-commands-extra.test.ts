@@ -102,6 +102,11 @@ beforeEach(() => {
   localAgentMocks.createSdk.mockReturnValue({
     agentId: "agent-self",
     attention: { raise: vi.fn() },
+    // `chat create` / `chat open` resolve the session chat's bridge state
+    // before doing anything, and an unresolvable answer now refuses instead of
+    // proceeding. Answer "ordinary chat" so these cases exercise the command,
+    // not the Feishu precondition (which owns its own test file).
+    getChatDetail: vi.fn(async () => ({ externalChannel: null })),
     createTaskChat: vi.fn(async () => ({
       chatId: "chat-created",
       messageId: "msg-created",

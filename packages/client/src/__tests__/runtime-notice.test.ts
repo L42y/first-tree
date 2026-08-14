@@ -1,4 +1,4 @@
-import { type ProviderRetryEventPayload, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
+import type { ProviderRetryEventPayload } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import { FirstTreeHubSDK } from "../cloud/sdk.js";
 import {
@@ -153,9 +153,9 @@ describe("runtime notice formatting", () => {
     expect(isEgressForbiddenText("Request not allowed")).toBe(false);
   });
 
-  it("sends the formatted notice as final API text with runtime metadata", async () => {
+  it("publishes the formatted notice through the dedicated runtime-notice endpoint", async () => {
     const sdk = new FirstTreeHubSDK({ serverUrl: "https://first-tree.test", getAccessToken: () => "token" });
-    const sendMessage = vi.spyOn(sdk, "sendMessage").mockResolvedValue({
+    const postRuntimeNotice = vi.spyOn(sdk, "postRuntimeNotice").mockResolvedValue({
       id: "msg-1",
       chatId: "chat-1",
       senderId: "agent-1",
@@ -171,12 +171,8 @@ describe("runtime notice formatting", () => {
 
     await postProviderFailureRuntimeNotice(sdk, "chat-1", payload({ messagePreview: "refresh token revoked" }));
 
-    expect(sendMessage).toHaveBeenCalledWith("chat-1", {
-      source: "api",
-      format: "text",
-      content: expect.stringContaining("refresh token revoked"),
-      metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
-      purpose: "agent-final-text",
-    });
+    // Only the text travels: the server authors source/format/purpose and the
+    // stored runtimeNotice marker, so the client cannot forge the exemption.
+    expect(postRuntimeNotice).toHaveBeenCalledWith("chat-1", expect.stringContaining("refresh token revoked"));
   });
 });

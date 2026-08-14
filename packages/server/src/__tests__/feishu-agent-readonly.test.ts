@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { FEISHU_AGENT_CHAT_WRITE_CODE } from "../api/agent/feishu-chat-guard.js";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../db/schema/im-chat-bindings.js";
+import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
@@ -109,20 +110,42 @@ describe("Feishu agent chat-tool boundary", () => {
     expect(update.statusCode).toBe(200);
   });
 
-  it("exempts the provider-failure runtime notice so operators still see the failure", async () => {
-    const { a, chat } = await setup();
+  /**
+   * The exemption is a property of the ROUTE, so the genuine runtime notice
+   * has to keep landing: an agent that cannot run at all must not also go
+   * silent on the operator watching the chat.
+   */
+  it("delivers a genuine runtime notice through the dedicated route and marks it server-side", async () => {
+    const { app, a, chat } = await setup();
 
-    const notice = await a.request("POST", `/api/v1/agent/chats/${chat.id}/messages`, {
-      format: "text",
+    const notice = await a.request("POST", `/api/v1/agent/chats/${chat.id}/runtime-notices`, {
       content: "Claude Code could not run this turn: credentials need attention.",
-      source: "api",
-      purpose: "agent-final-text",
-      metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
     });
     expect(notice.statusCode).toBe(201);
 
-    // The silent delivery profile alone must NOT open the door — an ordinary
-    // agent send may carry `purpose` too.
+    const [stored] = await app.db.select().from(messages).where(eq(messages.id, notice.json<{ id: string }>().id));
+    expect(stored?.metadata).toMatchObject({ [RUNTIME_NOTICE_METADATA_KEY]: true });
+  });
+
+  /**
+   * Regression for the forgeable exemption. Both markers used to be read off
+   * the request body, so any agent credential could mint its own bypass of the
+   * 403 by decorating an ordinary `chat send`.
+   */
+  it("rejects a forged runtime notice from an ordinary agent credential", async () => {
+    const { app, a, b, chat } = await setup();
+
+    const forged = await a.request("POST", `/api/v1/agent/chats/${chat.id}/messages`, {
+      format: "text",
+      content: "arbitrary content wearing a runtime-notice costume",
+      source: "cli",
+      purpose: "agent-final-text",
+      metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
+    });
+    expect(forged.statusCode).toBe(403);
+    expect(forged.json<{ code?: string }>().code).toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+
+    // The silent delivery profile alone never opened the door either.
     const bareFinalText = await a.request("POST", `/api/v1/agent/chats/${chat.id}/messages`, {
       format: "text",
       content: "not a runtime notice",
@@ -131,6 +154,67 @@ describe("Feishu agent chat-tool boundary", () => {
     });
     expect(bareFinalText.statusCode).toBe(403);
     expect(bareFinalText.json<{ code?: string }>().code).toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+
+    // And even in an ORDINARY chat, where the send succeeds, the smuggled
+    // marker must not survive onto the stored row — otherwise the forgery just
+    // moves one chat over.
+    const plain = await createChat(app.db, a.agent.uuid, { type: "group", participantIds: [b.agent.uuid] });
+    const smuggled = await a.request("POST", `/api/v1/agent/chats/${plain.id}/messages`, {
+      format: "text",
+      content: "ordinary send carrying the marker",
+      source: "cli",
+      metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true, mentions: [b.agent.uuid] },
+    });
+    expect(smuggled.statusCode).toBe(201);
+    const [stored] = await app.db.select().from(messages).where(eq(messages.id, smuggled.json<{ id: string }>().id));
+    expect(stored?.metadata).not.toHaveProperty(RUNTIME_NOTICE_METADATA_KEY);
+  });
+
+  /**
+   * The notice route is a narrower capability, not an open door: it still
+   * requires membership, and it refuses to let the caller shape the stored row.
+   */
+  it("keeps the runtime-notice route membership-gated and strict about its body", async () => {
+    const { a, c, chat } = await setup();
+
+    const outsider = await c.request("POST", `/api/v1/agent/chats/${chat.id}/runtime-notices`, {
+      content: "not my chat",
+    });
+    expect(outsider.statusCode).toBe(403);
+    expect(outsider.json<{ code?: string }>().code).not.toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+
+    const overreaching = await a.request("POST", `/api/v1/agent/chats/${chat.id}/runtime-notices`, {
+      content: "trying to address a teammate",
+      metadata: { mentions: [c.agent.uuid] },
+    });
+    expect(overreaching.statusCode).toBe(400);
+  });
+
+  /**
+   * The guard must not become an oracle: a non-member who guesses a chat UUID
+   * should not be able to tell a Feishu-bound chat from an ordinary one by the
+   * difference in error.
+   */
+  it("authorizes membership before the boundary, so the 403 cannot be probed", async () => {
+    const { app, a, b, c, chat } = await setup();
+    const plain = await createChat(app.db, a.agent.uuid, { type: "group", participantIds: [b.agent.uuid] });
+
+    for (const target of [chat, plain]) {
+      const invite = await c.request("POST", `/api/v1/agent/chats/${target.id}/participants`, {
+        agentIds: [c.agent.uuid],
+      });
+      expect(invite.statusCode).toBe(403);
+      expect(invite.json<{ code?: string }>().code).not.toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+
+      const send = await c.request("POST", `/api/v1/agent/chats/${target.id}/messages`, {
+        format: "text",
+        content: "probing",
+        source: "cli",
+        metadata: { mentions: [a.agent.uuid] },
+      });
+      expect(send.statusCode).toBe(403);
+      expect(send.json<{ code?: string }>().code).not.toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+    }
   });
 
   it("releases the boundary once the Feishu binding detaches", async () => {

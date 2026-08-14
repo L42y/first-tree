@@ -144,8 +144,24 @@ export function registerChatCreateCommand(chat: Command): void {
         // The server cannot enforce this one: `POST /agent/chats` never
         // receives the originating chat. Refuse client-side so a Feishu-bound
         // session does not spawn a First Tree chat its humans cannot see.
-        const refusal = await checkFeishuChatContext(sdk, process.env.FIRST_TREE_CHAT_ID, "create");
-        if (refusal) fail(refusal.code, refusal.message, 2);
+        //
+        // The origin lookup deliberately runs under the SESSION identity
+        // (`createSdk()` resolves from FIRST_TREE_AGENT_ID), never under
+        // `--agent`. `--agent` picks who creates the new chat; it must not pick
+        // who answers "is the chat I am sitting in bridged?" — an overridden
+        // agent that is not a member of the origin chat gets a 403, and reading
+        // that as "not a Feishu chat" was a straight bypass of this refusal.
+        // Requiring the session agent here also keeps an unrelated agent's
+        // membership from becoming a precondition for ordinary creates.
+        //
+        // Gated on both agent-session variables, matching `chat open`: an
+        // origin chat only exists inside an agent session, and an operator
+        // terminal may have no agent configured at all.
+        const sessionChatId = process.env.FIRST_TREE_CHAT_ID;
+        if (sessionChatId && process.env.FIRST_TREE_AGENT_ID) {
+          const refusal = await checkFeishuChatContext(createSdk(), sessionChatId, "create");
+          if (refusal) fail(refusal.code, refusal.message, 2);
+        }
 
         // KNOWN GAP (follow-up #1069), out of scope for this PR: no chat exists
         // yet, so the upload org can't be resolved from a chat — doc capture is a

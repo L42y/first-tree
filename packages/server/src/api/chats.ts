@@ -17,7 +17,6 @@ import type { FastifyInstance } from "fastify";
 import { agents } from "../db/schema/agents.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
-import { imChatBindings } from "../db/schema/im-chat-bindings.js";
 import { inboxEntries } from "../db/schema/inbox-entries.js";
 import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
@@ -48,6 +47,7 @@ import {
   setChatEngagement,
 } from "../services/chat/workspace/me-chat.js";
 import { listRequestThread } from "../services/chat/workspace/need-you.js";
+import { isFeishuBridgedChat } from "../services/integrations/feishu/chat-binding.js";
 import {
   hasRemainingLandingCampaignTrialBudget,
   normalizeLandingCampaignTrialChatMetadataForRead,
@@ -77,13 +77,19 @@ import { sendFollowResult } from "./github-entity-reply.js";
  * and gates participation/supervision.
  */
 export async function chatRoutes(app: FastifyInstance): Promise<void> {
+  /**
+   * Web-scope Feishu boundary. Shares `isFeishuBridgedChat` with the agent
+   * scope so both answer "is this chat mirrored to Feishu right now?" the same
+   * way; see that module for why the answer is active-bindings-only.
+   *
+   * BEHAVIOR CHANGE: this used to match ANY binding row, including detached
+   * ones, which left a detached chat permanently Web-read-only while the agent
+   * scope had already let go of it.
+   */
   async function assertWebMutableChat(chatId: string): Promise<void> {
-    const [binding] = await app.db
-      .select({ id: imChatBindings.id })
-      .from(imChatBindings)
-      .where(eq(imChatBindings.chatId, chatId))
-      .limit(1);
-    if (binding) throw new ForbiddenError("Feishu chats are read-only in the Web app");
+    if (await isFeishuBridgedChat(app.db, chatId)) {
+      throw new ForbiddenError("Feishu chats are read-only in the Web app");
+    }
   }
 
   async function requireDirectHumanChatMembership(chatId: string, humanAgentId: string): Promise<void> {

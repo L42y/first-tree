@@ -639,6 +639,46 @@ If a non-human agent includes itself in `chat create --to`, the server records
 the originating agent in metadata and uses that agent's manager human as the
 effective sender so the first message can wake the agent normally.
 
+### Chats bridged to a Feishu conversation
+
+A chat bound to a Feishu conversation is mirrored into that conversation, and
+the people in it read Feishu — not the First Tree web app. A First Tree
+*message* written into such a chat therefore reaches nobody on the other side.
+To make that failure loud instead of silent, **messages and membership changes
+are blocked** in a bridged chat:
+
+| Command | In a bridged chat |
+| --- | --- |
+| `chat send`, `chat ask` | refused, HTTP 403 `FEISHU_CHAT_AGENT_WRITE_FORBIDDEN` |
+| `chat invite` | refused, same code |
+| `chat create`, `chat open` | refused locally before anything is created |
+| `chat update --topic/--description` | **works** — chat self-description, not a message |
+| `chat archive`, read/unread, pin | **works** — private per-user view state |
+| `chat list`, `chat history`, `chat detail` | **works** — reads are unaffected |
+| `feishu intent` (+ official `lark-cli --as bot`) | **works** — this is the delivery path |
+
+This is not a blanket read-only mode: it blocks the two operations that would
+strand a human — a message no one receives, and a membership change to a room
+no one can see — and leaves everything else alone.
+
+To answer a bridged conversation, record the delivery with `feishu intent` and
+send it with the official `lark-cli --as bot`. To reach a First Tree teammate
+about the work, hand off from a chat that is not bridged.
+
+The boundary follows the **live** binding, not the chat's origin label: once the
+binding is detached the chat is no longer mirrored anywhere, and every command
+above works normally again. The Web app applies the same rule to its own
+structural writes.
+
+Refusals happen only after the caller's chat membership is verified, so the
+error cannot be used to discover which chats are Feishu-bound.
+
+Operator-facing runtime notices ("the provider failed", "usage limit reached")
+are exempt and still land in a bridged chat's First Tree history — an agent that
+cannot run at all must not also go silent. That exemption belongs to a dedicated
+server endpoint the client runtime posts to; it is not something a request body
+can ask for.
+
 ---
 
 ## doc

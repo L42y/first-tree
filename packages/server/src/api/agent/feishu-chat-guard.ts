@@ -1,8 +1,6 @@
-import { isRuntimeNoticeMetadata, type SendMessage } from "@first-tree/shared";
-import { and, eq } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
-import { imChatBindings } from "../../db/schema/im-chat-bindings.js";
 import { ForbiddenError } from "../../errors.js";
+import { isFeishuBridgedChat } from "../../services/integrations/feishu/chat-binding.js";
 
 /**
  * Agent-scope counterpart of `assertWebMutableChat` in `api/chats.ts`.
@@ -13,11 +11,11 @@ import { ForbiddenError } from "../../errors.js";
  * on the other side can see, so the reply is silently lost. These routes fail
  * fast instead and name the path that actually delivers.
  *
- * Authority is `im_chat_bindings`, filtered to `status = 'active'` — NOT
+ * Authority is the shared `isFeishuBridgedChat` predicate — live
+ * `im_chat_bindings` state restricted to `status = 'active'`, NOT
  * `chats.metadata.source`, which is a soft label that stays `"feishu"` after a
- * binding detaches. The Web helper predates the `status` column and does not
- * filter; the agent scope does, so a detached chat becomes an ordinary First
- * Tree chat again for the agent.
+ * binding detaches. The Web boundary uses the very same predicate so the two
+ * scopes cannot drift apart on what "bridged" means.
  *
  * DELIBERATELY NOT GUARDED HERE:
  *   - `messageService.sendMessage` itself. The Feishu bridge's own outbound
@@ -26,6 +24,11 @@ import { ForbiddenError } from "../../errors.js";
  *     the service layer would break the bot's own replies. The bridge is
  *     distinguishable only by its route, which is why this lives in the
  *     route/adapter layer and is applied per-route.
+ *   - `POST /agent/chats/:chatId/runtime-notices`. Operator-facing runtime
+ *     notices must survive the boundary — an agent that cannot run at all must
+ *     not also go silent. That route is exempt because of WHICH ROUTE IT IS,
+ *     the same property that makes the bridge safe. The exemption is no longer
+ *     expressible in a request body: see the note below.
  *   - `PATCH /agent/chats/:chatId` (`chat update`). Topic/description are
  *     First-Tree-side metadata the agent briefing requires it to maintain;
  *     they are not a message to a human in the Feishu group.
@@ -33,52 +36,42 @@ import { ForbiddenError } from "../../errors.js";
  *     private engagement row, i.e. personal view state — the same class the
  *     Web boundary deliberately keeps working on Feishu chats (`/read`,
  *     `/unread`, `/pin` are all unguarded there).
+ *
+ * NO CONTENT-DERIVED EXEMPTION. An earlier revision exempted a send whose body
+ * carried `purpose: "agent-final-text"` plus `metadata.runtimeNotice`. Both are
+ * request fields any agent credential can set, so the exemption was a hole
+ * straight through this 403. The marker is now server-owned
+ * (`stripUntrustedMetadataKeys` removes any inbound copy) and the exemption is
+ * a property of the route, not of what the caller claims to be sending.
  */
 
 /** Machine-readable code surfaced to the CLI through `AppError.attrs.code`. */
 export const FEISHU_AGENT_CHAT_WRITE_CODE = "FEISHU_CHAT_AGENT_WRITE_FORBIDDEN";
 
+/**
+ * Wording matters here: the boundary blocks MESSAGES AND MEMBERSHIP CHANGES,
+ * not every write. `chat update`, `chat archive` and the agent's own read/view
+ * state all keep working, and saying "read-only" would send an agent hunting
+ * for a workaround it does not need.
+ */
 const FEISHU_AGENT_CHAT_WRITE_MESSAGE =
-  "This chat is bridged to a Feishu conversation, so a First Tree chat write here reaches nobody: " +
-  "the humans in it only ever see the Feishu group. Reply through the Feishu path instead — record the " +
-  "delivery with `feishu intent`, then send it with the official `lark-cli --as bot`.";
+  "This chat is bridged to a Feishu conversation, so messages and membership changes are blocked here: " +
+  "a First Tree message reaches nobody, because the humans in this chat only ever see the Feishu group. " +
+  "Reply through the Feishu path instead — record the delivery with `feishu intent`, then send it with the " +
+  "official `lark-cli --as bot`. Reads, `chat update` and your own archive/read state still work normally.";
 
-/** True when the chat currently has an active Feishu conversation binding. */
-export async function isFeishuBridgedChat(db: Database, chatId: string): Promise<boolean> {
-  const [binding] = await db
-    .select({ id: imChatBindings.id })
-    .from(imChatBindings)
-    .where(and(eq(imChatBindings.chatId, chatId), eq(imChatBindings.status, "active")))
-    .limit(1);
-  return binding !== undefined;
-}
+export { isFeishuBridgedChat };
 
-/** Reject an agent-scope chat write that would land outside the Feishu group. */
+/**
+ * Reject an agent-scope chat write that would land outside the Feishu group.
+ *
+ * Call this only AFTER the route has authorized the caller's membership.
+ * Running it first would turn the boundary into an oracle: a non-member who
+ * guesses a chat UUID could tell bridged chats from ordinary ones by the
+ * difference between this 403 and the ordinary not-a-participant error.
+ */
 export async function assertAgentMutableChat(db: Database, chatId: string): Promise<void> {
   if (await isFeishuBridgedChat(db, chatId)) {
     throw new ForbiddenError(FEISHU_AGENT_CHAT_WRITE_MESSAGE, { code: FEISHU_AGENT_CHAT_WRITE_CODE });
   }
-}
-
-/**
- * Provider-failure runtime notices are exempt.
- *
- * `runtime/runtime-notice.ts::postProviderFailureRuntimeNotice` posts through
- * the same agent message route when a provider terminally fails. That row is
- * the only in-product signal an operator gets that the agent could not run at
- * all — suppressing it on a Feishu chat would make the chat look merely idle.
- * It is recipientless and silent (`purpose: "agent-final-text"`), so it wakes
- * nobody and cannot be used as a back door for ordinary conversation.
- *
- * Both markers are required: the silent delivery profile alone is not enough,
- * because deliberate agent sends may also carry it.
- */
-export function isProviderFailureRuntimeNotice(body: SendMessage): boolean {
-  return body.purpose === "agent-final-text" && isRuntimeNoticeMetadata(body.metadata);
-}
-
-/** Apply the Feishu boundary to an agent message send, honouring the notice exemption. */
-export async function assertAgentSendableChat(db: Database, chatId: string, body: SendMessage): Promise<void> {
-  if (isProviderFailureRuntimeNotice(body)) return;
-  await assertAgentMutableChat(db, chatId);
 }
