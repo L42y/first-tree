@@ -89,10 +89,7 @@ describe("member Team Agent selection", () => {
       ["agent-9", binding(9, { appId: null })],
     ]);
 
-    expect(selectReadyTeamAgents(agents, bindings).map(({ agent: item }) => item.uuid)).toEqual([
-      "agent-1",
-      "agent-6",
-    ]);
+    expect(selectReadyTeamAgents(agents, bindings).map(({ agent: item }) => item.uuid)).toEqual(["agent-1", "agent-6"]);
   });
 });
 
