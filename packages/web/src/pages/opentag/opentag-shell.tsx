@@ -41,8 +41,8 @@ export function OpenTagShell({
       <main
         className="mx-auto grid items-start"
         style={{
-          width: "min(calc(100% - var(--sp-20)), var(--opentag-page-max))",
-          gridTemplateColumns: "minmax(0, var(--opentag-story-width)) minmax(0, var(--opentag-flow-width))",
+          width: "min(calc(100% - (var(--opentag-page-gutter) * 2)), var(--opentag-page-max))",
+          gridTemplateColumns: "var(--opentag-grid-columns)",
           columnGap: "var(--opentag-column-gap)",
           paddingTop: "var(--opentag-content-top)",
           paddingBottom: "var(--sp-20)",
