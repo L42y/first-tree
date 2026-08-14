@@ -48,10 +48,15 @@ export function registerOrgContextTreeCommand(org: Command): void {
           print.status("Context Tree", "Bound");
           print.status("Repository", binding.repo);
           print.status("Branch", binding.branch);
-        } else {
+        } else if (binding.status === "unbound") {
           print.status("Context Tree", "Unbound");
           print.line(
             "  Ask an administrator for this agent's organization to bind an existing Context Tree or initialize a new one.\n",
+          );
+        } else {
+          print.status("Context Tree", "Invalid");
+          print.line(
+            "  The Team has invalid Context Tree binding state. Repair the binding before using remote or Local Context.\n",
           );
         }
 

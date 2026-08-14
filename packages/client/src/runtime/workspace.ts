@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { ensureWorkspaceRuntimeDir, FIRST_TREE_RUNTIME_DIR } from "./bootstrap.js";
+import { ensureTrustedWorkspaceRoot, requireTrustedDirectory } from "./trusted-workspace-paths.js";
+import { atomicWriteText } from "./workspace-manifest.js";
 
 /** Retained as an exported constant so external callers that imported it
  *  before the per-agent-home refactor still compile. The runtime no longer
@@ -33,14 +35,14 @@ export const INIT_COMPLETE_SENTINEL_REL = join(FIRST_TREE_RUNTIME_DIR, "init-com
  * lives in the system prompt injected by the handler.
  */
 export function acquireAgentHome(agentHome: string): string {
-  mkdirSync(agentHome, { recursive: true });
+  const workspaceRoot = ensureTrustedWorkspaceRoot(agentHome);
   // Reconciliation writes its lock and journal below `.first-tree-workspace/`.
   // Converge the supported file-marker / `.agent/` layouts before any handler
   // can invoke the reconciler; legacy per-chat Claude resumes deliberately do
   // not call acquireAgentHome and therefore keep their narrower compatibility
   // path.
-  ensureWorkspaceRuntimeDir(agentHome);
-  return agentHome;
+  ensureWorkspaceRuntimeDir(workspaceRoot);
+  return workspaceRoot;
 }
 
 /**
@@ -65,7 +67,8 @@ export function acquireWorkspace(workspaceRoot: string, chatId: string): string 
 export function markWorkspaceInitComplete(agentHome: string): void {
   const path = join(agentHome, INIT_COMPLETE_SENTINEL_REL);
   ensureWorkspaceRuntimeDir(agentHome);
-  writeFileSync(path, JSON.stringify({ completedAt: new Date().toISOString(), schemaVersion: 1 }), "utf-8");
+  requireTrustedDirectory(join(agentHome, FIRST_TREE_RUNTIME_DIR), "Agent runtime directory");
+  atomicWriteText(path, JSON.stringify({ completedAt: new Date().toISOString(), schemaVersion: 1 }));
 }
 
 /**

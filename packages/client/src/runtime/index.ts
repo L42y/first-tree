@@ -20,6 +20,7 @@ export {
 } from "./client-connection.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./config.js";
 export { loadRuntimeConfig } from "./config.js";
+export { recordRemoteBindingObservation } from "./context-source.js";
 export { Deduplicator } from "./deduplicator.js";
 export type {
   AgentHandler,

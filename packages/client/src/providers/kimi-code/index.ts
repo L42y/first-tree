@@ -38,10 +38,14 @@ import type {
   ProviderAttemptSettlement,
 } from "../../runtime/provider-support/index.js";
 import {
+  assertContextSourceCurrent,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
@@ -243,11 +247,15 @@ function additionalDirectories(workspaceCwd: string, contextTreePath: string | n
 /** Kimi Code handler backed by the direct Botiverse/Moonshot Node SDK. */
 export const createKimiCodeHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   const harnessFactory = (config.kimiHarnessFactory as KimiHarnessFactory | undefined) ?? createKimiHarness;
   const kaosFactory = (config.kimiKaosFactory as KimiKaosFactory | undefined) ?? (() => LocalKaos.create());
   const maxRetries = maxProviderTurnRetryAttempts();
@@ -862,15 +870,17 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
     const prepared = await prepareManagedSession({
       sessionCtx,
       workspaceRoot,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
     });
     const workspaceCwd = prepared.workspace;
@@ -886,7 +896,7 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       payload,
       workspaceCwd,
       roleAdditional,
-      additionalDirs: additionalDirectories(workspaceCwd, contextTreePath),
+      additionalDirs: additionalDirectories(workspaceCwd, contextTree.path),
       kaos,
     };
   }
@@ -964,6 +974,16 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       const effectiveHomeDir = kimiHome !== null && kimiHome.length === 0 ? null : kimiHome;
       try {
         const activeHarness = await ensureHarness(effectiveHomeDir ?? undefined);
+        await assertContextSourceCurrent({
+          sessionCtx,
+          sourceAuthorityRoot: workspaceRoot,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+        });
         session = await activeHarness.createSession(options);
         sessionId = session.id;
         sessionActive = true;
@@ -997,6 +1017,16 @@ export const createKimiCodeHandler: HandlerFactory = (config) => {
       const effectiveHomeDir = kimiHome !== null && kimiHome.length === 0 ? null : kimiHome;
       try {
         const activeHarness = await ensureHarness(effectiveHomeDir ?? undefined);
+        await assertContextSourceCurrent({
+          sessionCtx,
+          sourceAuthorityRoot: workspaceRoot,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+        });
         session = await activeHarness.resumeSession(input);
         sessionId = session.id;
         await session.setPermission("yolo");

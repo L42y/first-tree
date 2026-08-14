@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RUNTIME_NOTICE_METADATA_KEY, type SessionEvent } from "@first-tree/shared";
@@ -68,7 +68,29 @@ vi.mock("@openai/codex-sdk", () => {
 vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
-  bootstrapWorkspace: vi.fn(),
+  bootstrapWorkspace: vi.fn(
+    (args: {
+      workspacePath: string;
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind: string;
+      identity: { agentId: string };
+      serverUrl: string;
+    }) => {
+      const runtimeDir = join(args.workspacePath, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: args.identity.agentId,
+          agentName: args.agentName,
+          serverUrl: args.serverUrl,
+          contextSourceKind: args.contextSourceKind,
+          contextTreePath: args.contextTreePath,
+        }),
+      );
+    },
+  ),
   deepEqualIdentity: vi.fn(() => true),
   ensureWorkspaceRuntimeDir: vi.fn((workspacePath: string) => {
     const dir = join(workspacePath, ".first-tree-workspace");
@@ -82,7 +104,10 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
   readCachedContextTreeHead: vi.fn(() => null),
   readContextTreeHead: vi.fn(() => null),
   resolveBundledCliVersion: vi.fn(() => "0.0.0-test"),
-  writeAgentBriefing: vi.fn(),
+  writeAgentBriefing: vi.fn((workspacePath: string, briefing: string) => {
+    writeFileSync(join(workspacePath, "AGENTS.md"), briefing);
+    symlinkSync("AGENTS.md", join(workspacePath, "CLAUDE.md"));
+  }),
   writeBundledCliVersion: vi.fn(),
   writeContextTreeHead: vi.fn(),
 }));
@@ -204,6 +229,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), {
       sendMessage,
@@ -265,6 +291,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), {
       sendMessage,
@@ -309,6 +336,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent });
 
@@ -346,6 +374,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { emitEvent, emitEventConfirmed });
 
@@ -381,6 +410,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexSdkHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const message = makeMessage("m1", "hello", 101);
     const ctx = makeContext((count) => completedCounts.push(count), {
@@ -415,6 +445,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count, outcome) => completed.push({ count, reason: outcome?.reason }), {
       emitEvent,
@@ -446,6 +477,7 @@ describe("codex usage-limit empty-turn (issue #971)", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), {
       emitEvent,

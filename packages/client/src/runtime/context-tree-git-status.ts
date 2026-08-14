@@ -62,8 +62,12 @@ export function createContextTreeGitWriteTracker(options: TrackerOptions): Conte
   let baseline: DirtyPath[] | null = null;
 
   function captureBaseline(): void {
-    baseline = options.contextTreePath ? gitStatus(options.contextTreePath) : null;
-    if (baseline === null && options.contextTreePath) {
+    if (!options.contextTreePath || !options.contextTreeRepoUrl) {
+      baseline = null;
+      return;
+    }
+    baseline = gitStatus(options.contextTreePath);
+    if (baseline === null) {
       // Under the agent-managed-repos model the context tree clone may not
       // exist yet at session start — the agent clones it on first use per its
       // briefing protocol. Do not log a "disabled" message here; the lazy

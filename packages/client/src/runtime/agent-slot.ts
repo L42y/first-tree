@@ -13,14 +13,15 @@ import { defaultDataDir } from "@first-tree/shared/config";
 import { createLogger, type pino } from "../cloud/observability/logger.js";
 import type { FirstTreeHubSDK, RegisterResult } from "../cloud/sdk.js";
 import { type AgentConfigCache, createAgentConfigCache } from "./agent-config-cache.js";
-import { resolveAgentContextTreeBinding } from "./bootstrap.js";
 import type { BoundAgent, ClientConnection, SessionReconcileResult } from "./client-connection.js";
 import type { SessionConfig } from "./config.js";
+import { applyContextSourceToHandlerConfig, resolveAgentContextSource } from "./context-source.js";
 import { clampRetryAttempt, classify, ERROR_KINDS, nextRetryDelayMs } from "./error-taxonomy.js";
 import type { HandlerFactory } from "./handler.js";
 import { PsSubprocessProbe } from "./process-tree-probe.js";
 import { RuntimeSessionTokenFile } from "./runtime-session-token-file.js";
 import { SessionManager, type SessionManagerShutdownOptions } from "./session-manager.js";
+import { acquireAgentHome } from "./workspace.js";
 
 /**
  * Max attempts to fetch the agent's runtime config during bring-up before a
@@ -326,14 +327,17 @@ export class AgentSlot {
       // Per-agent home — also the parent of the agent-managed Context Tree
       // clone (`<workspaceRoot>/context-tree`) and source-repo clones.
       const workspaceRoot = join(defaultDataDir(), "workspaces", this.config.name);
+      // Heal the trusted legacy runtime marker before Context resolution takes
+      // the source-publication lock. Symlink/non-directory homes still fail
+      // closed inside acquireAgentHome.
+      acquireAgentHome(workspaceRoot);
       // Pure config resolution — no git. The agent itself materialises and
-      // refreshes the clone per the protocol injected into its briefing.
-      const contextTreeBinding = await resolveAgentContextTreeBinding(sdk, workspaceRoot, (msg) =>
-        this.logger.info(msg),
-      );
-      if (!contextTreeBinding) {
+      // refreshes a remote clone per the protocol injected into its briefing.
+      const contextSource = await resolveAgentContextSource(sdk, workspaceRoot, (msg) => this.logger.info(msg));
+      if (contextSource.kind === "none") {
         this.logger.info(
-          "context tree not configured or binding unresolved — agent will start without organizational context",
+          { reason: contextSource.reason },
+          "context source unresolved — agent will start without organizational context",
         );
       }
       this.throwIfRuntimeSessionTokenMutationFailed();
@@ -364,19 +368,20 @@ export class AgentSlot {
         concurrency: this.config.concurrency,
         subprocessProbe,
         handlerFactory: this.config.handlerFactory,
-        handlerConfig: {
-          workspaceRoot,
-          agentName: this.config.name,
-          contextTreePath: contextTreeBinding?.path,
-          contextTreeRepoUrl: contextTreeBinding?.repoUrl,
-          contextTreeBranch: contextTreeBinding?.branch,
-          runtimeProvider: runtimeProvider.data,
-          // Identifies the owning client process. The claude-code-tui handler
-          // uses it to scope tmux session ownership (orphan sweep / names) so
-          // it never touches another live client's sessions. Other handlers
-          // ignore it.
-          clientId: this.clientConnection.clientId,
-        },
+        handlerConfig: applyContextSourceToHandlerConfig(
+          {
+            workspaceRoot,
+            agentName: this.config.name,
+            runtimeProvider: runtimeProvider.data,
+            // Identifies the owning client process. The claude-code-tui handler
+            // uses it to scope tmux session ownership (orphan sweep / names) so
+            // it never touches another live client's sessions. Other handlers
+            // ignore it.
+            clientId: this.clientConnection.clientId,
+          },
+          contextSource,
+        ),
+        resolveContextSource: () => resolveAgentContextSource(sdk, workspaceRoot, (msg) => this.logger.info(msg)),
         agentIdentity: {
           agentId: agent.agentId,
           inboxId: agent.inboxId,

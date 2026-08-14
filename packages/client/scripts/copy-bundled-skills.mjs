@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 // Copy the canonical skill payloads from the repo-root `skills/` directory
 // into `packages/client/skills/` so they ship inside the @first-tree/client
-// npm tarball (see the `files` field in package.json). Source of truth stays
-// at `<repo>/skills/`; this directory is a build artifact (.gitignore'd).
+// npm tarball (see the `files` field in package.json). Public source of truth
+// stays at `<repo>/skills/`; private alternatives are centrally registered
+// under `<repo>/skill-variants/`. This directory is a build artifact.
 //
 // Runs in `prebuild`. Intentionally synchronous — fast, deterministic, and
 // avoids pulling in an async dependency just to do a directory copy.
 
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  copyPrivateSkillVariants,
+  resetSkillsTarget,
+  withTrustedSkillsTarget,
+} from "../../../scripts/copy-skill-payloads.mjs";
 
 // The skill set that ships with @first-tree/client. Kept hand-maintained
 // (rather than "copy whatever exists in repo-root skills/") so that adding
@@ -48,40 +54,48 @@ function main() {
   const clientPkgDir = resolve(scriptDir, "..");
   const repoRoot = findRepoRoot(scriptDir);
   const sourceSkillsRoot = join(repoRoot, "skills");
-  const targetSkillsRoot = join(clientPkgDir, "skills");
 
   if (!existsSync(sourceSkillsRoot) || !statSync(sourceSkillsRoot).isDirectory()) {
     throw new Error(`Source skills directory missing: ${sourceSkillsRoot}`);
   }
 
-  // Wipe + recreate so retired skills disappear and dirty files do not
-  // linger between builds. The wipe is bounded to the target dir we own.
-  if (existsSync(targetSkillsRoot)) {
-    rmSync(targetSkillsRoot, { recursive: true, force: true });
-  }
-  mkdirSync(targetSkillsRoot, { recursive: true });
+  // Run the reset, the selective public copy, and the private-variant copy
+  // inside a single verified transaction — there is no raw-path wipe here,
+  // and the source roots stay pinned open for the whole mutation sequence.
+  withTrustedSkillsTarget({ repoRoot, trustedParentDir: clientPkgDir }, (skillsTarget) => {
+    const targetSkillsRoot = skillsTarget.targetSkillsRoot;
 
-  const missing = [];
-  for (const name of BUNDLED_SKILLS) {
-    const src = join(sourceSkillsRoot, name);
-    if (!existsSync(src)) {
-      missing.push(name);
-      continue;
+    // Wipe + recreate so retired skills disappear and dirty files do not
+    // linger between builds. The reset re-verifies the capability immediately
+    // before deleting.
+    resetSkillsTarget(skillsTarget);
+
+    const missing = [];
+    for (const name of BUNDLED_SKILLS) {
+      const src = join(sourceSkillsRoot, name);
+      if (!existsSync(src)) {
+        missing.push(name);
+        continue;
+      }
+      const dst = join(targetSkillsRoot, name);
+      cpSync(src, dst, { recursive: true });
     }
-    const dst = join(targetSkillsRoot, name);
-    cpSync(src, dst, { recursive: true });
-  }
 
-  if (missing.length > 0) {
-    throw new Error(
-      `Source skills missing for: ${missing.join(", ")}. Either add them under ${sourceSkillsRoot}/ or remove from BUNDLED_SKILLS in this script.`,
+    if (missing.length > 0) {
+      throw new Error(
+        `Source skills missing for: ${missing.join(", ")}. Either add them under ${sourceSkillsRoot}/ or remove from BUNDLED_SKILLS in this script.`,
+      );
+    }
+
+    const variantCount = copyPrivateSkillVariants({ target: skillsTarget });
+
+    const copied = readdirSync(targetSkillsRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+      .map((d) => d.name);
+    process.stdout.write(
+      `copy-bundled-skills: copied ${copied.length} public skill(s) + ${variantCount} private variant(s) → ${targetSkillsRoot}\n`,
     );
-  }
-
-  const copied = readdirSync(targetSkillsRoot, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
-  process.stdout.write(`copy-bundled-skills: copied ${copied.length} skill(s) → ${targetSkillsRoot}\n`);
+  });
 }
 
 main();

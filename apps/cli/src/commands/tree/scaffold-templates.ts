@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { contextTreeBranchSchema } from "@first-tree/shared";
 import type * as ejs from "ejs";
+import { assertLocalContextAgentName } from "../../core/local-context/index.js";
 
 // EJS is published as CommonJS at runtime even though its types expose named
 // exports, so native ESM cannot `import { render }` directly — mirror the
@@ -97,14 +98,43 @@ export function rootNodeContent(title: string, ownerLogin: string): string {
 
 /** The `members/` domain index node. */
 export function membersIndexContent(ownerLogin: string): string {
-  return render("members-index.md.ejs", { ownerLogin });
+  return render("members-index.md.ejs", { ownerField: ownerLogin });
+}
+
+/** Agent-private `members/NODE.md`, with grandfathered names YAML-quoted. */
+export function localMembersIndexContent(agentName: string): string {
+  assertLocalContextAgentName(agentName);
+  return render("members-index.md.ejs", { ownerField: yamlDoubleQuote(agentName) });
 }
 
 /** The creator's `members/<login>/NODE.md` member node. */
 export function memberNodeContent(login: string): string {
   return render("member-node.md.ejs", {
     login,
+    memberType: "human",
     titleField: yamlDoubleQuote(login),
     descriptionField: yamlDoubleQuote(`Member profile for ${login}.`),
+  });
+}
+
+/** Root `NODE.md` for an Agent-private, non-Git Local Context Tree. */
+export function localContextRootNodeContent(agentName: string): string {
+  assertLocalContextAgentName(agentName);
+  return render("local-context-root-node.md.ejs", {
+    agentName,
+    ownerField: yamlDoubleQuote(agentName),
+    titleField: yamlDoubleQuote(`${agentName} Local Context`),
+    descriptionField: yamlDoubleQuote(`Private local context for First Tree Agent ${agentName}.`),
+  });
+}
+
+/** `members/<agentName>/NODE.md` for the Local Context owner. */
+export function localAgentMemberNodeContent(agentName: string): string {
+  assertLocalContextAgentName(agentName);
+  return render("local-agent-member-node.md.ejs", {
+    agentName,
+    ownerField: yamlDoubleQuote(agentName),
+    titleField: yamlDoubleQuote(agentName),
+    descriptionField: yamlDoubleQuote(`Agent profile for ${agentName}.`),
   });
 }

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
@@ -81,7 +81,34 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
-  bootstrapWorkspace: vi.fn(),
+  bootstrapWorkspace: vi.fn(
+    (options: {
+      workspacePath: string;
+      identity: SessionContext["agent"];
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind?: "remote" | "local" | "none";
+      serverUrl: string;
+    }) => {
+      const runtimeDir = join(options.workspacePath, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: options.identity.agentId,
+          agentName: options.agentName,
+          displayName: options.identity.displayName,
+          type: options.identity.type,
+          visibility: options.identity.visibility,
+          delegateMention: options.identity.delegateMention,
+          metadata: options.identity.metadata,
+          serverUrl: options.serverUrl,
+          contextTreePath: options.contextTreePath,
+          contextSourceKind: options.contextSourceKind ?? "none",
+        }),
+      );
+    },
+  ),
   deepEqualIdentity: vi.fn(() => true),
   ensureWorkspaceRuntimeDir: vi.fn((workspacePath: string) => {
     const dir = join(workspacePath, ".first-tree-workspace");
@@ -95,7 +122,13 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
   readCachedContextTreeHead: vi.fn(() => null),
   readContextTreeHead: vi.fn(() => null),
   resolveBundledCliVersion: vi.fn(() => "0.0.0-test"),
-  writeAgentBriefing: vi.fn(),
+  writeAgentBriefing: vi.fn((workspacePath: string, content: string) => {
+    writeFileSync(join(workspacePath, "AGENTS.md"), content);
+    const claudePath = join(workspacePath, "CLAUDE.md");
+    rmSync(claudePath, { force: true });
+    if (process.platform === "win32") writeFileSync(claudePath, content);
+    else symlinkSync("AGENTS.md", claudePath);
+  }),
   writeBundledCliVersion: vi.fn(),
   writeContextTreeHead: vi.fn(),
 }));
@@ -207,6 +240,7 @@ function makeAutoHandler(fake: StartupFakeAppServerClient) {
   return createCodexHandler({
     runtimeProvider: "codex",
     workspaceRoot,
+    agentName: "codex-race-test-agent",
     codexHandlerEngine: "auto",
     codexRuntimeBinaryResolver: async () => ({
       ok: true,
@@ -329,6 +363,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -396,6 +431,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -442,6 +478,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => {
       completedCounts.push(count);
@@ -489,6 +526,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -619,6 +657,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => {
       completedCounts.push(count);
@@ -656,6 +695,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => {
       completedCounts.push(count);
@@ -696,6 +736,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(() => {}, { sendMessage, emitEvent });
 
@@ -731,6 +772,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent });
 
@@ -775,6 +817,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { emitEvent, retryTurn });
 
@@ -815,6 +858,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent, retryTurn });
 
@@ -868,6 +912,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent, retryTurn });
 
@@ -916,6 +961,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent, retryTurn });
 
@@ -966,6 +1012,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext((count) => completedCounts.push(count), { sendMessage, emitEvent, retryTurn });
 
@@ -1013,6 +1060,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -1065,6 +1113,7 @@ describe("codex handler startup inject queue", () => {
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-race-test-agent",
     });
     const ctx = makeContext(
       (count) => {

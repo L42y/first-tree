@@ -50,7 +50,9 @@ const coreMocks = vi.hoisted(() => ({
   installPortableSpec: vi.fn(),
   isServiceSupported: vi.fn(),
   listLiveClientRuntimeMarkers: vi.fn(),
+  listLocalContextDataLoss: vi.fn(),
   loadCredentials: vi.fn(),
+  localContextDataLossForAgent: vi.fn(),
   PACKAGE_NAME: "first-tree",
   promptAddAgent: vi.fn(),
   readActiveClientIdFromIndex: vi.fn(),
@@ -136,6 +138,8 @@ beforeEach(() => {
   coreMocks.installPortableSpec.mockResolvedValue({ ok: true, mode: "portable", installedVersion: "99.0.0" });
   coreMocks.loadCredentials.mockReturnValue(null);
   coreMocks.listLiveClientRuntimeMarkers.mockReturnValue([]);
+  coreMocks.listLocalContextDataLoss.mockReturnValue([]);
+  coreMocks.localContextDataLossForAgent.mockReturnValue(null);
   coreMocks.readActiveClientIdFromIndex.mockReturnValue(null);
   coreMocks.readActiveRootClientId.mockReturnValue(null);
   coreMocks.stopClientRuntimeProcess.mockResolvedValue({ ok: true });
@@ -155,6 +159,21 @@ afterEach(() => {
 });
 
 describe("agent lifecycle CLI commands", () => {
+  it("warns before agent remove deletes unmigrated Local Context", async () => {
+    mkdirSync(join(tempDir, "agents", "old"), { recursive: true });
+    coreMocks.localContextDataLossForAgent.mockReturnValue({
+      agentName: "old",
+      path: join(tempDir, "data", "workspaces", "old", "local-context"),
+      storage: "active",
+    });
+
+    await runAgent(["remove", "old"]);
+
+    const output = printLineMock.mock.calls.map((call) => String(call[0])).join("");
+    expect(output).toContain("permanently deletes its unmigrated Local Context");
+    expect(coreMocks.removeLocalAgent).toHaveBeenCalledWith("old");
+  });
+
   it("adds an existing agent, handles missing prompt args, and reports prompt cancellation", async () => {
     await runAgent(["add", "--agent-id", "agent-1"]);
 
@@ -369,8 +388,16 @@ describe("agent lifecycle CLI commands", () => {
   });
 
   it("prunes stale aliases with dry-run, confirmation skip, removal failures, and missing client id", async () => {
+    coreMocks.localContextDataLossForAgent.mockImplementation((_root: string, name: string) =>
+      name === "old"
+        ? { agentName: name, path: join(tempDir, "data", "workspaces", name, "local-context"), storage: "active" }
+        : null,
+    );
     await runAgent(["prune", "--dry-run"]);
     expect(coreMocks.removeLocalAgent).not.toHaveBeenCalled();
+    expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain(
+      "unmigrated Local Context will be permanently deleted",
+    );
     expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain("Dry run");
 
     await runAgent(["prune", "--yes"]);
@@ -467,6 +494,13 @@ describe("logout and upgrade commands", () => {
       serverUrl: "https://first-tree.example",
     });
     coreMocks.readActiveRootClientId.mockReturnValue("client-1");
+    coreMocks.listLocalContextDataLoss.mockReturnValue([
+      {
+        agentName: "nova",
+        path: join(workspacesDir, "nova", "local-context"),
+        storage: "active",
+      },
+    ]);
     cliFetchMock.mockResolvedValue(jsonResponse({}, true, 204));
 
     const { registerLogoutCommand } = await import("../commands/logout.js");
@@ -491,6 +525,9 @@ describe("logout and upgrade commands", () => {
     expect(existsSync(switchLock)).toBe(false);
     expect(existsSync(switchJournal)).toBe(false);
     expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain("Logged out");
+    expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain(
+      "permanently deletes 1 unmigrated Local Context directory",
+    );
   });
 
   it("uses the active switch-index client id for logout purge when client.yaml has no id", async () => {
@@ -766,6 +803,13 @@ describe("logout and upgrade commands", () => {
     coreMocks.isServiceSupported.mockReturnValue(true);
     coreMocks.getClientServiceStatus.mockReturnValue({ state: "active", platform: "launchd" });
     coreMocks.stopClientService.mockReturnValue({ ok: true });
+    coreMocks.listLocalContextDataLoss.mockReturnValue([
+      {
+        agentName: "nova",
+        path: join(workspacesDir, "nova", "local-context"),
+        storage: "active",
+      },
+    ]);
 
     const { registerComputerCommands } = await import("../commands/computer/index.js");
     await runTopLevel(registerComputerCommands, ["computer", "reset"]);
@@ -780,6 +824,9 @@ describe("logout and upgrade commands", () => {
     expect(existsSync(parkedClientsDir)).toBe(false);
     expect(existsSync(switchLock)).toBe(false);
     expect(existsSync(switchJournal)).toBe(false);
+    expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain(
+      "unmigrated Local Context directory",
+    );
   });
 
   it("refuses purge before deleting local state when an active service cannot be stopped", async () => {

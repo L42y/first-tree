@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig, AgentRuntimeConfigPayload, RuntimeResourceSkill } from "@first-tree/shared";
@@ -70,7 +79,41 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   },
 }));
 
-vi.mock("../../../runtime/agent-bootstrap.js", () => ({ ensureAgentBootstrap: vi.fn() }));
+vi.mock("../../../runtime/agent-bootstrap.js", () => ({
+  ensureAgentBootstrap: vi.fn(
+    (args: {
+      workspace: string;
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind: string;
+      briefing: string;
+      sessionCtx: { agent: SessionContext["agent"]; sdk: { serverUrl: string } };
+    }) => {
+      const runtimeDir = join(args.workspace, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: args.sessionCtx.agent.agentId,
+          agentName: args.agentName,
+          displayName: args.sessionCtx.agent.displayName,
+          type: args.sessionCtx.agent.type,
+          visibility: args.sessionCtx.agent.visibility,
+          delegateMention: args.sessionCtx.agent.delegateMention,
+          metadata: args.sessionCtx.agent.metadata,
+          serverUrl: args.sessionCtx.sdk.serverUrl,
+          contextSourceKind: args.contextSourceKind,
+          contextTreePath: args.contextTreePath,
+        }),
+      );
+      writeFileSync(join(args.workspace, "AGENTS.md"), args.briefing);
+      const claudePath = join(args.workspace, "CLAUDE.md");
+      rmSync(claudePath, { force: true });
+      if (process.platform === "win32") writeFileSync(claudePath, args.briefing);
+      else symlinkSync("AGENTS.md", claudePath);
+    },
+  ),
+}));
 vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
@@ -81,7 +124,11 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
   }),
   writeAgentBriefing: vi.fn(),
 }));
-vi.mock("../../../runtime/agent-briefing.js", () => ({ buildAgentBriefing: vi.fn(() => "") }));
+vi.mock("../../../runtime/agent-briefing.js", () => ({
+  buildAgentBriefing: vi.fn(
+    () => "<!-- first-tree:generated -->\nThis briefing was generated without a safe Context source.\n",
+  ),
+}));
 vi.mock("../../../runtime/chat-context.js", () => ({
   fetchChatContext: vi.fn(async () => {
     if (!state.chatContextPromise) throw new Error("chat context gate was not initialised");
@@ -207,7 +254,12 @@ afterEach(() => {
 describe("claude-code inject-time managed Skill reconciliation", () => {
   it("materializes a skill bound mid-session so the injected turn finds it on disk", async () => {
     cachedConfig = makeConfig(1, []);
-    const config = { workspaceRoot, agentConfigCache, runtimeProvider: "claude-code" as const };
+    const config = {
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+      runtimeProvider: "claude-code" as const,
+    };
     const handler = createClaudeCodeHandler(config);
     const ctx = makeContext();
 
@@ -236,7 +288,12 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
 
   it("does not prune a live skill when a refresh falls back to a lower-version empty config", async () => {
     cachedConfig = makeConfig(2, [SCAN_SKILL]);
-    const config = { workspaceRoot, agentConfigCache, runtimeProvider: "claude-code" as const };
+    const config = {
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+      runtimeProvider: "claude-code" as const,
+    };
     const handler = createClaudeCodeHandler(config);
     const ctx = makeContext();
 
@@ -248,14 +305,13 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     expect(existsSync(skillPath())).toBe(true);
 
     // A swallowed refresh failure leaves a version-0 empty fallback config.
-    // maybeSwitchConfig still runs its restart path (writeAgentBriefing fires),
-    // but the version guard must skip re-materialization so the empty payload
-    // cannot prune the live skill.
+    // The version guard must skip re-materialization so the empty payload
+    // cannot prune the live skill while the injected turn still proceeds.
     vi.mocked(writeAgentBriefing).mockClear();
     cachedConfig = makeConfig(0, []);
     handler.inject(makeMessage("m2", "another message"), noopDeliveryToken());
 
-    await waitFor(() => vi.mocked(writeAgentBriefing).mock.calls.length >= 1);
+    await waitFor(() => state.observedInputs.length === 2);
     expect(existsSync(skillPath())).toBe(true);
 
     await handler.shutdown();
@@ -300,6 +356,7 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache,
     });
     const ctx = makeContext(fetchAttachment);
@@ -350,6 +407,7 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache,
     });
     const ctx = makeContext(fetchAttachment, (message) => logs.push(message));
@@ -366,7 +424,12 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     try {
       cachedConfig = makeConfig(2, [bundledSkill]);
       handler.inject(makeMessage("m2", "must not reach provider"), noopDeliveryToken());
-      await waitFor(() => logs.some((message) => message.includes("cannot be verified or quarantined")));
+      await waitFor(() =>
+        logs.some(
+          (message) =>
+            message.includes("cannot be verified or quarantined") || message.includes("must remain unchanged"),
+        ),
+      );
       expect(state.observedInputs).toHaveLength(1);
       expect(readFileSync(join(scriptsRoot, "scan.sh"), "utf-8")).toContain("tampered");
     } finally {

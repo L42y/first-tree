@@ -12,6 +12,8 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
 
     expect(api.FirstTreeHubSDK).toBeDefined();
     expect(api.FirstTreeSDK).toBe(api.FirstTreeHubSDK);
+    expect(api.recordRemoteBindingObservation).toBeDefined();
+    expect(api).not.toHaveProperty("writeRemoteLatch");
     expect(api.ClientConnection).toBeDefined();
     expect(api.AgentSlot).toBeDefined();
     expect(api.AgentRuntime).toBeDefined();
@@ -73,6 +75,8 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(runtime).not.toHaveProperty("prepareManagedSession");
     expect(runtime).not.toHaveProperty("providerSupport");
     expect(runtime.resolveAgentContextTreeBinding).toBeDefined();
+    expect(runtime.recordRemoteBindingObservation).toBeDefined();
+    expect(runtime).not.toHaveProperty("writeRemoteLatch");
     expect(runtime.registerShutdownHook).toBeDefined();
 
     const runtimeIndex = readFileSync(join(clientSrc, "runtime/index.ts"), "utf8");

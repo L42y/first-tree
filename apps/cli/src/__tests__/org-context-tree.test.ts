@@ -153,12 +153,14 @@ describe("org context-tree CLI", () => {
     });
   });
 
-  it("reads and renders a bound agent-scoped binding with the default branch", async () => {
+  it("reads and renders a bound agent-scoped binding with its explicit branch", async () => {
     const sdk = {
       agentId: "agent-1",
       getAgentContextTreeConfig: vi.fn(async () => ({
+        bindingState: "bound",
         repo: "git@github.com:acme/context-tree.git",
-        branch: null,
+        branch: "main",
+        provider: "github",
       })),
     };
     localAgentMocks.createSdk.mockReturnValue(sdk);
@@ -184,7 +186,12 @@ describe("org context-tree CLI", () => {
   it("normalizes an unbound response and prints the administrator action", async () => {
     const sdk = {
       agentId: "agent-1",
-      getAgentContextTreeConfig: vi.fn(async () => ({ repo: null, branch: "main" })),
+      getAgentContextTreeConfig: vi.fn(async () => ({
+        bindingState: "unbound",
+        repo: null,
+        branch: "main",
+        provider: null,
+      })),
     };
     localAgentMocks.createSdk.mockReturnValue(sdk);
 
@@ -195,7 +202,29 @@ describe("org context-tree CLI", () => {
     expect(stderr).toContain("Ask an administrator for this agent's organization");
     expect(successEnvelope()).toEqual({
       ok: true,
-      data: { status: "unbound", repo: null, branch: null },
+      data: { status: "unbound", repo: null, branch: "main" },
+    });
+  });
+
+  it("renders invalid binding state distinctly from unbound Local authorization", async () => {
+    localAgentMocks.createSdk.mockReturnValue({
+      agentId: "agent-1",
+      getAgentContextTreeConfig: vi.fn(async () => ({
+        bindingState: "invalid",
+        repo: null,
+        branch: null,
+        provider: null,
+      })),
+    });
+
+    await buildProgram().parseAsync(["context-tree"], { from: "user" });
+
+    expect(stderr).toContain("Context Tree         Invalid");
+    expect(stderr).toContain("Repair the binding before using remote or Local Context");
+    expect(stderr).not.toContain("Context Tree         Unbound");
+    expect(successEnvelope()).toEqual({
+      ok: true,
+      data: { status: "invalid", repo: null, branch: null },
     });
   });
 
@@ -204,8 +233,10 @@ describe("org context-tree CLI", () => {
     localAgentMocks.createSdk.mockReturnValue({
       agentId: "agent-1",
       getAgentContextTreeConfig: vi.fn(async () => ({
+        bindingState: "bound",
         repo: "https://github.com/acme/context-tree.git",
         branch: "release",
+        provider: "github",
       })),
     });
 

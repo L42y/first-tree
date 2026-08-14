@@ -4,7 +4,7 @@
  * built CLI under the trusted-publishing npm client the workflow pins.
  *
  *   1. `npm pack` the built apps/cli package through REAL pack semantics
- *      (prepack copies skills + materializes bundled deps, postpack restores —
+ *      (prepack copies public Skills + private variants and materializes bundled deps, postpack restores —
  *      no --ignore-scripts), writing the tarball into a run-owned temp
  *      directory via `--pack-destination` so apps/cli is never overwritten.
  *   2. Enumerate every tarball entry and reject traversal / absolute /
@@ -40,6 +40,7 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -58,6 +59,10 @@ const MANIFEST_PATH = join(CLI_ROOT, ".bundled-deps-materialize.json");
 const CONTEXT_INTEGRATION_ROOT = join(CLI_ROOT, "context-integration");
 const CONTEXT_INTEGRATION_MANIFEST = join(CONTEXT_INTEGRATION_ROOT, "release-manifest.json");
 const PACKAGED_CONTEXT_MANIFEST_ENTRY = "package/context-integration/release-manifest.json";
+const PACKAGED_LOCAL_SKILL_VARIANT_ENTRIES = [
+  "package/skills/.variants/local-context/first-tree-read/SKILL.md",
+  "package/skills/.variants/local-context/first-tree-write/SKILL.md",
+];
 
 class SmokeFailure extends Error {
   /** @param {string} message */
@@ -393,6 +398,23 @@ function assertTarballContainsContextIntegration(tarballPath) {
   }
 }
 
+function assertTarballContainsLocalSkillVariants(tarballPath) {
+  const entries = listNpmTarballEntries(tarballPath);
+  for (const required of PACKAGED_LOCAL_SKILL_VARIANT_ENTRIES) {
+    if (entries.filter((entry) => entry.name === required).length !== 1) {
+      fail(`tarball must contain exactly one ${required}`);
+    }
+  }
+  const publicSkillNames = entries
+    .map((entry) => /^package\/skills\/([^/]+)\/SKILL\.md$/u.exec(entry.name)?.[1] ?? null)
+    .filter((name) => name !== null);
+  for (const name of ["first-tree-read", "first-tree-write"]) {
+    if (publicSkillNames.filter((candidate) => candidate === name).length !== 1) {
+      fail(`tarball public Skill inventory must contain exactly one ${name}`);
+    }
+  }
+}
+
 function captureBundledSymlinks() {
   /** @type {Map<string, string>} */
   const snapshot = new Map();
@@ -430,7 +452,7 @@ function runSmoke() {
   const contextIntegration = assertSourceContextIntegrationPresent();
 
   const symlinkSnapshot = captureBundledSymlinks();
-  const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-"));
+  const work = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-release-pack-smoke-"));
   activeWorkDir = work;
   try {
     const packDir = join(work, "pack");
@@ -440,6 +462,7 @@ function runSmoke() {
 
     const safety = assertNpmTarballRegistrySafe(tarball);
     assertTarballContainsContextIntegration(tarball);
+    assertTarballContainsLocalSkillVariants(tarball);
 
     run("npm", ["install", "--prefix", consumerDir, tarball]);
     const binName = "first-tree-dev";
@@ -503,7 +526,7 @@ function selftestCleanup() {
     fail("apps/cli/dist is missing — run `pnpm build` before selftest-cleanup");
   }
   const symlinkSnapshot = captureBundledSymlinks();
-  const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-neg-"));
+  const work = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-release-pack-smoke-neg-"));
   activeWorkDir = work;
   let failedAsExpected = false;
   let packedPath;
@@ -609,7 +632,7 @@ function selftestPreservePreexistingTarball() {
 
     // 1) Success-path: pack into run-owned destination; collision path untouched.
     {
-      const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-ok-"));
+      const work = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-release-pack-smoke-preserve-ok-"));
       activeWorkDir = work;
       let packed;
       try {
@@ -632,7 +655,7 @@ function selftestPreservePreexistingTarball() {
     // 2) Post-pack failure: pack succeeds into temp, then injected failure cleanup
     // must remove run-owned outputs without touching the collision path.
     {
-      const work = mkdtempSync(join(tmpdir(), "first-tree-release-pack-smoke-preserve-post-"));
+      const work = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-release-pack-smoke-preserve-post-"));
       activeWorkDir = work;
       let packed;
       let failedAsExpected = false;
@@ -705,7 +728,7 @@ function selftestTurboContextIntegrationCache() {
     fail('apps/cli/turbo.json build.outputs must include "dist/**"');
   }
 
-  const cacheDir = mkdtempSync(join(tmpdir(), "first-tree-turbo-ci-cache-"));
+  const cacheDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-turbo-ci-cache-"));
   try {
     // Force a real build into an isolated cache so outputs include the payload.
     run("pnpm", ["exec", "turbo", "run", "build", "--filter=first-tree-dev", "--force", "--cache-dir", cacheDir], {

@@ -82,6 +82,7 @@ describe("claude-code handler — turn_end emission", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -125,6 +126,7 @@ describe("claude-code handler — turn_end emission", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {

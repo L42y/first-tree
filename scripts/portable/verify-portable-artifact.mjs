@@ -104,6 +104,8 @@ function verify(options) {
       "node/bin/node",
       "app/package.json",
       "app/cli/index.mjs",
+      "app/skills/.variants/local-context/first-tree-read/SKILL.md",
+      "app/skills/.variants/local-context/first-tree-write/SKILL.md",
       `bin/${manifest.binName}`,
       `bin/${manifest.aliasName}`,
     ]) {

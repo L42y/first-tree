@@ -30,6 +30,7 @@ type SessionRecord = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
+  handlerSourceKey: string;
   status: SessionState;
   activeSlotHeld: boolean;
   lastActivity: number;
@@ -303,6 +304,7 @@ function makeSessionRecord(chatId: string, overrides: Partial<SessionRecord> = {
     chatId,
     claudeSessionId: `session-${chatId}`,
     handler: handler(),
+    handlerSourceKey: "none",
     status,
     activeSlotHeld: status === "active",
     lastActivity: Date.now(),
@@ -1024,7 +1026,12 @@ describe("SessionManager edge coverage", () => {
     await firstContext.finishTurn(firstMessage, { status: "success", terminal: true });
 
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-queued"));
-    expect(ackEntry).toHaveBeenCalledWith(10);
+    // If pending routing retires the old route before its Context-held
+    // SessionContext can ACK, the terminal head remains explicit recovery
+    // custody instead of being silently discarded.
+    expect(internals(sm).inboxDelivery.snapshot("chat-working").entries).toEqual([
+      expect.objectContaining({ entryId: 10, phase: "terminal" }),
+    ]);
     expect(internals(sm).pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
 
     await sm.shutdown();
@@ -4226,9 +4233,12 @@ describe("SessionManager edge coverage", () => {
         .mockResolvedValue(undefined),
     });
     const sessionHandler = handler({
-      resume: vi.fn().mockResolvedValue({
-        sessionId: "resumed-session",
-        route: { kind: "owned" as const, mode: "queued" as const },
+      resume: vi.fn(async (message, _sessionId, _ctx, token) => {
+        if (message) token?.processingStarted(message);
+        return {
+          sessionId: "resumed-session",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        };
       }),
     });
     const sm = makeManager();
@@ -4891,8 +4901,8 @@ describe("SessionManager edge coverage", () => {
 
     rejectReplaceStop?.(boom);
     await delivery;
-    await Promise.resolve();
-    await Promise.resolve();
+    const retryRun = retrySpy.mock.results[0]?.value;
+    if (retryRun) await retryRun;
 
     // Exactly ONE re-arm handle exists (the single-flight failure path ran
     // once), and manager shutdown clears it — no duplicate retry callback

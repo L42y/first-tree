@@ -1,5 +1,14 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -212,23 +221,35 @@ function installMocks(
   };
 
   vi.doMock("@first-tree/shared/config", () => ({
-    defaultDataDir: () => options.dataDir ?? "/tmp/first-tree-test-data",
+    defaultDataDir: () => options.dataDir ?? join(realpathSync(tmpdir()), "first-tree-test-data"),
   }));
   vi.doMock("../cloud/observability/logger.js", () => ({
     createLogger: () => state.logger,
   }));
-  vi.doMock("../runtime/bootstrap.js", () => ({
-    resolveAgentContextTreeBinding: vi.fn(async (sdk: unknown, _workspaceRoot: string, log: (msg: string) => void) => {
-      const messages: string[] = [];
-      log("sync log");
-      messages.push("sync log");
-      state.syncCalls.push({ sdk, messages });
-      if (options.syncDelayMs && options.syncDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, options.syncDelayMs));
-      }
-      return state.syncResult;
-    }),
-  }));
+  vi.doMock("../runtime/context-source.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../runtime/context-source.js")>();
+    return {
+      ...actual,
+      resolveAgentContextSource: vi.fn(async (sdk: unknown, _workspaceRoot: string, log: (msg: string) => void) => {
+        const messages: string[] = [];
+        log("sync log");
+        messages.push("sync log");
+        state.syncCalls.push({ sdk, messages });
+        if (options.syncDelayMs && options.syncDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, options.syncDelayMs));
+        }
+        if (state.syncResult === null) {
+          return { kind: "none" as const, reason: "unknown" as const };
+        }
+        return {
+          kind: "remote" as const,
+          path: state.syncResult.path,
+          repoUrl: state.syncResult.repoUrl,
+          branch: state.syncResult.branch,
+        };
+      }),
+    };
+  });
   vi.doMock("../runtime/session-manager.js", () => ({
     SessionManager: class {
       state: FakeSessionState;
@@ -456,6 +477,19 @@ describe("AgentSlot", () => {
     expect(connection.bindAgent).toHaveBeenCalledWith("agent-1", "claude-code", "1.2.3");
     expect(state.sessions).toHaveLength(0);
     expect(state.logger.info).toHaveBeenCalledWith("server reports type=human — message processing disabled");
+  });
+
+  it("migrates a legacy regular runtime marker before the first bound-source resolution", async () => {
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-legacy-marker-"));
+    const workspace = join(dataDir, "workspaces", "agent-one");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(join(workspace, ".first-tree-workspace"), "legacy marker\n");
+    const { slot } = await makeSlot({ dataDir });
+
+    await expect(slot.start()).resolves.toMatchObject({ agentId: "agent-1" });
+    expect(statSync(join(workspace, ".first-tree-workspace")).isDirectory()).toBe(true);
+    await slot.stop();
+    rmSync(dataDir, { recursive: true, force: true });
   });
 
   it("refuses to construct SessionManager when runtimeType is not a known RuntimeProvider", async () => {
@@ -1321,7 +1355,7 @@ describe("AgentSlot", () => {
   });
 
   it("writes a stable runtime session token file that updates after a reconnect rebind", async () => {
-    const tokenFile = "/tmp/first-tree-test-data/runtime-session-tokens/agent-1.token";
+    const tokenFile = join(realpathSync(tmpdir()), "first-tree-test-data/runtime-session-tokens/agent-1.token");
     const { slot, connection, state } = await makeSlot({
       activeRuntimeChatIds: ["chat-1"],
       runtimeSessionToken: "runtime-token-1",
@@ -1357,7 +1391,7 @@ describe("AgentSlot", () => {
   });
 
   it("does not delete a newer token generation written by a replacement slot", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-owner-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-owner-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     const { slot, connection } = await makeSlot({
       dataDir,
@@ -1380,7 +1414,7 @@ describe("AgentSlot", () => {
   });
 
   it("keeps a slot unavailable when the per-agent mutation lock cannot be acquired", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-lock-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-lock-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     mkdirSync(join(dataDir, "runtime-session-tokens"), { recursive: true, mode: 0o700 });
     writeFileSync(`${tokenFile}.lock`, `${process.pid}\n`, { mode: 0o600 });
@@ -1406,7 +1440,7 @@ describe("AgentSlot", () => {
   });
 
   it("keeps a slot unavailable when atomic token replacement fails", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-write-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-write-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     mkdirSync(tokenFile, { recursive: true });
     const { slot, connection, sdk, state } = await makeSlot({
@@ -1428,7 +1462,7 @@ describe("AgentSlot", () => {
   });
 
   it("failed-start cleanup preserves a generation written by a later bind", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-failed-start-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-failed-start-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     const { slot, sdk } = await makeSlot({
       dataDir,
@@ -1452,7 +1486,7 @@ describe("AgentSlot", () => {
   });
 
   it("failed-start cleanup removes the generation written by that slot", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-owned-failed-start-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-owned-failed-start-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     const { slot } = await makeSlot({
       dataDir,
@@ -1469,7 +1503,7 @@ describe("AgentSlot", () => {
   });
 
   it("stops a healthy slot and preserves the file when reconnect persistence cannot lock", async () => {
-    const dataDir = mkdtempSync(join(tmpdir(), "first-tree-agent-slot-rebind-lock-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "first-tree-agent-slot-rebind-lock-"));
     const tokenFile = join(dataDir, "runtime-session-tokens", "agent-1.token");
     const { slot, connection, state } = await makeSlot({
       dataDir,
@@ -1846,7 +1880,8 @@ describe("AgentSlot", () => {
     reconcile.call(slot);
 
     expect(state.logger.info).toHaveBeenCalledWith(
-      "context tree not configured or binding unresolved — agent will start without organizational context",
+      { reason: "unknown" },
+      "context source unresolved — agent will start without organizational context",
     );
     expect(state.logger.warn).toHaveBeenCalledWith(
       { err: new Error("dispatch failed"), entryId: 55 },

@@ -10,6 +10,7 @@ import {
   getClientServiceStatus,
   isServiceSupported,
   listLiveClientRuntimeMarkers,
+  listLocalContextDataLoss,
   loadCredentials,
   readActiveClientIdFromIndex,
   readActiveRootClientId,
@@ -188,6 +189,18 @@ export async function runLogout(opts: {
   const dataDir = defaultDataDir();
   const retryCommand = opts.retryCommand ?? `${channelConfig.binName} logout --purge`;
   const clientId = readActiveRootClientId(configDir) ?? readActiveClientIdFromIndex(home);
+  if (opts.purge) {
+    const localContexts = listLocalContextDataLoss({ dataDir, home });
+    if (localContexts.length > 0) {
+      print.line(
+        `  Warning: this operation permanently deletes ${localContexts.length} unmigrated Local Context ${localContexts.length === 1 ? "directory" : "directories"}:\n`,
+      );
+      for (const local of localContexts) {
+        print.line(`    - ${local.agentName} (${local.storage}): ${local.path}\n`);
+      }
+      print.line("\n");
+    }
+  }
   // 1. Stop daemon (best-effort).
   if (isServiceSupported()) {
     const svc = getClientServiceStatus();

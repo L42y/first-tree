@@ -31,32 +31,32 @@ import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts
 import type {
   AgentConfigCache,
   ChatContext,
-  PredeclaredSourceRepo,
   ProviderAttemptSettlement,
   ProviderFailureClassification,
   ProviderRetryDecision,
-  ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
-  buildAgentBriefing,
+  assertContextSourceCurrent,
   buildBriefingUpdateNotice,
   buildProviderRetryEvent,
   classifyProviderFailure,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
   decideProviderRetry,
   fetchChatContextOrLog,
   findImagePath,
   InputController,
+  isContextSourceTransitionError,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  projectManagedWorkspace,
   readSessionBriefingFingerprint,
-  reconcileManagedSkillsForConfig,
   redactErrorPreview,
+  remoteGitAttributionFromSource,
   renderDocumentAttachmentsForLLM,
-  teamSkillBundleResolverFromSdk,
-  writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
 import { formatAuthHint, isClaudeAuthError } from "../handlers/auth-error-hint.js";
@@ -394,6 +394,7 @@ function emitTokenUsageFromResult(
  */
 export const createClaudeCodeHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider: RuntimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
@@ -417,7 +418,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   let appliedConfigVersion = 0;
   let appliedModel = "";
   let appliedPayload: AgentRuntimeConfigPayload | null = null;
-  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   /**
    * Briefing-staleness tracking for the active session (see
    * session-briefing-fingerprint.ts). `current` is the fingerprint of the
@@ -452,7 +452,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
    * agent creates under `<agentHome>/worktrees/<name>/` — those are
    * runtime-opaque (created and cleaned up by the agent, not by First Tree).
    */
-  let sourceReposForPrompt: readonly PredeclaredSourceRepo[] = [];
   /**
    * SDK inputs pushed into the active query that have not reached a terminal
    * turn boundary yet. Transient retry must replay the whole unclosed pushed
@@ -799,6 +798,25 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   }
 
   /**
+   * Message conversion can await attachment materialization after workspace
+   * preparation. Re-authorize immediately before the synchronous query spawn;
+   * keeping the spawn itself synchronous also preserves the atomic
+   * spawn-then-input-buffer ordering expected by the SDK consumer.
+   */
+  async function assertQuerySpawnCurrent(sessionCtx: SessionContext): Promise<void> {
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
+  }
+
+  /**
    * Single helper for "turn closed → finish the provider-entered inbox
    * prefix AND drop settled inputs from the replay buffer". The two
    * operations are paired everywhere a turn finishes (success /
@@ -1036,7 +1054,17 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
    * with no user input; in that case the rebuilt query waits for the next
    * input normally.
    */
-  function respawnQuery(sessionId: string, sessionCtx: SessionContext): void {
+  async function respawnQuery(sessionId: string, sessionCtx: SessionContext): Promise<void> {
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
     buildQuery(sessionId, sessionCtx, sessionId, activeProviderEnv ?? buildEnv(sessionCtx));
     const replay = unclosedSdkInputs.slice();
     for (const input of replay) {
@@ -1129,6 +1157,12 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     if (!agentConfigCache || !claudeSessionId || !currentQuery) return false;
     const cached = agentConfigCache.get(sessionCtx.agent.agentId);
     if (!cached || cached.version === appliedConfigVersion) return false;
+    if (cached.version < appliedConfigVersion) {
+      sessionCtx.log(
+        `[configHotSwitch] preserving active version=${appliedConfigVersion}; ignored stale cached version=${cached.version}`,
+      );
+      return false;
+    }
 
     const newPayload = cached.payload;
     const onlyModelChanged =
@@ -1170,17 +1204,30 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     // at the old version until the next session restart.
     const providerEnv = buildEnv(sessionCtx);
     if (cwd) {
-      const reconcileResult = await reconcileManagedSkillsForConfig(
-        cwd,
+      const legacyProjection = cwd !== workspaceRoot;
+      const projected = await projectManagedWorkspace({
+        sessionCtx,
+        workspace: cwd,
+        sourceAuthorityRoot: legacyProjection ? workspaceRoot : cwd,
+        agentName,
         runtimeProvider,
-        PROVIDER_SKILL_ROOTS,
-        cached,
-        sessionCtx.log,
-        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-      );
-      reconciledTeamSkills = reconcileResult.teamSkills;
-      const switchedBriefing = currentBriefing(sessionCtx, cwd, newPayload);
-      writeAgentBriefing(cwd, switchedBriefing);
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
+        runtimeConfig: cached,
+        payload: newPayload,
+        payloadResolved: true,
+        existingPayload: appliedPayload ?? undefined,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+        reresolveSource: true,
+        markInitComplete: false,
+        writeIdentityAndManifest: !legacyProjection,
+        suppressSourceRepos: legacyProjection,
+      });
+      const switchedBriefing = projected.briefing;
       // Refresh the on-disk briefing fingerprint so the NEXT delivered message
       // (drained right after this restart in pushInjectedMessage) sees the
       // change and carries the re-read notice. `delivered` is intentionally
@@ -1310,8 +1357,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
                       return;
                     }
                     try {
-                      respawnQuery(claudeSessionId, sessionCtx);
+                      await respawnQuery(claudeSessionId, sessionCtx);
                     } catch (resumeErr) {
+                      if (isContextSourceTransitionError(resumeErr)) {
+                        retryBufferedMessages("claude_context_source_changed");
+                        failFatalSessionForRecovery(sessionCtx, "claude_context_source_changed");
+                        return;
+                      }
                       const resumeMsg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr);
                       sessionCtx.log(`Auto-resume failed after Claude SDK provider failure: ${resumeMsg}`);
                       emitAutoResumeFailedTerminalEvent({
@@ -1583,8 +1635,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           }
 
           try {
-            respawnQuery(claudeSessionId, sessionCtx);
+            await respawnQuery(claudeSessionId, sessionCtx);
           } catch (resumeErr) {
+            if (isContextSourceTransitionError(resumeErr)) {
+              retryBufferedMessages("claude_context_source_changed");
+              failFatalSessionForRecovery(sessionCtx, "claude_context_source_changed");
+              return;
+            }
             const resumeMsg = resumeErr instanceof Error ? resumeErr.message : String(resumeErr);
             sessionCtx.log(`Auto-resume failed: ${resumeMsg}`);
             // Mirror the MAX_RETRIES branch above and close the turn
@@ -1624,9 +1681,12 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     }
   }
 
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
 
   /**
    * Probe whether the Claude Code SDK can resume the given session at the
@@ -1663,31 +1723,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     return existsSync(join(homedir(), ".claude", "projects", encoded, `${sessionId}.jsonl`));
   }
 
-  /**
-   * Build the unified briefing for the current session state — agent identity,
-   * the latest `prompt.append`, source-repo list, and the Context Tree /
-   * runtime sections. The handler rebuilds this on every start/resume and on
-   * config hot-switch so AGENTS.md (and the CLAUDE.md symlink the Claude Code
-   * SDK reads) is always current. Per-chat context is injected separately via
-   * `systemPrompt.append`.
-   */
-  function currentBriefing(
-    sessionCtx: SessionContext,
-    workspace: string,
-    payload: AgentRuntimeConfigPayload | null | undefined,
-  ): string {
-    return buildAgentBriefing({
-      identity: sessionCtx.agent,
-      payload: payload ?? null,
-      workspacePath: workspace,
-      sourceRepos: sourceReposForPrompt,
-      contextTreePath,
-      contextTreeRepoUrl,
-      contextTreeBranch,
-      teamSkills: reconciledTeamSkills,
-    });
-  }
-
   const handler: AgentHandler = {
     async start(message, sessionCtx, token) {
       const deliveryToken = token;
@@ -1705,15 +1740,17 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       const prepared = await prepareManagedSession({
         sessionCtx,
         workspaceRoot,
+        agentName,
         runtimeProvider,
         providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,
         contextTree: {
-          path: contextTreePath,
-          repoUrl: contextTreeRepoUrl,
-          branch: contextTreeBranch,
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
         },
       });
       // Per agent-session-cwd-redesign: cwd is per-agent, shared by every
@@ -1721,8 +1758,6 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       // boundary marker on first call; afterwards acquire is a no-op).
       cwd = prepared.workspace;
       chatContextForPrompt = prepared.chatContext;
-      sourceReposForPrompt = prepared.sourceRepos;
-      reconciledTeamSkills = prepared.teamSkills;
       const briefing = prepared.briefing;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -1743,6 +1778,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       // replay payload while still attaching ACK metadata before the SDK can
       // pull the prompt.
       const sdkMsg = await toSDKUserMessage(message, sessionCtx, claudeSessionId);
+      await assertQuerySpawnCurrent(sessionCtx);
       spawnQuery(claudeSessionId, sessionCtx, undefined, providerEnv);
       deliverUserMessage(sdkMsg, message, deliveryToken, claudeSessionId, sessionCtx);
       scheduleInjectedMessagesDrain(sessionCtx, claudeSessionId);
@@ -1775,8 +1811,10 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           `Resume: detected pre-redesign SDK transcript at legacy cwd ${legacyCwd}; ` +
             "running this session under the legacy per-chat layout to preserve agent memory",
         );
-        const runtimeConfig = agentConfigCache?.get(sessionCtx.agent.agentId);
-        const payload = runtimeConfig?.payload;
+        const runtimeConfig = agentConfigCache?.get(sessionCtx.agent.agentId) ?? null;
+        let payload = runtimeConfig?.payload ?? null;
+        const payloadResolved = payload !== null;
+        payload ??= { ...DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD };
         const chatContext = await fetchChatContextOrLog(sessionCtx);
         chatContextForPrompt = chatContext;
         // Intentionally NOT calling ensureAgentBootstrap / declareSourceRepos /
@@ -1799,18 +1837,34 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         // Project Core and Team Skills to the legacy cwd as well. `cwd` is
         // `legacyCwd` here (set above), NOT the agent home, so provider-native
         // discovery and its managed transaction state are session-local.
-        reconciledTeamSkills = (
-          await reconcileManagedSkillsForConfig(
-            cwd,
-            runtimeProvider,
-            PROVIDER_SKILL_ROOTS,
-            runtimeConfig,
-            sessionCtx.log,
-            teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-          )
-        ).teamSkills;
+        // Briefing is written inside the source-publication lock; do not
+        // rewrite AGENTS.md after the projector returns.
+        const projected = await projectManagedWorkspace({
+          sessionCtx,
+          workspace: cwd,
+          sourceAuthorityRoot: workspaceRoot,
+          agentName,
+          runtimeProvider,
+          providerSkillRoots: PROVIDER_SKILL_ROOTS,
+          runtimeConfig,
+          payload,
+          payloadResolved,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+          reresolveSource: true,
+          markInitComplete: false,
+          writeIdentityAndManifest: false,
+          suppressSourceRepos: true,
+          allowLegacyTargetUpgrade: true,
+        });
+        const briefing = projected.briefing;
         const providerEnv = buildEnv(sessionCtx);
-        writeAgentBriefing(legacyCwd, currentBriefing(sessionCtx, legacyCwd, payload));
+        currentBriefingFingerprint = computeBriefingFingerprint(briefing);
+        deliveredBriefingFingerprint = readSessionBriefingFingerprint(cwd, sessionId);
         // Same convert-stash-then-spawn ordering as `start()` so a stream
         // error fired on the first turn of the resumed session can replay
         // through `respawnQuery`.
@@ -1818,6 +1872,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         if (message) {
           sdkMsg = await toSDKUserMessage(message, sessionCtx, sessionId);
         }
+        await assertQuerySpawnCurrent(sessionCtx);
         spawnQuery(sessionId, sessionCtx, sessionId, providerEnv);
         if (sdkMsg) {
           if (message) pushPendingSdkInput(createPendingSdkInput(sdkMsg, message, deliveryToken));
@@ -1840,21 +1895,21 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       const prepared = await prepareManagedSession({
         sessionCtx,
         workspaceRoot,
+        agentName,
         runtimeProvider,
         providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,
         contextTree: {
-          path: contextTreePath,
-          repoUrl: contextTreeRepoUrl,
-          branch: contextTreeBranch,
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
         },
       });
       cwd = prepared.workspace;
       chatContextForPrompt = prepared.chatContext;
-      sourceReposForPrompt = prepared.sourceRepos;
-      reconciledTeamSkills = prepared.teamSkills;
       const briefing = prepared.briefing;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -1880,6 +1935,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         if (message) {
           freshSdkMsg = await toSDKUserMessage(message, sessionCtx, freshSessionId);
         }
+        await assertQuerySpawnCurrent(sessionCtx);
         spawnQuery(freshSessionId, sessionCtx, undefined, providerEnv);
         if (freshSdkMsg && message) {
           deliverUserMessage(freshSdkMsg, message, deliveryToken, freshSessionId, sessionCtx);
@@ -1905,6 +1961,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       if (message) {
         resumeSdkMsg = await toSDKUserMessage(message, sessionCtx, sessionId);
       }
+      await assertQuerySpawnCurrent(sessionCtx);
       spawnQuery(sessionId, sessionCtx, sessionId, providerEnv);
       if (resumeSdkMsg && message) {
         deliverUserMessage(resumeSdkMsg, message, deliveryToken, sessionId, sessionCtx);

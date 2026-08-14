@@ -157,6 +157,7 @@ describe("claude-code handler — auto-resume failure surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -254,6 +255,7 @@ describe("claude-code handler — auto-resume failure surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -341,6 +343,7 @@ describe("claude-code handler — auto-resume failure surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const plumbing = mockCtxPlumbing({ sendMessage }, "chat-resume-fail");

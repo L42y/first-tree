@@ -1,5 +1,16 @@
+import type { Stats } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { FirstTreeHubSDK, probeCapabilities } from "@first-tree/client";
-import { clientConfigSchema, initConfig, resetConfig, resetConfigMeta } from "@first-tree/shared/config";
+import {
+  clientConfigSchema,
+  defaultDataDir,
+  defaultHome,
+  initConfig,
+  resetConfig,
+  resetConfigMeta,
+} from "@first-tree/shared/config";
+import { z } from "zod";
 import type { CheckResult } from "../../core/doctor.js";
 import {
   CLI_USER_AGENT,
@@ -11,10 +22,13 @@ import {
   checkServerReachable,
   checkWebSocket,
   ensureFreshAccessToken,
+  inspectLocalContextTree,
+  listLocalContextDataLoss,
   reconcileAgentConfigs,
   resolveServerUrl,
   runtimeProviderChecks,
 } from "../../core/index.js";
+import { verifyTreeRoot } from "../tree/verify.js";
 
 /**
  * Runtime-provider readiness: a resolve-only capability detection per built-in
@@ -27,6 +41,116 @@ import {
  */
 export async function checkRuntimeProviders(): Promise<CheckResult[]> {
   return runtimeProviderChecks(await probeCapabilities());
+}
+
+const doctorIdentitySchema = z
+  .object({
+    agentId: z.string().min(1),
+    agentName: z.string().min(1),
+    contextSourceKind: z.enum(["remote", "local", "none"]),
+    contextTreePath: z.string().min(1).nullable(),
+    serverUrl: z.string().url(),
+  })
+  .passthrough();
+
+const doctorRemoteLatchSchema = z
+  .object({
+    branch: z.string().min(1),
+    observedAt: z.string().min(1),
+    remoteObserved: z.literal(true),
+    repoUrl: z.string().min(1),
+    schemaVersion: z.literal(1),
+  })
+  .strict();
+
+export function checkLocalContexts(): CheckResult {
+  const contexts = listLocalContextDataLoss({ dataDir: defaultDataDir(), home: defaultHome() });
+  if (contexts.length === 0) {
+    return { label: "Local Context", ok: true, detail: "no Agent Local Context directories" };
+  }
+
+  const problems: string[] = [];
+  let active = 0;
+  let frozen = 0;
+  for (const context of contexts) {
+    try {
+      inspectLocalContextTree(context.path);
+      const verification = verifyTreeRoot(context.path);
+      if (!verification.ok) problems.push(`${context.agentName}: tree verify failed`);
+
+      const workspace = dirname(context.path);
+      const identityPath = join(workspace, ".first-tree-workspace", "identity.json");
+      let identityEntry: Stats;
+      try {
+        identityEntry = lstatSync(identityPath);
+      } catch (error) {
+        if (typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT") {
+          problems.push(`${context.agentName}: identity.json is missing`);
+        } else {
+          problems.push(`${context.agentName}: identity.json cannot be inspected`);
+        }
+        continue;
+      }
+      if (identityEntry.isSymbolicLink() || !identityEntry.isFile()) {
+        problems.push(`${context.agentName}: identity.json is not a trusted regular file`);
+        continue;
+      }
+      let identityText: string;
+      try {
+        identityText = readFileSync(identityPath, "utf8");
+      } catch {
+        problems.push(`${context.agentName}: identity.json is unreadable`);
+        continue;
+      }
+      let identity: z.infer<typeof doctorIdentitySchema>;
+      try {
+        identity = doctorIdentitySchema.parse(JSON.parse(identityText));
+      } catch {
+        problems.push(`${context.agentName}: identity.json is malformed or incomplete`);
+        continue;
+      }
+      if (identity.agentName !== context.agentName) {
+        problems.push(`${context.agentName}: identity agentName mismatch`);
+      }
+      if (identity.contextSourceKind === "local" && resolve(identity.contextTreePath ?? "") !== resolve(context.path)) {
+        problems.push(`${context.agentName}: Local identity contextTreePath mismatch`);
+      }
+
+      const statePath = join(workspace, ".first-tree-workspace", "source-state.json");
+      try {
+        const stateEntry = lstatSync(statePath);
+        if (stateEntry.isSymbolicLink() || !stateEntry.isFile()) {
+          problems.push(`${context.agentName}: source-state.json is not a trusted regular file`);
+          continue;
+        }
+        doctorRemoteLatchSchema.parse(JSON.parse(readFileSync(statePath, "utf8")));
+        frozen += 1;
+      } catch (error) {
+        if (typeof error === "object" && error !== null && "code" in error && Reflect.get(error, "code") === "ENOENT") {
+          if (identity.contextSourceKind !== "local") {
+            problems.push(`${context.agentName}: Local tree has neither local identity nor remote latch`);
+          } else {
+            active += 1;
+          }
+        } else if (error instanceof z.ZodError || error instanceof SyntaxError) {
+          problems.push(`${context.agentName}: corrupt or unsupported source-state.json`);
+        } else {
+          problems.push(`${context.agentName}: unreadable source-state.json`);
+        }
+      }
+    } catch (error) {
+      problems.push(`${context.agentName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  return {
+    label: "Local Context",
+    ok: problems.length === 0,
+    detail:
+      problems.length === 0
+        ? `${contexts.length} found (${active} active, ${frozen} frozen), identity/containment/limits/verify healthy`
+        : problems.slice(0, 4).join("; "),
+  };
 }
 
 /**
@@ -74,6 +198,7 @@ export async function runDaemonChecks(): Promise<CheckResult[]> {
     await checkWebSocket(),
     checkBackgroundService(),
     checkDaemonRuntimeOwnership(),
+    checkLocalContexts(),
     ...(await checkRuntimeProviders()),
   ];
 }

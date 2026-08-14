@@ -133,6 +133,7 @@ describe("CLI command registration", () => {
     expect(tree.commands.map((entry) => entry.name()).sort()).toEqual([
       "init",
       "io",
+      "local",
       "read",
       "review",
       "seed",
@@ -181,7 +182,13 @@ describe("CLI command registration", () => {
     expect(optionNames(command(command(root, "org"), "bind-tree"))).toEqual(["--branch", "--org"]);
     expect(optionNames(command(command(root, "org"), "context-tree"))).toEqual(["--agent"]);
     expect(optionNames(command(command(root, "tree"), "read"))).toEqual(["--snapshot", "--team"]);
-    expect(optionNames(command(command(root, "tree"), "tree"))).toEqual(["--level", "--no-pull", "--pattern"]);
+    expect(optionNames(command(command(root, "tree"), "tree"))).toEqual([
+      "--level",
+      "--no-pull",
+      "--pattern",
+      "--tree-path",
+    ]);
+    expect(optionNames(command(command(command(root, "tree"), "local"), "resolve"))).toEqual(["--ensure", "--intent"]);
     expect(optionNames(command(command(root, "tree"), "write"))).toEqual(["--github-login", "--snapshot", "--team"]);
   });
 

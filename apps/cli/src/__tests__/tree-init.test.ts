@@ -6,6 +6,9 @@ import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildScaffoldFiles, defaultRepoName, resolveRepoOwner, type ScaffoldFile } from "../commands/tree/init.js";
 import {
+  localAgentMemberNodeContent,
+  localContextRootNodeContent,
+  localMembersIndexContent,
   memberNodeContent,
   membersIndexContent,
   rootNodeContent,
@@ -203,6 +206,45 @@ describe("scaffold-templates (ejs)", () => {
     expect(node).toContain('title: "octocat"');
     expect(node).toContain("owners: [octocat]");
     expect(node).toContain("type: human");
+  });
+
+  it("keeps Team scaffolds unchanged while Local scaffolds use Agent-private language", () => {
+    const teamRoot = rootNodeContent("Acme", "octocat");
+    const teamMember = memberNodeContent("octocat");
+    expect(teamRoot).toContain("# Acme's Context Tree");
+    expect(teamMember).toContain('role: "Team member"');
+    expect(teamMember).toContain("team Context Tree");
+
+    const localRoot = localContextRootNodeContent("co-high");
+    const localMember = localAgentMemberNodeContent("co-high");
+    expect(localRoot).toContain("# co-high Local Context");
+    expect(localRoot).toContain("Agent-private");
+    expect(localRoot).not.toContain("Local Context's Context Tree");
+    expect(localMember).toContain("type: agent");
+    expect(localMember).toContain('role: "Local Context owner"');
+    expect(localMember).not.toContain("Team member");
+    expect(localMember).not.toContain("team Context Tree");
+  });
+
+  it("quotes every Local owner field for safe grandfathered Agent names", () => {
+    const agentName = 'Legacy: "Writer"';
+    const quotedOwner = `owners: [${JSON.stringify(agentName)}]`;
+
+    expect(localContextRootNodeContent(agentName)).toContain(quotedOwner);
+    expect(localMembersIndexContent(agentName)).toContain(quotedOwner);
+    expect(localAgentMemberNodeContent(agentName)).toContain(quotedOwner);
+    expect(membersIndexContent("octocat")).toContain("owners: [octocat]");
+  });
+
+  it.each([
+    "",
+    ".",
+    "..",
+    ".hidden",
+    "nested/member",
+    "nested\\member",
+  ])("rejects unsafe Local member directory name %j before rendering", (agentName) => {
+    expect(() => localAgentMemberNodeContent(agentName)).toThrow(/immediate directory name/u);
   });
 
   it("renders the validate-tree workflow", () => {

@@ -1,5 +1,5 @@
-import type { Dirent } from "node:fs";
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
+import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import type { Command } from "commander";
@@ -52,7 +52,8 @@ type ContextTreeBranchInfo = {
 };
 
 type ContextTreeCommandData = ContextTreeSnapshot & {
-  branch: ContextTreeBranchInfo;
+  branch: ContextTreeBranchInfo | null;
+  mode: "filesystem" | "git";
   readSnapshot: ContextTreeReadSnapshotIdentity | null;
 };
 
@@ -60,6 +61,7 @@ type ParsedTreeTreeOptions = {
   level?: number;
   pattern?: string;
   path: string;
+  treePath?: string;
   /**
    * When true (the default), refresh the resolved Context Tree repo with
    * `git pull --ff-only` before reading it, so the listing always reflects
@@ -415,10 +417,36 @@ function parseTreeTreeOptions(options: Record<string, unknown>, args: string[]):
     level,
     pattern: asString(options.pattern),
     path,
+    treePath: asString(options.treePath),
     // Commander maps `--no-pull` to `options.pull === false`; the flag is
     // absent (undefined) by default, which we treat as pull-enabled.
     pull: options.pull !== false,
   };
+}
+
+function resolveFilesystemTreeTarget(cwd: string, treePath: string, target: string): ResolvedTreeTarget {
+  const requestedRoot = resolve(cwd, treePath);
+  let rootEntry: Stats;
+  try {
+    rootEntry = lstatSync(requestedRoot);
+  } catch {
+    throw new TreeTreeCommandError(TREE_TREE_INVALID_PATH, `Tree path "${treePath}" is not an existing directory.`);
+  }
+  if (rootEntry.isSymbolicLink() || !rootEntry.isDirectory()) {
+    throw new TreeTreeCommandError(
+      TREE_TREE_INVALID_PATH,
+      `Tree path "${treePath}" must be a real directory and must not be a symlink.`,
+    );
+  }
+  const repoRoot = realpathSync(requestedRoot);
+  const targetPath = resolve(repoRoot, target);
+  if (!isDirectory(targetPath)) {
+    throw new TreeTreeCommandError(TREE_TREE_INVALID_PATH, `Path "${target}" is not an existing directory.`);
+  }
+  if (!isRealPathInsideOrEqual(repoRoot, targetPath)) {
+    throw new TreeTreeCommandError(TREE_TREE_INVALID_PATH, `Path "${target}" is outside the filesystem Tree root.`);
+  }
+  return { repoRoot, targetRelativePath: toPosixRelativePath(repoRoot, targetPath) };
 }
 
 /**
@@ -625,9 +653,9 @@ function renderContextTreeSnapshot(snapshot: ContextTreeSnapshot): string {
 }
 
 function renderContextTreeCommandData(data: ContextTreeCommandData): string {
-  const lines = [`Branch: ${data.branch.name}`];
+  const lines = data.branch === null ? ["Mode: filesystem"] : [`Branch: ${data.branch.name}`];
 
-  if (data.branch.warning !== null) {
+  if (data.branch?.warning) {
     lines.push(data.branch.warning);
   }
 
@@ -658,6 +686,7 @@ function configureTreeTreeCommand(command: Command): void {
     .allowExcessArguments(false)
     .option("-L, --level <depth>", "max descendant depth below the target directory")
     .option("-P, --pattern <pattern>", "shell-style glob filter matched against path, filename, title, and description")
+    .option("--tree-path <root>", "browse a filesystem Context Tree root without Git discovery or pull")
     .option(
       "--no-pull",
       "skip the automatic `git pull --ff-only` refresh and read the local checkout as-is (offline / stable-snapshot use)",
@@ -668,13 +697,17 @@ export function runTreeTreeCommand(context: CommandContext): void {
   try {
     const options = context.command.opts<Record<string, unknown>>();
     const parsedOptions = parseTreeTreeOptions(options, context.command.args);
-    const resolvedTarget = resolveTreeTarget(process.cwd(), parsedOptions.path);
-    const readSnapshot = readContextTreeReadSnapshotIdentity(resolvedTarget.repoRoot);
+    const filesystemMode = parsedOptions.treePath !== undefined;
+    const resolvedTarget =
+      parsedOptions.treePath === undefined
+        ? resolveTreeTarget(process.cwd(), parsedOptions.path)
+        : resolveFilesystemTreeTarget(process.cwd(), parsedOptions.treePath, parsedOptions.path);
+    const readSnapshot = filesystemMode ? null : readContextTreeReadSnapshotIdentity(resolvedTarget.repoRoot);
     // Refresh the tree before reading it (hard freshness guarantee), unless
     // the caller opted out with --no-pull. An activated BYO task snapshot is
     // already pinned to an exact commit and must never refresh per selector.
     // Managed checkouts retain their existing best-effort stale fallback.
-    if (parsedOptions.pull && readSnapshot === null) {
+    if (!filesystemMode && parsedOptions.pull && readSnapshot === null) {
       pullContextTreeRepo(resolvedTarget.repoRoot);
     }
     const snapshot = readContextTreeSnapshot(resolvedTarget.repoRoot, {
@@ -685,7 +718,8 @@ export function runTreeTreeCommand(context: CommandContext): void {
     });
     const data: ContextTreeCommandData = {
       ...snapshot,
-      branch: readContextTreeBranch(resolvedTarget.repoRoot, readSnapshot),
+      branch: filesystemMode ? null : readContextTreeBranch(resolvedTarget.repoRoot, readSnapshot),
+      mode: filesystemMode ? "filesystem" : "git",
       readSnapshot,
     };
 

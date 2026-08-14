@@ -44,7 +44,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/run-vitest-batches.mjs",
     "coverage": "pnpm run build && vitest run --coverage --passWithNoTests",
-    "prepack": "rm -rf skills && cp -R ../../skills . && node scripts/materialize-bundled-deps.mjs prepare",
+    "prepack": "node ../../scripts/copy-skill-payloads.mjs --target skills --clean && node scripts/materialize-bundled-deps.mjs prepare",
     "postpack": "node scripts/materialize-bundled-deps.mjs restore && rm -rf skills context-integration",
     "postinstall": "node scripts/prune-codex-runtime-binary.mjs && node scripts/prune-claude-runtime-binary.mjs && node scripts/prune-claude-sdk-deps.mjs"
   },

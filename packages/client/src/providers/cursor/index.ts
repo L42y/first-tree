@@ -25,28 +25,28 @@ import type {
   AgentConfigCache,
   ContextTreeAttribution,
   ContextTreeGitWriteTracker,
-  PredeclaredSourceRepo,
   ProviderAttemptSettlement,
-  ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
-  buildAgentBriefing,
+  assertContextSourceCurrent,
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
+  isContextSourceTransitionError,
   isManagedSkillsUnsafeDiscoveryError,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  projectManagedWorkspace,
   readSessionBriefingFingerprint,
-  reconcileManagedSkillsForConfig,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
-  teamSkillBundleResolverFromSdk,
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
-  writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
 import { chunkAssistantText } from "../handlers/assistant-text.js";
@@ -519,12 +519,16 @@ function cursorToolEventName(tool: CursorToolCall): string {
 
 export const createCursorHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   const spawnFn = (config.cursorSpawnFn as SpawnFn | undefined) ?? spawn;
   const enableMcpServer = (config.cursorMcpEnableFn as CursorMcpEnableFn | undefined) ?? enableCursorMcpServer;
   const resolveBinary =
@@ -533,7 +537,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
   let activePayload: AgentRuntimeConfigPayload | null = null;
-  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let binary: string | null = null;
   /** Stream-confirmed provider session id — the ONLY value `--resume` may carry. */
   let providerSessionId: string | null = null;
@@ -569,7 +572,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
    * provider.
    */
   let pendingChatContextPrompt: string | null = null;
-  let sourceReposForPrompt: readonly PredeclaredSourceRepo[] = [];
   const gitWriteTracker: ContextTreeGitWriteTracker = createContextTreeGitWriteTracker({
     contextTreePath,
     contextTreeRepoUrl,
@@ -693,19 +695,6 @@ export const createCursorHandler: HandlerFactory = (config) => {
   function formatCursorError(message: string): string {
     if (isCursorAuthError(message)) return formatAuthHint("cursor", message);
     return message;
-  }
-
-  function buildBriefing(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload, workspaceCwd: string): string {
-    return buildAgentBriefing({
-      identity: sessionCtx.agent,
-      payload,
-      workspacePath: workspaceCwd,
-      sourceRepos: sourceReposForPrompt,
-      contextTreePath,
-      contextTreeRepoUrl,
-      contextTreeBranch,
-      teamSkills: reconciledTeamSkills,
-    });
   }
 
   function consumePendingChatContext(input: string): string {
@@ -1133,6 +1122,20 @@ export const createCursorHandler: HandlerFactory = (config) => {
     }
 
     const activeBinary = binary;
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
+    if (cwd !== workspaceCwd || binary !== activeBinary || !sessionActive) {
+      token.retry(messages, "cursor_session_inactive");
+      return false;
+    }
     // One immutable per-turn snapshot drives MCP projection, targeted
     // approval, model, and env. SessionManager refreshes the cache before
     // dispatch, so an active chat converges on its very next turn even when a
@@ -1173,6 +1176,25 @@ export const createCursorHandler: HandlerFactory = (config) => {
       }
 
       try {
+        if (
+          abort.signal.aborted ||
+          turnGeneration !== generation ||
+          cwd !== workspaceCwd ||
+          binary !== activeBinary ||
+          !sessionActive
+        ) {
+          return false;
+        }
+        await assertContextSourceCurrent({
+          sessionCtx,
+          sourceAuthorityRoot: workspaceRoot,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+        });
         if (
           abort.signal.aborted ||
           turnGeneration !== generation ||
@@ -1376,6 +1398,23 @@ export const createCursorHandler: HandlerFactory = (config) => {
         } catch {
           return; // suspend/shutdown raced ahead
         }
+        try {
+          await assertContextSourceCurrent({
+            sessionCtx,
+            sourceAuthorityRoot: workspaceRoot,
+            contextTree: {
+              kind: contextTree.kind,
+              path: contextTree.path,
+              repoUrl: contextTree.repoUrl,
+              branch: contextTree.branch,
+            },
+          });
+        } catch (sourceError) {
+          if (!isContextSourceTransitionError(sourceError)) throw sourceError;
+          token.retry(messages, "cursor_context_source_changed");
+          sessionCtx.failSessionForRecovery?.("cursor_context_source_changed", providerSessionId ?? undefined);
+          return;
+        }
       }
     })();
 
@@ -1494,7 +1533,8 @@ export const createCursorHandler: HandlerFactory = (config) => {
    * Active-session briefing hot-switch before an injected turn (same contract
    * as the codex handler): rebuild from the latest cached config; when changed,
    * rewrite AGENTS.md and report so the caller prepends the one-time re-read
-   * notice. Never throws on the drain path.
+   * notice. Source transitions and unsafe managed projections remain
+   * fail-closed so the drain owner can return custody to SessionManager.
    */
   async function refreshBriefingForActiveTurn(
     sessionCtx: SessionContext,
@@ -1505,22 +1545,32 @@ export const createCursorHandler: HandlerFactory = (config) => {
       const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
-      reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(
-          cwd,
-          runtimeProvider,
-          PROVIDER_SKILL_ROOTS,
-          runtimeConfig,
-          sessionCtx.log,
-          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-        )
-      ).teamSkills;
-      const briefing = buildBriefing(sessionCtx, payload, cwd);
+      const projected = await projectManagedWorkspace({
+        sessionCtx,
+        workspace: cwd,
+        agentName,
+        runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
+        runtimeConfig,
+        payload,
+        existingPayload: activePayload ?? undefined,
+        payloadResolved: true,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+        reresolveSource: true,
+        markInitComplete: false,
+      });
+      activePayload = payload;
+      const briefing = projected.briefing;
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, sessionKey) === fingerprint) return { fingerprint, changed: false };
-      writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
+      if (isContextSourceTransitionError(err)) throw err;
       if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
       sessionCtx.log(
         `active-session briefing refresh failed, delivering under prior briefing: ${err instanceof Error ? err.message : String(err)}`,
@@ -1552,16 +1602,22 @@ export const createCursorHandler: HandlerFactory = (config) => {
       for (const queued of drained) queued.token.retry(queued.message, "cursor_queued_turn_format_failed");
       return;
     }
-    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
-    if (refreshed?.changed && cwd) {
-      const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
-      pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
-      sessionCtx.log(`Active session briefing changed — prepending re-read notice (${providerSessionId})`);
-    }
-    const delivered = await runTurn(inputs.join("\n\n"), sessionCtx, messages, token);
-    const sessionKey = providerSessionId ?? pendingSyntheticId;
-    if (refreshed?.changed && delivered && cwd && sessionKey) {
-      writeSessionBriefingFingerprint(cwd, sessionKey, refreshed.fingerprint);
+    try {
+      const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
+      if (refreshed?.changed && cwd) {
+        const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
+        pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
+        sessionCtx.log(`Active session briefing changed — prepending re-read notice (${providerSessionId})`);
+      }
+      const delivered = await runTurn(inputs.join("\n\n"), sessionCtx, messages, token);
+      const sessionKey = providerSessionId ?? pendingSyntheticId;
+      if (refreshed?.changed && delivered && cwd && sessionKey) {
+        writeSessionBriefingFingerprint(cwd, sessionKey, refreshed.fingerprint);
+      }
+    } catch (err) {
+      if (!isContextSourceTransitionError(err)) throw err;
+      for (const queued of drained) queued.token.retry(queued.message, "cursor_context_source_changed");
+      sessionCtx.failSessionForRecovery?.("cursor_context_source_changed", providerSessionId ?? undefined);
     }
   }
 
@@ -1616,22 +1672,22 @@ export const createCursorHandler: HandlerFactory = (config) => {
     const prepared = await prepareManagedSession({
       sessionCtx,
       workspaceRoot,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
     });
     const workspaceCwd = prepared.workspace;
     cwd = workspaceCwd;
     pendingChatContextPrompt = renderChatContextPrompt(prepared.chatContext);
-    sourceReposForPrompt = prepared.sourceRepos;
-    reconciledTeamSkills = prepared.teamSkills;
     const briefing = prepared.briefing;
 
     const resolution = resolveBinary(process.env);

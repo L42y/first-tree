@@ -25,6 +25,7 @@ import {
   assertNoBuildRootReferences,
   buildPortableReleaseMetadata,
   copyPortableAppTemplate,
+  copyPortableSkillPayloads,
   DEFAULT_DOWNLOAD_BASE_URL,
   DEFAULT_NODE_VERSION,
   manifestDownloadUrl,
@@ -58,7 +59,7 @@ const TSX_IMPORT = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).
 let tmpDirs: string[] = [];
 
 function tempDir(name: string): string {
-  const dir = mkdtempSync(join(tmpdir(), name));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), name));
   tmpDirs.push(dir);
   return dir;
 }
@@ -177,6 +178,31 @@ afterEach(() => {
 });
 
 describe("portable builder helpers", () => {
+  it("ships private Local Context Skill variants without adding public duplicate names", () => {
+    const appDir = tempDir("first-tree-portable-skills-");
+
+    copyPortableSkillPayloads(appDir);
+
+    const publicNames = readdirSync(join(appDir, "skills"), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name);
+    expect(publicNames.filter((name) => name === "first-tree-read")).toHaveLength(1);
+    expect(publicNames.filter((name) => name === "first-tree-write")).toHaveLength(1);
+    expect(
+      readdirSync(join(appDir, "skills", ".variants", "local-context"), { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort(),
+    ).toEqual(["first-tree-read", "first-tree-write"]);
+    for (const name of ["first-tree-read", "first-tree-write"]) {
+      expect(existsSync(join(appDir, "skills", ".variants", "local-context", name, "SKILL.md"))).toBe(true);
+      expect(existsSync(join(appDir, "skills", ".variants", "local-context", name, "VERSION"))).toBe(true);
+      expect(existsSync(join(appDir, "skills", ".variants", "local-context", name, "agents", "openai.yaml"))).toBe(
+        true,
+      );
+    }
+  });
+
   it("validates channel/version pairs", () => {
     expect(() => validateChannelVersion("prod", "1.2.3")).not.toThrow();
     expect(() => validateChannelVersion("prod", "1.2.3-staging.4.1")).toThrow(/stable/);
@@ -977,7 +1003,7 @@ if (args[0] === "--version") {
       encoding: "utf8",
     });
     expect(install.status, install.stderr || install.stdout).toBe(0);
-    expect(realpathSync(join(prefix, "current"))).toBe(join(prefix, "versions", "1.0.0"));
+    expect(realpathSync(join(prefix, "current"))).toBe(realpathSync(join(prefix, "versions", "1.0.0")));
 
     const login = spawnSync(shim, ["login", "test-code"], { cwd: REPO_ROOT, env, encoding: "utf8" });
     expect(login.status, login.stderr || login.stdout).toBe(0);

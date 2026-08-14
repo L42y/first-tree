@@ -28,17 +28,22 @@ import type {
   ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
+  assertContextSourceCurrent,
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
   createDefaultProviderProcessSupervisor,
+  isContextSourceTransitionError,
   isExhaustedCapacityPhrasing,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
   piProviderDetailBinaryMissingReasonCode,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
   projectManagedWorkspace,
   readSessionBriefingFingerprint,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
@@ -448,11 +453,15 @@ export async function defaultPiRetrySleep(delayMs: number, signal: AbortSignal):
 
 export const createPiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   const platform = (config.piPlatform as NodeJS.Platform | undefined) ?? process.platform;
   const resolveBinary =
     (config.piBinaryResolver as typeof resolvePiRuntimeBinary | undefined) ?? resolvePiRuntimeBinary;
@@ -854,6 +863,16 @@ export const createPiHandler: HandlerFactory = (config) => {
     if (rpcClient && !rpcClient.isClosed && activeSpawnFingerprint === nextFingerprint) {
       return rpcClient;
     }
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
     if (rpcClient && !rpcClient.isClosed) {
       sessionCtx.log("pi spawn-scoped config changed; restarting RPC process against the stable session id");
       await closeRpcClient();
@@ -862,6 +881,16 @@ export const createPiHandler: HandlerFactory = (config) => {
     await mkdir(prepared.sessionDir, { recursive: true });
     const env = buildEnv(sessionCtx, prepared.payload);
     await runVersionGate(binary, env, prepared.workspaceCwd, sessionCtx);
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
     // Empty model: inherit whatever the persisted Pi session already selected.
     // Clearing config does not force a host-default reset on an existing session file.
     const args = buildPiRpcArgs({
@@ -1202,8 +1231,15 @@ export const createPiHandler: HandlerFactory = (config) => {
           retryCustody("pi_client_closed");
           return false;
         }
-        const prepared = await refreshPreparedSession(sessionCtx);
-        activeClient = await ensureRpcClient(prepared, sessionCtx);
+        try {
+          const prepared = await refreshPreparedSession(sessionCtx);
+          activeClient = await ensureRpcClient(prepared, sessionCtx);
+        } catch (sourceError) {
+          if (!isContextSourceTransitionError(sourceError)) throw sourceError;
+          retryCustody("pi_context_source_changed");
+          sessionCtx.failSessionForRecovery?.("pi_context_source_changed", sessionId ?? undefined);
+          return false;
+        }
       }
       turnObservation.assistantText = "";
       turnObservation.settled = false;
@@ -1454,6 +1490,7 @@ export const createPiHandler: HandlerFactory = (config) => {
   async function refreshPreparedSession(sessionCtx: SessionContext): Promise<PreparedSession> {
     if (!cwd || !sessionId) throw new Error("pi session is not prepared");
     const generation = lifecycleGeneration;
+    const existingPayload = activePayload;
     let runtimeConfig: AgentRuntimeConfig | null = null;
     let payload: AgentRuntimeConfigPayload | null = activePayload;
     let payloadResolved = false;
@@ -1471,16 +1508,20 @@ export const createPiHandler: HandlerFactory = (config) => {
     const projected = await projectManagedWorkspace({
       sessionCtx,
       workspace: cwd,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,
+      existingPayload: existingPayload ?? undefined,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
+      reresolveSource: true,
       markInitComplete: false,
       atProjectionEntry: (): undefined => {
         assertLifecycleGeneration(generation, "prepared_refresh_projection");
@@ -1503,6 +1544,20 @@ export const createPiHandler: HandlerFactory = (config) => {
       sessionDir: join(cwd, PI_SESSIONS_DIR),
       skillsDir: join(cwd, PI_SKILLS_DIR),
       briefing: projected.briefing,
+    };
+  }
+
+  function capturedPreparedSession(): PreparedSession {
+    if (!cwd || !sessionId || !activePayload || activeBriefingText === null) {
+      throw new Error("pi active session has no captured prepared projection");
+    }
+    return {
+      payload: activePayload,
+      workspaceCwd: cwd,
+      sessionId,
+      sessionDir: join(cwd, PI_SESSIONS_DIR),
+      skillsDir: join(cwd, PI_SKILLS_DIR),
+      briefing: activeBriefingText,
     };
   }
 
@@ -1563,7 +1618,12 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   async function mergeAndRun(drained: QueuedDelivery[], sessionCtx: SessionContext): Promise<void> {
-    const prepared = await refreshPreparedSession(sessionCtx);
+    // A healthy live RPC remains on its captured source/config for ordinary
+    // injections. Re-authorize and refresh only when a real process spawn is
+    // required; otherwise another Chat's newer projection must not be
+    // overwritten and this handler must not emit telemetry for that source.
+    const prepared =
+      rpcClient && !rpcClient.isClosed ? capturedPreparedSession() : await refreshPreparedSession(sessionCtx);
     const prompts: string[] = [];
     for (const entry of drained) {
       prompts.push(await sessionCtx.formatInboundContent(entry.message));
@@ -1610,6 +1670,11 @@ export const createPiHandler: HandlerFactory = (config) => {
         return;
       } catch (error) {
         if (!drainStillOwns(drained, drainGeneration)) return;
+        if (isContextSourceTransitionError(error)) {
+          retryDrainingBatch(drained, "pi_context_source_changed");
+          sessionCtx.failSessionForRecovery?.("pi_context_source_changed", sessionId ?? undefined);
+          return;
+        }
         const outcome = await settleQueuedPreProviderFailure(drained, sessionCtx, error, attemptNumber);
         if (outcome.action !== "retry") {
           finishDrainingBatch(drained);
@@ -1793,6 +1858,7 @@ export const createPiHandler: HandlerFactory = (config) => {
 
   async function prepareSession(sessionCtx: SessionContext, resolvedSessionId: string): Promise<PreparedSession> {
     const generation = lifecycleGeneration;
+    const existingPayload = activePayload;
     if (isLandingCampaignTrialAgentMetadata(sessionCtx.agent.metadata)) {
       throw new Error("landing campaign trial agents require the codex app-server workspace-only runtime");
     }
@@ -1830,15 +1896,18 @@ export const createPiHandler: HandlerFactory = (config) => {
     const prepared = await prepareManagedSession({
       sessionCtx,
       workspaceRoot,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved,
+      existingPayload: existingPayload ?? undefined,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
       atProjectionEntry: (): undefined => {
         // Sync fence at projection entry (first statement of

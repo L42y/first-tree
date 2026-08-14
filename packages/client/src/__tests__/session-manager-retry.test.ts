@@ -1,7 +1,14 @@
 import { parseProviderRetryEventMessage, type SessionEvent, type SessionState } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
-import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
+import type { ContextSource } from "../runtime/context-source.js";
+import type {
+  AgentHandler,
+  HandlerConfig,
+  HandlerFactory,
+  SessionContext,
+  SessionMessage,
+} from "../runtime/handler.js";
 import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
 import { SessionManager } from "../runtime/session-manager.js";
 import { silentLogger } from "./_logger-helpers.js";
@@ -34,6 +41,8 @@ function makeManager(opts: {
   recoverChat?: (chatId: string) => Promise<void>;
   onStateChange?: (chatId: string, state: SessionState) => void;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
+  handlerConfig?: HandlerConfig;
+  resolveContextSource?: () => Promise<ContextSource>;
 }): SessionManager {
   const factory: HandlerFactory = () => {
     const next = opts.handlers.shift();
@@ -44,7 +53,8 @@ function makeManager(opts: {
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
     handlerFactory: factory,
-    handlerConfig: { workspaceRoot: "/tmp/test-retry", runtimeProvider: "codex" },
+    handlerConfig: opts.handlerConfig ?? { workspaceRoot: "/tmp/test-retry", runtimeProvider: "codex" },
+    resolveContextSource: opts.resolveContextSource,
     agentIdentity: {
       agentId: "agent-1",
       inboxId: "inbox-agent-1",
@@ -256,6 +266,127 @@ describe("SessionManager: transient session retry", () => {
     expect(recovered.start).toHaveBeenCalled();
 
     await sm.shutdown();
+  });
+
+  it("re-resolves Remote authority before a retry replacement and switches repo A to B", async () => {
+    const failing: AgentHandler = {
+      start: vi.fn().mockRejectedValue(new FakeRateLimit("rate limited")),
+      resume: vi.fn(),
+      inject: vi.fn(),
+      suspend: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const recovered: AgentHandler = {
+      start: vi.fn().mockResolvedValue({
+        sessionId: "session-after-retry",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      }),
+      resume: vi.fn(),
+      inject: vi.fn(),
+      suspend: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const handlerConfig: HandlerConfig = {
+      workspaceRoot: "/tmp/test-retry-authority",
+      runtimeProvider: "codex",
+      contextSourceKind: "remote",
+      contextTreePath: "/tree-a",
+      contextTreeRepoUrl: "https://github.com/acme/tree-a.git",
+      contextTreeBranch: "main",
+    };
+    let reads = 0;
+    const sm = makeManager({
+      handlers: [failing, recovered],
+      handlerConfig,
+      resolveContextSource: async () => {
+        reads += 1;
+        return reads === 1
+          ? {
+              kind: "remote",
+              path: "/tree-a",
+              repoUrl: "https://github.com/acme/tree-a.git",
+              branch: "main",
+            }
+          : {
+              kind: "remote",
+              path: "/tree-b",
+              repoUrl: "https://github.com/acme/tree-b.git",
+              branch: "release",
+            };
+      },
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "chat-retry-rebind" }));
+    await sm.dispatch(mockEntry({ id: 2, chatId: "chat-retry-rebind" }));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(recovered.start).toHaveBeenCalled();
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(handlerConfig).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: "/tree-b",
+      contextTreeRepoUrl: "https://github.com/acme/tree-b.git",
+      contextTreeBranch: "release",
+    });
+    await sm.shutdown();
+  });
+
+  it.each([
+    "unbound",
+    "unknown",
+  ] as const)("does not restart a prior Remote during timed retry when authority becomes %s", async (reason) => {
+    vi.useFakeTimers();
+    try {
+      const failing: AgentHandler = {
+        start: vi.fn().mockRejectedValue(new FakeRateLimit("rate limited")),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const recovered: AgentHandler = {
+        start: vi.fn().mockResolvedValue({
+          sessionId: "must-not-start",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        }),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      const handlerConfig: HandlerConfig = {
+        workspaceRoot: "/tmp/test-retry-frozen",
+        runtimeProvider: "codex",
+        contextSourceKind: "remote",
+        contextTreePath: "/tree-a",
+        contextTreeRepoUrl: "https://github.com/acme/tree-a.git",
+        contextTreeBranch: "main",
+      };
+      let current: ContextSource = {
+        kind: "remote",
+        path: "/tree-a",
+        repoUrl: "https://github.com/acme/tree-a.git",
+        branch: "main",
+      };
+      const sm = makeManager({
+        handlers: [failing, recovered],
+        handlerConfig,
+        resolveContextSource: async () => current,
+      });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: `chat-retry-${reason}` }));
+      current = { kind: "none", reason };
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(recovered.start).not.toHaveBeenCalled();
+      expect(handlerConfig).toMatchObject({
+        contextSourceKind: "remote",
+        contextTreeRepoUrl: "https://github.com/acme/tree-a.git",
+      });
+      await sm.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("parks managed-Skill unsafe resume retries past the old exhaustion boundary and drains head then tail once", async () => {

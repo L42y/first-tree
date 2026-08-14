@@ -12,6 +12,7 @@ export async function agentContextTreeInfoRoutes(app: FastifyInstance): Promise<
     const identity = requireAgent(request);
     const runtime = await getTeamSafeOrgContextReviewRuntime(app.db, identity.organizationId);
     return {
+      bindingState: runtime.bindingState,
       provider: runtime.provider,
       repo: runtime.repo,
       branch: runtime.branch,

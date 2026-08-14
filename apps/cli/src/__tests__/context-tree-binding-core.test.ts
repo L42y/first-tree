@@ -12,8 +12,10 @@ describe("Context Tree binding core", () => {
   it("normalizes bound HTTPS, SSH URL, and scp-like responses", () => {
     expect(
       normalizeContextTreeBinding({
+        bindingState: "bound",
         repo: "https://github.com/acme/context-tree.git",
         branch: "release",
+        provider: "github",
       }),
     ).toEqual({
       status: "bound",
@@ -23,19 +25,36 @@ describe("Context Tree binding core", () => {
 
     expect(
       normalizeContextTreeBinding({
-        repo: "ssh://git@github.com/acme/context-tree.git",
-        branch: null,
+        bindingState: "bound",
+        repo: "ssh://git@gitlab.com/acme/context-tree.git",
+        branch: "main",
+        provider: "gitlab",
       }),
     ).toEqual({
       status: "bound",
-      repo: "ssh://git@github.com/acme/context-tree.git",
+      repo: "ssh://git@gitlab.com/acme/context-tree.git",
       branch: "main",
     });
 
     expect(
       normalizeContextTreeBinding({
+        bindingState: "bound",
+        repo: "ssh://git@example.com/acme/context-tree.git",
+        branch: "main",
+        provider: null,
+      }),
+    ).toEqual({
+      status: "bound",
+      repo: "ssh://git@example.com/acme/context-tree.git",
+      branch: "main",
+    });
+
+    expect(
+      normalizeContextTreeBinding({
+        bindingState: "bound",
         repo: "git@github.com:acme/context-tree.git",
         branch: "trunk",
+        provider: "github",
       }),
     ).toEqual({
       status: "bound",
@@ -44,35 +63,117 @@ describe("Context Tree binding core", () => {
     });
   });
 
-  it("uses repo null as the only unbound signal and discards the wire branch", () => {
-    expect(normalizeContextTreeBinding({ repo: null, branch: "main" })).toEqual({
+  it("requires explicit unbound state with no usable remote coordinates", () => {
+    expect(
+      normalizeContextTreeBinding({ bindingState: "unbound", repo: null, branch: "main", provider: null }),
+    ).toEqual({
       status: "unbound",
       repo: null,
-      branch: null,
+      branch: "main",
     });
-    expect(normalizeContextTreeBinding({ repo: null, branch: "" })).toEqual({
-      status: "unbound",
+
+    expect(normalizeContextTreeBinding({ bindingState: "invalid", repo: null, branch: null, provider: null })).toEqual({
+      status: "invalid",
       repo: null,
       branch: null,
     });
 
-    expect(() => normalizeContextTreeBinding({ repo: "", branch: "main" })).toThrow(ContextTreeUnreadableError);
-    expect(() => normalizeContextTreeBinding({ repo: "https://github.com/acme/context-tree.git", branch: "" })).toThrow(
-      ContextTreeUnreadableError,
-    );
+    expect(() =>
+      normalizeContextTreeBinding({ bindingState: "bound", repo: "", branch: "main", provider: "github" }),
+    ).toThrow(ContextTreeUnreadableError);
+    expect(() =>
+      normalizeContextTreeBinding({
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        branch: "",
+        provider: "github",
+      }),
+    ).toThrow(ContextTreeUnreadableError);
   });
 
   it.each([
-    ["missing repo", { branch: "main" }],
-    ["missing branch", { repo: "https://github.com/acme/context-tree.git" }],
-    ["invalid repo URL", { repo: "http://github.com/acme/context-tree.git", branch: "main" }],
-    ["missing repo host", { repo: "ssh:///acme/context-tree.git", branch: "main" }],
-    ["missing repo path", { repo: "https://github.com", branch: "main" }],
-    ["padded repo", { repo: " https://github.com/acme/context-tree.git", branch: "main" }],
-    ["multiline repo", { repo: "https://github.com/acme/context-tree.git\nforged", branch: "main" }],
-    ["padded branch", { repo: "https://github.com/acme/context-tree.git", branch: " main" }],
-    ["multiline branch", { repo: "https://github.com/acme/context-tree.git", branch: "main\nforged" }],
-    ["Git-invalid branch", { repo: "https://github.com/acme/context-tree.git", branch: "feature..next" }],
+    ["missing repo", { bindingState: "bound", branch: "main", provider: "github" }],
+    [
+      "bound response without branch",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        provider: "github",
+      },
+    ],
+    [
+      "bound response with null branch",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        branch: null,
+        provider: "github",
+      },
+    ],
+    ["legacy response without bindingState", { repo: null, branch: null }],
+    ["legacy response without required provider", { bindingState: "unbound", repo: null, branch: "main" }],
+    [
+      "unbound response without its default branch",
+      { bindingState: "unbound", repo: null, branch: null, provider: null },
+    ],
+    [
+      "invalid response with usable provider coordinates",
+      { bindingState: "invalid", repo: null, branch: null, provider: "github" },
+    ],
+    [
+      "invalid repo URL",
+      { bindingState: "bound", repo: "http://github.com/acme/context-tree.git", branch: "main", provider: "github" },
+    ],
+    [
+      "missing repo host",
+      { bindingState: "bound", repo: "ssh:///acme/context-tree.git", branch: "main", provider: "github" },
+    ],
+    ["missing repo path", { bindingState: "bound", repo: "https://github.com", branch: "main", provider: "github" }],
+    [
+      "padded repo",
+      {
+        bindingState: "bound",
+        repo: " https://github.com/acme/context-tree.git",
+        branch: "main",
+        provider: "github",
+      },
+    ],
+    [
+      "multiline repo",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git\nforged",
+        branch: "main",
+        provider: "github",
+      },
+    ],
+    [
+      "padded branch",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        branch: " main",
+        provider: "github",
+      },
+    ],
+    [
+      "multiline branch",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        branch: "main\nforged",
+        provider: "github",
+      },
+    ],
+    [
+      "Git-invalid branch",
+      {
+        bindingState: "bound",
+        repo: "https://github.com/acme/context-tree.git",
+        branch: "feature..next",
+        provider: "github",
+      },
+    ],
     ["invalid response shape", ["not", "an", "object"]],
   ])("rejects %s as an unreadable response", (_label, response) => {
     expect(() => normalizeContextTreeBinding(response)).toThrowError(
@@ -87,8 +188,10 @@ describe("Context Tree binding core", () => {
 
   it("reads once through the supplied SDK and emits structured debug logs", async () => {
     const getAgentContextTreeConfig = vi.fn(async () => ({
+      bindingState: "bound",
       repo: "git@github.com:acme/context-tree.git",
-      branch: null,
+      branch: "main",
+      provider: "github",
     }));
     const logger = { debug: vi.fn(), warn: vi.fn() };
 

@@ -206,7 +206,10 @@ function message(id: string, content: string): SessionMessage {
   return { id, chatId: "chat-kimi", senderId: "human-1", format: "text", content, metadata: {} };
 }
 
-function makeContext(events: SessionEvent[]): SessionContext {
+function makeContext(
+  events: SessionEvent[],
+  opts: { getAgentContextTreeConfig?: () => Promise<unknown> } = {},
+): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   return {
     agent: {
@@ -218,7 +221,11 @@ function makeContext(events: SessionEvent[]): SessionContext {
       delegateMention: null,
       metadata: {},
     },
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "https://first-tree.test",
+      sendMessage,
+      ...(opts.getAgentContextTreeConfig ? { getAgentContextTreeConfig: opts.getAgentContextTreeConfig } : {}),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-kimi",
     log: () => {},
     recordProviderActivity: () => {},
@@ -249,6 +256,7 @@ function makeHandler(
   };
   return createKimiCodeHandler({
     workspaceRoot,
+    agentName: "kimi-test-agent",
     runtimeProvider: "kimi-code",
     kimiKaosFactory: async () => fakeKaos,
     replayFence: makeFence(),
@@ -406,6 +414,7 @@ describe("Kimi Code handler", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -445,6 +454,7 @@ describe("Kimi Code handler", () => {
     const contextTreePath = join(workspaceRoot, "context-tree");
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       contextTreePath,
       contextTreeRepoUrl: "https://example.com/acme/context-tree.git",
@@ -518,6 +528,7 @@ describe("Kimi Code handler", () => {
     const token = makeToken();
 
     const turn = handler.start(message("m1", "retry safely"), makeContext([]), token);
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0));
     await vi.runAllTimersAsync();
     await turn;
 
@@ -547,6 +558,7 @@ describe("Kimi Code handler", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -1143,6 +1155,93 @@ describe("Kimi replay fence", () => {
 });
 
 describe("Kimi homeDir lifecycle", () => {
+  it.each([
+    "start",
+    "resume",
+  ] as const)("rejects a Context source change during harness replacement before native %s", async (operation) => {
+    const firstSession = new FakeSession("source-first", [successfulTurn("source-first")]);
+    const secondSession = new FakeSession("source-second", [successfulTurn("source-second")]);
+    let authoritativeRemote = false;
+    let factoryCalls = 0;
+    let nativeCreateCalls = 0;
+    let nativeResumeCalls = 0;
+    let markCloseEntered: (() => void) | undefined;
+    let releaseClose: (() => void) | undefined;
+    const closeEntered = new Promise<void>((resolve) => {
+      markCloseEntered = resolve;
+    });
+    const closeGate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    const payload = {
+      kind: "kimi-code" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [{ key: "KIMI_CODE_HOME", value: "/old/kimi" }],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const handler = createKimiCodeHandler({
+      workspaceRoot,
+      agentName: "kimi-test-agent",
+      runtimeProvider: "kimi-code",
+      agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
+      kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
+      kimiHarnessFactory: () => {
+        factoryCalls += 1;
+        const activeSession = factoryCalls === 1 ? firstSession : secondSession;
+        return {
+          createSession: async () => {
+            nativeCreateCalls += 1;
+            return activeSession;
+          },
+          resumeSession: async () => {
+            nativeResumeCalls += 1;
+            return activeSession;
+          },
+          close:
+            factoryCalls === 1
+              ? async () => {
+                  markCloseEntered?.();
+                  await closeGate;
+                }
+              : async () => {},
+        };
+      },
+    });
+    const contextOptions = {
+      getAgentContextTreeConfig: async () =>
+        authoritativeRemote
+          ? {
+              bindingState: "bound" as const,
+              repo: "https://github.com/acme/new-tree.git",
+              branch: "main",
+              provider: "github" as const,
+            }
+          : { bindingState: "invalid" as const, repo: null, branch: null, provider: null },
+    };
+
+    await handler.start(message("source-initial", "first"), makeContext([], contextOptions), makeToken());
+    await handler.suspend("test");
+    payload.env = [{ key: "KIMI_CODE_HOME", value: "/new/kimi" }];
+    const token = makeToken();
+    const transition =
+      operation === "start"
+        ? handler.start(message("source-next", "next"), makeContext([], contextOptions), token)
+        : handler.resume(message("source-next", "next"), "source-first", makeContext([], contextOptions), token);
+    await closeEntered;
+    authoritativeRemote = true;
+    releaseClose?.();
+
+    await expect(transition).rejects.toMatchObject({ name: "ContextSourceTransitionError" });
+    expect(nativeCreateCalls).toBe(1);
+    expect(nativeResumeCalls).toBe(0);
+    expect(token.completed).toEqual([]);
+    expect(token.retried).toEqual([]);
+    await handler.shutdown();
+  });
+
   it("normalizes trimmed KIMI_CODE_HOME and forwards it as harness homeDir", async () => {
     const harnessOptions: KimiHarnessOptions[] = [];
     const payload = {
@@ -1156,6 +1255,7 @@ describe("Kimi homeDir lifecycle", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -1188,6 +1288,7 @@ describe("Kimi homeDir lifecycle", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -1225,6 +1326,7 @@ describe("Kimi homeDir lifecycle", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -1268,6 +1370,7 @@ describe("Kimi homeDir lifecycle", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),
@@ -1312,6 +1415,7 @@ describe("Kimi homeDir lifecycle", () => {
     };
     const handler = createKimiCodeHandler({
       workspaceRoot,
+      agentName: "kimi-test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: { refresh: async () => ({ payload }), get: () => ({ payload }) },
       kimiKaosFactory: async () => ({ withCwd: vi.fn().mockReturnThis(), withEnv: vi.fn().mockReturnThis() }),

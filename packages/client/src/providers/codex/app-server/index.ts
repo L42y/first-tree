@@ -23,26 +23,26 @@ import type {
   AgentConfigCache,
   ContextTreeAttribution,
   ContextTreeGitWriteTracker,
-  PredeclaredSourceRepo,
   ProviderAttemptSettlement,
-  ReconciledTeamSkill,
 } from "../../../runtime/provider-support/index.js";
 import {
-  buildAgentBriefing,
+  assertContextSourceCurrent,
   buildBriefingUpdateNotice,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
+  isContextSourceTransitionError,
   isManagedSkillsUnsafeDiscoveryError,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  projectManagedWorkspace,
   readSessionBriefingFingerprint,
-  reconcileManagedSkillsForConfig,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
-  teamSkillBundleResolverFromSdk,
   toolFileRefsFromShellCommand,
-  writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../../runtime/provider-support/index.js";
 import { chunkAssistantText } from "../../handlers/assistant-text.js";
@@ -193,11 +193,15 @@ const CODEX_COMPACT_FAILURE_MESSAGE =
   "Codex failed to compact this thread before answering. Start a new thread or clear earlier history before retrying.";
 export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfig): AgentHandler => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   const clientFactory = readClientFactory(config.codexAppServerClientFactory) ?? defaultClientFactory;
   const resolveRuntimeBinary =
     readRuntimeBinaryResolver(config.codexRuntimeBinaryResolver) ?? resolveCodexRuntimeBinary;
@@ -210,7 +214,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   let currentModel = "";
   let currentReasoningEffort = "high";
   let activePayload: AgentRuntimeConfigPayload | null = null;
-  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   let serviceTierConfigurationFailure: string | null = null;
   let currentTurn: CurrentTurn | null = null;
   let currentTurnPromise: Promise<void> | null = null;
@@ -225,7 +228,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   let pendingInputGeneration = 0;
   let shutdownRequested = false;
   let pendingChatContextPrompt: string | null = null;
-  let sourceReposForPrompt: readonly PredeclaredSourceRepo[] = [];
   let latestThreadUsageTotal: TokenUsageBreakdown | null = null;
   let latestCurrentSessionUsageTurnId: string | null = null;
   let workspaceOnly = false;
@@ -376,19 +378,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     return cfg;
   }
 
-  function buildBriefing(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload, workspaceCwd: string): string {
-    return buildAgentBriefing({
-      identity: sessionCtx.agent,
-      payload,
-      workspacePath: workspaceCwd,
-      sourceRepos: sourceReposForPrompt,
-      contextTreePath,
-      contextTreeRepoUrl,
-      contextTreeBranch,
-      teamSkills: reconciledTeamSkills,
-    });
-  }
-
   async function resolvePayload(sessionCtx: SessionContext): Promise<{
     payload: AgentRuntimeConfigPayload;
     resolved: boolean;
@@ -430,15 +419,17 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     const prepared = await prepareManagedSession({
       sessionCtx,
       workspaceRoot,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: resolved,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
       beforeBriefing: async ({ workspace }) => {
         env = buildEnv(sessionCtx);
@@ -468,8 +459,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     });
     cwd = prepared.workspace;
     pendingChatContextPrompt = renderChatContextPrompt(prepared.chatContext);
-    sourceReposForPrompt = prepared.sourceRepos;
-    reconciledTeamSkills = prepared.teamSkills;
     currentModel = payload.model || "";
     currentReasoningEffort = payload.kind === "codex" ? payload.reasoningEffort : "high";
     return { payload, env, briefingFingerprint: computeBriefingFingerprint(prepared.briefing) };
@@ -546,10 +535,20 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     );
   }
 
-  async function startThread(payload: AgentRuntimeConfigPayload): Promise<string> {
+  async function startThread(payload: AgentRuntimeConfigPayload, sessionCtx: SessionContext): Promise<string> {
     const client = requireAppServer();
     let result: unknown;
     serviceTierConfigurationFailure = null;
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
     try {
       result = await client.request("thread/start", {
         ...threadParams(payload),
@@ -566,10 +565,24 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     return id;
   }
 
-  async function resumeThread(sessionId: string, payload: AgentRuntimeConfigPayload): Promise<void> {
+  async function resumeThread(
+    sessionId: string,
+    payload: AgentRuntimeConfigPayload,
+    sessionCtx: SessionContext,
+  ): Promise<void> {
     const client = requireAppServer();
     resetThreadUsageTracking(null);
     serviceTierConfigurationFailure = null;
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
+    });
     try {
       const result = await client.request("thread/resume", {
         threadId: sessionId,
@@ -590,7 +603,23 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     const recoveryMessage = staleRolloutRecoveryMessage(staleThreadId);
     sessionCtx.emitEvent({ kind: "error", payload: { source: "runtime", message: recoveryMessage } });
     sessionCtx.log(recoveryMessage);
-    const replacementThreadId = await startThread(payload);
+    try {
+      await assertContextSourceCurrent({
+        sessionCtx,
+        sourceAuthorityRoot: workspaceRoot,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+      });
+    } catch (sourceError) {
+      if (!isContextSourceTransitionError(sourceError)) throw sourceError;
+      sessionCtx.failSessionForRecovery?.("codex_app_server_context_source_changed", staleThreadId ?? undefined);
+      throw sourceError;
+    }
+    const replacementThreadId = await startThread(payload, sessionCtx);
     sessionCtx.replaceSessionId?.(replacementThreadId, "codex_stale_rollout_recovered");
     sessionCtx.emitEvent({
       kind: "error",
@@ -1110,7 +1139,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         turnStartAttempt = null;
         pendingChatContextPrompt = promptSnapshot;
         const staleThreadId = extractCodexStaleRolloutThreadId(err) ?? threadId;
-        await startFreshThreadAfterStaleRollout(activePayload, sessionCtx, staleThreadId);
+        try {
+          await startFreshThreadAfterStaleRollout(activePayload, sessionCtx, staleThreadId);
+        } catch (sourceError) {
+          if (!isContextSourceTransitionError(sourceError)) throw sourceError;
+          token.retry(messages, "codex_app_server_context_source_changed");
+          return false;
+        }
         return runTurnFromText(
           inputText,
           messages,
@@ -1704,20 +1739,29 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
-      reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(
-          cwd,
-          runtimeProvider,
-          PROVIDER_SKILL_ROOTS,
-          runtimeConfig,
-          sessionCtx.log,
-          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-        )
-      ).teamSkills;
-      const briefing = buildBriefing(sessionCtx, payload, cwd);
+      const projected = await projectManagedWorkspace({
+        sessionCtx,
+        workspace: cwd,
+        agentName,
+        runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
+        runtimeConfig,
+        payload,
+        existingPayload: activePayload ?? undefined,
+        payloadResolved: true,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+        reresolveSource: true,
+        markInitComplete: false,
+      });
+      const briefing = projected.briefing;
+      activePayload = payload;
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, threadId) === fingerprint) return { fingerprint, changed: false };
-      writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
       if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
@@ -1850,7 +1894,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         const { payload, env, briefingFingerprint } = await prepareSession(sessionCtx);
         activePayload = payload;
         await startAppServer(sessionCtx, env);
-        const id = await startThread(payload);
+        const id = await startThread(payload, sessionCtx);
         let input: string;
         try {
           input = await sessionCtx.formatInboundContent(message);
@@ -1899,7 +1943,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
         await startAppServer(sessionCtx, env);
         let effectiveSessionId = sessionId;
         try {
-          await resumeThread(sessionId, payload);
+          await resumeThread(sessionId, payload, sessionCtx);
         } catch (err) {
           if (!isCodexStaleRolloutError(err)) throw err;
           const staleThreadId = extractCodexStaleRolloutThreadId(err) ?? sessionId;

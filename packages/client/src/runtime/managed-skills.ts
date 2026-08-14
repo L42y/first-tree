@@ -32,12 +32,17 @@ import {
 } from "@first-tree/shared";
 import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
-import { CORE_SKILL_NAMES, resolveBundledSkillsRoot } from "./first-tree-skills/installer.js";
+import {
+  CORE_SKILL_NAMES,
+  localContextVariantSourcePath,
+  resolveBundledSkillsRoot,
+} from "./first-tree-skills/installer.js";
 import {
   clearManagedSkillsJournal,
   emptyManagedState,
   MANAGED_SKILLS_JOURNAL_REL,
   MANAGED_SKILLS_LOCK_REL,
+  MANAGED_STATE_REL,
   type ManagedSkillEntry,
   type ManagedSkillsJournal,
   type ManagedSkillsJournalPhase,
@@ -48,6 +53,7 @@ import {
   writeManagedState,
 } from "./managed-state.js";
 import { acquireWorkspaceFileLock, type WorkspaceFileLock } from "./workspace-file-lock.js";
+import { workspaceHasRemoteLatch } from "./workspace-manifest.js";
 
 const OWNERSHIP_MARKER = TEAM_SKILL_OWNERSHIP_MARKER;
 const LEGACY_RESOURCE_SKILLS_ROOT = ".first-tree/resources/skills";
@@ -124,6 +130,172 @@ export type ReconcileManagedSkillsResult = Readonly<{
   staleTeamSnapshot: boolean;
 }>;
 
+/**
+ * Read-only proof that an already-published Managed Skills projection is a
+ * complete, internally consistent v2 ledger. This is deliberately stricter
+ * than normal reconciliation recovery: callers use it before deciding that
+ * an unresolved Context source may safely keep running a previously
+ * published `none` projection, so it must never repair, quarantine, or write.
+ */
+export type VerifiedManagedSkillsProjection = Readonly<{
+  resourceConfigVersion: number;
+  teamSkills: readonly ReconciledTeamSkill[];
+}>;
+
+export async function verifyManagedSkillsProjectionForAdmission(options: {
+  workspace: string;
+  provider: RuntimeProvider;
+  providerSkillRoots: ProviderSkillRootProjection;
+}): Promise<VerifiedManagedSkillsProjection | null> {
+  const { workspace, provider, providerSkillRoots } = options;
+  const allowedRoots = allowedTargetRootsFromProjection(providerSkillRoots);
+
+  try {
+    const workspaceStat = await lstat(workspace);
+    if (!workspaceStat.isDirectory() || workspaceStat.isSymbolicLink()) return null;
+    if ((await realpath(workspace)) !== resolve(workspace)) return null;
+
+    const statePath = join(workspace, MANAGED_STATE_REL);
+    const stateStat = await lstat(statePath);
+    if (!stateStat.isFile() || stateStat.isSymbolicLink()) return null;
+    const stateResult = readManagedStateResult(workspace);
+    if (stateResult.kind !== "current") return null;
+
+    try {
+      await lstat(join(workspace, MANAGED_SKILLS_JOURNAL_REL));
+      return null;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+    }
+
+    const activeRoot = providerSkillRoot(provider, providerSkillRoots);
+    const activePrefix = `${activeRoot}/`;
+    const activeEntries = stateResult.state.skills.filter((entry) => entry.target.startsWith(activePrefix));
+    if (activeEntries.length !== stateResult.state.skills.length) return null;
+    const ledgerKeys = new Set<string>();
+    const ledgerTargets = new Set<string>();
+    const verifiedTeamSkills = new Map<ManagedSkillEntry["key"], ReconciledTeamSkill>();
+    for (const entry of stateResult.state.skills) {
+      if (ledgerKeys.has(entry.key) || ledgerTargets.has(entry.target)) return null;
+      ledgerKeys.add(entry.key);
+      ledgerTargets.add(entry.target);
+    }
+    for (const coreName of CORE_SKILL_NAMES) {
+      const expected = activeEntries.filter(
+        (entry) => entry.key === `core:${coreName}` && entry.target === `${activeRoot}/${coreName}`,
+      );
+      if (expected.length !== 1) return null;
+    }
+    const expectedCoreKeys = new Set(CORE_SKILL_NAMES.map((name) => `core:${name}`));
+    const ledgerCoreEntries = stateResult.state.skills.filter((entry) => entry.key.startsWith("core:"));
+    if (
+      ledgerCoreEntries.length !== expectedCoreKeys.size ||
+      ledgerCoreEntries.some((entry) => !expectedCoreKeys.has(entry.key))
+    ) {
+      return null;
+    }
+
+    for (const entry of stateResult.state.skills) {
+      const targetPath = resolveWorkspacePath(workspace, entry.target, "target", allowedRoots);
+      const targetStat = await lstat(targetPath);
+      if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) return null;
+
+      const markerPath = join(targetPath, OWNERSHIP_MARKER);
+      const markerStat = await lstat(markerPath);
+      if (!markerStat.isFile() || markerStat.isSymbolicLink()) return null;
+      const marker: unknown = JSON.parse(await readFile(markerPath, "utf8"));
+      if (
+        !isRecord(marker) ||
+        marker.schemaVersion !== 1 ||
+        marker.key !== entry.key ||
+        marker.revision !== entry.revision
+      ) {
+        return null;
+      }
+
+      const digest = await digestDirectory(targetPath);
+      if (digest !== entry.installedDigest) return null;
+      if (entry.key.startsWith("resource:")) {
+        const raw = await readFile(join(targetPath, "SKILL.md"));
+        const markdown = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+        const frontmatter = parseStrictTeamSkillMarkdown(markdown).frontmatter;
+        if (
+          typeof frontmatter.name !== "string" ||
+          frontmatter.name !== entry.effectiveName ||
+          typeof frontmatter.description !== "string" ||
+          frontmatter.description.trim().length === 0
+        ) {
+          return null;
+        }
+        const resourceKey = entry.key as `resource:${string}`;
+        verifiedTeamSkills.set(resourceKey, {
+          key: resourceKey,
+          name: frontmatter.name,
+          description: frontmatter.description,
+          target: entry.target,
+          revision: entry.revision,
+          installedDigest: entry.installedDigest,
+        });
+      }
+    }
+
+    for (const root of allowedRoots) {
+      let entries: string[];
+      try {
+        const rootPath = resolveWorkspacePath(workspace, root, "root", allowedRoots);
+        const rootStat = await lstat(rootPath);
+        if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) return null;
+        entries = await readdir(rootPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return null;
+      }
+      if (entries.some((name) => /^\..+\.ft-[a-f0-9]+\.(?:staging|backup)$/.test(name))) return null;
+      for (const name of entries) {
+        const target = `${root}/${name}`;
+        const ledgerEntry = stateResult.state.skills.find((entry) => entry.target === target);
+        const targetPath = join(workspace, ...target.split("/"));
+        const targetStat = await lstat(targetPath);
+        if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+          if (ledgerEntry || ALL_KNOWN_CORE_SKILL_NAMES.includes(name as (typeof ALL_KNOWN_CORE_SKILL_NAMES)[number]))
+            return null;
+          continue;
+        }
+        let hasOwnershipMarker = false;
+        try {
+          const markerStat = await lstat(join(targetPath, OWNERSHIP_MARKER));
+          if (!markerStat.isFile() || markerStat.isSymbolicLink()) return null;
+          hasOwnershipMarker = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+        }
+        if (
+          (hasOwnershipMarker ||
+            ALL_KNOWN_CORE_SKILL_NAMES.includes(name as (typeof ALL_KNOWN_CORE_SKILL_NAMES)[number])) &&
+          !ledgerEntry
+        ) {
+          return null;
+        }
+      }
+    }
+
+    const runtimeRoot = join(workspace, ".first-tree-workspace");
+    const runtimeEntries = await readdir(runtimeRoot);
+    if (runtimeEntries.some((name) => name.startsWith(MANAGED_SKILLS_QUARANTINE_PREFIX))) return null;
+    const resourceEntries = stateResult.state.skills.filter((entry) => entry.key.startsWith("resource:"));
+    if (verifiedTeamSkills.size !== resourceEntries.length) return null;
+    return {
+      resourceConfigVersion: stateResult.state.resourceConfigVersion,
+      teamSkills: resourceEntries
+        .filter((entry): entry is typeof entry & { key: `resource:${string}` } => entry.key.startsWith("resource:"))
+        .map((entry) => verifiedTeamSkills.get(entry.key))
+        .filter((entry): entry is ReconciledTeamSkill => entry !== undefined),
+    };
+  } catch {
+    return null;
+  }
+}
+
 export type ManagedSkillsCheckpoint =
   | "prepared"
   | "target_backed_up"
@@ -149,6 +321,12 @@ export type ReconcileManagedSkillsOptions = Readonly<{
   bundledSkillsRoot?: string;
   /** Resolves immutable Team Skill ZIP bytes through the authenticated SDK. */
   bundleResolver?: TeamSkillBundleResolver;
+  /**
+   * Trusted Context source for this reconcile. Only `local` projects the
+   * private Local Read/Write payloads; `remote` and `none` keep the public
+   * inventory.
+   */
+  contextSourceKind?: "remote" | "local" | "none";
   lockTimeoutMs?: number;
   /** Fault-injection seam used by deterministic crash-recovery tests. */
   testCrashAt?: ManagedSkillsCheckpoint;
@@ -220,6 +398,14 @@ export function isManagedSkillsUnsafeDiscoveryError(error: unknown): error is Ma
   return error instanceof ManagedSkillsUnsafeDiscoveryError;
 }
 
+function assertLocalSkillPublicationAuthorized(options: ReconcileManagedSkillsOptions): void {
+  if (options.contextSourceKind !== "local") return;
+  if (!workspaceHasRemoteLatch(options.workspace)) return;
+  throw new ManagedSkillsUnsafeDiscoveryError(
+    "Local Context Read/Write Skill variants cannot be published after a remote binding has been observed",
+  );
+}
+
 const processMutexTails = new Map<string, Promise<void>>();
 
 export function providerSkillRoot(provider: RuntimeProvider, projection: ProviderSkillRootProjection): string {
@@ -250,6 +436,8 @@ export async function reconcileManagedSkillsForConfig(
   config: AgentRuntimeConfig | null | undefined,
   log?: (message: string) => void,
   bundleResolver?: TeamSkillBundleResolver,
+  contextSourceKind: "remote" | "local" | "none" = "remote",
+  bundledSkillsRoot?: string,
 ): Promise<ReconcileManagedSkillsResult> {
   return reconcileManagedSkills({
     workspace,
@@ -258,6 +446,8 @@ export async function reconcileManagedSkillsForConfig(
     teamSnapshot: teamSkillSnapshotFromConfig(config),
     log,
     bundleResolver,
+    contextSourceKind,
+    bundledSkillsRoot,
   });
 }
 
@@ -277,6 +467,7 @@ export async function reconcileManagedSkills(
     try {
       assertManagedWorkspaceRootsSafe(options.workspace, allowedTargetRootsFromProjection(options.providerSkillRoots));
       lock = await acquireWorkspaceLock(options);
+      assertLocalSkillPublicationAuthorized(options);
       await recoverPendingJournal(options);
       let state = await loadOrMigrateManagedState(options);
 
@@ -320,6 +511,19 @@ export async function reconcileManagedSkills(
       }
 
       const desiredSkills = await buildDesiredSkills(options, state, authoritative);
+      if (options.contextSourceKind === "local") {
+        const missingLocal = desiredSkills.filter(
+          (skill) =>
+            (skill.key === "core:first-tree-read" || skill.key === "core:first-tree-write") && skill.validationError,
+        );
+        if (missingLocal.length > 0) {
+          throw new ManagedSkillsUnsafeDiscoveryError(
+            `Local Context Read/Write Skill variants are required before admission: ${missingLocal
+              .map((skill) => skill.key)
+              .join(", ")}`,
+          );
+        }
+      }
       const allocations = await allocateTargets(options, state, desiredSkills);
       const successfulTargets = new Map<ManagedSkillEntry["key"], string>();
       const desiredKeys = new Set<ManagedSkillEntry["key"]>(desiredSkills.map((skill) => skill.key));
@@ -384,6 +588,7 @@ export async function reconcileManagedSkills(
               }
             }
           }
+          assertLocalSkillPublicationAuthorized(options);
           const staged = await stageManagedSkill(options, allocated);
           state = await installStagedSkill(options, state, staged);
           mutable.installed.push(staged.entry.key);
@@ -440,6 +645,7 @@ export async function reconcileManagedSkills(
       }
 
       await (options.testBeforePublication ?? options.testBeforeTeamRows)?.();
+      assertLocalSkillPublicationAuthorized(options);
       const publication = await verifyLedgerTargetsForPublication(options, state);
       for (const invalidated of publication.invalidated) {
         mutable.installed = mutable.installed.filter((key) => key !== invalidated.key);
@@ -746,12 +952,15 @@ async function buildDesiredSkills(
     options.log?.(`Managed Core Skill bundle unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
   const desired: DesiredManagedSkill[] = [];
+  const localVariants = options.contextSourceKind === "local";
   for (const name of CORE_SKILL_NAMES) {
-    const sourcePath = join(bundledRoot, name);
+    const useLocalVariant = localVariants && (name === "first-tree-read" || name === "first-tree-write");
+    const sourcePath = useLocalVariant ? localContextVariantSourcePath(bundledRoot, name) : join(bundledRoot, name);
     let revision = "unavailable";
     let validationError: string | null = null;
     try {
-      revision = await readRequiredVersion(sourcePath, name);
+      const version = await readRequiredVersion(sourcePath, name);
+      revision = useLocalVariant ? `local-context:${version}` : version;
     } catch (error) {
       validationError = error instanceof Error ? error.message : String(error);
       options.log?.(`Managed Core Skill rejected (core:${name}): ${validationError}`);

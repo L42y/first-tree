@@ -302,7 +302,7 @@ function handlerContext(): SessionContext {
       delegateMention: null,
       metadata: {},
     },
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: { serverUrl: "https://first-tree.test", sendMessage } as unknown as SessionContext["sdk"],
     chatId: "chat-e2e",
     log: () => {},
     recordProviderActivity: () => {},
@@ -369,6 +369,7 @@ describe("patched SDK authorize boundary (real bundle + mock provider)", () => {
 
     const handler = createKimiCodeHandler({
       workspaceRoot: workDir,
+      agentName: "test-agent",
       runtimeProvider: "kimi-code",
       agentConfigCache: {
         refresh: async () => ({ payload: DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD }),

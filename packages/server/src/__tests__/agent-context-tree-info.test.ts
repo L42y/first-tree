@@ -15,6 +15,47 @@ import { createTestAdmin, seedClient, useTestApp } from "./helpers.js";
 describe("agent context tree info route", () => {
   const getApp = useTestApp();
 
+  it("returns the explicit four-key unbound wire shape from a real Agent request", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const clientId = await seedClient(app, admin.userId, admin.organizationId);
+    const runtimeAgent = await createAgent(app.db, {
+      name: `agent-ct-unbound-${crypto.randomUUID().slice(0, 8)}`,
+      type: "agent",
+      displayName: "Unbound Agent Context Tree Runtime",
+      managerId: admin.memberId,
+      organizationId: admin.organizationId,
+      clientId,
+    });
+    const runtimeSessionToken = await bindAgentRuntimeSession(app.db, runtimeAgent.uuid, clientId);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/agent/context-tree/info",
+      headers: {
+        authorization: `Bearer ${admin.accessToken}`,
+        "x-agent-id": runtimeAgent.uuid,
+        [AGENT_RUNTIME_SESSION_HEADER]: runtimeSessionToken,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      bindingState: "unbound",
+      provider: null,
+      repo: null,
+      branch: "main",
+      providerMatchesRepository: false,
+      gitlabConnection: null,
+      contextReviewer: {
+        enabled: false,
+        agentUuid: null,
+        managerHumanAgentId: null,
+        managerActiveAdmin: false,
+      },
+    });
+  });
+
   it("masks a historical private Reviewer UUID from other Team runtimes", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);
@@ -190,6 +231,7 @@ describe("agent context tree info route", () => {
     });
     expect(agentScoped.statusCode).toBe(200);
     expect(agentScoped.json()).toEqual({
+      bindingState: "bound",
       provider: "github",
       repo: "git@github.com:example/updated-side-context.git",
       branch: "updated-side",
@@ -220,6 +262,7 @@ describe("agent context tree info route", () => {
     });
     expect(invalidAgentScoped.statusCode).toBe(200);
     expect(invalidAgentScoped.json()).toEqual({
+      bindingState: "invalid",
       provider: null,
       repo: null,
       branch: null,

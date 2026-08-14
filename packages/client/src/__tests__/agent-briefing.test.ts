@@ -380,7 +380,7 @@ describe("buildAgentBriefing — Context Tree policy and skill routing", () => {
     expect(briefing).not.toContain("# Required Reading");
     const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
     expect(tree).toContain("## Context Tree Policy");
-    expect(tree).toContain("This briefing was generated without a bound tree");
+    expect(tree).toContain("This briefing was generated without a safe Context source");
     expect(tree).toContain("before any tree read/write, re-check the workspace binding");
   });
 
@@ -902,7 +902,7 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(cli).toContain("do not pre-confirm admin or ask who will bind");
     expect(cli).toContain("only if the command actually fails");
     expect(cli).not.toContain("confirmed org admin");
-    expect(tree).toContain("At briefing generation time this agent had no Context Tree bound");
+    expect(tree).toContain("At briefing generation time this agent had no safe Context source");
     expect(tree).toContain("Re-check the\nbinding if the user says a tree was created or bound during the session");
     expect(tree).toMatch(/surface that\s+gap to a human/);
     expect(tree).toContain("operator action");
@@ -913,6 +913,27 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).toContain("only after an actual command failure");
     expect(tree).not.toContain("confirmed org admin");
     expect(tree).not.toContain("first-tree-onboarding");
+  });
+
+  it("projects lockless Local Context playbooks without Git clone or Seed/Reviewer/Audit routes", () => {
+    const briefing = buildAgentBriefing(
+      makeOpts({
+        contextTreePath: `${AGENT_HOME}/local-context`,
+        contextSourceKind: "local",
+      }),
+    );
+    const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
+    const skills = topLevelSection(briefing, "# Skills (First Tree Managed)");
+    expect(tree).toContain("tree local resolve --ensure --intent read");
+    expect(tree).toContain("tree local resolve --ensure --intent write");
+    expect(tree).toContain("edit the live Tree directly");
+    expect(tree).not.toContain("git clone");
+    expect(tree).not.toContain("git -C");
+    expect(skills).toContain("`first-tree-read`");
+    expect(skills).toContain("`first-tree-write`");
+    expect(skills).not.toContain("`first-tree-seed`");
+    expect(skills).not.toContain("`context-tree-review`");
+    expect(skills).not.toContain("`context-tree-audit`");
   });
 
   it("shell-quotes interpolated tree clone command values", () => {
