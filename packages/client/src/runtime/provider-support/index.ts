@@ -14,6 +14,7 @@
  * - failure-policy — attempt/retry/terminal notice/redaction + binary-failure seam
  * - turn-prompt — chat-context prompt rendering + briefing fingerprint helpers
  * - turn-input — streaming input controller + attachment/image prompt helpers
+ * - attachment-availability — inbound attachment 404 classification + retention copy
  * - tree-tracking — Context Tree path/git attribution
  * - host-runtime — briefing rewrite, CLI binding, discovery roots, workspace lock
  *
@@ -22,6 +23,8 @@
  * implementations.
  */
 
+// attachment-availability
+export { ATTACHMENT_UNAVAILABLE_NOTE, isAttachmentGoneError } from "./attachment-availability.js";
 export type {
   ProviderAttemptOptions,
   ProviderAttemptSettlement,

@@ -30,7 +30,7 @@ describe("first-tree-welcome floor invariants", () => {
   it("implements periodic coverage for every concrete non-catch-all matrix row", () => {
     const periodicCases = cases.filter((evalCase) => evalCase.tier === "periodic");
 
-    expect(periodicCases).toHaveLength(13);
+    expect(periodicCases).toHaveLength(14);
     expect(periodicCases.every((evalCase) => evalCase.status === "implemented")).toBe(true);
     expect(periodicCases.some((evalCase) => hasTag(evalCase, "catch-all"))).toBe(false);
   });
@@ -108,9 +108,11 @@ describe("first-tree-welcome floor invariants", () => {
 
     expect(description).not.toContain("local project folder path");
     expect(skillMarkdown).toContain("Treat the opening message as the user's onboarding request.");
-    expect(skillMarkdown).toContain("local project folder path");
-    expect(skillMarkdown).toContain("Git repository URL");
-    expect(skillMarkdown).toContain('`first-tree chat ask <human> "<local-path-first request>"`');
+    expect(skillMarkdown).toContain('`first-tree chat ask <human> "<goal-first ask>"`');
+    expect(skillMarkdown).toContain("What's the first outcome you'd like from me?");
+    expect(skillMarkdown).toContain("open by asking for a repo, path, or URL");
+    expect(skillMarkdown).toContain("the only opening move is the goal-first ask");
+    expect(skillMarkdown).toContain("accept a plain directory on");
     expect(skillMarkdown).toContain("`gh auth login` or `glab auth login`");
     expect(skillMarkdown).not.toContain("First Tree sent it");
   });
@@ -154,6 +156,30 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).not.toContain("first choices as a multi-select ask");
   });
 
+  it("keeps forge access split between plain git reads and narrowly blocked forge operations", () => {
+    expect(skillMarkdown).toContain("Try the filesystem and plain `git` first for reading code");
+    expect(skillMarkdown).toContain("only for actual forge/API actions");
+    expect(skillMarkdown).toMatch(/A GitHub URL alone is never a reason to ask\s+for GitHub App installation/u);
+    expect(skillMarkdown).toContain("A repo access failure blocks only repo-dependent work");
+    expect(skillMarkdown).toMatch(/explain that exact gap and give the single narrowest\s+recovery/u);
+    expect(skillMarkdown).toContain("If First Tree says no repo is connected, that alone prompts nothing");
+  });
+
+  it("never turns a missing capability into proactive probing or setup talk", () => {
+    // Host-CLI probing is scoped to tasks that genuinely need repo/forge
+    // capability; a plain greeting or repo-free task triggers no probe.
+    expect(skillMarkdown).toMatch(
+      /current task genuinely needs the repo or forge\s+capability, first try to resolve it yourself/u,
+    );
+    expect(skillMarkdown).toMatch(/A plain greeting\s+or a repo-free task gets no host-CLI probe at all/u);
+    // The admin handoff is mentioned only when the concrete result genuinely
+    // depends on an admin-only capability; never proactively in a generic chat.
+    expect(skillMarkdown).toMatch(
+      /owns\/finishes\s+team setup only when the current concrete result genuinely\s+depends on an admin-only capability/u,
+    );
+    expect(skillMarkdown).toMatch(/generic no-repo\/no-Tree first chat says\s+nothing about setup or admins/u);
+  });
+
   it("keeps later fan-out separate from the first microtask", () => {
     expect(skillMarkdown).toContain("Only after the user explicitly asks for multiple larger tasks");
     expect(skillMarkdown).toMatch(/The first microtask never fans out/iu);
@@ -176,13 +202,23 @@ describe("first-tree-welcome floor invariants", () => {
     expect(skillMarkdown).not.toContain("A GitLab MR has no documented equivalent here");
   });
 
-  it("keeps the post-result bridge singular, contextual, and role-aware", () => {
+  it("keeps the post-result bridge singular, goal-tied, and free of any proactive tree offer", () => {
     expect(skillMarkdown).toContain("A first-result diff does not authorize a PR/MR");
-    expect(skillMarkdown).toContain("the PR/MR question takes priority as the only");
-    expect(skillMarkdown).toContain("the human is an **admin**");
-    expect(skillMarkdown).toContain("the team's Context Tree is still\n  **missing or empty**");
-    expect(skillMarkdown).toContain("a lasting decision that crosses module\n  boundaries");
-    expect(skillMarkdown).toContain("Never for an invitee");
+    // The proactive "build the Context Tree after value" offer is gone: a result
+    // — even one exposing a lasting cross-module decision — never earns a tree
+    // bridge, while an explicit user request still routes to the tree chat.
+    expect(skillMarkdown).toContain("never offer a Context Tree build or a separate tree chat from a result");
+    expect(skillMarkdown).toContain("Never offer to build the Context Tree from a result");
+    expect(skillMarkdown).toContain("A missing or empty tree is background state, not a bridge");
+    expect(skillMarkdown).not.toContain("After value lands");
+    expect(skillMarkdown).not.toContain("the qualified tree bridge");
+    expect(skillMarkdown).toContain("the user explicitly asks to build\nthe team's Context Tree");
+    expect(skillMarkdown).toMatch(/persist current decisions as\s+shared team context/u);
+    // Explicit Tree requests route by tree state, not unconditionally to Seed:
+    // persist/write on a populated tree is a source-backed first-tree-write.
+    expect(skillMarkdown).toContain("read the Context Tree → `first-tree-read`");
+    expect(skillMarkdown).toContain("first-tree-write` behind its\n  source gate");
+    expect(skillMarkdown).toContain("never Seed, which refuses non-empty trees");
     expect(skillMarkdown).toContain("Do not inspect or surface Automatic Review");
     expect(skillMarkdown).toContain(
       "does not automatically\n  register the session project as a durable Team repository",

@@ -11,7 +11,7 @@ import { SessionRegistry } from "../runtime/session-registry.js";
 
 /**
  * Production-shaped Reset regression: real `ClientConnection` frames on a real
- * socket, a real `AgentSlot` + `SessionManager` + inbox delivery coordinator,
+ * socket, a real `AgentSlot` + `SessionRuntime` + inbox delivery coordinator,
  * and a server model that owns the terminate/finalize handshake and the
  * inbox recover / redelivery / no-progress path.
  *

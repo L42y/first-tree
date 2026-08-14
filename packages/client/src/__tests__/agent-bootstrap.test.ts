@@ -155,4 +155,37 @@ describe("ensureAgentBootstrap", () => {
     expect(bootstrapMocks.bootstrapWorkspace).not.toHaveBeenCalled();
     expect(bootstrapMocks.writeAgentBriefing).not.toHaveBeenCalled();
   });
+
+  it("never writes a workspace manifest without a bound tree, even with resolved source repos", () => {
+    // No binding = no manifest: a resolved source set alone must not produce
+    // `.first-tree/workspace.json`. Covers both the normal bootstrap path and
+    // the sentinel fast path.
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      agentName: "slot-agent",
+      contextTreePath: null,
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+
+    const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
+    mkdirSync(dirname(sentinel), { recursive: true });
+    writeFileSync(sentinel, "1\n");
+    writeFileSync(join(workspace, ".first-tree-workspace", "identity.json"), JSON.stringify({ agentId: "agent-1" }));
+
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      agentName: "slot-agent",
+      contextTreePath: null,
+      briefing: "briefing\n",
+      currentSourceRepoNames: new Set(["source-repos/first-tree"]),
+    });
+
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+  });
 });

@@ -193,6 +193,117 @@ describe("formatInboundContent", () => {
     }
   });
 
+  it("renders transient Feishu thread context before the current message without treating it as canonical history", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-context",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "current question",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "available",
+        scope: "thread",
+        messages: [
+          {
+            externalMessageId: "om_1",
+            senderId: "ou_alice",
+            senderName: "Alice",
+            isBot: false,
+            content: "first detail",
+            sentAt: "2026-08-14T02:00:00.000Z",
+          },
+          {
+            externalMessageId: "om_2",
+            senderId: "ou_bot",
+            senderName: "Helper Bot",
+            isBot: true,
+            content: "earlier answer",
+            sentAt: "2026-08-14T02:01:00.000Z",
+          },
+        ],
+        truncated: true,
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain("[Earlier in Feishu thread — reference context, not complete history]");
+    expect(out.indexOf("first detail")).toBeLessThan(out.indexOf("earlier answer"));
+    expect(out).toContain("[Only the most recent bounded Feishu context is shown]");
+    expect(out.indexOf("[Now — message that woke you]")).toBeLessThan(out.indexOf("current question"));
+  });
+
+  it("renders a stable unavailable marker while preserving the current Feishu trigger", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-unavailable",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "still handle this",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "unavailable",
+        scope: "chat",
+        messages: [],
+        truncated: false,
+        reason: "provider_unavailable",
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    expect(out).toContain("[Earlier in Feishu chat — reference context, not complete history]");
+    expect(out).toContain("Earlier Feishu context could not be loaded");
+    expect(out).toContain("still handle this");
+  });
+
+  it("caps rendered Feishu reference context at 64 KiB while retaining the newest message", async () => {
+    const cache = createParticipantCache(
+      mkSdk(async () => participants),
+      "chat-1",
+      () => {},
+    );
+    const msg: SessionMessage = {
+      id: "m-feishu-oversized",
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "current question",
+      metadata: null,
+      feishuReferenceContext: {
+        state: "available",
+        scope: "thread",
+        messages: [
+          {
+            externalMessageId: "om_large",
+            senderId: "ou_alice",
+            senderName: "Alice",
+            isBot: false,
+            content: `newest ${"界".repeat(30_000)}`,
+            sentAt: "2026-08-14T02:00:00.000Z",
+          },
+        ],
+        truncated: false,
+      },
+    };
+
+    const out = await formatInboundContent(msg, cache);
+    const block = out.slice(0, out.indexOf("[Now — message that woke you]"));
+    expect(Buffer.byteLength(block, "utf8")).toBeLessThanOrEqual(64 * 1024);
+    expect(block).toContain("[From: Alice");
+    expect(block).toContain("newest");
+    expect(block).toContain("[Only the most recent bounded Feishu context is shown]");
+  });
+
   it("adds the trusted Ask agent reply contract without changing the visible question", async () => {
     setCliBinding({ binName: "first-tree-staging", packageName: "first-tree-staging" });
     const human = { ...mkParticipant("human-1", "liuchao", "Liu Chao"), type: "human" };
@@ -698,6 +809,85 @@ describe("formatInboundContent", () => {
     expect(out).toContain("Please inspect this file.");
     expect(out).toContain('File "missing.csv" not available on this device');
     expect(out).not.toContain("Path:");
+  });
+
+  it("renders an expired-or-unavailable note only for ids this delivery saw 404", async () => {
+    const sdk = mkSdk(async () => participants);
+    const cache = createParticipantCache(sdk, "chat-1", () => {});
+    const makeMsg = (id: string, unavailableAttachmentIds?: ReadonlySet<string>): SessionMessage => ({
+      id,
+      chatId: "chat-1",
+      senderId: "agent-a",
+      format: "text",
+      content: "Please inspect this file.",
+      metadata: {
+        attachments: [
+          {
+            attachmentId: "44444444-4444-4444-8444-444444444444",
+            kind: "document",
+            mimeType: "text/csv",
+            filename: "expired.csv",
+            size: 12,
+          },
+        ],
+      },
+      ...(unavailableAttachmentIds ? { unavailableAttachmentIds } : {}),
+    });
+
+    const marked = await formatInboundContent(makeMsg("m1", new Set(["44444444-4444-4444-8444-444444444444"])), cache);
+    expect(marked).toContain(
+      '[File "expired.csv" expired or unavailable — Cloud message attachments are retained for 14 days]',
+    );
+    expect(marked).not.toContain("not available on this device");
+
+    // A different message without the transient 404 verdict keeps the generic
+    // wording — availability state never leaks across messages.
+    const unmarked = await formatInboundContent(makeMsg("m2"), cache);
+    expect(unmarked).toContain('[File "expired.csv" not available on this device]');
+    expect(unmarked).not.toContain("retained for 14 days");
+  });
+
+  it("keeps the local path when the file is cached even if the id carries a 404 verdict", async () => {
+    const home = join(tmpdir(), `ft-agent-io-expired-hit-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    vi.stubEnv("FIRST_TREE_HOME", home);
+    try {
+      const attachmentPath = await writeAttachmentFile({
+        chatId: "chat-1",
+        attachmentId: "66666666-6666-4666-8666-666666666666",
+        filename: "cached.pdf",
+        base64: Buffer.from("pdf bytes").toString("base64"),
+      });
+      const sdk = mkSdk(async () => participants);
+      const cache = createParticipantCache(sdk, "chat-1", () => {});
+      const msg: SessionMessage = {
+        id: "m1",
+        chatId: "chat-1",
+        senderId: "agent-a",
+        format: "text",
+        content: "cached file",
+        metadata: {
+          attachments: [
+            {
+              attachmentId: "66666666-6666-4666-8666-666666666666",
+              kind: "file",
+              mimeType: "application/pdf",
+              filename: "cached.pdf",
+              size: 9,
+            },
+          ],
+        },
+        unavailableAttachmentIds: new Set(["66666666-6666-4666-8666-666666666666"]),
+      };
+
+      const out = await formatInboundContent(msg, cache);
+
+      expect(out).toContain(`Path: ${attachmentPath}`);
+      expect(out).not.toContain("retained for 14 days");
+      expect(out).not.toContain("not available");
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("ignores malformed attachment metadata when rendering inbound text", async () => {

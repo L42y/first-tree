@@ -114,7 +114,7 @@ describe("claude-code handler — turn_end on SDK-reported subtype error", () =>
     await new Promise((r) => setImmediate(r));
 
     // Success path was NOT taken; durable chat notice delivery is owned by
-    // SessionManager after it sees the structured provider event.
+    // SessionRuntime after it sees the structured provider event.
     expect(sendMessage).not.toHaveBeenCalled();
 
     // Error event carries the SDK-reported cause.

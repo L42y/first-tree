@@ -194,7 +194,7 @@ function makeFixtureSrc(): string {
   writeFileSync(join(src, "cloud", "index.ts"), `export const cloud = true;\n`);
   writeFileSync(join(src, "runtime", "index.ts"), `export const runtime = true;\n`);
   writeFileSync(join(src, "runtime", "contracts.ts"), `export type Contract = string;\n`);
-  writeFileSync(join(src, "runtime", "session-manager.ts"), `export class SessionManager {}\n`);
+  writeFileSync(join(src, "runtime", "session-runtime.ts"), `export class SessionRuntime {}\n`);
   writeFileSync(join(src, "runtime", "provider-support", "index.ts"), `export const support = true;\n`);
   writeFileSync(join(src, "providers", "index.ts"), `export const providers = true;\n`);
   return src;
@@ -289,7 +289,7 @@ describe("client directory production dependency direction", () => {
     const src = makeFixtureSrc();
     writeFileSync(
       join(src, "providers", "dyn.ts"),
-      `const target = "../runtime/session-manager.js";\nexport async function load() {\n  return import(target);\n}\n`,
+      `const target = "../runtime/session-runtime.js";\nexport async function load() {\n  return import(target);\n}\n`,
     );
     const violations = collectDirectoryBoundaryViolations(src);
     expect(violations.some((v) => v.includes("providers/dyn.ts") && v.includes("unclassifiable/non-literal"))).toBe(
@@ -301,11 +301,11 @@ describe("client directory production dependency direction", () => {
     const src = makeFixtureSrc();
     writeFileSync(
       join(src, "providers", "equals.ts"),
-      `import Session = require("../runtime/session-manager.js");\nexport { Session };\n`,
+      `import Session = require("../runtime/session-runtime.js");\nexport { Session };\n`,
     );
     writeFileSync(
       join(src, "providers", "cjs.ts"),
-      `import { createRequire } from "node:module";\nconst req = createRequire(import.meta.url);\nexport const Session = req("../runtime/session-manager.js");\n`,
+      `import { createRequire } from "node:module";\nconst req = createRequire(import.meta.url);\nexport const Session = req("../runtime/session-runtime.js");\n`,
     );
     const violations = collectDirectoryBoundaryViolations(src);
     expect(
@@ -320,11 +320,11 @@ describe("client directory production dependency direction", () => {
     ).toBe(true);
   });
 
-  it("negative fixture: provider-support/../session-manager traversal fails from resolved target", () => {
+  it("negative fixture: provider-support/../session-runtime traversal fails from resolved target", () => {
     const src = makeFixtureSrc();
     writeFileSync(
       join(src, "providers", "traverse.ts"),
-      `import { SessionManager } from "../runtime/provider-support/../session-manager.js";\nexport { SessionManager };\n`,
+      `import { SessionRuntime } from "../runtime/provider-support/../session-runtime.js";\nexport { SessionRuntime };\n`,
     );
     const violations = collectDirectoryBoundaryViolations(src);
     expect(
@@ -332,7 +332,7 @@ describe("client directory production dependency direction", () => {
         (v) =>
           v.includes("providers/traverse.ts") &&
           v.includes("runtime outside contracts/provider-support") &&
-          v.includes("resolved=runtime/session-manager.ts"),
+          v.includes("resolved=runtime/session-runtime.ts"),
       ),
     ).toBe(true);
   });
@@ -343,7 +343,7 @@ describe("client directory production dependency direction", () => {
     const source = `import * as nodeModule from "node:module";
 const { "createRequire": makeRequire } = nodeModule;
 const load = makeRequire(import.meta.url);
-export const Session = load("../runtime/session-manager.js");
+export const Session = load("../runtime/session-runtime.js");
 `;
     writeFileSync(join(src, "providers", "destructure-cjs.ts"), source);
 
@@ -352,7 +352,7 @@ export const Session = load("../runtime/session-manager.js");
     const refs = extractModuleReferences(source);
     expect(refs.hasUnresolvableModuleReference).toBe(false);
     expect(refs.literalSpecifiers).toContain("node:module");
-    expect(refs.literalSpecifiers).toContain("../runtime/session-manager.js");
+    expect(refs.literalSpecifiers).toContain("../runtime/session-runtime.js");
 
     const violations = collectDirectoryBoundaryViolations(src);
     expect(
@@ -360,7 +360,7 @@ export const Session = load("../runtime/session-manager.js");
         (v) =>
           v.includes("providers/destructure-cjs.ts") &&
           v.includes("runtime outside contracts/provider-support") &&
-          v.includes("resolved=runtime/session-manager.ts"),
+          v.includes("resolved=runtime/session-runtime.ts"),
       ),
     ).toBe(true);
   });

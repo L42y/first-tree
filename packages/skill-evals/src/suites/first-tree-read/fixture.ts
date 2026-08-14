@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -7,7 +8,7 @@ import { runFixtureVerify } from "../../core/fixture-verify.js";
 import type { EvalReporter } from "../../core/reporter.js";
 import { installRepoSkill, parseSkillDescription } from "../../core/skills/install.js";
 import type { CommandResult, RunPaths } from "../../core/types.js";
-import type { FirstTreeReadEvalCase, FixtureValidation, WorkspaceKind } from "./types.js";
+import type { FirstTreeReadEvalCase, FixtureValidation, TreeArtifactBaseline, WorkspaceKind } from "./types.js";
 
 const DOMAIN_NODE_TARGET_COUNT = 100;
 const NAVIGATION_NODE_MARKER = "evalNodeKind: navigation";
@@ -120,6 +121,16 @@ evaluations.
 `;
 }
 
+function unboundSourceReadmeMarkdown(): string {
+  return `# Source Repo
+
+Software source fixture for first-tree-read evals.
+
+Inbox delivery is deduplicated at the client boundary; the server only fans
+messages out.
+`;
+}
+
 function workspaceAgentsMarkdown(skillDescription: string, workspaceKind: WorkspaceKind): string {
   const standingContext =
     workspaceKind === "byo-context-tree"
@@ -156,15 +167,45 @@ function installFirstTreeReadSkill(repoRoot: string, workspacePath: string, work
   );
 }
 
+type BriefingTreeState = "bound" | "explicitly-unbound";
+
 function runtimeGeneratedWorkspaceAgentsMarkdown(
   workspacePath: string,
-  contextTreePath: string,
+  contextTreePath: string | null,
+  briefingTreeState: BriefingTreeState,
   descriptions: ReadonlyMap<string, string>,
 ): string {
   const sourceRepoPath = join(workspacePath, "source-repo");
   const skillRows = RUNTIME_SKILL_NAMES.map(
     (skill) => `| \`${skill}\` | ${descriptions.get(skill) ?? "Use when this skill applies."} |`,
   ).join("\n");
+  const contextTreeSection =
+    briefingTreeState === "explicitly-unbound"
+      ? `# Context Tree (First Tree Managed)
+
+This briefing was generated without a bound Context Tree — a supported state,
+not a gap to fix. Ordinary tasks proceed from the user's messages, chat
+context, pasted content, and locally available inputs with no prompt to bind
+or create a tree; only a request whose result genuinely needs a tree
+read/write/audit/setup names that specific capability impact.`
+      : `# Context Tree (First Tree Managed)
+
+The current Context Tree checkout is \`${contextTreePath ?? ""}\`.
+Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
+is \`main\`.
+
+## Context Tree Policy
+
+The tree records durable decisions, constraints, ownership, and cross-domain
+relationships; source repos record implementation detail. Default to normal
+tree content as current truth. Treat archive/supporting and member content as
+non-normal classes with narrower authority.
+
+Read task-scoped tree context before acting on software project questions:
+
+1. Read \`.agents/skills/first-tree-read/SKILL.md\`.
+2. Inspect \`first-tree tree tree --help\`.
+3. Use \`first-tree tree tree\` selectors before answering.`;
 
   return `<!-- ======================================================================
   first-tree:generated — this file is rebuilt by the First Tree runtime at
@@ -185,24 +226,7 @@ Your fixed working directory is \`${workspacePath}\`. The runtime marker
 
 - \`${sourceRepoPath}\` (fixture source repo)
 
-# Context Tree (First Tree Managed)
-
-The current Context Tree checkout is \`${contextTreePath}\`.
-Its binding repository is \`${EVAL_BINDING_REPOSITORY}\` and its binding branch
-is \`main\`.
-
-## Context Tree Policy
-
-The tree records durable decisions, constraints, ownership, and cross-domain
-relationships; source repos record implementation detail. Default to normal
-tree content as current truth. Treat archive/supporting and member content as
-non-normal classes with narrower authority.
-
-Read task-scoped tree context before acting on software project questions:
-
-1. Read \`.agents/skills/first-tree-read/SKILL.md\`.
-2. Inspect \`first-tree tree tree --help\`.
-3. Use \`first-tree tree tree\` selectors before answering.
+${contextTreeSection}
 
 # Skills (First Tree Managed)
 
@@ -224,7 +248,12 @@ function writeClaudeBriefingSymlink(workspacePath: string): void {
   symlinkSync("AGENTS.md", claudeMdPath);
 }
 
-function installRuntimeGeneratedBriefing(repoRoot: string, workspacePath: string, contextTreePath: string): void {
+function installRuntimeGeneratedBriefing(
+  repoRoot: string,
+  workspacePath: string,
+  contextTreePath: string | null,
+  briefingTreeState: BriefingTreeState,
+): void {
   const descriptions = new Map<string, string>();
   for (const skill of RUNTIME_SKILL_NAMES) {
     const skillMarkdown = installRepoSkill(repoRoot, workspacePath, skill);
@@ -236,7 +265,7 @@ function installRuntimeGeneratedBriefing(repoRoot: string, workspacePath: string
     `${JSON.stringify(
       {
         agentId: "first-tree-read-eval-agent",
-        contextTreePath,
+        contextTreePath: briefingTreeState === "bound" ? contextTreePath : null,
         delegateMention: null,
         displayName: "First Tree Read Eval Agent",
         metadata: {},
@@ -250,7 +279,7 @@ function installRuntimeGeneratedBriefing(repoRoot: string, workspacePath: string
   );
   writeText(
     join(workspacePath, "AGENTS.md"),
-    runtimeGeneratedWorkspaceAgentsMarkdown(workspacePath, contextTreePath, descriptions),
+    runtimeGeneratedWorkspaceAgentsMarkdown(workspacePath, contextTreePath, briefingTreeState, descriptions),
   );
   writeClaudeBriefingSymlink(workspacePath);
 }
@@ -431,14 +460,18 @@ function navigationParentPaths(nodes: readonly DomainNode[]): readonly string[] 
 
 function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind): string {
   const managedWorkspace = workspaceKind === "context-tree";
-  const contextTreePath = managedWorkspace
-    ? join(paths.workspacePath, "context-tree")
-    : join(paths.runRoot, "byo-context-tree-source");
+  // A previous binding was explicitly retired: nothing deletes the on-disk
+  // manifest or the clean Tree checkout, so both stay behind as inert residue.
+  const staleCheckout = workspaceKind === "explicitly-unbound-with-stale-checkout";
+  const contextTreePath =
+    managedWorkspace || staleCheckout
+      ? join(paths.workspacePath, "context-tree")
+      : join(paths.runRoot, "byo-context-tree-source");
   const sourceRepoPath = join(paths.workspacePath, "source-repo");
   mkdirSync(contextTreePath, { recursive: true });
   mkdirSync(sourceRepoPath, { recursive: true });
 
-  if (managedWorkspace) {
+  if (managedWorkspace || staleCheckout) {
     writeText(
       join(paths.workspacePath, ".first-tree", "workspace.json"),
       `${JSON.stringify({ sources: ["source-repo"], tree: "context-tree" }, null, 2)}\n`,
@@ -476,7 +509,9 @@ function writeContextTreeFixture(paths: RunPaths, workspaceKind: WorkspaceKind):
     writeText(join(contextTreePath, node.path, "NODE.md"), nodeMarkdown(node));
   }
 
-  initializeGitRepo(paths, contextTreePath, managedWorkspace);
+  // The retired checkout keeps the old binding remote, exactly as explicit
+  // unbind leaves it behind.
+  initializeGitRepo(paths, contextTreePath, managedWorkspace || staleCheckout);
   return contextTreePath;
 }
 
@@ -512,12 +547,30 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
   reporter.fixtureSetupStarted(evalCase.workspaceKind);
 
   const contextTreePath =
-    evalCase.workspaceKind === "blank" ? null : writeContextTreeFixture(paths, evalCase.workspaceKind);
+    evalCase.workspaceKind === "blank" || evalCase.workspaceKind === "unbound-managed"
+      ? null
+      : writeContextTreeFixture(paths, evalCase.workspaceKind);
+  if (
+    evalCase.workspaceKind === "unbound-managed" ||
+    evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
+  ) {
+    // A managed workspace with source repos but no bound Tree. For the plain
+    // unbound variant the real runtime writes no `.first-tree/workspace.json`,
+    // so the fixture writes no manifest either. The stale-checkout variant
+    // keeps the stale manifest and retired checkout that explicit unbind
+    // leaves behind as inert residue; the briefing must still say explicitly
+    // unbound.
+    const sourceRepoPath = join(paths.workspacePath, "source-repo");
+    mkdirSync(sourceRepoPath, { recursive: true });
+    writeText(join(sourceRepoPath, "README.md"), unboundSourceReadmeMarkdown());
+  }
   if (evalCase.briefingMode === "runtime-generated") {
-    if (contextTreePath === null) {
-      throw new Error("runtime-generated first-tree-read fixture requires a context-tree workspace.");
-    }
-    installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath);
+    const briefingTreeState: BriefingTreeState =
+      evalCase.workspaceKind === "unbound-managed" ||
+      evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout"
+        ? "explicitly-unbound"
+        : "bound";
+    installRuntimeGeneratedBriefing(paths.repoRoot, paths.workspacePath, contextTreePath, briefingTreeState);
   } else {
     installFirstTreeReadSkill(paths.repoRoot, paths.workspacePath, evalCase.workspaceKind);
   }
@@ -531,6 +584,60 @@ export function setupFixture(evalCase: FirstTreeReadEvalCase, paths: RunPaths, r
   reporter.fixtureSetupFinished(evalCase.workspaceKind, contextTreePath);
 
   return contextTreePath;
+}
+
+function fingerprintDirectory(root: string): string | null {
+  if (!existsSync(root)) return null;
+  const entries: string[] = [];
+  function walk(dir: string): void {
+    for (const entry of readdirSafe(dir)) {
+      if (entry === ".git" || entry === "node_modules") continue;
+      const child = join(dir, entry);
+      if (isDirectory(child)) {
+        walk(child);
+        continue;
+      }
+      const relPath = relative(root, child).replace(/\\/gu, "/");
+      const digest = createHash("sha256").update(readFileSync(child)).digest("hex");
+      entries.push(`${relPath}\0${digest}`);
+    }
+  }
+  walk(root);
+  return createHash("sha256").update(entries.sort().join("\n")).digest("hex");
+}
+
+/**
+ * Pre-run record of the workspace manifest and Tree checkout state. Snapshot
+ * it right after fixture setup; the post-run comparison treats whatever it
+ * captured as the legal baseline.
+ */
+export function snapshotTreeArtifactBaseline(workspacePath: string): TreeArtifactBaseline {
+  const manifestPath = join(workspacePath, ".first-tree", "workspace.json");
+  return {
+    checkoutFingerprint: fingerprintDirectory(join(workspacePath, "context-tree")),
+    manifestContent: existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : null,
+  };
+}
+
+/**
+ * PRE/POST artifact guard: a violation is a manifest or checkout NEWLY
+ * created by the run, or a pre-existing stale manifest/checkout MODIFIED
+ * (including deleted) by the run. A clean checkout left by a retired binding
+ * never trips this guard on its own.
+ */
+export function treeArtifactBaselineViolation(
+  baseline: TreeArtifactBaseline,
+  workspacePath: string,
+): { created: boolean; modified: boolean } {
+  const current = snapshotTreeArtifactBaseline(workspacePath);
+  return {
+    created:
+      (baseline.manifestContent === null && current.manifestContent !== null) ||
+      (baseline.checkoutFingerprint === null && current.checkoutFingerprint !== null),
+    modified:
+      (baseline.manifestContent !== null && current.manifestContent !== baseline.manifestContent) ||
+      (baseline.checkoutFingerprint !== null && current.checkoutFingerprint !== baseline.checkoutFingerprint),
+  };
 }
 
 function requiredTreeFiles(contextTreePath: string): readonly RequiredTreeFile[] {

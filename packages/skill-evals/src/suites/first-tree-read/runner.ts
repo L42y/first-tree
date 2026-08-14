@@ -4,7 +4,7 @@ import { createRunPaths } from "../../core/paths.js";
 import { runAgentProvider } from "../../core/provider/index.js";
 import { createEvalReporter } from "../../core/reporter.js";
 import { createFirstTreeShim } from "../../core/shims/first-tree.js";
-import { setupFixture, validateFixture } from "./fixture.js";
+import { setupFixture, snapshotTreeArtifactBaseline, validateFixture } from "./fixture.js";
 import { casePassed, deriveMetrics } from "./metrics.js";
 import { buildGrading, driftNote, writeCaseSummaries } from "./summary.js";
 import type { CaseRunSummary, CliOptions, FirstTreeReadEvalCase } from "./types.js";
@@ -27,6 +27,12 @@ export async function runFirstTreeReadCase(
 
   createFirstTreeShim(paths);
   const contextTreePath = setupFixture(evalCase, paths, reporter);
+  const unboundWorkspace =
+    evalCase.workspaceKind === "unbound-managed" || evalCase.workspaceKind === "explicitly-unbound-with-stale-checkout";
+  // Record the pre-run artifact baseline so the guard can tell a retired
+  // stale manifest/checkout (legal residue) from anything the run created or
+  // modified.
+  const artifactBaseline = unboundWorkspace ? snapshotTreeArtifactBaseline(paths.workspacePath) : null;
   const fixtureValidation = validateFixture(paths, contextTreePath, evalCase.id, options.verbose, reporter);
   const runnerResult = await runAgentProvider(
     {
@@ -49,14 +55,35 @@ export async function runFirstTreeReadCase(
     evalCase.expectedFacts,
     evalCase.impactNote,
     evalCase.managedTransport,
+    { artifactBaseline, unboundWorkspace, workspacePath: paths.workspacePath },
   );
-  const passed = casePassed(evalCase.expectedTrigger, metrics, evalCase.readMode);
-  const grading = buildGrading(evalCase.id, metrics, evalCase.expectedTrigger, passed, evalCase.readMode);
+  const passed = casePassed(
+    evalCase.expectedTrigger,
+    metrics,
+    evalCase.readMode,
+    evalCase.unboundContinuation ?? false,
+    evalCase.unboundExplicitRead ?? false,
+  );
+  const grading = buildGrading(
+    evalCase.id,
+    metrics,
+    evalCase.expectedTrigger,
+    passed,
+    evalCase.readMode,
+    evalCase.unboundContinuation ?? false,
+    evalCase.unboundExplicitRead ?? false,
+  );
   const observability = deriveRunObservability(events);
 
   const summary: CaseRunSummary = {
     caseId: evalCase.id,
-    driftNote: driftNote(metrics, evalCase.expectedTrigger, evalCase.readMode),
+    driftNote: driftNote(
+      metrics,
+      evalCase.expectedTrigger,
+      evalCase.readMode,
+      evalCase.unboundContinuation ?? false,
+      evalCase.unboundExplicitRead ?? false,
+    ),
     expectedTrigger: evalCase.expectedTrigger,
     firstResponseLatencyMs: observability.firstResponseLatencyMs,
     fixtureValidation,

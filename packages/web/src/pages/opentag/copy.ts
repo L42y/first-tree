@@ -1,4 +1,4 @@
-import type { OpenTagActiveStepId, OpenTagStepId } from "./flow.js";
+import type { OpenTagStepId } from "./flow.js";
 
 /**
  * Member-facing strings for the `/opentag` entry, kept out of the components
@@ -9,9 +9,8 @@ import type { OpenTagActiveStepId, OpenTagStepId } from "./flow.js";
  * "Computer" and "Feishu", never "client", "bind", "runtime provider".
  */
 export const OPENTAG_COPY = {
-  productName: "First Tree",
-  railLabel: "Guided handoff",
-  handoffLabel: "Your handoff",
+  productName: "OpenTag",
+  railLabel: "OpenTag setup progress",
   signOut: "Sign out",
 } as const;
 
@@ -20,24 +19,53 @@ export const OPENTAG_COPY = {
  * names every leg so the member can see how far Feishu still is.
  */
 export const OPENTAG_RAIL_COPY: Record<OpenTagStepId, { title: string; rail: string }> = {
-  "choose-agent": { title: "Create your Team Agent", rail: "Choose what it does" },
-  "set-up-runtime": { title: "Set up its Runtime", rail: "Give it a place to work" },
-  "connect-feishu": { title: "Add to Feishu", rail: "Connect one Bot" },
-  "use-in-feishu": { title: "Use in Feishu", rail: "Start working there" },
+  "choose-agent": { title: "Shape your agent", rail: "Focus & name" },
+  "set-up-runtime": { title: "Set up its runtime", rail: "Computer & coding agent" },
+  "connect-feishu": { title: "Add it to Feishu", rail: "Connect its bot" },
+  "use-in-feishu": { title: "Start working together", rail: "First task" },
 };
 
-/** Heading copy for the steps this entry actually renders. */
-export const OPENTAG_STEP_COPY: Record<OpenTagActiveStepId, { why: string; lead: string }> = {
+/** Heading copy for the steps this entry renders. */
+export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: string }> = {
   "choose-agent": {
-    why: "Start with the work your team already has.",
-    lead: "Pick the teammate you want in Feishu. Setting up where it runs comes after the Agent is clear.",
+    why: "What should your agent do?",
+    lead: "Choose the kind of work you want to delegate. We'll use the matching template as its starting setup, and you can refine it later.",
   },
   "set-up-runtime": {
-    why: "Give your Agent one place to work.",
-    lead: "Choose a connected Computer for this Agent. It stays on that Computer, and your other Computers are untouched.",
+    why: "Set up its runtime",
+    lead: "Connect or choose the computer where your agent will work. We'll use an available coding agent on it.",
   },
+  // Purely descriptive, because it is the one heading this step has. Directing
+  // an action here would keep asking for a confirmation that may already be
+  // done — or, when the Bot has failed, one the member cannot give at all.
   "connect-feishu": {
-    why: "Add one Bot for this Agent.",
-    lead: "First Tree prepares a dedicated Feishu Bot. You confirm it in Feishu — your Agent and its Computer stay set up while you do.",
+    why: "Add OpenTag to Feishu",
+    lead: "Connect its bot while your agent prepares the tools it needs to work in Feishu.",
+  },
+  // Says only what the Task itself establishes. The shell renders this heading
+  // for the whole step, including while the completion stamp is still in flight
+  // or has failed — so anything here that declared setup finished would sit
+  // directly above copy saying it could not be finished.
+  "use-in-feishu": {
+    why: "Send your first task",
+    lead: "Send the bot a private message, or @mention it in a group. This page updates automatically.",
   },
 };
+
+export const OPENTAG_FIRST_TASK_COMPLETE_COPY = {
+  why: "Your first task is ready",
+  lead: "Keep the conversation in Feishu. You can follow the work and its full history here.",
+} as const;
+
+/** Member-facing strings for the two things Step 3 is waiting on. */
+export const OPENTAG_FEISHU_READINESS_COPY = {
+  botLabel: "Feishu bot",
+  toolsLabel: "Agent tools",
+  recoveryTitle: "You are not stuck here.",
+  recoveryLead: "Try the automatic setup again, or finish later and repair it from this agent's settings.",
+  // When there is nothing left for the automatic setup to do, leaving is the
+  // only honest offer.
+  recoveryLeadFinishOnly: "Finish later and pick this up from this agent's settings whenever you're ready.",
+  tryAgain: "Try again",
+  finishLater: "Finish later",
+} as const;

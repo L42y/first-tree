@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
+import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { attachments } from "../db/schema/attachments.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
@@ -81,6 +82,7 @@ describe("Feishu inbound pipeline", () => {
         headers: { "content-type": "image/png", "content-length": String(bytes.length) },
       }),
       addReaction: vi.fn().mockResolvedValue("reaction-ack"),
+      readParentMessage: vi.fn().mockResolvedValue(null),
       attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     };
   }
@@ -110,7 +112,7 @@ describe("Feishu inbound pipeline", () => {
     expect(deps.downloadResource).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => {
       expect(deps.addReaction).toHaveBeenCalledOnce();
-      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "THUMBSUP" });
+      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "Get" });
     });
 
     const stored = await app.db.select().from(messages);
@@ -162,7 +164,7 @@ describe("Feishu inbound pipeline", () => {
 
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, ignoredInput, deps)).resolves.toEqual({
       state: "ignored",
-      reason: "group_without_mention",
+      reason: "group_without_trigger",
     });
     expect(deps.downloadResource).not.toHaveBeenCalled();
     expect(deps.addReaction).not.toHaveBeenCalled();
@@ -177,7 +179,7 @@ describe("Feishu inbound pipeline", () => {
     });
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, otherBotMention, deps)).resolves.toEqual({
       state: "ignored",
-      reason: "group_without_mention",
+      reason: "group_without_trigger",
     });
     expect(await app.db.select().from(messages)).toEqual([]);
 
@@ -212,6 +214,211 @@ describe("Feishu inbound pipeline", () => {
     expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(messages)).toEqual([]);
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
+  });
+
+  it("accepts a direct reply to this Bot and rejects unverifiable or foreign parents", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    const chatId = "oc_reply_group";
+    await ingestFeishuMessage(
+      app.db,
+      app.notifier,
+      binding,
+      normalizedMessage({
+        messageId: "om_activate_reply_chat",
+        chatId,
+        chatType: "group",
+        mentionedBot: true,
+        mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Bot", isBot: true }],
+      }),
+      deps,
+    );
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId,
+      sender: { id: "cli_bot", idType: "app_id", senderType: "app", openBotId: "ou_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_direct_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_bot_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toMatchObject({ state: "created" });
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId,
+      sender: { id: "cli_other", idType: "app_id", senderType: "app", openBotId: "ou_other_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_foreign_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_other_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+
+    deps.readParentMessage.mockResolvedValueOnce({
+      chatId: "oc_other_group",
+      sender: { id: "cli_bot", idType: "app_id", senderType: "app", openBotId: "ou_bot" },
+    });
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_cross_chat_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_cross_chat_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+
+    deps.readParentMessage.mockRejectedValueOnce(new Error("provider unavailable"));
+    await expect(
+      ingestFeishuMessage(
+        app.db,
+        app.notifier,
+        binding,
+        normalizedMessage({
+          messageId: "om_unverified_reply",
+          chatId,
+          chatType: "group",
+          replyToMessageId: "om_unknown_parent",
+        }),
+        deps,
+      ),
+    ).resolves.toEqual({ state: "ignored", reason: "group_without_trigger" });
+    expect(await app.db.select().from(messages)).toHaveLength(2);
+  });
+
+  it("keeps an activated thread awake without another mention or parent lookup", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    const chatId = "oc_thread_group";
+    const rootId = "om_thread_root";
+    const threadId = "omt_active_thread";
+    const first = normalizedMessage({
+      messageId: rootId,
+      chatId,
+      chatType: "group",
+      threadId,
+      mentionedBot: true,
+      mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Bot", isBot: true }],
+    });
+    await expect(ingestFeishuMessage(app.db, app.notifier, binding, first, deps)).resolves.toMatchObject({
+      state: "created",
+    });
+
+    const followUp = normalizedMessage({
+      messageId: "om_thread_follow_up",
+      chatId,
+      chatType: "group",
+      threadId,
+      rootId,
+      mentionedBot: false,
+    });
+    await expect(ingestFeishuMessage(app.db, app.notifier, binding, followUp, deps)).resolves.toMatchObject({
+      state: "created",
+    });
+    expect(deps.readParentMessage).not.toHaveBeenCalled();
+    expect(await app.db.select().from(messages)).toHaveLength(2);
+    expect(await app.db.select().from(imChatBindings)).toHaveLength(1);
+  });
+
+  it("keeps the existing Bot inbound path active while a permission update is awaiting confirmation", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const [updating] = await app.db
+      .update(imBotBindings)
+      .set({ status: "provisioning", registrationStateCipher: "encrypted-registration-state" })
+      .where(eq(imBotBindings.id, binding.id))
+      .returning();
+    if (!updating) throw new Error("binding update setup failed");
+
+    await expect(
+      ingestFeishuMessage(app.db, app.notifier, updating, normalizedMessage(), dependencies()),
+    ).resolves.toMatchObject({ state: "created" });
+  });
+
+  it("creates a new Task when a replacement Bot enters the same Feishu chat", async () => {
+    const app = getApp();
+    const { binding, testAgent } = await seedBinding();
+    const oldMessage = normalizedMessage({ chatId: "oc_reused_chat", messageId: "om_old_bot" });
+    const oldResult = await ingestFeishuMessage(app.db, app.notifier, binding, oldMessage, dependencies());
+    if (oldResult.state !== "created") throw new Error("old Bot did not create its Task");
+    const now = new Date();
+    await app.db.transaction(async (tx) => {
+      await tx
+        .update(imBotBindings)
+        .set({
+          status: "revoked",
+          appSecretCipher: null,
+          connectionStatus: "disconnected",
+          connectionOwnerInstanceId: null,
+          connectionLeaseExpiresAt: null,
+          revokedAt: now,
+        })
+        .where(eq(imBotBindings.id, binding.id));
+      await tx
+        .update(imChatBindings)
+        .set({ status: "detached", updatedAt: now })
+        .where(eq(imChatBindings.botBindingId, binding.id));
+    });
+    const [replacement] = await app.db
+      .insert(imBotBindings)
+      .values({
+        id: `binding-${crypto.randomUUID()}`,
+        organizationId: testAgent.organizationId,
+        agentId: testAgent.agent.uuid,
+        appId: `cli_${crypto.randomUUID()}`,
+        botOpenId: "ou_replacement_bot",
+        tenantKey: "tenant-a",
+        appSecretCipher: "encrypted-replacement-secret",
+        grantedScopes: ["im:message"],
+        status: "active",
+        connectionStatus: "connected",
+      })
+      .returning();
+    if (!replacement) throw new Error("replacement binding setup failed");
+
+    const replacementMessage = normalizedMessage({ chatId: "oc_reused_chat", messageId: "om_replacement_bot" });
+    const replacementResult = await ingestFeishuMessage(
+      app.db,
+      app.notifier,
+      replacement,
+      replacementMessage,
+      dependencies(),
+    );
+    expect(replacementResult).toMatchObject({ state: "created" });
+    if (replacementResult.state !== "created") throw new Error("replacement Bot did not create its Task");
+    expect(replacementResult.chatId).not.toBe(oldResult.chatId);
+    const mappings = await app.db.select().from(imChatBindings);
+    expect(mappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ botBindingId: binding.id, feishuChatId: "oc_reused_chat", status: "detached" }),
+        expect.objectContaining({ botBindingId: replacement.id, feishuChatId: "oc_reused_chat", status: "active" }),
+      ]),
+    );
   });
 
   it("keeps ingesting when the acknowledgement reaction fails", async () => {

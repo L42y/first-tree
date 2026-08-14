@@ -51,6 +51,37 @@ export type ContextTreeCoordinates = {
   branch: string | null;
 };
 
+export function contextSourceKey(source: ContextSource): string {
+  if (source.kind === "remote") return `remote\0${source.path}\0${source.repoUrl}\0${source.branch}`;
+  if (source.kind === "local") return `local\0${source.path}`;
+  return "none";
+}
+
+/**
+ * Immutable Context-source capture taken at a provider-admission boundary.
+ * The handler factory that wins the boundary builds from this exact snapshot;
+ * a later source change can never mutate an already-captured admission.
+ */
+export type ContextSourceAdmissionSnapshot = Readonly<{
+  source: ContextSource;
+  sourceKey: string;
+}>;
+
+export function captureContextSourceAdmission(source: ContextSource): ContextSourceAdmissionSnapshot {
+  const captured: ContextSource =
+    source.kind === "remote"
+      ? Object.freeze({
+          kind: "remote",
+          path: source.path,
+          repoUrl: source.repoUrl,
+          branch: source.branch,
+        })
+      : source.kind === "local"
+        ? Object.freeze({ kind: "local", path: source.path })
+        : Object.freeze({ kind: "none", reason: source.reason });
+  return Object.freeze({ source: captured, sourceKey: contextSourceKey(captured) });
+}
+
 export type RemoteGitAttribution = {
   contextTreePath: string | null;
   contextTreeRepoUrl: string | null;

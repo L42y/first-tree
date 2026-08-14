@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  *     failure so the chat timeline shows an ErrorRow
  *   - emit `kind:"turn_end"` with `status:"error"` so the turn-grouping filter
  *     closes out the dropped turn
- *   - flip `runtimeState` to `"error"` so the SessionManager reclaims the slot
+ *   - flip `runtimeState` to `"error"` so the SessionRuntime reclaims the slot
  *
  * Pre-fix this branch was silent like MAX_RETRIES — it only flipped the
  * runtime state and returned with no chat-visible signal.

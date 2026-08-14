@@ -74,6 +74,8 @@ type FileChipProps = Omit<VariantProps<typeof fileChipVariants>, "trailing"> & {
    * reserves right padding so the name never underlaps it.
    */
   trailing?: ReactNode;
+  /** Tooltip override; defaults to the filename. Used to explain an error state. */
+  title?: string;
   className?: string;
 };
 
@@ -84,13 +86,13 @@ type FileChipProps = Omit<VariantProps<typeof fileChipVariants>, "trailing"> & {
  * tokens follow packages/web/DESIGN.md (chip radius, size-4 lucide icon,
  * text-label, --sp-20/--sp-45 min/max width).
  */
-export function FileChip({ filename, state, trailing, className }: FileChipProps) {
+export function FileChip({ filename, state, trailing, title, className }: FileChipProps) {
   const Icon = fileIconForName(filename);
   const dot = filename.lastIndexOf(".");
   const head = dot > 0 ? filename.slice(0, dot) : filename;
   const tail = dot > 0 ? filename.slice(dot) : "";
   return (
-    <div className={cn(fileChipVariants({ state, trailing: trailing != null }), className)} title={filename}>
+    <div className={cn(fileChipVariants({ state, trailing: trailing != null }), className)} title={title ?? filename}>
       {state === "uploading" ? (
         <LoaderCircle className="size-4 shrink-0 text-muted-foreground motion-safe:animate-spin" aria-hidden />
       ) : (

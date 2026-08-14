@@ -86,6 +86,17 @@ and the adjacent campaign quickstart handoff.
   idempotency identity without a data migration. `scanFixRepoSlug` is not an
   accepted request field. An onboarding action still stamps completion like any
   onboarding kickoff.
+- The Agent's own Feishu CLI setup Task shares this column under the
+  `<humanAgent>:<agent>:<client|"unbound">:feishu-cli` key, so the automatic
+  OpenTag preparation, a reload, an extra tab, an explicit retry, and the
+  permanent Agent Detail repair action all converge on one private conversation;
+  moving the Agent to another Computer is a different machine to check and earns
+  its own Task. The surface token stays last because `clients.id` is
+  client-supplied text and this column is also read by suffix (below) — an
+  arbitrary trailing segment could impersonate another namespace. Reuse is not
+  inert: an explicit `retry` asks the Agent again inside that Task, because once
+  it has taken the original request re-arming it wakes nobody, while every
+  ensure-shaped call stays a no-op.
 - A successfully created campaign action chat is best-effort recorded on the
   caller's matching trial-chat metadata. This keeps conversion measurement
   inside the existing trial-export authorization boundary; ordinary action

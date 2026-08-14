@@ -198,6 +198,7 @@ const FETCH_TIMEOUT_MS = 15_000;
  * wall-clock at ≈ 16.5s instead of the global 15s × 3 ≈ 46.5s.
  */
 const STARTUP_FETCH_TIMEOUT_MS = 5_000;
+const FEISHU_REFERENCE_CONTEXT_TIMEOUT_MS = 6_500;
 
 /**
  * Per-call timeout override knob. Most endpoints stay on `FETCH_TIMEOUT_MS`
@@ -393,6 +394,17 @@ export class FirstTreeHubSDK {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  /** Load a bounded, server-authorized provider history window for one inbound Feishu trigger. */
+  async getFeishuReferenceContext(
+    firstTreeMessageId: string,
+  ): Promise<import("@first-tree/shared").FeishuReferenceContext> {
+    return this.requestJson(
+      `/api/v1/agent/feishu/messages/${encodeURIComponent(firstTreeMessageId)}/reference-context`,
+      undefined,
+      { timeoutMs: FEISHU_REFERENCE_CONTEXT_TIMEOUT_MS, retry: false, logRetries: false },
+    );
   }
 
   /**

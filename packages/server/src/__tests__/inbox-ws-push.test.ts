@@ -109,7 +109,7 @@ describe("inbox WS data-plane claim helpers", () => {
     expect(entry.status).toBe("delivered");
     expect(entry.message.id).toBe(messageId);
     // Same wire shape as the `pollInbox` path → client-side dispatch is
-    // identical (single SessionManager.dispatch call site).
+    // identical (single SessionRuntime.dispatch call site).
     expect(typeof entry.message.configVersion).toBe("number");
     expect(entry.message.recipientMode).toBeTruthy();
     // `inbox_entries.id` is bigserial (int8) — postgres-js returns int8 as a

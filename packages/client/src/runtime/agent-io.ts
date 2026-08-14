@@ -18,6 +18,7 @@ import { findAttachmentFile } from "./attachment-store.js";
 import { getCliBinding } from "./cli-binding.js";
 import type { AgentIdentity, SessionMessage } from "./handler.js";
 import { findImagePath } from "./image-store.js";
+import { ATTACHMENT_UNAVAILABLE_NOTE } from "./provider-support/attachment-availability.js";
 
 /**
  * Cross-handler plumbing for First Tree ↔ agent-runtime interaction.
@@ -384,6 +385,23 @@ function renderForLLM(message: SessionMessage): string {
 }
 
 /**
+ * Placeholder line for an attachment whose bytes never made it to disk. When
+ * this delivery's fetch pass saw a 404 the row is gone server-side and the
+ * note carries the retention window; anything else (transient failure, never
+ * attempted) keeps the generic device-availability wording.
+ */
+function unavailableAttachmentNote(
+  unavailableIds: ReadonlySet<string> | undefined,
+  attachmentId: string,
+  kind: "File" | "Image",
+  filename: string,
+): string {
+  return unavailableIds?.has(attachmentId)
+    ? `\n[${kind} "${filename}" expired or unavailable — ${ATTACHMENT_UNAVAILABLE_NOTE}]`
+    : `\n[${kind} "${filename}" not available on this device]`;
+}
+
+/**
  * A text note listing the on-disk paths of any document/file attachments on
  * this message (`metadata.attachments`, non-image), so a shell-capable agent
  * can open them. Returns null when there are none. Generic image refs are
@@ -401,14 +419,18 @@ export function renderDocumentAttachmentsForLLM(message: SessionMessage): string
   for (const ref of refs) {
     const path = findAttachmentFile(message.chatId, ref.attachmentId, ref.filename);
     lines.push(
-      path ? `\nFilename: ${ref.filename}\nPath: ${path}` : `\n[File "${ref.filename}" not available on this device]`,
+      path
+        ? `\nFilename: ${ref.filename}\nPath: ${path}`
+        : unavailableAttachmentNote(message.unavailableAttachmentIds, ref.attachmentId, "File", ref.filename),
     );
   }
   return lines.join("\n");
 }
 
 /** Render generic image attachments as local paths for the receiving agent. */
-export function renderImageAttachmentsForLLM(message: Pick<SessionMessage, "chatId" | "metadata">): string | null {
+export function renderImageAttachmentsForLLM(
+  message: Pick<SessionMessage, "chatId" | "metadata" | "unavailableAttachmentIds">,
+): string | null {
   const refs = imageAttachmentRefsFromMetadata(message.metadata ?? undefined);
   if (refs.length === 0) return null;
   const lines: string[] = [
@@ -419,7 +441,9 @@ export function renderImageAttachmentsForLLM(message: Pick<SessionMessage, "chat
   for (const ref of refs) {
     const path = findImagePath(message.chatId, ref.attachmentId, ref.mimeType);
     lines.push(
-      path ? `\nFilename: ${ref.filename}\nPath: ${path}` : `\n[Image "${ref.filename}" not available on this device]`,
+      path
+        ? `\nFilename: ${ref.filename}\nPath: ${path}`
+        : unavailableAttachmentNote(message.unavailableAttachmentIds, ref.attachmentId, "Image", ref.filename),
     );
   }
   return lines.join("\n");
@@ -446,7 +470,7 @@ function renderFileMessageForLLM(message: SessionMessage): string | null {
       lines.push(
         path
           ? `\nFilename: ${att.filename}\nPath: ${path}`
-          : `\n[Image "${att.filename}" not available on this device]`,
+          : unavailableAttachmentNote(message.unavailableAttachmentIds, att.imageId, "Image", att.filename),
       );
     }
     return lines.join("\n");
@@ -457,7 +481,12 @@ function renderFileMessageForLLM(message: SessionMessage): string | null {
     const path = findImagePath(message.chatId, content.imageId, content.mimeType);
     return path
       ? `An image was shared in this chat. Use the Read tool / shell to open it before responding.\n\nFilename: ${content.filename}\nPath: ${path}`
-      : `[Image "${content.filename}" not available on this device]`;
+      : unavailableAttachmentNote(
+          message.unavailableAttachmentIds,
+          content.imageId,
+          "Image",
+          content.filename,
+        ).trimStart();
   }
 
   return null;
@@ -478,6 +507,9 @@ export async function formatInboundContent(message: SessionMessage, participants
           ? renderImageAttachmentsForLLM({
               chatId: message.chatId,
               metadata: p.metadata,
+              // Preceding request images were fetched in this delivery's
+              // pass, so the current message carries their 404 verdicts.
+              unavailableAttachmentIds: message.unavailableAttachmentIds,
             })
           : null;
       if (imageNote) text = `${text}\n\n${imageNote}`;
@@ -485,14 +517,17 @@ export async function formatInboundContent(message: SessionMessage, participants
       if (feishuReference) text = `${text}\n\n${feishuReference}`;
       lines.push(`${formatMessageFromHeaderLine(p, ps)} ${text}`);
     }
-    lines.push("", "[Now — message that woke you]");
     header = `${lines.join("\n")}\n\n`;
   }
+
+  const feishuReferenceContext = renderFeishuReferenceContext(message);
+  const nowMarker = preceding.length > 0 || message.feishuReferenceContext ? "[Now — message that woke you]\n\n" : "";
 
   const currentHeader = await buildFromHeader(message, participants);
   const feishuReference = renderFeishuReferenceForLLM(message);
   const content = feishuReference ? `${rawContent}\n\n${feishuReference}` : rawContent;
-  const base = currentHeader ? `${header}${currentHeader}\n\n${content}` : `${header}${content}`;
+  const beforeCurrent = `${header}${feishuReferenceContext}${nowMarker}`;
+  const base = currentHeader ? `${beforeCurrent}${currentHeader}\n\n${content}` : `${beforeCurrent}${content}`;
 
   const askAgent = readAskAgentMessageMetadata(message.metadata);
   if (!askAgent) return base;
@@ -520,4 +555,64 @@ export async function formatInboundContent(message: SessionMessage, participants
   ].join("\n");
 
   return `${steering}\n\n${base}`;
+}
+
+function renderFeishuReferenceContext(message: SessionMessage): string {
+  const context = message.feishuReferenceContext;
+  if (!context) return "";
+  const scopeLabel = context.scope === "thread" ? "thread" : "chat";
+  const header = `[Earlier in Feishu ${scopeLabel} — reference context, not complete history]`;
+  const lines = [header];
+  if (context.state === "unavailable") {
+    lines.push("Earlier Feishu context could not be loaded");
+  } else {
+    const messageLines = context.messages.map((item) => {
+      const senderName = item.senderName.replace(/[\r\n]+/g, " ").trim() || "Feishu user";
+      return `[From: ${senderName} · sent=${item.sentAt}] ${item.content}`;
+    });
+    const fitted = fitFeishuReferenceLines(header, messageLines, context.truncated);
+    lines.push(...fitted.lines);
+    if (fitted.truncated) lines.push("[Only the most recent bounded Feishu context is shown]");
+  }
+  return `${lines.join("\n")}\n\n`;
+}
+
+const MAX_FEISHU_REFERENCE_CONTEXT_BYTES = 64 * 1024;
+const FEISHU_REFERENCE_TRUNCATED_LINE = "[Only the most recent bounded Feishu context is shown]";
+
+function fitFeishuReferenceLines(
+  header: string,
+  messageLines: string[],
+  providerTruncated: boolean,
+): { lines: string[]; truncated: boolean } {
+  const render = (lines: string[], truncated: boolean) =>
+    `${header}\n${lines.join("\n")}${lines.length > 0 ? "\n" : ""}${truncated ? `${FEISHU_REFERENCE_TRUNCATED_LINE}\n` : ""}\n`;
+  if (Buffer.byteLength(render(messageLines, providerTruncated), "utf8") <= MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+    return { lines: messageLines, truncated: providerTruncated };
+  }
+
+  const keptNewestFirst: string[] = [];
+  for (let index = messageLines.length - 1; index >= 0; index -= 1) {
+    const candidate = [messageLines[index] as string, ...keptNewestFirst];
+    if (Buffer.byteLength(render(candidate, true), "utf8") > MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+      if (keptNewestFirst.length === 0) {
+        const codePoints = Array.from(messageLines[index] as string);
+        let low = 0;
+        let high = codePoints.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          const shortened = `${codePoints.slice(0, middle).join("")}…`;
+          if (Buffer.byteLength(render([shortened], true), "utf8") <= MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+            low = middle;
+          } else {
+            high = middle - 1;
+          }
+        }
+        keptNewestFirst.push(`${codePoints.slice(0, low).join("")}…`);
+      }
+      break;
+    }
+    keptNewestFirst.unshift(messageLines[index] as string);
+  }
+  return { lines: keptNewestFirst, truncated: true };
 }

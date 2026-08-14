@@ -49,7 +49,7 @@ describe("discoverProviderModels — grok", () => {
     const catalog = await discoverProviderModels("grok", {
       resolveGrokBinary: () => ({
         ok: false as const,
-        error: "resolved grok failed validation: grok 0.1.0 is outside the supported range >=0.2.117 <0.3.0",
+        error: "resolved grok failed validation: grok 0.1.0 is outside the supported range >=0.2.117 <2.0.0",
         transient: false,
       }),
       fetchGrokModelMeta: async () => {

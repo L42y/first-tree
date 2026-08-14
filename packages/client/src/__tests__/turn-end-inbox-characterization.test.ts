@@ -1,5 +1,5 @@
 /**
- * Characterization: turn-end sink + SessionManager wiring contracts that must
+ * Characterization: turn-end sink + SessionRuntime wiring contracts that must
  * stay identical across the inert ResultSinkDeps cleanup.
  *
  * This file is intentionally dual-compatible with:
@@ -15,18 +15,18 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler, SessionContext } from "../runtime/handler.js";
 import { createResultSink } from "../runtime/result-sink.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
 type Trigger = { messageId: string; senderId: string };
 
-type SessionManagerInternals = {
-  currentTrigger: Map<string, Trigger>;
+type SessionRuntimeInternals = {
+  projection: { currentTrigger: Map<string, Trigger> };
 };
 
-function internals(sm: SessionManager): SessionManagerInternals {
-  return sm as unknown as SessionManagerInternals;
+function internals(sm: SessionRuntime): SessionRuntimeInternals {
+  return sm as unknown as SessionRuntimeInternals;
 }
 
 function dualCompatSinkDeps(opts: {
@@ -107,7 +107,7 @@ describe("characterization — ResultSink turn-end contract", () => {
   });
 });
 
-describe("characterization — SessionManager turn-end wiring", () => {
+describe("characterization — SessionRuntime turn-end wiring", () => {
   const sessionConfig = {
     idle_timeout: 300,
     max_sessions: 10,
@@ -176,7 +176,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
     } as unknown as FirstTreeHubSDK;
   }
 
-  const managers: SessionManager[] = [];
+  const managers: SessionRuntime[] = [];
   const roots: string[] = [];
 
   afterEach(async () => {
@@ -197,7 +197,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
     const config = runtimeConfig();
     const cache = makeCache(config);
     let captured: SessionContext | undefined;
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: sessionConfig,
       concurrency: 5,
       handlerFactory: () =>
@@ -232,7 +232,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
     const ctx = captured;
     if (!ctx) throw new Error("missing session context");
 
-    expect(internals(sm).currentTrigger.get("chat-char")).toEqual({
+    expect(internals(sm).projection.currentTrigger.get("chat-char")).toEqual({
       messageId: "msg-char-1",
       senderId: "sender-1",
     });
@@ -244,7 +244,7 @@ describe("characterization — SessionManager turn-end wiring", () => {
 
     await ctx.forwardResult("characterization final text");
 
-    expect(internals(sm).currentTrigger.has("chat-char")).toBe(false);
+    expect(internals(sm).projection.currentTrigger.has("chat-char")).toBe(false);
     expect(sdk.sendMessage).not.toHaveBeenCalled();
     expect(sdk.getChatDetail).not.toHaveBeenCalled();
     expect(cache.refreshIfNewer).not.toHaveBeenCalled();

@@ -588,7 +588,7 @@ describe("classifyProviderFailure", () => {
     const c = classifyProviderFailure(
       new Error(
         "Grok Build CLI at /home/op/.local/bin/grok is not a supported Grok Build version: `grok --version` " +
-          "reported 0.2.89 (supported range >=0.2.117 <0.3.0).",
+          "reported 2.0.0 (supported range >=0.2.117 <2.0.0).",
       ),
       { provider: "grok", scope: "provider_turn" },
     );

@@ -1,4 +1,4 @@
-import type { AgentVisibility, RuntimeProvider, SessionEvent } from "@first-tree/shared";
+import type { AgentVisibility, FeishuReferenceContext, RuntimeProvider, SessionEvent } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 /** Agent identity fields flowing from Server through the runtime pipeline. */
@@ -125,7 +125,7 @@ export type DeliveryToken = {
  * required durable runtime-failure notice could not be posted).
  *
  * `void` remains accepted on DeliveryToken.complete for legacy/test tokens;
- * production SessionManager tokens always return an explicit disposition.
+ * production SessionRuntime tokens always return an explicit disposition.
  */
 export type DeliveryCompletionDisposition = "settled" | "retry";
 // biome-ignore lint/suspicious/noConfusingVoidType: legacy/test tokens intentionally resolve void.
@@ -325,6 +325,21 @@ export type SessionMessage = {
    * See proposals/group-chat-ux-improvements §1 (silent inbox).
    */
   precedingMessages?: PrecedingMessage[];
+  /**
+   * Transient per-delivery runtime state: attachment ids whose eager fetch
+   * during this delivery answered 404 (row gone server-side). Set by the
+   * Runtime host's fetch pass on this message instance only — never
+   * persisted, never sent back to Cloud, never shared across messages.
+   * Renderers use it to say "expired or unavailable" instead of the generic
+   * device placeholder; a plain disk miss without a 404 keeps the generic
+   * wording.
+   */
+  unavailableAttachmentIds?: ReadonlySet<string>;
+  /**
+   * One-delivery provider history window. The runtime fetches it from the
+   * Agent-only endpoint and never sends it back to Cloud or canonical metadata.
+   */
+  feishuReferenceContext?: FeishuReferenceContext;
 };
 
 export type PrecedingMessage = {
@@ -365,7 +380,7 @@ export type AgentHandler = {
 
   /**
    * Idle timeout / operator pause. Close query, preserve state for resume.
-   * SessionManager sets `opts.settleProviderEntered` for manual operator suspend
+   * SessionRuntime sets `opts.settleProviderEntered` for manual operator suspend
    * so the contiguous provider-entered prefix can settle before ACK; idle yield
    * and forced preemption leave it unset.
    */
@@ -373,14 +388,14 @@ export type AgentHandler = {
 
   /**
    * Eviction or runtime shutdown. Same as suspend() unless
-   * `opts.settleProviderEntered` is set by SessionManager's full graceful drain.
+   * `opts.settleProviderEntered` is set by SessionRuntime's full graceful drain.
    */
   shutdown(reason?: string, opts?: HandlerShutdownOptions): Promise<void>;
 };
 
 /**
  * Options for {@link AgentHandler.suspend} / {@link AgentHandler.shutdown}.
- * The diagnostic `reason` string is not a custody contract — SessionManager sets
+ * The diagnostic `reason` string is not a custody contract — SessionRuntime sets
  * `settleProviderEntered` explicitly for full manager/client graceful drain and
  * for manual operator suspend. Route retirement / forced preemption leave it
  * unset so provider-entered work stays recoverable (ACK-none).

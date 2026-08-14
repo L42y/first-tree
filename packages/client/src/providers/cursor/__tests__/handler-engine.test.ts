@@ -333,7 +333,7 @@ describe("cursor handler — per-turn CLI transport", () => {
     const started = await handler.start(makeMessage("m1", "hi"), ctx, token);
     if (typeof started === "string") throw new Error("expected a start receipt");
     // Terminal credential failure: delivery consumed (durable-notice path is
-    // SessionManager's, keyed off the provider-retry event emitted below).
+    // SessionRuntime's, keyed off the provider-retry event emitted below).
     expect(token.completed).toMatchObject([{ status: "error", completion: "consumed" }]);
     expect(started.sessionId.startsWith(CURSOR_PENDING_SESSION_PREFIX)).toBe(true);
     // The structured provider-retry event that drives notice-before-ACK.

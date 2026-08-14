@@ -1,4 +1,4 @@
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { type FeishuBotBinding, hasCurrentFeishuRequiredScopes } from "@first-tree/shared";
 import { ExternalLink } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import type { ReactElement } from "react";
@@ -42,6 +42,7 @@ export function feishuBindingLabel(
   connectionStatus: FeishuBotBinding["connectionStatus"],
 ): string {
   if (status === "active" && connectionStatus === "connected") return "Connected";
+  if (status === "provisioning" && connectionStatus === "connected") return "Connected · waiting for confirmation";
   if (status === "provisioning") return "Waiting for confirmation";
   if (status === "error") return "Needs attention";
   return status;
@@ -53,7 +54,26 @@ export function feishuBindingLabel(
  * that promises "you can message it now" has to consult both fields.
  */
 export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
-  return binding.status === "active" && binding.connectionStatus === "connected";
+  return (
+    (binding.status === "active" || binding.status === "provisioning") &&
+    binding.connectionStatus === "connected" &&
+    binding.appId !== null &&
+    binding.botOpenId !== null
+  );
+}
+
+/**
+ * Whether the Agent's Feishu handoff is configured to carry work. Both halves
+ * have to hold: the Bot must receive messages and the CLI must be ready to
+ * answer them. Agent lifecycle is a separate caller-owned constraint.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  return (
+    !!binding &&
+    isFeishuBotReachable(binding) &&
+    hasCurrentFeishuRequiredScopes(binding.grantedScopes) &&
+    binding.cli.state === "ready"
+  );
 }
 
 /**
@@ -63,9 +83,10 @@ export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
 export function FeishuRegistrationQr({ registrationUrl }: { registrationUrl: string }): ReactElement {
   return (
     <div className="flex flex-col items-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4) 0" }}>
-      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu Bot registration QR code" />
+      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu bot registration QR code" />
       <div className="text-label text-center" style={{ color: "var(--fg-3)" }}>
-        Scan with Feishu and confirm creating the Bot. This page updates automatically.
+        Scan with Feishu, choose the existing Bot or create a new one, then confirm the requested permissions. This page
+        updates automatically.
       </div>
       <Button size="xs" variant="outline" asChild>
         <a href={registrationUrl} target="_blank" rel="noreferrer">

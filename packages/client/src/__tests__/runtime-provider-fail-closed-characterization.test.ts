@@ -1,6 +1,6 @@
 /**
- * Characterization for SessionManager.runtimeProvider resolution and the
- * provider-boundary guard's coverage of session-manager.ts.
+ * Characterization for SessionRuntime.runtimeProvider resolution and the
+ * provider-boundary guard's coverage of session-runtime.ts.
  *
  * Detects live implementation via `detectFailClosed()` so the same file:
  * - PASSes on PR base (documents silent Claude-era fallback + guard gap)
@@ -13,19 +13,19 @@ import type { RuntimeProvider } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler } from "../runtime/handler.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const sessionManagerSourcePath = join(here, "..", "runtime", "session-manager.ts");
+const sessionRuntimeSourcePath = join(here, "..", "runtime", "session-runtime.ts");
 const guardSourcePath = join(here, "provider-boundary-guard.test.ts");
 
-type SessionManagerInternals = {
+type SessionRuntimeInternals = {
   runtimeProvider(): RuntimeProvider;
 };
 
-function internals(sm: SessionManager): SessionManagerInternals {
-  return sm as unknown as SessionManagerInternals;
+function internals(sm: SessionRuntime): SessionRuntimeInternals {
+  return sm as unknown as SessionRuntimeInternals;
 }
 
 function handler(): AgentHandler {
@@ -48,14 +48,14 @@ function mockSdk(): FirstTreeHubSDK {
   } as unknown as FirstTreeHubSDK;
 }
 
-function makeManager(opts: { runtimeProvider?: unknown } = {}): SessionManager {
+function makeRuntime(opts: { runtimeProvider?: unknown } = {}): SessionRuntime {
   const handlerConfig: Record<string, unknown> = {
     workspaceRoot: "/tmp/runtime-provider-char",
   };
   if ("runtimeProvider" in opts) {
     handlerConfig.runtimeProvider = opts.runtimeProvider;
   }
-  return new SessionManager({
+  return new SessionRuntime({
     session: {
       idle_timeout: 300,
       max_sessions: 10,
@@ -64,7 +64,7 @@ function makeManager(opts: { runtimeProvider?: unknown } = {}): SessionManager {
     },
     concurrency: 5,
     handlerFactory: () => handler(),
-    handlerConfig: handlerConfig as ConstructorParameters<typeof SessionManager>[0]["handlerConfig"],
+    handlerConfig: handlerConfig as ConstructorParameters<typeof SessionRuntime>[0]["handlerConfig"],
     agentIdentity: {
       agentId: "agent-1",
       inboxId: "inbox-1",
@@ -80,21 +80,21 @@ function makeManager(opts: { runtimeProvider?: unknown } = {}): SessionManager {
   });
 }
 
-/** True once SessionManager no longer silently defaults a missing provider. */
+/** True once SessionRuntime no longer silently defaults a missing provider. */
 function detectFailClosed(): boolean {
-  const source = readFileSync(sessionManagerSourcePath, "utf8");
+  const source = readFileSync(sessionRuntimeSourcePath, "utf8");
   return !source.includes('return parsed.success ? parsed.data : "claude-code"');
 }
 
-describe("characterization — SessionManager.runtimeProvider", () => {
+describe("characterization — SessionRuntime.runtimeProvider", () => {
   it("returns the configured provider when it is a valid RuntimeProvider", async () => {
-    const sm = makeManager({ runtimeProvider: "codex" });
+    const sm = makeRuntime({ runtimeProvider: "codex" });
     expect(internals(sm).runtimeProvider()).toBe("codex");
     await sm.shutdown();
   });
 
   it("handles missing runtimeProvider according to the fail-closed contract", async () => {
-    const sm = makeManager({});
+    const sm = makeRuntime({});
     const failClosed = detectFailClosed();
     if (failClosed) {
       expect(() => internals(sm).runtimeProvider()).toThrow(/runtimeProvider/i);
@@ -106,7 +106,7 @@ describe("characterization — SessionManager.runtimeProvider", () => {
   });
 
   it("handles invalid runtimeProvider according to the fail-closed contract", async () => {
-    const sm = makeManager({ runtimeProvider: "not-a-provider" });
+    const sm = makeRuntime({ runtimeProvider: "not-a-provider" });
     const failClosed = detectFailClosed();
     if (failClosed) {
       expect(() => internals(sm).runtimeProvider()).toThrow(/runtimeProvider/i);
@@ -117,22 +117,22 @@ describe("characterization — SessionManager.runtimeProvider", () => {
   });
 });
 
-describe("characterization — provider-boundary guard covers SessionManager", () => {
-  it("lists runtime/session-manager.ts among guarded client files once fail-closed lands", () => {
+describe("characterization — provider-boundary guard covers SessionRuntime", () => {
+  it("lists runtime/session-runtime.ts among guarded client files once fail-closed lands", () => {
     const guardSource = readFileSync(guardSourcePath, "utf8");
     const failClosed = detectFailClosed();
     if (failClosed) {
-      expect(guardSource).toContain('"runtime/session-manager.ts"');
+      expect(guardSource).toContain('"runtime/session-runtime.ts"');
     } else {
-      // PRE-REFACTOR: SessionManager is still outside the guard (known gap).
-      expect(guardSource).not.toContain('"runtime/session-manager.ts"');
+      // PRE-REFACTOR: SessionRuntime is still outside the guard (known gap).
+      expect(guardSource).not.toContain('"runtime/session-runtime.ts"');
     }
   });
 
-  it("after fail-closed, session-manager.ts has no concrete provider string literals", () => {
+  it("after fail-closed, session-runtime.ts has no concrete provider string literals", () => {
     const failClosed = detectFailClosed();
     if (!failClosed) return;
-    const source = readFileSync(sessionManagerSourcePath, "utf8");
+    const source = readFileSync(sessionRuntimeSourcePath, "utf8");
     for (const id of ["claude-code", "claude-code-tui", "codex", "cursor", "grok", "kimi-code", "opencode", "pi"]) {
       expect(source.includes(`"${id}"`) || source.includes(`'${id}'`), `literal ${id}`).toBe(false);
     }

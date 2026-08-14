@@ -1091,7 +1091,7 @@ describe("Kimi replay fence", () => {
 
     expect(fakeSession.effectCount).toBe(0);
     // Terminal settlement goes through the provider-attempt pipeline: the
-    // provider.retry event is what SessionManager turns into the durable
+    // provider.retry event is what SessionRuntime turns into the durable
     // chat-visible runtime notice before the consumed ACK.
     expect(
       events.some(

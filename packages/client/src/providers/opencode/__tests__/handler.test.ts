@@ -22,7 +22,7 @@ import type { DeliveryToken, SessionContext, SessionMessage } from "../../../run
 import { ManagedSkillsUnsafeDiscoveryError, reconcileManagedSkillsForConfig } from "../../../runtime/managed-skills.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
-import { SessionManager } from "../../../runtime/session-manager.js";
+import { SessionRuntime } from "../../../runtime/session-runtime.js";
 import {
   buildOpenCodeConfigContent,
   buildOpenCodeTurnArgs,
@@ -1055,7 +1055,7 @@ describe("OpenCode V1 handler", () => {
     expect(sessionCtx.failSessionForRecovery).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps bounded retry custody across real SessionManager handler replacement", async () => {
+  it("keeps bounded retry custody across real SessionRuntime handler replacement", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-session-manager-retry-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
@@ -1080,7 +1080,7 @@ describe("OpenCode V1 handler", () => {
       })),
       listChatParticipants: vi.fn(async () => []),
     } as unknown as FirstTreeHubSDK;
-    const manager = new SessionManager({
+    const manager = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1184,7 +1184,7 @@ describe("OpenCode V1 handler", () => {
     await handler.shutdown();
   });
 
-  it("continues the same retry window after SessionManager preempts an unacked delivery delay", async () => {
+  it("continues the same retry window after SessionRuntime preempts an unacked delivery delay", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-retry-preempt-"));
     roots.push(root);
     let firstDelayStarted!: () => void;
@@ -1221,7 +1221,7 @@ describe("OpenCode V1 handler", () => {
       })),
       listChatParticipants: vi.fn(async () => []),
     } as unknown as FirstTreeHubSDK;
-    const manager = new SessionManager({
+    const manager = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,
@@ -1316,7 +1316,7 @@ describe("OpenCode V1 handler", () => {
     expect(openCodeProviderAttemptWindowSizeForTests()).toBe(1);
   });
 
-  it("retries durable failure notice through SessionManager recovery without re-entering the provider", async () => {
+  it("retries durable failure notice through SessionRuntime recovery without re-entering the provider", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-session-manager-notice-"));
     roots.push(root);
     const inputs: string[] = [];
@@ -1346,7 +1346,7 @@ describe("OpenCode V1 handler", () => {
       })),
       listChatParticipants: vi.fn(async () => []),
     } as unknown as FirstTreeHubSDK;
-    const manager = new SessionManager({
+    const manager = new SessionRuntime({
       session: {
         idle_timeout: 300,
         max_sessions: 10,

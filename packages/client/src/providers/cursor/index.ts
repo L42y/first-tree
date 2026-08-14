@@ -1137,7 +1137,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       return false;
     }
     // One immutable per-turn snapshot drives MCP projection, targeted
-    // approval, model, and env. SessionManager refreshes the cache before
+    // approval, model, and env. SessionRuntime refreshes the cache before
     // dispatch, so an active chat converges on its very next turn even when a
     // projection transition must wait for older live turns to drain.
     const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
@@ -1731,7 +1731,7 @@ export const createCursorHandler: HandlerFactory = (config) => {
       if (!providerSessionId) {
         // First turn settled (e.g. auth/quota terminal consumed) before the
         // stream ever confirmed a provider id. Return a runtime-local
-        // placeholder so SessionManager does not re-process the already
+        // placeholder so SessionRuntime does not re-process the already
         // settled delivery; the next confirmed id upgrades it atomically via
         // replaceSessionId.
         pendingSyntheticId = `${CURSOR_PENDING_SESSION_PREFIX}${randomUUID()}`;

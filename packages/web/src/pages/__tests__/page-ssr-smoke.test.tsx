@@ -959,11 +959,11 @@ describe("page SSR smoke coverage", () => {
     const { OpenTagPage } = await import("../opentag/opentag-page.js");
 
     expect(renderPage(<LandingPage />)).toContain("AI-native teams");
-    // OpenTag's first frame is the Agent choice: no Team step, and the guided
-    // path is visible from the start.
+    // OpenTag's first frame starts the approved four-step setup path.
     const opentag = renderPage(<OpenTagPage />, "/opentag");
-    expect(opentag).toContain("Create your Team Agent");
-    expect(opentag).toContain("Guided handoff");
+    expect(opentag).toContain("Step 1 of 4 · Create agent");
+    expect(opentag).toContain("What should your agent do?");
+    expect(opentag).toContain("OpenTag");
     // ClientsPage / SettingsComputersPage no longer render their own title —
     // the Settings layout owns the single page heading (see settings.tsx), so
     // assert on stable body copy instead of the moved title.

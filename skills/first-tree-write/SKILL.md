@@ -1,6 +1,6 @@
 ---
 name: first-tree-write
-version: 0.16.2
+version: 0.16.7
 cliCompat:
   first-tree: ">=0.5.16 <0.6.0"
 description: Source-driven Context Tree write workflow for managed and BYO consumers. BYO always requires the exact SCOPE-routed read snapshot and a new user confirmation of the precise Team/source/targets/mutation plan before any Tree mutation. If no source artifact is available, there is no write task.
@@ -16,6 +16,37 @@ source-backed write.
 Use `first-tree-read` for task-scoped tree reads before acting, except when the
 source is a current-session Audit finding whose exact snapshot context is
 already loaded. Use this skill only for source artifact -> tree edit work.
+
+## Unbound or broken Tree binding
+
+Evaluate this gate before the Source Gate below. When the trusted briefing
+reports no usable binding, the response is only the binding gap this section
+defines — the Source Gate's stop-and-ask for a source artifact never applies,
+because there is no write task to source.
+
+A missing Context Tree removes only the operations that depend on it. Nothing
+in this skill may prompt the user to bind, create, or connect a Tree merely
+because one is absent.
+
+- **Explicitly unbound:** when the trusted managed briefing explicitly states
+  there is no bound Tree, no Tree write is possible and there is no write
+  task. Continue the underlying work from the source artifact and locally
+  available inputs without Tree operations. A leftover
+  `.first-tree/workspace.json` manifest or `context-tree/` checkout from a
+  previously bound session may still be on disk — it is inert residue, and
+  this gate precedes any disk discovery: never read, trust, or recover from
+  it. If the user explicitly asked for a Tree write, state only that this
+  Tree write cannot be completed because no Tree is bound; do not expand the
+  absence into bind/create guidance. An explicit first-time Tree creation
+  request routes to `first-tree-seed`, not this skill.
+- **Declared but broken:** "broken" means the binding metadata, resolved
+  path, or upstream identity is malformed or inconsistent — in that case
+  keep failing closed for Tree operations — never guess a Tree. Report
+  the binding gap;
+  the broken binding blocks only the Tree write, never unrelated work.
+  A fully declared binding whose local checkout simply does not exist
+  yet is not broken: materialize it per Tree Location before drafting
+  and continue.
 
 ## Source Gate
 
@@ -40,8 +71,12 @@ remains intentionally broader than the generic automatic route.
 
 If no concrete source artifact exists, stop and ask for one. Do not invent
 ad-hoc tree edits from memory or from a broad request like "update the tree".
-When the source repo or issue lives on GitHub or GitLab, use its matching CLI
-(`gh` or `glab`) for that source artifact. Before any tree push or review
+When the source repo or issue lives on GitHub or GitLab, read local code,
+history, and existing files from the filesystem and plain `git` first; use
+its matching CLI (`gh` or `glab`) only for forge reads the filesystem cannot
+answer — PR/MRs, issues, review comments, provider metadata — and for publish
+actions. A missing or unauthenticated CLI blocks only that forge step; source
+reading and local drafting continue without it. Before any tree push or review
 request, detect the Context Tree forge from its own `origin`; never infer it
 from the source.
 

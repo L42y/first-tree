@@ -10,6 +10,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const authMock = vi.hoisted(() => ({
   value: {
     meLoaded: true,
+    role: "admin" as "admin" | "member" | null,
     onboardingStep: "completed" as "connect" | "create_agent" | "completed" | null,
     onboardingDismissedAt: null as string | null,
     onboardingCompletedAt: "2026-05-28T00:00:00.000Z" as string | null,
@@ -236,6 +237,7 @@ beforeEach(() => {
   viewportMock.value = "xl";
   authMock.value = {
     meLoaded: true,
+    role: "admin",
     onboardingStep: "completed",
     onboardingDismissedAt: null,
     onboardingCompletedAt: "2026-05-28T00:00:00.000Z",
@@ -396,6 +398,7 @@ describe("WorkspacePage DOM behavior", () => {
     const { WorkspacePage } = await import("../index.js");
     authMock.value = {
       meLoaded: true,
+      role: "admin",
       onboardingStep: "connect",
       onboardingDismissedAt: null,
       onboardingCompletedAt: null,
@@ -409,11 +412,51 @@ describe("WorkspacePage DOM behavior", () => {
 
     authMock.value = {
       meLoaded: true,
+      role: "admin",
       onboardingStep: "completed",
       onboardingDismissedAt: null,
       onboardingCompletedAt: "2026-05-28T00:00:00.000Z",
       currentOrgHasUsableAgent: true,
       currentOrgHasPersonalAgent: true,
     };
+  });
+
+  it("keeps a confirmed member's bare root and direct chat links in the complete Workspace", async () => {
+    const { WorkspacePage } = await import("../index.js");
+    authMock.value = {
+      ...authMock.value,
+      role: "member",
+      currentOrgHasPersonalAgent: false,
+      onboardingCompletedAt: null,
+    };
+
+    const bare = await renderDom("/", <WorkspacePage />);
+    expect(bare.container.querySelector('[data-testid="location"]')?.textContent).toBe("/");
+    expect(bare.container.querySelector('[data-testid="conversation-list"]')).toBeTruthy();
+    expect(bare.container.textContent).toContain("center:none:wide:no-with");
+    await click(buttonByText(bare.container, "New chat"));
+    expect(bare.container.querySelector('[data-testid="location"]')?.textContent).toBe("/?c=draft");
+    await act(async () => bare.root.unmount());
+
+    const deepLink = await renderDom("/?c=chat-1", <WorkspacePage />);
+    expect(deepLink.container.querySelector('[data-testid="conversation-list"]')).toBeTruthy();
+    expect(deepLink.container.textContent).toContain("center:chat-1");
+    await act(async () => deepLink.root.unmount());
+  });
+
+  it("does not treat an unresolved role as a Team Member", async () => {
+    const { WorkspacePage } = await import("../index.js");
+    authMock.value = {
+      ...authMock.value,
+      role: null,
+      onboardingStep: "connect",
+      onboardingCompletedAt: null,
+      currentOrgHasPersonalAgent: false,
+    };
+
+    const unresolved = await renderDom("/", <WorkspacePage />);
+
+    expect(unresolved.container.textContent).toContain("Onboarding route");
+    await act(async () => unresolved.root.unmount());
   });
 });

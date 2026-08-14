@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -38,6 +38,7 @@ function context(overrides: Partial<AgentDetailContext> = {}): AgentDetailContex
       displayName: "Agent A",
       type: "agent",
       visibility: "organization",
+      status: "active",
     } as AgentDetailContext["agent"],
     isHuman: false,
     canManageAgent: true,
@@ -57,7 +58,7 @@ function binding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
     tenantKey: "tenant-a",
     status: "active",
     connectionStatus: "connected",
-    grantedScopes: ["im:message"],
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     registrationUrl: null,
     registrationExpiresAt: null,
     lastConnectedAt: "2026-08-12T00:00:00.000Z",
@@ -76,7 +77,7 @@ async function flush(): Promise<void> {
   });
 }
 
-async function renderSection(props: { onOpenProfileEdit?: () => void } = {}): Promise<HTMLElement> {
+async function renderSection(props: { onOpenProfile?: () => void } = {}): Promise<HTMLElement> {
   const { FeishuSection } = await import("../feishu-section.js");
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -130,13 +131,14 @@ afterEach(async () => {
 describe("Feishu Agent Detail section", () => {
   it("starts the QR registration from the Agent Detail surface", async () => {
     const container = await renderSection();
-    expect(container.textContent).toContain("No Feishu Bot is connected");
+    expect(container.textContent).toContain("Not connected");
+    expect(container.textContent).toContain("Teammates can't reach this Agent in Feishu yet");
     await click(buttonByText(container, "Connect Bot"));
     expect(apiMocks.startAgentFeishuRegistration).toHaveBeenCalledWith("agent-a", "Agent A · First Tree");
   });
 
   it("explains the visibility requirement before a private Agent can connect", async () => {
-    const onOpenProfileEdit = vi.fn();
+    const onOpenProfile = vi.fn();
     const privateContext = context();
     contextMock.value = context({
       agent: {
@@ -144,13 +146,13 @@ describe("Feishu Agent Detail section", () => {
         visibility: "private",
       } as AgentDetailContext["agent"],
     });
-    const container = await renderSection({ onOpenProfileEdit });
+    const container = await renderSection({ onOpenProfile });
 
     expect(container.textContent).toContain("Organization visibility is required");
     expect(container.textContent).not.toContain("One Bot and Feishu chat map");
     expect(buttonByText(container, "Connect Bot")?.disabled).toBe(true);
-    await click(buttonByText(container, "Change visibility"));
-    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    await click(buttonByText(container, "Manage in Profile"));
+    expect(onOpenProfile).toHaveBeenCalledOnce();
     expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
   });
 
@@ -166,10 +168,71 @@ describe("Feishu Agent Detail section", () => {
     expect(container.textContent).toContain("Agent A · First Tree");
     expect(container.textContent).toContain("App ID: cli_app");
     expect(container.querySelector('img[src="https://example.com/bot.png"]')).not.toBeNull();
+    await click(buttonByText(container, "Update permissions"));
+    expect(apiMocks.startAgentFeishuRegistration).toHaveBeenCalledWith("agent-a", "Agent A · First Tree");
+  });
+
+  it("only reports Ready when both the Bot is reachable and the CLI is ready", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" } }),
+    });
+    const ready = await renderSection();
+    expect(ready.querySelector('[data-channel-state="ready"]')).not.toBeNull();
+    expect(ready.textContent).toContain("Ready for Feishu tasks");
+
+    await act(async () => roots.pop()?.unmount());
+    document.body.innerHTML = "";
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "missing", version: null, clientId: "client-a" } }),
+    });
+    const incomplete = await renderSection();
+    expect(incomplete.querySelector('[data-channel-state="setup-incomplete"]')).not.toBeNull();
+    expect(incomplete.textContent).toContain("The Bot is reachable. Finish the Agent setup");
+  });
+
+  it("keeps the existing Bot online while clearly requiring a permission update", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({
+        cli: { state: "ready", version: "1.2.3", clientId: "client-a" },
+        grantedScopes: ["im:message"],
+      }),
+    });
+    const container = await renderSection();
+
+    expect(container.querySelector('[data-channel-state="setup-incomplete"]')).not.toBeNull();
+    expect(container.textContent).toContain("The Bot is online with its existing access");
+    expect(container.textContent).toContain("Update required");
+    expect(container.textContent).toContain("group replies, continue active threads");
+    expect(buttonByText(container, "Update permissions")).not.toBeNull();
+  });
+
+  it("separates an offline Computer from Bot reachability and marks the aggregate channel for attention", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "offline", version: null, clientId: null } }),
+    });
+    const container = await renderSection();
+    expect(container.querySelector('[data-channel-state="needs-attention"]')).not.toBeNull();
+    expect(container.textContent).toContain("The Bot may still receive messages");
+    expect(container.textContent).toContain("Computer offline");
+  });
+
+  it("gives a suspended Agent precedence over an otherwise usable Feishu handoff", async () => {
+    contextMock.value = context({
+      agent: { ...context().agent, status: "suspended" } as AgentDetailContext["agent"],
+    });
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" } }),
+    });
+
+    const container = await renderSection();
+    expect(container.querySelector('[data-channel-state="needs-attention"]')).not.toBeNull();
+    expect(container.textContent).toContain("Agent is suspended");
+    expect(container.textContent).toContain("Reactivate this Agent in Profile");
+    expect(container.textContent).not.toContain("Ready for Feishu tasks");
   });
 
   it("blocks Retry and explains visibility for a private Agent with an errored binding", async () => {
-    const onOpenProfileEdit = vi.fn();
+    const onOpenProfile = vi.fn();
     const privateContext = context();
     contextMock.value = context({
       agent: { ...privateContext.agent, visibility: "private" } as AgentDetailContext["agent"],
@@ -177,12 +240,12 @@ describe("Feishu Agent Detail section", () => {
     apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
       binding: binding({ status: "error", connectionStatus: "error", lastErrorMessage: "Registration failed" }),
     });
-    const container = await renderSection({ onOpenProfileEdit });
+    const container = await renderSection({ onOpenProfile });
 
     expect(container.textContent).toContain("Organization visibility is required");
     expect(buttonByText(container, "Retry")?.disabled).toBe(true);
-    await click(buttonByText(container, "Change visibility"));
-    expect(onOpenProfileEdit).toHaveBeenCalledOnce();
+    await click(buttonByText(container, "Manage in Profile"));
+    expect(onOpenProfile).toHaveBeenCalledOnce();
     expect(apiMocks.startAgentFeishuRegistration).not.toHaveBeenCalled();
   });
 
@@ -196,7 +259,7 @@ describe("Feishu Agent Detail section", () => {
     });
     const qr = await renderSection();
     expect(qr.querySelector("svg")).not.toBeNull();
-    expect(qr.querySelector("svg title")?.textContent).toBe("Feishu Bot registration QR code");
+    expect(qr.querySelector("svg title")?.textContent).toBe("Feishu bot registration QR code");
     expect(qr.querySelector('a[href="https://open.feishu.cn/register?code=test"]')).not.toBeNull();
 
     await act(async () => roots.pop()?.unmount());
@@ -207,7 +270,7 @@ describe("Feishu Agent Detail section", () => {
     const active = await renderSection();
     expect(active.textContent).toContain("Not detected");
     await click(buttonByText(active, "Ask Agent to install"));
-    expect(apiMocks.createAgentFeishuSetupChat).toHaveBeenCalledWith("agent-a");
+    expect(apiMocks.createAgentFeishuSetupChat).toHaveBeenCalledWith("agent-a", { retry: true });
     expect(navigateAway).toHaveBeenCalledWith("/?c=setup-chat");
   });
 
@@ -229,7 +292,22 @@ describe("Feishu Agent Detail section", () => {
       }),
     });
     const container = await renderSection();
-    expect(container.querySelector("svg")).toBeNull();
+    expect(container.querySelector("svg title")?.textContent).not.toBe("Feishu Bot registration QR code");
     expect(container.querySelector('a[href*="must-not-render"]')).toBeNull();
+    expect(buttonByText(container, "Disconnect")).toBeNull();
+    expect(buttonByText(container, "Retry")).toBeNull();
+  });
+
+  it("lets the viewer retry a failed binding read without claiming the channel is disconnected", async () => {
+    apiMocks.getAgentFeishuBinding
+      .mockRejectedValueOnce(new Error("status unavailable"))
+      .mockResolvedValueOnce({ binding: null });
+    const container = await renderSection();
+    expect(container.textContent).toContain("Couldn't check this channel");
+    expect(container.querySelector('[data-channel-state="not-connected"]')).toBeNull();
+
+    await click(buttonByText(container, "Retry"));
+    expect(apiMocks.getAgentFeishuBinding).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-channel-state="not-connected"]')).not.toBeNull();
   });
 });

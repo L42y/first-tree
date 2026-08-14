@@ -183,6 +183,8 @@ describe("CLI command registration", () => {
     expect(optionNames(command(command(root, "org"), "context-tree"))).toEqual(["--agent"]);
     expect(optionNames(command(command(root, "tree"), "read"))).toEqual(["--snapshot", "--team"]);
     expect(optionNames(command(command(root, "tree"), "tree"))).toEqual([
+      "--expect-branch",
+      "--expect-remote",
       "--level",
       "--no-pull",
       "--pattern",

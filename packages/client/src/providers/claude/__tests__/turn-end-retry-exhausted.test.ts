@@ -14,7 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
  *     filter on the frontend closes out the failed turn
  *
  * Pre-fix this path was silent — it only flipped runtimeState to "error"
- * (so the SessionManager could reclaim the slot) and returned, leaving the
+ * (so the SessionRuntime could reclaim the slot) and returned, leaving the
  * chat with no visible signal that the agent had crashed.
  */
 

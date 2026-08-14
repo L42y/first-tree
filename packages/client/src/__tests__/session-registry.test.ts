@@ -336,7 +336,7 @@ describe("SessionRegistry", () => {
       "chat-1": { claudeSessionId: "sess-new", lastActivity: 1700000999999, status: "active" },
     });
 
-    // Mimic the SessionManager shutdown path: a debounced save was queued
+    // Mimic the SessionRuntime shutdown path: a debounced save was queued
     // earlier, then shutdown calls flush({ immediate: true }) with the final
     // state, then dispose() tears the timer down.
     registry.save(oldEntries);

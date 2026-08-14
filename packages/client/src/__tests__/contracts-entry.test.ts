@@ -43,6 +43,7 @@ const CONTRACT_TYPE_EXPORTS = [
 const CONTRACT_VALUE_EXPORTS = ["noopDeliveryToken", "requireDeliveryToken"] as const;
 
 const FORBIDDEN_CONTRACT_EXPORTS = [
+  "SessionRuntime",
   "SessionManager",
   "SessionRegistry",
   "AgentSlot",

@@ -8,7 +8,7 @@ import type {
   SessionContext,
   SessionMessage,
 } from "../runtime/handler.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -16,7 +16,7 @@ import { mockEntry } from "./test-helpers.js";
  * Pin the F2 contract from
  * docs/workspace-session-branch-collision-fix-design.md §3.3:
  *
- * When `handler.start` or `handler.resume` throws, the SessionManager must
+ * When `handler.start` or `handler.resume` throws, the SessionRuntime must
  *   1) emit `session:state=errored` to the server so admin / UI see it,
  *   2) emit a structured `error` session event so the chat timeline renders
  *      the failure with its distinct ErrorRow styling (NOT a plain text
@@ -54,7 +54,7 @@ function mockSdk(): {
   };
 }
 
-function makeSessionManager(opts: {
+function makeSessionRuntime(opts: {
   handlers: AgentHandler[];
   onStateChange?: (chatId: string, state: SessionState) => void;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
@@ -68,7 +68,7 @@ function makeSessionManager(opts: {
     if (!next) throw new Error("handler factory exhausted");
     return next;
   };
-  return new SessionManager({
+  return new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
     handlerFactory: factory,
@@ -144,10 +144,10 @@ function deferred<T = void>(): {
   return { promise, resolve, reject };
 }
 
-describe("SessionManager: session-start failure signalling (F2)", () => {
+describe("SessionRuntime: session-start failure signalling (F2)", () => {
   it("emits onStateChange('errored') when handler.start throws", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failingHandler()],
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
@@ -171,7 +171,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
   it("emits a structured error session event (not a plain text message)", async () => {
     const { sdk, sendMessage } = mockSdk();
     const events: Array<{ chatId: string; event: SessionEvent }> = [];
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failingHandler()],
       sdk,
       onSessionEvent: (chatId, event) => events.push({ chatId, event }),
@@ -208,7 +208,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const handler = workingHandler();
     handler.start = vi.fn().mockRejectedValue(new FakeClientUserMismatchError(giant));
     const events: SessionEvent[] = [];
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [handler],
       onSessionEvent: (_chatId, event) => events.push(event),
     });
@@ -233,7 +233,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
     const confirmSessionEvent = vi.fn<(chatId: string, event: SessionEvent) => Promise<void>>().mockResolvedValue();
     const recoverChat = vi.fn().mockResolvedValue(undefined);
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failing, working],
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
       confirmSessionEvent,
@@ -273,7 +273,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const confirmSessionEvent = vi
       .fn<(chatId: string, event: SessionEvent) => Promise<void>>()
       .mockRejectedValue(new Error("persist failed"));
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failing, working],
       confirmSessionEvent,
       ackEntry,
@@ -302,7 +302,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const confirmSessionEvent = vi
       .fn<(chatId: string, event: SessionEvent) => Promise<void>>()
       .mockReturnValue(confirm.promise);
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failing, working],
       confirmSessionEvent,
       ackEntry,
@@ -341,7 +341,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const confirmSessionEvent = vi
       .fn<(chatId: string, event: SessionEvent) => Promise<void>>()
       .mockReturnValue(confirm.promise);
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failing, working],
       confirmSessionEvent,
       ackEntry,
@@ -376,7 +376,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
       await token?.complete(message, { status: "success", terminal: true });
       return { sessionId: "session-live-after-start", route: { kind: "owned", mode: "processing" } } as const;
     });
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [handler],
       ackEntry,
       recoverChat: vi.fn().mockResolvedValue(undefined),
@@ -407,7 +407,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     const working = workingHandler("session-after-broken-emit");
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
     const recoverChat = vi.fn().mockResolvedValue(undefined);
-    const sm = makeSessionManager({
+    const sm = makeSessionRuntime({
       handlers: [failing, working],
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
       onSessionEvent: () => {
@@ -450,7 +450,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     };
     const recovered = workingHandler("thread-after-start-recovery");
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const sm = makeSessionManager({ handlers: [failed, recovered], recoverChat });
+    const sm = makeSessionRuntime({ handlers: [failed, recovered], recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId, messageId: "msg-start" }));
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith(chatId));
@@ -496,7 +496,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
     };
     const recovered = workingHandler("thread-after-inject-recovery");
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-    const sm = makeSessionManager({ handlers: [failed, recovered], recoverChat });
+    const sm = makeSessionRuntime({ handlers: [failed, recovered], recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId, messageId: "msg-start" }));
     expect(sm.activeCount).toBe(1);
@@ -521,7 +521,7 @@ describe("SessionManager: session-start failure signalling (F2)", () => {
   });
 });
 
-describe("SessionManager: session-resume failure signalling (F2, resume path)", () => {
+describe("SessionRuntime: session-resume failure signalling (F2, resume path)", () => {
   /**
    * Build a manager whose concurrency is 1 so two consecutive dispatches
    * to different chats preempt the first onto the resume path. The handler
@@ -536,7 +536,7 @@ describe("SessionManager: session-resume failure signalling (F2, resume path)", 
     recoverChat?: (chatId: string) => Promise<void>;
   }) {
     const queue = [...opts.handlerQueue];
-    return new SessionManager({
+    return new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 1,
       handlerFactory: () => queue.shift() ?? workingHandler(),

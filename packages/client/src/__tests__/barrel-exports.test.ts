@@ -19,6 +19,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(api.AgentRuntime).toBeDefined();
     expect(api.cleanAgentWorkspaces).toBeDefined();
     expect(api).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
+    expect(api).not.toHaveProperty("SessionRuntime");
     expect(api).not.toHaveProperty("SessionManager");
     expect(api).not.toHaveProperty("SessionRegistry");
     expect(api.createBuiltinHandlerRegistry).toBeDefined();
@@ -33,6 +34,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(api).not.toHaveProperty("provider-support");
     expect(api).not.toHaveProperty("prepareManagedSession");
     const publicKeys = Object.keys(api).sort();
+    expect(publicKeys).not.toContain("SessionRuntime");
     expect(publicKeys).not.toContain("SessionManager");
     expect(publicKeys).not.toContain("SessionRegistry");
     expect(publicKeys).not.toContain("noopDeliveryToken");
@@ -69,6 +71,7 @@ describe("public barrel exports", { timeout: 30_000 }, () => {
     expect(runtime.AgentRuntime).toBeDefined();
     expect(runtime.cleanAgentWorkspaces).toBeDefined();
     expect(runtime).not.toHaveProperty("cleanAgentWorkspacesWithDeps");
+    expect(runtime).not.toHaveProperty("SessionRuntime");
     expect(runtime).not.toHaveProperty("SessionManager");
     expect(runtime).not.toHaveProperty("SessionRegistry");
     expect(runtime).not.toHaveProperty("contracts");

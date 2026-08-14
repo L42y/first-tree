@@ -20,7 +20,7 @@ import { clampRetryAttempt, classify, ERROR_KINDS, nextRetryDelayMs } from "./er
 import type { HandlerFactory } from "./handler.js";
 import { PsSubprocessProbe } from "./process-tree-probe.js";
 import { RuntimeSessionTokenFile } from "./runtime-session-token-file.js";
-import { SessionManager, type SessionManagerShutdownOptions } from "./session-manager.js";
+import { SessionRuntime, type SessionRuntimeShutdownOptions } from "./session-runtime.js";
 import { acquireAgentHome } from "./workspace.js";
 
 /**
@@ -86,7 +86,7 @@ export type AgentSlotConfig = {
 };
 
 export type AgentSlotStopOptions = {
-  sessionShutdown?: SessionManagerShutdownOptions;
+  sessionShutdown?: SessionRuntimeShutdownOptions;
 };
 
 type ConnectionListener =
@@ -127,7 +127,7 @@ type ConnectionListener =
   | { event: "session:reconcile:result"; fn: (result: SessionReconcileResult) => void };
 
 export class AgentSlot {
-  private sessionManager: SessionManager | null = null;
+  private sessionRuntime: SessionRuntime | null = null;
   private readonly config: AgentSlotConfig;
   private readonly runtimeSessionTokenFile: string;
   private readonly runtimeSessionTokenStore: RuntimeSessionTokenFile;
@@ -188,7 +188,7 @@ export class AgentSlot {
    * which is the same semantics: idle.
    */
   getQuietGateSnapshot(): { activeCount: number; lastActivityMs: number } {
-    return this.sessionManager?.getQuietGateSnapshot() ?? { activeCount: 0, lastActivityMs: 0 };
+    return this.sessionRuntime?.getQuietGateSnapshot() ?? { activeCount: 0, lastActivityMs: 0 };
   }
 
   async start(): Promise<RegisterResult> {
@@ -219,8 +219,8 @@ export class AgentSlot {
       // strict check resumes.
       const ownInboxId = this.inboxId ?? expectedInboxId;
       if (inboxId !== ownInboxId) return;
-      if (!this.sessionManager) {
-        // SessionManager isn't built yet — buffer the frame; we'll
+      if (!this.sessionRuntime) {
+        // SessionRuntime isn't built yet — buffer the frame; we'll
         // flush below once the manager is alive.
         earlyDeliverBuffer.push(frame);
         return;
@@ -244,21 +244,21 @@ export class AgentSlot {
           if (boundAgent.sdk) this.adoptRuntimeTransport(boundAgent.sdk);
           runtimeSessionProofRefreshed = true;
         }
-        if (runtimeSessionProofRefreshed && typeof this.sessionManager?.noteBindRecoveryComplete === "function") {
-          this.sessionManager.noteBindRecoveryComplete();
+        if (runtimeSessionProofRefreshed && typeof this.sessionRuntime?.noteBindRecoveryComplete === "function") {
+          this.sessionRuntime.noteBindRecoveryComplete();
         }
         // The first `agent:bound` can arrive while startup is still inside
         // sdk.register / config load / Context Tree sync, before
-        // SessionManager exists. In that case the explicit startup
+        // SessionRuntime exists. In that case the explicit startup
         // fullStateSync below owns both the state report and the delayed
-        // reconcile. Reconnects with an existing SessionManager are handled
+        // reconcile. Reconnects with an existing SessionRuntime are handled
         // here.
-        if (!this.sessionManager) return;
+        if (!this.sessionRuntime) return;
         // Replay-fence reconciliation on every (re)bind: an ACK committed
         // while this client was offline can leave a stale fence the startup
         // pass never revisits. Outstanding truth counts pending+delivered,
         // so running it before the bind drain is safe.
-        void this.sessionManager.reconcileReplayFencesWithServer?.().catch((err) => {
+        void this.sessionRuntime.reconcileReplayFencesWithServer?.().catch((err) => {
           this.logger.warn({ err }, "replay fence rebind reconciliation failed; keeping fences (fail-closed)");
         });
         void this.refreshActiveRuntimeChatIds("bind").finally(() => {
@@ -273,8 +273,8 @@ export class AgentSlot {
       }
     };
     const onReconcileResult = (result: SessionReconcileResult) => {
-      if (result.agentId === this.config.agentId && this.sessionManager) {
-        this.sessionManager.applyStaleChatIds(result.staleChatIds);
+      if (result.agentId === this.config.agentId && this.sessionRuntime) {
+        this.sessionRuntime.applyStaleChatIds(result.staleChatIds);
       }
     };
     const onUnbound = (agentId: string, reason?: string) => {
@@ -352,7 +352,7 @@ export class AgentSlot {
       const runtimeProvider = runtimeProviderSchema.safeParse(runtimeType);
       if (!runtimeProvider.success) {
         throw new Error(
-          `Unsupported agent runtime type "${runtimeType}" — refusing to start SessionManager without a known RuntimeProvider`,
+          `Unsupported agent runtime type "${runtimeType}" — refusing to start SessionRuntime without a known RuntimeProvider`,
         );
       }
 
@@ -363,7 +363,7 @@ export class AgentSlot {
           ? new PsSubprocessProbe({ log: this.logger })
           : undefined;
 
-      this.sessionManager = new SessionManager({
+      this.sessionRuntime = new SessionRuntime({
         session: this.config.session,
         concurrency: this.config.concurrency,
         subprocessProbe,
@@ -417,7 +417,7 @@ export class AgentSlot {
         type: "session:suspend" | "session:resume" | "session:terminate";
         ref?: string;
       }) => {
-        if (cmd.agentId !== this.config.agentId || !this.sessionManager) return;
+        if (cmd.agentId !== this.config.agentId || !this.sessionRuntime) return;
         if (cmd.type === "session:terminate" && cmd.ref) {
           // Apply-ack path (chat-session Reset): the server holds the HTTP
           // request open until this ack lands, so the ack must only fire
@@ -446,7 +446,7 @@ export class AgentSlot {
             });
             return;
           }
-          this.sessionManager
+          this.sessionRuntime
             .handleCommand(cmd.chatId, cmd.type, { resetRef: ref })
             .then(() => {
               this.clientConnection.reportSessionCommandApplied({
@@ -475,17 +475,17 @@ export class AgentSlot {
           // authority to retire whatever Reset generation is armed. That is
           // an explicit supersede, not the incidental unref'd release — a
           // finalized frame for the superseded generation is then ignored.
-          this.sessionManager
+          this.sessionRuntime
             .handleCommand(cmd.chatId, cmd.type)
             .then(() => {
-              this.sessionManager?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
+              this.sessionRuntime?.supersedeResetGeneration(cmd.chatId, "unrefd_server_terminate");
             })
             .catch((err) => {
               this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
             });
           return;
         }
-        this.sessionManager.handleCommand(cmd.chatId, cmd.type).catch((err) => {
+        this.sessionRuntime.handleCommand(cmd.chatId, cmd.type).catch((err) => {
           this.logger.error({ err, chatId: cmd.chatId, type: cmd.type }, "session command error");
         });
       };
@@ -503,7 +503,7 @@ export class AgentSlot {
        * restores nothing; it just lets the parked durable row recover once into
        * a fresh nonce-derived session.
        *
-       * The SessionManager is the single Reset-generation authority: it knows
+       * The SessionRuntime is the single Reset-generation authority: it knows
        * which refs are aliases of the current generation, which one superseded
        * which, and whether the fence actually came down. The slot asks and
        * reports that verdict verbatim — keeping a second map here is what let
@@ -515,8 +515,8 @@ export class AgentSlot {
         kind: "finalized" | "aborted",
         frame: { ref: string; ackRef: string; agentId: string; chatId: string },
       ): void => {
-        if (frame.agentId !== this.config.agentId || !this.sessionManager) return;
-        const verdict = this.sessionManager.releaseParkedResetFenceRecovery(frame.chatId, frame.ref);
+        if (frame.agentId !== this.config.agentId || !this.sessionRuntime) return;
+        const verdict = this.sessionRuntime.releaseParkedResetFenceRecovery(frame.chatId, frame.ref);
         const released = verdict === "accepted" || verdict === "idempotent";
         if (!released) {
           this.logger.warn(
@@ -593,14 +593,14 @@ export class AgentSlot {
       // ACKed just before a crash would otherwise stall its chat forever.
       // Server ACK truth (inbox recovery reset count) decides; failures keep
       // fences fail-closed. Optional-call: slot tests stub a partial manager.
-      await this.sessionManager.reconcileReplayFencesWithServer?.().catch((err) => {
+      await this.sessionRuntime.reconcileReplayFencesWithServer?.().catch((err) => {
         this.logger.warn({ err }, "replay fence startup reconciliation failed; keeping fences (fail-closed)");
       });
 
       await this.refreshActiveRuntimeChatIds("startup");
       // Initial-startup fullStateSync. The `on("agent:bound", onBound)`
       // listener above also fires here now that it's attached pre-bind,
-      // but `sessionManager` was null inside its callback — so its
+      // but `sessionRuntime` was null inside its callback — so its
       // `fullStateSync()` call was a no-op. Run it explicitly now that
       // the manager exists.
       this.fullStateSync();
@@ -689,7 +689,7 @@ export class AgentSlot {
       this.activeRuntimeChatIdsRefreshTimer = null;
     }
     this.agentConfigCache?.updateSdk(sdk);
-    this.sessionManager?.updateTransport(sdk, this.agentConfigCache ?? undefined);
+    this.sessionRuntime?.updateTransport(sdk, this.agentConfigCache ?? undefined);
   }
 
   private recoverRuntimeSessionProof(reasonCode: string): Promise<void> {
@@ -778,7 +778,7 @@ export class AgentSlot {
       this.clientConnection.off(entry.event, entry.fn);
     }
     this.listeners = [];
-    // The armed Reset generations die with the SessionManager below, so a
+    // The armed Reset generations die with the SessionRuntime below, so a
     // finalized/aborted frame arriving after a restart belongs to a manager
     // that no longer exists and cannot release anything the new one parked.
     let firstError: unknown = null;
@@ -789,7 +789,7 @@ export class AgentSlot {
     // the entered turn unacked for reconnect replay.
     try {
       try {
-        await this.sessionManager?.shutdown(reason, opts.sessionShutdown);
+        await this.sessionRuntime?.shutdown(reason, opts.sessionShutdown);
       } catch (err) {
         firstError = err;
         this.logger.warn({ err }, "failed to shut down sessions while stopping");
@@ -802,10 +802,10 @@ export class AgentSlot {
       }
     } finally {
       // Cleanup runs exactly once even when drain/unbind fails — but never before
-      // SessionManager.shutdown has joined (success or failure).
+      // SessionRuntime.shutdown has joined (success or failure).
       this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
       this.cleanupOwnedRuntimeSessionToken();
-      this.sessionManager = null;
+      this.sessionRuntime = null;
       this.agentConfigCache = null;
       this.sdk = null;
       this.activeRuntimeChatIds = null;
@@ -838,7 +838,7 @@ export class AgentSlot {
     this.listeners = [];
     try {
       try {
-        await this.sessionManager?.shutdown();
+        await this.sessionRuntime?.shutdown();
       } catch (err) {
         this.logger.warn({ err }, "failed to shut down sessions after aborted agent start");
       }
@@ -852,7 +852,7 @@ export class AgentSlot {
     } finally {
       this.clientConnection.clearRuntimeSessionTokenProvider(this.config.agentId, this.runtimeSessionTokenProvider);
       this.cleanupOwnedRuntimeSessionToken();
-      this.sessionManager = null;
+      this.sessionRuntime = null;
       this.agentConfigCache = null;
       this.sdk = null;
       this.activeRuntimeChatIds = null;
@@ -883,7 +883,7 @@ export class AgentSlot {
   }
 
   private fullStateSync(): void {
-    if (!this.sessionManager) return;
+    if (!this.sessionRuntime) return;
     const activeChatIds = this.activeRuntimeChatIds;
     // ORDERING IS LOAD-BEARING: `session:state` frames flush before any
     // `session:runtime` frame so the server's `setSessionRuntime` (gated
@@ -891,7 +891,7 @@ export class AgentSlot {
     // hadn't landed yet. TCP/WS preserves the order across this single
     // send loop, and the server-side `chainSessionOp` per-(agent,chat)
     // queue preserves it through the processing pipeline as well.
-    for (const { chatId, state } of this.sessionManager.getSessionStates(activeChatIds)) {
+    for (const { chatId, state } of this.sessionRuntime.getSessionStates(activeChatIds)) {
       this.clientConnection.reportSessionState(this.config.agentId, chatId, state);
     }
     // After a process restart `sessions` is empty but SessionRegistry just
@@ -901,7 +901,7 @@ export class AgentSlot {
     // (commonly `active`) forever — the next inbound message would only
     // refresh that one row, leaving the rest stale. "suspended" is the
     // closest in-schema state for "handler is gone but resumable".
-    for (const chatId of this.sessionManager.getEvictedChatIds(activeChatIds)) {
+    for (const chatId of this.sessionRuntime.getEvictedChatIds(activeChatIds)) {
       this.clientConnection.reportSessionState(this.config.agentId, chatId, "suspended");
     }
     // Re-assert the *real* per-chat runtime of every still-live local session,
@@ -914,24 +914,24 @@ export class AgentSlot {
     //
     // This intentionally differs from the lifecycle sync above: lifecycle rows
     // stay filtered to the user's active working set, while runtime rows are
-    // cheap idempotent repairs for any chat the local SessionManager still
+    // cheap idempotent repairs for any chat the local SessionRuntime still
     // holds.
-    for (const { chatId, runtimeState } of this.sessionManager.getSessionRuntimeStates(null)) {
+    for (const { chatId, runtimeState } of this.sessionRuntime.getSessionRuntimeStates(null)) {
       this.clientConnection.reportSessionRuntime(this.config.agentId, chatId, runtimeState);
     }
     // Explicit "idle" clears any stale `working`/`blocked` on the server:
     // any in-flight work owned by the previous process died with its SDK
     // transport. The first inbound message will flip it back to `working`
     // through the normal session-runtime-state path.
-    const runtimeState = this.sessionManager.getAggregateRuntimeState();
+    const runtimeState = this.sessionRuntime.getAggregateRuntimeState();
     this.clientConnection.reportRuntimeState(this.config.agentId, runtimeState ?? "idle");
   }
 
   /**
    * Translate an `inbox:deliver` push frame into the {@link InboxEntryWithMessage}
-   * shape `SessionManager.dispatch` expects, then dispatch.
+   * shape `SessionRuntime.dispatch` expects, then dispatch.
    *
-   * Ack happens INSIDE the SessionManager via the `ackEntry` callback we
+   * Ack happens INSIDE the SessionRuntime via the `ackEntry` callback we
    * pinned at construction time — `clientConnection.sendInboxAck`. Post
    * inflight-message-recovery the ack is deferred until the handler closes
    * the turn via `ctx.finishTurn(...)`. Sending an additional ack here
@@ -944,7 +944,7 @@ export class AgentSlot {
    * (see inflight-message-recovery-design.md §4).
    */
   private async dispatchPushedFrame(frame: InboxDeliverFrame): Promise<void> {
-    if (!this.sessionManager) return;
+    if (!this.sessionRuntime) return;
     const chatId = frame.chatId ?? frame.message.chatId;
     this.noteActiveRuntimeChat(chatId);
     const entry: InboxEntryWithMessage = {
@@ -954,7 +954,7 @@ export class AgentSlot {
       chatId: frame.chatId,
       // The DB columns we don't carry on the wire — set to the values the
       // claim path would have produced. Only `chatId`, `id`, and `message`
-      // are read by SessionManager.dispatch, but keeping the shape correct
+      // are read by SessionRuntime.dispatch, but keeping the shape correct
       // lets test fixtures and downstream consumers depend on the schema.
       status: "delivered",
       retryCount: 0,
@@ -963,7 +963,7 @@ export class AgentSlot {
       ackedAt: null,
       message: frame.message,
     };
-    await this.sessionManager.dispatch(entry);
+    await this.sessionRuntime.dispatch(entry);
   }
 
   private startReconcileLoop(): void {
@@ -1025,8 +1025,8 @@ export class AgentSlot {
   }
 
   private reconcileNow(): void {
-    if (!this.sessionManager) return;
-    const chatIds = this.sessionManager.getHeldChatIds(this.activeRuntimeChatIds);
+    if (!this.sessionRuntime) return;
+    const chatIds = this.sessionRuntime.getHeldChatIds(this.activeRuntimeChatIds);
     if (chatIds.length === 0) return;
     for (let index = 0; index < chatIds.length; index += SESSION_RECONCILE_BATCH_SIZE) {
       this.clientConnection.sendSessionReconcile(

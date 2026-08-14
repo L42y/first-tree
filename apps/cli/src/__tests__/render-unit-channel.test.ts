@@ -1,3 +1,6 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { defaultHome } from "@first-tree/shared/config";
 import { describe, expect, it } from "vitest";
@@ -151,25 +154,77 @@ describe("renderPlist — channel identity baked into plist text", () => {
   });
 });
 
-describe("renderLaunchdWrapper — launcher script execs the resolved CLI", () => {
+describe("renderLaunchdWrapper — launcher script supervises the resolved CLI", () => {
   it("starts with a /bin/sh shebang", () => {
     expect(renderLaunchdWrapper(FAKE_BIN_INVOCATION)).toMatch(/^#!\/bin\/sh\n/);
   });
 
-  it("execs the bin invocation with the daemon args", () => {
+  it("invokes the bin with the daemon args", () => {
     expect(renderLaunchdWrapper(FAKE_BIN_INVOCATION)).toContain(
-      "exec /usr/local/bin/first-tree-dev daemon start --no-interactive",
+      "/usr/local/bin/first-tree-dev daemon start --no-interactive",
     );
   });
 
-  it("execs the node interpreter + script for the node invocation", () => {
+  it("invokes the node interpreter + script for the node invocation", () => {
     const wrapper = renderLaunchdWrapper({
       kind: "node",
       program: "/usr/bin/node",
       args: ["/opt/first-tree/dist/cli/index.mjs"],
     });
-    expect(wrapper).toContain("exec /usr/bin/node /opt/first-tree/dist/cli/index.mjs daemon start --no-interactive");
+    expect(wrapper).toContain("/usr/bin/node /opt/first-tree/dist/cli/index.mjs daemon start --no-interactive");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "reloads an atomically replaced wrapper after exit 75 without waiting for launchd to respawn it",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "first-tree-launchd-wrapper-"));
+      const oldDaemon = join(dir, "old daemon");
+      const newDaemon = join(dir, "new daemon");
+      const wrapperPath = join(dir, "First Tree");
+      const replacementPath = join(dir, "First Tree.next");
+      const markerPath = join(dir, "invocations");
+      try {
+        writeFileSync(
+          oldDaemon,
+          `#!/bin/sh
+if [ -f "$FIRST_TREE_TEST_MARKER" ]; then
+  printf 'old-again\n' >> "$FIRST_TREE_TEST_MARKER"
+  exit 9
+fi
+printf 'old\n' > "$FIRST_TREE_TEST_MARKER"
+mv "$FIRST_TREE_TEST_REPLACEMENT" "$FIRST_TREE_TEST_WRAPPER"
+exit 75
+`,
+          { mode: 0o755 },
+        );
+        writeFileSync(
+          newDaemon,
+          `#!/bin/sh
+printf 'new\n' >> "$FIRST_TREE_TEST_MARKER"
+exit 0
+`,
+          { mode: 0o755 },
+        );
+        writeFileSync(wrapperPath, renderLaunchdWrapper({ kind: "bin", program: oldDaemon }), { mode: 0o755 });
+        writeFileSync(replacementPath, renderLaunchdWrapper({ kind: "bin", program: newDaemon }), { mode: 0o755 });
+
+        const result = spawnSync("/bin/sh", [wrapperPath], {
+          env: {
+            ...process.env,
+            FIRST_TREE_TEST_MARKER: markerPath,
+            FIRST_TREE_TEST_REPLACEMENT: replacementPath,
+            FIRST_TREE_TEST_WRAPPER: wrapperPath,
+          },
+          encoding: "utf8",
+        });
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(readFileSync(markerPath, "utf8")).toBe("old\nnew\n");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe("renderWindowsTaskXml — channel identity baked into Task Scheduler text", () => {

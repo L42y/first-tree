@@ -86,19 +86,22 @@ computer is awake and its coding agent is signed in, then try again.
 
 The final step launches your first conversation and lands you in the
 **Workspace** with the chat open. Setup finishes here — agent-led, in the
-chat, not as more wizard steps. Your agent walks you through the key
-operations, one approved step at a time:
+chat, not as more wizard steps. Your agent works from what you give it, one
+approved step at a time:
 
-- **Point it at your code** — share a local project folder path or a GitHub or
-  GitLab repo URL, and the agent reads your project and gets a first task done.
-  No forge setup is required up front. GitHub automation uses the First Tree
-  GitHub App; GitLab automation uses an admin-configured inbound project
-  Webhook while the agent keeps repository credentials on its own host.
-- **Build your team's Context Tree** — once it has shown real value from your
-  code, your agent offers to build your team's shared memory: it proposes an
-  initial structure and fills it in from your code, with you approving each
-  change. (Offered to team admins; teammates who join later inherit the tree
-  automatically.)
+- **Lead with the outcome** — describe the result you want in your own words.
+  The agent works from your messages, the chat context, and anything you paste
+  or attach; no repository or extra setup is needed to get a first task done.
+  When the task does need existing code, you can point it at a local project
+  folder path or a GitHub or GitLab repo URL, and the agent reads your project
+  and works from it. Reading code and history needs no forge setup — the
+  filesystem and plain `git` cover it. Only actual forge steps (creating or
+  commenting on PRs/MRs and issues, reading checks or provider metadata) use
+  the host `gh`/`glab` CLI on the agent's computer, and only those steps are
+  blocked when the CLI is missing. Separately, the optional First Tree GitHub
+  App or an admin-configured GitLab Webhook adds live CI/review/merge tracking
+  and review automation back into the chat; without them everything else keeps
+  working.
 
 You reach a working agent first — none of this is a gate you clear up front.
 You can also connect code anytime from **Settings**.

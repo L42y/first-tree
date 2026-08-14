@@ -1,13 +1,101 @@
 import { z } from "zod";
 import { feishuMessageReferenceSchema, feishuOutboundMediaIdentitySchema } from "./message.js";
 
-export const FEISHU_REQUIRED_SCOPES = [
+const FEISHU_MESSAGING_SCOPES = [
   "im:message",
   "im:message:send_as_bot",
   "im:message.group_at_msg:readonly",
+  "im:message.group_msg",
   "im:message.p2p_msg:readonly",
   "im:chat.members:read",
+  "im:chat:readonly",
+  "im:message:readonly",
+  "im:message.reactions:read",
 ] as const;
+
+const FEISHU_DOCUMENT_SCOPES = [
+  "docx:document:create",
+  "docx:document:readonly",
+  "docx:document:write_only",
+  "docs:document.media:upload",
+  "docs:document.media:download",
+  "docs:permission.member:create",
+  "docs:permission.member:retrieve",
+  "docs:permission.member:update",
+  "drive:drive.metadata:readonly",
+  "drive:file:upload",
+  "drive:file:download",
+  "space:document:delete",
+  "space:folder:create",
+  "wiki:wiki",
+] as const;
+
+const FEISHU_SHEET_SCOPES = [
+  "sheets:spreadsheet:create",
+  "sheets:spreadsheet:read",
+  "sheets:spreadsheet:write_only",
+  "sheets:spreadsheet.meta:read",
+] as const;
+
+const FEISHU_BASE_SCOPES = [
+  "base:app:create",
+  "base:app:read",
+  "base:app:update",
+  "base:table:create",
+  "base:table:read",
+  "base:table:update",
+  "base:table:delete",
+  "base:field:create",
+  "base:field:read",
+  "base:field:update",
+  "base:field:delete",
+  "base:record:create",
+  "base:record:read",
+  "base:record:retrieve",
+  "base:record:update",
+  "base:record:delete",
+  "base:view:read",
+  "base:view:write_only",
+] as const;
+
+const FEISHU_CALENDAR_SCOPES = [
+  "calendar:calendar:create",
+  "calendar:calendar:read",
+  "calendar:calendar:update",
+  "calendar:calendar:delete",
+  "calendar:calendar.event:create",
+  "calendar:calendar.event:read",
+  "calendar:calendar.event:update",
+  "calendar:calendar.event:delete",
+  "calendar:calendar.event:reply",
+  "calendar:calendar.free_busy:read",
+] as const;
+
+const FEISHU_TASK_SCOPES = [
+  "task:task:read",
+  "task:task:write",
+  "task:tasklist:read",
+  "task:tasklist:write",
+  "task:comment:read",
+  "task:comment:write",
+  "task:attachment:read",
+  "task:attachment:write",
+] as const;
+
+export const FEISHU_REQUIRED_SCOPES = [
+  ...FEISHU_MESSAGING_SCOPES,
+  ...FEISHU_DOCUMENT_SCOPES,
+  ...FEISHU_SHEET_SCOPES,
+  ...FEISHU_BASE_SCOPES,
+  ...FEISHU_CALENDAR_SCOPES,
+  ...FEISHU_TASK_SCOPES,
+] as const;
+
+/** Whether a binding has every permission required by the current Feishu contract. */
+export function hasCurrentFeishuRequiredScopes(grantedScopes: readonly string[]): boolean {
+  const granted = new Set(grantedScopes);
+  return FEISHU_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+}
 
 export const feishuBotBindingStatusSchema = z.enum(["provisioning", "active", "error", "revoked"]);
 export const feishuConnectionStatusSchema = z.enum(["disconnected", "connecting", "connected", "error"]);
@@ -44,6 +132,13 @@ export type StartFeishuRegistration = z.infer<typeof startFeishuRegistrationSche
 
 export const createFeishuSetupChatSchema = z.object({
   requestInstall: z.literal(true),
+  /**
+   * A member explicitly asked to try again, rather than a surface ensuring the
+   * Task exists. The two must stay distinguishable: ensuring runs on every
+   * load, reload, and extra tab and has to stay a no-op, while a retry has to
+   * reach an Agent that may have already consumed the original request.
+   */
+  retry: z.boolean().optional().default(false),
 });
 export type CreateFeishuSetupChat = z.infer<typeof createFeishuSetupChatSchema>;
 
@@ -98,3 +193,22 @@ export const feishuReferenceSelectionSchema = feishuMessageReferenceSchema.pick(
   rootId: true,
   parentId: true,
 });
+
+export const feishuReferenceContextMessageSchema = z.object({
+  externalMessageId: z.string().min(1),
+  senderId: z.string().min(1),
+  senderName: z.string().min(1),
+  isBot: z.boolean(),
+  content: z.string(),
+  sentAt: z.string().datetime(),
+});
+export type FeishuReferenceContextMessage = z.infer<typeof feishuReferenceContextMessageSchema>;
+
+export const feishuReferenceContextSchema = z.object({
+  state: z.enum(["available", "unavailable"]),
+  scope: z.enum(["thread", "chat"]),
+  messages: z.array(feishuReferenceContextMessageSchema),
+  truncated: z.boolean(),
+  reason: z.enum(["permission_denied", "provider_unavailable", "reference_unavailable"]).optional(),
+});
+export type FeishuReferenceContext = z.infer<typeof feishuReferenceContextSchema>;

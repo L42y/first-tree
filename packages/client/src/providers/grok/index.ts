@@ -510,7 +510,7 @@ export const createGrokHandler: HandlerFactory = (config) => {
       return false;
     }
     // One immutable per-turn snapshot drives model, effort, MCP delivery, and
-    // env. SessionManager refreshes the cache before dispatch, so an active
+    // env. SessionRuntime refreshes the cache before dispatch, so an active
     // chat converges on its very next turn.
     const turnPayload = agentConfigCache?.get(sessionCtx.agent.agentId)?.payload ?? fallbackPayload;
     const model = turnPayload.model;
@@ -1120,7 +1120,7 @@ export const createGrokHandler: HandlerFactory = (config) => {
       if (!providerSessionId) {
         // First turn settled (e.g. auth/quota terminal consumed) before
         // session/new ever confirmed a provider id. Return a runtime-local
-        // placeholder so SessionManager does not re-process the already
+        // placeholder so SessionRuntime does not re-process the already
         // settled delivery; the next confirmed id upgrades it atomically via
         // replaceSessionId.
         pendingSyntheticId = `${GROK_PENDING_SESSION_PREFIX}${randomUUID()}`;

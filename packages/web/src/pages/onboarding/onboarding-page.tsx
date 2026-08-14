@@ -17,8 +17,8 @@ import { resolveOnboardingPath, shouldLeaveOnboarding } from "./steps.js";
  * here; once setup is terminally complete this route bounces back to `/`.
  *
  * The "bounce back" is an ENTRY-time guard, decided ONCE when `/me` first
- * loads — not a live leash re-checked every render. Both admin and invitee
- * have start-chat AFTER create-agent, and creating the agent flips
+ * loads — not a live leash re-checked every render. The admin path has
+ * start-chat AFTER create-agent, and creating the agent flips
  * `currentOrgHasPersonalAgent` true (the flow's own `refreshMe` surfaces it the
  * moment the agent comes online). A
  * per-render check therefore ejected an actively-onboarding user the instant
@@ -39,6 +39,12 @@ export function OnboardingPage() {
 
   if (!meLoaded) {
     return <div className="min-h-screen bg-background" />;
+  }
+  // A confirmed Member never enters the legacy invitee wizard: they go to the
+  // existing Team page. The invitee path below remains only for the
+  // unresolved-role recovery state and the explicit onboarding preview.
+  if (role === "member") {
+    return <Navigate to="/team" replace />;
   }
   if (leaveDecision.current === null) {
     leaveDecision.current = shouldLeaveOnboarding({

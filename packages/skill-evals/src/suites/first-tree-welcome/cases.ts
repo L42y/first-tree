@@ -22,6 +22,7 @@ type WelcomeRow = {
   chatScenario: FirstTreeWelcomeEvalCase["fixture"]["chatScenario"];
   prompt: string;
   repoState: FirstTreeWelcomeEvalCase["fixture"]["repoState"];
+  requiredDeliveryConcepts?: readonly (readonly string[])[];
   requiredResponseHints: readonly string[];
   role: FirstTreeWelcomeEvalCase["fixture"]["role"];
   tags: readonly string[];
@@ -46,14 +47,16 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
     treeState: "unknown",
   },
   {
-    action: "invitee_waits_for_team_readiness",
+    action: "ask_for_first_goal",
     forbiddenActions: ["admin-setup", "repo-selection", "duplicate-tree", "setup-as-first-task"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-invitee-not-ready",
     chatScenario: "team-onboarding",
-    prompt: "Introduce First Tree to this invited teammate.",
+    prompt: `Nova, welcome aboard.
+
+Please help me get settled into this team on First Tree.`,
     repoState: "none",
-    requiredResponseHints: ["admin", "local", "path"],
+    requiredResponseHints: ["ready", "first", "outcome"],
     role: "invitee",
     tags: ["welcome-row-2", "planned"],
     treeState: "none",
@@ -74,25 +77,43 @@ Use first-tree-welcome only to classify the setup state from its matrix. Reply w
     treeState: "populated",
   },
   {
-    action: "ask_for_repo_path_or_url",
-    forbiddenActions: ["github-auth-first", "github-app-install-first", "setup-as-first-task"],
+    action: "ask_for_first_goal",
+    forbiddenActions: ["admin-setup", "github-auth-first", "github-app-install-first", "setup-as-first-task"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-no-repo-intro",
     chatScenario: "onboarding",
     prompt: `Nova, welcome aboard.
 
-Please help me get started with First Tree.
-
-No repository is connected, no local project folder path or Git repository URL is available, and no populated Context Tree is readable. Give the smallest useful next ask.`,
+Please help me get started with First Tree.`,
     repoState: "none",
-    requiredResponseHints: ["local project folder path", "Git repository URL", "GitHub repo URL"],
+    requiredResponseHints: ["ready", "first", "outcome"],
     role: "admin",
     tags: ["welcome-row-3", "no-repo"],
     treeState: "none",
   },
   {
+    action: "complete_task_directly",
+    forbiddenActions: ["admin-setup", "setup-as-first-task", "fanout-first-task", "first-task-options"],
+    forbiddenClaims: [],
+    id: "first-tree-welcome-concrete-task-no-repo",
+    chatScenario: "selected-task",
+    prompt: `Nova, welcome aboard.
+
+Please help me get started with First Tree. First task: draft a two-sentence release announcement from this pasted note — "Checkout recovery now retries expired sessions automatically and support agents see a clear re-auth prompt." Deliver the draft in this chat; no repository or Context Tree is needed.`,
+    repoState: "none",
+    requiredDeliveryConcepts: [
+      ["retr", "automat"],
+      ["expired", "session"],
+      ["auth", "prompt"],
+    ],
+    requiredResponseHints: ["checkout", "session"],
+    role: "admin",
+    tags: ["welcome-row-3c", "concrete-task", "no-repo"],
+    treeState: "none",
+  },
+  {
     action: "report_auth_failure_without_claiming_repo_read",
-    forbiddenActions: ["claim-private-repo-read", "invent-repo-evidence"],
+    forbiddenActions: ["claim-private-repo-read", "invent-repo-evidence", "declare-onboarding-blocked"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-repo-auth-fails",
     chatScenario: "onboarding",
@@ -117,15 +138,16 @@ No repository is connected, no local project folder path or Git repository URL i
     treeState: "unknown",
   },
   {
-    action: "ask_for_repo_path_or_url",
-    forbiddenActions: ["claim-unread-repo-evidence", "github-auth-first", "repo-selection"],
+    action: "ask_for_first_goal",
+    forbiddenActions: ["admin-setup", "claim-unread-repo-evidence", "github-auth-first", "repo-selection"],
     forbiddenClaims: ["repo evidence", "tree readiness"],
     id: "first-tree-welcome-app-installed-no-repo-selected",
     chatScenario: "onboarding",
-    prompt:
-      "Welcome the admin after GitHub App installation, but no project is readable. Ask for a local project folder path first or a Git repository URL; do not register a long-term Team repository.",
+    prompt: `Nova, welcome aboard.
+
+Please help me get started with First Tree.`,
     repoState: "none",
-    requiredResponseHints: ["local project folder path", "Git repository URL", "GitHub repo URL"],
+    requiredResponseHints: ["ready", "first", "outcome"],
     role: "admin",
     tags: ["welcome-row-6", "planned"],
     treeState: "unknown",
@@ -228,16 +250,18 @@ Complete it in this current chat. Start at ./source-repo/src/checkout/recovery.t
   },
   {
     action: "offer_one_contextual_bridge",
+    bridgeForbiddenHints: ["context tree", "tree chat", "shared memory"],
+    bridgeRequiredHints: ["checkout"],
     forbiddenActions: ["multiple-bridges", "early-pr-setup", "repo-selection", "broad-repo-scan"],
     forbiddenClaims: [],
-    id: "first-tree-welcome-admin-qualified-tree-bridge",
+    id: "first-tree-welcome-admin-result-bridge",
     chatScenario: "post-result",
     prompt:
-      "The confirmed admin has just received a verified read-only result. It exposed a lasting decision across checkout and authentication modules, and the team's Context Tree is confirmed empty. Offer exactly one directly related next step. Do not create the chat or mutate setup yet.",
+      "The confirmed admin has just received a verified read-only result. It exposed a lasting decision across checkout and authentication modules, and the team's Context Tree is confirmed empty. Offer exactly one directly related next step that continues the completed checkout result — an adjacent verification or implementation step tied to the user's goal. Even with a confirmed admin and an empty tree, do not offer a Context Tree build or a separate tree chat; only an explicit user request routes there. Do not create the chat or mutate setup yet.",
     repoState: "selected-readable",
-    requiredResponseHints: ["Context Tree", "separate chat", "decision"],
+    requiredResponseHints: ["checkout", "verify"],
     role: "admin",
-    tags: ["post-result", "admin", "tree-bridge"],
+    tags: ["post-result", "admin", "no-tree-offer"],
     treeState: "empty",
   },
   {
@@ -293,6 +317,7 @@ function caseFromRow(
       action: row.action,
       bridgeForbiddenHints: row.bridgeForbiddenHints,
       bridgeRequiredHints: row.bridgeRequiredHints,
+      requiredDeliveryConcepts: row.requiredDeliveryConcepts,
       requiredResponseHints: row.requiredResponseHints,
       taskOptionHints: row.taskOptionHints,
     },

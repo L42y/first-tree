@@ -3,9 +3,26 @@ import type { SkillCaseGrading } from "../../core/result-schema.js";
 import type { CommandResult } from "../../core/types.js";
 
 export type SourceArtifactKind = "absent" | "durable-decision-note" | "implementation-only-diff";
-export type TreeState = "populated";
+export type TreeState = "populated" | "unbound" | "explicitly-unbound-with-stale-checkout";
 export type TreeDiffExpectation = "none" | "minimal";
-export type ExpectedAction = "refuse_without_source" | "write_minimal_tree_diff" | "refuse_implementation_only_source";
+
+/**
+ * Pre-run record of the Tree artifacts a treeless run must leave alone: the
+ * workspace manifest content (null = absent) and a content fingerprint of the
+ * `context-tree/` checkout (null = absent). A post-run comparison flags only
+ * NEWLY created artifacts or MODIFIED pre-existing stale artifacts, so a clean
+ * checkout left by a retired binding is a legal baseline, never a violation.
+ */
+export type TreeArtifactBaseline = {
+  checkoutFingerprint: string | null;
+  manifestContent: string | null;
+};
+export type ExpectedAction =
+  | "refuse_without_source"
+  | "write_minimal_tree_diff"
+  | "refuse_implementation_only_source"
+  | "skip_tree_write_unbound"
+  | "report_unbound_tree_write_gap";
 
 export type FirstTreeWriteFixture = {
   sourceArtifact: SourceArtifactKind;
@@ -53,7 +70,7 @@ export type FixtureValidation = {
   errors: readonly string[];
   ok: boolean;
   requiredFilesOk: boolean;
-  verifyResult: CommandResult;
+  verifyResult: CommandResult | null;
 };
 
 export type TreeStateSnapshot = {
@@ -77,10 +94,33 @@ export type EvalMetrics = {
   postModelVerifySucceeded: boolean | null;
   runnerExitCode: number | null;
   skillFileReadObserved: boolean;
+  /** Model-phase `chat ask` invocations. */
+  chatAskCount: number;
+  /** The final response asked for a source artifact/input despite a missing binding. */
+  sourceAskObserved: boolean;
   sourceRepoChanged: boolean;
   treeChanged: boolean;
+  treeCliInvocationCount: number;
   treeDiff: string;
+  treeSetupGuidanceObserved: boolean;
+  treeSetupSurfaceGuidanceObserved: boolean;
   treeStatus: string;
+  /** Final response proactively mentioned the Tree's absence; only the explicit Tree-write branch may state it. */
+  unboundAbsenceMentionObserved: boolean;
+  unboundGapStatementObserved: boolean;
+  unboundSetupSteeringObserved: boolean;
+  /** An unbound run newly created the manifest or a Tree checkout, or modified the retired stale baseline. */
+  unboundTreeArtifactsCreated: boolean;
+  /** The run read or referenced the stale `.first-tree/workspace.json` manifest or `context-tree/` checkout. */
+  staleTreeArtifactAccessObserved: boolean;
+  /** An unbound run modified or deleted the stale manifest or Tree checkout; inert residue must stay byte-identical. */
+  staleTreeArtifactModifiedObserved: boolean;
+  /**
+   * Ordinary-skip response contract: the final response fully carries the
+   * source note's deterministic-gate / quality-judge distinction, keeps the
+   * prompt's three-bullet shape, and contains no refusal or input ask.
+   */
+  ordinarySummaryShapeObserved: boolean;
   verifySucceeded: boolean;
 };
 

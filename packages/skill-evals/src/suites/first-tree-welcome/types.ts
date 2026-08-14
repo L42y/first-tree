@@ -11,8 +11,8 @@ export type WelcomeTreeSetupChatState = "absent" | "exists" | "promised";
 
 export type WelcomeExpectedAction =
   | "route_to_tree_skill"
-  | "invitee_waits_for_team_readiness"
-  | "ask_for_repo_path_or_url"
+  | "ask_for_first_goal"
+  | "complete_task_directly"
   | "report_auth_failure_without_claiming_repo_read"
   | "offer_single_select_microtasks"
   | "complete_first_task_in_current_chat"
@@ -34,6 +34,13 @@ export type FirstTreeWelcomeExpected = {
   bridgeKind?: "pull_request";
   bridgeRequiredHints?: readonly string[];
   evidenceSnippets?: readonly string[];
+  /**
+   * `complete_task_directly` only: each inner list is one source-note concept
+   * whose needles must ALL appear (normalized substring match) in the final
+   * chat-send delivery. Setting this also requires the delivery to be exactly
+   * two sentences (deterministic sentence-terminator count).
+   */
+  requiredDeliveryConcepts?: readonly (readonly string[])[];
   requiredResponseHints: readonly string[];
   taskOptionHints?: readonly string[];
 };
@@ -111,6 +118,8 @@ export type EvalMetrics = {
   taskOptionsObserved: boolean;
   timeEstimateObserved: boolean;
   treeEvidenceReadObserved: boolean;
+  /** A no-Tree run created `.first-tree/workspace.json`, which only a bound Tree may produce. */
+  workspaceManifestCreated: boolean;
   workingStatusObserved: boolean;
 };
 

@@ -3,17 +3,20 @@ import { isDeepStrictEqual } from "node:util";
 import {
   type FeishuOutboundMediaIdentity,
   feishuOutboundIntentRequestSchema,
+  feishuReferenceContextSchema,
   MESSAGE_SOURCES,
   readFeishuMessageMetadata,
 } from "@first-tree/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { imBotBindings } from "../../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../../db/schema/im-chat-bindings.js";
 import { messages } from "../../db/schema/messages.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
 import * as messageService from "../../services/chat/message.js";
+import { isFeishuBotUsable } from "../../services/integrations/feishu/binding-state.js";
 import { renderCodeSpan } from "../../services/integrations/feishu/markdown.js";
 import { uuidv7 } from "../../uuid.js";
 
@@ -58,14 +61,19 @@ async function loadBoundConversation(
       feishuChatType: imChatBindings.feishuChatType,
       botBindingId: imBotBindings.id,
       agentId: imBotBindings.agentId,
+      status: imBotBindings.status,
+      appId: imBotBindings.appId,
+      appSecretCipher: imBotBindings.appSecretCipher,
+      botOpenId: imBotBindings.botOpenId,
+      registrationStateCipher: imBotBindings.registrationStateCipher,
     })
     .from(imChatBindings)
     .innerJoin(imBotBindings, eq(imBotBindings.id, imChatBindings.botBindingId))
-    .where(
-      and(eq(imChatBindings.chatId, chatId), eq(imChatBindings.status, "active"), eq(imBotBindings.status, "active")),
-    )
+    .where(and(eq(imChatBindings.chatId, chatId), eq(imChatBindings.status, "active")))
     .limit(1);
-  if (!binding) throw new NotFoundError("This chat is not bound to an active Feishu conversation");
+  if (!binding || !isFeishuBotUsable(binding)) {
+    throw new NotFoundError("This chat is not bound to an active Feishu conversation");
+  }
   if (binding.agentId !== agentId) {
     throw new ForbiddenError("Only the Agent bound to this Feishu Bot may send externally");
   }
@@ -99,6 +107,13 @@ async function assertReplyTarget(
 
 /** Agent-runtime-only credential and immutable intent endpoints for direct official lark-cli use. */
 export async function agentFeishuRoutes(app: FastifyInstance): Promise<void> {
+  app.get("/feishu/messages/:firstTreeMessageId/reference-context", async (request, reply) => {
+    const identity = requireAgent(request);
+    const params = z.object({ firstTreeMessageId: z.string().uuid() }).parse(request.params);
+    const context = await app.feishuIntegration.getReferenceContext(identity.uuid, params.firstTreeMessageId);
+    return reply.send(feishuReferenceContextSchema.parse(context));
+  });
+
   app.post("/feishu/credentials", async (request, reply) => {
     const identity = requireAgent(request);
     const grant = await app.feishuIntegration.getCliGrant(identity.uuid);
