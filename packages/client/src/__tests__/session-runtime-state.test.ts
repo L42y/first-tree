@@ -2,7 +2,7 @@ import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -29,7 +29,7 @@ function createMockHandler(overrides?: Partial<AgentHandler>): AgentHandler {
   };
 }
 
-function createSessionManager(opts: {
+function createSessionRuntime(opts: {
   sdk?: FirstTreeHubSDK;
   handler?: AgentHandler;
   handlerFactory?: HandlerFactory;
@@ -45,12 +45,12 @@ function createSessionManager(opts: {
   log?: pino.Logger;
   onRuntimeStateChange?: (state: "idle" | "working" | "blocked" | "error") => void;
   onSessionRuntimeChange?: (chatId: string, state: "idle" | "working" | "blocked" | "error") => void;
-}): SessionManager {
+}): SessionRuntime {
   const handler = opts.handler ?? createMockHandler();
   const factory: HandlerFactory = opts.handlerFactory ?? (() => handler);
   const sdk = opts.sdk ?? mockSdk();
 
-  return new SessionManager({
+  return new SessionRuntime({
     session: opts.session ?? {
       idle_timeout: 300,
       max_sessions: 10,
@@ -88,7 +88,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void; reject: (err
   return { promise, resolve, reject };
 }
 
-describe("SessionManager runtime projection from inbox coordinator work", () => {
+describe("SessionRuntime runtime projection from inbox coordinator work", () => {
   it("projects only processing owned work as working and returns to idle before ACK confirms", async () => {
     const events: Array<{ chatId: string; state: string }> = [];
     let capturedCtx: SessionContext | undefined;
@@ -101,7 +101,7 @@ describe("SessionManager runtime projection from inbox coordinator work", () => 
         return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry: vi.fn().mockReturnValue(ack.promise),
       onRuntimeStateChange: vi.fn(),
@@ -141,7 +141,7 @@ describe("SessionManager runtime projection from inbox coordinator work", () => 
       capturedMessage = msg;
       return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       recoverChat,
       ackEntry: vi.fn().mockRejectedValue(new Error("prefix_gap")),
@@ -173,7 +173,7 @@ describe("SessionManager runtime projection from inbox coordinator work", () => 
   it("does not route or ACK duplicate-in-flight redelivery", async () => {
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler, ackEntry });
+    const sm = createSessionRuntime({ handler, ackEntry });
     const entry = mockEntry({ id: 1, chatId: "chat-a", messageId: "same-message" });
 
     await sm.dispatch(entry);
@@ -190,7 +190,7 @@ describe("SessionManager runtime projection from inbox coordinator work", () => 
     vi.useFakeTimers();
     try {
       const handler = createMockHandler();
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         session: { idle_timeout: 1, max_sessions: 10, working_grace_seconds: 60, reconcile_interval_seconds: 300 },
       });
@@ -219,7 +219,7 @@ describe("SessionManager runtime projection from inbox coordinator work", () => 
           return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
         },
       });
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         recoverChat,

@@ -171,6 +171,6 @@ fallback to another provider or default config is forbidden.
 
 ## Out of scope
 
-- Handler V2 / SessionManager split
+- Handler V2 / SessionRuntime split
 - ACK / retry / Reset / persistence redesign
 - Moving adapter protocol / SDK taxonomy into shared catalog

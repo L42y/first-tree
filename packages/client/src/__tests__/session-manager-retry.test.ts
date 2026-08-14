@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
 import { ManagedSkillsUnsafeDiscoveryError } from "../runtime/managed-skills.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -36,20 +36,20 @@ function mockSdk(): { sdk: FirstTreeHubSDK; sendMessage: ReturnType<typeof vi.fn
   };
 }
 
-function makeManager(opts: {
+function makeRuntime(opts: {
   handlers: AgentHandler[];
   sdk?: FirstTreeHubSDK;
   ackEntry?: (entryId: number) => Promise<void>;
   recoverChat?: (chatId: string) => Promise<void>;
   onStateChange?: (chatId: string, state: SessionState) => void;
   onSessionEvent?: (chatId: string, event: SessionEvent) => void;
-}): SessionManager {
+}): SessionRuntime {
   const factory: HandlerFactory = () => {
     const next = opts.handlers.shift();
     if (!next) throw new Error("handler factory exhausted");
     return next;
   };
-  return new SessionManager({
+  return new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
     handlerFactory: factory,
@@ -77,7 +77,7 @@ class FakeRateLimit extends Error {
   status = 429;
 }
 
-describe("SessionManager: transient session retry", () => {
+describe("SessionRuntime: transient session retry", () => {
   it("keeps the entry alive and schedules a retry on RateLimitError", async () => {
     const handler: AgentHandler = {
       start: vi.fn().mockRejectedValue(new FakeRateLimit("rate limited")),
@@ -90,7 +90,7 @@ describe("SessionManager: transient session retry", () => {
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
     const stateChanges: SessionState[] = [];
-    const sm = makeManager({
+    const sm = makeRuntime({
       handlers: [handler],
       onStateChange: (_chat, state) => stateChanges.push(state),
     });
@@ -104,7 +104,7 @@ describe("SessionManager: transient session retry", () => {
     // No "Session start failed" event was forwarded as a structured error to
     // the chat — transient retries stay silent so the user does not see
     // intermediate failures.
-    // SessionManager state should still hold the entry so a user message can
+    // SessionRuntime state should still hold the entry so a user message can
     // trigger an immediate retry.
     expect(sm.totalCount).toBe(1);
 
@@ -124,7 +124,7 @@ describe("SessionManager: transient session retry", () => {
     };
     const events: SessionEvent[] = [];
     const stateChanges: SessionState[] = [];
-    const sm = makeManager({
+    const sm = makeRuntime({
       handlers: [handler],
       onStateChange: (_chat, state) => stateChanges.push(state),
       onSessionEvent: (_chat, ev) => events.push(ev),
@@ -153,7 +153,7 @@ describe("SessionManager: transient session retry", () => {
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
     const events: SessionEvent[] = [];
-    const sm = makeManager({
+    const sm = makeRuntime({
       handlers: [handler],
       onSessionEvent: (_chat, ev) => events.push(ev),
     });
@@ -202,7 +202,7 @@ describe("SessionManager: transient session retry", () => {
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
     const events: SessionEvent[] = [];
-    const sm = makeManager({
+    const sm = makeRuntime({
       handlers: [handler],
       onSessionEvent: (_chat, ev) => events.push(ev),
     });
@@ -249,7 +249,7 @@ describe("SessionManager: transient session retry", () => {
       suspend: vi.fn().mockResolvedValue(undefined),
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
-    const sm = makeManager({ handlers: [failing, recovered] });
+    const sm = makeRuntime({ handlers: [failing, recovered] });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-imm" }));
     // Entry survives transient failure.
@@ -300,7 +300,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({ handlers: [failing, recovered], sdk });
+      const sm = makeRuntime({ handlers: [failing, recovered], sdk });
 
       const base = mockEntry({ id: 1, chatId: "chat-retry-att" });
       await sm.dispatch({
@@ -378,7 +378,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({
+      const sm = makeRuntime({
         handlers: [established, ...unsafeRetries, recovered],
         ackEntry,
         recoverChat,
@@ -466,7 +466,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({ handlers: [first, shouldStayUnused], ackEntry, recoverChat });
+      const sm = makeRuntime({ handlers: [first, shouldStayUnused], ackEntry, recoverChat });
 
       await sm.dispatch(mockEntry({ id: 10, chatId: "chat-unsafe-start-suspend", messageId: "msg-head" }));
       await sm.dispatch(mockEntry({ id: 11, chatId: "chat-unsafe-start-suspend", messageId: "msg-tail" }));
@@ -505,7 +505,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({ handlers: [first, shouldStayUnused], ackEntry });
+      const sm = makeRuntime({ handlers: [first, shouldStayUnused], ackEntry });
 
       await sm.dispatch(mockEntry({ id: 20, chatId: "chat-unsafe-start-shutdown", messageId: "msg-head" }));
       await sm.dispatch(mockEntry({ id: 21, chatId: "chat-unsafe-start-shutdown", messageId: "msg-tail" }));
@@ -543,7 +543,7 @@ describe("SessionManager: transient session retry", () => {
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
-      const sm = makeManager({ handlers: [failing, recovered], recoverChat });
+      const sm = makeRuntime({ handlers: [failing, recovered], recoverChat });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-suspend-retry", messageId: "msg-retry-1" }));
       await sm.handleCommand("chat-suspend-retry", "session:suspend");
@@ -592,7 +592,7 @@ describe("SessionManager: transient session retry", () => {
       suspend: vi.fn().mockResolvedValue(undefined),
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
-    const sm = makeManager({ handlers: [failing, recovered], ackEntry, recoverChat });
+    const sm = makeRuntime({ handlers: [failing, recovered], ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-prefix", messageId: "msg-1" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-prefix", messageId: "msg-2" }));
@@ -644,7 +644,7 @@ describe("SessionManager: transient session retry", () => {
       suspend: vi.fn().mockResolvedValue(undefined),
       shutdown: vi.fn().mockResolvedValue(undefined),
     };
-    const sm = makeManager({ handlers: [established, recovered], ackEntry, recoverChat });
+    const sm = makeRuntime({ handlers: [established, recovered], ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-resume-head", messageId: "msg-1" }));
     if (!initialCtx || !initialMessage) throw new Error("initial session was not captured");
@@ -721,7 +721,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({ handlers: [established, recovered], ackEntry });
+      const sm = makeRuntime({ handlers: [established, recovered], ackEntry });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-pending-resume", messageId: "msg-1" }));
       if (!initialCtx || !initialMessage) throw new Error("initial deferred session was not captured");
@@ -781,7 +781,7 @@ describe("SessionManager: transient session retry", () => {
         suspend: vi.fn().mockResolvedValue(undefined),
         shutdown: vi.fn().mockResolvedValue(undefined),
       };
-      const sm = makeManager({ handlers: [established, recovered] });
+      const sm = makeRuntime({ handlers: [established, recovered] });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-control-retry", messageId: "old-user-message" }));
       if (!initialCtx || !initialMessage) throw new Error("initial control session was not captured");

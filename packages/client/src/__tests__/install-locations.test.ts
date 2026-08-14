@@ -310,7 +310,7 @@ describe("version-manager discovery after a multishell teardown", () => {
     // answered, its per-session dir no longer exists — so only the stable
     // version dir, appended after it, can still answer.
     const loginShellPathDirs = (): string[] => {
-      rmSync(multishell, { force: true });
+      rmSync(multishell, { force: true, recursive: true });
       return [multishell, ...versionManagerBinDirs(home, { env: {} })];
     };
 

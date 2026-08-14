@@ -197,7 +197,7 @@ export type SessionEventRejectedReason = z.infer<typeof sessionEventRejectedReas
 
 /**
  * Client→Server apply-acknowledgement for a ref'd `session:terminate`
- * command. Sent ONLY after the client's `SessionManager.handleCommand(...,
+ * command. Sent ONLY after the client's `SessionRuntime.handleCommand(...,
  * "session:terminate")` has fully resolved — local handler stopped, provider
  * session mapping dropped — so the server can treat `applied: true` as proof
  * the old provider session is gone before it evicts and clears traces.

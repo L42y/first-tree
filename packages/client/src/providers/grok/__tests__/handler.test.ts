@@ -1138,8 +1138,8 @@ describe("grok handler — per-turn ACP transport", () => {
     // notice-trigger SessionEvent (a live trace / notice trigger, NOT the
     // durable chat notice) is emitted strictly BEFORE the turn_end that
     // gates token.complete. The durable chat notice write itself lives in
-    // SessionManager/token.complete and is covered by the generic
-    // SessionManager failure-post tests — this test makes no claim about it.
+    // SessionRuntime/token.complete and is covered by the generic
+    // SessionRuntime failure-post tests — this test makes no claim about it.
     const noticeIndex = events.findIndex(
       (e) => e.kind === "error" && parseProviderRetryEventMessage(e.payload.message) !== null,
     );
