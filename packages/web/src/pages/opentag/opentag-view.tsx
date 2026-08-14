@@ -301,7 +301,7 @@ function StatusLine({
   children?: ReactElement | null;
 }): ReactElement {
   return (
-    <div className="flex min-w-0 items-center" style={{ gap: "var(--sp-3)" }}>
+    <div className="flex min-w-0 items-center" style={{ gap: "var(--opentag-status-item-gap)" }}>
       <span
         aria-hidden="true"
         className="h-5 w-5 shrink-0 rounded-[var(--radius-full)]"

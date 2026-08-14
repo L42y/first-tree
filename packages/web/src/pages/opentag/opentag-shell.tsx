@@ -30,7 +30,7 @@ export function OpenTagShell({
     >
       <header
         className="flex items-center justify-between border-b border-border-faint"
-        style={{ padding: "var(--sp-5) var(--sp-12)" }}
+        style={{ padding: "var(--sp-3) var(--sp-12)" }}
       >
         <OpenTagLogo />
         <Button type="button" variant="link" className="h-auto p-0 text-lead font-normal" onClick={logout}>

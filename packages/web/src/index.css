@@ -351,6 +351,7 @@ video[data-onboarding-orientation-video]::cue {
   --opentag-status-bottom: 4.25rem;
   --opentag-status-columns: repeat(2, minmax(0, 1fr));
   --opentag-status-gap: var(--sp-10);
+  --opentag-status-item-gap: var(--sp-3);
   --opentag-picker-max-height: 10.5rem;
   --opentag-picker-anchor-gap: var(--sp-1);
   --opentag-picker-viewport-margin: var(--sp-2);
@@ -685,11 +686,12 @@ video[data-onboarding-orientation-video]::cue {
 
 @media (max-width: 68rem) {
   [data-opentag-theme="light"] {
-    --opentag-page-gutter: var(--sp-6);
-    --opentag-grid-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
-    --opentag-column-gap: var(--sp-8);
-    --opentag-status-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+    --opentag-page-gutter: var(--sp-4);
+    --opentag-grid-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+    --opentag-column-gap: var(--sp-3);
+    --opentag-status-columns: minmax(0, 0.66fr) minmax(0, 1fr);
     --opentag-status-gap: var(--sp-3);
+    --opentag-status-item-gap: var(--sp-2);
     --opentag-action-padding: var(--sp-6);
     --opentag-qr-flow-offset: var(--sp-8);
     --opentag-qr-size: 10rem;

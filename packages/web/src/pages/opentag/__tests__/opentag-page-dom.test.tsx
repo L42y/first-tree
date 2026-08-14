@@ -298,6 +298,7 @@ describe("OpenTag single-page Desktop flow", () => {
     const state = container.querySelector("[data-opentag-state='connect-computer']");
 
     expect(container.querySelector("h1")?.textContent).toBe("Bring your agent to Feishu");
+    expect(container.querySelector<HTMLElement>("header")?.style.padding).toBe("var(--sp-3) var(--sp-12)");
     expect(container.querySelector("[data-opentag-identity]")?.textContent).toBe("OpenTagChange name");
     expect(state?.textContent).toContain("Copy command");
     expect(state?.querySelectorAll("button")).toHaveLength(1);
@@ -427,6 +428,19 @@ describe("OpenTag single-page Desktop flow", () => {
     ]);
     await click(button(container, "Create agent"));
     expect(agentsApi.createAgent.mock.calls[0]?.[0]).toMatchObject({ runtimeProvider: "pi" });
+  });
+
+  it("keeps Change available after selecting the longest ready runtime label", async () => {
+    computerMock.value = readyComputer({ codex: capability(), "claude-code": capability() });
+    const container = await renderAt("/opentag");
+
+    await click(buttonExact(container, "Change"));
+    const choices = document.querySelector("[role='dialog'][aria-label='Change Agent']");
+    if (!choices) throw new Error("missing Agent picker");
+    await click(button(choices, "Claude Code"));
+
+    expect(container.textContent).toContain("Agent · Claude Code ready");
+    expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("false");
   });
 
   it("pins the OpenTag light palette when the persisted root theme is dark", async () => {
