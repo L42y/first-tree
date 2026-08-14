@@ -411,9 +411,8 @@ describe("OpenCode V1 handler", () => {
           process.execPath,
           [
             "-e",
-            `const fs=require("node:fs");const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(
-              releaseDbFile,
-            )})){clearInterval(timer);process.stdout.write('[{"ready":1}]\\n');}},5);`,
+            `const fs=require("node:fs");const releasePath=process.argv[1];const timer=setInterval(()=>{if(fs.existsSync(releasePath)){clearInterval(timer);process.stdout.write('[{"ready":1}]\\n');}},5);`,
+            releaseDbFile,
           ],
           { ...spec.options, detached: false },
         );

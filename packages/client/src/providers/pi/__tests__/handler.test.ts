@@ -1605,9 +1605,8 @@ describe("Pi handler", () => {
             process.execPath,
             [
               "-e",
-              `const fs=require("node:fs");const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(
-                releaseVersionFile,
-              )})){clearInterval(timer);process.stdout.write("pi 0.80.5\\n");}},5);`,
+              `const fs=require("node:fs");const releasePath=process.argv[1];const timer=setInterval(()=>{if(fs.existsSync(releasePath)){clearInterval(timer);process.stdout.write("pi 0.80.5\\n");}},5);`,
+              releaseVersionFile,
             ],
             { ...spec.options, detached: false },
           );
