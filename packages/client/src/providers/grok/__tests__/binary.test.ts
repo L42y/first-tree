@@ -122,8 +122,22 @@ describe("verifyGrokExecutable — version parse + supported-range gate", () => 
     expect(verification.reason).toContain("outside the supported range");
   });
 
-  it("rejects 0.3.0 (the exclusive ceiling) as deterministic, NOT transient", () => {
-    const verification = verifyGrokExecutable(fakeGrok("grok 0.3.0 (abcd1234)"));
+  it("accepts the current 1.x line (official 1.0.3) inside the range", () => {
+    const verification = verifyGrokExecutable(fakeGrok("grok 1.0.3 (abcd1234)"));
+    expect(verification).toMatchObject({ ok: true, version: "1.0.3" });
+  });
+
+  it("rejects 0.2.116 (below the floor) as deterministic, NOT transient", () => {
+    const verification = verifyGrokExecutable(fakeGrok("grok 0.2.116 (abcd1234)"));
+    expect(verification.ok).toBe(false);
+    if (verification.ok) throw new Error("unreachable");
+    expect(verification.transient).toBe(false);
+    expect(verification.reason).toContain("0.2.116");
+    expect(verification.reason).toContain("outside the supported range");
+  });
+
+  it("rejects 2.0.0 (the exclusive ceiling) as deterministic, NOT transient", () => {
+    const verification = verifyGrokExecutable(fakeGrok("grok 2.0.0 (abcd1234)"));
     expect(verification.ok).toBe(false);
     if (verification.ok) throw new Error("unreachable");
     expect(verification.transient).toBe(false);
@@ -134,8 +148,10 @@ describe("verifyGrokExecutable — version parse + supported-range gate", () => 
     expect(isGrokVersionSupported("0.2.116")).toBe(false);
     expect(isGrokVersionSupported("0.2.117")).toBe(true);
     expect(isGrokVersionSupported("0.2.999")).toBe(true);
-    expect(isGrokVersionSupported("0.3.0")).toBe(false);
-    expect(isGrokVersionSupported("1.0.0")).toBe(false);
+    expect(isGrokVersionSupported("0.3.0")).toBe(true);
+    expect(isGrokVersionSupported("1.0.3")).toBe(true);
+    expect(isGrokVersionSupported("1.9.9")).toBe(true);
+    expect(isGrokVersionSupported("2.0.0")).toBe(false);
   });
 
   it("a clean exit with unparseable output is deterministic, NOT transient", () => {
@@ -218,7 +234,7 @@ describe("resolveGrokRuntimeBinary — spawn-time smoke split", () => {
         verifyPath: () => ({
           ok: false,
           transient: false,
-          reason: "grok 0.2.89 is outside the supported range >=0.2.117 <0.3.0",
+          reason: "grok 2.0.0 is outside the supported range >=0.2.117 <2.0.0",
         }),
       },
     );
