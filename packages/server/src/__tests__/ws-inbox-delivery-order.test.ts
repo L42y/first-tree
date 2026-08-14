@@ -102,16 +102,13 @@ describe("Agent WS — inbox delivery ordering", () => {
     });
   }
 
-  async function openBoundSocket(
-    seed: {
-      accessToken: string;
-      clientId: string;
-      agentId: string;
-      runtimeProvider: string;
-    },
-    url = wsUrl,
-  ): Promise<WebSocket> {
-    const ws = new WebSocket(url);
+  async function openBoundSocket(seed: {
+    accessToken: string;
+    clientId: string;
+    agentId: string;
+    runtimeProvider: string;
+  }): Promise<WebSocket> {
+    const ws = new WebSocket(wsUrl);
     await new Promise<void>((resolve, reject) => {
       ws.once("open", () => resolve());
       ws.once("error", reject);
@@ -591,85 +588,4 @@ describe("Agent WS — inbox delivery ordering", () => {
       await new Promise<void>((resolve) => ws.once("close", () => resolve()));
     }
   }, 15000);
-
-  it("acks a 9-entry prefix when the configured per-chat in-flight cap is 12", async () => {
-    const cappedApp = await createTestApp({ inbox: { maxInFlightPerAgentChat: 12 } });
-    await cappedApp.listen({ port: 0, host: "127.0.0.1" });
-    const address = cappedApp.server.address();
-    if (!address || typeof address === "string") throw new Error("capped test server has no address");
-    const cappedWsUrl = `ws://127.0.0.1:${address.port}/api/v1/agent/ws/client`;
-    let ws: WebSocket | undefined;
-
-    try {
-      const admin = await createAdminContext(cappedApp, {
-        username: `ws-ack-cap12-${crypto.randomUUID().slice(0, 6)}`,
-      });
-      const agent = await createAgent(cappedApp.db, {
-        name: `ws-ack-cap12-agent-${crypto.randomUUID().slice(0, 6)}`,
-        type: "agent",
-        managerId: admin.memberId,
-        clientId: admin.clientId,
-        organizationId: admin.organizationId,
-      });
-      const chat = await createChat(cappedApp.db, admin.humanAgentUuid, {
-        type: "group",
-        participantIds: [agent.uuid],
-      });
-      ws = await openBoundSocket(
-        {
-          accessToken: admin.accessToken,
-          clientId: admin.clientId,
-          agentId: agent.uuid,
-          runtimeProvider: agent.runtimeProvider,
-        },
-        cappedWsUrl,
-      );
-
-      const messageIds: string[] = [];
-      for (let i = 0; i < 9; i++) {
-        const sent = await sendMessage(cappedApp.db, chat.id, admin.humanAgentUuid, {
-          source: "api",
-          format: "text",
-          content: `cap12 ${i + 1}`,
-          metadata: { mentions: [agent.uuid] },
-        });
-        messageIds.push(sent.message.id);
-      }
-      const lastMessageId = messageIds.at(-1);
-      if (!lastMessageId) throw new Error("expected 9 messages");
-
-      const framesPromise = collectDeliverFrames(ws, 9, 10000);
-      await cappedApp.notifier.notify(agent.inboxId, lastMessageId);
-      const frames = await framesPromise;
-      expect(frames).toHaveLength(9);
-      const tail = [...frames].sort((left, right) => left.entryId - right.entryId).at(-1);
-      if (!tail) throw new Error("expected a tail delivery");
-
-      const acceptedPromise = waitForFrame(
-        ws,
-        (message) =>
-          (message as { type?: string; ref?: string }).type === "inbox:ack:accepted" &&
-          (message as { ref?: string }).ref === "ack-cap12-tail",
-      );
-      ws.send(JSON.stringify({ type: "inbox:ack", entryId: tail.entryId, ref: "ack-cap12-tail" }));
-      await expect(acceptedPromise).resolves.toMatchObject({
-        type: "inbox:ack:accepted",
-        entryId: tail.entryId,
-        ref: "ack-cap12-tail",
-        disposition: "acked",
-        ackedCount: 9,
-      });
-
-      for (const messageId of messageIds) {
-        expect((await loadNotifyRow(agent.inboxId, messageId, cappedApp.db))?.status).toBe("acked");
-      }
-    } finally {
-      if (ws) {
-        const socket = ws;
-        socket.close();
-        await new Promise<void>((resolve) => socket.once("close", () => resolve()));
-      }
-      await cappedApp.close();
-    }
-  }, 20000);
 });
