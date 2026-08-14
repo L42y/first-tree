@@ -1,6 +1,6 @@
 ---
 name: first-tree-read
-version: 0.8.1
+version: 0.8.5
 description: Read the applicable Context Tree before acting. In BYO sessions, route only among locally authorized Teams by reading each exact root SCOPE.md before selecting one task snapshot; in managed workspaces, use the bound Tree. Do not use for a Context Tree PR/MR review or an explicit broad audit of stored tree content.
 ---
 
@@ -41,6 +41,34 @@ Do not promote non-normal content into canonical tree facts. If normal content
 requires non-normal material to be understood, report a tree hygiene concern.
 If code and tree content conflict, follow the generated policy's code-vs-tree
 drift rule.
+
+## Unbound or broken Tree binding
+
+A missing Context Tree removes only the operations that depend on it. The
+agent keeps working from the user's messages, chat context, pasted content,
+and locally available inputs, and never prompts the user to bind, create, or
+connect a Tree merely because one is absent.
+
+- **Explicitly unbound:** when the trusted managed briefing explicitly states
+  there is no bound Tree, exit this skill for ordinary tasks and continue the
+  task without Context Tree content. Run no Tree commands and offer no Tree
+  setup guidance. A leftover `.first-tree/workspace.json` manifest or
+  `context-tree/` checkout from a previously bound session may still be on
+  disk — it is inert residue, and this gate precedes any disk discovery:
+  never read, trust, or recover from it. If the user explicitly asked for a
+  Tree read, state only that this Tree read cannot be completed because no
+  Tree is bound; do not expand the absence into bind/create guidance. An
+  explicit first-time Tree creation request routes to `first-tree-seed`, not
+  this skill.
+- **Declared but broken:** "broken" means the binding metadata, resolved
+  path, or upstream identity is malformed or inconsistent — in that case
+  keep failing closed for Tree operations — never guess a Tree. Report
+  the binding gap, then continue every part of the task that does not
+  depend on Tree content;
+  the broken binding blocks only Tree reads, not unrelated work.
+  A fully declared binding whose local checkout simply does not exist
+  yet is not broken: materialize it per Tree Location (step 2B) and
+  continue.
 
 ## Workflow
 
@@ -140,8 +168,9 @@ cat "$WS/.first-tree/workspace.json"
 ```
 
 Resolve the context repo as `<workspaceRoot>/<manifest.tree>`. If the
-manifest is missing or malformed, stop and report the binding gap — do
-not guess a context repo.
+manifest is missing or malformed, stop the Tree read and report the binding
+gap — do not guess a context repo — then continue any task work that does
+not depend on Tree content.
 
 If the manifest is present but the resolved path **does not exist on
 disk**, the workspace is agent-managed and this is the agent's job to
@@ -151,6 +180,15 @@ path (the briefing carries the upstream URL, branch, and a ready
 `git clone` command). Once the directory exists, continue below. (If the
 path exists as a **symlink**, treat it as the legacy shared-pool layout —
 remove only the symlink, then clone per the briefing.)
+
+If the resolved path **already exists as a checkout you did not clone this
+session**, verify its identity before any content read — the Tree always
+lands at the same path, so a leftover checkout from a previous binding is
+indistinguishable by location alone. Run `tree tree` with the briefing's
+declared identity (`--expect-remote <upstream> --expect-branch <branch>`).
+A mismatch is declared-broken: never read, never delete, never repoint —
+stop the Tree read, report the binding gap, and continue any task work that
+does not depend on Tree content.
 
 You do **not** need a separate `git pull` step before reading: the
 `<firstTreeInvocation> tree tree` command in step 2 runs `git pull --ff-only` on the

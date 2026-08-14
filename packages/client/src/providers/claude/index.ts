@@ -38,6 +38,7 @@ import type {
   ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
+  ATTACHMENT_UNAVAILABLE_NOTE,
   buildAgentBriefing,
   buildBriefingUpdateNotice,
   buildProviderRetryEvent,
@@ -626,7 +627,9 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           lines.push(
             imagePath
               ? `\nFilename: ${att.filename}\nPath: ${imagePath}`
-              : `\n[Image "${att.filename}" not available on this device]`,
+              : message.unavailableAttachmentIds?.has(att.imageId)
+                ? `\n[Image "${att.filename}" expired or unavailable — ${ATTACHMENT_UNAVAILABLE_NOTE}]`
+                : `\n[Image "${att.filename}" not available on this device]`,
           );
         }
         const docNote = renderDocumentAttachmentsForLLM(message);
@@ -644,7 +647,9 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         const imagePath = findImagePath(message.chatId, imageId, mimeType);
         const text = imagePath
           ? `An image was shared in this chat. Please use the Read tool to read it, then respond based on what you see.\n\nFilename: ${filename}\nPath: ${imagePath}`
-          : `[Image "${filename}" not available on this device]`;
+          : message.unavailableAttachmentIds?.has(imageId)
+            ? `[Image "${filename}" expired or unavailable — ${ATTACHMENT_UNAVAILABLE_NOTE}]`
+            : `[Image "${filename}" not available on this device]`;
         return {
           type: "user",
           message: { role: "user", content: await formatFileText(text) },

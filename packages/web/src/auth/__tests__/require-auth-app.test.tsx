@@ -2,14 +2,11 @@
 
 import type { MeMembership } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, type ReactNode } from "react";
-import { createRoot } from "react-dom/client";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
-import { NO_TEAM_ENTRY_PATH, RequireAuth } from "../require-auth.js";
-
-globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+import { RequireAuth } from "../require-auth.js";
 
 const authMock = vi.hoisted(() => ({
   value: {
@@ -18,7 +15,7 @@ const authMock = vi.hoisted(() => ({
     user: null,
     memberships: [] as MeMembership[],
     currentMembership: null as MeMembership | null,
-    hasNoTeam: false,
+    meBoundary: null as "reconciling" | "invite-required" | "membership-repair-required" | "unavailable" | null,
     organizationId: null,
     memberId: null,
     role: null,
@@ -36,6 +33,7 @@ const authMock = vi.hoisted(() => ({
     adoptTokens: async () => undefined,
     selectOrganization: async () => undefined,
     refreshMe: async () => undefined,
+    refreshMeStrict: async () => undefined,
     logout: () => undefined,
   },
 }));
@@ -58,48 +56,12 @@ function renderRoute(path: string): string {
           <Route element={<RequireAuth />}>
             <Route index element={<div>Dashboard</div>} />
             <Route path="/settings" element={<div>Settings</div>} />
-            <Route path="/settings/account" element={<div>Account settings</div>} />
-            <Route path="/quickstart" element={<div>Quickstart</div>} />
           </Route>
           <Route path="/login" element={<div>Login</div>} />
-          <Route path="/templates" element={<div>Template library</div>} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
   );
-}
-
-/**
- * `renderToStaticMarkup` does not follow `<Navigate>` — a redirect renders as
- * an empty string. Mount for real when the DESTINATION is what is under test.
- */
-function renderRouteInDom(path: string): string {
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container);
-  const queryClient = new QueryClient();
-  act(() => {
-    root.render(
-      <MemoryRouter initialEntries={[path]}>
-        <QueryClientProvider client={queryClient}>
-          <Routes>
-            <Route element={<RequireAuth />}>
-              <Route index element={<div>Dashboard</div>} />
-              <Route path="/settings" element={<div>Settings</div>} />
-              <Route path="/settings/account" element={<div>Account settings</div>} />
-              <Route path="/quickstart" element={<div>Quickstart</div>} />
-            </Route>
-            <Route path="/login" element={<div>Login</div>} />
-            <Route path={NO_TEAM_ENTRY_PATH} element={<div>Template library</div>} />
-          </Routes>
-        </QueryClientProvider>
-      </MemoryRouter>,
-    );
-  });
-  const html = container.innerHTML;
-  act(() => root.unmount());
-  container.remove();
-  return html;
 }
 
 describe("RequireAuth", () => {
@@ -117,38 +79,28 @@ describe("RequireAuth", () => {
     authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: false };
     expect(renderRoute("/settings")).not.toContain("Settings");
 
-    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true };
+    authMock.value = {
+      ...authMock.value,
+      isAuthenticated: true,
+      meLoaded: true,
+      currentMembership: { organizationId: "org-1" } as MeMembership,
+    };
     expect(renderRoute("/settings")).toContain("Settings");
   });
 
-  // Everything behind this guard is org-scoped, and the first org-scoped query
-  // to mount throws without a selected org. A Team-less user goes to the
-  // Team-less entry instead.
-  it("sends an authenticated user with no Team to the Team-less entry", () => {
-    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true, hasNoTeam: true };
-    expect(renderRouteInDom("/settings")).toContain("Template library");
-    expect(renderRouteInDom("/settings")).not.toContain("Settings");
-    // Including the workspace root, which would otherwise mount the dashboard.
-    expect(renderRouteInDom("/")).toContain("Template library");
-    expect(renderRouteInDom("/")).not.toContain("Dashboard");
-  });
+  it("does not mount Team-scoped routes from an authenticated empty-membership snapshot", () => {
+    authMock.value = {
+      ...authMock.value,
+      isAuthenticated: true,
+      meLoaded: true,
+      currentMembership: null,
+      meBoundary: "invite-required",
+    };
 
-  it("keeps user-scoped Quickstart and account routes reachable without a Team", () => {
-    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true, hasNoTeam: true };
-
-    expect(renderRouteInDom("/quickstart?campaign=production-scan")).toContain("Quickstart");
-    expect(renderRouteInDom("/settings/account")).toContain("Account settings");
-  });
-
-  it("keeps a member with Teams in the workspace even while /me has not proven authority", () => {
-    // `hasNoTeam` is false whenever /me is not authoritative, so a transport
-    // failure that leaves `memberships` empty never ejects a real member.
-    authMock.value = { ...authMock.value, isAuthenticated: true, meLoaded: true, hasNoTeam: false };
-    expect(renderRouteInDom("/settings")).toContain("Settings");
-  });
-
-  it("names an entry destination that is not itself behind this guard", () => {
-    // A destination inside the guard would redirect to itself forever.
-    expect(NO_TEAM_ENTRY_PATH).toBe("/templates");
+    const html = renderRoute("/settings");
+    expect(html).not.toContain("Settings");
+    expect(html).toContain("requires an invitation");
+    expect(html).toContain("Try again");
+    expect(html).toContain("Sign out");
   });
 });

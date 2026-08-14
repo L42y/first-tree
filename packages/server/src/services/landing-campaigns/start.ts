@@ -33,10 +33,8 @@ import { notifyRecipients } from "../notifier.js";
 import { sendToClient } from "../runtime/connection-manager.js";
 import { pickDefaultMembership } from "../team/default-membership.js";
 import {
-  createPersonalTeam,
   lockMembershipLifecycleUser,
   MEMBER_STATUSES,
-  personalTeamDisplayName,
   reactivateMembership,
   syncCurrentUserDisplayName,
 } from "../team/membership.js";
@@ -122,7 +120,7 @@ async function resolveCallerMembership(
   db: Database,
   userId: string,
   organizationId?: string,
-): Promise<ActiveMembership | null> {
+): Promise<ActiveMembership> {
   const rows = await db
     .select({
       id: members.id,
@@ -142,7 +140,10 @@ async function resolveCallerMembership(
         return picked ? rows.find((row) => row.id === picked.id) : undefined;
       })();
 
-  return selected ?? null;
+  if (!selected) {
+    throw new NotFoundError("Active membership not found");
+  }
+  return selected;
 }
 
 function assertCallerCanStartLandingCampaign(app: FastifyInstance, caller: ActiveMembership): void {
@@ -346,34 +347,16 @@ async function provisionTrialAgent(
   trialAgent: Awaited<ReturnType<typeof ensureTrialAgent>>;
 }> {
   return app.db.transaction(async (tx) => {
-    // Drizzle's transaction callback exposes the same runtime query surface as
-    // `Database`, but its inferred type omits the app's relational-query
-    // decoration. The provisioning helpers use only query-builder methods.
     const db = tx as unknown as Database;
-    // The stable user row is the serialization point shared by every
-    // first-Team entry. Two Quickstart tabs therefore cannot mint two Teams.
-    const lockedUser = await lockMembershipLifecycleUser(db, input.userId);
-
-    let caller = await resolveCallerMembership(db, input.userId, input.organizationId);
-    if (!caller) {
-      // Supplying a Team id is an existing-Team request, never permission to
-      // create a replacement when that membership cannot be resolved.
-      if (input.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
-        throw new NotFoundError("Active membership not found");
-      }
-      if (app.config.access?.allowedOrganizationId) {
-        throw new ForbiddenError("This server requires an invitation link to join a team.");
-      }
-      const team = await createPersonalTeam(db, {
-        userId: input.userId,
-        username: lockedUser.username,
-        teamDisplayName: personalTeamDisplayName(lockedUser.displayName),
-        userDisplayName: lockedUser.displayName,
-      });
-      caller = await resolveCallerMembership(db, input.userId, team.organizationId);
-      if (!caller) throw new Error("Unexpected: created Team has no active caller membership");
-    }
-
+    // The caller was authorized from a snapshot taken before this transaction
+    // opened. A self-leave or admin removal can commit in that window, so take
+    // the same per-user lifecycle lock those paths take and re-read the
+    // membership before the first Team write. Without this fence a stale
+    // request still provisions the service member and trial Agent into a Team
+    // the caller no longer belongs to, and those rows commit whether or not
+    // chat creation later rejects the inactive human mirror.
+    await lockMembershipLifecycleUser(db, input.userId);
+    const caller = await resolveCallerMembership(db, input.userId, input.organizationId);
     assertCallerCanStartLandingCampaign(app, caller);
 
     const lockKey = `${caller.organizationId}:${input.campaign}`;
@@ -570,16 +553,10 @@ export async function startLandingCampaignTrial(
   const skillSet = getLandingCampaignSkillSet(body.campaign);
   if (!skillSet) throw new NotFoundError(`Landing campaign "${body.campaign}" not found`);
   const repo = parseRepo(body.repoUrl);
-  // Preserve the existing authorization-before-runtime-config behavior for
-  // callers who already have a Team. A Team-less caller intentionally falls
-  // through so the validated official runtime can participate in the atomic
-  // first-Team transaction below.
-  const existingCaller = await resolveCallerMembership(app.db, userId, body.organizationId);
-  if (existingCaller) {
-    assertCallerCanStartLandingCampaign(app, existingCaller);
-  } else if (body.organizationId || !app.config.opentag.agentFirstOnboardingEnabled) {
-    throw new NotFoundError("Active membership not found");
-  }
+  // Fail fast before the runtime-config check, preserving the existing error
+  // ordering. Provisioning revalidates this under the lifecycle lock.
+  assertCallerCanStartLandingCampaign(app, await resolveCallerMembership(app.db, userId, body.organizationId));
+
   await assertOfficialLandingCampaignClient(app.db, config.clientId, config.serviceUserId, config.serviceOrgId);
   const { caller, serviceMember, trialAgent } = await provisionTrialAgent(app, {
     userId,

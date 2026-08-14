@@ -222,6 +222,43 @@ describe("DocPreviewDrawer", () => {
     expect(dom.textContent).toContain("Integrity check failed");
   });
 
+  it("shows an explicit expired state when the attachment row is gone (404)", async () => {
+    const { ApiError } = await import("../../api/client.js");
+    attachmentsMocks.fetchAttachmentText.mockRejectedValue(new ApiError(404, "Not Found"));
+    const { DocPreviewDrawer } = await import("../doc-preview-drawer.js");
+    const route = `/?docChat=chat-1&docMsg=msg-1&docAttachment=${ATT_ID}`;
+    const dom = await renderAt(route, <DocPreviewDrawer />, (client) => {
+      client.setQueryData(docAttachmentRefQueryKey(ATT_ID), docRef);
+    });
+    await flush();
+    expect(dom.textContent).toContain(
+      "Attachment expired or unavailable (Cloud message attachments are retained for 14 days).",
+    );
+    expect(dom.textContent).not.toContain("Not Found");
+  });
+
+  it("shows the retention note when the fallback download hits a 404", async () => {
+    const { ApiError } = await import("../../api/client.js");
+    attachmentsMocks.fetchAttachmentText.mockResolvedValue({
+      text: "x",
+      mimeType: "text/markdown",
+      sizeBytes: 2 * 1024 * 1024,
+    });
+    attachmentsMocks.downloadAttachment.mockRejectedValue(new ApiError(404, "Not Found"));
+    const { DocPreviewDrawer } = await import("../doc-preview-drawer.js");
+    const route = `/?docChat=chat-1&docMsg=msg-1&docAttachment=${ATT_ID}`;
+    const dom = await renderAt(route, <DocPreviewDrawer />, (client) => {
+      client.setQueryData(docAttachmentRefQueryKey(ATT_ID), docRef);
+    });
+    await flush();
+    const downloadButton = [...dom.querySelectorAll("button")].find((b) => b.textContent === "Download to view");
+    expect(downloadButton).toBeTruthy();
+    await click(downloadButton ?? null);
+    expect(dom.textContent).toContain(
+      "Attachment expired or unavailable (Cloud message attachments are retained for 14 days).",
+    );
+  });
+
   it("shows a download fallback when the doc exceeds the preview render cap", async () => {
     attachmentsMocks.fetchAttachmentText.mockResolvedValue({
       text: "x",

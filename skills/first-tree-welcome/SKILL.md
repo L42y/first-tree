@@ -1,6 +1,6 @@
 ---
 name: first-tree-welcome
-version: 1.4.1
+version: 1.4.4
 description: Use for a First Tree onboarding first chat, especially natural opening messages like "welcome aboard", "Please help me get started with First Tree", or "Please help me get settled into this team on First Tree." Also covers the production-scan fix first chat ("fix the launch blockers found by my production readiness scan"). Do not use for external-channel or integration messages (including Feishu), dedicated tree setup chats, ordinary chats, PR/MR reviews, repo scans, tree writes, or maintenance.
 ---
 
@@ -35,16 +35,19 @@ Two look-alikes that are NOT this launcher, and one that routes by shape:
   source exists, route by blocker count — several eligible blockers become their own fix chats, a
   single one is just fixed in place (see "Production-scan fix handoff" below).
   The onboarding greeting ("welcome aboard") only tells you the human's role
-  for the later Context Tree offer; it does NOT change how you handle the fix.
+  for later setup gating; it does NOT change how you handle the fix.
   No readable findings source → ask for the report or a re-run, then stop.
 
 ## What This Is
 
 Make the first work loop immediate and reviewable:
 
-1. **Connect one real project** — use only the project entry the user supplied.
-2. **Show it is readable** — take a bounded look and return a two-sentence
-   project receipt, without pretending that receipt is product value.
+1. **Start from the user's goal** — deliver value from whatever input the user
+   gave: their messages, pasted content, attachments, a local folder, or none
+   at all. Connect code only when the goal genuinely needs it.
+2. **When code is readable, show it** — take a bounded look and return a
+   two-sentence project receipt, without pretending that receipt is product
+   value.
 3. **Complete one microtask here** — offer one or two small single-select
    choices, do the selected work in this first chat, and show a concrete result.
 4. **Bridge once** — after the result, offer only the one next step that follows
@@ -53,7 +56,9 @@ Make the first work loop immediate and reviewable:
 This chat is **value-first, visible, and consent-gated**. It is not a launcher
 for the first task and it is not a parallel-work demo. Do not show longer work,
 time estimates, bundles, multi-select, Context Tree setup, GitHub App setup, or
-child-chat fan-out before the first result. The user should make one low-cost
+child-chat fan-out before the first result. Context Tree setup is never offered
+from a result — not even a strong one; only an explicit user request routes to
+the dedicated tree chat. The user should make one low-cost
 choice and see it finish in the chat they are already in.
 
 Treat the opening message as the user's onboarding request. Reply naturally,
@@ -90,11 +95,14 @@ available local files:
 - **matching host CLI / local credentials**: `gh` for GitHub, `glab` for
   GitLab, or plain `git` for another host; usable or not.
 
-If state is unknown, first try to resolve it yourself (read the greeting for
-role, attempt the repo read, check the host CLI, `gh` or `glab`); only if it
-stays genuinely unresolvable, name the one specific missing piece and ask for
-that. Do not
-invent repo access, GitHub/GitLab authorization, or tree readiness.
+If state is unknown and the current task genuinely needs the repo or forge
+capability, first try to resolve it yourself (read the greeting for role,
+attempt the repo read, check the host CLI, `gh` or `glab`). A plain greeting
+or a repo-free task gets no host-CLI probe at all — work from the user's
+messages and locally available inputs. Only if the state stays genuinely
+unresolvable for the task at hand, name the one specific missing piece and
+ask for that. Do not invent repo access, GitHub/GitLab authorization, or tree
+readiness.
 
 #### Reading role from the greeting
 
@@ -121,20 +129,28 @@ these examples are kept in sync by a test — do not paraphrase them loosely.
 
 ### Your first substantive reply
 
-- **No readable code yet** — no repo connected, no local path, no Git repository URL, and
-  no readable team context. Make exactly one minimal ask: request one project
-  entry point — prefer a local project folder path on this machine, or accept a
-  Git repository URL — without faking understanding. Recommended shape: "Share
-  the local project folder path on this machine; if it is not local, send the Git
-  repository URL instead. I'll read a small slice, then give you one or two
-  concrete ways to start." If they share a
-  GitHub URL, use host `gh` first; if they share a GitLab URL, use `glab` first.
-  This is project intake, not a value result. Do not scan the machine for other
-   directories, do not ask for GitHub App authorization first, do not offer a
-   task yet, and do not mention Context Tree
-   setup yet. This input is required to continue, so deliver the minimal request
-   with `first-tree chat ask <human> "<local-path-first request>"` and no option
-   menu; do not leave it only in console/final narration.
+- **No concrete task yet** — the opening is a plain greeting with no task and
+  no source input. Say briefly that you are ready to work, and make exactly one
+  tracked ask for the outcome the user wants first, delivered with
+  `first-tree chat ask <human> "<goal-first ask>"` and no option menu; do not
+  leave it only in console/final narration. The ask must NOT mention a repo,
+  path, URL, binding, Context Tree creation, provider, App, CLI install, or
+  asking an admin to fix configuration — it asks what the user wants to
+  accomplish, not for project plumbing. Recommended shape: "I'm ready to work.
+  What's the first outcome you'd like from me?"
+- **A concrete task is already visible** — the opening message or the first
+  visible continuation names a concrete task that does not depend on repo
+  access. Complete it directly in this chat from the user's messages, chat
+  context, and locally available inputs; never force a repo/code menu in front
+  of it.
+- **A concrete task needs existing code** — only when the requested task
+  genuinely depends on code you cannot see and no source input exists, ask for
+  the minimal input with one tracked `chat ask`: accept a plain directory on
+  this machine, pasted content, attachments, or a repository URL — never
+  require creating a git repository first, and do not scan the machine for
+  other directories. Read a shared repository URL with plain `git` (clone or
+  fetch) first; use the host CLI (`gh` for GitHub, `glab` for GitLab) only
+  when the task needs a forge/API action or authenticated access.
 - **Readable code available** — a repo is connected and you can read it, or a
   local path / URL was given and you can read it. (A repo that is connected but
   local credentials cannot read it is the "cannot read it" state below — report
@@ -225,8 +241,9 @@ When either shape matches:
 4. If the repository is not readable from this machine, follow the normal
    cannot-read rule: state the exact failure and make the smallest access ask;
    do not fake progress on findings alone.
-5. Context Tree rules are unchanged: offer a tree build only after the fix work
-   has shown value, and only per the existing role/tree-state gates.
+5. Context Tree rules are unchanged: never offer a tree build from fix results;
+   only an explicit user request routes to the dedicated tree chat (see
+   Spawning Task Chats).
 
 ### State → action (repo/tree axis; role is the overlay below)
 
@@ -235,33 +252,43 @@ never fall through silently.
 
 | State | What to do |
 | --- | --- |
-| No project yet (no repo/path/URL) | Ask for one local project folder path or a Git repository URL. For GitHub URLs try host `gh` / local credentials first; for GitLab URLs try `glab` / local credentials first; for another host use plain `git`. Do not ask for GitHub authorization first, and do not offer tree build (no code to draw it from). |
-| Repo/resource exists but local credentials cannot read it | **Diagnose why** (private repo needing access / `gh` or `glab` not authenticated / wrong path / network), then give the one specific next step for that cause — `gh auth login` or `glab auth login` if the matching CLI isn't authenticated; for a private repo, the narrowest access, an accessible URL, or a local project folder path; the corrected path if it's mistyped (see **Handling snags**). Do not claim private repo contents, fake understanding, or send a menu; don't just report the read failure and ask for a path/URL/credential all at once. |
-| Repo readable, tree missing or empty | Take the bounded project read, send the receipt, and offer one or two microtasks without setup. Resolve tree details only if the post-result bridge could legitimately be a Context Tree task. |
+| No concrete task yet (plain greeting, no source input) | Say briefly that you are ready to work and make the one goal-first tracked ask for the outcome the user wants first — never a repo/path/URL/binding/setup ask. Do not offer tree build. |
+| Concrete task visible, no existing code needed | Complete it directly in this chat from the user's messages, chat context, and locally available inputs; never force a repo/code menu in front of it. |
+| Concrete task needs existing code, no source input | Ask for the minimal source input — a plain directory, pasted content, attachments, or a repository URL (never a new git repository). Read repository URLs with plain `git` first; use `gh` / `glab` only for forge/API actions or authenticated access. Do not ask for GitHub authorization first, and do not offer tree build. |
+| Repo/resource exists but local credentials cannot read it | This blocks only repo-dependent work — keep serving everything else. **Diagnose why** (private repo needing access / `gh` or `glab` not authenticated / wrong path / network), then give the one specific next step for that cause — `gh auth login` or `glab auth login` if the matching CLI isn't authenticated; for a private repo, the narrowest access, an accessible URL, or a local project folder path; the corrected path if it's mistyped (see **Handling snags**). Do not claim private repo contents, fake understanding, or send a menu; don't just report the read failure and ask for a path/URL/credential all at once. |
+| Repo readable, tree missing or empty | Take the bounded project read, send the receipt, and offer one or two microtasks without setup. A missing or empty tree is background state, not a bridge; do not offer a tree build. |
 | Repo readable, tree already populated | Use relevant tree context only when already available, but keep the project read bounded and offer one or two microtasks. Do not turn tree state into a setup or Review prompt. |
-| Repo readable, tree state unknown | Use repo evidence for the receipt and microtask choice without inventing tree readiness. Resolve tree state only if a later result makes it relevant. |
+| Repo readable, tree state unknown | Use repo evidence for the receipt and microtask choice without inventing tree readiness. |
 | Any other state (catch-all) | Give evidence-backed value from whatever is readable; do not invent repo access or tree readiness. If nothing is actionable yet, first exhaust what you can safely check yourself, then ask for the one specific thing that unblocks you (see **Handling snags**). |
 
 ### Role overlay (holds in EVERY state above)
 
-Role gates only post-result admin setup (building the tree, selecting team repos,
-installing the GitHub App), not project intake or the first microtask.
+Role gates only post-result admin setup (selecting team repos, installing the
+GitHub App), not the goal-first ask or the first microtask.
 
 - **Invitee / member**: NEVER offered tree build, team-repo selection, or GitHub
   App install, and must not mutate org-wide setup — regardless of which state
-  matched. Give value from whatever is readable; note that an admin owns/finishes
-  team setup. On a not-ready team, offer a meet-the-agent / local-path path now.
+  matched. Give value from whatever is readable. Mention that an admin
+  owns/finishes team setup only when the current concrete result genuinely
+  depends on an admin-only capability; a generic no-repo/no-Tree first chat says
+  nothing about setup or admins. On a not-ready team, give value from the
+  user's messages and locally available inputs now.
 - **Unclear**: first resolve role from the greeting (see **Reading role from the
   greeting**) — it usually resolves. Only if it stays genuinely unresolvable, do
-  not assume admin: give value from whatever is readable, and note an admin owns
-  team setup — don't walk a non-admin into an admin surface, and don't lead with
-  "who should be involved?".
+  not assume admin: give value from whatever is readable; mention that an admin
+  owns team setup only when the current concrete result genuinely depends on an
+  admin-only capability — don't walk a non-admin into an admin surface, and
+  don't lead with "who should be involved?".
 
-You do not create or bind the tree yourself in this chat. When the user accepts
-the later, qualified "Build your Context Tree" bridge, SPAWN a dedicated chat and let
-`first-tree-seed` own repo creation, binding, and seeding there (see Spawning
-Task Chats). Never silently create, bind, or duplicate team-wide setup from this
-launcher chat.
+You do not create or bind the tree yourself in this chat, and a result never
+earns a tree offer. Route only explicit user requests, by tree state: build or
+set up the Context Tree on a missing or empty tree → SPAWN a dedicated chat
+and let `first-tree-seed` own repo creation, binding, and seeding there (see
+Spawning Task Chats); read the Context Tree → `first-tree-read`; persist
+current decisions as shared team context on a populated tree →
+`first-tree-write`, a source-backed write still behind its own source gate —
+never Seed, which refuses non-empty trees. Never silently create, bind, or
+duplicate team-wide setup from this launcher chat.
 
 ## The First In-Chat Work Loop
 
@@ -364,12 +391,13 @@ leave the result or bridge only in console/final narration:
   GitHub App yet;
 - after a PR exists, mention GitHub App coverage only when live CI, review, or
   merge tracking is actually needed and unavailable;
-- offer a separate Context Tree chat only when the human is a confirmed admin,
-  the tree is missing/empty, and the result exposed a lasting cross-module
-  decision that future work must reuse;
-- otherwise bridge to one adjacent verification or implementation step.
+- otherwise bridge to one adjacent verification or implementation step directly
+  tied to the user's current goal;
+- never offer a Context Tree build or a separate tree chat from a result, even
+  when it exposed a lasting cross-module decision — only an explicit user
+  request routes to tree work.
 
-Never stack PR, GitHub App, Context Tree, repository registration, or another
+Never stack PR, GitHub App, repository registration, or another
 task as simultaneous bridges. The session project is not automatically added
 to the long-term Team repository catalog.
 
@@ -394,8 +422,8 @@ existing status and completion contract. Do not present later fan-out as the
 first menu or describe it as multi-agent collaboration when it is only separate
 work streams.
 
-Two other paths may still create task chats: a user accepts the qualified
-post-result Context Tree bridge, or a production-scan fix launcher has two or
+Two other paths may still create task chats: the user explicitly asks to build
+the team's Context Tree, or a production-scan fix launcher has two or
 more eligible blockers. Production-scan fan-out remains capped at five active
 fix chats with distinct topics. Open each later task with:
 
@@ -498,30 +526,6 @@ Never substitute `first-tree github follow` or GitHub App setup guidance for Git
 - If the task result did not establish whether tracking is active or blocked,
   report only the PR result. Do not infer App debt.
 
-## After value lands: the qualified tree bridge
-
-Delivering value is the moment the user is most open to the durable next step —
-building the team's Context Tree. Offer it **once**, after value, on these
-conditions:
-
-- The first microtask choice never included tree setup. If the user already received
-  and declined this later offer, never re-offer it.
-- Only when the same setup gates still hold: the human is an **admin** (per
-  **Reading role from the greeting**) and the team's Context Tree is still
-  **missing or empty** (confirm by reading the target team's tree, not by
-  trusting a binding).
-- Only when the verified result exposed a lasting decision that crosses module
-  boundaries and future work needs to reuse. A routine trace, local finding,
-  test result, or small diff does not qualify.
-- If the result includes a diff, the PR/MR question takes priority as the only
-  bridge; do not add the tree offer beside it.
-- Offer it **once**, tight (one short question tied to the observed decision).
-  If they say no or
-  later, drop it — no repeated nudging. Never for an invitee, and never when the
-  tree is already populated.
-- On "yes", spawn the dedicated tree chat as in **Spawning Task Chats** — never
-  create, bind, or seed inline in this launcher.
-
 ## No other first-result setup
 
 Do not inspect or surface Automatic Review, Team repository registration, or
@@ -562,12 +566,20 @@ When a step fails or the situation is unexpected, do not relay the symptom and
 stop. Find the real cause, take the smallest forward action yourself, and ask
 the user only for what only they can supply.
 
+- **A missing capability removes only the work that depends on it.** No Context
+  Tree, no readable repo, no forge CLI, no team binding or provider — none of
+  these is by itself a reason to stop, and none may by itself prompt the user
+  to bind, create, connect, or install anything. Keep working from the user's
+  messages, chat context, pasted content/attachments, and locally available
+  inputs; only the concrete step that genuinely needs the missing capability is
+  blocked, and only that step gets a named, minimal ask.
 - **Diagnose to the cause, not the symptom.** "Can't read the repo" is a
   symptom; the cause is one of — a private repo needing access, `gh` or `glab` not
   authenticated, a mistyped path, a network issue. Name the actual cause and act
   on *that*.
 - **Exhaust what you can safely do before asking.** Retry the specific safe
-  action, try the obvious alternative (host `gh` or `glab`, a local path), read what you
+  action, try the obvious alternative (plain `git`, a local path, the matching
+  host CLI when authentication is the cause), read what you
   can. Escalate to the user only when you hit something only they can supply
   (access, a credential, a login, a repo) or a genuine decision.
 - **When you do ask, make it specific and small.** "`gh` isn't logged in — run
@@ -586,42 +598,53 @@ choices — not about acting on things that are genuinely the user's to allow.
 
 **Consent gates.** Authorization, repo authorization, Context Tree
 creation/binding, `gh` / `glab` repo create, pushes, PR/MR creation, and destructive actions
-all require explicit user consent. The user's acceptance of the later,
-contextual tree offer IS consent to open its dedicated task chat; other
+all require explicit user consent. The user's explicit request to build the
+Context Tree IS consent to open its dedicated task chat; other
 authorizations use a tracked ask.
 
 **Role.**
 
-- **Admins** may be offered "Build your Context Tree" (tree missing/empty, after
-  value), and guided through GitHub App / repo selection when a chosen task needs
-  durable platform capability.
+- **Admins** may be guided through GitHub App / repo selection when a chosen
+  task needs durable platform capability.
 - **Invitees / members** must NOT be offered tree build, team-repo selection, or
-  GitHub App install, and must not mutate org-wide setup — in every state. Note
-  an admin owns those.
+  GitHub App install, and must not mutate org-wide setup — in every state.
+  Mention that an admin owns those only when the current concrete result
+  genuinely depends on an admin-only capability; a generic no-repo/no-Tree
+  first chat says nothing about setup or admins.
 - **Unclear role**: resolve it from the greeting first (see **Reading role from
-  the greeting**); only if genuinely unresolvable, do not assume admin — note an
-  admin owns setup rather than routing a possible non-admin into an admin
-  surface, and don't lead with "who should be involved?".
+  the greeting**); only if genuinely unresolvable, do not assume admin — mention
+  that an admin owns setup only when the current concrete result genuinely
+  depends on an admin-only capability, rather than routing a possible non-admin
+  into an admin surface, and don't lead with "who should be involved?".
 
 **Forge / repo access.**
 
-- Prefer a local project folder path + the matching host CLI (`gh` for GitHub,
-  `glab` for GitLab) for ordinary forge work. A GitHub URL alone is not a reason
-  to ask for GitHub App installation — try host `gh` first; a GitLab URL should
-  try `glab` first.
+- Try the filesystem and plain `git` first for reading code. Use the forge CLIs
+  (`gh` for GitHub, `glab` for GitLab) only for actual forge/API actions —
+  PR/MRs, issues, checks, comments, provider metadata — not merely because a
+  URL is a GitHub or GitLab URL. A GitHub URL alone is never a reason to ask
+  for GitHub App installation.
+- A repo access failure blocks only repo-dependent work. Everything that does
+  not depend on that repo continues from the user's messages, chat context,
+  pasted content/attachments, and locally available inputs.
 - Private repo access depends on the member's local credentials. Do not promise
   access to named private repos until reads actually succeed.
-- If First Tree says no repo is connected: (1) do not ask for GitHub App
-  authorization first; (2) ask for either a local project folder path or a Git repository
-  URL; (3) local path → inspect it and give the evidence-backed menu;
-  (4) GitHub URL → use host `gh` or local git credentials when available; GitLab
-  URL → use `glab` or local git credentials when available; (5) if `gh` or
-  `glab` is missing / unauthenticated / lacks access, explain that exact gap and
-  give the single narrowest recovery for that diagnosed cause (e.g. `gh auth
-  login` or `glab auth login` when it's just unauthenticated; a local project
-  folder path; the relevant CLI install) — one concrete step, not the whole menu;
-  (6) do not offer "Build your Context Tree" until there is readable code and
-  the human is a confirmed admin.
+- If First Tree says no repo is connected, that alone prompts nothing — no
+  binding, no App authorization, no repo ask. Only when a concrete task
+  genuinely needs existing code and no source input exists: (1) ask for the
+  minimal input — a plain directory on this machine, pasted content,
+  attachments, or a repository URL; never require creating a git repository
+  first; (2) local path → inspect it and give the evidence-backed menu;
+  (3) repository URL → read it with plain `git` / local credentials first,
+  using the host CLI (`gh` / `glab`) only when authentication or a forge action
+  requires it; (4) if `gh` or
+  `glab` is missing / unauthenticated / lacks access for a forge action the
+  task actually needs, explain that exact gap and give the single narrowest
+  recovery for that diagnosed cause (e.g. `gh auth login` or `glab auth login`
+  when it's just unauthenticated; a local project folder path; the relevant CLI
+  install) — one concrete step, not the whole menu; (5) never offer to build
+  the Context Tree from this chat — only an explicit user request routes to
+  the dedicated tree chat.
 
 **Setup handoff (steps you cannot perform — durable provider authorization,
 repository coverage, Review Agent selection).** Raise them only when a real
@@ -641,17 +664,27 @@ admin-only surface; involve the responsible admin.
   question with your recommendation. Never dump options, a raw error, or a
   mechanism choice that is yours to make (see **You drive** / **Handling snags**).
 - Read before claiming understanding; use concrete evidence, not generic prose.
-- Lead with concrete project understanding; never open with setup.
+- Lead with the user's goal and concrete work; never open with setup, and never
+  open by asking for a repo, path, or URL. When the opening carries no concrete
+  task, the only opening move is the goal-first ask.
+- A missing capability (Context Tree, readable repo, forge CLI, team
+  binding/provider/resources) removes only the operations that depend on it.
+  Its absence must never by itself prompt the user to bind, create, connect, or
+  install anything; name a blocked step and its minimal recovery only when the
+  current request genuinely depends on that capability.
 - Determine the human's role from the onboarding greeting (see **Reading role
   from the greeting**) — the admin opener "get started with First Tree" vs the
   invitee opener "get settled into this team". This is your only reliable role
   signal; do not silently omit an admin's setup options just because no
   structured role field exists.
-- Offer "Build your Context Tree" ONLY after the first verified result, when it
-  exposed a lasting cross-module decision, the human is a confirmed admin, and
-  the team tree is missing/empty. Never put it in the first choice, offer it to
-  an invitee, or stack it beside another bridge. A routine trace, local finding,
-  test result, or small diff does not qualify.
+- Never offer to build the Context Tree from a result — not even one that
+  exposed a lasting cross-module decision, and regardless of role or tree
+  state. A missing or empty tree is background state, not a bridge. Only an
+  explicit user request routes, by tree state: build or set up the Context
+  Tree on a missing or empty tree → the dedicated tree chat (`first-tree-seed`);
+  read the Context Tree → `first-tree-read`; persist current decisions as
+  shared team context on a populated tree → `first-tree-write` behind its
+  source gate.
 - A first-result diff makes the PR/MR consent question the one bridge. Only
   after the user authorizes creation and live GitHub PR tracking reports missing
   coverage does the GitHub App become relevant. GitLab uses
@@ -669,9 +702,11 @@ admin-only surface; involve the responsible admin.
 - Put the two-sentence project receipt in the same user-visible delivery as the
   first choice, and use `chat update --description` for the bounded-read status.
   Console narration does not satisfy either user-visible obligation.
-- Deliver required project intake and every post-result bridge through one
-  tracked `chat ask`; deliver a one-option first choice through `chat send` and
-  a two-option choice through one tracked ask without `--multi-select`.
+- Deliver the goal-first ask, any conditional source-input ask (only when a
+  concrete task genuinely needs existing code and no source input exists), and
+  every post-result bridge through one tracked `chat ask`; deliver a one-option
+  first choice through `chat send` and a two-option choice through one tracked
+  ask without `--multi-select`.
 - Do the first selected microtask in this chat. Do not use `chat create` for the
   first selection. Only after the user explicitly asks for multiple larger
   tasks may those later tasks fan out through the existing task-chat workflow.

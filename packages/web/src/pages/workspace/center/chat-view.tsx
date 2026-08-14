@@ -174,6 +174,7 @@ import { useAutoResizeTextarea } from "../../../lib/use-autoresize-textarea.js";
 import { useChatDraftText } from "../../../lib/use-chat-draft-text.js";
 import { useChatMessageFilter } from "../../../lib/use-chat-message-filter.js";
 import { useClientMap } from "../../../lib/use-client-map.js";
+import { ATTACHMENT_RETENTION_NOTE, isAttachmentGoneError } from "../../../lib/use-image-src.js";
 import { useOrgAgents } from "../../../lib/use-org-agents.js";
 import { usePendingAttachments } from "../../../lib/use-pending-attachments.js";
 import { cn } from "../../../lib/utils.js";
@@ -942,23 +943,61 @@ const MessageBody = memo(function MessageBody({
       {chipAttachmentRefs.length > 0 && (
         <div className="flex flex-col items-start" style={{ gap: 6, marginTop: 6 }}>
           {chipAttachmentRefs.map((ref) => (
-            <button
-              key={ref.attachmentId}
-              type="button"
-              onClick={() => {
-                void downloadAttachment(ref.attachmentId, ref.filename);
-              }}
-              aria-label={`Download ${ref.filename}`}
-              className="cursor-pointer border-none bg-transparent p-0 text-left"
-            >
-              <FileChip filename={ref.filename} trailing={<Download className="size-4 text-muted-foreground" />} />
-            </button>
+            <MessageAttachmentChip key={ref.attachmentId} attachmentId={ref.attachmentId} filename={ref.filename} />
           ))}
         </div>
       )}
     </div>
   );
 }, areMessageBodyPropsEqual);
+
+/**
+ * Received file/document chip whose whole body is the download action. When
+ * the attachment row is gone server-side (message attachments are retained
+ * for 14 days) the 404 disables the chip, swaps it to the error state, and
+ * exposes the reason through the tooltip / aria-label / sr-only text instead
+ * of failing silently. A transient failure keeps the chip downloadable and
+ * surfaces an ordinary toast.
+ */
+function MessageAttachmentChip({ attachmentId, filename }: { attachmentId: string; filename: string }) {
+  const { addToast } = useToast();
+  const [gone, setGone] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={gone}
+      onClick={() => {
+        if (gone) return;
+        downloadAttachment(attachmentId, filename).catch((error: unknown) => {
+          if (isAttachmentGoneError(error)) {
+            setGone(true);
+            return;
+          }
+          addToast({
+            title: "Download failed",
+            description: `"${filename}" couldn't be downloaded. Try again.`,
+          });
+        });
+      }}
+      aria-label={gone ? `${filename} is no longer available; ${ATTACHMENT_RETENTION_NOTE}` : `Download ${filename}`}
+      className={
+        gone
+          ? "cursor-not-allowed border-none bg-transparent p-0 text-left"
+          : "cursor-pointer border-none bg-transparent p-0 text-left"
+      }
+    >
+      <FileChip
+        filename={filename}
+        state={gone ? "error" : "idle"}
+        title={gone ? `Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).` : undefined}
+        trailing={gone ? undefined : <Download className="size-4 text-muted-foreground" />}
+      />
+      {gone ? (
+        <span className="sr-only">{`Attachment expired or unavailable (${ATTACHMENT_RETENTION_NOTE}).`}</span>
+      ) : null}
+    </button>
+  );
+}
 
 const MessageRow = memo(function MessageRow({
   msg,

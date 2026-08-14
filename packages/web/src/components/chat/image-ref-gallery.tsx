@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { useState } from "react";
-import { useImageSrc } from "../../lib/use-image-src.js";
+import { ATTACHMENT_RETENTION_NOTE, useImageSrc } from "../../lib/use-image-src.js";
 import { ImageLightbox, type LightboxImage } from "../ui/image-lightbox.js";
 
 const STANDALONE_IMG_STYLE = {
@@ -47,6 +47,13 @@ function ImageFromRef({
           style={variant === "standalone" ? STANDALONE_IMG_STYLE : GALLERY_IMG_STYLE}
         />
       </button>
+    );
+  }
+  if (state.kind === "gone") {
+    return (
+      <span className="text-label" style={{ color: "var(--fg-3)", fontStyle: "italic" }}>
+        [Image "{content.filename}" expired or unavailable — {ATTACHMENT_RETENTION_NOTE}]
+      </span>
     );
   }
   if (state.kind === "miss") {

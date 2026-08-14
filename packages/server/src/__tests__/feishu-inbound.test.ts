@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
+import { eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import { attachments } from "../db/schema/attachments.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
@@ -80,6 +81,8 @@ describe("Feishu inbound pipeline", () => {
         stream: Readable.from([bytes]),
         headers: { "content-type": "image/png", "content-length": String(bytes.length) },
       }),
+      addReaction: vi.fn().mockResolvedValue("reaction-ack"),
+      attachmentObjectQuota: { maxOrganizationAttachments: 10_000 },
     };
   }
 
@@ -106,6 +109,10 @@ describe("Feishu inbound pipeline", () => {
     const second = await ingestFeishuMessage(app.db, app.notifier, binding, input, deps);
     expect(second).toEqual({ state: "duplicate" });
     expect(deps.downloadResource).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(deps.addReaction).toHaveBeenCalledOnce();
+      expect(deps.addReaction).toHaveBeenCalledWith({ messageId: input.messageId, emojiType: "Get" });
+    });
 
     const stored = await app.db.select().from(messages);
     expect(stored).toHaveLength(1);
@@ -159,6 +166,7 @@ describe("Feishu inbound pipeline", () => {
       reason: "group_without_mention",
     });
     expect(deps.downloadResource).not.toHaveBeenCalled();
+    expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
     expect(await app.db.select().from(messages)).toEqual([]);
 
@@ -188,6 +196,7 @@ describe("Feishu inbound pipeline", () => {
     await expect(ingestFeishuMessage(app.db, app.notifier, binding, accepted, deps)).resolves.toMatchObject({
       state: "created",
     });
+    await vi.waitFor(() => expect(deps.addReaction).toHaveBeenCalledOnce());
     const [stored] = await app.db.select().from(messages);
     expect(stored?.content).toBe("work");
   });
@@ -201,7 +210,110 @@ describe("Feishu inbound pipeline", () => {
       state: "ignored",
       reason: "bot_echo",
     });
+    expect(deps.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(messages)).toEqual([]);
     expect(await app.db.select().from(imChatBindings)).toEqual([]);
+  });
+
+  it("keeps the existing Bot inbound path active while a permission update is awaiting confirmation", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const [updating] = await app.db
+      .update(imBotBindings)
+      .set({ status: "provisioning", registrationStateCipher: "encrypted-registration-state" })
+      .where(eq(imBotBindings.id, binding.id))
+      .returning();
+    if (!updating) throw new Error("binding update setup failed");
+
+    await expect(
+      ingestFeishuMessage(app.db, app.notifier, updating, normalizedMessage(), dependencies()),
+    ).resolves.toMatchObject({ state: "created" });
+  });
+
+  it("creates a new Task when a replacement Bot enters the same Feishu chat", async () => {
+    const app = getApp();
+    const { binding, testAgent } = await seedBinding();
+    const oldMessage = normalizedMessage({ chatId: "oc_reused_chat", messageId: "om_old_bot" });
+    const oldResult = await ingestFeishuMessage(app.db, app.notifier, binding, oldMessage, dependencies());
+    if (oldResult.state !== "created") throw new Error("old Bot did not create its Task");
+    const now = new Date();
+    await app.db.transaction(async (tx) => {
+      await tx
+        .update(imBotBindings)
+        .set({
+          status: "revoked",
+          appSecretCipher: null,
+          connectionStatus: "disconnected",
+          connectionOwnerInstanceId: null,
+          connectionLeaseExpiresAt: null,
+          revokedAt: now,
+        })
+        .where(eq(imBotBindings.id, binding.id));
+      await tx
+        .update(imChatBindings)
+        .set({ status: "detached", updatedAt: now })
+        .where(eq(imChatBindings.botBindingId, binding.id));
+    });
+    const [replacement] = await app.db
+      .insert(imBotBindings)
+      .values({
+        id: `binding-${crypto.randomUUID()}`,
+        organizationId: testAgent.organizationId,
+        agentId: testAgent.agent.uuid,
+        appId: `cli_${crypto.randomUUID()}`,
+        botOpenId: "ou_replacement_bot",
+        tenantKey: "tenant-a",
+        appSecretCipher: "encrypted-replacement-secret",
+        grantedScopes: ["im:message"],
+        status: "active",
+        connectionStatus: "connected",
+      })
+      .returning();
+    if (!replacement) throw new Error("replacement binding setup failed");
+
+    const replacementMessage = normalizedMessage({ chatId: "oc_reused_chat", messageId: "om_replacement_bot" });
+    const replacementResult = await ingestFeishuMessage(
+      app.db,
+      app.notifier,
+      replacement,
+      replacementMessage,
+      dependencies(),
+    );
+    expect(replacementResult).toMatchObject({ state: "created" });
+    if (replacementResult.state !== "created") throw new Error("replacement Bot did not create its Task");
+    expect(replacementResult.chatId).not.toBe(oldResult.chatId);
+    const mappings = await app.db.select().from(imChatBindings);
+    expect(mappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ botBindingId: binding.id, feishuChatId: "oc_reused_chat", status: "detached" }),
+        expect.objectContaining({ botBindingId: replacement.id, feishuChatId: "oc_reused_chat", status: "active" }),
+      ]),
+    );
+  });
+
+  it("keeps ingesting when the acknowledgement reaction fails", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    deps.addReaction.mockRejectedValueOnce(new Error("Feishu reaction unavailable"));
+
+    const result = await ingestFeishuMessage(app.db, app.notifier, binding, normalizedMessage(), deps);
+
+    expect(result.state).toBe("created");
+    await vi.waitFor(() => expect(deps.addReaction).toHaveBeenCalledOnce());
+    expect(await app.db.select().from(messages)).toHaveLength(1);
+  });
+
+  it("does not wait for the acknowledgement reaction before ingesting", async () => {
+    const app = getApp();
+    const { binding } = await seedBinding();
+    const deps = dependencies();
+    deps.addReaction.mockImplementationOnce(() => new Promise<string>(() => undefined));
+
+    const result = await ingestFeishuMessage(app.db, app.notifier, binding, normalizedMessage(), deps);
+
+    expect(result.state).toBe("created");
+    expect(deps.addReaction).toHaveBeenCalledOnce();
+    expect(await app.db.select().from(messages)).toHaveLength(1);
   });
 });

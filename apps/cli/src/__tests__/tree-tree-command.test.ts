@@ -354,6 +354,349 @@ describe("tree tree command action", () => {
     });
   });
 
+  it("fails closed on a same-path checkout whose origin and branch do not match the declared binding", () => {
+    // A real checkout at the canonical <workspace>/context-tree path, cloned
+    // from origin A on main, while the briefing declares origin B / branch
+    // "release": the guard must fire before any content read or pull.
+    const seed = makeTreeFixture();
+    const base = makeTempDir("ft-tree-binding-guard-");
+    const originA = join(base, "origin-a.git");
+    const originB = join(base, "origin-b.git");
+    const checkout = join(base, "context-tree");
+    execFileSync("git", ["init", "--bare", "-b", "main", originA], { stdio: "ignore" });
+    execFileSync("git", ["init", "--bare", "-b", "main", originB], { stdio: "ignore" });
+    git(seed, "remote", "add", "origin", originA);
+    git(seed, "push", "-u", "origin", "main");
+    execFileSync("git", ["clone", originA, checkout], { stdio: "ignore" });
+
+    const headBefore = git(checkout, "rev-parse", "HEAD");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null): never => {
+      throw new ProcessExit(typeof code === "number" ? code : 0);
+    });
+    process.chdir(checkout);
+
+    expect(() =>
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: originB, expectBranch: "release" }))),
+    ).toThrow(ProcessExit);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    // Zero content reads: no snapshot output.
+    expect(readMockOutput(stdout)).toBe("");
+    const errorPayload = JSON.parse(readMockOutput(stderr));
+    expect(errorPayload.ok).toBe(false);
+    expect(errorPayload.error.code).toBe("TREE_TREE_BINDING_MISMATCH");
+    expect(errorPayload.error.message).toContain("origin and branch mismatch");
+    // Zero modifications: no pull, no writes — HEAD and worktree untouched.
+    expect(git(checkout, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(git(checkout, "status", "--porcelain")).toBe("");
+
+    // Control: the matching declared identity reads normally (human-mode
+    // output goes to stderr in this harness).
+    runTreeTreeCommand(context(commandWithOptions({ expectRemote: originA, expectBranch: "main" }, ["docs"])));
+    expect(process.exitCode).toBeUndefined();
+    expect(readMockOutput(stderr)).toContain("docs/");
+  });
+
+  /** Clone a real checkout at `<base>/context-tree` from a fresh origin. */
+  function makeDeclaredBindingFixture(): {
+    checkout: string;
+    originA: string;
+    originB: string;
+    seedA: string;
+    seedB: string;
+  } {
+    const seedA = makeTreeFixture();
+    const seedB = makeTreeFixture();
+    const base = makeTempDir("ft-tree-upstream-guard-");
+    const originA = join(base, "origin-a.git");
+    const originB = join(base, "origin-b.git");
+    const checkout = join(base, "context-tree");
+    execFileSync("git", ["init", "--bare", "-b", "main", originA], { stdio: "ignore" });
+    execFileSync("git", ["init", "--bare", "-b", "main", originB], { stdio: "ignore" });
+    git(seedA, "remote", "add", "origin", originA);
+    git(seedA, "push", "-u", "origin", "main");
+    git(seedB, "remote", "add", "origin", originB);
+    git(seedB, "push", "-u", "origin", "main");
+    execFileSync("git", ["clone", originA, checkout], { stdio: "ignore" });
+    return { checkout, originA, originB, seedA, seedB };
+  }
+
+  function advanceSeed(seed: string, leaf: string, title: string): void {
+    writeLeaf(join(seed, "docs", leaf), title, `${title} detail`);
+    git(seed, "add", ".");
+    git(seed, "commit", "-m", `advance ${leaf}`);
+    git(seed, "push");
+  }
+
+  function expectBindingMismatch(checkout: string, options: Record<string, unknown>, mismatch: string): void {
+    const headBefore = git(checkout, "rev-parse", "HEAD");
+    const remoteBefore = git(checkout, "remote", "get-url", "origin");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null): never => {
+      throw new ProcessExit(typeof code === "number" ? code : 0);
+    });
+    process.chdir(checkout);
+
+    expect(() => runTreeTreeCommand(context(commandWithOptions(options)))).toThrow(ProcessExit);
+
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(readMockOutput(stdout)).toBe("");
+    const errorPayload = JSON.parse(readMockOutput(stderr));
+    expect(errorPayload.ok).toBe(false);
+    expect(errorPayload.error.code).toBe("TREE_TREE_BINDING_MISMATCH");
+    expect(errorPayload.error.message).toContain(mismatch);
+    expect(git(checkout, "rev-parse", "HEAD")).toBe(headBefore);
+    expect(git(checkout, "status", "--porcelain")).toBe("");
+    expect(git(checkout, "remote", "get-url", "origin")).toBe(remoteBefore);
+  }
+
+  it("fails closed when only one expect flag is given", () => {
+    const { checkout, originA } = makeDeclaredBindingFixture();
+    expectBindingMismatch(checkout, { expectRemote: originA }, "Incomplete declared Context Tree binding identity");
+    expectBindingMismatch(checkout, { expectBranch: "main" }, "Incomplete declared Context Tree binding identity");
+  });
+
+  it("reads only the declared origin/branch content when the branch upstream points at another remote", () => {
+    const { checkout, originA, originB, seedA, seedB } = makeDeclaredBindingFixture();
+
+    // The branch's upstream points at a different remote — irrelevant to the
+    // refresh, which is pinned to the validated origin/branch.
+    git(checkout, "remote", "add", "other", originB);
+    git(checkout, "config", "branch.main.remote", "other");
+    git(checkout, "config", "branch.main.merge", "refs/heads/main");
+    advanceSeed(seedA, "a-only.md", "Declared Tree Leaf");
+    advanceSeed(seedB, "b-only.md", "Other Tree Leaf");
+
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+
+    runTreeTreeCommand(
+      context(commandWithOptions({ expectRemote: originA, expectBranch: "main", pull: true }, ["docs"])),
+    );
+
+    const output = readMockOutput(stderr);
+    expect(output).toContain("a-only.md");
+    expect(output).not.toContain("b-only.md");
+    expect(output).not.toContain("reading local copy");
+    // Remote and upstream config are never modified.
+    expect(git(checkout, "config", "--get", "branch.main.remote")).toBe("other");
+    expect(git(checkout, "config", "--get", "branch.main.merge")).toBe("refs/heads/main");
+    expect(git(checkout, "remote")).toBe("origin\nother");
+  });
+
+  it("still pulls and reads the advanced declared content when the checkout upstream is missing", () => {
+    const { checkout, originA, seedA } = makeDeclaredBindingFixture();
+    git(checkout, "config", "--unset", "branch.main.remote");
+    git(checkout, "config", "--unset", "branch.main.merge");
+    advanceSeed(seedA, "a-only.md", "Declared Tree Leaf");
+
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+
+    runTreeTreeCommand(
+      context(commandWithOptions({ expectRemote: originA, expectBranch: "main", pull: true }, ["docs"])),
+    );
+
+    const output = readMockOutput(stderr);
+    expect(output).toContain("a-only.md");
+    expect(output).not.toContain("reading local copy");
+  });
+
+  it("accepts equivalent nested-namespace remotes across HTTPS, scp-like, and ssh:// transports", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    // The retained checkout's origin is a nested GitLab HTTPS URL; the
+    // declared remote may arrive in any equivalent transport spelling.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.com/group/subgroup/tree.git");
+
+    for (const declared of [
+      "git@gitlab.com:group/subgroup/tree.git",
+      "ssh://git@gitlab.com/group/subgroup/tree.git",
+      "https://gitlab.com/group/subgroup/tree.git",
+    ]) {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      process.chdir(checkout);
+
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: declared, expectBranch: "main" }, ["docs"])));
+
+      expect(process.exitCode, `declared remote rejected: ${declared}`).toBeUndefined();
+      expect(readMockOutput(stderr)).toContain("docs/");
+      expect(readMockOutput(stdout)).toBe("");
+    }
+  });
+
+  it("fails closed when a self-managed default-port HTTPS checkout matches an SSH/scp declaration", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    // Without the Team connection origin, default HTTPS port is not proof that
+    // an SSH/scp binding maps to this web instance.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com/group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("fails closed when an http checkout matches a declared https binding", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "http://gitlab.example.com/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("fails closed when both remotes are identical plain HTTP", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "http://gitlab.example.com/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "http://gitlab.example.com/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("fails closed when a non-default-port HTTPS checkout matches an scp-like declaration", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    // The SSH spelling carries no web origin, so a non-default HTTPS port can
+    // be a different self-managed instance — unprovable, hence fail closed.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:9443/group/tree.git");
+
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com:9443/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("accepts equivalent self-managed SSH/scp spellings", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+
+    for (const declared of [
+      "git@gitlab.example.com:group/tree.git",
+      "ssh://git@gitlab.example.com/group/tree.git",
+      "ssh://git@gitlab.example.com:22/group/tree.git",
+    ]) {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      process.chdir(checkout);
+
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: declared, expectBranch: "main" }, ["docs"])));
+
+      expect(process.exitCode, `declared remote rejected: ${declared}`).toBeUndefined();
+      expect(readMockOutput(stderr)).toContain("docs/");
+      expect(readMockOutput(stdout)).toBe("");
+    }
+  });
+
+  it("fails closed when self-managed SSH endpoints use different ports", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "ssh://git@gitlab.example.com:3333/group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "ssh://git@gitlab.example.com:2222/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+
+    git(checkout, "remote", "set-url", "origin", "git@gitlab.example.com:group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "ssh://git@gitlab.example.com:2222/group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+
+    git(checkout, "remote", "set-url", "origin", "ssh://git@gitlab.example.com:2222/group/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "git@gitlab.example.com:group/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
+  it("accepts equivalent self-managed SSH spellings of the same non-default port", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "ssh://git@gitlab.example.com:2222/group/tree.git");
+
+    for (const declared of [
+      "ssh://git@gitlab.example.com:2222/group/tree.git",
+      "ssh://gitlab.example.com:2222/group/tree.git",
+    ]) {
+      const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      process.chdir(checkout);
+
+      runTreeTreeCommand(context(commandWithOptions({ expectRemote: declared, expectBranch: "main" }, ["docs"])));
+
+      expect(process.exitCode, `declared remote rejected: ${declared}`).toBeUndefined();
+      expect(readMockOutput(stderr)).toContain("docs/");
+      expect(readMockOutput(stdout)).toBe("");
+    }
+  });
+
+  it("accepts identical self-managed HTTPS origins including a non-default port", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:8443/group/tree.git");
+
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(checkout);
+    runTreeTreeCommand(
+      context(
+        commandWithOptions({ expectRemote: "https://gitlab.example.com:8443/group/tree.git", expectBranch: "main" }, [
+          "docs",
+        ]),
+      ),
+    );
+    expect(process.exitCode).toBeUndefined();
+    expect(readMockOutput(stderr)).toContain("docs/");
+    expect(readMockOutput(stdout)).toBe("");
+  });
+
+  it("fails closed on a different host, a different path, or a different HTTPS port", () => {
+    const { checkout } = makeDeclaredBindingFixture();
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.com/group/subgroup/tree.git");
+
+    for (const declared of [
+      "git@gitlab.example.com:group/subgroup/tree.git",
+      "git@gitlab.com:group/other/tree.git",
+      "https://gitlab.com:8443/group/subgroup/tree.git",
+    ]) {
+      expectBindingMismatch(checkout, { expectRemote: declared, expectBranch: "main" }, "origin mismatch");
+    }
+
+    // Two explicit HTTPS origins with different non-default ports are
+    // different Trees even on the same host and path.
+    git(checkout, "remote", "set-url", "origin", "https://gitlab.example.com:8443/group/subgroup/tree.git");
+    expectBindingMismatch(
+      checkout,
+      { expectRemote: "https://gitlab.example.com:9443/group/subgroup/tree.git", expectBranch: "main" },
+      "origin mismatch",
+    );
+  });
+
   it("prints the selected subtree with repo-root ancestor context in human mode", () => {
     const root = makeTreeFixture();
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);

@@ -45,26 +45,10 @@ describe("scan-fix handoff flag", () => {
       repoUrl: "https://github.com/octo/app",
       reportKey: "octo-app-20260707-ab12cd3",
       repoSlug: "octo/app",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
     };
     writeCampaignActionHandoffFlag(handoff);
     expect(readCampaignActionHandoffFlag()).toEqual(handoff);
     expect(window.sessionStorage.getItem("onboarding:scanFixHandoff")).toBeNull();
-  });
-
-  it("rejects a partially-scoped campaign handoff", () => {
-    window.sessionStorage.setItem(
-      "onboarding:campaignActionHandoff",
-      JSON.stringify({
-        campaign: "production-scan",
-        repoUrl: "https://github.com/octo/app",
-        reportKey: null,
-        targetAgentId: "agent-1",
-      }),
-    );
-    expect(readCampaignActionHandoffFlag()).toBeNull();
-    expect(window.sessionStorage.getItem("onboarding:campaignActionHandoff")).toBeNull();
   });
 
   it("normalizes the deployed legacy key into production-scan context", () => {

@@ -6,6 +6,7 @@ import {
   isLandingCampaignServiceMembership,
 } from "../../services/landing-campaigns/guards.js";
 import * as memberService from "../../services/team/member.js";
+import { membershipRecoveryPolicy } from "../../services/team/membership.js";
 
 /** Class B — `/api/v1/orgs/:orgId/members`. */
 export async function orgMemberRoutes(app: FastifyInstance): Promise<void> {
@@ -32,7 +33,13 @@ export async function orgMemberRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { orgId: string; id: string } }>("/:id", async (request, reply) => {
     const scope = await requireOrgAdmin(request, app.db);
     await assertMemberIsNotLandingCampaignServiceMember(app.db, app.config, request.params.id, scope.organizationId);
-    await memberService.deleteMember(app.db, request.params.id, scope.organizationId);
+    await memberService.deleteMember(
+      app.db,
+      request.params.id,
+      scope.organizationId,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+      app.notifier,
+    );
     return reply.status(204).send();
   });
 }

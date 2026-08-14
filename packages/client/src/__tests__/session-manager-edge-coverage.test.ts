@@ -4793,6 +4793,69 @@ describe("SessionRuntime edge coverage", () => {
     await sm.shutdown();
   });
 
+  it("abandons a stale retry after attachment rematerialization if terminate already finished", async () => {
+    const imageId = "11111111-1111-4111-8111-111111111111";
+    const home = mkdtempSync(join(tmpdir(), "ft-retry-terminate-fetch-"));
+    vi.stubEnv("FIRST_TREE_HOME", home);
+    let signalFetchStarted: (() => void) | undefined;
+    let releaseFetch: (() => void) | undefined;
+    const fetchStarted = new Promise<void>((resolve) => {
+      signalFetchStarted = resolve;
+    });
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    const fetchAttachment = vi.fn(async () => {
+      signalFetchStarted?.();
+      await fetchGate;
+      return { bytes: Buffer.from("png bytes") };
+    });
+    const oldHandler = handler();
+    const freshHandler = handler();
+    const sdk = { ...mockSdk(), fetchAttachment } as unknown as FirstTreeHubSDK;
+    const sm = makeRuntime({ handlers: [freshHandler], sdk });
+    const i = internals(sm);
+    const chatId = "chat-retry-fetch-vs-terminate";
+    try {
+      bindSeededSession(
+        i,
+        makeSessionRecord(chatId, {
+          handler: oldHandler,
+          status: "suspended",
+          retryAttempt: 1,
+          retryHeadMessage: {
+            ...makeMessage(chatId),
+            format: "file",
+            content: { imageId, mimeType: "image/png", filename: "one.png" },
+          },
+        }),
+      );
+
+      const retry = i.slotScheduler.runRetry(chatId);
+      await fetchStarted;
+      expect(fetchAttachment).toHaveBeenCalledWith({ id: imageId });
+      expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
+
+      await sm.handleCommand(chatId, "session:terminate");
+      expect(i.projection.sessions.has(chatId)).toBe(false);
+      expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
+      expect(i.resetReplay.terminatingChats.has(chatId)).toBe(false);
+      expect(oldHandler.shutdown).toHaveBeenCalledTimes(0);
+
+      releaseFetch?.();
+      await retry;
+
+      expect(i.projection.sessions.has(chatId)).toBe(false);
+      expect(i.routeTeardown.pendingTeardowns.has(chatId)).toBe(false);
+      expect(oldHandler.shutdown).toHaveBeenCalledTimes(0);
+      expect(freshHandler.start).not.toHaveBeenCalled();
+      expect(freshHandler.resume).not.toHaveBeenCalled();
+    } finally {
+      await sm.shutdown();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("manager shutdown waits for a gated retry replacement stop", async () => {
     let signalReplaceStopStarted: (() => void) | undefined;
     let resolveReplaceStop: (() => void) | undefined;

@@ -76,6 +76,13 @@ export {
   segmentMentions,
   stripCode,
 } from "./mentions.js";
+// -- Authenticated OpenTag entry URL (browser route + OAuth `next`) --
+export {
+  OPENTAG_ENTRY_PATH,
+  type OpenTagEntryTarget,
+  opentagEntryPath,
+  parseOpenTagEntryPath,
+} from "./opentag-entry.js";
 // -- OAuth-callback open-redirect guard --
 export { DEFAULT_SAFE_REDIRECT, safeRedirectPath } from "./safe-redirect.js";
 export {
@@ -97,7 +104,6 @@ export {
   type AgentVisibility,
   AVATAR_COLOR_TOKENS,
   type AvatarColorToken,
-  agentNameSchema,
   agentPinnedMessageSchema,
   agentSchema,
   agentSourceSchema,
@@ -109,10 +115,7 @@ export {
   type CreateAgent,
   contextTreeInfoSchema,
   createAgentSchema,
-  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
-  type FirstTeamAgentContinuation,
   findReservedAgentMetadataKey,
-  getFirstTeamAgentContinuation,
   isReservedAgentName,
   type ListAgentsQuery,
   listAgentsQuerySchema,
@@ -273,6 +276,7 @@ export {
   type AttachmentMetadata,
   attachmentMetadataSchema,
   MAX_ATTACHMENT_BYTES,
+  MESSAGE_ATTACHMENT_RETENTION_DAYS,
   type UploadAttachmentResponse,
   uploadAttachmentResponseSchema,
 } from "./schemas/attachment.js";
@@ -1076,13 +1080,7 @@ export {
   onboardingStepSchema,
   orgBriefSchema,
   type PatchOnboarding,
-  PROVISION_FIRST_TEAM_AGENT_ERROR_CODES,
-  type ProvisionFirstTeamAgent,
-  type ProvisionFirstTeamAgentErrorCode,
-  type ProvisionFirstTeamAgentResult,
   patchOnboardingSchema,
-  provisionFirstTeamAgentResultSchema,
-  provisionFirstTeamAgentSchema,
   type TreeSetupKickoff,
   treeSetupKickoffSchema,
 } from "./schemas/me-extras.js";

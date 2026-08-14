@@ -61,6 +61,7 @@ import {
   decideProviderRetry,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
+import { isAttachmentGoneError } from "./provider-support/attachment-availability.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 import { type ResetFenceReleaseVerdict, ResetReplayAuthority } from "./reset-replay-authority.js";
 import { createResultSink } from "./result-sink.js";
@@ -579,6 +580,7 @@ export class SessionRuntime {
         this.teardownTerminalSessionFailure(entry as SessionEntry, message, handling),
       drainDeferredMessages: (entry) => this.drainDeferredMessages(entry as SessionEntry),
       persistRegistry: () => this.projection.persistRegistry(),
+      ensureImagesLocal: (message) => this.ensureImagesLocal(message),
       failSessionForRecovery: (chatId, reason, sessionId) => this.failSessionForRecovery(chatId, reason, sessionId),
       runtimeProvider: () => this.runtimeProvider(),
       normalizeResumeReceipt,
@@ -766,6 +768,12 @@ export class SessionRuntime {
    * duplicates and cached refs consume no budget.
    */
   private async ensureImagesLocal(message: SessionMessage): Promise<void> {
+    // Drop any 404 verdicts from a previous delivery attempt of this same
+    // message instance (retry path): the set is rebuilt from this pass only.
+    delete message.unavailableAttachmentIds;
+    // Attachment ids whose fetch answered 404 this delivery — attached to the
+    // message below so renderers can say "expired or unavailable".
+    const goneIds = new Set<string>();
     const legacyImageRefs =
       message.format === "file" && isImageBatchRefContent(message.content)
         ? message.content.attachments
@@ -810,6 +818,7 @@ export class SessionRuntime {
             base64: bytes.toString("base64"),
           });
         } catch (err) {
+          if (isAttachmentGoneError(err)) goneIds.add(ref.imageId);
           this.config.log.warn(
             { chatId: message.chatId, imageId: ref.imageId, err },
             "eager image fetch failed — message will render a placeholder",
@@ -835,6 +844,7 @@ export class SessionRuntime {
             base64: bytes.toString("base64"),
           });
         } catch (err) {
+          if (isAttachmentGoneError(err)) goneIds.add(ref.attachmentId);
           this.config.log.warn(
             { chatId: message.chatId, attachmentId: ref.attachmentId, err },
             "eager attachment fetch failed — agent will not see this file",
@@ -842,6 +852,7 @@ export class SessionRuntime {
         }
       }),
     );
+    if (goneIds.size > 0) message.unavailableAttachmentIds = goneIds;
   }
 
   /**

@@ -325,6 +325,16 @@ export type SessionMessage = {
    * See proposals/group-chat-ux-improvements §1 (silent inbox).
    */
   precedingMessages?: PrecedingMessage[];
+  /**
+   * Transient per-delivery runtime state: attachment ids whose eager fetch
+   * during this delivery answered 404 (row gone server-side). Set by the
+   * Runtime host's fetch pass on this message instance only — never
+   * persisted, never sent back to Cloud, never shared across messages.
+   * Renderers use it to say "expired or unavailable" instead of the generic
+   * device placeholder; a plain disk miss without a 404 keeps the generic
+   * wording.
+   */
+  unavailableAttachmentIds?: ReadonlySet<string>;
 };
 
 export type PrecedingMessage = {

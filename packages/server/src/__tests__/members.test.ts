@@ -10,7 +10,12 @@ import { organizations as organizationsTable } from "../db/schema/organizations.
 import { users as usersTable } from "../db/schema/users.js";
 import { createAgent } from "../services/agents/identity.js";
 import * as memberService from "../services/team/member.js";
-import { ensureMembership, repairMembershipHumanMirrors, selfCreateOrganization } from "../services/team/membership.js";
+import {
+  ensureMembership,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  repairMembershipHumanMirrors,
+  selfCreateOrganization,
+} from "../services/team/membership.js";
 import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
@@ -328,10 +333,6 @@ describe("Members API", () => {
         role: "member",
       });
       const created = createRes.json<{ id: string; agentId: string }>();
-      await app.db
-        .update(agentsTable)
-        .set({ metadata: { firstTeamAgentContinuation: { agentId: "transferred-first-agent" } } })
-        .where(eq(agentsTable.uuid, created.agentId));
       await req("DELETE", `/api/v1/members/${created.id}`);
 
       const restoreRes = await req("POST", "/api/v1/members", {
@@ -354,19 +355,13 @@ describe("Members API", () => {
       expect(row).toEqual({ status: "active", role: "admin" });
 
       const [mirror] = await app.db
-        .select({
-          status: agentsTable.status,
-          displayName: agentsTable.displayName,
-          name: agentsTable.name,
-          metadata: agentsTable.metadata,
-        })
+        .select({ status: agentsTable.status, displayName: agentsTable.displayName, name: agentsTable.name })
         .from(agentsTable)
         .where(eq(agentsTable.uuid, created.agentId))
         .limit(1);
       expect(mirror?.status).toBe("active");
       expect(mirror?.displayName).toBe("Restored");
       expect(mirror?.name).not.toBeNull();
-      expect(mirror?.metadata).not.toHaveProperty("firstTeamAgentContinuation");
     });
 
     it("repairs pre-existing corrupted human mirrors for active and inactive memberships", async () => {
@@ -1051,10 +1046,12 @@ describe("Members API", () => {
         // Removal locks the active admin first and then waits for the target
         // member held by repair. A table-wide repair transaction would next
         // wait for that admin while retaining the target, forming a cycle.
-        const removal = memberService.deleteMember(removalDb, target.id, organization.id).then(
-          (value) => ({ status: "fulfilled" as const, value }),
-          (error: unknown) => ({ status: "rejected" as const, error }),
-        );
+        const removal = memberService
+          .deleteMember(removalDb, target.id, organization.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED)
+          .then(
+            (value) => ({ status: "fulfilled" as const, value }),
+            (error: unknown) => ({ status: "rejected" as const, error }),
+          );
         await waitForPostgresLockWait(observer, removalApplicationName);
 
         await mirrorBlocker`COMMIT`;
@@ -1144,16 +1141,23 @@ describe("Members API", () => {
         role: "member",
       });
 
-      await expect(memberService.deleteMember(app.db, target.id, org.id)).rejects.toThrow(/another admin/i);
+      await expect(
+        memberService.deleteMember(app.db, target.id, org.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED),
+      ).rejects.toThrow(/another admin/i);
     });
 
     it("deleteMember rejects removing the only active admin", async () => {
       const app = getApp();
       const admin = await createTestAdmin(app, { username: `delete-only-admin-${randomUUID().slice(0, 8)}` });
 
-      await expect(memberService.deleteMember(app.db, admin.memberId, admin.organizationId)).rejects.toThrow(
-        /last admin/i,
-      );
+      await expect(
+        memberService.deleteMember(
+          app.db,
+          admin.memberId,
+          admin.organizationId,
+          MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED,
+        ),
+      ).rejects.toThrow(/last admin/i);
     });
 
     it("restores a left member whose human mirror name was cleared with a collision-safe slug", async () => {
@@ -1228,7 +1232,7 @@ describe("Members API", () => {
           username: admin.username,
           displayName: "Empty First Team",
         }),
-      ).rejects.toThrow("Create your first Team by starting an Agent");
+      ).rejects.toThrow("An active Team membership is required to create another Team");
 
       const created = await app.db
         .select({ id: organizationsTable.id })

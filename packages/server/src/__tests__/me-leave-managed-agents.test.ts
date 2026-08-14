@@ -7,7 +7,7 @@ import { members as membersTable } from "../db/schema/members.js";
 import { createAgent, updateAgent } from "../services/agents/identity.js";
 import { retireClient } from "../services/runtime/client.js";
 import { createMember } from "../services/team/member.js";
-import { leaveOrganization } from "../services/team/membership.js";
+import { leaveOrganization, MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { createOrganization } from "../services/team/organization.js";
 import { seedClient, useTestApp } from "./helpers.js";
 
@@ -50,7 +50,7 @@ describe("self-service leave: managed non-human agents", () => {
       clientId,
     });
 
-    await leaveOrganization(app.db, leaver.id);
+    await leaveOrganization(app.db, leaver.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED);
 
     // Managed agent moved to the fallback admin and unpinned.
     const [managedRow] = await app.db
@@ -99,7 +99,9 @@ describe("self-service leave: managed non-human agents", () => {
       clientId,
     });
 
-    await expect(leaveOrganization(app.db, soleAdmin.id)).rejects.toThrow(/another admin|no other active admin/i);
+    await expect(leaveOrganization(app.db, soleAdmin.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED)).rejects.toThrow(
+      /another admin|no other active admin/i,
+    );
 
     // Nothing changed: agent still managed + pinned, membership still active.
     const [managedRow] = await app.db
@@ -139,7 +141,7 @@ describe("self-service leave: managed non-human agents", () => {
     // counting it, otherwise the sole admin is trapped forever.
     await app.db.update(agentsTable).set({ status: "deleted", name: null }).where(eq(agentsTable.uuid, managed.uuid));
 
-    await leaveOrganization(app.db, soleAdmin.id);
+    await leaveOrganization(app.db, soleAdmin.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED);
 
     const [memberRow] = await app.db
       .select({ status: membersTable.status })
@@ -166,7 +168,7 @@ describe("self-service leave: managed non-human agents", () => {
       role: "admin",
     });
 
-    await leaveOrganization(app.db, soleAdmin.id);
+    await leaveOrganization(app.db, soleAdmin.id, MEMBERSHIP_RECOVERY_POLICIES.REPAIR_REQUIRED);
 
     const [memberRow] = await app.db
       .select({ status: membersTable.status })

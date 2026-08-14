@@ -198,8 +198,24 @@ export function revokeAgentFeishuBinding(uuid: string): Promise<void> {
   return api.delete(`/agents/${encodeURIComponent(uuid)}/feishu-binding`);
 }
 
-export function createAgentFeishuSetupChat(uuid: string): Promise<{ chatId: string }> {
-  return api.post(`/agents/${encodeURIComponent(uuid)}/feishu-binding/setup-chat`, { requestInstall: true });
+/**
+ * Create-or-reuse the Agent's Feishu CLI setup Task.
+ *
+ * `retry` separates a member asking again from a surface ensuring the Task
+ * exists. Ensuring happens on every load, reload, and extra tab and stays a
+ * no-op; a retry has to reach an Agent that may have consumed the original
+ * request already.
+ */
+export function createAgentFeishuSetupChat(
+  uuid: string,
+  options: { retry?: boolean } = {},
+): Promise<{
+  chatId: string;
+}> {
+  return api.post(`/agents/${encodeURIComponent(uuid)}/feishu-binding/setup-chat`, {
+    requestInstall: true,
+    retry: options.retry ?? false,
+  });
 }
 
 // -- Test Connection --

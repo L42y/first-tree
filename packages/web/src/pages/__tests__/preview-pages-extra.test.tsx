@@ -37,12 +37,10 @@ const DEFAULT_AUTH = {
   isAuthenticated: true,
   meLoaded: true,
   meAuthoritative: true,
+  meBoundary: null,
   user: { id: "preview-human", displayName: "Gandy", username: "gandy2025", avatarUrl: null },
   memberships: [],
   currentMembership: null,
-  // Preview pages render a fully set-up Team; `memberships` is only empty
-  // because these fixtures do not model the roster.
-  hasNoTeam: false,
   organizationId: "org-preview",
   memberId: "member-preview",
   role: "admin",
@@ -65,6 +63,7 @@ const DEFAULT_AUTH = {
   adoptTokens: async () => undefined,
   selectOrganization: async () => undefined,
   refreshMe: async () => undefined,
+  refreshMeStrict: async () => undefined,
   logout: () => undefined,
 } as AuthValue;
 

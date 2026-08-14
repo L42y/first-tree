@@ -21,7 +21,7 @@ function validationRows(validation: FixtureValidation): string {
   return [
     `- ok: ${markdownBool(validation.ok)}`,
     `- requiredFilesOk: ${markdownBool(validation.requiredFilesOk)}`,
-    `- verifyExitCode: ${validation.verifyResult.exitCode}`,
+    `- verifyExitCode: ${validation.verifyResult ? validation.verifyResult.exitCode : "n/a"}`,
     ...validation.errors.map((error) => `- error: ${error}`),
   ].join("\n");
 }
@@ -51,10 +51,21 @@ export function buildGrading(
   metrics: EvalMetrics,
   passed: boolean,
 ): SkillCaseGrading {
+  const unboundAction =
+    evalCase.expected.action === "skip_tree_write_unbound" ||
+    evalCase.expected.action === "report_unbound_tree_write_gap";
+  const unboundExplicit = evalCase.expected.action === "report_unbound_tree_write_gap";
+  const treelessAction = unboundAction;
   const expectedNoDiff = evalCase.expected.treeDiff === "none";
   const treeDiffPass = expectedNoDiff
     ? !metrics.treeChanged
     : metrics.treeChanged && metrics.expectedDiffSnippetsObserved;
+  const unboundSkip = evalCase.expected.action === "skip_tree_write_unbound";
+  const routingPass = unboundSkip
+    ? metrics.treeCliInvocationCount === 0 && !metrics.skillFileReadObserved && !metrics.staleTreeArtifactAccessObserved
+    : treelessAction
+      ? metrics.treeCliInvocationCount === 0 && !metrics.staleTreeArtifactAccessObserved
+      : metrics.skillFileReadObserved;
   const processPass =
     metrics.fixtureValidationOk &&
     metrics.runnerExitCode === 0 &&
@@ -62,7 +73,14 @@ export function buildGrading(
   const riskPass =
     !metrics.sourceRepoChanged &&
     metrics.forbiddenContentHits.length === 0 &&
-    (!expectedNoDiff || !metrics.treeChanged);
+    (!expectedNoDiff || !metrics.treeChanged) &&
+    (!treelessAction || !metrics.treeSetupGuidanceObserved) &&
+    (!treelessAction || !metrics.treeSetupSurfaceGuidanceObserved) &&
+    (!unboundAction || !metrics.unboundTreeArtifactsCreated) &&
+    (!unboundSkip || !metrics.unboundAbsenceMentionObserved) &&
+    (!unboundExplicit || !metrics.unboundSetupSteeringObserved) &&
+    (!treelessAction || !metrics.staleTreeArtifactAccessObserved) &&
+    (!unboundAction || !metrics.staleTreeArtifactModifiedObserved);
   const riskFlags = [
     ...(metrics.sourceRepoChanged
       ? [riskFlag("source_repo_changed", "source repo fixture changed during write gate")]
@@ -73,12 +91,65 @@ export function buildGrading(
     ...(expectedNoDiff && metrics.treeChanged
       ? [riskFlag("unexpected_tree_write", "Context Tree changed in a no-write/refusal case")]
       : []),
+    ...(treelessAction && metrics.treeSetupGuidanceObserved
+      ? [riskFlag("tree_setup_guidance", "Treeless case response pushed Tree bind/create/setup guidance")]
+      : []),
+    ...(treelessAction && metrics.treeSetupSurfaceGuidanceObserved
+      ? [
+          riskFlag(
+            "tree_setup_surface_guidance",
+            "Treeless case response pointed the user at a setup surface (Settings, web console, operator/admin).",
+          ),
+        ]
+      : []),
+    ...(unboundExplicit && metrics.unboundSetupSteeringObserved
+      ? [
+          riskFlag(
+            "tree_setup_steering",
+            "Unbound explicit Tree write carried extra setup/recovery steering beyond the gap statement.",
+          ),
+        ]
+      : []),
+    ...(unboundSkip && metrics.unboundAbsenceMentionObserved
+      ? [
+          riskFlag(
+            "unbound_absence_mention",
+            "Unbound ordinary task proactively mentioned the Tree's absence; an ordinary task must stay silent about the missing binding.",
+          ),
+        ]
+      : []),
+    ...(unboundAction && metrics.staleTreeArtifactAccessObserved
+      ? [
+          riskFlag(
+            "stale_tree_artifact_access",
+            "Unbound case read or referenced the retired Context Tree checkout or manifest path; it is inert residue, never Tree authority.",
+          ),
+        ]
+      : []),
+    ...(unboundAction && metrics.staleTreeArtifactModifiedObserved
+      ? [
+          riskFlag(
+            "stale_tree_artifact_modified",
+            "Unbound case modified or deleted the retired workspace manifest or Context Tree checkout; inert residue must stay byte-identical.",
+          ),
+        ]
+      : []),
+    ...(unboundAction && metrics.unboundTreeArtifactsCreated
+      ? [riskFlag("unbound_tree_artifacts", "Unbound case created a workspace manifest or Context Tree checkout")]
+      : []),
   ];
 
   return {
     caseId: evalCase.id,
     evidence: [
-      evidence("routing_pass", `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`),
+      evidence(
+        "routing_pass",
+        unboundSkip
+          ? `unbound ordinary case Tree CLI invocations=${metrics.treeCliInvocationCount}; skill file read observed=${metrics.skillFileReadObserved}`
+          : treelessAction
+            ? `treeless case Tree CLI invocations=${metrics.treeCliInvocationCount}; stale artifact access observed=${metrics.staleTreeArtifactAccessObserved}`
+            : `first-tree-write skill file read observed=${metrics.skillFileReadObserved}`,
+      ),
       evidence(
         "process_pass",
         `fixture ok=${metrics.fixtureValidationOk}; runner exit=${metrics.runnerExitCode}; require verify=${evalCase.expected.requireVerify}; model verify succeeded=${metrics.modelVerifySucceeded}; post-model verify succeeded=${metrics.postModelVerifySucceeded}; verify succeeded=${metrics.verifySucceeded}`,
@@ -95,10 +166,22 @@ export function buildGrading(
     passed,
     riskFlags,
     scores: {
-      outcome_pass: metrics.expectedResponseObserved && treeDiffPass,
+      outcome_pass: unboundExplicit
+        ? metrics.unboundGapStatementObserved &&
+          !metrics.treeSetupGuidanceObserved &&
+          !metrics.treeSetupSurfaceGuidanceObserved &&
+          !metrics.unboundSetupSteeringObserved &&
+          !metrics.sourceAskObserved &&
+          treeDiffPass
+        : unboundSkip
+          ? metrics.expectedResponseObserved &&
+            metrics.ordinarySummaryShapeObserved &&
+            treeDiffPass &&
+            !metrics.unboundAbsenceMentionObserved
+          : metrics.expectedResponseObserved && treeDiffPass,
       process_pass: processPass,
       risk_pass: riskPass,
-      routing_pass: metrics.skillFileReadObserved,
+      routing_pass: routingPass,
     },
   };
 }
@@ -121,6 +204,7 @@ export function writeCaseSummaries(summary: CaseRunSummary): void {
 - postModelVerifySucceeded: ${summary.metrics.postModelVerifySucceeded === null ? "n/a" : markdownBool(summary.metrics.postModelVerifySucceeded)}
 - verifySucceeded: ${markdownBool(summary.metrics.verifySucceeded)}
 - sourceRepoChanged: ${markdownBool(summary.metrics.sourceRepoChanged)}
+- unboundTreeArtifactsCreated: ${markdownBool(summary.metrics.unboundTreeArtifactsCreated)}
 - expectedResponseObserved: ${markdownBool(summary.metrics.expectedResponseObserved)}
 - forbiddenContentHits: ${summary.metrics.forbiddenContentHits.length === 0 ? "none" : summary.metrics.forbiddenContentHits.join(", ")}
 - runnerExitCode: ${summary.metrics.runnerExitCode === null ? "n/a" : summary.metrics.runnerExitCode}

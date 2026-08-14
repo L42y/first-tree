@@ -1,8 +1,9 @@
+import { OPENTAG_ENTRY_PATH } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, useEffect } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { RouteTracker } from "./analytics.js";
-import { AuthProvider } from "./auth/auth-context.js";
+import { AuthProvider, useAuth } from "./auth/auth-context.js";
 import { RequireAuth } from "./auth/require-auth.js";
 import { Layout } from "./components/layout.js";
 import { Button } from "./components/ui/button.js";
@@ -10,6 +11,7 @@ import { ToastProvider } from "./components/ui/toast.js";
 import { PulseProvider } from "./hooks/pulse-context.js";
 import { useMobileExperienceState } from "./hooks/use-mobile-experience.js";
 import { useContextTreeSetupPreviewBootstrapState } from "./hooks/use-server-channel.js";
+import { ChannelsTab } from "./pages/agent-detail/channels-tab.js";
 import { ProfileTab } from "./pages/agent-detail/profile-tab.js";
 import { PromptTab } from "./pages/agent-detail/prompt-tab.js";
 import { RepositoriesTab } from "./pages/agent-detail/repositories-tab.js";
@@ -31,6 +33,7 @@ import { MobileWorkPage } from "./pages/mobile/work.js";
 import { OAuthCompletePage } from "./pages/oauth-complete.js";
 import { GithubConnectedPage } from "./pages/onboarding/github-connected.js";
 import { OnboardingPage } from "./pages/onboarding/onboarding-page.js";
+import { OpenTagPage } from "./pages/opentag/opentag-page.js";
 import { QuickstartPage } from "./pages/quickstart/quickstart-page.js";
 import { SettingsAccountPage } from "./pages/settings/account.js";
 import { SettingsComputersPage } from "./pages/settings/computers.js";
@@ -476,6 +479,12 @@ export function App() {
                     chrome. The workspace root redirects incomplete users
                     here; this route redirects back once setup is complete. */}
                 <Route path="/onboarding" element={<OnboardingPage />} />
+                {/* OpenTag entry — its own full-screen guided handoff, outside
+                    the workspace chrome and outside the `/onboarding` gate.
+                    A logged-out visit takes the ordinary deep-link route
+                    (/login -> OAuth with `next`), and the server preserves
+                    this exact destination through solo signup. */}
+                <Route path={OPENTAG_ENTRY_PATH} element={<OpenTagPage />} />
                 <Route element={<MobileExperienceGate />}>
                   <Route path="m" element={<Navigate to="/m/chat" replace />} />
                   <Route path="m/chat" element={<MobileWorkPage />} />
@@ -504,6 +513,7 @@ export function App() {
                   <Route path="agents/:uuid" element={<AgentDetailPage />}>
                     <Route index element={<Navigate to="profile" replace />} />
                     <Route path="profile" element={<ProfileTab />} />
+                    <Route path="channels" element={<ChannelsTab />} />
                     <Route path="responsibilities" element={<Navigate to="../profile" replace />} />
                     <Route path="runtime" element={<RuntimeTab />} />
                     <Route path="prompt" element={<PromptTab />} />
@@ -575,8 +585,12 @@ function ContextTreeSetupPreviewUnavailable() {
 
 function WorkspaceEntry() {
   const location = useLocation();
+  const { role } = useAuth();
   const mobileExperience = useMobileExperienceState();
   if (!mobileExperience.settled) return null;
+  if (role === "member" && shouldOpenMobileRoot(location)) {
+    return <Navigate to="/team" replace />;
+  }
   if (mobileExperience.enabled && shouldOpenMobileRoot(location)) {
     return <Navigate to="/m/chat" replace />;
   }

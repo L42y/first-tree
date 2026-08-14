@@ -57,6 +57,7 @@ const authMock = vi.hoisted(() => {
       adoptTokens: async () => undefined,
       selectOrganization: async () => undefined,
       refreshMe: async () => undefined,
+      refreshMeStrict: async () => undefined,
       logout: () => undefined,
     },
   };
@@ -955,8 +956,14 @@ describe("page SSR smoke coverage", () => {
     const { SettingsRepositoriesPage } = await import("../settings/repositories.js");
     const { SettingsResourcesPage } = await import("../settings/resources.js");
     const { TeamPage } = await import("../team/index.js");
+    const { OpenTagPage } = await import("../opentag/opentag-page.js");
 
     expect(renderPage(<LandingPage />)).toContain("AI-native teams");
+    // OpenTag's first frame starts the approved four-step setup path.
+    const opentag = renderPage(<OpenTagPage />, "/opentag");
+    expect(opentag).toContain("Step 1 of 4 · Create agent");
+    expect(opentag).toContain("What should your agent do?");
+    expect(opentag).toContain("OpenTag");
     // ClientsPage / SettingsComputersPage no longer render their own title —
     // the Settings layout owns the single page heading (see settings.tsx), so
     // assert on stable body copy instead of the moved title.

@@ -3,7 +3,11 @@ import type { OidcCallbackQuery } from "@first-tree/shared";
 import { oauthStartQuerySchema, oidcCallbackQuerySchema, safeRedirectPath } from "@first-tree/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { findOrCreateUserFromExternalAccount } from "../../services/auth/identity.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import {
+  completeExternalAccountBootstrap,
+  OAuthBootstrapError,
+  oauthBootstrapBoundary,
+} from "../../services/auth/oauth/bootstrap.js";
 import {
   exchangeOidcCode,
   fetchDiscovery,
@@ -17,7 +21,8 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "../../services/auth/oauth/state.js";
-import { signTokensForUser } from "../../services/auth/tokens.js";
+import { signTokensForActiveUser } from "../../services/auth/tokens.js";
+import { membershipRecoveryPolicy } from "../../services/team/membership.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
@@ -315,14 +320,27 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
         allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
         ip: request.ip,
         userAgent: request.headers["user-agent"] ?? "",
-        agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
       });
     } catch (error) {
       if (error instanceof OAuthBootstrapError) return redirectError(reply, error.code, verified.next);
       throw error;
     }
 
-    const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
+    let tokens: Awaited<ReturnType<typeof signTokensForActiveUser>>;
+    try {
+      tokens = await signTokensForActiveUser(
+        app.db,
+        account.userId,
+        app.config.secrets.jwtSecret,
+        app.config.auth,
+        "auth.oauth",
+        membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+      );
+    } catch (error) {
+      const boundary = oauthBootstrapBoundary(error);
+      if (boundary) return redirectError(reply, boundary.code, verified.next);
+      throw error;
+    }
     const fragment = new URLSearchParams({
       access: tokens.accessToken,
       refresh: tokens.refreshToken,
@@ -330,9 +348,7 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       accountCreated: account.created ? "1" : "0",
       callbackIntent: "sign-in",
       provider: "oidc",
-      // Omitted only for the gated Agent-first solo path. The default flow
-      // returns the personal Team created during bootstrap.
-      ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
+      org: bootstrap.organizationId,
       ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
     }).toString();
 

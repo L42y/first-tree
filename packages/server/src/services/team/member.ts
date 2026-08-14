@@ -12,13 +12,16 @@ import { uuidv7 } from "../../uuid.js";
 import { createAgent } from "../agents/identity.js";
 import { lockWatcherProjectionMemberMutation } from "../chat/membership/lock.js";
 import { lockWatcherProjectionForMemberChanges, recomputeWatcherChats } from "../chat/membership/watcher.js";
+import type { Notifier } from "../notifier.js";
 import { forceDisconnect } from "../runtime/connection-manager.js";
 import * as presenceService from "../runtime/presence.js";
 import { suspendGitlabLinksForMembership } from "../scm/gitlab/identities.js";
 import {
   lockMembershipLifecycleUser,
   MEMBER_STATUSES,
+  type MembershipRecoveryPolicy,
   reactivateMembership,
+  resolveMembershipAfterLifecycleLock,
   syncUserDisplayName,
 } from "./membership.js";
 
@@ -276,8 +279,14 @@ export async function updateOwnProfile(db: Database, userId: string, displayName
   return { id: userId, displayName };
 }
 
-export async function deleteMember(db: Database, id: string, callerOrgId: string) {
-  const transferredAgentIds = await db.transaction(async (tx) => {
+export async function deleteMember(
+  db: Database,
+  id: string,
+  callerOrgId: string,
+  recoveryPolicy: MembershipRecoveryPolicy,
+  notifier?: Notifier,
+): Promise<void> {
+  const { transferredAgentIds, organizationId } = await db.transaction(async (tx) => {
     const [targetRef] = await tx
       .select({ organizationId: members.organizationId, userId: members.userId })
       .from(members)
@@ -288,7 +297,7 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
     if (!targetRef || targetRef.organizationId !== callerOrgId) {
       throw new NotFoundError(`Member "${id}" not found`);
     }
-    await lockMembershipLifecycleUser(tx, targetRef.userId);
+    const lockedUser = await lockMembershipLifecycleUser(tx, targetRef.userId);
 
     const [projectedFallback] = await tx
       .select({ id: members.id })
@@ -334,9 +343,14 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
       .where(eq(members.id, id))
       .for("update")
       .limit(1);
-    if (!member || member.organizationId !== callerOrgId || member.status !== MEMBER_STATUSES.ACTIVE) {
+    if (!member || member.organizationId !== callerOrgId) {
       throw new NotFoundError(`Member "${id}" not found`);
     }
+    if (member.status === MEMBER_STATUSES.REMOVED) {
+      await resolveMembershipAfterLifecycleLock(tx, lockedUser, recoveryPolicy);
+      return { transferredAgentIds: [], organizationId: member.organizationId };
+    }
+    if (member.status !== MEMBER_STATUSES.ACTIVE) throw new NotFoundError(`Member "${id}" not found`);
 
     // Prevent deleting the last admin. The active-admin rows are locked in a
     // deterministic order above, so concurrent admin removals serialize before
@@ -379,9 +393,11 @@ export async function deleteMember(db: Database, id: string, callerOrgId: string
       .set({ status: AGENT_STATUSES.SUSPENDED, clientId: null, updatedAt: new Date() })
       .where(eq(agents.uuid, member.agentId));
     await recomputeWatcherChats(tx, watcherChatIds);
-    return transferred.map((agent) => agent.uuid);
+    await resolveMembershipAfterLifecycleLock(tx, lockedUser, recoveryPolicy);
+    return { transferredAgentIds: transferred.map((agent) => agent.uuid), organizationId: member.organizationId };
   });
 
+  await notifier?.notifyMembershipChanged(id, organizationId);
   for (const agentId of transferredAgentIds) {
     forceDisconnect(agentId, "member_removed");
     await presenceService.unbindAgent(db, agentId);

@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { login as loginApi } from "../api/auth.js";
 import {
+  ADMIN_WS_MEMBERSHIP_CHANGED_EVENT,
   ADMIN_WS_ORG_CHANGED_EVENT,
   api,
   clearStoredTokens,
@@ -43,6 +44,8 @@ type MeResponse = {
   };
 };
 
+export type MeBoundary = "reconciling" | "invite-required" | "membership-repair-required" | "unavailable";
+
 type AuthContextValue = {
   isAuthenticated: boolean;
   /**
@@ -64,6 +67,8 @@ type AuthContextValue = {
    * just `meLoaded`.
    */
   meAuthoritative: boolean;
+  /** Explicit fail-closed state shown when no live Team membership is available. */
+  meBoundary: MeBoundary | null;
   /**
    * Currently selected membership — drives `organizationId / memberId / role
    * / agentId` and the admin gate. Initialized from
@@ -71,18 +76,6 @@ type AuthContextValue = {
    * membership returned by `/me`.
    */
   currentMembership: MeMembership | null;
-  /**
-   * `true` only once an AUTHORITATIVE `/me` has confirmed the caller belongs to
-   * no Team — the ordinary state after a solo sign-in, which no longer
-   * provisions one. Everything org-scoped is unavailable here: `withOrg` throws
-   * without a selected org, so this is the signal that routes the user to the
-   * Team-less entry instead of mounting the workspace.
-   *
-   * Deliberately gated on `meAuthoritative`, not `meLoaded`: a `/me` transport
-   * failure also leaves `memberships` empty, and treating that as "no Team"
-   * would eject a member with Teams out of their workspace.
-   */
-  hasNoTeam: boolean;
   organizationId: string | null;
   memberId: string | null;
   role: string | null;
@@ -146,8 +139,14 @@ type AuthContextValue = {
   /**
    * POST `/me/onboarding-completed`. Optimistically stamps
    * `onboardingCompletedAt` so first-run routing can settle immediately.
-   * Idempotent server-side. Called at Step 3 terminal-success points (admin
-   * Continue, invitee Confirm / Continue).
+   * Idempotent server-side.
+   *
+   * Its one caller is the `/opentag` entry, once that Agent has a real Feishu
+   * Task. That terminal fact is observed rather than pressed, so the stamp is
+   * not tied to a button and has to be issued separately. The standalone
+   * journey does not use this: its start-chat writes the same stamp inside the
+   * kickoff transaction and mirrors it with `applyOnboardingKickoffStamp`,
+   * because a second POST could fail after the chat already succeeded.
    */
   markOnboardingCompleted: () => Promise<void>;
   /**
@@ -188,6 +187,14 @@ type AuthContextValue = {
   switchingOrg: OrgBrief | null;
   setSwitchingOrg: (org: OrgBrief | null) => void;
   refreshMe: () => Promise<void>;
+  /**
+   * Same read as {@link refreshMe}, but it REJECTS when `/me` fails instead of
+   * resolving. `refreshMe` is fail-soft so an unreachable `/me` cannot hang the
+   * dashboard; a caller that has just changed membership readiness needs the
+   * opposite, because acting on a stale `currentOrgHasPersonalAgent` can walk
+   * the member back into creating a second Agent.
+   */
+  refreshMeStrict: () => Promise<void>;
   logout: () => void;
 };
 
@@ -242,7 +249,7 @@ function writeSelectedOrgId(userId: string | null, value: string | null): void {
   }
 }
 
-/** Marker for a /me response from a stale session or identity (discarded, zero mutation). */
+/** Marker for a /me response from stale session or membership authority (discarded, zero mutation). */
 class StaleMeError extends Error {
   constructor() {
     super("stale /me response discarded");
@@ -280,6 +287,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // relogin as the same user is still a new session. Token refresh does not
   // advance it (same session, only the raw token changed).
   const sessionGenRef = useRef(0);
+  // Membership authority generation: advances as soon as the live data plane
+  // reports a revoked membership. Every /me request captures the current
+  // value, so a response already in flight before revocation can never
+  // resurrect the departed Team after reconciliation starts or completes.
+  const membershipAuthorityEpochRef = useRef(0);
   // Monotonic /me request-start identity. Each loadMe captures its id AND the
   // selected-org identity at request start; a successful live confirmation
   // records {requestId, requestStartOrg, settledOrg}. selectOrganization
@@ -299,6 +311,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // new login/adopted-token session. A later refresh failure does not erase
   // an already-authoritative snapshot.
   const [meAuthoritative, setMeAuthoritative] = useState(false);
+  const [meBoundary, setMeBoundary] = useState<MeBoundary | null>(null);
   // Stays false until the first fetchMe settles. Unauthenticated visitors
   // never need /me, so the gate also flips for them via the unauth branch
   // below — RequireAuth only blocks the loading frame when the user IS
@@ -339,6 +352,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setDocsEnabled(false);
     setMeLoaded(false);
     setMeAuthoritative(false);
+    setMeBoundary(null);
     setSwitchingOrg(null);
   }, [queryClient]);
 
@@ -348,9 +362,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // the rejection directly because the post-switch /me is the switch's
     // confirmation authority.
     const generation = sessionGenRef.current;
+    const membershipAuthorityEpoch = membershipAuthorityEpochRef.current;
     const subject = userIdFromToken();
     const requestId = ++meRequestIdRef.current;
     const requestStartOrg = selectedOrgIdRef.current;
+    const hasCurrentAuthority = () =>
+      generation === sessionGenRef.current &&
+      membershipAuthorityEpoch === membershipAuthorityEpochRef.current &&
+      userIdFromToken() === subject;
     try {
       const data = await api.get<MeResponse>("/me");
       // A stale SUCCESS must mutate nothing: the session moved on (logout,
@@ -359,11 +378,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // override, cache, or WS write. Concurrent same-session requests are
       // deliberately NOT sequenced here — they carry the same session's
       // authoritative snapshot, and a global /me scheduler is out of scope.
-      if (generation !== sessionGenRef.current || userIdFromToken() !== subject) {
+      if (!hasCurrentAuthority()) {
         throw new StaleMeError();
       }
-      setUser(data.user ?? null);
       const ms = data.memberships ?? [];
+      // `/me` is specified to reject zero active memberships. Keep a client-
+      // side tripwire as well: a stale/misconfigured server response must not
+      // mount normal workspace routes with `organizationId = null` and let
+      // account identity masquerade as Team authority.
+      if (ms.length === 0) {
+        setUser(data.user ?? null);
+        setMemberships([]);
+        selectedOrgIdRef.current = null;
+        confirmedOrgIdRef.current = null;
+        setApiSelectedOrganizationId(null);
+        setSelectedOrgId(null);
+        setMeAuthoritative(false);
+        setMeBoundary("membership-repair-required");
+        return;
+      }
+      setUser(data.user ?? null);
       setMemberships(ms);
       setDocsEnabled(data.features?.docs === true);
       const nextStep = data.onboarding?.step ?? null;
@@ -402,6 +436,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // this session's /me authority as established.
       lastLiveConfirmRef.current = { requestId, requestStartOrg, settledOrg: settled };
       setMeAuthoritative(true);
+      setMeBoundary(null);
+    } catch (error) {
+      // Transport errors from a superseded membership epoch are stale too.
+      // Converting them here prevents fetchMe from replacing the live
+      // reconciliation boundary with an error from the departed Team.
+      if (!hasCurrentAuthority()) throw new StaleMeError();
+      throw error;
     } finally {
       // Flip the gate only for the LIVE session (generation + subject,
       // matching the success guard) — a request discarded for identity
@@ -409,7 +450,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // takeover. The gate still flips on ordinary same-session errors so
       // RequireAuth doesn't hang the dashboard forever if /me is briefly
       // unreachable.
-      if (generation === sessionGenRef.current && userIdFromToken() === subject) setMeLoaded(true);
+      if (hasCurrentAuthority()) setMeLoaded(true);
     }
   }, []);
 
@@ -418,8 +459,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // falls back to hiding admin features.
     try {
       await loadMe();
-    } catch {
-      // Swallowed by design for non-switch reads.
+    } catch (error) {
+      if (!(error instanceof StaleMeError)) {
+        const code =
+          typeof error === "object" && error !== null && "code" in error
+            ? (error as { code?: unknown }).code
+            : undefined;
+        setMeAuthoritative(false);
+        setMeBoundary(
+          code === "invite-required"
+            ? "invite-required"
+            : code === "membership-repair-required"
+              ? "membership-repair-required"
+              : "unavailable",
+        );
+      }
     }
   }, [loadMe]);
 
@@ -481,7 +535,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // pair (generation + subject) means an ordinary token refresh
         // mid-switch does not masquerade as an identity change, while
         // logout + relogin as the same subject still counts as a new session.
-        if (sessionGenRef.current !== sessionGeneration || userIdFromToken() !== sessionMarker) throw error;
+        if (
+          error instanceof StaleMeError ||
+          sessionGenRef.current !== sessionGeneration ||
+          userIdFromToken() !== sessionMarker
+        ) {
+          throw error;
+        }
         // Only a live /me whose REQUEST BEGAN after this attempt — and whose
         // request-start and settled targets both equal the exact Team — can
         // satisfy this switch (e.g. a manual refresh that started after the
@@ -684,6 +744,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [isAuthenticated, user, fetchMe]);
 
+  useEffect(() => {
+    const reconcileMembership = () => {
+      // Fence every /me that began under the departed membership before any
+      // visible state changes or the authoritative reconciliation request.
+      membershipAuthorityEpochRef.current += 1;
+      // Stop Team-scoped consumers before the round-trip: the socket was
+      // authorized by a membership that is no longer live.
+      setMemberships([]);
+      selectedOrgIdRef.current = null;
+      confirmedOrgIdRef.current = null;
+      setApiSelectedOrganizationId(null);
+      setSelectedOrgId(null);
+      setMeAuthoritative(false);
+      setMeBoundary("reconciling");
+      queryClient.clear();
+      void fetchMe().finally(() => {
+        // A successful /me selected the remaining/repaired Team. A failed
+        // invitation boundary leaves the selected org null, so connect no-ops.
+        window.dispatchEvent(new CustomEvent(ADMIN_WS_ORG_CHANGED_EVENT));
+      });
+    };
+    window.addEventListener(ADMIN_WS_MEMBERSHIP_CHANGED_EVENT, reconcileMembership);
+    return () => window.removeEventListener(ADMIN_WS_MEMBERSHIP_CHANGED_EVENT, reconcileMembership);
+  }, [fetchMe, queryClient]);
+
   // Listen for auth failure dispatched by the API client
   useEffect(() => {
     const handler = () => logout();
@@ -697,10 +782,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated,
         meLoaded,
         meAuthoritative,
+        meBoundary,
         user,
         memberships,
         currentMembership,
-        hasNoTeam: meAuthoritative && memberships.length === 0,
         organizationId: currentMembership?.organizationId ?? null,
         memberId: currentMembership?.id ?? null,
         role: currentMembership?.role ?? null,
@@ -723,6 +808,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         switchingOrg,
         setSwitchingOrg,
         refreshMe: fetchMe,
+        refreshMeStrict: loadMe,
         logout,
       }}
     >

@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef } from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
+import { Button } from "../components/ui/button.js";
 import { isKnownCampaign } from "../pages/quickstart/campaigns.js";
 import { beginAuthAttempt } from "./auth-analytics.js";
 import { useAuth } from "./auth-context.js";
@@ -20,6 +21,43 @@ const LandingPage = lazy(() => import("../pages/landing/index.js").then((m) => (
  * even if the chunk takes a few hundred ms over slow 3G.
  */
 const LandingFallback = () => <div className="landing-marketing min-h-screen bg-background" />;
+
+function TeamAccessBoundary({
+  reason,
+  onRetry,
+  onSignOut,
+}: {
+  reason: "reconciling" | "invite-required" | "membership-repair-required" | "unavailable" | null;
+  onRetry: () => Promise<void>;
+  onSignOut: () => void;
+}) {
+  const invitationRequired = reason === "invite-required";
+  const title = reason === "reconciling" ? "Team access changed" : "Workspace unavailable";
+  const detail = invitationRequired
+    ? "This server requires an invitation. Ask a Team administrator for an allowed invitation, then try again."
+    : reason === "membership-repair-required"
+      ? "Your Team access needs repair. Try again; if it remains unavailable, ask a Team administrator for help."
+      : reason === "reconciling"
+        ? "We’re checking your current Team access."
+        : "We couldn’t verify your Team access. No workspace data has been opened.";
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background px-6">
+      <div className="w-full max-w-md text-center">
+        <p className="text-label font-medium text-fg-3">First Tree</p>
+        <h1 className="mt-3 text-title font-semibold text-fg">{title}</h1>
+        <p className="mt-3 text-body text-fg-2">{detail}</p>
+        <div className="mt-6 flex justify-center gap-3">
+          <Button type="button" onClick={() => void onRetry()}>
+            Try again
+          </Button>
+          <Button type="button" variant="outline" onClick={onSignOut}>
+            Sign out
+          </Button>
+        </div>
+      </div>
+    </main>
+  );
+}
 
 /**
  * The scan funnel's own login handoff. A logged-out visitor who arrives at
@@ -58,22 +96,6 @@ function OAuthStartRedirect({ next }: { next: string }) {
 }
 
 /**
- * Where a signed-in user with no Team is sent. Everything behind this guard is
- * org-scoped, so there is nothing for them to render there; the Template
- * library is the Team-less entry point — picking a Template is the first step
- * of creating the Team Agent that creates the Team.
- *
- * It lives outside this guard (a public route), so redirecting here cannot
- * loop. Exported as the single place the entry destination is named.
- */
-export const NO_TEAM_ENTRY_PATH = "/templates";
-
-/** User-scoped routes that remain valid before the first Team exists. */
-export function isTeamlessAuthenticatedPath(pathname: string): boolean {
-  return pathname === "/quickstart" || pathname === "/settings/account";
-}
-
-/**
  * Route guard for everything behind the dashboard chrome.
  *
  * Behavior matrix (unauthenticated visitor):
@@ -82,15 +104,14 @@ export function isTeamlessAuthenticatedPath(pathname: string): boolean {
  *                           location in router state so LoginPage can send
  *                           the user back there after auth succeeds
  *
- * Authenticated users pass through to the matched child route, so landing on
- * `/` still produces the WorkspacePage as before — unless they have no Team at
- * all, which every route under this guard depends on. We render landing inline
- * (rather than redirecting to a `/landing` URL) so the marketing entry point
- * and the workspace share the canonical `/` URL — the path the user typed
- * never changes between auth states.
+ * Authenticated users always pass through to the matched child route, so
+ * landing on `/` still produces the WorkspacePage as before. We render
+ * landing inline (rather than redirecting to a `/landing` URL) so the
+ * marketing entry point and the workspace share the canonical `/` URL —
+ * the path the user typed never changes between auth states.
  */
 export function RequireAuth() {
-  const { isAuthenticated, meLoaded, hasNoTeam } = useAuth();
+  const { currentMembership, isAuthenticated, logout, meBoundary, meLoaded, refreshMe } = useAuth();
   const location = useLocation();
   if (!isAuthenticated) {
     if (location.pathname === "/") {
@@ -116,11 +137,9 @@ export function RequireAuth() {
   // populate the org id before the dashboard mounts and fires its first wave
   // of requests.
   if (!meLoaded) return <LandingFallback />;
-  // Most dashboard routes are Team-scoped, but Quickstart is an explicit
-  // first-Agent entry and Account remains user-scoped. Keep those two escape
-  // hatches mounted; redirect every other Team-less destination.
-  if (hasNoTeam && !isTeamlessAuthenticatedPath(location.pathname)) {
-    return <Navigate to={NO_TEAM_ENTRY_PATH} replace />;
-  }
+  // `/me` rejects this state and AuthProvider clears the session if an older
+  // server ever returns it. Keep the route guard fail-closed during that state
+  // transition so no Team-scoped child can mount from account identity alone.
+  if (!currentMembership) return <TeamAccessBoundary reason={meBoundary} onRetry={refreshMe} onSignOut={logout} />;
   return <Outlet />;
 }

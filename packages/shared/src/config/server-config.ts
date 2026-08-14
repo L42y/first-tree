@@ -140,16 +140,6 @@ export const serverConfigSchema = defineConfig({
   channel: field(z.enum(["dev", "staging", "prod"]).default("dev"), {
     env: "FIRST_TREE_CHANNEL",
   }),
-  opentag: {
-    /**
-     * Enables the Agent-first onboarding entry only after its Runtime,
-     * channel, and first-use continuation can ship as one reachable flow.
-     * Off by default so partial rollout cannot strand a new account.
-     */
-    agentFirstOnboardingEnabled: field(z.boolean().default(false), {
-      env: "FIRST_TREE_OPENTAG_AGENT_FIRST_ONBOARDING_ENABLED",
-    }),
-  },
   growth: {
     /**
      * Enables the Cloud side of public growth funnels handed off from website
@@ -246,6 +236,43 @@ export const serverConfigSchema = defineConfig({
       },
     }),
     provider: field(z.enum(["docker", "external"]).default("docker")),
+  },
+  /**
+   * Attachment quotas. The per-file 10 MiB cap (`MAX_ATTACHMENT_BYTES`) and
+   * the per-organization 2 GiB byte ceiling stay hard-coded; only the object
+   * count is deployment-tunable.
+   */
+  attachments: {
+    /**
+     * Maximum number of attachment objects (rows in `uploading`, `ready`, or
+     * `deleting` state) one organization may hold. The count covers every
+     * creation path — chat uploads, Feishu inbound resources, Team Skill
+     * bundle backfills, and Agent Template adoption copies all share the same
+     * pool. Default 10,000; the 2 GiB byte quota remains the storage
+     * backstop regardless of this value.
+     */
+    organizationObjectQuota: field(z.number().int().min(1).default(10_000), {
+      env: "FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT",
+    }),
+    /**
+     * 14-day retention sweep for message-class attachments (chat images /
+     * documents, Feishu inbound resources). Attachments held by a Team Skill
+     * Resource or an Agent Template bundle never expire. The sweep runs once
+     * at Server startup and then every 24 hours, and is a dry-run unless
+     * deletion is explicitly enabled: dry-run only counts and logs eligible
+     * rows, so operators can size the impact before flipping the switch.
+     * Rollback means disabling deletion again — already-deleted bytes can
+     * only be restored from a database backup.
+     */
+    retention: optional({
+      /**
+       * Master switch for real deletion. Unset / false = dry-run (count and
+       * log only); true = actually delete expired rows and reclaim quota.
+       */
+      deleteEnabled: field(z.boolean().default(false), {
+        env: "FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED",
+      }),
+    }),
   },
   /**
    * Transitional read/delete compatibility for attachment payloads written

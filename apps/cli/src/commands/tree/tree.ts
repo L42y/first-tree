@@ -1,7 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-
+import { canonicalGitRepoIdentity, contextTreeRepoSchema, sameContextTreeRepository } from "@first-tree/shared";
 import type { Command } from "commander";
 import {
   type ContextTreeReadSnapshotIdentity,
@@ -13,7 +13,7 @@ import type { CommandContext, SubcommandModule } from "../types.js";
 import { classifyContextContent } from "./content-class.js";
 import type { NodeMetadata } from "./context-document.js";
 import { readNodeMetadata } from "./context-document.js";
-import { asString, findGitRoot, runCommand } from "./shared.js";
+import { asString, findGitRoot, readGitRemoteUrl, runCommand } from "./shared.js";
 
 export type ContextTreeNode = {
   kind: "directory" | "file";
@@ -67,6 +67,14 @@ type ParsedTreeTreeOptions = {
    * wants a stable snapshot within a task.
    */
   pull: boolean;
+  /**
+   * Declared Context Tree binding identity (canonical origin URL and branch)
+   * from the trusted briefing. When either is set, an existing checkout that
+   * does not match is treated as declared-broken and the command fails closed
+   * before any read or pull.
+   */
+  expectRemote?: string;
+  expectBranch?: string;
 };
 
 type ResolvedTreeTarget = {
@@ -78,12 +86,17 @@ const NODE_FILE = "NODE.md";
 const LEAF_FILE_EXCLUDES = new Set([NODE_FILE]);
 const TREE_TREE_INVALID_LEVEL = "TREE_TREE_INVALID_LEVEL";
 const TREE_TREE_INVALID_PATH = "TREE_TREE_INVALID_PATH";
+const TREE_TREE_BINDING_MISMATCH = "TREE_TREE_BINDING_MISMATCH";
 const TREE_TREE_FAILED = "TREE_TREE_FAILED";
 const MAINLINE_BRANCHES = new Set(["main", "master", "origin/main"]);
 
 class TreeTreeCommandError extends Error {
   constructor(
-    public readonly code: typeof TREE_TREE_INVALID_LEVEL | typeof TREE_TREE_INVALID_PATH | typeof TREE_TREE_FAILED,
+    public readonly code:
+      | typeof TREE_TREE_INVALID_LEVEL
+      | typeof TREE_TREE_INVALID_PATH
+      | typeof TREE_TREE_BINDING_MISMATCH
+      | typeof TREE_TREE_FAILED,
     message: string,
   ) {
     super(message);
@@ -418,7 +431,155 @@ function parseTreeTreeOptions(options: Record<string, unknown>, args: string[]):
     // Commander maps `--no-pull` to `options.pull === false`; the flag is
     // absent (undefined) by default, which we treat as pull-enabled.
     pull: options.pull !== false,
+    expectRemote: asString(options.expectRemote),
+    expectBranch: asString(options.expectBranch),
   };
+}
+
+/**
+ * The validated binding identity: the refresh pull is pinned to it, so the
+ * checkout's own upstream config is irrelevant to which Tree gets read.
+ */
+type ValidatedBindingIdentity = {
+  remote: string;
+  branch: string;
+};
+
+/**
+ * Compare a checkout's origin against the declared remote using the shared
+ * binding schema, canonical identity, and provider-aware matcher.
+ *
+ * Either side that fails `contextTreeRepoSchema` is fail-closed, except the
+ * existing local-fixture control: both canonical identities are null, neither
+ * raw value contains `://`, and the trimmed strings are exactly equal.
+ * Public GitHub/GitLab.com keep their well-known web origin, so nested
+ * GitLab.com HTTPS ↔ SSH/scp stays equivalent. Self-managed hosts omit
+ * connection origin, so HTTPS↔HTTPS compares the complete origin (port
+ * included), mixed HTTPS↔SSH fails closed, and SSH↔SSH additionally
+ * requires the same effective SSH endpoint port (scp / unstated `ssh://`
+ * port means 22) rather than matching on canonical host/path alone.
+ */
+function sameDeclaredRemote(actual: string, expected: string): boolean {
+  const actualRaw = actual.trim();
+  const expectedRaw = expected.trim();
+  const actualParsed = contextTreeRepoSchema.safeParse(actualRaw);
+  const expectedParsed = contextTreeRepoSchema.safeParse(expectedRaw);
+  if (!actualParsed.success || !expectedParsed.success) {
+    return (
+      canonicalGitRepoIdentity(actualRaw) === null &&
+      canonicalGitRepoIdentity(expectedRaw) === null &&
+      !actualRaw.includes("://") &&
+      !expectedRaw.includes("://") &&
+      actualRaw === expectedRaw
+    );
+  }
+
+  const left = canonicalGitRepoIdentity(actualParsed.data);
+  const right = canonicalGitRepoIdentity(expectedParsed.data);
+  if (!left || !right || left.canonical !== right.canonical) return false;
+
+  if (left.host === "github.com") {
+    return sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "github",
+    });
+  }
+  if (left.host === "gitlab.com") {
+    return sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "gitlab",
+      gitlabInstanceOrigin: "https://gitlab.com",
+    });
+  }
+  if (
+    !sameContextTreeRepository({
+      left: actualParsed.data,
+      right: expectedParsed.data,
+      provider: "gitlab",
+    })
+  ) {
+    return false;
+  }
+  return sameSelfManagedSshEndpoint(actualParsed.data, expectedParsed.data);
+}
+
+/**
+ * When no Team GitLab connection origin is available, two SSH/scp spellings
+ * are the same executable endpoint only if their effective SSH ports match.
+ * scp-like and `ssh://` without a port are port 22. HTTPS pairs are left to
+ * the shared matcher (both ports null).
+ */
+function sameSelfManagedSshEndpoint(left: string, right: string): boolean {
+  const leftPort = sshEndpointPort(left);
+  const rightPort = sshEndpointPort(right);
+  if (leftPort === null && rightPort === null) return true;
+  if (leftPort === null || rightPort === null) return false;
+  return leftPort === rightPort;
+}
+
+function sshEndpointPort(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed.includes("://")) return 22;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "ssh:") return null;
+    if (url.port === "") return 22;
+    const port = Number(url.port);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fail-closed binding guard for an existing checkout. The Tree always lands
+ * at `<agentHome>/context-tree`, so a same-path checkout left by a previous
+ * binding is indistinguishable by location alone: before any content or
+ * hierarchy read (and before the refresh pull), verify the checkout's
+ * canonical `origin` URL and current branch name against the declared
+ * binding. A mismatch is declared-broken: never read, never delete, never
+ * repoint. The branch's upstream config is deliberately NOT consulted: the
+ * refresh pull is pinned to the validated identity, so a missing or foreign
+ * upstream cannot redirect or weaken the read.
+ *
+ * Both expect flags must be given together — a partial identity is not a
+ * binding we can pin a pull to, so it fails closed as invalid.
+ *
+ * Returns the validated identity for the pull target; `undefined` when no
+ * expectations were given (plain `tree tree` behavior is unchanged).
+ */
+function assertCheckoutMatchesDeclaredBinding(
+  repoRoot: string,
+  expectRemote: string | undefined,
+  expectBranch: string | undefined,
+): ValidatedBindingIdentity | undefined {
+  if (expectRemote === undefined && expectBranch === undefined) return undefined;
+  if (expectRemote === undefined || expectBranch === undefined) {
+    throw new TreeTreeCommandError(
+      TREE_TREE_BINDING_MISMATCH,
+      "Incomplete declared Context Tree binding identity: --expect-remote and --expect-branch must be given together. No tree content was read and nothing was modified.",
+    );
+  }
+
+  const mismatches: string[] = [];
+  const actualRemote = readGitRemoteUrl(repoRoot);
+  if (actualRemote === undefined || !sameDeclaredRemote(actualRemote, expectRemote)) {
+    mismatches.push("origin");
+  }
+  const currentBranch = runCommand("git", ["rev-parse", "--abbrev-ref", "HEAD"], repoRoot).trim();
+  if (currentBranch !== expectBranch) {
+    mismatches.push("branch");
+  }
+
+  if (mismatches.length > 0) {
+    throw new TreeTreeCommandError(
+      TREE_TREE_BINDING_MISMATCH,
+      `Existing checkout does not match the declared Context Tree binding (${mismatches.join(" and ")} mismatch). Treating it as declared-broken: no tree content was read and nothing was modified; do not read, delete, or repoint this checkout.`,
+    );
+  }
+  return { remote: "origin", branch: expectBranch };
 }
 
 /**
@@ -434,9 +595,16 @@ function parseTreeTreeOptions(options: Record<string, unknown>, args: string[]):
  * already runs git with `GIT_TERMINAL_PROMPT=0`, so a missing credential fails
  * fast instead of hanging.
  */
-function pullContextTreeRepo(root: string): void {
+function pullContextTreeRepo(root: string, validated?: ValidatedBindingIdentity): void {
   try {
-    runCommand("git", ["pull", "--ff-only"], root);
+    // When the binding guard validated an identity, the pull is pinned to
+    // that exact origin/branch — the checkout's own upstream config is never
+    // consulted to decide the refresh target.
+    runCommand(
+      "git",
+      validated !== undefined ? ["pull", "--ff-only", validated.remote, validated.branch] : ["pull", "--ff-only"],
+      root,
+    );
   } catch (error) {
     const stderr =
       typeof error === "object" && error !== null && "stderr" in error
@@ -661,6 +829,14 @@ function configureTreeTreeCommand(command: Command): void {
     .option(
       "--no-pull",
       "skip the automatic `git pull --ff-only` refresh and read the local checkout as-is (offline / stable-snapshot use)",
+    )
+    .option(
+      "--expect-remote <url>",
+      "declared Context Tree origin from the trusted briefing (requires --expect-branch); a mismatched checkout fails closed as declared-broken, and the refresh pull is pinned to the validated origin/branch",
+    )
+    .option(
+      "--expect-branch <branch>",
+      "declared Context Tree branch from the trusted briefing (requires --expect-remote); a mismatched checkout fails closed as declared-broken, and the refresh pull is pinned to the validated origin/branch",
     );
 }
 
@@ -669,13 +845,20 @@ export function runTreeTreeCommand(context: CommandContext): void {
     const options = context.command.opts<Record<string, unknown>>();
     const parsedOptions = parseTreeTreeOptions(options, context.command.args);
     const resolvedTarget = resolveTreeTarget(process.cwd(), parsedOptions.path);
+    // Binding guard before any read or refresh: a same-path checkout that does
+    // not match the declared binding is declared-broken — fail closed.
+    const validatedIdentity = assertCheckoutMatchesDeclaredBinding(
+      resolvedTarget.repoRoot,
+      parsedOptions.expectRemote,
+      parsedOptions.expectBranch,
+    );
     const readSnapshot = readContextTreeReadSnapshotIdentity(resolvedTarget.repoRoot);
     // Refresh the tree before reading it (hard freshness guarantee), unless
     // the caller opted out with --no-pull. An activated BYO task snapshot is
     // already pinned to an exact commit and must never refresh per selector.
     // Managed checkouts retain their existing best-effort stale fallback.
     if (parsedOptions.pull && readSnapshot === null) {
-      pullContextTreeRepo(resolvedTarget.repoRoot);
+      pullContextTreeRepo(resolvedTarget.repoRoot, validatedIdentity);
     }
     const snapshot = readContextTreeSnapshot(resolvedTarget.repoRoot, {
       level: parsedOptions.level,

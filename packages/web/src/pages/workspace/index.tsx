@@ -101,8 +101,16 @@ export function parseParticipantList(params: URLSearchParams): string[] {
 }
 
 export function WorkspacePage() {
-  const { meLoaded, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
+  const location = useLocation();
+  const { meLoaded, role, onboardingStep, onboardingDismissedAt, onboardingCompletedAt, currentOrgHasPersonalAgent } =
     useAuth();
+
+  if (meLoaded && role === "member") {
+    if (location.pathname === "/" && !location.search && !location.hash) {
+      return <Navigate to="/team" replace />;
+    }
+    return <WorkspaceBody />;
+  }
 
   // Users who haven't finished setup go through the standalone /onboarding
   // flow — including the server-`completed`-but-no-start-chat case. Only

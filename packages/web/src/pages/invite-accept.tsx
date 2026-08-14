@@ -9,7 +9,6 @@ import { FirstTreeLogo } from "../components/first-tree-logo.js";
 import { Button } from "../components/ui/button.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card.js";
 import { useAuthProviderAvailabilityState } from "../hooks/use-server-channel.js";
-import { markOnboardingResume } from "../utils/onboarding-flags.js";
 
 /**
  * Public landing for `/invite/:token`. Two cases:
@@ -93,8 +92,7 @@ export function InviteAcceptPage() {
         role: string;
       }>("/me/organizations/join", { token });
       await selectOrganization(res.organizationId);
-      markOnboardingResume("invite");
-      navigate("/onboarding", { replace: true });
+      navigate("/team", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to join team");
     } finally {

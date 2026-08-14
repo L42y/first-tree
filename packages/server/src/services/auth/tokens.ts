@@ -1,13 +1,18 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import bcrypt from "bcrypt";
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { jwtVerify, SignJWT } from "jose";
 import type { Database } from "../../db/connection.js";
 import { connectCodes } from "../../db/schema/connect-codes.js";
-import { members } from "../../db/schema/members.js";
 import { users } from "../../db/schema/users.js";
-import { UnauthorizedError } from "../../errors.js";
+import { NotFoundError, UnauthorizedError } from "../../errors.js";
 import { classifyJoseError, decodeJwtForTrace, untrustedAttrs } from "../../observability/jwt-trace.js";
+import {
+  lockMembershipLifecycleUser,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  type MembershipRecoveryPolicy,
+  resolveMembershipAfterLifecycleLock,
+} from "../team/membership.js";
 
 /**
  * Token lifetime configuration. Driven by `FIRST_TREE_AUTH_*_EXPIRY`
@@ -114,7 +119,8 @@ export async function login(
   password: string,
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
-) {
+  recoveryPolicy: MembershipRecoveryPolicy = MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+): Promise<{ accessToken: string; refreshToken: string }> {
   const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
 
   if (!user || user.status !== "active") {
@@ -126,22 +132,7 @@ export async function login(
     throw new UnauthorizedError("Invalid username or password");
   }
 
-  // The user MUST have at least one active membership to log in. The
-  // default org for the web client is derived from `/me` later; we keep
-  // the existence check here so a user with zero memberships gets a clear
-  // 401 instead of silently ending up at a no-op landing page.
-  const [member] = await db
-    .select({ id: members.id })
-    .from(members)
-    .where(and(eq(members.userId, user.id), eq(members.status, "active")))
-    .orderBy(desc(members.createdAt), desc(members.id))
-    .limit(1);
-
-  if (!member) {
-    throw new UnauthorizedError("No organization membership found");
-  }
-
-  const tokens = await signTokensForUser(jwtSecretKey, user.id, expiries);
+  const tokens = await signTokensForActiveUser(db, user.id, jwtSecretKey, expiries, "auth.login", recoveryPolicy);
 
   await db.update(users).set({ updatedAt: new Date() }).where(eq(users.id, user.id));
 
@@ -157,7 +148,7 @@ export async function refreshAccessToken(
   refreshToken: string,
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
-  options: { allowTeamless?: boolean } = {},
+  recoveryPolicy: MembershipRecoveryPolicy = MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const secret = new TextEncoder().encode(jwtSecretKey);
 
@@ -181,36 +172,7 @@ export async function refreshAccessToken(
     });
   }
 
-  const [user] = await db
-    .select({ id: users.id, status: users.status })
-    .from(users)
-    .where(eq(users.id, payload.sub))
-    .limit(1);
-
-  if (!user) {
-    throw new UnauthorizedError("User not found or suspended", {
-      "auth.refresh.reason": "user_not_found",
-      "auth.refresh.user_id": payload.sub,
-    });
-  }
-  if (user.status !== "active") {
-    throw new UnauthorizedError("User not found or suspended", {
-      "auth.refresh.reason": "user_suspended",
-      "auth.refresh.user_id": payload.sub,
-      "auth.refresh.user_status": user.status,
-    });
-  }
-
-  if (!options.allowTeamless) {
-    const [membership] = await db
-      .select({ id: members.id })
-      .from(members)
-      .where(and(eq(members.userId, user.id), eq(members.status, "active")))
-      .limit(1);
-    if (!membership) throw new UnauthorizedError("No organization membership found");
-  }
-
-  return signTokensForUser(jwtSecretKey, user.id, expiries);
+  return signTokensForActiveUser(db, payload.sub, jwtSecretKey, expiries, "auth.refresh", recoveryPolicy);
 }
 
 /**
@@ -249,6 +211,7 @@ export async function exchangeConnectToken(
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
   expectedIssuer?: string,
+  recoveryPolicy: MembershipRecoveryPolicy = MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
 ): Promise<{ accessToken: string; refreshToken: string }> {
   const codeToken = parseConnectCodeToken(connectToken);
   if (codeToken) {
@@ -279,7 +242,7 @@ export async function exchangeConnectToken(
       });
     }
 
-    return signTokensForActiveUser(db, row.userId, jwtSecretKey, expiries, "auth.connect");
+    return signTokensForActiveUser(db, row.userId, jwtSecretKey, expiries, "auth.connect", recoveryPolicy);
   }
 
   throw new UnauthorizedError("Invalid or expired connect token", {
@@ -287,41 +250,53 @@ export async function exchangeConnectToken(
   });
 }
 
-async function signTokensForActiveUser(
+export async function signTokensForActiveUser(
   db: Database,
   userId: string,
   jwtSecretKey: string,
   expiries: Pick<AuthTokenExpiries, "accessTokenExpiry" | "refreshTokenExpiry">,
-  attrPrefix: "auth.connect" | "auth.refresh",
+  attrPrefix: "auth.connect" | "auth.login" | "auth.oauth" | "auth.refresh",
+  recoveryPolicy: MembershipRecoveryPolicy,
 ): Promise<{ accessToken: string; refreshToken: string }> {
-  const [user] = await db
-    .select({ id: users.id, status: users.status })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
+  return db.transaction(async (tx) => {
+    let user: Awaited<ReturnType<typeof lockMembershipLifecycleUser>>;
+    try {
+      user = await lockMembershipLifecycleUser(tx, userId);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+      throw new UnauthorizedError("User not found or suspended", {
+        [`${attrPrefix}.reason`]: "user_not_found",
+        [`${attrPrefix}.user_id`]: userId,
+      });
+    }
+    const membership = await resolveMembershipAfterLifecycleLock(tx, user, recoveryPolicy);
+    if (membership.kind === "account-inactive") {
+      throw new UnauthorizedError("User not found or suspended", {
+        code: "account-inactive",
+        [`${attrPrefix}.reason`]: "user_suspended",
+        [`${attrPrefix}.user_id`]: userId,
+        [`${attrPrefix}.user_status`]: user.status,
+      });
+    }
+    if (membership.kind === "invitation-required" || membership.kind === "repair-required") {
+      throw new UnauthorizedError(
+        attrPrefix === "auth.login" ? "No organization membership found" : "No active membership",
+        {
+          code: membershipBoundaryCode(recoveryPolicy),
+          [`${attrPrefix}.reason`]: "no_active_membership",
+          [`${attrPrefix}.user_id`]: userId,
+        },
+      );
+    }
 
-  if (!user || user.status !== "active") {
-    throw new UnauthorizedError("User not found or suspended", {
-      [`${attrPrefix}.reason`]: user ? "user_suspended" : "user_not_found",
-      [`${attrPrefix}.user_id`]: userId,
-      ...(user ? { [`${attrPrefix}.user_status`]: user.status } : {}),
-    });
-  }
+    // Signing happens while the stable user lock is still held, so account
+    // suspension cannot commit between the status decision and issuance.
+    return signTokensForUser(jwtSecretKey, userId, expiries);
+  });
+}
 
-  // Same membership-existence check as refreshAccessToken — clear failure
-  // mode if the connect token was minted before the user was removed.
-  const [anyMember] = await db
-    .select({ id: members.id })
-    .from(members)
-    .where(and(eq(members.userId, userId), eq(members.status, "active")))
-    .limit(1);
-
-  if (!anyMember) {
-    throw new UnauthorizedError("No active membership", {
-      [`${attrPrefix}.reason`]: "no_active_membership",
-      [`${attrPrefix}.user_id`]: userId,
-    });
-  }
-
-  return signTokensForUser(jwtSecretKey, userId, expiries);
+function membershipBoundaryCode(recoveryPolicy: MembershipRecoveryPolicy): string {
+  return recoveryPolicy === MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED
+    ? "invite-required"
+    : "membership-repair-required";
 }

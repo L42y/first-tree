@@ -9,7 +9,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import { ToastProvider } from "../../../components/ui/toast.js";
-import type { StoredCampaignActionHandoff } from "../../../utils/onboarding-flags.js";
 import { UsageTab } from "../usage-tab.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -61,11 +60,6 @@ const authMock = vi.hoisted(() => ({
     memberId: "member-self",
     role: "admin",
     organizationId: "org-1",
-    onboardingCompletedAt: null as string | null,
-    currentMembership: {
-      firstTeamAgentContinuation: null as { agentId: string; status: "active" | "suspended" | "deleted" } | null,
-    },
-    markOnboardingCompleted: vi.fn(async () => undefined),
   },
 }));
 
@@ -75,15 +69,6 @@ const orgSettingsMocks = vi.hoisted(() => ({
 
 const providerModelMocks = vi.hoisted(() => ({
   getProviderModels: vi.fn(),
-}));
-
-const meChatMocks = vi.hoisted(() => ({
-  createMeTaskChat: vi.fn(),
-}));
-
-const onboardingFlagMocks = vi.hoisted(() => ({
-  readCampaignActionHandoffFlag: vi.fn((): StoredCampaignActionHandoff | null => null),
-  writeCampaignActionHandoffFlag: vi.fn(),
 }));
 
 vi.mock("../../../api/activity.js", async (importOriginal) => ({
@@ -124,13 +109,6 @@ vi.mock("../../../api/org-settings.js", () => orgSettingsMocks);
 // exercise (catalog rendering is covered in model-section-catalog.test.tsx).
 vi.mock("../../../api/provider-models.js", () => ({
   getProviderModels: providerModelMocks.getProviderModels,
-}));
-
-vi.mock("../../../api/me-chats.js", () => meChatMocks);
-
-vi.mock("../../../utils/onboarding-flags.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../utils/onboarding-flags.js")>()),
-  ...onboardingFlagMocks,
 }));
 
 const NOW = "2026-05-28T12:00:00.000Z";
@@ -467,18 +445,9 @@ beforeEach(() => {
   installBrowserStubs();
   document.body.innerHTML = "";
   vi.clearAllMocks();
-  authMock.value = {
-    memberId: "member-self",
-    role: "admin",
-    organizationId: "org-1",
-    onboardingCompletedAt: null,
-    currentMembership: { firstTeamAgentContinuation: null },
-    markOnboardingCompleted: vi.fn(async () => undefined),
-  };
+  authMock.value = { memberId: "member-self", role: "admin", organizationId: "org-1" };
   orgSettingsMocks.getContextTreeSetting.mockResolvedValue({ repo: "https://github.com/acme/tree", branch: "main" });
   providerModelMocks.getProviderModels.mockResolvedValue(null);
-  meChatMocks.createMeTaskChat.mockResolvedValue({ chatId: "chat-campaign" });
-  onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue(null);
   agentMocks.getAgent.mockResolvedValue(agent());
   // Cross-agent navigation helpers use the same agent list as the Team surface.
   const switcherAgents = {
@@ -692,6 +661,7 @@ describe("AgentDetailPage", () => {
     if (!profileNav) throw new Error("Expected Agent navigation");
     expect([...profileNav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -703,7 +673,7 @@ describe("AgentDetailPage", () => {
 
   it("shows adopted responsibilities read-only in Profile for a non-editor", async () => {
     const { ProfileTab } = await import("../profile-tab.js");
-    authMock.value = { ...authMock.value, memberId: "member-other", role: "member", organizationId: "org-1" };
+    authMock.value = { memberId: "member-other", role: "member", organizationId: "org-1" };
     agentMocks.getAgent.mockResolvedValue(agent({ managerId: "member-owner" }));
     agentResourceMocks.getAgentResources.mockResolvedValue(
       agentResources({
@@ -718,6 +688,7 @@ describe("AgentDetailPage", () => {
     if (!viewerNav) throw new Error("Expected Agent navigation");
     expect([...viewerNav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Tools & skills",
       "Usage",
     ]);
@@ -733,6 +704,7 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Identity");
     expect(view.container.querySelector('nav[aria-label="Agent sections"]')).toBeNull();
     expect(view.container.textContent).not.toContain("Responsibilities");
+    expect(view.container.textContent).not.toContain("Feishu");
     expect(view.container.textContent).not.toContain("Some profile details couldn’t be loaded.");
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
     expect(templateMocks.listAgentTemplates).not.toHaveBeenCalled();
@@ -747,6 +719,7 @@ describe("AgentDetailPage", () => {
     await waitForText(view.container, "Identity");
     expect(agentSectionLabels(view.container)).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -755,6 +728,7 @@ describe("AgentDetailPage", () => {
     ]);
     expect(view.container.textContent).not.toContain("Responsibilities");
     expect(templateMocks.listAgentTemplates).not.toHaveBeenCalled();
+    expect(view.container.textContent).not.toContain("Feishu");
     await act(async () => view.root.unmount());
   });
 
@@ -891,6 +865,7 @@ describe("AgentDetailPage", () => {
     if (!nav) throw new Error("Expected Agent navigation");
     expect([...nav.querySelectorAll("a")].map((tab) => tab.textContent?.trim())).toEqual([
       "Profile",
+      "Channels",
       "Runtime",
       "Instructions",
       "Tools & skills",
@@ -898,21 +873,29 @@ describe("AgentDetailPage", () => {
       "Usage",
     ]);
     expect(container.textContent).toContain("Always explain tradeoffs.");
-    expect(container.textContent).toContain("All instructions");
+    expect(container.textContent).toContain("What this agent follows");
+    expect(container.textContent).toContain("2 instructions applied");
+    expect(container.textContent).toContain("Applied instructions");
     await waitForText(container, "Team style guide");
     expect(container.textContent).toContain("Team style guide");
-    expect(container.textContent).toContain("Custom for this agent");
-    // The merged block renders each contributed instruction as its own labelled
-    // segment (not one blob): the team segment + the agent's own "Custom" segment.
-    const effBlock = container.querySelector('[aria-label="All instructions"]');
-    expect(effBlock).toBeTruthy();
-    const segLabels = [...(effBlock?.querySelectorAll(".text-eyebrow") ?? [])].map((n) => n.textContent?.trim());
-    // Each segment label is "<name> · <source>", aligned with the source rows.
-    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("Team default"))).toBe(true);
-    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Custom for this agent"))).toBe(
+    expect(container.textContent).toContain("Team instruction · Managed by your team");
+    expect(container.textContent).toContain("For this agent · Editable here");
+    const preview = container.querySelector("[data-instruction-result-preview]");
+    expect(preview?.textContent).toContain("Use the team house style. Always explain tradeoffs.");
+
+    const readFull = exactButtonByText(container, "Read full");
+    readFull?.focus();
+    await click(readFull);
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    const segLabels = [...(dialog?.querySelectorAll(".text-eyebrow") ?? [])].map((n) => n.textContent?.trim());
+    expect(segLabels.some((l) => l?.includes("Team style guide") && l?.includes("Team instruction"))).toBe(true);
+    expect(segLabels.some((l) => l?.includes("Custom instructions") && l?.includes("Editable for this agent"))).toBe(
       true,
     );
-    expect(effBlock?.textContent).toContain("Use the team house style.");
+    expect(dialog?.textContent).toContain("Use the team house style.");
+    await click(dialog?.querySelector("button span.sr-only")?.parentElement ?? null);
+    await waitForCondition(() => document.activeElement === readFull, "Expected dialog focus to return to Read full");
 
     // The custom prompt's edit action now lives in the row's ⋯ overflow menu.
     await clickRowMenuItem(container, "More actions for Custom instructions", "Edit custom instructions");
@@ -994,7 +977,7 @@ describe("AgentDetailPage", () => {
 
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
     await waitForText(container, "Team style guide");
-    await waitForText(container, "Custom for this agent");
+    await waitForText(container, "For this agent · Editable here");
     expect(container.textContent).toContain("No instructions yet.");
 
     await clickRowMenuItem(container, "More actions for Custom instructions", "Edit custom instructions");
@@ -1224,8 +1207,9 @@ describe("AgentDetailPage", () => {
     );
 
     const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "No instructions yet.");
-    await click(container.querySelector('button[aria-label="Add instructions"]'));
+    await waitForText(container, "No additional instructions are active.");
+    await waitForText(container, "No instructions are applied.");
+    await click(container.querySelector('button[aria-label="Add instruction"]'));
     await click(buttonByText(document.body, "Add custom instructions"));
     await waitForText(container, "Save instructions");
     await click(exactButtonByText(container, "Save instructions"));
@@ -1236,7 +1220,7 @@ describe("AgentDetailPage", () => {
       "Expected prompt body validation error to clear",
     );
 
-    await click(container.querySelector('button[aria-label="Add instructions"]'));
+    await click(container.querySelector('button[aria-label="Add instruction"]'));
     await click(buttonByText(document.body, "Add custom instructions"));
     await waitForText(container, "Save instructions");
     expect(container.textContent).not.toContain("Instructions are required.");
@@ -1363,169 +1347,6 @@ describe("AgentDetailPage", () => {
     await click(container.querySelector('button[aria-label="Start chat"]'));
     await waitForText(container, "/?c=draft&with=agent-1");
     expect(container.textContent).toContain("/?c=draft&with=agent-1");
-
-    await act(async () => root.unmount());
-  });
-
-  it("does not complete the exact Agent-first continuation until a real task exists", async () => {
-    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
-    const { PromptTab } = await import("../prompt-tab.js");
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Custom instructions");
-
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-    await waitForText(container, "/?c=draft&with=agent-1");
-
-    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
-    await act(async () => root.unmount());
-  });
-
-  it("starts the stored campaign task with this exact Agent from the header", async () => {
-    authMock.value.currentMembership.firstTeamAgentContinuation = { agentId: "agent-1", status: "active" };
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: "acme-backend-20260812-abcdef",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForCondition(() => meChatMocks.createMeTaskChat.mock.calls.length === 1, "Expected campaign task create");
-    expect(meChatMocks.createMeTaskChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        mode: "task",
-        topic: "Fix production scan blockers",
-        campaignAction: { campaign: "production-scan", repoSlug: "acme/backend" },
-        initialRecipientAgentIds: ["agent-1"],
-        initialMessage: expect.objectContaining({
-          source: "web",
-          content: expect.stringContaining("https://github.com/acme/backend"),
-        }),
-      }),
-    );
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
-    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
-    await waitForText(container, "/?c=chat-campaign");
-
-    await act(async () => root.unmount());
-  });
-
-  it("does not let another Agent consume a scoped campaign task", async () => {
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-other",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForText(container, "/?c=draft&with=agent-1");
-    expect(meChatMocks.createMeTaskChat).not.toHaveBeenCalled();
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
-  });
-
-  it("does not let an Agent in another Team consume a scoped campaign task", async () => {
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-other",
-      targetAgentId: "agent-1",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForText(container, "/?c=draft&with=agent-1");
-    expect(meChatMocks.createMeTaskChat).not.toHaveBeenCalled();
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
-  });
-
-  it("keeps a failed stored campaign task retryable from the Agent header", async () => {
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
-    });
-    meChatMocks.createMeTaskChat.mockRejectedValueOnce(new Error("server unavailable"));
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForText(container, "Couldn't start this task");
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
-    expect(container.textContent).not.toContain("/?c=chat-campaign");
-
-    await act(async () => root.unmount());
-  });
-
-  it("rejects a stored campaign task whose repository URL and slug disagree", async () => {
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/acme/backend",
-      reportKey: null,
-      repoSlug: "other/repository",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForText(container, "Couldn't start this task");
-    expect(meChatMocks.createMeTaskChat).not.toHaveBeenCalled();
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
-  });
-
-  it("accepts case variants of the same stored GitHub repository", async () => {
-    const { PromptTab } = await import("../prompt-tab.js");
-    onboardingFlagMocks.readCampaignActionHandoffFlag.mockReturnValue({
-      campaign: "production-scan",
-      repoUrl: "https://github.com/Acme/Backend",
-      reportKey: null,
-      repoSlug: "acme/backend",
-      targetOrganizationId: "org-1",
-      targetAgentId: "agent-1",
-    });
-
-    const { container, root } = await renderDom("/agents/agent-1/prompt", <PromptTab />);
-    await waitForText(container, "Start chat");
-    await click(container.querySelector('button[aria-label="Start chat"]'));
-
-    await waitForCondition(() => meChatMocks.createMeTaskChat.mock.calls.length === 1, "Expected campaign task create");
-    expect(meChatMocks.createMeTaskChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        campaignAction: { campaign: "production-scan", repoSlug: "Acme/Backend" },
-      }),
-    );
-    expect(onboardingFlagMocks.writeCampaignActionHandoffFlag).toHaveBeenCalledWith(null);
 
     await act(async () => root.unmount());
   });

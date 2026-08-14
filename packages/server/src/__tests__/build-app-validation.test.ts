@@ -17,9 +17,6 @@ import * as resourcesMigration from "../services/agents/resources/migration.js";
  */
 const baseConfig: Config = {
   channel: "dev",
-  opentag: {
-    agentFirstOnboardingEnabled: false,
-  },
   growth: {
     landingPagesEnabled: false,
     landingCampaignMaxAgentTurns: 1,
@@ -28,6 +25,7 @@ const baseConfig: Config = {
   },
   docs: { enabled: false },
   database: { url: process.env.DATABASE_URL ?? "", provider: "external" },
+  attachments: { organizationObjectQuota: 10_000 },
   server: { port: 0, host: "127.0.0.1", publicUrl: undefined },
   workspace: { root: "/tmp/first-tree-test-workspaces" },
   secrets: {

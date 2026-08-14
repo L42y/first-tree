@@ -2279,6 +2279,7 @@ describe("runtime provider architecture guard", () => {
     const hostRuntime = await import("../runtime/provider-support/host-runtime.js");
     const turnInput = await import("../runtime/provider-support/turn-input.js");
     const failurePolicy = await import("../runtime/provider-support/failure-policy.js");
+    const attachmentAvailability = await import("../runtime/provider-support/attachment-availability.js");
 
     expect(entry.prepareManagedSession).toBe(preparation.prepareManagedSession);
     expect(entry.projectManagedWorkspace).toBe(preparation.projectManagedWorkspace);
@@ -2286,6 +2287,8 @@ describe("runtime provider architecture guard", () => {
     expect(entry.acquireWorkspaceFileLock).toBe(hostRuntime.acquireWorkspaceFileLock);
     expect(entry.InputController).toBe(turnInput.InputController);
     expect(entry.recognizeProviderBinaryFailure).toBe(failurePolicy.recognizeProviderBinaryFailure);
+    expect(entry.isAttachmentGoneError).toBe(attachmentAvailability.isAttachmentGoneError);
+    expect(entry.ATTACHMENT_UNAVAILABLE_NOTE).toBe(attachmentAvailability.ATTACHMENT_UNAVAILABLE_NOTE);
   });
 
   it("keeps generic Runtime free of handler and concrete provider implementation imports", () => {

@@ -45,14 +45,10 @@ and the adjacent campaign quickstart handoff.
   Web presentation of its stored bootstrap; the client must not append hidden
   onboarding directives from message metadata.
 - Campaign quickstart starts through `POST /api/v1/me/landing-campaigns/start`.
-  For a caller with no active Team, a known campaign is an explicit first-Agent
-  start: one transaction creates the Team, Admin membership and human mirror,
-  tenant-local service membership, and service-managed trial Agent. Existing
-  members stay in their selected/default Team. After that boundary, the path
-  creates the trial chat, binds the managed trial prompt guardrail, and wakes
-  the agent from visible task text. The campaign skill is not
-  server-materialized: the kickoff message instructs the trial agent to clone
-  the campaign's skill repo and run the named skill on the connected repo.
+  That server-owned path creates the trial chat, binds the managed trial prompt
+  guardrail, and wakes the agent from visible task text. The campaign skill is
+  not server-materialized: the kickoff message instructs the trial agent to
+  clone the campaign's skill repo and run the named skill on the connected repo.
 - Campaign quickstart may carry an anonymous `{ attemptId, variant }`
   attribution pair. The pair is stored only on the trial chat's JSON metadata
   and included in the internal campaign export; it does not change trial
@@ -72,14 +68,12 @@ and the adjacent campaign quickstart handoff.
 - A `/me/onboarding/kickoff` request may carry `stamp` to say how the
   membership's onboarding state is stamped once the kickoff chat exists:
   `"completed"` (default, same as the older `complete: true`), `"none"`
-  (same as `complete: false`), or `"invitee_skip"` — the legacy wire name for
-  an explicit Team-Agent start. It is used both when a joining member starts
-  with a teammate's org-visible Agent and when a Team-less creator confirms
-  their own first Team Agent: it writes only
+  (same as `complete: false`), or `"invitee_skip"` — the team-agent start.
+  `"invitee_skip"` is used when a joining member starts their first chat with a
+  teammate's org-visible agent instead of creating their own: it writes only
   the auto-open suppressor (`onboarding_suppressed_reason = "invitee_skip"`),
-  never `onboarding_completed_at`. An invitee without a personal Agent may
-  resume the standard personal-Agent journey; a creator who already manages
-  the confirmed Agent continues on that Agent's Runtime surface. `stamp` supersedes
+  never `onboarding_completed_at`, so the standard connect-computer →
+  create-agent journey stays pending and resumable. `stamp` supersedes
   `complete` when both are present; the kickoff key stays the normal
   `<humanAgent>:<agent>:onboarding` key, so a team-agent start and a later
   personal-agent start-chat are distinct chats.
@@ -92,6 +86,17 @@ and the adjacent campaign quickstart handoff.
   idempotency identity without a data migration. `scanFixRepoSlug` is not an
   accepted request field. An onboarding action still stamps completion like any
   onboarding kickoff.
+- The Agent's own Feishu CLI setup Task shares this column under the
+  `<humanAgent>:<agent>:<client|"unbound">:feishu-cli` key, so the automatic
+  OpenTag preparation, a reload, an extra tab, an explicit retry, and the
+  permanent Agent Detail repair action all converge on one private conversation;
+  moving the Agent to another Computer is a different machine to check and earns
+  its own Task. The surface token stays last because `clients.id` is
+  client-supplied text and this column is also read by suffix (below) — an
+  arbitrary trailing segment could impersonate another namespace. Reuse is not
+  inert: an explicit `retry` asks the Agent again inside that Task, because once
+  it has taken the original request re-arming it wakes nobody, while every
+  ensure-shaped call stays a no-op.
 - A successfully created campaign action chat is best-effort recorded on the
   caller's matching trial-chat metadata. This keeps conversion measurement
   inside the existing trial-export authorization boundary; ordinary action

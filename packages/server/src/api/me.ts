@@ -6,26 +6,22 @@ import {
   contextSessionCandidateIssueResponseSchema,
   contextSessionCandidateValidateRequestSchema,
   createOrgFromMeSchema,
-  FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY,
-  getFirstTeamAgentContinuation,
   joinByInvitationSchema,
   kickoffOnboardingSchema,
   type OnboardingStep,
   onboardingEventSchema,
-  type ProvisionFirstTeamAgentResult,
   patchOnboardingSchema,
-  provisionFirstTeamAgentSchema,
   updateMyProfileSchema,
 } from "@first-tree/shared";
 import { getChannelConfig } from "@first-tree/shared/channel";
-import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { agents } from "../db/schema/agents.js";
 import { clients } from "../db/schema/clients.js";
 import { members } from "../db/schema/members.js";
 import { users } from "../db/schema/users.js";
-import { ForbiddenError, NotFoundError } from "../errors.js";
+import { ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../errors.js";
 import { requireUser } from "../scope/require-user.js";
 import {
   listAgentsManagedByUser,
@@ -57,7 +53,6 @@ import { buildServerConnectBootstrapCommand } from "../services/runtime/daemon/b
 import { GithubApiError, listUserRepos } from "../services/scm/github/oauth.js";
 import { GithubUserTokenError, getFreshGithubUserToken } from "../services/scm/github/user-token.js";
 import { pickDefaultMembership } from "../services/team/default-membership.js";
-import { provisionFirstTeamAgent } from "../services/team/first-team-agent.js";
 import {
   buildInviteUrl,
   findActiveByToken,
@@ -70,6 +65,9 @@ import {
   ensureMembership,
   leaveOrganization,
   listActiveMemberships,
+  lockMembershipLifecycleUser,
+  MEMBERSHIP_RECOVERY_POLICIES,
+  membershipRecoveryPolicy,
   selfCreateOrganization,
 } from "../services/team/membership.js";
 import { resolvePublicUrl } from "../utils/public-url.js";
@@ -208,6 +206,17 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       .limit(1);
 
     const memberships = await listActiveMemberships(app.db, userId);
+    if (memberships.length === 0) {
+      const recoveryPolicy = membershipRecoveryPolicy(app.config.access?.allowedOrganizationId);
+      throw new ForbiddenError("An active Team membership is required", {
+        code:
+          recoveryPolicy === MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED
+            ? "invite-required"
+            : "membership-repair-required",
+        "auth.me.reason": "no_active_membership",
+        "auth.me.user_id": userId,
+      });
+    }
     const defaultMembership = pickDefaultMembership(
       memberships.map((m) => ({ id: m.memberId, createdAt: m.createdAt })),
     );
@@ -260,39 +269,6 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
       memberships.map((mb) => ({ memberId: mb.memberId, organizationId: mb.organizationId })),
     );
 
-    const humanMirrorRows =
-      memberships.length > 0
-        ? await app.db
-            .select({ uuid: agents.uuid, metadata: agents.metadata })
-            .from(agents)
-            .where(
-              inArray(
-                agents.uuid,
-                memberships.map((mb) => mb.agentId),
-              ),
-            )
-        : [];
-    const continuationByMirrorId = new Map(
-      humanMirrorRows.flatMap((row) => {
-        const continuation = getFirstTeamAgentContinuation(row.metadata);
-        return continuation ? [[row.uuid, continuation] as const] : [];
-      }),
-    );
-    const continuationAgentIds = [...new Set([...continuationByMirrorId.values()].map((value) => value.agentId))];
-    const continuationAgentRows =
-      continuationAgentIds.length > 0
-        ? await app.db
-            .select({
-              uuid: agents.uuid,
-              organizationId: agents.organizationId,
-              managerId: agents.managerId,
-              status: agents.status,
-            })
-            .from(agents)
-            .where(inArray(agents.uuid, continuationAgentIds))
-        : [];
-    const continuationAgentById = new Map(continuationAgentRows.map((row) => [row.uuid, row]));
-
     // Surface invite URL only for users who admin at least one org. The
     // web client picks the relevant org from `selectedOrganizationId`
     // first; this is purely a convenience fallback for the default org.
@@ -307,41 +283,27 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
 
     const onboardingStep = await inferOnboardingStep(app, userId);
 
-    return {
+    const response = {
       user: user ?? null,
       defaultOrganizationId: defaultOrgId,
-      memberships: memberships.map((mb) => {
-        const continuation = continuationByMirrorId.get(mb.agentId);
-        const continuationAgent = continuation ? continuationAgentById.get(continuation.agentId) : undefined;
-        const firstTeamAgentContinuation =
-          !mb.onboardingCompletedAt &&
-          continuationAgent?.organizationId === mb.organizationId &&
-          (mb.role === "admin" || continuationAgent.managerId === mb.memberId) &&
-          (continuationAgent.status === "active" ||
-            continuationAgent.status === "suspended" ||
-            continuationAgent.status === "deleted")
-            ? { agentId: continuationAgent.uuid, status: continuationAgent.status }
-            : null;
-        return {
-          id: mb.memberId,
-          organizationId: mb.organizationId,
-          organizationName: mb.orgDisplayName,
-          role: mb.role,
-          agentId: mb.agentId,
-          orgHasOtherMembers: (memberCounts.get(mb.organizationId) ?? 1) > 1,
-          hasUsableAgent: orgsWithUsableAgent.has(mb.organizationId),
-          hasPersonalAgent: orgsWithPersonalAgent.has(mb.organizationId),
-          onboardingSuppressedAt: mb.onboardingSuppressedAt ? mb.onboardingSuppressedAt.toISOString() : null,
-          onboardingSuppressedReason:
-            mb.onboardingSuppressedReason === "finish_later" ||
-            mb.onboardingSuppressedReason === "completed" ||
-            mb.onboardingSuppressedReason === "invitee_skip"
-              ? mb.onboardingSuppressedReason
-              : null,
-          onboardingCompletedAt: mb.onboardingCompletedAt ? mb.onboardingCompletedAt.toISOString() : null,
-          firstTeamAgentContinuation,
-        };
-      }),
+      memberships: memberships.map((mb) => ({
+        id: mb.memberId,
+        organizationId: mb.organizationId,
+        organizationName: mb.orgDisplayName,
+        role: mb.role,
+        agentId: mb.agentId,
+        orgHasOtherMembers: (memberCounts.get(mb.organizationId) ?? 1) > 1,
+        hasUsableAgent: orgsWithUsableAgent.has(mb.organizationId),
+        hasPersonalAgent: orgsWithPersonalAgent.has(mb.organizationId),
+        onboardingSuppressedAt: mb.onboardingSuppressedAt ? mb.onboardingSuppressedAt.toISOString() : null,
+        onboardingSuppressedReason:
+          mb.onboardingSuppressedReason === "finish_later" ||
+          mb.onboardingSuppressedReason === "completed" ||
+          mb.onboardingSuppressedReason === "invitee_skip"
+            ? mb.onboardingSuppressedReason
+            : null,
+        onboardingCompletedAt: mb.onboardingCompletedAt ? mb.onboardingCompletedAt.toISOString() : null,
+      })),
       onboarding: {
         step: onboardingStep,
         dismissedAt: defaultRow?.onboardingSuppressedAt ? defaultRow.onboardingSuppressedAt.toISOString() : null,
@@ -355,6 +317,34 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
         docs: app.config.docs.enabled,
       },
     };
+    const snapshotMemberIds = memberships.map((membership) => membership.memberId).sort();
+    await app.db.transaction(async (tx) => {
+      // Linearize the response snapshot with every supported leave/remove/
+      // repair transition. If anything changed while the later projections
+      // were built, fail closed and let the client retry instead of returning
+      // a Team whose membership is already revoked.
+      const lockedUser = await lockMembershipLifecycleUser(tx, userId);
+      if (lockedUser.status !== "active") {
+        throw new UnauthorizedError("User not found or suspended", {
+          "auth.failure_reason": "user_suspended",
+          "auth.user_id": userId,
+          "auth.user_status": lockedUser.status,
+        });
+      }
+      const current = await tx
+        .select({ id: members.id })
+        .from(members)
+        .where(and(eq(members.userId, userId), eq(members.status, "active")))
+        .orderBy(asc(members.id));
+      const currentMemberIds = current.map((membership) => membership.id);
+      if (
+        currentMemberIds.length !== snapshotMemberIds.length ||
+        currentMemberIds.some((memberId, index) => memberId !== snapshotMemberIds[index])
+      ) {
+        throw new ConflictError("Team membership changed while loading /me; retry", { code: "membership-changed" });
+      }
+    });
+    return response;
   });
 
   /**
@@ -424,25 +414,15 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     const body = completeOnboardingSchema.parse(request.body ?? {});
     const memberId = await resolveOnboardingMembershipId(app, userId, body.organizationId);
     const now = new Date();
-    const result = await app.db.transaction(async (tx) => {
-      const updated = await tx
-        .update(members)
-        .set({
-          onboardingCompletedAt: now,
-          onboardingSuppressedAt: now,
-          onboardingSuppressedReason: "completed",
-        })
-        .where(and(eq(members.id, memberId), isNull(members.onboardingCompletedAt)))
-        .returning({ agentId: members.agentId });
-      const completed = updated[0];
-      if (completed) {
-        await tx
-          .update(agents)
-          .set({ metadata: sql`${agents.metadata} - ${FIRST_TEAM_AGENT_CONTINUATION_METADATA_KEY}` })
-          .where(eq(agents.uuid, completed.agentId));
-      }
-      return updated;
-    });
+    const result = await app.db
+      .update(members)
+      .set({
+        onboardingCompletedAt: now,
+        onboardingSuppressedAt: now,
+        onboardingSuppressedReason: "completed",
+      })
+      .where(and(eq(members.id, memberId), isNull(members.onboardingCompletedAt)))
+      .returning({ id: members.id });
     if (result.length > 0) {
       app.log.info({ event: "onboarding.completed", userId }, "onboarding funnel: setup completed");
     }
@@ -559,8 +539,7 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * POST /me/onboarding/events — web-side onboarding funnel reporter.
-   * Server-side milestones (`team_created` at first-Agent confirmation,
-   * `dismissed` on PATCH)
+   * Server-side milestones (`team_created` at OAuth, `dismissed` on PATCH)
    * are emitted directly; this endpoint surfaces the web-driven ones into
    * the same log stream so a single funnel query covers the full flow.
    * Body shape is enum-validated so the server won't log arbitrary names.
@@ -793,6 +772,10 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     if (!inv) {
       return reply.status(404).send({ error: "Invitation not found or no longer valid" });
     }
+    const allowedOrganizationId = app.config.access?.allowedOrganizationId;
+    if (allowedOrganizationId && inv.organizationId !== allowedOrganizationId) {
+      throw new ForbiddenError("Invitation is not allowed on this server", { code: "invite-not-allowed" });
+    }
 
     const [u] = await app.db
       .select({ username: users.username, displayName: users.displayName })
@@ -822,54 +805,6 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  /**
-   * POST /me/team-agents — provision the caller's first Team Agent.
-   *
-   * Class A by construction, not by preference: the starting state this serves
-   * has no organization at all, so there is no `:orgId` to put in the path and
-   * no org claim to read. The Team is an OUTPUT of this call. Creating further
-   * Agents inside a Team the caller already works in stays org-scoped
-   * (`POST /orgs/:orgId/agents`).
-   *
-   * The service runs Team, Admin membership, human mirror, Agent, and Template
-   * adoption in one transaction, and converges concurrent/retried calls on a
-   * single first Team and first Agent.
-   */
-  app.post("/me/team-agents", { config: { otelRecordBody: true } }, async (request, reply) => {
-    if (!app.config.opentag.agentFirstOnboardingEnabled) {
-      return reply.status(404).send({
-        error: "Agent-first onboarding is disabled on this First Tree deployment.",
-        code: "feature_disabled",
-      });
-    }
-    const { userId } = requireUser(request);
-    const body = provisionFirstTeamAgentSchema.parse(request.body ?? {});
-
-    const result: ProvisionFirstTeamAgentResult = await provisionFirstTeamAgent(
-      app.db,
-      { ...body, userId },
-      {
-        attachmentBlobStore: app.attachmentBlobStore,
-        idempotencySecret: app.config.secrets.jwtSecret,
-        templatePublisherOrgId: app.config.agentTemplates?.publisherOrgId,
-        allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
-      },
-    );
-
-    if (result.teamCreated) {
-      app.log.info(
-        {
-          event: "onboarding.team_created",
-          userId,
-          organizationId: result.organizationId,
-          source: "first-team-agent",
-        },
-        "onboarding funnel: team created with the first Team Agent",
-      );
-    }
-    return reply.status(result.agentCreated ? 201 : 200).send(result);
-  });
-
   app.post<{ Params: { memberId: string } }>("/me/memberships/:memberId/leave", async (request, reply) => {
     const { userId } = requireUser(request);
     // Confirm the member row belongs to the caller before flipping it.
@@ -881,7 +816,12 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     if (!row || row.userId !== userId) {
       throw new NotFoundError(`Membership "${request.params.memberId}" not found`);
     }
-    await leaveOrganization(app.db, row.id);
+    await leaveOrganization(
+      app.db,
+      row.id,
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+      app.notifier,
+    );
     return reply.status(204).send();
   });
 

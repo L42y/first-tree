@@ -101,6 +101,8 @@ describe("createNotifier", () => {
     await notifier.notifyChatMessage("chat_1", "msg_1");
     await notifier.notifyChatAudience("chat_1");
     await notifier.notifyChatUpdated("chat_1");
+    await notifier.notifyMeChatsChanged("human_1", "org_1");
+    await notifier.notifyMembershipChanged("member_1", "org_1");
     await notifier.notifyAgentRouteChange(payload);
     await notifier.notifyDaemonClientCommand({
       type: "provider-models:list",
@@ -111,7 +113,7 @@ describe("createNotifier", () => {
     });
     await notifier.notifyDaemonClientCommandResult({ clientId: "client_1", ref: "ref_1" });
 
-    expect(ok.calls).toHaveLength(12);
+    expect(ok.calls).toHaveLength(14);
     expect(ok.calls.map((values) => values[0])).toEqual([
       "inbox_notifications",
       "config_changes",
@@ -122,6 +124,8 @@ describe("createNotifier", () => {
       "chat_message_events",
       "chat_audience_events",
       "chat_updated_events",
+      "me_chats_changed",
+      "membership_changes",
       "agent_route_events",
       "daemon_client_commands",
       "daemon_client_command_results",
@@ -137,6 +141,8 @@ describe("createNotifier", () => {
     await expect(failing.notifyChatMessage("chat_1", "msg_1")).resolves.toBeUndefined();
     await expect(failing.notifyChatAudience("chat_1")).resolves.toBeUndefined();
     await expect(failing.notifyChatUpdated("chat_1")).resolves.toBeUndefined();
+    await expect(failing.notifyMeChatsChanged("human_1", "org_1")).resolves.toBeUndefined();
+    await expect(failing.notifyMembershipChanged("member_1", "org_1")).resolves.toBeUndefined();
     await expect(failing.notifyAgentRouteChange(payload)).resolves.toBeUndefined();
     await expect(
       failing.notifyDaemonClientCommand({
@@ -178,6 +184,7 @@ describe("createNotifier", () => {
     });
     const chatUpdatedSecond = vi.fn();
     const meChatsChanged = vi.fn();
+    const membershipChanged = vi.fn();
     const agentRoute = vi.fn(() => {
       throw new Error("consumer failed");
     });
@@ -204,6 +211,7 @@ describe("createNotifier", () => {
     notifier.onChatUpdated(chatUpdated);
     notifier.onChatUpdated(chatUpdatedSecond);
     notifier.onMeChatsChanged(meChatsChanged);
+    notifier.onMembershipChanged(membershipChanged);
     notifier.onAgentRouteChange(agentRoute);
     notifier.onAgentRouteChange(agentRouteSecond);
     notifier.onDaemonClientCommand(daemonCommand);
@@ -226,6 +234,9 @@ describe("createNotifier", () => {
     listeners.get("chat_updated_events")?.("chat_1");
     listeners.get("me_chats_changed")?.("human_1:org_1");
     listeners.get("me_chats_changed")?.("bad");
+    listeners.get("membership_changes")?.(JSON.stringify({ memberId: "member_1", organizationId: "org_1" }));
+    listeners.get("membership_changes")?.("{not json");
+    listeners.get("membership_changes")?.(JSON.stringify({ memberId: "member_1" }));
     listeners.get("agent_route_events")?.(
       JSON.stringify({
         agentId: "agent_1",
@@ -310,6 +321,8 @@ describe("createNotifier", () => {
     expect(meChatsChanged).toHaveBeenCalledWith({ humanAgentId: "human_1", organizationId: "org_1" });
     // The malformed "bad" payload (no colon) is dropped, not passed through.
     expect(meChatsChanged).toHaveBeenCalledTimes(1);
+    expect(membershipChanged).toHaveBeenCalledWith({ memberId: "member_1", organizationId: "org_1" });
+    expect(membershipChanged).toHaveBeenCalledTimes(1);
     expect(agentRouteSecond).toHaveBeenCalledWith({
       agentId: "agent_1",
       agentType: "codex",
@@ -343,7 +356,7 @@ describe("createNotifier", () => {
 
     await notifier.stop();
     await notifier.stop();
-    expect(unlisteners).toHaveLength(13);
+    expect(unlisteners).toHaveLength(14);
     for (const unlisten of unlisteners) {
       expect(unlisten).toHaveBeenCalledTimes(1);
     }

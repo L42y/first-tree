@@ -14,15 +14,19 @@ import { messages } from "../../../db/schema/messages.js";
 import { processedEvents } from "../../../db/schema/processed-events.js";
 import { createLogger } from "../../../observability/index.js";
 import { uuidv7 } from "../../../uuid.js";
+import type { AttachmentObjectQuota } from "../../attachment.js";
 import { addChatParticipants } from "../../chat/membership/participants.js";
 import { sendMessage } from "../../chat/message.js";
 import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
+import { isFeishuBotUsable } from "./binding-state.js";
 import { convertFeishuContent } from "./content.js";
 import { type FeishuResourceDownloader, hydrateFeishuResources } from "./resource-hydrator.js";
+import { safeFeishuErrorContext } from "./safe-error.js";
 import { externalAuthorIdentity, type FeishuChatMembersReader, type FeishuSenderNameResolver } from "./sender-name.js";
 
 const log = createLogger("feishu-inbound");
+const ACKNOWLEDGEMENT_EMOJI = "Get";
 
 type Binding = typeof imBotBindings.$inferSelect;
 
@@ -40,9 +44,11 @@ export async function ingestFeishuMessage(
     senderNames: FeishuSenderNameResolver;
     readMembers: FeishuChatMembersReader;
     downloadResource: FeishuResourceDownloader;
+    addReaction: (input: { messageId: string; emojiType: string }) => Promise<unknown>;
+    attachmentObjectQuota: AttachmentObjectQuota;
   },
 ): Promise<FeishuInboundResult> {
-  if (binding.status !== "active") return { state: "ignored", reason: "inactive_binding" };
+  if (!isFeishuBotUsable(binding)) return { state: "ignored", reason: "inactive_binding" };
   if (input.senderId === binding.botOpenId) return { state: "ignored", reason: "bot_echo" };
   const exactBotMention = input.mentions.some((mention) => mention.openId === binding.botOpenId);
   if (input.chatType === "group" && (!input.mentionedBot || !exactBotMention)) {
@@ -54,6 +60,7 @@ export async function ingestFeishuMessage(
   const eventPlatform = `feishu:${binding.id}`;
   const claimed = await claimRecoverableEvent(db, eventId, eventPlatform);
   if (!claimed) return { state: "duplicate" };
+  acknowledgeFeishuMessage(binding.id, input.messageId, dependencies.addReaction);
 
   try {
     const chatBinding = await resolveOrCreateChatBinding(db, binding, input);
@@ -85,6 +92,7 @@ export async function ingestFeishuMessage(
       messageId: input.messageId,
       descriptors,
       download: dependencies.downloadResource,
+      attachmentObjectQuota: dependencies.attachmentObjectQuota,
     });
     const content = [converted.content, ...hydrated.unavailableNotes.map((note) => `> ${note}`)]
       .filter(Boolean)
@@ -137,10 +145,28 @@ export async function ingestFeishuMessage(
   } catch (error) {
     if (await findExistingMessage(db, binding.id, input.messageId)) return { state: "duplicate" };
     await unclaimEvent(db, eventId, eventPlatform).catch((unclaimError) => {
-      log.warn({ bindingId: binding.id, eventId, err: unclaimError }, "Failed to release Feishu event claim");
+      log.warn(
+        { bindingId: binding.id, eventId, ...safeFeishuErrorContext(unclaimError) },
+        "Failed to release Feishu event claim",
+      );
     });
     throw error;
   }
+}
+
+function acknowledgeFeishuMessage(
+  bindingId: string,
+  messageId: string,
+  addReaction: (input: { messageId: string; emojiType: string }) => Promise<unknown>,
+): void {
+  void Promise.resolve()
+    .then(() => addReaction({ messageId, emojiType: ACKNOWLEDGEMENT_EMOJI }))
+    .catch((error) => {
+      log.warn(
+        { bindingId, messageId, emojiType: ACKNOWLEDGEMENT_EMOJI, ...safeFeishuErrorContext(error) },
+        "Failed to acknowledge Feishu message with a reaction",
+      );
+    });
 }
 
 function mergeResourceDescriptors<T extends { type: string; fileKey: string }>(
@@ -289,5 +315,5 @@ function readString(record: Record<string, unknown> | null, key: string): string
 }
 
 export function logFeishuInboundFailure(bindingId: string, error: unknown): void {
-  log.error({ bindingId, err: error }, "Feishu inbound message failed");
+  log.error({ bindingId, ...safeFeishuErrorContext(error) }, "Feishu inbound message failed");
 }

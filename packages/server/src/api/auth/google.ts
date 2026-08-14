@@ -8,13 +8,18 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   findOrCreateUserFromExternalAccount,
+  IdentityAccountInactiveError,
   IdentityConflictError,
   IdentityMismatchError,
   LastIdentityError,
   linkExternalIdentity,
   unlinkExternalIdentity,
 } from "../../services/auth/identity.js";
-import { completeExternalAccountBootstrap, OAuthBootstrapError } from "../../services/auth/oauth/bootstrap.js";
+import {
+  completeExternalAccountBootstrap,
+  OAuthBootstrapError,
+  oauthBootstrapBoundary,
+} from "../../services/auth/oauth/bootstrap.js";
 import { buildGoogleAuthorizeUrl, exchangeGoogleCode } from "../../services/auth/oauth/google.js";
 import {
   STATE_NONCE_COOKIE_NAME,
@@ -22,7 +27,8 @@ import {
   signOAuthState,
   verifyOAuthState,
 } from "../../services/auth/oauth/state.js";
-import { signTokensForUser } from "../../services/auth/tokens.js";
+import { signTokensForActiveUser } from "../../services/auth/tokens.js";
+import { membershipRecoveryPolicy } from "../../services/team/membership.js";
 import { resolvePublicUrl } from "../../utils/public-url.js";
 import { buildCookie, protectOAuthStateNonce, readOAuthStateNonce } from "./oauth-cookie.js";
 
@@ -133,6 +139,8 @@ export async function googleOauthRoutes(app: FastifyInstance): Promise<void> {
         app.log.info({ event: "identity.unlinked", provider: "google", userId: verified.userId }, "Identity unlinked");
         return reply.redirect(`${ACCOUNT_RETURN_PATH}?connection=google-unlinked`, 302);
       } catch (error) {
+        if (error instanceof IdentityAccountInactiveError)
+          return reply.redirect(`${ACCOUNT_RETURN_PATH}?error=account-inactive`, 302);
         if (error instanceof IdentityConflictError)
           return reply.redirect(`${ACCOUNT_RETURN_PATH}?error=identity-conflict`, 302);
         if (error instanceof IdentityMismatchError)
@@ -162,7 +170,6 @@ async function completeGoogleSignIn(
       allowedOrganizationId: app.config.access?.allowedOrganizationId ?? null,
       ip: request.ip,
       userAgent: request.headers["user-agent"] ?? null,
-      agentFirstOnboardingEnabled: app.config.opentag.agentFirstOnboardingEnabled,
     });
   } catch (error) {
     if (error instanceof OAuthBootstrapError)
@@ -184,9 +191,26 @@ async function completeGoogleSignIn(
       "onboarding funnel: team auto-created at OAuth bootstrap",
     );
   }
-  const tokens = await signTokensForUser(app.config.secrets.jwtSecret, account.userId, app.config.auth);
-  // A gated Agent-first solo sign-in has no Team yet, so `org` is omitted
-  // rather than sent empty. The default flow returns its personal Team.
+  let tokens: Awaited<ReturnType<typeof signTokensForActiveUser>>;
+  try {
+    tokens = await signTokensForActiveUser(
+      app.db,
+      account.userId,
+      app.config.secrets.jwtSecret,
+      app.config.auth,
+      "auth.oauth",
+      membershipRecoveryPolicy(app.config.access?.allowedOrganizationId),
+    );
+  } catch (error) {
+    const boundary = oauthBootstrapBoundary(error);
+    if (boundary) {
+      return redirectError(reply, boundary.code, next, {
+        callbackIntent: "sign-in",
+        accountCreated: account.created,
+      });
+    }
+    throw error;
+  }
   const fragment = new URLSearchParams({
     access: tokens.accessToken,
     refresh: tokens.refreshToken,
@@ -194,7 +218,7 @@ async function completeGoogleSignIn(
     joinPath: bootstrap.joinPath,
     accountCreated: account.created ? "1" : "0",
     callbackIntent: "sign-in",
-    ...(bootstrap.organizationId ? { org: bootstrap.organizationId } : {}),
+    org: bootstrap.organizationId,
     ...(bootstrap.orgPinned ? { orgPinned: "1" } : {}),
   }).toString();
   app.log.info(

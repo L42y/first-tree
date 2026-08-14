@@ -196,31 +196,6 @@ describe("server config", () => {
     expect(enabledConfig.growth.landingCampaignMaxTrialsPerUserPer24Hours).toBe(7);
   });
 
-  it("keeps Agent-first onboarding disabled until the full channel lifecycle is enabled", async () => {
-    const defaultConfigDir = makeTempConfigDir();
-    stubRequiredProductionConfig();
-
-    const defaultConfig = await initConfig({
-      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
-      role: "server",
-      configDir: defaultConfigDir,
-    });
-
-    expect(defaultConfig.opentag.agentFirstOnboardingEnabled).toBe(false);
-
-    resetConfig();
-    const enabledConfigDir = makeTempConfigDir();
-    vi.stubEnv("FIRST_TREE_OPENTAG_AGENT_FIRST_ONBOARDING_ENABLED", "true");
-
-    const enabledConfig = await initConfig({
-      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
-      role: "server",
-      configDir: enabledConfigDir,
-    });
-
-    expect(enabledConfig.opentag.agentFirstOnboardingEnabled).toBe(true);
-  });
-
   it("resolves landing campaign official service ids only when configured", async () => {
     const defaultConfigDir = makeTempConfigDir();
     stubRequiredProductionConfig();
@@ -448,6 +423,82 @@ describe("server config", () => {
     });
 
     expect(config.rateLimit).toBeUndefined();
+  });
+
+  it("defaults the organization attachment object quota to 10,000 and accepts env overrides", async () => {
+    const defaultDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+
+    const defaultConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: defaultDir,
+    });
+
+    expect(defaultConfig.attachments.organizationObjectQuota).toBe(10_000);
+
+    resetConfig();
+    const configuredDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "25000");
+
+    const configured = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: configuredDir,
+    });
+
+    expect(configured.attachments.organizationObjectQuota).toBe(25_000);
+  });
+
+  it("rejects invalid organization attachment object quotas", async () => {
+    const zeroDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "0");
+
+    await expect(
+      initConfig({
+        schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+        role: "server",
+        configDir: zeroDir,
+      }),
+    ).rejects.toThrow(/organizationObjectQuota/);
+
+    resetConfig();
+    const nonNumericDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT", "not-a-number");
+
+    await expect(
+      initConfig({
+        schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+        role: "server",
+        configDir: nonNumericDir,
+      }),
+    ).rejects.toThrow(/organizationObjectQuota/);
+  });
+
+  it("keeps attachment retention deletion off unless explicitly enabled", async () => {
+    const defaultDir = makeTempConfigDir();
+    stubRequiredProductionConfig();
+
+    const defaultConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: defaultDir,
+    });
+
+    expect(defaultConfig.attachments.retention).toBeUndefined();
+
+    resetConfig();
+    const enabledDir = makeTempConfigDir();
+    vi.stubEnv("FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED", "true");
+
+    const enabledConfig = await initConfig({
+      schema: createServerConfigSchema({ autoGenerateSecrets: false }),
+      role: "server",
+      configDir: enabledDir,
+    });
+
+    expect(enabledConfig.attachments.retention).toEqual({ deleteEnabled: true });
   });
 
   it("accepts operator-provided production server secrets without writing generated YAML", async () => {

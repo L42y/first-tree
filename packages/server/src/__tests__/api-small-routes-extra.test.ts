@@ -30,6 +30,7 @@ const routeMocks = {
   listAgentTurns: vi.fn(),
   listActiveMemberships: vi.fn(),
   leaveOrganization: vi.fn(),
+  membershipRecoveryPolicy: vi.fn(),
   recoverAgentRuntimeSwitch: vi.fn(),
   recordRedemption: vi.fn(),
   requireAgent: vi.fn(),
@@ -113,6 +114,7 @@ function mockRouteDependencies(): void {
     ensureMembership: routeMocks.ensureMembership,
     leaveOrganization: routeMocks.leaveOrganization,
     listActiveMemberships: routeMocks.listActiveMemberships,
+    membershipRecoveryPolicy: routeMocks.membershipRecoveryPolicy,
     selfCreateOrganization: routeMocks.selfCreateOrganization,
   }));
   vi.doMock("../services/onboarding-kickoff.js", () => ({
@@ -228,6 +230,7 @@ beforeEach(() => {
     organizationId: "org_1",
     role: "admin",
   });
+  routeMocks.membershipRecoveryPolicy.mockReturnValue("repair-required");
   routeMocks.ensureMembership.mockResolvedValue({ id: "member_joined", organizationId: "org_join", role: "member" });
   routeMocks.findActiveByToken.mockResolvedValue(null);
   routeMocks.listActiveMemberships.mockResolvedValue([]);
@@ -623,7 +626,13 @@ describe("small API route handlers", () => {
       leaveReply,
     );
     expect(leaveReply.code).toBe(204);
-    expect(routeMocks.leaveOrganization).toHaveBeenCalledWith(expect.anything(), "member_leave");
+    expect(routeMocks.membershipRecoveryPolicy).toHaveBeenCalledWith(undefined);
+    expect(routeMocks.leaveOrganization).toHaveBeenCalledWith(
+      expect.anything(),
+      "member_leave",
+      "repair-required",
+      appBase.notifier,
+    );
     await expect(
       route(leave.routes, "POST", "/me/memberships/:memberId/leave").handler(
         { params: { memberId: "member_other" }, user: { userId: "user_1" } },
@@ -764,25 +773,29 @@ describe("small API route handlers", () => {
   it("skips malformed org agent pinned frames after create", async () => {
     const sendToClient = vi.fn();
     const createdAt = new Date("2026-07-08T00:00:00.000Z");
+    const createAgent = vi.fn().mockResolvedValue({
+      uuid: "agent_bad_runtime",
+      name: "bad-runtime",
+      displayName: "Bad Runtime",
+      type: "agent",
+      clientId: "client_1",
+      runtimeProvider: "not-a-runtime",
+      metadata: {},
+      createdAt,
+      updatedAt: createdAt,
+    });
     vi.doMock("../services/runtime/connection-manager.js", () => ({ sendToClient }));
     vi.doMock("../services/agents/identity.js", () => ({
-      createAgent: vi.fn().mockResolvedValue({
-        uuid: "agent_bad_runtime",
-        name: "bad-runtime",
-        displayName: "Bad Runtime",
-        type: "agent",
-        clientId: "client_1",
-        runtimeProvider: "not-a-runtime",
-        metadata: {},
-        createdAt,
-        updatedAt: createdAt,
-      }),
+      createAgent,
       resolveAvatarImageUrl: vi.fn(() => null),
       stripReservedAgentMetadata: vi.fn((metadata: unknown) => metadata ?? {}),
     }));
     const warn = vi.fn();
     const { orgAgentRoutes } = await import("../api/orgs/agents.js");
-    const { app, routes } = makeApp({ log: { warn } });
+    const { app, routes } = makeApp({
+      log: { warn },
+      config: { attachments: { organizationObjectQuota: 10_000 } },
+    });
 
     await orgAgentRoutes(app as never);
 
@@ -795,6 +808,11 @@ describe("small API route handlers", () => {
     );
 
     expect(reply.code).toBe(201);
+    expect(createAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: "agent", name: "bad-runtime" }),
+      expect.objectContaining({ attachmentObjectQuota: { maxOrganizationAttachments: 10_000 } }),
+    );
     expect(sendToClient).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.any(Object), "agent:pinned frame failed schema validation — not sending");
   });

@@ -7,7 +7,9 @@ import { authIdentities } from "../db/schema/auth-identities.js";
 import { invitationRedemptions } from "../db/schema/invitations.js";
 import { members } from "../db/schema/members.js";
 import { organizations } from "../db/schema/organizations.js";
+import { users } from "../db/schema/users.js";
 import * as githubAppInstallations from "../services/scm/github/app-installations.js";
+import { deactivateMembership, MEMBER_STATUSES, MEMBERSHIP_RECOVERY_POLICIES } from "../services/team/membership.js";
 import { createTestAdmin, useTestApp } from "./helpers.js";
 
 function oauthStateCookie(app: FastifyInstance, nonce: string): string {
@@ -72,7 +74,7 @@ function stubGithubAppOauth(opts: {
  * has been resolved.
  */
 describe("GitHub OAuth onboarding flow", () => {
-  const getApp = useTestApp({ agentFirstOnboardingEnabled: true });
+  const getApp = useTestApp();
 
   it("start signs a state cookie and redirects to the GitHub App authorize URL", async () => {
     const app = getApp();
@@ -92,7 +94,7 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(authorizeUrl.searchParams.get("state")).toBeTruthy();
   });
 
-  it("dev-callback creates user + auth_identity but no Team for first sign-in", async () => {
+  it("dev-callback creates user + auth_identity + personal team for first sign-in", async () => {
     const app = getApp();
     const res = await app.inject({
       method: "GET",
@@ -116,17 +118,28 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(ids).toHaveLength(1);
     expect(ids[0]?.provider).toBe("github");
 
-    // No Team is minted at sign-in. It is created together with the first Team
-    // Agent, when the user confirms that Agent.
+    // Default team was minted — slug is the GitHub login (no `-personal` suffix).
     const orgs = await app.db.select().from(organizations).where(eq(organizations.name, "octocat"));
-    expect(orgs).toEqual([]);
-    const userId = ids[0]?.userId ?? "";
-    expect(await app.db.select().from(members).where(eq(members.userId, userId))).toEqual([]);
+    expect(orgs).toHaveLength(1);
+    const orgRow = orgs[0];
+    if (!orgRow) throw new Error("expected default org row");
+    // Default team display name is `${displayName}'s team` — collective-space
+    // reading per first-tree-context:agent-hub/onboarding.md (was §5.5 in source design); user can rename
+    // in onboarding Step 1.
+    expect(orgRow.displayName).toBe("Octo Cat's team");
 
-    // Nothing to select or pin: both params are omitted rather than sent
-    // empty, so the SPA never treats a blank value as a real destination.
-    expect(params.get("org")).toBeNull();
-    expect(params.get("orgPinned")).toBeNull();
+    // The callback carries the resolved org back so the web selects it
+    // (overriding any stale localStorage org) — here the freshly-minted team.
+    expect(params.get("org")).toBe(orgRow.id);
+    // A fresh solo signup is a deliberate destination — pinned so the SPA
+    // activates the just-minted org rather than a stale last-used selection.
+    expect(params.get("orgPinned")).toBe("1");
+
+    // The new user is its admin.
+    const memberRows = await app.db.select().from(members).where(eq(members.organizationId, orgRow.id));
+    expect(memberRows).toHaveLength(1);
+    expect(memberRows[0]?.role).toBe("admin");
+    expect(memberRows[0]?.status).toBe("active");
   });
 
   it("preserves quickstart campaign next for first-time solo signup", async () => {
@@ -173,7 +186,7 @@ describe("GitHub OAuth onboarding flow", () => {
     }
   });
 
-  it("continues dev sign-in when the installation stub upsert fails", async () => {
+  it("continues dev sign-in when installation stub upsert and direct bind fail", async () => {
     const app = getApp();
     const upsert = vi
       .spyOn(githubAppInstallations, "upsertInstallationFromMetadata")
@@ -189,9 +202,7 @@ describe("GitHub OAuth onboarding flow", () => {
       expect(res.headers.location).toContain("/auth/github/complete#");
       expect(res.headers.location).toContain("access=");
       expect(upsert).toHaveBeenCalledTimes(1);
-      // A first-time signer-in has no Team, so the DEV-only direct bind has
-      // nothing to bind to and is skipped. Sign-in still completes.
-      expect(bind).not.toHaveBeenCalled();
+      expect(bind).toHaveBeenCalledTimes(1);
     } finally {
       upsert.mockRestore();
       bind.mockRestore();
@@ -207,7 +218,7 @@ describe("GitHub OAuth onboarding flow", () => {
     });
 
     expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: "Invitation not found or no longer valid" });
+    expect(res.json()).toEqual({ error: "Invitation not found or no longer valid", code: "invite-invalid" });
   });
 
   it("still sends first-time solo signup with ordinary protected next to onboarding entry", async () => {
@@ -242,9 +253,21 @@ describe("GitHub OAuth onboarding flow", () => {
     expect(ids).toHaveLength(1);
   });
 
-  // Team slug disambiguation moved with Team creation itself: sign-in no
-  // longer mints a Team, so that behavior is covered against the provisioning
-  // path in `first-team-agent.test.ts`.
+  it("disambiguates default team slug on collision", async () => {
+    const app = getApp();
+    await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/github/dev-callback?githubId=1&login=duplicate",
+    });
+    await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/github/dev-callback?githubId=2&login=duplicate",
+    });
+    const orgs = await app.db.select().from(organizations);
+    // First sign-in claims `duplicate`; second gets `duplicate-XXXX` (4-char hex).
+    const claims = orgs.filter((o) => o.name === "duplicate" || /^duplicate-[a-f0-9]{4}$/.test(o.name));
+    expect(claims.length).toBeGreaterThanOrEqual(2);
+  });
 
   it("rejects /dev-callback in production", async () => {
     const app = getApp();
@@ -356,10 +379,10 @@ describe("GitHub OAuth onboarding flow", () => {
       defaultOrganizationId: string | null;
       onboarding: { step: string };
     }>();
-    // The token authorizes a real signed-in session that simply has no Team
-    // yet — the state solo signup now leaves behind.
-    expect(body.memberships).toEqual([]);
-    expect(body.defaultOrganizationId).toBeNull();
+    // Solo signup auto-provisions one org with admin role.
+    expect(body.memberships).toHaveLength(1);
+    expect(body.memberships[0]?.role).toBe("admin");
+    expect(body.defaultOrganizationId).toBe(body.memberships[0]?.organizationId);
     expect(body.onboarding.step).toBe("connect");
   });
 });
@@ -486,6 +509,66 @@ describe("GitHub OAuth invite-only single-org entry gate", () => {
     // own last-used org selection rather than activating the callback org.
     expect(params.get("orgPinned")).toBeNull();
   });
+
+  it("returns an explicit inactive-account boundary instead of minting a suspended OAuth session", async () => {
+    const app = getApp();
+    await ensureOrg(app, allowedOrganizationId, "allowed-entry-gate");
+    const invite = await rotateInviteForOrg(app, allowedOrganizationId);
+    await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1205&login=suspendedgate&next=/invite/${invite.token}`,
+    });
+    const userId = await findGithubUserId(app, "1205");
+    const [identityBeforeSuspendedSignIn] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, userId));
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, userId));
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1205&login=suspendedgate-after&email=after@example.com&next=/invite/${invite.token}`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "account-inactive" });
+    expect(response.headers.location).toBeUndefined();
+    const [identityAfterSuspendedSignIn] = await app.db
+      .select()
+      .from(authIdentities)
+      .where(eq(authIdentities.userId, userId));
+    expect(identityAfterSuspendedSignIn).toEqual(identityBeforeSuspendedSignIn);
+  });
+
+  it("returns the shared admin-restore boundary for a removed OAuth invite without redeeming it again", async () => {
+    const app = getApp();
+    await ensureOrg(app, allowedOrganizationId, "allowed-entry-gate");
+    const invite = await rotateInviteForOrg(app, allowedOrganizationId);
+    await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1206&login=removedgate&next=/invite/${invite.token}`,
+    });
+    const userId = await findGithubUserId(app, "1206");
+    const [stableMember] = await app.db.select().from(members).where(eq(members.userId, userId));
+    if (!stableMember) throw new Error("Expected invited membership");
+    await deactivateMembership(
+      app.db,
+      stableMember.id,
+      MEMBER_STATUSES.REMOVED,
+      MEMBERSHIP_RECOVERY_POLICIES.INVITATION_REQUIRED,
+    );
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/v1/auth/github/dev-callback?githubId=1206&login=removedgate&next=/invite/${invite.token}`,
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "membership-restore-required" });
+    expect(
+      await app.db.select().from(invitationRedemptions).where(eq(invitationRedemptions.invitationId, invite.id)),
+    ).toHaveLength(1);
+  });
 });
 
 describe("GitHub account-link return path", () => {
@@ -554,6 +637,72 @@ describe("GitHub account-link return path", () => {
     }
   });
 
+  it("rejects a link callback after the signed-state account is suspended", async () => {
+    const app = getApp();
+    const target = await createTestAdmin(app, { username: `link-suspended-${randomUUID().slice(0, 8)}` });
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/integrations/github", {
+      intent: "link",
+      provider: "github",
+      userId: target.userId,
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId));
+    const restore = stubGithubAppOauth({ githubId: 77_200_003, login: "suspended-link" });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
+        headers: { cookie: oauthStateCookie(app, nonce) },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/settings/integrations/github?error=account-inactive");
+      await expect(
+        app.db.select().from(authIdentities).where(eq(authIdentities.userId, target.userId)),
+      ).resolves.toEqual([]);
+    } finally {
+      restore();
+    }
+  });
+
+  it("rejects an unlink callback after the signed-state account is suspended", async () => {
+    const app = getApp();
+    const target = await createTestAdmin(app, { username: `unlink-suspended-${randomUUID().slice(0, 8)}` });
+    const identityId = randomUUID();
+    const githubId = 77_200_004;
+    await app.db.insert(authIdentities).values({
+      id: identityId,
+      userId: target.userId,
+      provider: "github",
+      identifier: String(githubId),
+      metadata: { accountName: "suspended-unlink" },
+    });
+    const { signOAuthState } = await import("../services/auth/oauth/state.js");
+    const { token, nonce } = await signOAuthState(app.config.secrets.jwtSecret, "/settings/account", {
+      intent: "unlink",
+      provider: "github",
+      userId: target.userId,
+      targetIdentityId: identityId,
+    });
+    await app.db.update(users).set({ status: "suspended" }).where(eq(users.id, target.userId));
+    const restore = stubGithubAppOauth({ githubId, login: "suspended-unlink" });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/v1/auth/github/callback?code=ok-code&state=${token}`,
+        headers: { cookie: oauthStateCookie(app, nonce) },
+      });
+
+      expect(res.statusCode).toBe(302);
+      expect(res.headers.location).toBe("/settings/account?error=account-inactive");
+      await expect(
+        app.db.select({ id: authIdentities.id }).from(authIdentities).where(eq(authIdentities.id, identityId)),
+      ).resolves.toEqual([{ id: identityId }]);
+    } finally {
+      restore();
+    }
+  });
+
   it("keeps a canceled account link side-effect free and preserves a retry route", async () => {
     const app = getApp();
     const target = await createTestAdmin(app, { username: `link-cancel-${randomUUID().slice(0, 8)}` });
@@ -586,7 +735,7 @@ describe("GitHub account-link return path", () => {
 });
 
 describe("OAuth callback rejects malformed state", () => {
-  const getApp = useTestApp({ agentFirstOnboardingEnabled: true });
+  const getApp = useTestApp();
 
   // The /callback route is a full-page browser navigation, so state
   // rejections redirect to the SPA's friendly error surface (the most
@@ -734,7 +883,7 @@ describe("OAuth callback rejects malformed state", () => {
     expect(params.get("next")).toBe("/");
   });
 
-  it("dev-callback stubs github_app_installations, unbound, when installationId is supplied by a Team-less user", async () => {
+  it("dev-callback stubs github_app_installations + binds to the new personal team when installationId is supplied", async () => {
     const app = getApp();
     const installationId = 8_810_001;
     const res = await app.inject({
@@ -750,10 +899,11 @@ describe("OAuth callback rejects malformed state", () => {
     expect(row).not.toBeNull();
     expect(row?.accountLogin).toBe("devappuser");
     expect(row?.accountType).toBe("User");
-    // The stub row is recorded but stays unbound: a first-time signer-in has
-    // no Team for the DEV-only direct bind to attach it to. It binds from the
-    // Settings connect panel once the user has a Team.
-    expect(row?.hubOrganizationId).toBeNull();
+    // hub_organization_id is the freshly-minted personal team for the new
+    // GitHub user — assert the binding by checking it's non-null. Verifying
+    // the exact id would duplicate createPersonalTeam's slug derivation that
+    // the earlier dev-callback test already pins down.
+    expect(row?.hubOrganizationId).not.toBeNull();
     // App-declared permissions mirror D0b — the dev stub looks like a real
     // install for downstream QA.
     expect(row?.permissions).toMatchObject({
@@ -777,25 +927,5 @@ describe("OAuth callback rejects malformed state", () => {
     // No installation rows attributable to this synthetic GitHub id.
     const own = rows.filter((r) => r.accountGithubId === 910);
     expect(own).toHaveLength(0);
-  });
-});
-
-describe("GitHub OAuth Agent-first rollout gate", () => {
-  const getApp = useTestApp();
-
-  it("keeps the established personal-Team signup when the gate is off", async () => {
-    const app = getApp();
-    const login = `gated-${randomUUID().slice(0, 8)}`;
-    const res = await app.inject({
-      method: "GET",
-      url: `/api/v1/auth/github/dev-callback?githubId=99001&login=${login}`,
-    });
-
-    expect(res.statusCode).toBe(302);
-    const params = new URLSearchParams(res.headers.location?.split("#")[1] ?? "");
-    expect(params.get("joinPath")).toBe("solo");
-    expect(params.get("org")).toBeTruthy();
-    expect(params.get("orgPinned")).toBe("1");
-    expect(await app.db.select().from(organizations).where(eq(organizations.name, login))).toHaveLength(1);
   });
 });

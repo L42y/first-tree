@@ -125,6 +125,7 @@ vi.mock("../../analytics.js", () => analyticsMocks);
 
 const authMock = vi.hoisted(() => {
   const memberships: MeMembership[] = [];
+  const currentMembership: MeMembership | null = null;
   const nullableString = (value: string | null): string | null => value;
   const onboardingStep = (value: "connect" | "create_agent" | "completed" | null) => value;
   return {
@@ -133,7 +134,7 @@ const authMock = vi.hoisted(() => {
       meLoaded: true,
       user: { id: "user-self", username: "gandy", displayName: "Gandy", avatarUrl: null },
       memberships,
-      currentMembership: null as MeMembership | null,
+      currentMembership,
       organizationId: nullableString("org-1"),
       memberId: nullableString("member-self"),
       role: nullableString("admin"),
@@ -645,8 +646,6 @@ beforeEach(() => {
     memberId: "member-self",
     agentId: "human-agent-self",
     organizationId: "org-1",
-    currentMembership: null,
-    onboardingCompletedAt: "2026-05-01T00:00:00.000Z",
     user: { id: "user-self", username: "gandy", displayName: "Gandy", avatarUrl: null },
   };
   activityMocks.listClients.mockResolvedValue(CLIENTS.filter((client) => client.userId === "user-self"));
@@ -982,7 +981,6 @@ describe("web DOM interaction coverage", () => {
     });
     expect(chatApiMocks.sendChatMessage).not.toHaveBeenCalled();
     expect(onCreated).toHaveBeenCalledWith("chat-created");
-    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
     expect(window.localStorage.getItem(cacheKey)).toBe("agent-1");
     await unmountRoot(first.root);
 
@@ -1499,6 +1497,22 @@ describe("web DOM interaction coverage", () => {
     // No `next` in the fragment → the way out defaults to the app root.
     expect(notAdmin.container.querySelector<HTMLAnchorElement>("a")?.getAttribute("href")).toBe("/");
     await unmountRoot(notAdmin.root);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, hash: "#error=account-inactive", pathname: "/auth/complete" },
+    });
+    const inactive = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await waitForText("account is suspended", inactive.container);
+    await unmountRoot(inactive.root);
+
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, hash: "#error=membership-restore-required", pathname: "/auth/complete" },
+    });
+    const restoreRequired = await renderDom(<OAuthCompletePage />, "/auth/complete");
+    await waitForText("administrator to restore it", restoreRequired.container);
+    await unmountRoot(restoreRequired.root);
 
     Object.defineProperty(window, "location", {
       configurable: true,

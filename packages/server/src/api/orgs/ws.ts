@@ -1,11 +1,12 @@
 import { AGENT_STATUSES, AGENT_VISIBILITY, type AgentChatStatus } from "@first-tree/shared";
-import { and, eq, ne, or } from "drizzle-orm";
-import type { FastifyInstance } from "fastify";
+import { and, eq, inArray, ne, or } from "drizzle-orm";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { jwtVerify } from "jose";
 import type { WebSocket } from "ws";
 import type { Database } from "../../db/connection.js";
 import { agents } from "../../db/schema/agents.js";
 import { members } from "../../db/schema/members.js";
+import { users } from "../../db/schema/users.js";
 import {
   createLogger,
   endWsConnectionSpan,
@@ -31,6 +32,7 @@ type SocketMeta = {
   memberId: string;
   humanAgentId: string;
   visibleAgentIds: Set<string>;
+  admitted: boolean;
 };
 
 async function loadVisibleAgentIds(db: Database, organizationId: string, memberId: string): Promise<Set<string>> {
@@ -55,19 +57,108 @@ function filterPulseAgents(agentsMap: Record<string, unknown>, visible: Set<stri
   return out;
 }
 
-export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
+export function orgWsRoutes(notifier: Notifier, jwtSecret: string): (app: FastifyInstance) => Promise<void> {
   const adminSockets = new Map<WebSocket, SocketMeta>();
   const secret = new TextEncoder().encode(jwtSecret);
 
-  function broadcastOrgScoped(payload: Record<string, unknown>) {
+  function evictMembershipSocket(ws: WebSocket, meta: SocketMeta): void {
+    if (!adminSockets.has(ws)) return;
+    adminSockets.delete(ws);
+    if (ws.readyState === 1) {
+      try {
+        ws.send(
+          JSON.stringify({
+            type: "membership:changed",
+            memberId: meta.memberId,
+            organizationId: meta.organizationId,
+          }),
+        );
+      } catch {
+        // The close below remains the authoritative client signal.
+      }
+    }
+    ws.close(4403, "Membership changed");
+  }
+
+  function closeAuthorizationUnavailable(ws: WebSocket): void {
+    adminSockets.delete(ws);
+    try {
+      ws.close(1013, "Authorization unavailable");
+    } catch {
+      // Socket transport errors are terminal for this connection.
+    }
+  }
+
+  async function loadLiveMembershipAuthorization(
+    db: Database,
+    userId: string,
+    organizationId: string,
+    memberId?: string,
+  ): Promise<{ id: string; role: string; agentId: string } | null> {
+    const [row] = await db
+      .select({ id: members.id, role: members.role, agentId: members.agentId })
+      .from(members)
+      .innerJoin(users, eq(users.id, members.userId))
+      .where(
+        and(
+          eq(members.userId, userId),
+          eq(members.organizationId, organizationId),
+          eq(members.status, "active"),
+          eq(users.status, "active"),
+          ...(memberId ? [eq(members.id, memberId)] : []),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  async function liveSocketEntries(
+    predicate: (meta: SocketMeta) => boolean = () => true,
+  ): Promise<Array<[WebSocket, SocketMeta]>> {
+    const candidates = [...adminSockets].filter(
+      ([ws, meta]) => ws.readyState === 1 && meta.admitted && predicate(meta),
+    );
+    if (candidates.length === 0) return [];
+    try {
+      const rows = await getDbForChatLookup()
+        .select({ id: members.id, organizationId: members.organizationId })
+        .from(members)
+        .innerJoin(users, eq(users.id, members.userId))
+        .where(
+          and(
+            inArray(
+              members.id,
+              candidates.map(([, meta]) => meta.memberId),
+            ),
+            eq(members.status, "active"),
+            eq(users.status, "active"),
+          ),
+        );
+      const liveKeys = new Set(rows.map((row) => `${row.id}:${row.organizationId}`));
+      const live: Array<[WebSocket, SocketMeta]> = [];
+      for (const [ws, meta] of candidates) {
+        if (liveKeys.has(`${meta.memberId}:${meta.organizationId}`)) live.push([ws, meta]);
+        else evictMembershipSocket(ws, meta);
+      }
+      return live;
+    } catch (err) {
+      // Fail closed for the data plane. Closing with a retryable code makes
+      // clients reconnect, re-authorize, and run their catch-up invalidation;
+      // cached handshake state never substitutes for the failed live check.
+      log.warn({ err }, "admin WS live membership revalidation failed");
+      for (const [ws] of candidates) closeAuthorizationUnavailable(ws);
+      return [];
+    }
+  }
+
+  async function broadcastOrgScoped(payload: Record<string, unknown>): Promise<void> {
     const orgId = payload.organizationId;
     if (typeof orgId !== "string" || orgId.length === 0) return;
 
     const isPulseTick = payload.type === "pulse:tick" && typeof payload.agents === "object" && payload.agents !== null;
     const sharedData = isPulseTick ? null : JSON.stringify(payload);
 
-    for (const [ws, meta] of adminSockets) {
-      if (ws.readyState !== 1 || meta.organizationId !== orgId) continue;
+    for (const [ws, meta] of await liveSocketEntries((candidate) => candidate.organizationId === orgId)) {
       if (isPulseTick) {
         const filtered = filterPulseAgents(payload.agents as Record<string, unknown>, meta.visibleAgentIds);
         ws.send(JSON.stringify({ ...payload, agents: filtered }));
@@ -103,7 +194,13 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
   });
 
   notifier.onMeChatsChanged(({ humanAgentId, organizationId }) => {
-    dispatchMeChatsChanged(humanAgentId, organizationId);
+    void dispatchMeChatsChanged(humanAgentId, organizationId);
+  });
+
+  notifier.onMembershipChanged(({ memberId, organizationId }) => {
+    for (const [ws, meta] of adminSockets) {
+      if (meta.memberId === memberId && meta.organizationId === organizationId) evictMembershipSocket(ws, meta);
+    }
   });
 
   /**
@@ -144,8 +241,9 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     }
     const bareFrame = JSON.stringify({ type, ...payload });
     const enrichedFrame = status ? JSON.stringify({ type, ...payload, status }) : bareFrame;
-    for (const [ws, meta] of adminSockets) {
-      if (ws.readyState !== 1 || meta.organizationId !== payload.organizationId) continue;
+    for (const [ws, meta] of await liveSocketEntries(
+      (candidate) => candidate.organizationId === payload.organizationId,
+    )) {
       const frame = status && audience?.has(meta.humanAgentId) ? enrichedFrame : bareFrame;
       try {
         ws.send(frame);
@@ -160,8 +258,7 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     const audience = await getCachedAudience(getDbForChatLookup(), chatId);
     if (!audience || audience.size === 0) return;
     const frame = JSON.stringify({ type: "chat:message", chatId });
-    for (const [ws, meta] of adminSockets) {
-      if (ws.readyState !== 1) continue;
+    for (const [ws, meta] of await liveSocketEntries()) {
       if (!audience.has(meta.humanAgentId)) continue;
       try {
         ws.send(frame);
@@ -179,8 +276,7 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
     const audience = await getCachedAudience(getDbForChatLookup(), chatId);
     if (!audience || audience.size === 0) return;
     const frame = JSON.stringify({ type: "chat:updated", chatId });
-    for (const [ws, meta] of adminSockets) {
-      if (ws.readyState !== 1) continue;
+    for (const [ws, meta] of await liveSocketEntries()) {
       if (!audience.has(meta.humanAgentId)) continue;
       try {
         ws.send(frame);
@@ -195,14 +291,14 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
   // user's own sockets in that org. Deliberately NO chat-audience lookup — pin
   // state is private and must never reach another member's devices, so the gate
   // is identity (`humanAgentId`) + org, not chat membership. One user with two
-  // devices in the org sees both rails regroup; nobody else is touched. Sync
-  // (no DB), so it runs inline on the notifier callback.
-  function dispatchMeChatsChanged(humanAgentId: string, organizationId: string): void {
+  // devices in the org sees both rails regroup; nobody else is touched.
+  // Delivery still revalidates the socket's live membership before sending.
+  async function dispatchMeChatsChanged(humanAgentId: string, organizationId: string): Promise<void> {
     if (adminSockets.size === 0) return;
     const frame = JSON.stringify({ type: "me-chats:changed" });
-    for (const [ws, meta] of adminSockets) {
-      if (ws.readyState !== 1) continue;
-      if (meta.humanAgentId !== humanAgentId || meta.organizationId !== organizationId) continue;
+    for (const [ws] of await liveSocketEntries(
+      (candidate) => candidate.humanAgentId === humanAgentId && candidate.organizationId === organizationId,
+    )) {
       try {
         ws.send(frame);
       } catch {
@@ -221,74 +317,126 @@ export function orgWsRoutes(notifier: Notifier, jwtSecret: string) {
   }
 
   return async (app: FastifyInstance): Promise<void> => {
-    app.get<{ Params: { orgId: string } }>("/", { websocket: true }, async (socket, request) => {
-      const ua = request.headers["user-agent"];
-      startWsConnectionSpan(socket, {
-        remoteIp: request.ip,
-        userAgent: typeof ua === "string" ? ua.slice(0, 200) : undefined,
-      });
+    app.get<{ Params: { orgId: string } }>(
+      "/",
+      {
+        websocket: true,
+        config: {
+          rateLimit: {
+            max: 60,
+            timeWindow: "1 minute",
+            keyGenerator: async (request: FastifyRequest): Promise<string> => {
+              const token = (request.query as Record<string, string | undefined>).token;
+              if (token) {
+                try {
+                  const { payload } = await jwtVerify(token, secret);
+                  if (payload.type === "access" && typeof payload.sub === "string") return `user:${payload.sub}`;
+                } catch {
+                  // Invalid and expired credentials remain in the unauthenticated
+                  // client-IP bucket so hostile handshakes are still capped.
+                }
+              }
+              return `ip:${request.ip}`;
+            },
+          },
+        },
+      },
+      async (socket, request) => {
+        const ua = request.headers["user-agent"];
+        startWsConnectionSpan(socket, {
+          remoteIp: request.ip,
+          userAgent: typeof ua === "string" ? ua.slice(0, 200) : undefined,
+        });
 
-      const orgIdFromPath = (request.params as { orgId?: string }).orgId;
-      const token = (request.query as Record<string, string>).token;
-      if (!token || !orgIdFromPath) {
-        socket.send(JSON.stringify({ type: "error", message: "Missing token or org" }));
-        socket.close(4001, "Missing token");
-        endWsConnectionSpan(socket, 4001);
-        return;
-      }
-
-      let userId: string;
-      try {
-        const { payload } = await jwtVerify(token, secret);
-        if (payload.type !== "access" || typeof payload.sub !== "string") {
-          socket.send(JSON.stringify({ type: "error", message: "Invalid token type" }));
-          socket.close(4001, "Invalid token");
+        const orgIdFromPath = (request.params as { orgId?: string }).orgId;
+        const token = (request.query as Record<string, string>).token;
+        if (!token || !orgIdFromPath) {
+          socket.send(JSON.stringify({ type: "error", message: "Missing token or org" }));
+          socket.close(4001, "Missing token");
           endWsConnectionSpan(socket, 4001);
           return;
         }
-        userId = payload.sub;
-      } catch {
-        socket.send(JSON.stringify({ type: "error", message: "Invalid or expired token" }));
-        socket.close(4001, "Auth failed");
-        endWsConnectionSpan(socket, 4001);
-        return;
-      }
 
-      const organizationId = orgIdFromPath;
-      const [memberRow] = await app.db
-        .select({ id: members.id, role: members.role, agentId: members.agentId })
-        .from(members)
-        .where(
-          and(eq(members.userId, userId), eq(members.organizationId, organizationId), eq(members.status, "active")),
-        )
-        .limit(1);
-      if (!memberRow) {
-        socket.send(JSON.stringify({ type: "error", message: "Not an active member of this organization" }));
-        socket.close(4403, "Not a member");
-        endWsConnectionSpan(socket, 4403);
-        return;
-      }
-      const memberId = memberRow.id;
+        let userId: string;
+        try {
+          const { payload } = await jwtVerify(token, secret);
+          if (payload.type !== "access" || typeof payload.sub !== "string") {
+            socket.send(JSON.stringify({ type: "error", message: "Invalid token type" }));
+            socket.close(4001, "Invalid token");
+            endWsConnectionSpan(socket, 4001);
+            return;
+          }
+          userId = payload.sub;
+        } catch {
+          socket.send(JSON.stringify({ type: "error", message: "Invalid or expired token" }));
+          socket.close(4001, "Auth failed");
+          endWsConnectionSpan(socket, 4001);
+          return;
+        }
 
-      setWsConnectionAttrs(socket, { organizationId, memberId });
-      rememberDb(app.db);
+        const organizationId = orgIdFromPath;
+        let memberRow: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
+        try {
+          memberRow = await loadLiveMembershipAuthorization(app.db, userId, organizationId);
+        } catch (err) {
+          log.warn({ err, organizationId, userId }, "admin WS handshake authorization failed");
+          closeAuthorizationUnavailable(socket);
+          endWsConnectionSpan(socket, 1013);
+          return;
+        }
+        if (!memberRow) {
+          socket.send(JSON.stringify({ type: "error", message: "Not an active member of this organization" }));
+          socket.close(4403, "Not a member");
+          endWsConnectionSpan(socket, 4403);
+          return;
+        }
+        const memberId = memberRow.id;
 
-      const visibleAgentIds = await loadVisibleAgentIds(app.db, organizationId, memberId);
+        setWsConnectionAttrs(socket, { organizationId, memberId });
+        rememberDb(app.db);
+        const provisionalMeta: SocketMeta = {
+          organizationId,
+          memberId,
+          humanAgentId: memberRow.agentId,
+          visibleAgentIds: new Set(),
+          admitted: false,
+        };
+        adminSockets.set(socket, provisionalMeta);
+        socket.on("close", (code) => {
+          adminSockets.delete(socket);
+          endWsConnectionSpan(socket, code);
+        });
 
-      const [humanAgentRow] = await app.db
-        .select({ uuid: agents.uuid })
-        .from(agents)
-        .where(eq(agents.uuid, memberRow.agentId))
-        .limit(1);
-      const humanAgentId = humanAgentRow?.uuid ?? memberRow.agentId;
+        let visibleAgentIds: Set<string>;
+        let humanAgentId: string;
+        let finalAuthorization: Awaited<ReturnType<typeof loadLiveMembershipAuthorization>>;
+        try {
+          visibleAgentIds = await loadVisibleAgentIds(app.db, organizationId, memberId);
+          const [humanAgentRow] = await app.db
+            .select({ uuid: agents.uuid })
+            .from(agents)
+            .where(eq(agents.uuid, memberRow.agentId))
+            .limit(1);
+          humanAgentId = humanAgentRow?.uuid ?? memberRow.agentId;
+          finalAuthorization = await loadLiveMembershipAuthorization(app.db, userId, organizationId, memberId);
+        } catch (err) {
+          log.warn({ err, organizationId, userId }, "admin WS handshake preparation failed");
+          closeAuthorizationUnavailable(socket);
+          return;
+        }
 
-      adminSockets.set(socket, { organizationId, memberId, humanAgentId, visibleAgentIds });
-      socket.send(JSON.stringify({ type: "admin:connected" }));
-
-      socket.on("close", (code) => {
-        adminSockets.delete(socket);
-        endWsConnectionSpan(socket, code);
-      });
-    });
+        // The membership-change notifier can evict this provisional socket while
+        // preparation awaits. Never resurrect it after that causal fence.
+        if (adminSockets.get(socket) !== provisionalMeta) return;
+        if (!finalAuthorization) {
+          evictMembershipSocket(socket, provisionalMeta);
+          return;
+        }
+        provisionalMeta.humanAgentId = humanAgentId;
+        provisionalMeta.visibleAgentIds = visibleAgentIds;
+        provisionalMeta.admitted = true;
+        socket.send(JSON.stringify({ type: "admin:connected" }));
+      },
+    );
   };
 }
