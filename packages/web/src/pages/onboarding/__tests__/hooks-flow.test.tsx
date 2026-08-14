@@ -66,8 +66,7 @@ const authMock = vi.hoisted(() => ({
     onboardingCompletedAt: null,
     dismissOnboarding: vi.fn(async () => undefined),
     restoreOnboarding: vi.fn(async () => undefined),
-    markOnboardingCompleted: vi.fn(async () => undefined),
-    applyOnboardingKickoffStamp: vi.fn(),
+    applyOnboardingStamp: vi.fn(),
     login: vi.fn(async () => undefined),
     adoptTokens: vi.fn(async () => undefined),
     selectOrganization: vi.fn(async () => undefined),
@@ -129,8 +128,7 @@ beforeEach(() => {
     currentOrgHasUsableAgent: false,
     currentOrgHasPersonalAgent: false,
     dismissOnboarding: vi.fn(async () => undefined),
-    markOnboardingCompleted: vi.fn(async () => undefined),
-    applyOnboardingKickoffStamp: vi.fn(),
+    applyOnboardingStamp: vi.fn(),
     refreshMe: vi.fn(async () => undefined),
   };
   root = null;
@@ -524,8 +522,7 @@ describe("onboarding hooks and flow", () => {
     // Kickoff already stamped completion atomically with chat creation. The
     // flow mirrors that confirmed result locally without a duplicate POST.
     expect(authMock.value.dismissOnboarding).toHaveBeenCalledTimes(1);
-    expect(authMock.value.applyOnboardingKickoffStamp).toHaveBeenCalledWith("completed");
-    expect(authMock.value.markOnboardingCompleted).not.toHaveBeenCalled();
+    expect(authMock.value.applyOnboardingStamp).toHaveBeenCalledWith("completed");
     expect(eventMocks.reportOnboardingEvent).toHaveBeenCalledWith("step_completed", {
       step: "start-chat",
       path: "admin",

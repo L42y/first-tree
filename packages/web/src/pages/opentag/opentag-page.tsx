@@ -2,7 +2,13 @@ import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { createAgent, createAgentFeishuSetupChat, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
+import {
+  completeAgentFeishuOnboarding,
+  createAgent,
+  createAgentFeishuSetupChat,
+  getAgent,
+  startAgentFeishuRegistration,
+} from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
@@ -66,7 +72,7 @@ export function OpenTagPage(): ReactElement | null {
     meAuthoritative,
     currentOrgHasPersonalAgent,
     refreshMeStrict,
-    markOnboardingCompleted,
+    applyOnboardingStamp,
   } = useAuth();
 
   // One parser for the browser route and the OAuth `next`, so a URL this app
@@ -379,7 +385,20 @@ export function OpenTagPage(): ReactElement | null {
   // The one write this discovery makes, and only after the Task is a fact. The
   // server stamp is idempotent, so a reload after first use converges on the
   // same membership instead of producing a second onboarding state.
-  const complete = useMutation({ mutationFn: () => markOnboardingCompleted() });
+  const complete = useMutation({
+    mutationFn: (target: { agentUuid: string; memberId: string; organizationId: string }) =>
+      completeAgentFeishuOnboarding(target.agentUuid),
+    onSuccess: ({ completedAt }, target) => {
+      const projected = applyOnboardingStamp("completed", completedAt, {
+        id: target.memberId,
+        organizationId: target.organizationId,
+      });
+      // The request belongs to the membership that started it. A late response
+      // after Team reconciliation must not complete whichever Team happens to
+      // be current now; refresh the authoritative snapshot instead.
+      if (!projected) void refreshMeStrict().catch(() => undefined);
+    },
+  });
   const completePending = complete.isPending;
   const completeSettled = complete.isSuccess;
   const completeFailed = complete.isError;
@@ -389,7 +408,7 @@ export function OpenTagPage(): ReactElement | null {
     // Ownership is re-checked at the write itself, not only at the read that
     // feeds it: this is the line that changes durable state, and it should not
     // depend on a caller upstream having kept a cached answer honest.
-    if (!ownsUrlAgent) return;
+    if (!ownsUrlAgent || !agentUuid || !memberId || !organizationId) return;
     // The handoff is re-checked at the write for the same reason. The scan that
     // produced this Task ran against an earlier read, and a capability that has
     // since gone means the Agent cannot answer the very Task about to finish
@@ -399,8 +418,19 @@ export function OpenTagPage(): ReactElement | null {
     // Once per landed Task: a failure holds until the member retries, so a
     // failing endpoint is not hammered by the first-use poll behind it.
     if (!firstUseChatId || completePending || completeSettled || completeFailed) return;
-    completeMutate();
-  }, [ownsUrlAgent, binding, firstUseChatId, completePending, completeSettled, completeFailed, completeMutate]);
+    completeMutate({ agentUuid, memberId, organizationId });
+  }, [
+    ownsUrlAgent,
+    agentUuid,
+    memberId,
+    organizationId,
+    binding,
+    firstUseChatId,
+    completePending,
+    completeSettled,
+    completeFailed,
+    completeMutate,
+  ]);
 
   // The handoff itself opens the real first-use step. A completed stamp keeps
   // that durable destination stable across a later capability blip in this

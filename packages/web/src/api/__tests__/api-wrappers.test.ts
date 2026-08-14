@@ -425,6 +425,7 @@ describe("api wrapper paths", () => {
     const githubApp = await import("../github-app.js");
     const github = await import("../github.js");
     const auth = await import("../auth.js");
+    const agents = await import("../agents.js");
     const chats = await import("../chats.js");
     const onboarding = await import("../onboarding-events.js");
 
@@ -498,7 +499,7 @@ describe("api wrapper paths", () => {
       onboarding.reportOnboardingEvent("agent_created", { runtimeProvider: "codex" }),
     ).resolves.toBeUndefined();
     apiMock.post.mockRejectedValueOnce(new Error("offline"));
-    await expect(onboarding.markOnboardingCompleted()).rejects.toThrow("offline");
+    await expect(agents.completeAgentFeishuOnboarding("agent-1")).rejects.toThrow("offline");
   });
 
   it("uploads agent avatars with optional auth and maps avatar upload errors", async () => {

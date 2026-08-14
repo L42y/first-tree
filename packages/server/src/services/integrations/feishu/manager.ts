@@ -13,6 +13,7 @@ import { decryptCredentials, encryptCredentials } from "../../crypto.js";
 import type { Notifier } from "../../notifier.js";
 import { isFeishuBotUsable } from "./binding-state.js";
 import { Client, createLarkChannel, type LarkChannel, LoggerLevel, registerApp } from "./channel-sdk.js";
+import { readFeishuCliCapability } from "./cli-capability.js";
 import { ingestFeishuMessage, logFeishuInboundFailure } from "./inbound.js";
 import { safeFeishuErrorContext, safeFeishuErrorMessage } from "./safe-error.js";
 import { createFeishuSenderNameResolver } from "./sender-name.js";
@@ -127,7 +128,7 @@ export function createFeishuIntegrationManager(input: {
       .leftJoin(clients, eq(clients.id, agents.clientId))
       .where(eq(agents.uuid, agentId))
       .limit(1);
-    const capability = readCliCapability(agent?.clientMetadata);
+    const capability = readFeishuCliCapability(agent?.clientMetadata);
     const registration = decryptRegistration(row.registrationStateCipher);
     return feishuBotBindingSchema.parse({
       id: row.id,
@@ -971,21 +972,6 @@ function normalizeHttpUrl(value: string | undefined): string | null {
   } catch {
     return null;
   }
-}
-
-function readCliCapability(metadata: Record<string, unknown> | null | undefined): {
-  available: boolean;
-  sdkVersion?: string | null;
-} | null {
-  const capabilities = metadata?.capabilities;
-  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return null;
-  const entry = (capabilities as Record<string, unknown>)["lark-cli"];
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const value = entry as Record<string, unknown>;
-  return {
-    available: value.available === true,
-    sdkVersion: typeof value.sdkVersion === "string" ? value.sdkVersion : null,
-  };
 }
 
 function tenantKeyFromRaw(raw: unknown): string | null {

@@ -11,7 +11,6 @@ import {
   setApiSelectedOrganizationId,
   setStoredTokens,
 } from "../api/client.js";
-import { markOnboardingCompleted as postOnboardingCompleted } from "../api/onboarding-events.js";
 import { clearOnboardingJoinPath, clearOnboardingSessionFlags } from "../utils/onboarding-flags.js";
 
 type MeUser = {
@@ -137,24 +136,14 @@ type AuthContextValue = {
    */
   restoreOnboarding: () => Promise<void>;
   /**
-   * POST `/me/onboarding-completed`. Optimistically stamps
-   * `onboardingCompletedAt` so first-run routing can settle immediately.
-   * Idempotent server-side.
-   *
-   * Its one caller is the `/opentag` entry, once that Agent has a real Feishu
-   * Task. That terminal fact is observed rather than pressed, so the stamp is
-   * not tied to a button and has to be issued separately. The standalone
-   * journey does not use this: its start-chat writes the same stamp inside the
-   * kickoff transaction and mirrors it with `applyOnboardingKickoffStamp`,
-   * because a second POST could fail after the chat already succeeded.
+   * Mirror a membership stamp already written by a successful authoritative
+   * server operation. This is local projection only.
    */
-  markOnboardingCompleted: () => Promise<void>;
-  /**
-   * Mirror a membership stamp already written atomically by the successful
-   * onboarding kickoff request. This is local projection only: it must never
-   * be called before the server confirms the chat exists.
-   */
-  applyOnboardingKickoffStamp: (stamp: "completed" | "invitee_skip") => void;
+  applyOnboardingStamp: (
+    stamp: "completed" | "invitee_skip",
+    stampedAt?: string,
+    expectedMembership?: { id: string; organizationId: string },
+  ) => boolean;
   login: (username: string, password: string) => Promise<void>;
   /**
    * Adopt a token pair handed in from a non-login surface (OAuth fragment
@@ -670,67 +659,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [currentMembership?.onboardingSuppressedReason, currentMembership?.organizationId, patchMembershipOnboarding]);
 
-  const markOnboardingCompleted = useCallback(async () => {
-    // Optimistic: stamp immediately so first-run routing reads the new state
-    // on the very next render. The server stamp is canonical. Roll the local
-    // projection back and propagate failures so terminal flows without an
-    // already-created chat can remain on-screen and retry.
-    const organizationId = currentMembership?.organizationId;
-    const priorAccountCompletedAt = onboardingCompletedAt;
-    const priorAccountDismissedAt = onboardingDismissedAt;
-    const priorMembershipCompletedAt = currentMembership?.onboardingCompletedAt ?? null;
-    const priorMembershipSuppressedAt = currentMembership?.onboardingSuppressedAt ?? null;
-    const priorMembershipSuppressedReason = currentMembership?.onboardingSuppressedReason ?? null;
-    const optimistic = new Date().toISOString();
-    setOnboardingCompletedAt((prev) => prev ?? optimistic);
-    setOnboardingDismissedAt((prev) => prev ?? optimistic);
-    patchMembershipOnboarding({
-      onboardingCompletedAt: currentMembership?.onboardingCompletedAt ?? optimistic,
-      onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? optimistic,
-      onboardingSuppressedReason: "completed",
-    });
-    try {
-      await postOnboardingCompleted(organizationId ?? undefined);
-    } catch (error) {
-      setOnboardingCompletedAt(priorAccountCompletedAt);
-      setOnboardingDismissedAt(priorAccountDismissedAt);
-      patchMembershipOnboarding({
-        onboardingCompletedAt: priorMembershipCompletedAt,
-        onboardingSuppressedAt: priorMembershipSuppressedAt,
-        onboardingSuppressedReason: priorMembershipSuppressedReason,
-      });
-      throw error;
-    }
-  }, [
-    onboardingCompletedAt,
-    onboardingDismissedAt,
-    currentMembership?.onboardingCompletedAt,
-    currentMembership?.onboardingSuppressedAt,
-    currentMembership?.onboardingSuppressedReason,
-    currentMembership?.organizationId,
-    patchMembershipOnboarding,
-  ]);
-
-  const applyOnboardingKickoffStamp = useCallback(
-    (stamp: "completed" | "invitee_skip") => {
-      const stampedAt = new Date().toISOString();
-      setOnboardingDismissedAt((prev) => prev ?? stampedAt);
+  const applyOnboardingStamp = useCallback(
+    (
+      stamp: "completed" | "invitee_skip",
+      serverStampedAt?: string,
+      expectedMembership?: { id: string; organizationId: string },
+    ) => {
+      if (
+        expectedMembership &&
+        (currentMembership?.id !== expectedMembership.id ||
+          currentMembership.organizationId !== expectedMembership.organizationId)
+      ) {
+        return false;
+      }
+      const stampedAt = serverStampedAt ?? new Date().toISOString();
       if (stamp === "completed") {
-        setOnboardingCompletedAt((prev) => prev ?? stampedAt);
+        setOnboardingDismissedAt(stampedAt);
+        setOnboardingCompletedAt(stampedAt);
         patchMembershipOnboarding({
-          onboardingCompletedAt: currentMembership?.onboardingCompletedAt ?? stampedAt,
-          onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
+          onboardingCompletedAt: stampedAt,
+          onboardingSuppressedAt: stampedAt,
           onboardingSuppressedReason: "completed",
         });
-        return;
+        return true;
       }
+      setOnboardingDismissedAt((prev) => prev ?? stampedAt);
       patchMembershipOnboarding({
         onboardingSuppressedAt: currentMembership?.onboardingSuppressedAt ?? stampedAt,
         onboardingSuppressedReason: currentMembership?.onboardingSuppressedReason ?? "invitee_skip",
       });
+      return true;
     },
     [
-      currentMembership?.onboardingCompletedAt,
+      currentMembership?.id,
+      currentMembership?.organizationId,
       currentMembership?.onboardingSuppressedAt,
       currentMembership?.onboardingSuppressedReason,
       patchMembershipOnboarding,
@@ -800,8 +762,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         onboardingCompletedAt: currentOnboardingCompletedAt,
         dismissOnboarding,
         restoreOnboarding,
-        markOnboardingCompleted,
-        applyOnboardingKickoffStamp,
+        applyOnboardingStamp,
         login,
         adoptTokens,
         selectOrganization,

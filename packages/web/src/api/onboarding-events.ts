@@ -91,24 +91,6 @@ export async function reportOnboardingEvent(
 }
 
 /**
- * Stamp the terminal-state `onboarding_completed_at` column. Reached from the
- * `/opentag` entry once that Agent has a real Feishu Task — a terminal state
- * arrived at by using the Agent, not by pressing anything, which is why it
- * needs its own request. The standalone journey stamps inside
- * `postOnboardingStartChat` instead. Once stamped, first-run onboarding no
- * longer auto-opens; the permanent Settings → Getting Started overview remains
- * available.
- *
- * Distinct from `dismissOnboarding()`, which only hides the stepper UI
- * and stays reversible. Idempotent on the server (only writes when the
- * column is still NULL). Failures propagate so a terminal path can remain
- * retryable until the durable stamp succeeds.
- */
-export async function markOnboardingCompleted(organizationId?: string): Promise<void> {
-  await api.post<{ ok: true }>("/me/onboarding-completed", organizationId ? { organizationId } : {});
-}
-
-/**
  * Run the idempotent server-side onboarding start-chat operation: create-or-reuse
  * the first chat, send the bootstrap message if the chat is empty, and
  * optionally stamp completion. Single-chat paths use the default stamp.

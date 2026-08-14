@@ -18,7 +18,6 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 const loginMock = vi.hoisted(() => vi.fn());
-const onboardingCompletedMock = vi.hoisted(() => vi.fn());
 const flagsMocks = vi.hoisted(() => ({
   clearOnboardingJoinPath: vi.fn(),
   clearOnboardingSessionFlags: vi.fn(),
@@ -39,10 +38,6 @@ vi.mock("../../api/client.js", () => ({
 
 vi.mock("../../api/auth.js", () => ({
   login: loginMock,
-}));
-
-vi.mock("../../api/onboarding-events.js", () => ({
-  markOnboardingCompleted: onboardingCompletedMock,
 }));
 
 vi.mock("../../utils/onboarding-flags.js", () => flagsMocks);
@@ -169,7 +164,6 @@ beforeEach(() => {
   });
   apiMocks.apiPatch.mockResolvedValue({ dismissedAt: "2026-05-28T00:00:00.000Z" });
   loginMock.mockResolvedValue({ accessToken: "access-login", refreshToken: "refresh-login" });
-  onboardingCompletedMock.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -518,7 +512,7 @@ describe("AuthProvider", () => {
     expect(localStorage.getItem("first-tree:selectedOrganizationId:user-2")).toBe("org-1");
   });
 
-  it("optimistically dismisses, restores, and completes onboarding with rollback on patch failure", async () => {
+  it("optimistically dismisses and restores onboarding with rollback on patch failure", async () => {
     await renderAuth();
 
     await act(async () => {
@@ -531,44 +525,42 @@ describe("AuthProvider", () => {
       await latestAuth?.restoreOnboarding();
     });
     expect(latestAuth?.onboardingDismissedAt).toBe("2026-05-28T00:00:00.000Z");
-
-    await act(async () => {
-      await latestAuth?.markOnboardingCompleted();
-    });
-    expect(onboardingCompletedMock).toHaveBeenCalled();
-    expect(latestAuth?.onboardingCompletedAt).toBeTruthy();
   });
 
-  it("rolls completion state back when the durable completion stamp fails", async () => {
-    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
-    await renderAuth();
-    onboardingCompletedMock.mockRejectedValueOnce(new Error("offline"));
-
-    await expect(
-      act(async () => {
-        await latestAuth?.markOnboardingCompleted();
-      }),
-    ).rejects.toThrow("offline");
-
-    expect(latestAuth?.onboardingCompletedAt).toBeNull();
-    expect(latestAuth?.onboardingDismissedAt).toBeNull();
-    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeNull();
-    expect(latestAuth?.currentMembership?.onboardingSuppressedAt).toBeNull();
-  });
-
-  it("mirrors a successful kickoff stamp locally without a duplicate completion request", async () => {
+  it("mirrors authoritative server stamps locally, including the canonical completion time", async () => {
     apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
     await renderAuth();
 
-    act(() => latestAuth?.applyOnboardingKickoffStamp("invitee_skip"));
+    act(() => latestAuth?.applyOnboardingStamp("invitee_skip"));
     expect(latestAuth?.currentMembership?.onboardingSuppressedReason).toBe("invitee_skip");
     expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeNull();
-    expect(onboardingCompletedMock).not.toHaveBeenCalled();
 
-    act(() => latestAuth?.applyOnboardingKickoffStamp("completed"));
+    act(() => latestAuth?.applyOnboardingStamp("completed", "2026-08-14T06:00:00.000Z"));
     expect(latestAuth?.currentMembership?.onboardingSuppressedReason).toBe("completed");
-    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeTruthy();
-    expect(onboardingCompletedMock).not.toHaveBeenCalled();
+    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBe("2026-08-14T06:00:00.000Z");
+    expect(latestAuth?.currentMembership?.onboardingSuppressedAt).toBe("2026-08-14T06:00:00.000Z");
+    expect(latestAuth?.onboardingDismissedAt).toBe("2026-08-14T06:00:00.000Z");
+  });
+
+  it("refuses to project a stamp onto a membership selected after the request began", async () => {
+    apiMocks.getStoredTokens.mockReturnValue({ accessToken: "access", refreshToken: "refresh" });
+    await renderAuth();
+    await act(async () => {
+      await latestAuth?.selectOrganization("org-2");
+    });
+
+    let projected: boolean | undefined;
+    act(() => {
+      projected = latestAuth?.applyOnboardingStamp("completed", "2026-08-14T06:00:00.000Z", {
+        id: "member-1",
+        organizationId: "org-1",
+      });
+    });
+
+    expect(projected).toBe(false);
+    expect(latestAuth?.currentMembership?.id).toBe("member-2");
+    expect(latestAuth?.currentMembership?.onboardingCompletedAt).toBeNull();
+    expect(latestAuth?.onboardingDismissedAt).toBeNull();
   });
 
   it("adopts external token pairs and falls back when /me fails", async () => {
