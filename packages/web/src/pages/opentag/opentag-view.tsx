@@ -1,5 +1,5 @@
 import { orderRuntimeProvidersByPreference, type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
-import { Check, ChevronDown, ExternalLink, LoaderCircle } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { type ReactElement, type ReactNode, useState } from "react";
 import type { HubClient } from "../../api/activity.js";
@@ -70,6 +70,7 @@ export function OpenTagView({
     preparingTools: boolean;
     botConnected: boolean;
     error: string | null;
+    retryable: boolean;
     retrying: boolean;
     onRetry: () => void;
   };
@@ -80,13 +81,11 @@ export function OpenTagView({
   return (
     <div style={{ marginTop: pageState === "add-to-feishu" ? "calc(var(--opentag-qr-flow-offset) * -1)" : undefined }}>
       <div
-        className="grid grid-cols-2"
+        data-opentag-statuses
+        className="opentag-statuses grid grid-cols-2"
         style={{
           gap: "var(--sp-10)",
-          marginBottom:
-            pageState === "add-to-feishu"
-              ? "calc(var(--opentag-status-bottom) + var(--sp-5))"
-              : "var(--opentag-status-bottom)",
+          marginBottom: pageState === "add-to-feishu" ? "calc(var(--opentag-status-bottom) + var(--sp-5))" : undefined,
         }}
       >
         <ComputerStatus clients={connectedClients} selectedClientId={selectedClientId} onSelect={onSelectClient} />
@@ -101,10 +100,10 @@ export function OpenTagView({
 
       <div className="fade-in" data-opentag-state={pageState}>
         <h2 className="text-headline font-semibold" style={{ margin: 0 }}>
-          {headingFor(pageState)}
+          {headingFor(pageState, displayName)}
         </h2>
         <p className="text-lead" style={{ margin: "var(--sp-2) 0 var(--sp-7)", color: "var(--fg-2)" }}>
-          {leadFor(pageState, displayName, runtimeLabel)}
+          {leadFor(pageState, displayName, runtimeLabel, runtimeState)}
         </p>
 
         <ActionSurface qr={pageState === "add-to-feishu" && !!feishu.registrationUrl}>
@@ -150,7 +149,7 @@ export function OpenTagView({
               </div>
             ))}
 
-          {pageState === "add-to-feishu" && <FeishuAction {...feishu} />}
+          {pageState === "add-to-feishu" && <FeishuAction {...feishu} displayName={displayName} />}
 
           {pageState === "ready" && (
             <div className="flex w-full items-center justify-between" style={{ gap: "var(--sp-8)" }}>
@@ -520,24 +519,34 @@ function RuntimeRecovery({
 }
 
 function FeishuAction({
+  displayName,
   registrationUrl,
   starting,
   preparingTools,
   botConnected,
   error,
+  retryable,
   retrying,
   onRetry,
 }: {
+  displayName: string;
   registrationUrl: string | null;
   starting: boolean;
   preparingTools: boolean;
   botConnected: boolean;
   error: string | null;
+  retryable: boolean;
   retrying: boolean;
   onRetry: () => void;
 }): ReactElement {
   if (error) {
-    return <InlineRecovery message={error} retrying={retrying} onRetry={onRetry} />;
+    return retryable ? (
+      <InlineRecovery message={error} retrying={retrying} onRetry={onRetry} />
+    ) : (
+      <p className="text-lead" role="alert" style={{ margin: 0 }}>
+        {error}
+      </p>
+    );
   }
   if (registrationUrl) {
     return (
@@ -563,7 +572,7 @@ function FeishuAction({
               Scan with Feishu
             </p>
             <p className="text-lead" style={{ margin: "var(--sp-3) 0 0", color: "var(--opentag-action-muted)" }}>
-              Open Feishu and scan this code to add your agent.
+              Open Feishu and scan this code to add {displayName}.
             </p>
           </div>
         </div>
@@ -603,7 +612,7 @@ function PrimaryAction({
     return (
       <Button variant="cta" className={className} asChild>
         <a href={href} target="_blank" rel="noopener noreferrer">
-          {children} <ExternalLink className="h-4 w-4" />
+          {children}
         </a>
       </Button>
     );
@@ -623,7 +632,7 @@ function StatusCopy({ children }: { children: ReactNode }): ReactElement {
   );
 }
 
-function headingFor(state: OpenTagPageState): string {
+function headingFor(state: OpenTagPageState, displayName: string): string {
   switch (state) {
     case "connect-computer":
       return "Connect your Computer";
@@ -632,18 +641,28 @@ function headingFor(state: OpenTagPageState): string {
     case "create-agent":
       return "Create agent";
     case "add-to-feishu":
-      return "Add OpenTag to Feishu";
+      return `Add ${displayName} to Feishu`;
     case "ready":
-      return "OpenTag is ready";
+      return `${displayName} is ready`;
   }
 }
 
-function leadFor(state: OpenTagPageState, displayName: string, runtimeLabel: string): string {
+function leadFor(
+  state: OpenTagPageState,
+  displayName: string,
+  runtimeLabel: string,
+  runtimeState: OpenTagRuntimeState,
+): string {
   switch (state) {
     case "connect-computer":
       return "Run this command in Terminal.";
     case "agent-blocked":
-      return `Finish setting up ${runtimeLabel} on this Computer.`;
+      if (runtimeState.kind === "sign-in" || runtimeState.kind === "signing-in") {
+        return `Sign in to ${runtimeLabel} on this Computer.`;
+      }
+      if (runtimeState.kind === "install") return `Install ${runtimeLabel} on this Computer.`;
+      if (runtimeState.kind === "checking") return "Checking local Agents on this Computer.";
+      return `Check ${runtimeLabel} on this Computer.`;
     case "create-agent":
       return `Create ${displayName} with this Computer and ${runtimeLabel}.`;
     case "add-to-feishu":

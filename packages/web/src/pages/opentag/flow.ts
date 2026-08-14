@@ -56,25 +56,28 @@ export type OpenTagRuntimeState =
   | { kind: "unavailable"; provider: RuntimeProvider };
 
 /** A capability is executable for this flow only when no live auth recovery is outstanding. */
-export function runtimeIsReady(entry: CapabilityEntry | null | undefined): boolean {
-  return entry?.state === "ok" && !entry.pendingAuth && !entry.lastAuthError;
+export function runtimeIsReady(entry: CapabilityEntry | null | undefined, nowMs = Date.now()): boolean {
+  return entry?.state === "ok" && !runtimeHasLivePendingAuth(entry, nowMs) && !entry.lastAuthError;
 }
 
 export function deriveOpenTagRuntimeState({
   capabilitiesLoaded,
   provider,
   entry,
+  nowMs = Date.now(),
 }: {
   capabilitiesLoaded: boolean;
   provider: RuntimeProvider | null;
   entry: CapabilityEntry | null | undefined;
+  nowMs?: number;
 }): OpenTagRuntimeState {
   if (!capabilitiesLoaded || !provider) return { kind: "checking" };
-  if (entry?.pendingAuth) {
+  const pendingAuth = runtimeHasLivePendingAuth(entry, nowMs);
+  if (pendingAuth) {
     return {
       kind: "signing-in",
       provider,
-      ...(entry.pendingAuth.authUrl ? { authUrl: entry.pendingAuth.authUrl } : {}),
+      ...(pendingAuth.authUrl ? { authUrl: pendingAuth.authUrl } : {}),
     };
   }
   if (entry?.state === "ok" && entry.lastAuthError) {
@@ -83,6 +86,16 @@ export function deriveOpenTagRuntimeState({
   if (entry?.state === "ok") return { kind: "ready", provider };
   if (entry?.state === "missing" || !entry) return { kind: "install", provider };
   return { kind: "unavailable", provider };
+}
+
+export function runtimeHasLivePendingAuth(
+  entry: CapabilityEntry | null | undefined,
+  nowMs = Date.now(),
+): CapabilityEntry["pendingAuth"] {
+  const pendingAuth = entry?.pendingAuth;
+  if (!pendingAuth) return null;
+  const expiresMs = Date.parse(pendingAuth.expiresAt);
+  return Number.isNaN(expiresMs) || expiresMs > nowMs ? pendingAuth : null;
 }
 
 export type OpenTagPageState = "connect-computer" | "agent-blocked" | "create-agent" | "add-to-feishu" | "ready";

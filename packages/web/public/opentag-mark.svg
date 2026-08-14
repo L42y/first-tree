@@ -1,8 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 48" role="img" aria-labelledby="title desc">
   <title id="title">OpenTag mascot</title>
   <desc id="desc">A lime speech bubble with a friendly face</desc>
-  <path d="M8 28C8 14.7 17.8 7 31.7 7h2.6C48.2 7 56 14.8 56 28.2v4.6C56 46.2 48.2 54 34.3 54H18l-8.7 4.2 2.3-10.3C9.2 44.1 8 39.1 8 32.8V28Z" fill="#90DE14" stroke="#141414" stroke-width="2.4" stroke-linejoin="round"/>
-  <circle cx="25" cy="29" r="2.4" fill="#141414"/>
-  <circle cx="42" cy="29" r="2.4" fill="#141414"/>
-  <path d="M39.8 53.2 43 42.4c.6-2 2.4-3.4 4.5-3.4h7.2c-1.7 7.5-6.8 12.4-14.9 14.2Z" fill="#fff" stroke="#141414" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M16 2h20c10 0 16 7 16 18v6c0 10-7 17-17 17H16C7 43 2 36 2 26v-6C2 9 7 2 16 2Z" fill="#90DE14" stroke="#141414" stroke-width="2.4" stroke-linejoin="round"/>
+  <circle cx="20" cy="22" r="2.4" fill="#141414"/>
+  <circle cx="36" cy="22" r="2.4" fill="#141414"/>
+  <path d="m37.5 42.7 3.3-11.1c.6-2 2.4-3.4 4.5-3.4h6.5c-.8 7.9-5.6 12.8-14.3 14.5Z" fill="#fff" stroke="#141414" stroke-width="2.4" stroke-linejoin="round"/>
 </svg>

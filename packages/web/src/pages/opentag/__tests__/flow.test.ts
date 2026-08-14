@@ -108,6 +108,19 @@ describe("OpenTag single-page conditions", () => {
     );
   });
 
+  it("falls back from an expired pending auth snapshot", () => {
+    const entry = capability({
+      pendingAuth: { method: "browser", expiresAt: "2026-08-14T00:00:00.000Z" },
+    });
+    const nowMs = Date.parse("2026-08-14T00:00:01.000Z");
+
+    expect(runtimeIsReady(entry, nowMs)).toBe(true);
+    expect(deriveOpenTagRuntimeState({ capabilitiesLoaded: true, provider: "codex", entry, nowMs })).toEqual({
+      kind: "ready",
+      provider: "codex",
+    });
+  });
+
   it("derives checking, install, auth, and ready recovery variants", () => {
     expect(deriveOpenTagRuntimeState({ capabilitiesLoaded: false, provider: "codex", entry: null })).toEqual({
       kind: "checking",

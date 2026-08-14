@@ -264,7 +264,7 @@ describe("OpenTag single-page Desktop flow", () => {
     const container = await renderAt("/opentag");
     const state = container.querySelector("[data-opentag-state='connect-computer']");
 
-    expect(container.textContent).toContain("Bring your agentto Feishu");
+    expect(container.querySelector("h1")?.textContent).toBe("Bring your agent to Feishu");
     expect(container.textContent).toContain("Your agentOpenTagChange name");
     expect(state?.textContent).toContain("Copy command");
     expect(state?.querySelectorAll("button")).toHaveLength(1);
@@ -313,6 +313,8 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(document.body.textContent).toContain("Claude Code");
     expect(document.body.textContent).toContain("Cursor");
     expect(document.body.textContent).toContain("Install required");
+    expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("[data-opentag-statuses]")?.classList.contains("opentag-statuses")).toBe(true);
 
     await click(button(container, "Create agent"));
     expect(agentsApi.createAgent).toHaveBeenCalledTimes(1);
@@ -333,6 +335,7 @@ describe("OpenTag single-page Desktop flow", () => {
     computerMock.value = readyComputer();
     agentsApi.createAgent.mockResolvedValue(agentRow({ displayName: "Atlas", name: "atlas" }));
     agentsApi.getAgent.mockResolvedValue(agentRow({ displayName: "Atlas", name: "atlas" }));
+    agentsApi.getAgentFeishuBinding.mockResolvedValue({ binding: binding() });
     const container = await renderAt("/opentag");
     await click(button(container, "Change name"));
     const input = container.querySelector<HTMLInputElement>("#opentag-agent-name");
@@ -345,6 +348,8 @@ describe("OpenTag single-page Desktop flow", () => {
     await flush();
     await click(button(container, "Create agent"));
     expect(agentsApi.createAgent.mock.calls[0]?.[0]).toMatchObject({ displayName: "Atlas", name: "atlas" });
+    expect(container.textContent).toContain("Add Atlas to Feishu");
+    expect(container.textContent).toContain("add Atlas");
   });
 
   it("automatically starts Feishu registration after creation and renders QR with no Web CTA", async () => {
@@ -395,6 +400,31 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(container.querySelector("[data-opentag-state='ready']")?.textContent).toContain("Open Feishu");
     expect(container.textContent).not.toContain("first message");
     expect(container.textContent).not.toContain("first task is ready");
+  });
+
+  it("keeps the edited Agent name in the ready handoff", async () => {
+    computerMock.value = readyComputer();
+    agentsApi.getAgent.mockResolvedValue(agentRow({ displayName: "Atlas", name: "atlas" }));
+    agentsApi.getAgentFeishuBinding.mockResolvedValue({ binding: usableBinding() });
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.querySelector("[data-opentag-state='ready']")?.textContent).toContain("Atlas is ready");
+    expect(container.querySelector("[data-opentag-state='ready']")?.textContent).toContain(
+      "Atlas is connected to Feishu",
+    );
+  });
+
+  it("never starts owner-only Feishu writes when an admin views a teammate’s Agent", async () => {
+    computerMock.value = readyComputer();
+    agentsApi.getAgent.mockResolvedValue(agentRow({ managerId: "member-2" }));
+    agentsApi.getAgentFeishuBinding.mockResolvedValue({ binding: null });
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("Only this agent’s owner can finish Feishu setup.");
+    expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.querySelectorAll("button")).toHaveLength(0);
+    expect(agentsApi.startAgentFeishuRegistration).not.toHaveBeenCalled();
+    expect(agentsApi.createAgentFeishuSetupChat).not.toHaveBeenCalled();
+    expect(markOnboardingCompleted).not.toHaveBeenCalled();
   });
 
   it("keeps completion closed while only the Bot is ready and prepares tools automatically", async () => {
@@ -462,5 +492,39 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(lastLocation).toBe("/opentag");
     await click(button(container, "Use existing agent"));
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("returns to the create action when the user changes a conflicting name", async () => {
+    computerMock.value = readyComputer();
+    agentsApi.createAgent.mockRejectedValue(new ApiError(409, "taken", undefined, "agent_name_conflict"));
+    agentsApi.listManagedAgents.mockResolvedValue([
+      {
+        uuid: AGENT_UUID,
+        name: "opentag",
+        displayName: "OpenTag",
+        type: "agent",
+        organizationId: ORG,
+        inboxId: "inbox-1",
+        visibility: "organization",
+        runtimeProvider: "codex",
+        clientId: "client-1",
+        status: "active",
+        avatarImageUrl: null,
+      },
+    ]);
+    const container = await renderAt("/opentag");
+    await click(button(container, "Create agent"));
+    await click(button(container, "Change name"));
+    const input = container.querySelector<HTMLInputElement>("#opentag-agent-name");
+    if (!input) throw new Error("missing name input");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, "Atlas");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).not.toContain("Use existing agent");
+    expect(button(container, "Create agent")).not.toBeNull();
   });
 });

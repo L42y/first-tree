@@ -337,8 +337,8 @@ video[data-onboarding-orientation-video]::cue {
   --opentag-action: oklch(0.13 0 0);
   --opentag-action-fg: oklch(0.98 0 0);
   --opentag-action-muted: oklch(0.84 0 0);
-  --opentag-accent: #90de14;
-  --opentag-accent-hover: #7dca0b;
+  --opentag-accent: oklch(0.8183 0.219 130.77);
+  --opentag-accent-hover: oklch(0.7592 0.2079 131.81);
   --opentag-accent-fg: oklch(0.13 0 0);
   --opentag-page-max: 85rem;
   --opentag-story-width: 38rem;
@@ -347,6 +347,7 @@ video[data-onboarding-orientation-video]::cue {
   --opentag-content-top: 11.5rem;
   --opentag-identity-top: 5.5rem;
   --opentag-status-bottom: 4.25rem;
+  --opentag-picker-reserve: 14rem;
   --opentag-action-height: 10.5rem;
   --opentag-action-qr-height: 21.75rem;
   --opentag-qr-flow-offset: 4.5rem;
@@ -638,6 +639,14 @@ video[data-onboarding-orientation-video]::cue {
 
 .opentag-primary-action:hover {
   background: var(--opentag-accent-hover);
+}
+
+.opentag-statuses {
+  margin-bottom: var(--opentag-status-bottom);
+}
+
+.opentag-statuses:has([aria-expanded="true"]) {
+  margin-bottom: calc(var(--opentag-status-bottom) + var(--opentag-picker-reserve));
 }
 
 /* ============================================================================

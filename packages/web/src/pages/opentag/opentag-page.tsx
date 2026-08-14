@@ -26,7 +26,13 @@ import {
 } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { hasUpdateProblem } from "../clients/derive-status.js";
-import { classifyOpenTagAgent, deriveOpenTagRuntimeState, resolveOpenTagPageState, runtimeIsReady } from "./flow.js";
+import {
+  classifyOpenTagAgent,
+  deriveOpenTagRuntimeState,
+  resolveOpenTagPageState,
+  runtimeHasLivePendingAuth,
+  runtimeIsReady,
+} from "./flow.js";
 import { OpenTagShell } from "./opentag-shell.js";
 import { OpenTagView, type RuntimeChoice } from "./opentag-view.js";
 import { isAgentNameConflict, recoverCreatedAgent } from "./recover-created-agent.js";
@@ -87,7 +93,7 @@ export function OpenTagPage(): ReactElement | null {
     navigate(opentagEntryPath(), { replace: true });
   }, [facts.state, agentUuid, navigate]);
 
-  const computer = useComputerConnection(true);
+  const computer = useComputerConnection(facts.state === "none" || facts.state === "resolved");
   const [displayName, setDisplayName] = useState("OpenTag");
   const [editingName, setEditingName] = useState(false);
   const [selectedLocalAgent, setSelectedLocalAgent] = useState<RuntimeProvider | null>(null);
@@ -195,7 +201,14 @@ export function OpenTagPage(): ReactElement | null {
   });
   const startFeishuMutate = startFeishu.mutate;
   useEffect(() => {
-    if (!feishuEnabled || !agentUuid || !feishuQuery.isSuccess || !bindingNeedsRegistration || startFeishu.isPending) {
+    if (
+      !feishuEnabled ||
+      !ownsUrlAgent ||
+      !agentUuid ||
+      !feishuQuery.isSuccess ||
+      !bindingNeedsRegistration ||
+      startFeishu.isPending
+    ) {
       return;
     }
     if (registrationRequestedFor === agentUuid) return;
@@ -203,6 +216,7 @@ export function OpenTagPage(): ReactElement | null {
     startFeishuMutate();
   }, [
     feishuEnabled,
+    ownsUrlAgent,
     agentUuid,
     feishuQuery.isSuccess,
     bindingNeedsRegistration,
@@ -301,20 +315,29 @@ export function OpenTagPage(): ReactElement | null {
   const visibleDisplayName = agent?.displayName ?? displayName;
   const identityState = pageState === "ready" ? "ready" : agent ? "created" : "editable";
 
+  const ownershipBlocksRegistration =
+    feishuEnabled && !ownsUrlAgent && feishuQuery.isSuccess && bindingNeedsRegistration;
   const feishuError =
     readinessError ??
-    (startFeishu.error instanceof Error ? startFeishu.error.message : null) ??
+    (ownershipBlocksRegistration ? "Only this agent’s owner can finish Feishu setup." : null) ??
+    (bindingNeedsRegistration && startFeishu.error instanceof Error ? startFeishu.error.message : null) ??
     (binding?.status === "error" ? (binding.lastErrorMessage ?? "Feishu registration could not finish.") : null) ??
     (binding?.connectionStatus === "error"
       ? (binding.lastErrorMessage ?? "The Feishu Bot connection could not finish.")
       : null) ??
     (binding?.cli.state === "offline" ? "Reconnect the Computer that owns this agent, then try again." : null) ??
-    (prepareTools.error instanceof Error ? prepareTools.error.message : null) ??
-    (complete.error instanceof Error ? complete.error.message : null) ??
-    (feishuQuery.error instanceof Error ? feishuQuery.error.message : null) ??
+    (binding && binding.cli.state !== "ready" && prepareTools.error instanceof Error
+      ? prepareTools.error.message
+      : null) ??
+    (handoffUsable && complete.error instanceof Error ? complete.error.message : null) ??
+    (!binding && feishuQuery.error instanceof Error ? feishuQuery.error.message : null) ??
     (handoffSlow ? "Setup is taking longer than expected. Try again to resume it." : null);
 
   const retryFeishu = (): void => {
+    if (!ownsUrlAgent) {
+      void feishuQuery.refetch();
+      return;
+    }
     if (readinessError) {
       void healReadiness();
       return;
@@ -360,7 +383,11 @@ export function OpenTagPage(): ReactElement | null {
       editingName={!agent && editingName}
       onEditName={() => setEditingName(true)}
       onCancelEditName={() => setEditingName(false)}
-      onNameChange={setDisplayName}
+      onNameChange={(name) => {
+        setDisplayName(name);
+        setRecoverableAgent(null);
+        create.reset();
+      }}
     >
       {facts.state === "unreadable" || facts.state === "team-unreadable" ? (
         <RecoverableReadError
@@ -411,6 +438,7 @@ export function OpenTagPage(): ReactElement | null {
               prepareTools.isPending || binding?.cli.state === "missing" || binding?.cli.state === "unknown",
             botConnected: !!binding && isFeishuBotReachable(binding),
             error: feishuError,
+            retryable: !ownershipBlocksRegistration,
             retrying: startFeishu.isPending || prepareTools.isPending || complete.isPending,
             onRetry: retryFeishu,
           }}
@@ -422,7 +450,7 @@ export function OpenTagPage(): ReactElement | null {
 
 function runtimeStatusCopy(entry: CapabilityEntry | null | undefined): string {
   if (runtimeIsReady(entry)) return "Ready";
-  if (entry?.pendingAuth) return "Sign-in open";
+  if (runtimeHasLivePendingAuth(entry)) return "Sign-in open";
   if (entry?.lastAuthError) return "Sign in required";
   if (entry?.state === "missing") return "Install required";
   if (entry?.state === "error") return "Check failed";

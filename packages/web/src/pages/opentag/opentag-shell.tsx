@@ -47,8 +47,7 @@ export function OpenTagShell({
         <section>
           <h1 className="text-opentag-display font-bold" style={{ margin: 0, maxWidth: "var(--opentag-story-width)" }}>
             Bring your agent
-            <br />
-            to Feishu
+            <br /> to Feishu
           </h1>
           <p
             className="text-lead"
