@@ -44,6 +44,7 @@ Branch 1 — confirm lost after commit:
 
 - The notify row stays `acked` after reconnect.
 - Bind reset does not redeliver that row and does not start a second provider turn for work that already entered the first turn.
+- After `inbox:recover` reports `unackedOutstanding === 0` (or an equivalent server settlement proof), the Client must release that row from local unsettled work instead of waiting forever for a redelivery that cannot happen.
 
 Branch 2 — request never committed:
 
@@ -53,9 +54,9 @@ Branch 2 — request never committed:
 
 ## Expected Result
 
-`PASS`: both branches keep initial + one retry, one `1011` close, and no third same-socket ACK. Branch 1 leaves the row `acked` with no redelivery and no second provider entry. Branch 2 redelivers the unsettled row after bind reset, and a later ACK settles only the current-socket delivery set.
+`PASS`: both branches keep initial + one retry, one `1011` close, and no third same-socket ACK. Branch 1 leaves the row `acked` with no redelivery, no second provider entry, and the Client ledger released after settlement proof. Branch 2 redelivers the unsettled row after bind reset, and a later ACK settles only the current-socket delivery set.
 
-`FAIL`: unbounded 3s retries; a third ACK on the same socket; old ACKs replayed after rebind; treating a committed ACK as if it must redeliver; or an ACK that settles a row the current socket never delivered.
+`FAIL`: unbounded 3s retries; a third ACK on the same socket; old ACKs replayed after rebind; treating a committed ACK as if it must redeliver; keeping the committed row as Client recovery debt after `unackedOutstanding === 0`; or an ACK that settles a row the current socket never delivered.
 
 `BLOCKED`: the run cell cannot authenticate, bind an agent, or independently intercept confirm-drop versus uncommitted-ACK.
 

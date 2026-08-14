@@ -99,10 +99,10 @@ export type InboxFenceProbeResult = {
 /**
  * Result of an accepted inbox recovery. `resetCount` only covers rows the
  * reset moved out of `delivered`; `unackedOutstanding` is the server's
- * authoritative pending+delivered backlog for the chat scope, and
-Only `unackedOutstanding === 0`
- * or an explicit id list may prove settlement; older servers omit them, and
- * absence must be treated as unknown, never as zero/empty.
+ * authoritative pending+delivered backlog for the chat scope. Only
+ * `unackedOutstanding === 0` or an explicit id list may prove settlement;
+ * older servers omit them, and absence must be treated as unknown, never as
+ * zero/empty.
  */
 export type InboxRecoverResult = {
   resetCount: number;

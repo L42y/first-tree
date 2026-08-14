@@ -343,7 +343,7 @@ export class AgentSlot {
 
       const ackEntry = (entryId: number) => this.clientConnection.sendInboxAck(entryId, agent.agentId);
       const recoverChat = async (chatId: string) => {
-        await this.clientConnection.sendInboxRecover(agent.agentId, chatId);
+        return this.clientConnection.sendInboxRecover(agent.agentId, chatId);
       };
       const runtimeProvider = runtimeProviderSchema.safeParse(runtimeType);
       if (!runtimeProvider.success) {
