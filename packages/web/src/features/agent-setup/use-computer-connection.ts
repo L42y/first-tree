@@ -30,6 +30,8 @@ export type ComputerConnection = {
   setSelectedClientId: (next: string | null) => void;
   connectedClient: HubClient | null;
   capabilitiesLoaded: boolean;
+  /** Fresh capability snapshot for the selected Computer. */
+  capabilities?: ClientCapabilities | null;
   /** Enabled `ok` providers in catalog display order. */
   okRuntimes: RuntimeProvider[];
   selectedRuntime: RuntimeProvider | null;
@@ -40,6 +42,8 @@ export type ComputerConnection = {
   tokenError: string | null;
   /** Manually re-attempt minting the connect token (clears `tokenError`). */
   retry: () => void;
+  /** Re-read the selected Computer's capabilities immediately. */
+  refreshCapabilities?: () => void;
 };
 
 export type UseComputerConnectionOptions = {
@@ -88,6 +92,7 @@ export function useComputerConnection(
   const [tokenError, setTokenError] = useState<string | null>(null);
   // Bumped by retry() to force a fresh mint attempt from the effect below.
   const [retryNonce, setRetryNonce] = useState(0);
+  const [capabilitiesRetryNonce, setCapabilitiesRetryNonce] = useState(0);
 
   const clientDetectSeqRef = useRef(0);
   const capabilitiesDetectSeqRef = useRef(0);
@@ -153,6 +158,7 @@ export function useComputerConnection(
   // Poll capabilities only for the chosen computer. A stale response from a
   // previous choice cannot become active because both sequence and client id
   // are checked before committing it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: capabilitiesRetryNonce deliberately triggers an immediate re-read
   useEffect(() => {
     if (!enabled || !selectedClientId) {
       capabilitiesDetectSeqRef.current += 1;
@@ -181,7 +187,7 @@ export function useComputerConnection(
       cancelled = true;
       dispose();
     };
-  }, [enabled, selectedClientId]);
+  }, [enabled, selectedClientId, capabilitiesRetryNonce]);
 
   // Mint / refresh the connect token while no computer is connected yet.
   // retryNonce in the deps is an intentional re-run trigger (bumped by retry()
@@ -255,6 +261,10 @@ export function useComputerConnection(
     setRetryNonce((n) => n + 1);
   }, []);
 
+  const refreshCapabilities = useCallback(() => {
+    setCapabilitiesRetryNonce((nonce) => nonce + 1);
+  }, []);
+
   const activeCapabilities =
     connectedClient && capabilitiesClientId === connectedClient.id && hasReportedCapabilities(capabilities)
       ? capabilities
@@ -292,11 +302,13 @@ export function useComputerConnection(
     setSelectedClientId,
     connectedClient,
     capabilitiesLoaded: activeCapabilities !== null,
+    capabilities: activeCapabilities,
     okRuntimes,
     selectedRuntime: selectedRuntimeState,
     setSelectedRuntime,
     cliCommand,
     tokenError,
     retry,
+    refreshCapabilities,
   };
 }

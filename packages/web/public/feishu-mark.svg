@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="10 15 44 36" role="img" aria-labelledby="title desc">
+  <title id="title">Feishu</title>
+  <desc id="desc">A stylized Feishu bird mark</desc>
+  <path d="M12 18h19l9 13H24L12 18Z" fill="#00D6B9"/>
+  <path d="M24 31h28c-2 11-9.7 18-20.2 18C20.9 49 12 40.1 12 29.2V18l12 13Z" fill="#3370FF"/>
+  <path d="m24 31 8 11 20-11H24Z" fill="#1456C0"/>
+  <path d="M31 18h9l7 10-7 3-9-13Z" fill="#00B5D9"/>
+</svg>
