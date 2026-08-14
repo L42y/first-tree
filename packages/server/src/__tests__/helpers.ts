@@ -97,6 +97,8 @@ export type CreateTestAppOptions = {
   runtimeSwitchFaultInjection?: boolean;
   /** Enable the periodic cron scheduler. Disabled by default so tests that drive sweeps explicitly cannot race it. */
   cronSchedulerEnabled?: boolean;
+  /** Enable the startup and daily attachment-retention sweep. Disabled by default so database cleanup cannot race it. */
+  attachmentRetentionSweepEnabled?: boolean;
   allowedOrganizationId?: string;
   /** Official Agent Template publisher org (FIRST_TREE_AGENT_TEMPLATE_PUBLISHER_ORG_ID). */
   agentTemplatePublisherOrgId?: string;
@@ -283,7 +285,10 @@ export async function createTestApp(opts: CreateTestAppOptions = {}): Promise<Fa
   setConfig(config);
   const app = await buildApp(config, {
     attachmentBlobStore: new MemoryAttachmentBlobStore(),
-    backgroundTasks: { cronSchedulerEnabled: opts.cronSchedulerEnabled ?? false },
+    backgroundTasks: {
+      cronSchedulerEnabled: opts.cronSchedulerEnabled ?? false,
+      attachmentRetentionSweepEnabled: opts.attachmentRetentionSweepEnabled ?? false,
+    },
     ...(opts.feishuSdk ? { feishuSdk: opts.feishuSdk } : {}),
   });
   await app.ready();

@@ -25,6 +25,7 @@ export type BackgroundTasks = {
 
 export type BackgroundTaskOptions = {
   cronSchedulerEnabled?: boolean;
+  attachmentRetentionSweepEnabled?: boolean;
 };
 
 export function createBackgroundTasks(
@@ -37,6 +38,7 @@ export function createBackgroundTasks(
   let archiveSweepTimer: ReturnType<typeof setInterval> | null = null;
   let attachmentSweepTimer: ReturnType<typeof setInterval> | null = null;
   let attachmentRetentionTimer: ReturnType<typeof setInterval> | null = null;
+  const attachmentRetentionRuns = new Set<Promise<void>>();
   const cronScheduler = options.cronSchedulerEnabled === false ? null : createCronScheduler(app);
 
   async function maintainAttachments(): Promise<void> {
@@ -48,6 +50,20 @@ export function createBackgroundTasks(
     if (legacyAttachments.migrated > 0 || legacySkills.migrated > 0 || sweep.deleted > 0) {
       log.info({ legacyAttachments, legacySkills, sweep }, "attachment maintenance completed");
     }
+  }
+
+  function startAttachmentRetentionSweep(): void {
+    const run = sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, {
+      deleteEnabled: app.config.attachments.retention?.deleteEnabled ?? false,
+    })
+      .then(() => undefined)
+      .catch((err) => {
+        log.error({ err }, "attachment retention sweep failed");
+      });
+    attachmentRetentionRuns.add(run);
+    void run.finally(() => {
+      attachmentRetentionRuns.delete(run);
+    });
   }
 
   return {
@@ -111,21 +127,10 @@ export function createBackgroundTasks(
         60 * 60 * 1000,
       );
 
-      const sweepAttachmentRetention = async (): Promise<void> => {
-        await sweepExpiredMessageAttachments(app.db, app.attachmentBlobStore, {
-          deleteEnabled: app.config.attachments.retention?.deleteEnabled ?? false,
-        });
-      };
-      attachmentRetentionTimer = setInterval(async () => {
-        try {
-          await sweepAttachmentRetention();
-        } catch (err) {
-          log.error({ err }, "attachment retention sweep failed");
-        }
-      }, ATTACHMENT_RETENTION_SWEEP_INTERVAL_MS);
-      sweepAttachmentRetention().catch((err) => {
-        log.error({ err }, "initial attachment retention sweep failed");
-      });
+      if (options.attachmentRetentionSweepEnabled !== false) {
+        attachmentRetentionTimer = setInterval(startAttachmentRetentionSweep, ATTACHMENT_RETENTION_SWEEP_INTERVAL_MS);
+        startAttachmentRetentionSweep();
+      }
 
       cronScheduler?.start();
 
@@ -159,6 +164,7 @@ export function createBackgroundTasks(
         clearInterval(attachmentRetentionTimer);
         attachmentRetentionTimer = null;
       }
+      await Promise.allSettled([...attachmentRetentionRuns]);
     },
   };
 }
