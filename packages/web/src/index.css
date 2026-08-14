@@ -189,12 +189,27 @@ video[data-onboarding-orientation-video]::cue {
   --text-display--letter-spacing: -0.02em;
   --text-display--font-weight: 600;
 
+  /* OpenTag's approved Desktop first-run hierarchy. This is a product utility
+     display tier, intentionally larger than ordinary dashboard chrome. */
+  --text-opentag-display: clamp(3.25rem, 4.4vw, 4rem);
+  --text-opentag-display--line-height: 1.08;
+  --text-opentag-display--letter-spacing: -0.035em;
+  --text-opentag-display--font-weight: 700;
+
+  --text-opentag-action: 16px;
+  --text-opentag-action--line-height: 1.5;
+  --text-opentag-action--font-weight: 400;
+
   /* ---- Radius scale -------------------------------------------------------- */
   /* Semantic radii. Prefer these over --radius-sm/md/lg (shadcn legacy). */
   --radius-chip: 3px;
   --radius-input: 4px;
   --radius-panel: 6px;
   --radius-dialog: 8px;
+  /* Locked OpenTag product-surface radii; kept page-specific so the compact
+     dashboard surface scale remains unchanged. */
+  --radius-opentag-cta: 12px;
+  --radius-opentag-action: 14px;
   /* Fully-round — pills, circular discs/dots, avatar rings. The one radius that
      isn't surface-importance-ascending; it means "capsule/circle", not a size. */
   --radius-full: 9999px;
@@ -314,6 +329,30 @@ video[data-onboarding-orientation-video]::cue {
   --brand-dim: oklch(0.62 0.14 150);
   --brand-bg: oklch(0.72 0.17 150 / 0.12);
   --brand-ring: oklch(0.72 0.17 150 / 0.3);
+
+  /* OpenTag Desktop first-run composition. The flow is deliberately pinned to
+     its white / off-black / lime artifact world rather than inheriting app
+     chrome elevation. */
+  --opentag-bg: oklch(1 0 0);
+  --opentag-action: oklch(0.13 0 0);
+  --opentag-action-fg: oklch(0.98 0 0);
+  --opentag-action-muted: oklch(0.84 0 0);
+  --opentag-accent: oklch(0.8183 0.219 130.77);
+  --opentag-accent-hover: oklch(0.7592 0.2079 131.81);
+  --opentag-accent-fg: oklch(0.13 0 0);
+  --opentag-page-max: 85rem;
+  --opentag-story-width: 38rem;
+  --opentag-flow-width: 42rem;
+  --opentag-column-gap: 5.5rem;
+  --opentag-content-top: 11.5rem;
+  --opentag-identity-top: 5.5rem;
+  --opentag-status-bottom: 4.25rem;
+  --opentag-picker-reserve: 14rem;
+  --opentag-action-height: 10.5rem;
+  --opentag-action-qr-height: 21.75rem;
+  --opentag-qr-flow-offset: 4.5rem;
+  --opentag-cta-height: 3.5rem;
+  --opentag-qr-size: 13.5rem;
 
   /* Primary — the neutral action/active color. Near-black ink in light mode,
      near-white in dark (inverts in .dark below). Drives primary buttons,
@@ -593,6 +632,23 @@ video[data-onboarding-orientation-video]::cue {
   --lvl4: var(--brand);
 }
 
+.opentag-primary-action {
+  background: var(--opentag-accent);
+  color: var(--opentag-accent-fg);
+}
+
+.opentag-primary-action:hover {
+  background: var(--opentag-accent-hover);
+}
+
+.opentag-statuses {
+  margin-bottom: var(--opentag-status-bottom);
+}
+
+.opentag-statuses:has([aria-expanded="true"]) {
+  margin-bottom: calc(var(--opentag-status-bottom) + var(--opentag-picker-reserve));
+}
+
 /* ============================================================================
    Marketing surface — pins the public landing page to the first-tree.ai
    palette regardless of the dashboard's light/dark toggle. The cloud /
@@ -706,6 +762,50 @@ video[data-onboarding-orientation-video]::cue {
   --lvl2: oklch(0.44 0.1 150);
   --lvl3: oklch(0.58 0.14 150);
   --lvl4: var(--brand);
+}
+
+/* OpenTag is an intentionally fixed white first-run artifact. Scope the full
+   light semantic palette to its wrapper so a persisted root `.dark` preference
+   cannot turn inherited text, inputs, borders, feedback, or native controls
+   into light-on-white UI. Global theme behavior remains unchanged. */
+[data-opentag-theme="light"] {
+  --bg: oklch(0.985 0 0);
+  --bg-raised: oklch(1 0 0);
+  --bg-sunken: oklch(0.965 0 0);
+  --bg-card: oklch(1 0 0);
+  --bg-hover: oklch(0.95 0 0);
+  --bg-active: oklch(0.92 0 0);
+
+  --fg: oklch(0.18 0 0);
+  --fg-2: oklch(0.36 0 0);
+  --fg-3: oklch(0.52 0 0);
+  --fg-4: oklch(0.68 0 0);
+  --fg-confirm: color-mix(in oklch, var(--primary) 35%, var(--fg));
+
+  --border: oklch(0.9 0 0);
+  --border-strong: oklch(0.82 0 0);
+  --border-faint: oklch(0.94 0 0);
+
+  --primary: oklch(0.21 0 0);
+  --primary-hover: oklch(0.32 0 0);
+  --primary-on: oklch(0.99 0 0);
+  --ring: oklch(0.21 0 0 / 0.4);
+
+  --shadow-sm: 0 1px 2px oklch(0 0 0 / 0.06);
+  --shadow-md: 0 4px 12px oklch(0 0 0 / 0.08);
+  --shadow-md-up: 0 -4px 12px oklch(0 0 0 / 0.08);
+
+  --bg-error-soft: oklch(0.97 0.02 25);
+  --fg-error-strong: oklch(0.42 0.17 25);
+  --bg-warn-soft: oklch(0.97 0.04 58);
+  --fg-warn-strong: oklch(0.48 0.14 58);
+  --fg-needs-you-strong: oklch(0.48 0.14 75);
+  --bg-success-soft: oklch(0.96 0.04 150);
+  --fg-success-strong: oklch(0.42 0.12 150);
+  --bg-info-soft: oklch(0.96 0.03 245);
+  --fg-info-strong: oklch(0.45 0.14 245);
+
+  color-scheme: light;
 }
 
 @layer base {
