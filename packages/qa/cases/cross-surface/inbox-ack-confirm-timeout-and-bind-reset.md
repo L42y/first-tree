@@ -44,7 +44,7 @@ Branch 1 — confirm lost after commit:
 
 - The notify row stays `acked` after reconnect.
 - Bind reset does not redeliver that row and does not start a second provider turn for work that already entered the first turn.
-- After `inbox:recover` reports `unackedOutstanding === 0` (or an equivalent server settlement proof), the Client must release that row from local unsettled work instead of waiting forever for a redelivery that cannot happen.
+- After `inbox:recover` reports `unackedOutstanding === 0` (or an equivalent server settlement proof), the Client must release that row from local unsettled work: ledger empty, recovery debt none, no activation window waiting for redelivery.
 
 Branch 2 — request never committed:
 

@@ -665,8 +665,9 @@ describe("Agent WS — inbox delivery ordering", () => {
       }
     } finally {
       if (ws) {
-        ws.close();
-        await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+        const socket = ws;
+        socket.close();
+        await new Promise<void>((resolve) => socket.once("close", () => resolve()));
       }
       await cappedApp.close();
     }
