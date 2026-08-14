@@ -83,7 +83,7 @@ export function OpenTagView({
   const runtimeLabel = selectedRuntime ? runtimeProviderLabel(selectedRuntime) : "Agent";
 
   return (
-    <div style={{ marginTop: pageState === "add-to-feishu" ? "calc(var(--opentag-qr-flow-offset) * -1)" : undefined }}>
+    <div>
       <div
         data-opentag-statuses
         data-opentag-runtime-picker={hasRuntimePicker || undefined}
@@ -91,7 +91,6 @@ export function OpenTagView({
         style={{
           gap: "var(--opentag-status-gap)",
           gridTemplateColumns: "var(--opentag-status-columns)",
-          marginBottom: pageState === "add-to-feishu" ? "calc(var(--opentag-status-bottom) + var(--sp-5))" : undefined,
         }}
       >
         <ComputerStatus clients={connectedClients} selectedClientId={selectedClientId} onSelect={onSelectClient} />
@@ -112,7 +111,7 @@ export function OpenTagView({
           {leadFor(pageState, displayName, runtimeLabel, runtimeState)}
         </p>
 
-        <ActionSurface qr={pageState === "add-to-feishu" && !!feishu.registrationUrl}>
+        <ActionSurface qr={pageState === "add-to-feishu"}>
           {pageState === "connect-computer" &&
             (bootstrapError ? (
               <InlineRecovery message={bootstrapError} retrying={false} onRetry={onRetryBootstrap} />
@@ -303,13 +302,20 @@ function StatusLine({
   children?: ReactElement | null;
 }): ReactElement {
   return (
-    <div className="flex min-w-0 items-center" style={{ gap: "var(--opentag-status-item-gap)" }}>
+    <div
+      className="flex min-w-0 items-center"
+      style={{ gap: "var(--opentag-status-item-gap)", minHeight: "var(--opentag-status-row-height)" }}
+    >
       <span
         aria-hidden="true"
-        className="h-5 w-5 shrink-0 rounded-[var(--radius-full)]"
-        style={{ background: ready ? "var(--opentag-accent)" : "var(--state-offline)" }}
+        className="shrink-0 rounded-[var(--radius-full)]"
+        style={{
+          width: "var(--opentag-status-dot-size)",
+          height: "var(--opentag-status-dot-size)",
+          background: ready ? "var(--opentag-accent)" : "var(--state-offline)",
+        }}
       />
-      <span className="min-w-0 truncate text-lead">{label}</span>
+      <span className="opentag-status-label min-w-0 truncate text-subtitle">{label}</span>
       {children}
     </div>
   );
