@@ -704,7 +704,8 @@ export class SessionRuntime {
         // history work is best-effort and bounded; anything not fetched still
         // renders with a filename and an unavailable placeholder.
         await this.ensureImagesLocal(message);
-        await this.ensureFeishuReferenceContext(message);
+        const feishuReferenceContextLoad = this.ensureFeishuReferenceContext(message);
+        if (feishuReferenceContextLoad) await feishuReferenceContextLoad;
 
         // 4c. Lazily resolve a tree-LESS Context Tree binding before routing this
         // message to a (possibly new) session. The binding is frozen at
@@ -857,8 +858,8 @@ export class SessionRuntime {
     if (goneIds.size > 0) message.unavailableAttachmentIds = goneIds;
   }
 
-  private async ensureFeishuReferenceContext(message: SessionMessage): Promise<void> {
-    if (message.feishuReferenceContext !== undefined) return;
+  private ensureFeishuReferenceContext(message: SessionMessage): Promise<void> | null {
+    if (message.feishuReferenceContext !== undefined) return null;
     const feishu = readFeishuMessageMetadata(message.metadata);
     if (
       message.senderKind !== "integration" ||
@@ -867,10 +868,14 @@ export class SessionRuntime {
       !feishu ||
       feishu.direction !== "inbound"
     ) {
-      return;
+      return null;
     }
 
     const scope = feishu.reference.threadId ? "thread" : "chat";
+    return this.loadFeishuReferenceContext(message, scope);
+  }
+
+  private async loadFeishuReferenceContext(message: SessionMessage, scope: "thread" | "chat"): Promise<void> {
     try {
       const context = await this.config.sdk.getFeishuReferenceContext(message.id);
       if (context.state !== "available") {
