@@ -114,7 +114,7 @@ export function sanitizePiProviderDetail(raw: string): string {
  * Post-Reset: SessionRegistry rotates a durable per-chat fresh-start nonce
  * that survives mapping deletion and manager restart. Hashing that nonce in
  * makes retirement non-reconstructible from the durable inbox row alone —
- * settled+ACK-failed → Pause/Reset → new SessionManager → same-row redelivery
+ * settled+ACK-failed → Pause/Reset → new SessionRuntime → same-row redelivery
  * cannot reopen the discarded Pi transcript/model state. Without a nonce the
  * pre-Reset deterministic identity is preserved for backward compatibility.
  *
@@ -486,7 +486,7 @@ export const createPiHandler: HandlerFactory = (config) => {
   let drainingBatch: QueuedDelivery[] | null = null;
   let drainCancellationReason: string | null = null;
   /**
-   * Explicit settlement mode from SessionManager — not inferred from reason text.
+   * Explicit settlement mode from SessionRuntime — not inferred from reason text.
    * - graceful_drain: full manager/client shutdown
    * - operator_suspend: manual session:suspend resolution boundary
    */
@@ -552,7 +552,7 @@ export const createPiHandler: HandlerFactory = (config) => {
   }
 
   /**
-   * When SessionManager sets an explicit settle mode, terminally settle the
+   * When SessionRuntime sets an explicit settle mode, terminally settle the
    * provider-entered prefix exactly once. Provider-entry authority is prompt
    * write/accept/tool/user-visible evidence — not `streaming`. Route-retire /
    * forced preemption leave settle mode unset (recoverable retry).

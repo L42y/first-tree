@@ -8,7 +8,7 @@ import type { AgentSlotConfig } from "../runtime/agent-slot.js";
 import type { ClientConnection, SessionReconcileResult } from "../runtime/client-connection.js";
 import type { HandlerConfig } from "../runtime/handler.js";
 import { RuntimeSessionTokenFile } from "../runtime/runtime-session-token-file.js";
-import type { ResetFenceReleaseVerdict } from "../runtime/session-manager.js";
+import type { ResetFenceReleaseVerdict } from "../runtime/session-runtime.js";
 
 type FakeLogger = {
   info: ReturnType<typeof vi.fn>;
@@ -229,8 +229,8 @@ function installMocks(
       return state.syncResult;
     }),
   }));
-  vi.doMock("../runtime/session-manager.js", () => ({
-    SessionManager: class {
+  vi.doMock("../runtime/session-runtime.js", () => ({
+    SessionRuntime: class {
       state: FakeSessionState;
 
       constructor(readonly config: unknown) {
@@ -423,7 +423,7 @@ describe("AgentSlot", () => {
     vi.doUnmock("@first-tree/shared/config");
     vi.doUnmock("../cloud/observability/logger.js");
     vi.doUnmock("../runtime/bootstrap.js");
-    vi.doUnmock("../runtime/session-manager.js");
+    vi.doUnmock("../runtime/session-runtime.js");
     vi.resetModules();
   });
 
@@ -458,7 +458,7 @@ describe("AgentSlot", () => {
     expect(state.logger.info).toHaveBeenCalledWith("server reports type=human — message processing disabled");
   });
 
-  it("refuses to construct SessionManager when runtimeType is not a known RuntimeProvider", async () => {
+  it("refuses to construct SessionRuntime when runtimeType is not a known RuntimeProvider", async () => {
     const { slot, connection, state } = await makeSlot({ runtimeType: "not-a-provider" });
 
     await expect(slot.start()).rejects.toThrow(/Unsupported agent runtime type "not-a-provider"/);
@@ -467,7 +467,7 @@ describe("AgentSlot", () => {
     expect(connection.unbindAgent).toHaveBeenCalledWith("agent-1");
     expect(state.sessions).toHaveLength(0);
     expect(state.sessionConfigs).toHaveLength(0);
-    expect(Reflect.get(slot, "sessionManager")).toBeNull();
+    expect(Reflect.get(slot, "sessionRuntime")).toBeNull();
   });
 
   it("aborts the bind immediately on a permanent (4xx) config rejection — no retry", async () => {
@@ -518,7 +518,7 @@ describe("AgentSlot", () => {
 
     expect(vi.mocked(sdk.fetchAgentConfig)).toHaveBeenCalledTimes(2);
     expect(connection.unbindAgent).not.toHaveBeenCalled();
-    // SessionManager built → the agent is genuinely online, not a dead slot.
+    // SessionRuntime built → the agent is genuinely online, not a dead slot.
     expect(state.sessions).toHaveLength(1);
   });
 
@@ -817,7 +817,7 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
-  it("reports the SessionManager's release verdict verbatim on the finalized receipt", async () => {
+  it("reports the SessionRuntime's release verdict verbatim on the finalized receipt", async () => {
     const { slot, connection, state } = await makeSlot({ omitReconcileInterval: true });
     await slot.start();
     const session = state.sessions[0];
@@ -1053,7 +1053,7 @@ describe("AgentSlot", () => {
     const session = state.sessions[0];
     if (!session) throw new Error("session missing");
 
-    // SessionManager coalesces a duplicate terminate onto the in-flight
+    // SessionRuntime coalesces a duplicate terminate onto the in-flight
     // apply; both refs must ack only after that shared work settles, and a
     // legacy unref'd terminate overlapping them never acks at all.
     const shared = deferred<void>();
@@ -1136,7 +1136,7 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
-  it("buffers bind-time inbox pushes until the SessionManager exists", async () => {
+  it("buffers bind-time inbox pushes until the SessionRuntime exists", async () => {
     const { slot, connection, sdk, state } = await makeSlot({
       dispatchRejectEntryId: 78,
       omitReconcileInterval: true,
@@ -1226,12 +1226,12 @@ describe("AgentSlot", () => {
     const session = state.sessions[0];
     if (!session) throw new Error("session missing");
 
-    // The real SessionManager force-keeps teardown-debt chats even when the
+    // The real SessionRuntime force-keeps teardown-debt chats even when the
     // active set excludes them (pinned in session-manager tests); spy the
     // slot's manager to reproduce that contract and pin the wire path:
     // reconcileNow must pass the active runtime set through and still send
     // the debt chat.
-    const manager = Reflect.get(slot, "sessionManager") as {
+    const manager = Reflect.get(slot, "sessionRuntime") as {
       getHeldChatIds(activeChatIds?: ReadonlySet<string> | null): string[];
     };
     const heldSpy = vi.spyOn(manager, "getHeldChatIds").mockReturnValue(["chat-debt-only"]);
@@ -1684,7 +1684,7 @@ describe("AgentSlot", () => {
     expect(state.logger.info).toHaveBeenCalledWith("stopped");
   });
 
-  it("keeps the runtime-session token provider registered while sessionManager.shutdown runs", async () => {
+  it("keeps the runtime-session token provider registered while sessionRuntime.shutdown runs", async () => {
     const { slot, connection, state } = await makeSlot({
       activeRuntimeChatIds: ["chat-1"],
       runtimeSessionToken: "runtime-token-live",
@@ -1815,7 +1815,7 @@ describe("AgentSlot", () => {
     await joinedStop;
 
     expect(session.shutdown).toHaveBeenCalledTimes(1);
-    // AgentSlot forwards the diagnostic reason; SessionManager maps full graceful
+    // AgentSlot forwards the diagnostic reason; SessionRuntime maps full graceful
     // drain to handler.shutdown(..., { settleProviderEntered: true }) independently
     // of that string (see pi-session-custody runtime-switch regressions).
     expect(session.shutdown).toHaveBeenCalledWith("agent_runtime_switch", {

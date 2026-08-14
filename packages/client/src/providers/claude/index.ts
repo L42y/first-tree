@@ -241,7 +241,7 @@ function sanitizeChatId(chatId: string): string {
  * Write a legacy inline-base64 image to a temp file so Claude Code's Read
  * tool can pick it up. Only the legacy path — new messages reference an
  * `attachments` row whose bytes are fetched to the data dir before delivery
- * (see SessionManager.ensureImagesLocal).
+ * (see SessionRuntime.ensureImagesLocal).
  */
 async function writeLegacyImageToTempFile(content: LegacyImageFileContent, chatId: string): Promise<string> {
   const dir = join(tmpdir(), "first-tree", "images", sanitizeChatId(chatId));

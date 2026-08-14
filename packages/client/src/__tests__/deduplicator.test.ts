@@ -40,7 +40,7 @@ describe("Deduplicator", () => {
   });
 
   it("dropByPrefix removes only matching keys and frees capacity", () => {
-    // Used by SessionManager's LRU eviction path to drop the evicted
+    // Used by SessionRuntime's LRU eviction path to drop the evicted
     // chat's dedup keys synchronously with `inFlightEntries.delete`.
     // Without this, a bind-reset redelivery for the evicted chat would
     // mis-route to the dispatch dedup short-circuit and break the

@@ -953,7 +953,7 @@ describe("characterization — inbox:deliver identity and deferred ACK", () => {
 
     expect(received).toEqual([{ firstArg: "inbox-agent-1", inboxId: "inbox-agent-1", entryId: 777 }]);
     // Receiving a deliver frame must not emit inbox:ack — ACK is owned by the
-    // handler turn completion path (SessionManager → ackEntry → sendInboxAck).
+    // handler turn completion path (SessionRuntime → ackEntry → sendInboxAck).
     const newFrames = socket.sent.slice(sentBefore).map((raw) => JSON.parse(raw) as { type?: string });
     expect(newFrames.every((frame) => frame.type !== "inbox:ack")).toBe(true);
 

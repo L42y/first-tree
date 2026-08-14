@@ -8,7 +8,7 @@ import {
   resolveSessionDocRoot,
   selfFenceFromRuntimeConfig,
   singleRepoLocalPathFromPayload,
-} from "../runtime/session-manager.js";
+} from "../runtime/session-runtime.js";
 
 function payload(gitRepos: AgentRuntimeConfigPayload["gitRepos"]): AgentRuntimeConfigPayload {
   return {

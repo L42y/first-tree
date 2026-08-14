@@ -26,8 +26,8 @@ import type {
 } from "../runtime/handler.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
-import { ReplayFenceStore } from "../runtime/replay-fence.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { ReplayFenceStore, type ReplayFenceWriter } from "../runtime/replay-fence.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -59,7 +59,7 @@ function mockRuntimeConfig(): AgentRuntimeConfig {
   };
 }
 
-/** Create a vi-mocked WS ack callback for SessionManager tests. */
+/** Create a vi-mocked WS ack callback for SessionRuntime tests. */
 function mockAckEntry() {
   return vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
 }
@@ -216,7 +216,7 @@ function emitClaudeProviderFailure(
   });
 }
 
-function createSessionManager(opts: {
+function createSessionRuntime(opts: {
   sdk?: FirstTreeHubSDK;
   handler?: AgentHandler;
   handlerConfig?: HandlerConfig;
@@ -246,7 +246,7 @@ function createSessionManager(opts: {
   const factory: HandlerFactory = opts.handlerFactory ?? (() => handler);
   const sdk = opts.sdk ?? mockSdk();
 
-  return new SessionManager({
+  return new SessionRuntime({
     session: opts.session ?? {
       idle_timeout: 300,
       max_sessions: 10,
@@ -284,7 +284,7 @@ function createSessionManager(opts: {
   });
 }
 
-describe("SessionManager", () => {
+describe("SessionRuntime", () => {
   it("loads Feishu reference context once before routing and removes canonical preceding duplicates", async () => {
     const handler = createMockHandler();
     const sdk = mockSdk();
@@ -371,7 +371,7 @@ describe("SessionManager", () => {
     entry.message.senderKind = "integration";
     entry.message.senderProvider = "feishu";
     entry.message.source = "feishu";
-    const sm = createSessionManager({ handler, sdk });
+    const sm = createSessionRuntime({ handler, sdk });
 
     await sm.dispatch(entry);
 
@@ -414,7 +414,7 @@ describe("SessionManager", () => {
     entry.message.senderKind = "integration";
     entry.message.senderProvider = "feishu";
     entry.message.source = "feishu";
-    const sm = createSessionManager({ handler, sdk });
+    const sm = createSessionRuntime({ handler, sdk });
 
     await sm.dispatch(entry);
 
@@ -432,7 +432,7 @@ describe("SessionManager", () => {
 
   it("creates a new session on first message to a chat", async () => {
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler });
+    const sm = createSessionRuntime({ handler });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
 
@@ -450,7 +450,7 @@ describe("SessionManager", () => {
     // completion via `ctx.finishTurn(...)`. A bare-mocked handler never closes
     // the turn, so no ack is fired.
     const ackEntry = mockAckEntry();
-    const sm = createSessionManager({ ackEntry });
+    const sm = createSessionRuntime({ ackEntry });
 
     await sm.dispatch(mockEntry({ id: 42, chatId: "chat-1" }));
 
@@ -469,7 +469,7 @@ describe("SessionManager", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
-    const sm = createSessionManager({ ackEntry, handler });
+    const sm = createSessionRuntime({ ackEntry, handler });
 
     await sm.dispatch(mockEntry({ id: 42, chatId: "chat-1" }));
     expect(ackEntry).not.toHaveBeenCalled();
@@ -493,7 +493,7 @@ describe("SessionManager", () => {
         return { sessionId: "session-old", route: { kind: "owned", mode: "processing" } as const };
       },
     });
-    const sm = createSessionManager({ handler, registryPath });
+    const sm = createSessionRuntime({ handler, registryPath });
     try {
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-rebind" }));
       capturedCtx?.replaceSessionId?.("session-new", "codex_stale_rollout_recovered");
@@ -510,7 +510,7 @@ describe("SessionManager", () => {
 
   it("deduplicates messages with same message ID", async () => {
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler });
+    const sm = createSessionRuntime({ handler });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" })); // same messageId
@@ -534,7 +534,7 @@ describe("SessionManager", () => {
     };
 
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: factory,
@@ -569,7 +569,7 @@ describe("SessionManager", () => {
     // at-least-once delivery of the same active entry must still be
     // idempotent.
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler });
+    const sm = createSessionRuntime({ handler });
 
     await sm.dispatch(mockEntry({ id: 20, chatId: "chat-x", messageId: "msg-redeliver" }));
     await sm.dispatch(mockEntry({ id: 20, chatId: "chat-x", messageId: "msg-redeliver" }));
@@ -588,7 +588,7 @@ describe("SessionManager", () => {
     // that should ack while the turn is open.
     const ackEntry = mockAckEntry();
     const handler = createMockHandler();
-    const sm = createSessionManager({ ackEntry, handler });
+    const sm = createSessionRuntime({ ackEntry, handler });
 
     await sm.dispatch(mockEntry({ id: 50, chatId: "chat-mid", messageId: "msg-mid" }));
     await sm.dispatch(mockEntry({ id: 50, chatId: "chat-mid", messageId: "msg-mid" }));
@@ -623,7 +623,7 @@ describe("SessionManager", () => {
       start: startSpy,
       inject: injectSpy,
     });
-    const sm = createSessionManager({ handler, agentConfigCache, recoverChat });
+    const sm = createSessionRuntime({ handler, agentConfigCache, recoverChat });
 
     const firstDispatch = sm.dispatch(mockEntry({ id: 60, chatId: "chat-admit", messageId: "msg-admit-1" }));
     await vi.waitFor(() => expect(agentConfigCache.refreshIfNewer).toHaveBeenCalledTimes(1));
@@ -661,7 +661,7 @@ describe("SessionManager", () => {
     const ackEntry = vi.fn().mockResolvedValue(undefined);
     const recoverChat = vi.fn().mockResolvedValue(undefined);
     const recoverRuntimeSessionProof = vi.fn().mockRejectedValue(new Error("bind temporarily rejected"));
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       agentConfigCache,
       ackEntry,
@@ -702,7 +702,7 @@ describe("SessionManager", () => {
       handlers.push(h);
       return h;
     };
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       handlerFactory: factory,
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
@@ -738,7 +738,7 @@ describe("SessionManager", () => {
           return { sessionId: `session-${message.chatId}`, route: { kind: "owned" as const, mode: "queued" as const } };
         },
       });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       handlerFactory: factory,
       concurrency: 1,
@@ -768,7 +768,7 @@ describe("SessionManager", () => {
     });
     const injectSpy = vi.fn();
     const handler = createMockHandler({ start: startSpy, inject: injectSpy });
-    const sm = createSessionManager({ ackEntry, handler });
+    const sm = createSessionRuntime({ ackEntry, handler });
 
     // Turn 1: original delivery.
     await sm.dispatch(mockEntry({ id: 60, chatId: "chat-redeliver", messageId: "msg-redeliver" }));
@@ -792,7 +792,7 @@ describe("SessionManager", () => {
 
   it("injects message into active session", async () => {
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler });
+    const sm = createSessionRuntime({ handler });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-1" }));
@@ -809,7 +809,7 @@ describe("SessionManager", () => {
     const handler = createMockHandler({
       inject: vi.fn().mockReturnValue({ kind: "rejected", reason: "no_active_context", retryable: true } as const),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       recoverChat,
@@ -834,7 +834,7 @@ describe("SessionManager", () => {
         throw new Error("inject offline");
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry, recoverChat });
+    const sm = createSessionRuntime({ handler, ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-throw", messageId: "msg-1" }));
     await expect(sm.dispatch(mockEntry({ id: 2, chatId: "chat-throw", messageId: "msg-2" }))).rejects.toThrow(
@@ -872,7 +872,7 @@ describe("SessionManager", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "processing" } as const };
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry, recoverChat });
+    const sm = createSessionRuntime({ handler, ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-dead", messageId: "msg-1" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-dead", messageId: "msg-2" }));
@@ -916,7 +916,7 @@ describe("SessionManager", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "processing" } as const };
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry });
+    const sm = createSessionRuntime({ handler, ackEntry });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-terminal", messageId: "msg-1" }));
     if (!startCtx || !startMessage || !startToken) throw new Error("expected captured start state");
@@ -949,7 +949,7 @@ describe("SessionManager", () => {
     };
 
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: factory,
@@ -980,7 +980,7 @@ describe("SessionManager", () => {
 
   it("calls handler.shutdown on session manager shutdown", async () => {
     const handler = createMockHandler();
-    const sm = createSessionManager({ handler });
+    const sm = createSessionRuntime({ handler });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
     await sm.shutdown();
@@ -998,7 +998,7 @@ describe("SessionManager", () => {
     });
 
     const sdk = mockSdk();
-    const sm = createSessionManager({ handler, sdk });
+    const sm = createSessionRuntime({ handler, sdk });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
 
@@ -1020,7 +1020,7 @@ describe("SessionManager", () => {
       },
     });
 
-    const sm = createSessionManager({ handler, log: logger });
+    const sm = createSessionRuntime({ handler, log: logger });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
     expect(records.some((r) => typeof r.msg === "string" && r.msg.includes("start/resume failed"))).toBe(true);
@@ -1045,7 +1045,7 @@ describe("SessionManager", () => {
     };
 
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: factory,
@@ -1103,7 +1103,7 @@ describe("SessionManager", () => {
       });
 
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: factory,
@@ -1181,7 +1181,7 @@ describe("SessionManager", () => {
       });
 
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 2,
       handlerFactory: factory,
@@ -1220,7 +1220,7 @@ describe("SessionManager", () => {
  * first-tree-context PR #281), the client has no remaining routing
  * guard — any entry that reaches dispatch must dispatch.
  */
-describe("SessionManager dispatch integration", () => {
+describe("SessionRuntime dispatch integration", () => {
   it("starts a session for any mention_only entry that reaches dispatch — server already filtered", async () => {
     // The server's fan-out only writes an inbox_entry for a mention_only
     // participant if they were in `metadata.mentions`; anything that reaches
@@ -1240,7 +1240,7 @@ describe("SessionManager dispatch integration", () => {
       return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
     });
     const ackEntry = mockAckEntry();
-    const sm = createSessionManager({ handler, ackEntry });
+    const sm = createSessionRuntime({ handler, ackEntry });
 
     const pinged = mockEntry({
       id: 101,
@@ -1269,7 +1269,7 @@ describe("SessionManager dispatch integration", () => {
  * `agent:bind` resets it server-side. Tests below pin the deferred-ack
  * contract for each entry-point dispatch can hit.
  */
-describe("SessionManager ackEntry callback (deferred ack)", () => {
+describe("SessionRuntime ackEntry callback (deferred ack)", () => {
   function buildSm(
     ackEntry: (entryId: number) => Promise<void>,
     handler?: AgentHandler,
@@ -1277,7 +1277,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
   ) {
     const h = handler ?? createMockHandler();
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: () => h,
@@ -1398,7 +1398,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       route: { kind: "owned" as const, mode: "queued" as const },
     }));
     const handler = createMockHandler({ start: startSpy });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       handler,
       recoverChat,
@@ -1437,7 +1437,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       });
       return current;
     };
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       handlerFactory: factory,
       onSessionEvent: (chatId, event) => events.push({ chatId, event }),
@@ -1622,7 +1622,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { kind: "owned", mode: "queued" } as const;
       }),
     });
-    const sm = createSessionManager({ ackEntry, handler, agentConfigCache });
+    const sm = createSessionRuntime({ ackEntry, handler, agentConfigCache });
 
     const firstDispatch = sm.dispatch(mockEntry({ id: 1, chatId: "chat-admit", messageId: "msg-a1" }));
     await vi.waitFor(() => expect(agentConfigCache.refreshIfNewer).toHaveBeenCalledTimes(1));
@@ -1663,7 +1663,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       if (factoryCalls === 1) throw new Error("handler factory offline");
       return createMockHandler({ start: recoveryStart });
     });
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
       handlerFactory: factory,
@@ -2049,7 +2049,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
       },
     });
     const sdk = mockSdk();
-    const sm = new SessionManager({
+    const sm = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 1, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 1,
       handlerFactory: () => handler,
@@ -2225,7 +2225,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2289,7 +2289,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-pi", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2343,7 +2343,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2393,7 +2393,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2450,7 +2450,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2503,7 +2503,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2555,7 +2555,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
     let capturedToken: DeliveryToken | undefined;
     let capturedMessage: SessionMessage | undefined;
     const handlers: AgentHandler[] = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       recoverChat,
       recoverRuntimeSessionProof,
@@ -2621,7 +2621,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         }),
       ),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       ackEntry,
       recoverChat,
       recoverRuntimeSessionProof,
@@ -2674,7 +2674,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       recoverChat,
@@ -2725,7 +2725,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       recoverChat,
@@ -2791,7 +2791,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned", mode: "queued" } as const };
       }),
     });
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       ackEntry,
       sdk,
@@ -2910,7 +2910,7 @@ describe("SessionManager ackEntry callback (deferred ack)", () => {
   });
 });
 
-describe("SessionManager lazy Context Tree binding", () => {
+describe("SessionRuntime lazy Context Tree binding", () => {
   const BINDING: ContextTreeBinding = {
     path: "/clones/abc",
     repoUrl: "https://github.com/acme/context-tree",
@@ -2920,7 +2920,7 @@ describe("SessionManager lazy Context Tree binding", () => {
   it("upgrades a tree-less handler config to tree-bound on a new session", async () => {
     const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
     let builtWith: HandlerConfig | undefined;
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handlerConfig,
       handlerFactory: (cfg) => {
         builtWith = cfg;
@@ -2948,7 +2948,7 @@ describe("SessionManager lazy Context Tree binding", () => {
       runtimeProvider: "codex",
       contextTreePath: "/already/bound",
     };
-    const sm = createSessionManager({ handlerConfig, resolveContextTreeBinding: resolve });
+    const sm = createSessionRuntime({ handlerConfig, resolveContextTreeBinding: resolve });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "c-bound", messageId: "m1" }));
 
@@ -2961,7 +2961,7 @@ describe("SessionManager lazy Context Tree binding", () => {
   it("re-resolves once for the new session, not again for a same-chat inject", async () => {
     const resolve = vi.fn(async () => null);
     const handlerConfig: HandlerConfig = { workspaceRoot: "/tmp/test", runtimeProvider: "codex" };
-    const sm = createSessionManager({ handlerConfig, resolveContextTreeBinding: resolve });
+    const sm = createSessionRuntime({ handlerConfig, resolveContextTreeBinding: resolve });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "c-once", messageId: "m1" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "c-once", messageId: "m2" }));
@@ -2972,7 +2972,7 @@ describe("SessionManager lazy Context Tree binding", () => {
   });
 });
 
-describe("SessionManager subprocess-aware suspend/eviction", () => {
+describe("SessionRuntime subprocess-aware suspend/eviction", () => {
   it("defers idle-suspend while the provider has a live subprocess, then suspends once it clears", async () => {
     vi.useFakeTimers();
     try {
@@ -2985,7 +2985,7 @@ describe("SessionManager subprocess-aware suspend/eviction", () => {
       });
       const hasLive = vi.fn().mockReturnValue(true);
       const probe: SubprocessProbe = { hasLiveSubprocess: hasLive, stop: vi.fn() };
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         subprocessProbe: probe,
         session: { idle_timeout: 1, max_sessions: 10, working_grace_seconds: 100, reconcile_interval_seconds: 300 },
@@ -3021,7 +3021,7 @@ describe("SessionManager subprocess-aware suspend/eviction", () => {
         },
       });
       const probe: SubprocessProbe = { hasLiveSubprocess: vi.fn().mockReturnValue(true), stop: vi.fn() };
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         subprocessProbe: probe,
         // Hard cap = idle_timeout(1) + working_grace(2) = 3s.
@@ -3061,7 +3061,7 @@ describe("SessionManager subprocess-aware suspend/eviction", () => {
       hasLiveSubprocess: vi.fn((chatId: string) => chatId === "chat-1"),
       stop: vi.fn(),
     };
-    const sm = createSessionManager({ handlerFactory: factory, concurrency: 2, subprocessProbe: probe });
+    const sm = createSessionRuntime({ handlerFactory: factory, concurrency: 2, subprocessProbe: probe });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1" }));
     await finishEntry(ctxs["chat-1"], 1, "chat-1");
@@ -3079,7 +3079,7 @@ describe("SessionManager subprocess-aware suspend/eviction", () => {
   });
 });
 
-describe("SessionManager replay fence gate", () => {
+describe("SessionRuntime replay fence gate", () => {
   function seedFence(path: string, chatId: string, messageId: string): void {
     const store = new ReplayFenceStore(path);
     store.load();
@@ -3105,7 +3105,7 @@ describe("SessionManager replay fence gate", () => {
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
       const runtimeStates: Array<{ chatId: string; state: RuntimeState }> = [];
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         replayFencePath: fencePath,
@@ -3161,7 +3161,7 @@ describe("SessionManager replay fence gate", () => {
       );
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, registryPath, replayFencePath: fencePath });
+      const sm = createSessionRuntime({ handler, ackEntry, registryPath, replayFencePath: fencePath });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
 
@@ -3184,7 +3184,7 @@ describe("SessionManager replay fence gate", () => {
       cleared.load();
       cleared.clear("chat-1", "msg-1");
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath });
+      const sm = createSessionRuntime({ handler, replayFencePath: fencePath });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
 
@@ -3204,7 +3204,7 @@ describe("SessionManager replay fence gate", () => {
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
       const log = recordingLogger();
-      const sm = createSessionManager({ handler, ackEntry, log: log.logger, replayFencePath: fencePath });
+      const sm = createSessionRuntime({ handler, ackEntry, log: log.logger, replayFencePath: fencePath });
 
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
 
@@ -3225,7 +3225,7 @@ describe("SessionManager replay fence gate", () => {
       const fencePath = join(root, "fence.json");
       let captured: HandlerConfig | undefined;
       const handler = createMockHandler();
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         replayFencePath: fencePath,
         handlerFactory: (config) => {
           captured = config;
@@ -3236,7 +3236,11 @@ describe("SessionManager replay fence gate", () => {
       await sm.dispatch(mockEntry({ id: 1, chatId: "chat-1", messageId: "msg-1" }));
 
       expect(handler.start).toHaveBeenCalledTimes(1);
-      expect(captured?.replayFence).toBeInstanceOf(ReplayFenceStore);
+      expect(captured?.replayFence).toEqual(
+        expect.objectContaining({ fence: expect.any(Function), clear: expect.any(Function) }),
+      );
+      expect(Object.isFrozen(captured?.replayFence)).toBe(true);
+      expect(captured?.replayFence).not.toBeInstanceOf(ReplayFenceStore);
 
       await sm.shutdown();
     } finally {
@@ -3245,7 +3249,7 @@ describe("SessionManager replay fence gate", () => {
   });
 });
 
-describe("SessionManager completion disposition", () => {
+describe("SessionRuntime completion disposition", () => {
   function turnMessage(entryId: number, chatId: string, messageId: string): SessionMessage {
     return {
       inboxEntryId: entryId,
@@ -3267,7 +3271,7 @@ describe("SessionManager completion disposition", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
-    const sm = createSessionManager({ handler, ackEntry, recoverChat: async () => {} });
+    const sm = createSessionRuntime({ handler, ackEntry, recoverChat: async () => {} });
 
     await sm.dispatch(mockEntry({ id: 7, chatId: "chat-ack", messageId: "msg-7" }));
     const disposition = await capturedCtx?.finishTurn(turnMessage(7, "chat-ack", "msg-7"), {
@@ -3291,7 +3295,7 @@ describe("SessionManager completion disposition", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
-    const sm = createSessionManager({ handler, ackEntry, recoverChat });
+    const sm = createSessionRuntime({ handler, ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 11, chatId: "chat-gap", messageId: "msg-11" }));
     await sm.dispatch(mockEntry({ id: 12, chatId: "chat-gap", messageId: "msg-12" }));
@@ -3330,7 +3334,7 @@ describe("SessionManager completion disposition", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       },
     });
-    const sm = createSessionManager({ handler, ackEntry });
+    const sm = createSessionRuntime({ handler, ackEntry });
 
     await sm.dispatch(mockEntry({ id: 21, chatId: "chat-settled", messageId: "msg-21" }));
     const disposition = await capturedCtx?.finishTurn(turnMessage(21, "chat-settled", "msg-21"), {
@@ -3345,7 +3349,7 @@ describe("SessionManager completion disposition", () => {
   });
 });
 
-describe("SessionManager replay fence reconcile", () => {
+describe("SessionRuntime replay fence reconcile", () => {
   it("clears the chat fence when recovery redelivery commits the ACK, then admits later deliveries", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-fence-reconcile-"));
     try {
@@ -3357,20 +3361,20 @@ describe("SessionManager replay fence reconcile", () => {
         .mockResolvedValue(undefined);
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         recoverChat,
         replayFencePath: fencePath,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -3431,7 +3435,7 @@ describe("SessionManager replay fence reconcile", () => {
   });
 });
 
-describe("SessionManager replay fence startup reconciliation", () => {
+describe("SessionRuntime replay fence startup reconciliation", () => {
   function seedFenceStore(path: string, chatId: string, messageId: string): void {
     const store = new ReplayFenceStore(path);
     store.load();
@@ -3460,7 +3464,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
       // A fresh manager (post-crash) loads the fence file.
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
+      const sm = createSessionRuntime({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3486,7 +3490,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const probeFencedSettlement = makeProbe([]);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
+      const sm = createSessionRuntime({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3515,7 +3519,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
         .mockRejectedValue(new Error("socket not bound"));
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
+      const sm = createSessionRuntime({ handler, ackEntry, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3548,7 +3552,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         replayFencePath: fencePath,
@@ -3596,7 +3600,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       seedFenceStore(fencePath, "chat-subset", "msg-2");
       const probeFencedSettlement = makeProbe(["msg-1", "msg-not-requested"]);
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath, probeFencedSettlement });
+      const sm = createSessionRuntime({ handler, replayFencePath: fencePath, probeFencedSettlement });
 
       await sm.reconcileReplayFencesWithServer();
 
@@ -3623,20 +3627,20 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const probeFencedSettlement = makeProbe([]);
       const ackEntry = mockAckEntry();
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         replayFencePath: fencePath,
         recoverChat,
         probeFencedSettlement,
         ackEntry,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -3709,7 +3713,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const probeFencedSettlement = makeProbe(["msg-1"]);
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
+      const sm = createSessionRuntime({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
 
       // Clear fails on I/O during the first gate-triggered probe round.
       chmodSync(root, 0o500);
@@ -3757,7 +3761,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         replayFencePath: fencePath,
@@ -3786,7 +3790,7 @@ describe("SessionManager replay fence startup reconciliation", () => {
   });
 });
 
-describe("SessionManager replay fence convergence matrix", () => {
+describe("SessionRuntime replay fence convergence matrix", () => {
   function seedFence(path: string, chatId: string, messageId: string): void {
     const store = new ReplayFenceStore(path);
     store.load();
@@ -3810,7 +3814,7 @@ describe("SessionManager replay fence convergence matrix", () => {
         return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
     });
-    const sm = createSessionManager({ handler, ackEntry, recoverChat });
+    const sm = createSessionRuntime({ handler, ackEntry, recoverChat });
 
     await sm.dispatch(mockEntry({ id: 71, chatId: "chat-normal", messageId: "msg-1" }));
     await sm.dispatch(mockEntry({ id: 72, chatId: "chat-normal", messageId: "msg-2" }));
@@ -3841,7 +3845,7 @@ describe("SessionManager replay fence convergence matrix", () => {
       const probeFencedSettlement = vi.fn(async (_chatId: string, _ids: readonly string[]) => ["msg-1"]);
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
+      const sm = createSessionRuntime({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
 
       await sm.dispatch(mockEntry({ id: 73, chatId: "chat-tomb", messageId: "msg-1" }));
       await sm.dispatch(mockEntry({ id: 74, chatId: "chat-tomb", messageId: "msg-2" }));
@@ -3876,7 +3880,7 @@ describe("SessionManager replay fence convergence matrix", () => {
         .mockResolvedValue(undefined);
       const probeFencedSettlement = vi.fn(async (_chatId: string, _ids: readonly string[]) => ["msg-1"]);
       const handler = createMockHandler();
-      const sm = createSessionManager({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
+      const sm = createSessionRuntime({ handler, replayFencePath: fencePath, probeFencedSettlement, recoverChat });
 
       await sm.dispatch(mockEntry({ id: 75, chatId: "chat-postretry", messageId: "msg-1" }));
       await sm.dispatch(mockEntry({ id: 76, chatId: "chat-postretry", messageId: "msg-2" }));
@@ -3935,7 +3939,7 @@ describe("SessionManager replay fence convergence matrix", () => {
         if (probeCalls.length === 2) throw new Error("probe flap");
         return [...chunk];
       });
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         handler: createMockHandler(),
         replayFencePath: fencePath,
         probeFencedSettlement,
@@ -4006,7 +4010,7 @@ describe("InboxDeliveryCoordinator fence-settled tombstones at high water", () =
   });
 });
 
-describe("SessionManager pre-ledger settlement race", () => {
+describe("SessionRuntime pre-ledger settlement race", () => {
   it("suppresses a frame parked before receive() while its fence is cleared by the probe", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-pre-ledger-"));
     try {
@@ -4015,15 +4019,15 @@ describe("SessionManager pre-ledger settlement race", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const handler = createMockHandler();
       const ackEntry = mockAckEntry();
-      let capturedFence: ReplayFenceStore | undefined;
-      const sm = createSessionManager({
+      let capturedFence: ReplayFenceWriter | undefined;
+      const sm = createSessionRuntime({
         handler,
         ackEntry,
         replayFencePath: fencePath,
         probeFencedSettlement,
         recoverChat,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });
@@ -4045,9 +4049,9 @@ describe("SessionManager pre-ledger settlement race", () => {
         releaseSuspension = resolvePromise;
       });
       const internals = sm as unknown as {
-        sessions: Map<string, { suspending: Promise<void> | null }>;
+        projection: { sessions: Map<string, { suspending: Promise<void> | null }> };
       };
-      const entry = internals.sessions.get("chat-race");
+      const entry = internals.projection.sessions.get("chat-race");
       if (!entry) throw new Error("session entry missing");
       entry.suspending = suspending;
 
@@ -4083,7 +4087,7 @@ describe("SessionManager pre-ledger settlement race", () => {
   });
 });
 
-describe("SessionManager confirmed-ACK fence settlement suppression", () => {
+describe("SessionRuntime confirmed-ACK fence settlement suppression", () => {
   it("suppresses a stale duplicate after a fenced delivery ACKs, even across suspend", async () => {
     const root = mkdtempSync(join(tmpdir(), "sm-ack-tombstone-"));
     try {
@@ -4091,19 +4095,19 @@ describe("SessionManager confirmed-ACK fence settlement suppression", () => {
       const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
       const ackEntry = mockAckEntry();
       let capturedCtx: SessionContext | undefined;
-      let capturedFence: ReplayFenceStore | undefined;
+      let capturedFence: ReplayFenceWriter | undefined;
       const handler = createMockHandler({
         start: vi.fn().mockImplementation(async (_msg: unknown, ctx: SessionContext) => {
           capturedCtx = ctx;
           return { sessionId: "session-id-mock", route: { kind: "owned" as const, mode: "queued" as const } };
         }),
       });
-      const sm = createSessionManager({
+      const sm = createSessionRuntime({
         ackEntry,
         recoverChat,
         replayFencePath: fencePath,
         handlerFactory: (config) => {
-          capturedFence = config.replayFence as ReplayFenceStore;
+          capturedFence = config.replayFence as ReplayFenceWriter;
           return handler;
         },
       });

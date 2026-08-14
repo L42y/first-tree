@@ -8,7 +8,7 @@ const execFileAsync = promisify(execFile);
 /**
  * Detects whether a session's provider process currently has any live
  * descendant process — e.g. a `Bash run_in_background` watcher polling a CI
- * run. SessionManager consults this to defer idle-suspend and to deprioritize
+ * run. SessionRuntime consults this to defer idle-suspend and to deprioritize
  * concurrency eviction while such background work is in flight, so the
  * provider's "background task complete -> re-invoke the agent" wake-up is not
  * lost by tearing the session down underneath it.
@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
 export interface SubprocessProbe {
   /** True if the provider for `chatId` currently has at least one live descendant. */
   hasLiveSubprocess(chatId: string): boolean;
-  /** Stop the background refresh loop (called on SessionManager shutdown). */
+  /** Stop the background refresh loop (called on SessionRuntime shutdown). */
   stop(): void;
 }
 

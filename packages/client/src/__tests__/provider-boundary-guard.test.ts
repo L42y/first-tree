@@ -51,7 +51,7 @@ const GUARDED_CLIENT_FILES = [
   "runtime/runtime.ts",
   "runtime/handler.ts",
   "runtime/runtime-notice.ts",
-  "runtime/session-manager.ts",
+  "runtime/session-runtime.ts",
   "runtime/error-taxonomy.ts",
   "providers/handlers/auth-error-hint.ts",
 ] as const;
@@ -212,7 +212,7 @@ describe("runtime provider architecture guard", () => {
         continue;
       }
 
-      if (relPosix === "runtime/session-manager.ts") {
+      if (relPosix === "runtime/session-runtime.ts") {
         // Session lifecycle owns provider-typed payloads but must not hard-code
         // a concrete runtime id (including the retired silent Claude-era default).
         const hit = containsAnyProviderLiteral(source);
@@ -1399,13 +1399,14 @@ describe("runtime provider architecture guard", () => {
     expect(agentRuntime).not.toMatch(/\bHANDLER_REGISTRY\b/);
   });
 
-  it("keeps SessionManager/SessionRegistry off public barrels and out of CLI production", () => {
+  it("keeps SessionRuntime/SessionManager/SessionRegistry off public barrels and out of CLI production", () => {
     const rootIndex = readFileSync(join(clientSrc, "index.ts"), "utf8");
     const runtimeIndex = readFileSync(join(clientSrc, "runtime/index.ts"), "utf8");
     for (const [label, source] of [
       ["packages/client/src/index.ts", rootIndex],
       ["packages/client/src/runtime/index.ts", runtimeIndex],
     ] as const) {
+      expect(source, `${label} must not re-export SessionRuntime`).not.toMatch(/export\s*\{[^}]*\bSessionRuntime\b/);
       expect(source, `${label} must not re-export SessionManager`).not.toMatch(/export\s*\{[^}]*\bSessionManager\b/);
       expect(source, `${label} must not re-export SessionRegistry`).not.toMatch(/export\s*\{[^}]*\bSessionRegistry\b/);
       expect(source, `${label} must expose cleanAgentWorkspaces`).toContain("cleanAgentWorkspaces");
@@ -1420,6 +1421,7 @@ describe("runtime provider architecture guard", () => {
       const source = readFileSync(file, "utf8");
       const rel = relative(repoRoot, file).replaceAll("\\", "/");
       expect(source, `${rel} must not import SessionRegistry`).not.toMatch(/\bSessionRegistry\b/);
+      expect(source, `${rel} must not import SessionRuntime`).not.toMatch(/\bSessionRuntime\b/);
       expect(source, `${rel} must not import SessionManager`).not.toMatch(/\bSessionManager\b/);
       expect(source, `${rel} must not call low-level cleanWorkspaces`).not.toMatch(/\bcleanWorkspaces\b/);
       expect(source, `${rel} must not deep-import client`).not.toMatch(/from ["']@first-tree\/client\//);
@@ -1527,6 +1529,7 @@ describe("runtime provider architecture guard", () => {
       expect(contractsSource, `contracts allowlist must mention ${name}`).toMatch(new RegExp(`\\b${name}\\b`));
     }
     for (const banned of [
+      "SessionRuntime",
       "SessionManager",
       "SessionRegistry",
       "AgentSlot",

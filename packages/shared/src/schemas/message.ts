@@ -522,7 +522,7 @@ export type PrecedingMessage = z.infer<typeof precedingMessageSchema>;
  *
  * `recipientMode` is the receiving agent's own mode in the entry's chat —
  * `mention_only` participants must only start a session when they appear in
- * `metadata.mentions` (see session-manager.ts).
+ * `metadata.mentions` (see session-runtime.ts).
  *
  * `precedingMessages` is a (possibly empty) list of older messages in the
  * same chat that this recipient did not previously receive (silent inbox

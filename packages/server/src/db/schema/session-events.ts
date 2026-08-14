@@ -8,7 +8,7 @@ import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "dr
  * via Zod (no FK / CHECK on this table per project rule).
  *
  * `seq` is monotonic per (agent_id, chat_id). The single-writer invariant
- * in the client-side session-manager guarantees ordering; the service wraps
+ * in the client-side session-runtime guarantees ordering; the service wraps
  * the insert in a MAX(seq)+1 retry loop to recover from restart-overlap
  * windows.
  *

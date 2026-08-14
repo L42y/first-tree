@@ -27,7 +27,7 @@ const sessionConfigSchema = z
     /**
      * Upper bound on how long `working` / `blocked` may keep a session
      * alive past `idle_timeout` before force-suspend. See `evictIdle` in
-     * `session-manager.ts`. Default kept in lock-step with
+     * `session-runtime.ts`. Default kept in lock-step with
      * `@first-tree/shared` `DEFAULT_WORKING_GRACE_SECONDS` (12h).
      */
     working_grace_seconds: z.number().int().positive().default(DEFAULT_WORKING_GRACE_SECONDS),

@@ -3,7 +3,7 @@ import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 import type { AgentHandler, HandlerFactory, SessionContext, SessionMessage } from "../runtime/handler.js";
-import { SessionManager } from "../runtime/session-manager.js";
+import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
 
@@ -66,7 +66,7 @@ function createCapturingFactory() {
   return { factory, finish };
 }
 
-function createSessionManager(opts: {
+function createSessionRuntime(opts: {
   sdk?: FirstTreeHubSDK;
   handler?: AgentHandler;
   handlerFactory?: HandlerFactory;
@@ -86,7 +86,7 @@ function createSessionManager(opts: {
   const factory: HandlerFactory = opts.handlerFactory ?? (() => handler);
   const sdk = opts.sdk ?? mockSdk();
 
-  return new SessionManager({
+  return new SessionRuntime({
     session: opts.session ?? {
       idle_timeout: 300,
       max_sessions: 10,
@@ -114,10 +114,10 @@ function createSessionManager(opts: {
   });
 }
 
-describe("SessionManager: state notifications", () => {
+describe("SessionRuntime: state notifications", () => {
   it("fires onStateChange('active') when a new session starts", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
 
@@ -131,7 +131,7 @@ describe("SessionManager: state notifications", () => {
 
   it("fires onStateChange('suspended') when a session is preempted", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       concurrency: 1,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
@@ -159,7 +159,7 @@ describe("SessionManager: state notifications", () => {
     // stays as last reported; local `evictedMappings` handles resume.
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
     const capturing = createCapturingFactory();
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       handlerFactory: capturing.factory,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
@@ -199,7 +199,7 @@ describe("SessionManager: state notifications", () => {
       },
     });
     const handlers = [handlerA, handlerB];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       concurrency: 1,
       handlerFactory: () => handlers.shift() ?? createMockHandler(),
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
@@ -231,17 +231,17 @@ describe("SessionManager: state notifications", () => {
 
   it("does not fire onStateChange when no callback is provided", async () => {
     // Should not throw
-    const sm = createSessionManager({});
+    const sm = createSessionRuntime({});
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
     await sm.shutdown();
   });
 });
 
-describe("SessionManager: state-before-runtime ordering (codex review P2)", () => {
+describe("SessionRuntime: state-before-runtime ordering (codex review P2)", () => {
   // The server's `setSessionRuntime` is active-gated — if `session:state
   // active` hasn't landed yet, any `session:runtime` for the same
   // (agent, chat) is dropped. Runtime projection is now coordinator-derived,
-  // so SessionManager must emit `active` before it projects the fresh
+  // so SessionRuntime must emit `active` before it projects the fresh
   // delivery to `working`, and both must happen before handler.start().
   it("emits active before coordinator-derived idle runtime and before handler.start", async () => {
     const emissions: Array<{ kind: "state" | "runtime"; value: string }> = [];
@@ -260,7 +260,7 @@ describe("SessionManager: state-before-runtime ordering (codex review P2)", () =
       }),
     });
 
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       handler,
       onStateChange: (_chatId, state) => emissions.push({ kind: "state", value: state }),
       onSessionRuntimeChange: (_chatId, state) => emissions.push({ kind: "runtime", value: state }),
@@ -282,12 +282,12 @@ describe("SessionManager: state-before-runtime ordering (codex review P2)", () =
   });
 });
 
-describe("SessionManager: state deduplication", () => {
+describe("SessionRuntime: state deduplication", () => {
   it("does not fire duplicate 'active' notifications for the same session", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
 
     // Concurrency 1: chat-a starts, chat-b preempts, chat-a resumes, chat-b preempts again
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       concurrency: 1,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
@@ -312,9 +312,9 @@ describe("SessionManager: state deduplication", () => {
   });
 });
 
-describe("SessionManager: getSessionStates()", () => {
+describe("SessionRuntime: getSessionStates()", () => {
   it("returns all current session states", async () => {
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       concurrency: 1,
     });
 
@@ -335,13 +335,13 @@ describe("SessionManager: getSessionStates()", () => {
   });
 
   it("returns empty array when no sessions exist", async () => {
-    const sm = createSessionManager({});
+    const sm = createSessionRuntime({});
     expect(sm.getSessionStates()).toEqual([]);
     await sm.shutdown();
   });
 });
 
-describe("SessionManager: getEvictedChatIds()", () => {
+describe("SessionRuntime: getEvictedChatIds()", () => {
   // After a process restart, SessionRegistry hydrates every persisted
   // (chatId → claudeSessionId) row into `evictedMappings` — `sessions` is
   // empty. The agent-slot full-state-sync uses these chatIds to advertise
@@ -349,7 +349,7 @@ describe("SessionManager: getEvictedChatIds()", () => {
   // `agent_chat_sessions.state` isn't stuck on a pre-restart snapshot.
   it("returns evictedMappings keys (LRU-evicted chats included)", async () => {
     const capturing = createCapturingFactory();
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       handlerFactory: capturing.factory,
     });
@@ -368,16 +368,16 @@ describe("SessionManager: getEvictedChatIds()", () => {
   });
 
   it("returns empty array when nothing has been evicted", async () => {
-    const sm = createSessionManager({});
+    const sm = createSessionRuntime({});
     expect(sm.getEvictedChatIds()).toEqual([]);
     await sm.shutdown();
   });
 });
 
-describe("SessionManager: shutdown state reporting", () => {
+describe("SessionRuntime: shutdown state reporting", () => {
   it("reports active sessions as 'suspended' on shutdown", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
 
@@ -396,7 +396,7 @@ describe("SessionManager: shutdown state reporting", () => {
 
   it("does not report already-suspended sessions on shutdown", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       concurrency: 1,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
@@ -419,10 +419,10 @@ describe("SessionManager: shutdown state reporting", () => {
   });
 });
 
-describe("SessionManager: terminate + reconcile", () => {
+describe("SessionRuntime: terminate + reconcile", () => {
   it("handleCommand('session:terminate') deletes local state and does NOT emit any state notification", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
     });
 
@@ -430,7 +430,7 @@ describe("SessionManager: terminate + reconcile", () => {
     stateChanges.length = 0;
 
     await sm.handleCommand("chat-a", "session:terminate");
-    // Direct SessionManager callers simulate server-confirmed Reset finalization.
+    // Direct SessionRuntime callers simulate server-confirmed Reset finalization.
     sm.releaseParkedResetFenceRecovery("chat-a");
 
     expect(stateChanges).toHaveLength(0); // server is authoritative
@@ -441,7 +441,7 @@ describe("SessionManager: terminate + reconcile", () => {
   });
 
   it("getHeldChatIds() unions active sessions and evicted mappings", async () => {
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     });
 
@@ -460,7 +460,7 @@ describe("SessionManager: terminate + reconcile", () => {
   it("applyStaleChatIds() cleans up both live sessions and evicted mappings", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
     const capturing = createCapturingFactory();
-    const sm = createSessionManager({
+    const sm = createSessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       handlerFactory: capturing.factory,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),

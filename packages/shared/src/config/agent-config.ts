@@ -42,7 +42,7 @@ export const agentConfigSchema = defineConfig({
     // thinking / large message generation AND hours-long / overnight background
     // tasks from idle eviction while still bounding stuck-state slot leaks: at
     // `idle_timeout + working_grace_seconds` past the last activity the session
-    // is reclaimed (see evictIdle in session-manager.ts and #418). See
+    // is reclaimed (see evictIdle in session-runtime.ts and #418). See
     // DEFAULT_WORKING_GRACE_SECONDS for why the default is 12h.
     working_grace_seconds: field(z.number().int().positive().default(DEFAULT_WORKING_GRACE_SECONDS)),
     // When a session goes idle but its provider still has a live background
@@ -50,7 +50,7 @@ export const agentConfigSchema = defineConfig({
     // idle-suspend and deprioritize concurrency eviction so the subprocess's
     // completion wake-up is not lost — still bounded by the
     // `idle_timeout + working_grace_seconds` hard cap (see evictIdle in
-    // client `session-manager.ts`). Default on.
+    // client `session-runtime.ts`). Default on.
     defer_suspend_on_subprocess: field(z.boolean().default(true)),
   },
 });
