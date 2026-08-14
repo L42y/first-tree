@@ -17,10 +17,12 @@ const serviceMocks = {
   notifyAgentEvent: vi.fn(),
   pruneStaleSilentEntries: vi.fn(),
   sweepChatArchive: vi.fn(),
+  sweepExpiredMessageAttachments: vi.fn(),
 };
 
 const mockedModules = [
   "../observability/index.js",
+  "../services/attachment.js",
   "../services/chat/workspace/archive.js",
   "../services/runtime/client.js",
   "../services/chat/scheduled-jobs/scheduler.js",
@@ -32,6 +34,11 @@ const mockedModules = [
 function mockBackgroundTaskDependencies(): void {
   vi.doMock("../observability/index.js", () => ({
     createLogger: () => loggerMocks,
+  }));
+  vi.doMock("../services/attachment.js", () => ({
+    backfillExternalAttachmentsToPostgres: vi.fn().mockResolvedValue({ migrated: 0, skipped: 0 }),
+    sweepOrphanAttachments: vi.fn().mockResolvedValue({ examined: 0, deleted: 0 }),
+    sweepExpiredMessageAttachments: serviceMocks.sweepExpiredMessageAttachments,
   }));
   vi.doMock("../services/chat/workspace/archive.js", () => ({
     sweepChatArchive: serviceMocks.sweepChatArchive,
@@ -58,9 +65,13 @@ function mockBackgroundTaskDependencies(): void {
   }));
 }
 
-function makeApp(archiveSweepIntervalSeconds = 30): FastifyInstance {
+function makeApp(archiveSweepIntervalSeconds = 30, retentionDeleteEnabled?: boolean): FastifyInstance {
   return {
     config: {
+      attachments: {
+        organizationObjectQuota: 10_000,
+        ...(retentionDeleteEnabled === undefined ? {} : { retention: { deleteEnabled: retentionDeleteEnabled } }),
+      },
       runtime: {
         archiveMappedIdleSeconds: 3_600,
         archiveSweepIntervalSeconds,
@@ -85,6 +96,13 @@ beforeEach(() => {
   serviceMocks.notifyAgentEvent.mockResolvedValue(undefined);
   serviceMocks.pruneStaleSilentEntries.mockResolvedValue({ ackedDeleted: 0, stalePendingDeleted: 0 });
   serviceMocks.sweepChatArchive.mockResolvedValue({ mappedRowsArchived: 0, unmappedRowsArchived: 0 });
+  serviceMocks.sweepExpiredMessageAttachments.mockResolvedValue({
+    eligibleObjects: 0,
+    eligibleBytes: 0,
+    deleted: 0,
+    reclaimedBytes: 0,
+    batches: 0,
+  });
 });
 
 afterEach(() => {
@@ -169,6 +187,29 @@ describe("createBackgroundTasks", () => {
 
     expect(serviceMocks.cronStart).not.toHaveBeenCalled();
     expect(serviceMocks.cronStop).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("runs the message-attachment retention sweep daily, separate from the hourly orphan sweep", async () => {
+    const { createBackgroundTasks } = await import("../services/background-tasks.js");
+    const app = makeApp(30, true);
+    const tasks = createBackgroundTasks(app, "srv_4");
+
+    tasks.start();
+    // Initial run at start, carrying the deployment's delete-mode switch.
+    expect(serviceMocks.sweepExpiredMessageAttachments).toHaveBeenCalledTimes(1);
+    expect(serviceMocks.sweepExpiredMessageAttachments).toHaveBeenCalledWith(app.db, undefined, {
+      deleteEnabled: true,
+    });
+
+    // Hourly-scale timers must not trigger the retention sweep.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1_000);
+    expect(serviceMocks.sweepExpiredMessageAttachments).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+    expect(serviceMocks.sweepExpiredMessageAttachments).toHaveBeenCalledTimes(2);
+
+    await tasks.stop();
     expect(vi.getTimerCount()).toBe(0);
   });
 });

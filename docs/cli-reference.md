@@ -2142,11 +2142,25 @@ Old per-route rate-limit env vars are no longer read.
 | Variable | Default |
 |---|---|
 | `FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT` | `10000` |
+| `FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED` | `false` (dry-run) |
 
 Maximum number of attachment objects one Team may hold. Chat uploads, Feishu
 inbound resources, Team Skill bundles, and Agent Template adoption copies all
 share the same per-Team pool. The per-file 10 MiB cap and the per-Team 2 GiB
 byte quota are fixed and stay the storage backstop regardless of this value.
+
+Message-class attachments (chat images/documents, Feishu inbound resources)
+expire 14 days after creation: a sweep runs once at server startup and then
+every 24 hours, deleting the attachment row and its PostgreSQL bytes even
+while historical messages still reference them — messages themselves stay
+immutable and render an explicit "expired or unavailable" state.
+Attachments held by a Team Skill Resource or an Agent Template bundle never
+expire. The sweep is a **dry-run by default**: it only counts and logs the
+eligible objects/bytes so operators can size the impact first. Set
+`FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED=true` to enable real
+deletion. Rolling back means setting it back to `false`, which only stops
+future deletions — already-deleted bytes can only be restored from a database
+backup.
 
 **Inbox / WS / archive sweeper:**
 

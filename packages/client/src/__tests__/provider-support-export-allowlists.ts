@@ -39,6 +39,7 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
     "type|SupervisedProviderProcess|SupervisedProviderProcess|./process-supervision.js",
     "type|VersionManagerDirDeps|VersionManagerDirDeps|./host-runtime.js",
     "type|WorkspaceFileLock|WorkspaceFileLock|./host-runtime.js",
+    "value|ATTACHMENT_UNAVAILABLE_NOTE|ATTACHMENT_UNAVAILABLE_NOTE|./attachment-availability.js",
     "value|FIRST_TREE_WORKSPACE_MARKER|FIRST_TREE_WORKSPACE_MARKER|./host-runtime.js",
     "value|InputController|InputController|./turn-input.js",
     "value|PROVIDER_BINARY_FAILURE_REASON_CODES|PROVIDER_BINARY_FAILURE_REASON_CODES|./failure-policy.js",
@@ -70,6 +71,7 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
     "value|getCliBinding|getCliBinding|./host-runtime.js",
     "value|getLoginShellPathDirs|getLoginShellPathDirs|./host-runtime.js",
     "value|imagePath|imagePath|./turn-input.js",
+    "value|isAttachmentGoneError|isAttachmentGoneError|./attachment-availability.js",
     "value|isCodexBinaryMissingError|isCodexBinaryMissingError|./failure-policy.js",
     "value|isCursorBinaryMissingError|isCursorBinaryMissingError|./failure-policy.js",
     "value|isEgressForbiddenText|isEgressForbiddenText|./failure-policy.js",
@@ -108,6 +110,10 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
     "value|writeAgentBriefing|writeAgentBriefing|./host-runtime.js",
     "value|writeImage|writeImage|./turn-input.js",
     "value|writeSessionBriefingFingerprint|writeSessionBriefingFingerprint|./turn-prompt.js",
+  ],
+  "attachment-availability": [
+    "value|ATTACHMENT_UNAVAILABLE_NOTE|ATTACHMENT_UNAVAILABLE_NOTE|<local>",
+    "value|isAttachmentGoneError|isAttachmentGoneError|<local>",
   ],
   preparation: [
     "type|AgentBootstrapParams|AgentBootstrapParams|../agent-bootstrap.js",

@@ -254,6 +254,25 @@ export const serverConfigSchema = defineConfig({
     organizationObjectQuota: field(z.number().int().min(1).default(10_000), {
       env: "FIRST_TREE_ATTACHMENT_ORG_QUOTA_COUNT",
     }),
+    /**
+     * 14-day retention sweep for message-class attachments (chat images /
+     * documents, Feishu inbound resources). Attachments held by a Team Skill
+     * Resource or an Agent Template bundle never expire. The sweep runs once
+     * at Server startup and then every 24 hours, and is a dry-run unless
+     * deletion is explicitly enabled: dry-run only counts and logs eligible
+     * rows, so operators can size the impact before flipping the switch.
+     * Rollback means disabling deletion again — already-deleted bytes can
+     * only be restored from a database backup.
+     */
+    retention: optional({
+      /**
+       * Master switch for real deletion. Unset / false = dry-run (count and
+       * log only); true = actually delete expired rows and reclaim quota.
+       */
+      deleteEnabled: field(z.boolean().default(false), {
+        env: "FIRST_TREE_ATTACHMENT_RETENTION_DELETE_ENABLED",
+      }),
+    }),
   },
   /**
    * Transitional read/delete compatibility for attachment payloads written

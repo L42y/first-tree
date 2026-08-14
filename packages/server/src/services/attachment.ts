@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
-import { MAX_ATTACHMENT_BYTES } from "@first-tree/shared";
-import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { MAX_ATTACHMENT_BYTES, MESSAGE_ATTACHMENT_RETENTION_DAYS } from "@first-tree/shared";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, ne, or, type SQLWrapper, sql } from "drizzle-orm";
 import type { Database } from "../db/connection.js";
 import { agentTemplates } from "../db/schema/agent-templates.js";
 import { attachments } from "../db/schema/attachments.js";
@@ -384,7 +384,15 @@ export async function openAttachmentStream(
   }
 }
 
-export async function isAttachmentReferenced(db: Database, id: string): Promise<boolean> {
+/**
+ * Team Skill Resources and official Agent Template bundles are the
+ * authoritative, permanently-protected references: an attachment held by
+ * either must survive every cleanup path until the last such reference is
+ * explicitly released. Message references do NOT protect against the 14-day
+ * retention sweep, so this check is kept separate from
+ * `isAttachmentReferenced`.
+ */
+export async function isAttachmentProtectedByBundleReference(db: Database, id: string): Promise<boolean> {
   const [resourceRef] = await db
     .select({ id: resources.id })
     .from(resources)
@@ -416,23 +424,44 @@ export async function isAttachmentReferenced(db: Database, id: string): Promise<
       )`,
     )
     .limit(1);
-  if (templateRef) return true;
+  return !!templateRef;
+}
 
-  const imageArray = JSON.stringify([{ imageId: id }]);
-  const attachmentArray = JSON.stringify([{ attachmentId: id }]);
+/**
+ * Four JSONB shapes that count as a message reference to an attachment.
+ * Kept as one SQL owner so `isAttachmentReferenced` and the retention
+ * selector cannot drift. Expressions match the existing btree
+ * (`content ->> 'imageId'`) and GIN jsonb_path_ops indexes
+ * (`content -> 'attachments'`, `metadata -> 'attachments'`).
+ */
+function messageReferencesAttachmentSql(attachmentId: SQLWrapper) {
+  return sql`(
+    ${messages.content} ->> 'imageId' = (${attachmentId})::text
+    OR ${messages.content} -> 'attachments' @> jsonb_build_array(jsonb_build_object('imageId', (${attachmentId})::text))
+    OR ${messages.content} -> 'attachments' @> jsonb_build_array(jsonb_build_object('attachmentId', (${attachmentId})::text))
+    OR ${messages.metadata} -> 'attachments' @> jsonb_build_array(jsonb_build_object('attachmentId', (${attachmentId})::text))
+  )`;
+}
+
+function messageReferencesAttachmentExistsSql(attachmentId: SQLWrapper) {
+  return sql`EXISTS (
+    SELECT 1 FROM ${messages}
+    WHERE ${messageReferencesAttachmentSql(attachmentId)}
+  )`;
+}
+
+async function isAttachmentReferencedByMessage(db: Database, id: string): Promise<boolean> {
   const [messageRef] = await db
     .select({ id: messages.id })
     .from(messages)
-    .where(
-      or(
-        sql`${messages.content} ->> 'imageId' = ${id}`,
-        sql`${messages.content} -> 'attachments' @> ${imageArray}::jsonb`,
-        sql`${messages.content} -> 'attachments' @> ${attachmentArray}::jsonb`,
-        sql`${messages.metadata} -> 'attachments' @> ${attachmentArray}::jsonb`,
-      ),
-    )
+    .where(messageReferencesAttachmentSql(sql`${id}`))
     .limit(1);
   return !!messageRef;
+}
+
+export async function isAttachmentReferenced(db: Database, id: string): Promise<boolean> {
+  if (await isAttachmentProtectedByBundleReference(db, id)) return true;
+  return isAttachmentReferencedByMessage(db, id);
 }
 
 /** Delete an immutable PostgreSQL row only after every known consumer releases it. */
@@ -520,6 +549,192 @@ export async function sweepOrphanAttachments(
     }
   }
   return { examined: candidates.length, deleted };
+}
+
+/**
+ * Message-class attachments (chat images/documents, Feishu inbound resources)
+ * expire after {@link MESSAGE_ATTACHMENT_RETENTION_DAYS} even while historical
+ * messages still reference them — messages stay immutable and render an
+ * explicit expired/unavailable state. Eligibility is positive: a row must
+ * actually be referenced by a message. Attachments held by a Team Skill
+ * Resource or an Agent Template bundle are permanently protected and never
+ * expire here. After the last bundle reference is released, a remaining
+ * message reference still makes the row retention-eligible; with no message
+ * reference, the release/orphan lifecycle reclaims it.
+ */
+export const MESSAGE_ATTACHMENT_RETENTION_MS = MESSAGE_ATTACHMENT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+
+export type AttachmentRetentionSweepOptions = {
+  /**
+   * false (the deployment default) runs a dry-run: the sweep only counts and
+   * logs eligible rows. true actually deletes them. Rollback = flip back to
+   * false; already-deleted bytes can only be restored from a database backup.
+   */
+  deleteEnabled: boolean;
+  now?: Date;
+  batchSize?: number;
+  /** Hard cap on batches per run so one daily sweep stays bounded; the next run resumes where this one stopped. */
+  maxBatches?: number;
+};
+
+export type AttachmentRetentionSweepResult = {
+  eligibleObjects: number;
+  eligibleBytes: number;
+  deleted: number;
+  reclaimedBytes: number;
+  batches: number;
+};
+
+/**
+ * Eligible = ready, older than the retention window, referenced by at least
+ * one message, and not protected by any Resource/Template bundle reference.
+ * The positive message EXISTS keeps generic (non-message) attachments out of
+ * this sweep. Excluding protected rows in SQL keeps long-lived bundles from
+ * permanently filling each batch and starving ordinary message attachments.
+ */
+function retentionEligibleConditions(cutoff: Date) {
+  return and(
+    eq(attachments.lifecycleState, "ready"),
+    lt(attachments.createdAt, cutoff),
+    messageReferencesAttachmentExistsSql(attachments.id),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${resources}
+      WHERE ${resources.bundleAttachmentId} = ${attachments.id}
+    )`,
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${agentTemplates}
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(
+          CASE WHEN jsonb_typeof(${agentTemplates.payload} -> 'components') = 'array'
+            THEN ${agentTemplates.payload} -> 'components'
+            ELSE '[]'::jsonb
+          END
+        ) AS component
+        WHERE component -> 'bundle' ->> 'attachmentId' = ${attachments.id}
+      )
+    )`,
+  );
+}
+
+/**
+ * Delete one expired message-class attachment. The row is locked FOR UPDATE —
+ * which conflicts with the FOR KEY SHARE reference lock the Skill/Template
+ * bind path takes — and both the message-class proof and the bundle
+ * protections are re-checked inside the transaction, so a reference that
+ * lands (or a message reference that disappears) between candidate selection
+ * and deletion is always honored.
+ */
+async function deleteExpiredAttachmentIfUnprotected(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  id: string,
+): Promise<boolean> {
+  let legacyObjectKey: string | null = null;
+  let deletePostgresRow = false;
+  await db.transaction(async (tx) => {
+    const targetDb = tx as unknown as Database;
+    const [row] = await targetDb
+      .select({
+        id: attachments.id,
+        objectKey: attachments.objectKey,
+        lifecycleState: attachments.lifecycleState,
+      })
+      .from(attachments)
+      .where(eq(attachments.id, id))
+      .for("update")
+      .limit(1);
+    if (!row || row.lifecycleState !== "ready") return;
+    if (await isAttachmentProtectedByBundleReference(targetDb, id)) return;
+    if (!(await isAttachmentReferencedByMessage(targetDb, id))) return;
+    legacyObjectKey = row.objectKey;
+    deletePostgresRow = true;
+    if (legacyObjectKey) {
+      await targetDb
+        .update(attachments)
+        .set({ lifecycleState: "deleting", updatedAt: new Date() })
+        .where(eq(attachments.id, id));
+      return;
+    }
+    await targetDb.delete(attachments).where(eq(attachments.id, id));
+  });
+  if (!deletePostgresRow) return false;
+  if (!legacyObjectKey) return true;
+  await blobStore.delete(legacyObjectKey);
+  await db.delete(attachments).where(and(eq(attachments.id, id), eq(attachments.lifecycleState, "deleting")));
+  return true;
+}
+
+/**
+ * Daily retention sweep for expired message-class attachments. Dry-run by
+ * default; with deletion enabled it processes bounded batches (oldest first)
+ * so a large backlog cannot monopolize the database in one run — remaining
+ * candidates are picked up by the next daily run.
+ */
+export async function sweepExpiredMessageAttachments(
+  db: Database,
+  blobStore: AttachmentBlobStore,
+  options: AttachmentRetentionSweepOptions,
+): Promise<AttachmentRetentionSweepResult> {
+  const now = options.now ?? new Date();
+  const batchSize = options.batchSize ?? 100;
+  const maxBatches = options.maxBatches ?? 10;
+  const cutoff = new Date(now.getTime() - MESSAGE_ATTACHMENT_RETENTION_MS);
+  const conditions = retentionEligibleConditions(cutoff);
+
+  const [usage] = await db
+    .select({
+      objectCount: sql<number>`count(*)`,
+      sizeBytes: sql<number>`coalesce(sum(${attachments.sizeBytes}), 0)`,
+    })
+    .from(attachments)
+    .where(conditions);
+  const eligibleObjects = Number(usage?.objectCount ?? 0);
+  const eligibleBytes = Number(usage?.sizeBytes ?? 0);
+
+  if (!options.deleteEnabled) {
+    // Always log, even at zero — a silent dry-run leaves operators unable to
+    // tell "nothing to clean" from "the sweep never ran". Resolve the logger at
+    // call time so the live createLogger export remains observable after this
+    // module has already been evaluated.
+    createLogger("attachment").info(
+      { eligibleObjects, eligibleBytes, cutoff },
+      "attachment retention sweep dry-run — no rows deleted",
+    );
+    return { eligibleObjects, eligibleBytes, deleted: 0, reclaimedBytes: 0, batches: 0 };
+  }
+
+  let deleted = 0;
+  let reclaimedBytes = 0;
+  let batches = 0;
+  while (batches < maxBatches) {
+    const candidates = await db
+      .select({ id: attachments.id, sizeBytes: attachments.sizeBytes })
+      .from(attachments)
+      .where(conditions)
+      .orderBy(asc(attachments.createdAt))
+      .limit(batchSize);
+    if (candidates.length === 0) break;
+    batches++;
+    for (const candidate of candidates) {
+      try {
+        if (await deleteExpiredAttachmentIfUnprotected(db, blobStore, candidate.id)) {
+          deleted++;
+          reclaimedBytes += candidate.sizeBytes;
+        }
+      } catch (error) {
+        // Keep the row for the next daily run.
+        log.warn({ err: error, attachmentId: candidate.id }, "expired attachment cleanup will retry");
+      }
+    }
+  }
+  if (deleted > 0) {
+    log.info(
+      { deleted, reclaimedBytes, eligibleObjects, eligibleBytes, batches },
+      "attachment retention sweep deleted expired message attachments",
+    );
+  }
+  return { eligibleObjects, eligibleBytes, deleted, reclaimedBytes, batches };
 }
 
 /**
