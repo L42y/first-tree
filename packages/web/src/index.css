@@ -189,12 +189,27 @@ video[data-onboarding-orientation-video]::cue {
   --text-display--letter-spacing: -0.02em;
   --text-display--font-weight: 600;
 
+  /* OpenTag's approved Desktop first-run hierarchy. This is a product utility
+     display tier, intentionally larger than ordinary dashboard chrome. */
+  --text-opentag-display: clamp(3.25rem, 4.4vw, 4rem);
+  --text-opentag-display--line-height: 1.08;
+  --text-opentag-display--letter-spacing: -0.035em;
+  --text-opentag-display--font-weight: 700;
+
+  --text-opentag-action: 16px;
+  --text-opentag-action--line-height: 1.5;
+  --text-opentag-action--font-weight: 400;
+
   /* ---- Radius scale -------------------------------------------------------- */
   /* Semantic radii. Prefer these over --radius-sm/md/lg (shadcn legacy). */
   --radius-chip: 3px;
   --radius-input: 4px;
   --radius-panel: 6px;
   --radius-dialog: 8px;
+  /* Locked OpenTag product-surface radii; kept page-specific so the compact
+     dashboard surface scale remains unchanged. */
+  --radius-opentag-cta: 12px;
+  --radius-opentag-action: 14px;
   /* Fully-round — pills, circular discs/dots, avatar rings. The one radius that
      isn't surface-importance-ascending; it means "capsule/circle", not a size. */
   --radius-full: 9999px;
@@ -314,6 +329,29 @@ video[data-onboarding-orientation-video]::cue {
   --brand-dim: oklch(0.62 0.14 150);
   --brand-bg: oklch(0.72 0.17 150 / 0.12);
   --brand-ring: oklch(0.72 0.17 150 / 0.3);
+
+  /* OpenTag Desktop first-run composition. The flow is deliberately pinned to
+     its white / off-black / lime artifact world rather than inheriting app
+     chrome elevation. */
+  --opentag-bg: oklch(1 0 0);
+  --opentag-action: oklch(0.13 0 0);
+  --opentag-action-fg: oklch(0.98 0 0);
+  --opentag-action-muted: oklch(0.84 0 0);
+  --opentag-accent: #90de14;
+  --opentag-accent-hover: #7dca0b;
+  --opentag-accent-fg: oklch(0.13 0 0);
+  --opentag-page-max: 85rem;
+  --opentag-story-width: 38rem;
+  --opentag-flow-width: 42rem;
+  --opentag-column-gap: 5.5rem;
+  --opentag-content-top: 11.5rem;
+  --opentag-identity-top: 5.5rem;
+  --opentag-status-bottom: 4.25rem;
+  --opentag-action-height: 10.5rem;
+  --opentag-action-qr-height: 21.75rem;
+  --opentag-qr-flow-offset: 4.5rem;
+  --opentag-cta-height: 3.5rem;
+  --opentag-qr-size: 13.5rem;
 
   /* Primary — the neutral action/active color. Near-black ink in light mode,
      near-white in dark (inverts in .dark below). Drives primary buttons,
@@ -591,6 +629,15 @@ video[data-onboarding-orientation-video]::cue {
   --lvl2: oklch(0.83 0.11 150);
   --lvl3: oklch(0.77 0.15 150);
   --lvl4: var(--brand);
+}
+
+.opentag-primary-action {
+  background: var(--opentag-accent);
+  color: var(--opentag-accent-fg);
+}
+
+.opentag-primary-action:hover {
+  background: var(--opentag-accent-hover);
 }
 
 /* ============================================================================
