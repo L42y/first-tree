@@ -22,7 +22,7 @@ export const OPENTAG_RAIL_COPY: Record<OpenTagStepId, { title: string; rail: str
   "choose-agent": { title: "Shape your agent", rail: "Focus & name" },
   "set-up-runtime": { title: "Set up its runtime", rail: "Computer & coding agent" },
   "connect-feishu": { title: "Add it to Feishu", rail: "Connect its bot" },
-  "use-in-feishu": { title: "Start working together", rail: "First task" },
+  "use-in-feishu": { title: "Ready in Feishu", rail: "Feishu handoff" },
 };
 
 /** Heading copy for the steps this entry renders. */
@@ -42,20 +42,11 @@ export const OPENTAG_STEP_COPY: Record<OpenTagStepId, { why: string; lead: strin
     why: "Add OpenTag to Feishu",
     lead: "Connect its bot while your agent prepares the tools it needs to work in Feishu.",
   },
-  // Says only what the Task itself establishes. The shell renders this heading
-  // for the whole step, including while the completion stamp is still in flight
-  // or has failed — so anything here that declared setup finished would sit
-  // directly above copy saying it could not be finished.
   "use-in-feishu": {
-    why: "Send your first task",
-    lead: "Send the bot a private message, or @mention it in a group. This page updates automatically.",
+    why: "Your agent is ready",
+    lead: "Open Feishu and start working with your agent whenever you're ready.",
   },
 };
-
-export const OPENTAG_FIRST_TASK_COMPLETE_COPY = {
-  why: "Your first task is ready",
-  lead: "Keep the conversation in Feishu. You can follow the work and its full history here.",
-} as const;
 
 /** Member-facing strings for the two things Step 3 is waiting on. */
 export const OPENTAG_FEISHU_READINESS_COPY = {

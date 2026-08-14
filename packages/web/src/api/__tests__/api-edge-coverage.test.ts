@@ -191,11 +191,12 @@ describe("onboarding and campaign API wrappers", () => {
   it("swallows best-effort onboarding telemetry failures and posts required kickoff calls", async () => {
     apiMock.post
       .mockRejectedValueOnce(new Error("telemetry down"))
-      .mockRejectedValueOnce(new Error("completion down"))
+      .mockResolvedValueOnce({ completedAt: "2026-08-14T06:00:00.000Z" })
       .mockResolvedValueOnce({ chatId: "chat-1" })
       .mockResolvedValueOnce({ chatId: "chat-2" });
     apiMock.get.mockResolvedValueOnce({ needsTreeSetup: true, hasTreeBinding: false, hasTreeSetupKickoff: true });
     const onboarding = await import("../onboarding-events.js");
+    const agents = await import("../agents.js");
 
     await expect(
       onboarding.reportOnboardingEvent("step_failed", {
@@ -207,7 +208,9 @@ describe("onboarding and campaign API wrappers", () => {
         chatId: "chat-1",
       }),
     ).resolves.toBeUndefined();
-    await expect(onboarding.markOnboardingCompleted("org/id")).rejects.toThrow("completion down");
+    await expect(agents.completeAgentFeishuOnboarding("agent/id")).resolves.toEqual({
+      completedAt: "2026-08-14T06:00:00.000Z",
+    });
     await expect(
       onboarding.postOnboardingStartChat({ agentUuid: "agent-1", bootstrap: "start", complete: true }),
     ).resolves.toEqual({ chatId: "chat-1" });
@@ -237,7 +240,7 @@ describe("onboarding and campaign API wrappers", () => {
       reasonCode: "agent_create_failed",
       retryable: true,
     });
-    expect(apiMock.post).toHaveBeenNthCalledWith(2, "/me/onboarding-completed", { organizationId: "org/id" });
+    expect(apiMock.post).toHaveBeenNthCalledWith(2, "/agents/agent%2Fid/feishu-binding/onboarding-completed", {});
     expect(apiMock.post).toHaveBeenNthCalledWith(3, "/me/onboarding/kickoff", {
       agentUuid: "agent-1",
       bootstrap: "start",

@@ -39,7 +39,7 @@ const authMock = vi.hoisted(() => ({
     currentOrgHasUsableAgent: false,
     refreshMe: vi.fn(async () => undefined),
     dismissOnboarding: vi.fn(async () => undefined),
-    applyOnboardingKickoffStamp: vi.fn(),
+    applyOnboardingStamp: vi.fn(),
   },
 }));
 

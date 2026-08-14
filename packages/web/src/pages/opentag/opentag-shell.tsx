@@ -14,17 +14,15 @@ import { OpenTagLogo } from "./opentag-logo.js";
 export function OpenTagShell({
   activeStep,
   completedSteps,
-  stepCopy,
   children,
 }: {
   activeStep: OpenTagStepId;
   completedSteps: readonly OpenTagStepId[];
-  stepCopy?: { why: string; lead: string };
   children: ReactNode;
 }): ReactElement {
   const { logout } = useAuth();
   const activeIndex = OPENTAG_STEPS.indexOf(activeStep);
-  const visibleStepCopy = stepCopy ?? OPENTAG_STEP_COPY[activeStep];
+  const stepCopy = OPENTAG_STEP_COPY[activeStep];
   const activeGroup = activeIndex < 2 ? "Create agent" : "Start in Feishu";
 
   return (
@@ -68,10 +66,10 @@ export function OpenTagShell({
             className="text-title font-semibold"
             style={{ margin: "var(--sp-2) 0 var(--sp-2_5)", color: "var(--fg)" }}
           >
-            {visibleStepCopy.why}
+            {stepCopy.why}
           </h1>
           <p className="text-body" style={{ margin: "0 0 var(--sp-6)", color: "var(--fg-3)" }}>
-            {visibleStepCopy.lead}
+            {stepCopy.lead}
           </p>
           <div key={activeStep} className="fade-in">
             {children}

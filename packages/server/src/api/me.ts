@@ -42,6 +42,7 @@ import {
 } from "../services/context-tree/settings.js";
 import { isLandingCampaignServiceMembership } from "../services/landing-campaigns/guards.js";
 import { notifyRecipients } from "../services/notifier.js";
+import { stampOnboardingCompleted } from "../services/onboarding-completion.js";
 import {
   campaignActionKickoffKey,
   hasTreeSetupKickoffMessage,
@@ -413,17 +414,8 @@ export async function meRoutes(app: FastifyInstance): Promise<void> {
     const { userId } = requireUser(request);
     const body = completeOnboardingSchema.parse(request.body ?? {});
     const memberId = await resolveOnboardingMembershipId(app, userId, body.organizationId);
-    const now = new Date();
-    const result = await app.db
-      .update(members)
-      .set({
-        onboardingCompletedAt: now,
-        onboardingSuppressedAt: now,
-        onboardingSuppressedReason: "completed",
-      })
-      .where(and(eq(members.id, memberId), isNull(members.onboardingCompletedAt)))
-      .returning({ id: members.id });
-    if (result.length > 0) {
+    const result = await stampOnboardingCompleted(app.db, memberId);
+    if (result.newlyCompleted) {
       app.log.info({ event: "onboarding.completed", userId }, "onboarding funnel: setup completed");
     }
     return reply.status(200).send({ ok: true });

@@ -159,7 +159,7 @@ describe("resolveOpenTagStep", () => {
     expect(resolveOpenTagStep({ state: "resolved" }, false)).toBe("connect-feishu");
   });
 
-  it("enters the real-first-use step only when both bot and tools are ready", () => {
+  it("enters the ready handoff only when both bot and tools are ready", () => {
     expect(resolveOpenTagStep({ state: "resolved" }, true)).toBe("use-in-feishu");
   });
 

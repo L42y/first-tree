@@ -1,6 +1,7 @@
 import type {
   Agent,
   AgentSkills,
+  CompleteFeishuOnboardingResponse,
   CreateAgent,
   FeishuBotBinding,
   NewChatDefaultCandidatesRequest,
@@ -196,6 +197,10 @@ export function startAgentFeishuRegistration(
 
 export function revokeAgentFeishuBinding(uuid: string): Promise<void> {
   return api.delete(`/agents/${encodeURIComponent(uuid)}/feishu-binding`);
+}
+
+export function completeAgentFeishuOnboarding(uuid: string): Promise<CompleteFeishuOnboardingResponse> {
+  return api.post(`/agents/${encodeURIComponent(uuid)}/feishu-binding/onboarding-completed`, {});
 }
 
 /**
