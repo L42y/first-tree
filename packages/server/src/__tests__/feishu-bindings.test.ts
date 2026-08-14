@@ -12,7 +12,8 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
-import { retireClient } from "../services/runtime/client.js";
+import { completeFeishuOnboarding } from "../services/integrations/feishu/onboarding-completion.js";
+import { retireClient, updateClientCapabilities } from "../services/runtime/client.js";
 import { ensureMembership } from "../services/team/membership.js";
 import { createOrganization } from "../services/team/organization.js";
 import { createTestAdmin, createTestAgent, useTestApp } from "./helpers.js";
@@ -308,6 +309,54 @@ describe("Feishu onboarding completion", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json<{ code: string }>().code).toBe("feishu-bot-unreachable");
     expect((await readCompletion(app, seed.memberId))?.completedAt).toBeNull();
+  });
+
+  it("rejects CLI readiness loss committed after the initial Client read", async () => {
+    const app = getApp();
+    const seed = await seedReadyHandoff(app);
+    let reportClientRead = (): void => undefined;
+    const clientRead = new Promise<void>((resolve) => {
+      reportClientRead = resolve;
+    });
+    let releaseStamp = (): void => undefined;
+    const stampRelease = new Promise<void>((resolve) => {
+      releaseStamp = resolve;
+    });
+    const completion = completeFeishuOnboarding(
+      app.db,
+      {
+        userId: seed.userId,
+        organizationId: seed.organizationId,
+        agentUuid: seed.agent.uuid,
+      },
+      {
+        afterClientReadForTest: async () => {
+          reportClientRead();
+          await stampRelease;
+        },
+      },
+    );
+
+    try {
+      await clientRead;
+      await updateClientCapabilities(app.db, seed.clientId, {
+        "lark-cli": {
+          state: "missing",
+          available: false,
+          detectedAt: new Date().toISOString(),
+        },
+      });
+      releaseStamp();
+
+      await expect(completion).rejects.toMatchObject({
+        statusCode: 409,
+        attrs: { code: "feishu-cli-not-ready" },
+      });
+      expect((await readCompletion(app, seed.memberId))?.completedAt).toBeNull();
+    } finally {
+      releaseStamp();
+      await Promise.allSettled([completion]);
+    }
   });
 
   it("completes without a Client-lock cycle while retirement waits for the Agent", async () => {

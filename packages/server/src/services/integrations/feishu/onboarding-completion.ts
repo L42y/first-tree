@@ -1,4 +1,4 @@
-import { and, eq, ne } from "drizzle-orm";
+import { and, eq, exists, isNull, ne, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
@@ -21,6 +21,10 @@ export type CompleteFeishuOnboardingInput = {
   agentUuid: string;
 };
 
+type CompleteFeishuOnboardingOptions = {
+  afterClientReadForTest?: () => Promise<void>;
+};
+
 /**
  * Validate the exact OpenTag handoff facts and stamp membership completion at
  * one database linearization point. Membership, Agent and Bot binding remain
@@ -30,6 +34,7 @@ export type CompleteFeishuOnboardingInput = {
 export async function completeFeishuOnboarding(
   db: Database,
   input: CompleteFeishuOnboardingInput,
+  options: CompleteFeishuOnboardingOptions = {},
 ): Promise<OnboardingCompletionStamp> {
   return db.transaction(async (tx) => {
     const [membership] = await tx
@@ -100,6 +105,8 @@ export async function completeFeishuOnboarding(
       });
     }
 
+    await options.afterClientReadForTest?.();
+
     // Re-read the clock immediately before the durable stamp so time spent on
     // readiness reads cannot let an expired Bot lease pass on an older clock.
     const completionTime = new Date();
@@ -109,6 +116,28 @@ export async function completeFeishuOnboarding(
       });
     }
 
-    return stampOnboardingCompleted(tx, membership.id, completionTime);
+    const stamped = await stampOnboardingCompleted(tx, membership.id, completionTime, {
+      // Capability writers do not take the Agent lock. Re-evaluate readiness
+      // inside the membership UPDATE statement so its MVCC snapshot is the
+      // completion linearization point, without adding a Client row lock.
+      condition: exists(
+        tx
+          .select({ ready: sql`1` })
+          .from(clients)
+          .where(
+            and(
+              eq(clients.id, agent.clientId),
+              isNull(clients.retiredAt),
+              sql`${clients.metadata} -> 'capabilities' -> 'lark-cli' ->> 'available' = 'true'`,
+            ),
+          ),
+      ),
+    });
+    if (!stamped) {
+      throw new ConflictError("The Agent's current Computer has not reported lark-cli ready", {
+        code: COMPLETION_ERROR_CODES.cliNotReady,
+      });
+    }
+    return stamped;
   });
 }
