@@ -6,6 +6,7 @@ import { createEvalReporter } from "../../core/reporter.js";
 import { createFirstTreeShim } from "../../core/shims/first-tree.js";
 import { createFirstTreeStagingShim } from "../../core/shims/first-tree-staging.js";
 import { createGhShim } from "../../core/shims/gh.js";
+import { createGlabShim } from "../../core/shims/glab.js";
 import { setupFixture, validateFixture } from "./fixture.js";
 import { casePassed, deriveMetrics, driftNote } from "./grader.js";
 import { buildGrading, writeCaseSummaries } from "./summary.js";
@@ -30,6 +31,7 @@ export async function runFirstTreeWelcomeCase(
   createFirstTreeShim(paths);
   createFirstTreeStagingShim(paths);
   createGhShim(paths);
+  createGlabShim(paths, {});
   const contextTreePath = setupFixture(evalCase, paths, reporter);
   const fixtureValidation = validateFixture(paths, contextTreePath, evalCase, evalCase.id, options.verbose, reporter);
   const runnerResult = await runAgentProvider(

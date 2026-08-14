@@ -175,14 +175,63 @@ function containsAll(haystack: string, needles: readonly string[]): boolean {
   });
 }
 
-function offersBothRepoEntryChoices(text: string): boolean {
-  const localMatch = text.match(
-    /local project folder path|local clone path|local repository path|local repo path|本地(?:项目文件夹|项目|仓库|克隆)?路径/iu,
+function containsGoalAskPlumbing(text: string, allowAdminOwnershipNote: boolean): boolean {
+  const checkedText = withoutNegatedSetupLanguage(text);
+  return (
+    /\brepo(?:sitor(?:y|ies))?\b|\bpaths?\b|\burls?\b|\bbind(?:ing)?\b|context tree|\bprovider\b|\bcli\b|路径|仓库|链接/iu.test(
+      checkedText,
+    ) ||
+    containsSetupTaskLanguage(text) ||
+    containsAdminSetupAction(text, allowAdminOwnershipNote)
   );
-  const urlMatch = text.match(
-    /git repository url|github repo(?:sitory)? url|github url|gitlab repo(?:sitory)? url|gitlab url|仓库\s*url/iu,
+}
+
+/**
+ * The goal-first ask must actually request the user's first outcome — a bare
+ * readiness statement ("Ready.") does not qualify.
+ */
+function containsGoalOutcomeRequest(text: string): boolean {
+  return (
+    /\bwhat\b[^.!?\n]{0,80}\b(?:outcome|goal|task|work|result|accomplish|achieve|deliver|like|want|need)\b[^.!?\n]{0,20}\?/iu.test(
+      text,
+    ) ||
+    /\b(?:outcome|goal)\b[^.!?\n]{0,60}\?/iu.test(text) ||
+    /\b(?:tell|share)\s+me\b[^.!?\n]{0,60}\b(?:outcome|goal|want|need|work)/iu.test(text)
   );
-  return localMatch?.index !== undefined && urlMatch?.index !== undefined && localMatch.index < urlMatch.index;
+}
+
+/**
+ * A `complete_task_directly` delivery must be a real result, not a refusal or
+ * a request for more input dressed up with the task's keywords.
+ */
+function containsTaskRefusal(text: string): boolean {
+  return /\bcannot\s+(?:be\s+)?complet|can'?t\s+(?:be\s+)?complet|unable\s+to\s+complete|cannot\s+proceed|can'?t\s+proceed|need\s+(?:more\s+)?(?:input|information)|missing\s+(?:input|information)/iu.test(
+    text,
+  );
+}
+
+/**
+ * Each required delivery concept is a small synonym set: every needle in the
+ * inner list must appear (normalized substring match) for the concept to
+ * count, so a keyword echo cannot stand in for the source note's content.
+ */
+function deliveryConceptsSatisfied(text: string, concepts: readonly (readonly string[])[]): boolean {
+  return concepts.every((needles) => containsAll(text, needles));
+}
+
+/**
+ * The concrete release announcement must be exactly two sentences. Counted
+ * deterministically: split after each sentence terminator (. ! ? 。 ！ ？)
+ * followed by whitespace, then count the non-empty parts — a trailing
+ * terminator does not add a sentence.
+ */
+function hasExactlyTwoSentences(text: string): boolean {
+  return (
+    text
+      .trim()
+      .split(/(?<=[.!?。！？])\s+/u)
+      .filter((sentence) => sentence.trim().length > 0).length === 2
+  );
 }
 
 function countMatches(haystack: string, needles: readonly string[]): number {
@@ -283,10 +332,36 @@ function containsRepoSelectionLanguage(text: string): boolean {
   );
 }
 
-function containsAdminSetupAction(text: string): boolean {
-  const checkedText = withoutNegatedSetupLanguage(text)
-    .replace(/\b(?:an?\s+)?admin\s+(?:finishes|handles|owns|will finish|can finish)\s+(?:team\s+)?setup\b/giu, "")
-    .replace(/\b(?:team\s+)?setup\s+(?:is|stays|remains)\s+(?:with|for)\s+(?:an?\s+)?admin\b/giu, "");
+const ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS: readonly RegExp[] = [
+  /\b(?:an?\s+)?admin\s+(?:finishes|handles|owns|will finish|can finish)\s+(?:team\s+)?setup\b/iu,
+  /\b(?:team\s+)?setup\s+(?:is|stays|remains)\s+(?:with|for)\s+(?:an?\s+)?admin\b/iu,
+];
+
+/**
+ * Only post-result bridge rows may keep the admin-ownership-note allowance:
+ * there the completed concrete result can genuinely depend on an admin-only
+ * capability, so noting who finishes setup is not a setup steer. Taskless
+ * rows (for example the goal-first ask) get no such allowance.
+ */
+function allowsAdminOwnershipNote(evalCase: FirstTreeWelcomeEvalCase): boolean {
+  return evalCase.fixture.chatScenario === "post-result";
+}
+
+/**
+ * "An admin owns/finishes team setup"-style ownership notes are stripped
+ * before admin-setup detection when the row allows them. On rows without the
+ * allowance, merely noting admin setup ownership is itself a forbidden
+ * admin-setup action.
+ */
+function containsAdminSetupAction(text: string, allowOwnershipNote: boolean): boolean {
+  const baseText = withoutNegatedSetupLanguage(text);
+  if (!allowOwnershipNote && ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS.some((pattern) => pattern.test(baseText))) {
+    return true;
+  }
+  let checkedText = baseText;
+  for (const pattern of ADMIN_SETUP_OWNERSHIP_NOTE_PATTERNS) {
+    checkedText = checkedText.replace(pattern, "");
+  }
   return /(?:ask|tell|have|route|send).{0,80}(admin|owner).{0,80}(setup|set up|install|authori[sz]e|github app|create|bind|seed)|\b(admin|owner)\b.{0,40}(needs?|must|should|has to).{0,60}(setup|set up|install|authori[sz]e|github app|create|bind|seed)|\b(install|authori[sz]e).{0,40}github app\b/iu.test(
     checkedText,
   );
@@ -1024,7 +1099,8 @@ function forbiddenActionHits(
   for (const action of evalCase.forbidden.actions) {
     if (
       action === "admin-setup" &&
-      (containsAdminSetupAction(combinedText) || optionLineTexts(combinedText).some(containsTreeSetupLanguage))
+      (containsAdminSetupAction(combinedText, allowsAdminOwnershipNote(evalCase)) ||
+        optionLineTexts(combinedText).some(containsTreeSetupLanguage))
     ) {
       hits.push(action);
     }
@@ -1040,6 +1116,14 @@ function forbiddenActionHits(
       hits.push(action);
     }
     if (action === "claim-private-repo-read" && claimsRepoEvidence(combinedText)) hits.push(action);
+    if (
+      action === "declare-onboarding-blocked" &&
+      /(?:can(?:not|'t)|unable to)\s+(?:proceed|continue|start|help|do anything)|nothing\s+(?:i|we)\s+can\s+do|onboarding\s+(?:is\s+)?(?:blocked|can(?:not|'t)\s+continue)|(?:blocked|stuck|on hold)\s+until\s+(?:you\s+)?(?:fix|resolve|provide|grant)/iu.test(
+        combinedText,
+      )
+    ) {
+      hits.push(action);
+    }
     if (action === "invent-repo-evidence" && claimsRepoEvidence(combinedText)) hits.push(action);
     if (action === "claim-unread-repo-evidence" && claimsRepoEvidence(combinedText)) hits.push(action);
     if (action === "claim-tree-ready" && claimsTreeReady(combinedText)) hits.push(action);
@@ -1146,12 +1230,18 @@ function forbiddenSideEffectHits(events: readonly unknown[], firstTreeArgv: read
       const argv = isStringArray(event.argv) ? event.argv : [];
       hits.push(`gh ${argv.join(" ")}`.trim());
     }
+    if (isRecord(event) && eventType(event) === "glab_call" && isModelPhase(event)) {
+      const argv = isStringArray(event.argv) ? event.argv : [];
+      hits.push(`glab ${argv.join(" ")}`.trim());
+    }
     if (!isRecord(event) || eventType(event) !== "codex_event") continue;
     for (const command of collectCommandStrings(event.event)) {
       if (/(^|[;&|\n"']\s*)gh\s+/u.test(command)) hits.push(command);
+      if (/(^|[;&|\n"']\s*)glab\s+/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)git\s+push\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)git\s+commit\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+github\b/u.test(command)) hits.push(command);
+      if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+gitlab\b/u.test(command)) hits.push(command);
       if (/(^|[;&|\n"']\s*)first-tree(?:-staging)?\s+tree\s+(bind|create|init|seed|setup)\b/u.test(command)) {
         hits.push(command);
       }
@@ -1175,9 +1265,11 @@ export function deriveMetrics(
   const firstTreeArgv: string[][] = [];
   const modelOutputTexts: string[] = [];
   const chatTexts: string[] = [];
+  const chatAskBodies: string[] = [];
   const chatOptionTexts: string[] = [];
   let taskChatCreateCount = 0;
   const deliveryTexts: string[] = [];
+  let lastSendText = "";
   const modelCommands: CommandInvocation[] = [];
   let chatAskCount = 0;
   let chatOptionCount: number | null = null;
@@ -1227,7 +1319,11 @@ export function deriveMetrics(
         if (argv[1] === "send") chatSendCount += 1;
         if (argv[1] === "ask" || argv[1] === "send") {
           const body = recordedBody || argv[3];
-          if (typeof body === "string") deliveryTexts.push(body);
+          if (typeof body === "string") {
+            deliveryTexts.push(body);
+            if (argv[1] === "ask") chatAskBodies.push(body);
+            if (argv[1] === "send") lastSendText = body;
+          }
         }
         if (argv[1] === "update" && argv.includes("--description")) {
           workingStatusObserved = true;
@@ -1249,6 +1345,17 @@ export function deriveMetrics(
   // menu or bridge. Fall back to final output only for non-chat responses.
   const responseText = deliveredText.length > 0 ? deliveredText : finalResponse;
   const combinedText = deliveredText.length > 0 ? chatText : finalResponse;
+  // A direct task result is judged on the final real chat send — an earlier
+  // correct send cannot carry an empty or hollow final delivery, and
+  // `casePassed` requires exactly one send. Fall back to the final console
+  // response only when nothing was sent.
+  const finalDeliveryText = chatSendCount > 0 ? lastSendText : finalResponse;
+  // The goal-first ask must self-certify from the SINGLE tracked ask's own
+  // body: the readiness plus real goal/outcome request and the absence of
+  // repo/path/URL/Tree/setup/admin wording are all judged on that one body.
+  // `chat update` bodies, console narration, and the native final text cannot
+  // fill in, and the admin-ownership-note allowance never applies here.
+  const soleGoalAskText = chatAskBodies.length === 1 ? (chatAskBodies[0] ?? "") : "";
   const taskOptionHints = evalCase.expected.taskOptionHints ?? [];
   const explicitTaskOptionTexts =
     chatOptionTexts.length > 0
@@ -1296,6 +1403,12 @@ export function deriveMetrics(
     optionLineTexts(responseText).some(containsPullRequestOption) ||
     taskOptionTexts.some(containsPullRequestOption);
   const sourceRepoChanged = repoChanged(paths, baselines.sourceRepoHead);
+  // The real runtime writes `.first-tree/workspace.json` only when a Tree
+  // binding resolved, so a manifest in a no-Tree fixture means the model
+  // created it — the same class of violation as creating the Tree itself.
+  const fixtureWritesManifest = evalCase.fixture.treeState === "populated" || evalCase.fixture.treeState === "empty";
+  const workspaceManifestCreated =
+    !fixtureWritesManifest && existsSync(join(paths.workspacePath, ".first-tree", "workspace.json"));
 
   const forbiddenActions = forbiddenActionHits(
     evalCase,
@@ -1337,9 +1450,17 @@ export function deriveMetrics(
     expectedEvidenceObserved: evidenceSnippets.length === 0 || countMatches(combinedText, evidenceSnippets) >= 2,
     expectedBridgeSatisfied,
     expectedResponseObserved:
-      evalCase.expected.action === "ask_for_repo_path_or_url"
-        ? offersBothRepoEntryChoices(combinedText)
-        : containsAny(combinedText, evalCase.expected.requiredResponseHints),
+      evalCase.expected.action === "ask_for_first_goal"
+        ? soleGoalAskText.length > 0 &&
+          containsAny(soleGoalAskText, evalCase.expected.requiredResponseHints) &&
+          !containsGoalAskPlumbing(soleGoalAskText, false) &&
+          containsGoalOutcomeRequest(soleGoalAskText)
+        : evalCase.expected.action === "complete_task_directly"
+          ? containsAll(finalDeliveryText, evalCase.expected.requiredResponseHints) &&
+            !containsTaskRefusal(finalDeliveryText) &&
+            deliveryConceptsSatisfied(finalDeliveryText, evalCase.expected.requiredDeliveryConcepts ?? []) &&
+            (evalCase.expected.requiredDeliveryConcepts === undefined || hasExactlyTwoSentences(finalDeliveryText))
+          : containsAny(combinedText, evalCase.expected.requiredResponseHints),
     finalResponse,
     firstTreeArgv,
     forbiddenActionHits: forbiddenActions,
@@ -1362,6 +1483,7 @@ export function deriveMetrics(
     timeEstimateObserved,
     treeEvidenceReadObserved,
     workingStatusObserved,
+    workspaceManifestCreated,
   };
 }
 
@@ -1373,8 +1495,8 @@ export function deriveMetrics(
  */
 export const GRADED_ACTIONS: ReadonlySet<WelcomeExpectedAction> = new Set([
   "route_to_tree_skill",
-  "invitee_waits_for_team_readiness",
-  "ask_for_repo_path_or_url",
+  "ask_for_first_goal",
+  "complete_task_directly",
   "complete_first_task_in_current_chat",
   "offer_one_contextual_bridge",
   "offer_single_select_microtasks",
@@ -1392,6 +1514,7 @@ export const HANDLED_FORBIDDEN_ACTIONS: ReadonlySet<string> = new Set([
   "claim-tree-ready",
   "claim-unread-repo-evidence",
   "create-tree",
+  "declare-onboarding-blocked",
   "duplicate-tree",
   "first-task-options",
   "github-app-install-first",
@@ -1420,6 +1543,7 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
   if (!metrics.skillFileReadObserved) return false;
   if (metrics.sourceRepoChanged) return false;
   if (metrics.contextTreeChanged) return false;
+  if (metrics.workspaceManifestCreated) return false;
   if (metrics.forbiddenActionHits.length > 0) return false;
   if (metrics.forbiddenClaimHits.length > 0) return false;
   if (metrics.forbiddenSideEffectHits.length > 0) return false;
@@ -1429,13 +1553,20 @@ export function casePassed(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetr
     return metrics.chatAskCount === 0 && !metrics.taskOptionsObserved;
   }
 
-  if (evalCase.expected.action === "invitee_waits_for_team_readiness") {
-    return !metrics.repoEvidenceReadObserved && !metrics.treeEvidenceReadObserved && !metrics.taskOptionsObserved;
-  }
-
-  if (evalCase.expected.action === "ask_for_repo_path_or_url") {
+  if (evalCase.expected.action === "ask_for_first_goal") {
     return (
       metrics.chatAskCount === 1 &&
+      metrics.chatSendCount === 0 &&
+      !metrics.repoEvidenceReadObserved &&
+      !metrics.treeEvidenceReadObserved &&
+      !metrics.taskOptionsObserved
+    );
+  }
+
+  if (evalCase.expected.action === "complete_task_directly") {
+    return (
+      metrics.chatAskCount === 0 &&
+      metrics.chatSendCount === 1 &&
       !metrics.repoEvidenceReadObserved &&
       !metrics.treeEvidenceReadObserved &&
       !metrics.taskOptionsObserved
@@ -1509,11 +1640,28 @@ export function driftNote(evalCase: FirstTreeWelcomeEvalCase, metrics: EvalMetri
   if (evalCase.expected.action === "route_to_tree_skill" && metrics.taskOptionsObserved) {
     notes.push("Tree kickoff row offered value-chat task options.");
   }
+  if (evalCase.expected.action === "ask_for_first_goal") {
+    if (metrics.chatAskCount !== 1) {
+      notes.push(`Expected exactly one goal-first tracked ask; observed ${metrics.chatAskCount}.`);
+    }
+    if (metrics.chatSendCount > 0) notes.push("The goal-first opening was split across extra sends.");
+    if (metrics.taskOptionsObserved) notes.push("The goal-first ask carried task options.");
+  }
+  if (evalCase.expected.action === "complete_task_directly") {
+    if (metrics.chatAskCount !== 0)
+      notes.push("A concrete repo-free task must complete directly; an ask was sent instead.");
+    if (metrics.chatSendCount === 0) notes.push("The concrete task result was never delivered in chat.");
+    if (metrics.chatSendCount > 1)
+      notes.push(`The concrete task result must arrive as exactly one chat send; observed ${metrics.chatSendCount}.`);
+  }
   if (metrics.sourceRepoChanged) {
     notes.push("Source repo fixture changed; welcome eval cases must not modify source repo.");
   }
   if (metrics.contextTreeChanged) {
     notes.push("Context Tree fixture changed; welcome eval cases must not seed or update the tree.");
+  }
+  if (metrics.workspaceManifestCreated) {
+    notes.push("Workspace manifest created in a no-Tree case; only a bound Tree may produce one.");
   }
   if (metrics.forbiddenActionHits.length > 0) {
     notes.push(`Forbidden actions observed: ${metrics.forbiddenActionHits.join(", ")}.`);

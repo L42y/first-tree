@@ -22,6 +22,7 @@ const LEASE_MS = 45_000;
 const CLAIM_INTERVAL_MS = 15_000;
 const REGISTRATION_QR_TIMEOUT_MS = 20_000;
 const BOT_PROFILE_TIMEOUT_MS = 5_000;
+const MAX_ACKNOWLEDGEMENT_REACTIONS_IN_FLIGHT = 16;
 // The SDK's generic request logger may receive transport errors that include
 // Authorization headers. Callers record redacted operation context instead.
 const SILENT_FEISHU_CLIENT_LOGGER = {
@@ -643,12 +644,26 @@ export function createFeishuIntegrationManager(input: {
       handshakeTimeoutMs: 15_000,
       wsConfig: { pingTimeout: 10 },
     });
+    let acknowledgementReactionsInFlight = 0;
+    async function addAcknowledgementReaction(input: { messageId: string; emojiType: string }): Promise<string | null> {
+      // The SDK has no default HTTP timeout. Keep permanently stalled
+      // provider calls bounded per owned Channel and drop excess best-effort
+      // acknowledgements instead of letting them consume unbounded resources.
+      if (acknowledgementReactionsInFlight >= MAX_ACKNOWLEDGEMENT_REACTIONS_IN_FLIGHT) return null;
+      acknowledgementReactionsInFlight += 1;
+      try {
+        return await channel.addReaction(input.messageId, input.emojiType);
+      } finally {
+        acknowledgementReactionsInFlight -= 1;
+      }
+    }
     channel.on("message", async (message) => {
       try {
         const current = await requireOwnedBinding(row.id, row.connectionEpoch);
         await ingestFeishuMessage(db, notifier, current, message, {
           senderNames,
           attachmentObjectQuota,
+          addReaction: addAcknowledgementReaction,
           readMembers: async ({ chatId, idType, pageToken }) =>
             client.im.v1.chatMembers.get({
               path: { chat_id: chatId },

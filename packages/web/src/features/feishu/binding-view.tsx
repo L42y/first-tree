@@ -23,16 +23,19 @@ export function feishuBindingQueryKey(agentUuid: string): [string, string] {
 }
 
 /**
- * One read contract for the binding: while Feishu is still provisioning the
- * Bot the member is watching the page, so it polls fast; afterwards it drops
- * back to an ambient refresh.
+ * One read contract for the binding. Setup/detail surfaces poll while the
+ * member watches provisioning; directory snapshots can explicitly opt out so
+ * one open roster does not create a per-Agent polling fan-out.
  */
-export function feishuBindingQueryOptions(agentUuid: string) {
+export function feishuBindingQueryOptions(agentUuid: string, options: { poll?: boolean } = {}) {
   return {
     queryKey: feishuBindingQueryKey(agentUuid),
     queryFn: () => getAgentFeishuBinding(agentUuid),
-    refetchInterval: (state: { state: { data?: { binding: FeishuBotBinding | null } } }) =>
-      state.state.data?.binding?.status === "provisioning" ? PROVISIONING_POLL_MS : IDLE_POLL_MS,
+    refetchInterval:
+      options.poll === false
+        ? (false as const)
+        : (state: { state: { data?: { binding: FeishuBotBinding | null } } }) =>
+            state.state.data?.binding?.status === "provisioning" ? PROVISIONING_POLL_MS : IDLE_POLL_MS,
   };
 }
 
@@ -63,13 +66,22 @@ export function isFeishuBotReachable(binding: FeishuBotBinding): boolean {
 }
 
 /**
+ * Whether the Agent's Feishu handoff is configured to carry work. Both halves
+ * have to hold: the Bot must receive messages and the CLI must be ready to
+ * answer them. Agent lifecycle is a separate caller-owned constraint.
+ */
+export function isFeishuHandoffUsable(binding: FeishuBotBinding | null): boolean {
+  return !!binding && isFeishuBotReachable(binding) && binding.cli.state === "ready";
+}
+
+/**
  * The registration QR the member scans in Feishu, plus the same destination as
  * a link for anyone who is already signed in on this device.
  */
 export function FeishuRegistrationQr({ registrationUrl }: { registrationUrl: string }): ReactElement {
   return (
     <div className="flex flex-col items-center" style={{ gap: "var(--sp-3)", padding: "var(--sp-4) 0" }}>
-      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu Bot registration QR code" />
+      <QRCodeSVG value={registrationUrl} size={184} marginSize={2} title="Feishu bot registration QR code" />
       <div className="text-label text-center" style={{ color: "var(--fg-3)" }}>
         Scan with Feishu, choose the existing Bot or create a new one, then confirm the requested permissions. This page
         updates automatically.

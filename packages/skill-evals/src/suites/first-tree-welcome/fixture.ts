@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { assertCommandOk, runCommand, writeText } from "../../core/commands.js";
@@ -20,7 +20,7 @@ function workspaceAgentsMarkdown(skillDescription: string, evalCase: FirstTreeWe
       return "A local readable source repo fixture is available at `./source-repo`; use it for the bounded first-project read.";
     }
     if (evalCase.fixture.repoState === "selected-auth-fails") {
-      return "A selected repository exists, but reading it fails with an authorization error. No repo evidence is readable; ask for a local project folder path or accessible URL.";
+      return "A selected repository exists, but reading it fails with an authorization error. No repo evidence is readable; name the exact read failure, give the single narrowest recovery for that cause (for example `gh auth login`, an accessible URL, or a local project folder path), and keep serving every part of the request that does not depend on the repo.";
     }
     return "No readable source repository is connected in this eval workspace.";
   })();
@@ -31,7 +31,7 @@ function workspaceAgentsMarkdown(skillDescription: string, evalCase: FirstTreeWe
     if (evalCase.fixture.treeState === "empty") {
       return "An empty bootstrap-only Context Tree fixture is available at `./context-tree`; it has no populated product evidence.";
     }
-    return "No readable populated Context Tree is available in this eval workspace.";
+    return "No Context Tree is bound in this eval workspace — a supported state, not a gap to fix; do not prompt the user to bind or create one.";
   })();
 
   return `# First Tree Welcome Eval Workspace
@@ -69,7 +69,7 @@ the two-option first microtask choice, using a JSON array of objects such as
 Never inline a rich body through the shell or search the project for CLI syntax.
 The eval shim records chat commands only; it never sends a real message.
 
-Do not use real GitHub, install GitHub Apps, create repositories, push, open
+Do not use real GitHub or GitLab, install GitHub Apps, create repositories, push, open
 pull requests, create or bind Context Trees, or seed a Context Tree in this
 eval workspace.
 `;
@@ -85,12 +85,19 @@ function installFirstTreeWelcomeSkill(
 }
 
 function writeWorkspaceManifest(paths: RunPaths, evalCase: FirstTreeWelcomeEvalCase): void {
+  const hasContextTree = evalCase.fixture.treeState === "populated" || evalCase.fixture.treeState === "empty";
+  // Match the real managed runtime: `.first-tree/workspace.json` is written
+  // only when a Context Tree binding resolved (agent-bootstrap gates the
+  // writer on `contextTreePath !== null`); no tree means no manifest at all,
+  // never a `tree: null` placeholder. The fixture builds its source repo flat
+  // at `<workspace>/source-repo`, so the manifest uses the schema's legacy
+  // flat form (no `sourcesRoot`), keeping the declared binding path real.
+  if (!hasContextTree) return;
   const hasReadableRepo =
     evalCase.fixture.repoState === "selected-readable" || evalCase.fixture.repoState === "local-readable";
-  const hasContextTree = evalCase.fixture.treeState === "populated" || evalCase.fixture.treeState === "empty";
   const manifest = {
+    tree: "context-tree",
     sources: hasReadableRepo ? ["source-repo"] : [],
-    tree: hasContextTree ? "context-tree" : null,
   };
   writeText(join(paths.workspacePath, ".first-tree", "workspace.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -364,6 +371,22 @@ export function validateFixture(
       ok: true,
       requiredFilesOk: true,
     };
+  }
+
+  // A declared binding must be real: every source the workspace manifest
+  // names must exist at its schema-resolved path (flat at the workspace root
+  // without `sourcesRoot`, under `<sourcesRoot>/` with it).
+  const manifestPath = join(paths.workspacePath, ".first-tree", "workspace.json");
+  if (existsSync(manifestPath)) {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { sources?: unknown; sourcesRoot?: unknown };
+    const sources = Array.isArray(manifest.sources) ? manifest.sources.filter((s) => typeof s === "string") : [];
+    const sourcesRoot = typeof manifest.sourcesRoot === "string" ? manifest.sourcesRoot : null;
+    for (const source of sources) {
+      const declaredPath = join(paths.workspacePath, ...(sourcesRoot === null ? [source] : [sourcesRoot, source]));
+      if (!existsSync(declaredPath)) {
+        errors.push(`manifest declares source "${source}" but ${declaredPath} does not exist`);
+      }
+    }
   }
 
   const requiredFiles = [

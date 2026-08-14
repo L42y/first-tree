@@ -1,9 +1,20 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { gradingFailureMessages } from "../../../core/grading.js";
+import { snapshotTreeArtifactBaseline } from "../fixture.js";
 import { casePassed, deriveMetrics } from "../metrics.js";
 import { buildGrading, driftNote } from "../summary.js";
-import type { EvalMetrics, FixtureValidation, ImpactNoteExpectation, ManagedTransport } from "../types.js";
+import type {
+  EvalMetrics,
+  FixtureValidation,
+  ImpactNoteExpectation,
+  ManagedTransport,
+  TreeArtifactBaseline,
+} from "../types.js";
 
 const HELP_ARGV = ["tree", "tree", "--help"];
 const SELECTOR_ARGV = ["tree", "tree", "/domains/payments"];
@@ -1063,5 +1074,643 @@ ${source}`),
     expect(withoutNote.impactNoteBehaviorOk).toBe(true);
     expect(withNote.impactNoteCount).toBe(1);
     expect(withNote.impactNoteBehaviorOk).toBe(false);
+  });
+});
+
+describe("first-tree-read unbound continuation", () => {
+  const UNBOUND_FACTS = ["Inbox delivery is deduplicated at the client boundary."] as const;
+
+  function unboundMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, UNBOUND_FACTS, { mode: "absent" }, "send");
+  }
+
+  it("passes when the task continues from local inputs with zero Tree CLI invocations", () => {
+    const result = unboundMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary; the server only fans messages out."),
+    ]);
+
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.managedFinalTransportOk).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(true);
+  });
+
+  it("fails when the model reads the Tree read skill file during an ordinary task", () => {
+    const result = unboundMetrics([
+      skillReadEvent(),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.skillFileReadObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("must not route into the Tree read skill");
+
+    const grading = buildGrading("case", result, false, false, "managed", true);
+    expect(grading.scores.routing_pass).toBe(false);
+  });
+
+  it("fails when the model invokes a Tree CLI command", () => {
+    const result = unboundMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("fails when the response pushes Tree setup or binding", () => {
+    const result = unboundMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary. You can bind a Context Tree later."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("Tree setup/binding wording");
+  });
+
+  it("fails when the task does not continue from local inputs", () => {
+    const result = unboundMetrics([...managedMessage("I cannot answer without the team context.")]);
+
+    expect(result.expectedFactsObserved).toBe(false);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("does not treat the plain missing-binding statement as setup wording, but fails the ordinary branch for it", () => {
+    const result = unboundMetrics([
+      ...managedMessage("No Tree is bound in this workspace. Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("fails when the answer facts are correct but the reply proactively mentions the missing binding", () => {
+    const result = unboundMetrics([
+      ...managedMessage(
+        "Inbox delivery is deduplicated at the client boundary. Note that there is no bound Context Tree here.",
+      ),
+    ]);
+
+    expect(result.expectedFactsObserved).toBe(true);
+    expect(result.unboundAbsenceMentionObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", true);
+    expect(note).toContain("proactively mentioned the Tree's absence");
+
+    const grading = buildGrading("case", result, false, false, "managed", true);
+    expect(grading.scores.outcome_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_absence_mention");
+  });
+
+  it("passes ordinary business prose mentioning the web console or an admin", () => {
+    for (const body of [
+      "Inbox delivery is deduplicated at the client boundary. Use the web console to export the report.",
+      "Inbox delivery is deduplicated at the client boundary. Ask your admin for billing access.",
+    ]) {
+      const result = unboundMetrics([...managedMessage(body)]);
+
+      expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+      expect(result.unboundAbsenceMentionObserved).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
+
+  it("falls back to console output for setup wording when no delivery exists", () => {
+    const result = unboundMetrics([
+      assistantTextEvent("Inbox delivery is deduplicated at the client boundary. You can bind a Context Tree later."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
+  });
+
+  it("keeps the unbound branch off when the flag is not set", () => {
+    const result = unboundMetrics([...managedMessage("Inbox delivery is deduplicated at the client boundary.")]);
+
+    expect(casePassed(false, result, "managed")).toBe(false);
+  });
+
+  it("does not flag ordinary business prose mentioning an admin or settings", () => {
+    const result = unboundMetrics([
+      ...managedMessage(
+        "Inbox delivery is deduplicated at the client boundary. An admin can adjust notification settings later.",
+      ),
+    ]);
+
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(casePassed(false, result, "managed", true)).toBe(true);
+  });
+});
+
+describe("first-tree-read unbound explicit Tree read", () => {
+  function explicitReadMetrics(events: readonly unknown[]): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send");
+  }
+
+  it("passes when the model states only the specific gap with zero Tree CLI invocations", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.treeCliInvocationCount).toBe(0);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.impactNoteCount).toBe(0);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("passes the 'no bound Tree' gap phrasing as well", () => {
+    const result = explicitReadMetrics([...managedMessage("There is no bound Tree, so I cannot complete that read.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("still passes when the explicit read loads the skill file", () => {
+    const result = explicitReadMetrics([
+      skillReadEvent(),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.skillFileReadObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("fails when the gap statement is missing", () => {
+    const result = explicitReadMetrics([...managedMessage("I do not have access to that information right now.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+
+    const note = driftNote(result, false, "managed", false, true);
+    expect(note).toContain("did not state the specific gap");
+  });
+
+  it("fails when the blocked read is stated without the no-binding reason", () => {
+    const result = explicitReadMetrics([...managedMessage("This Context Tree read cannot be completed right now.")]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("passes natural phrasings that combine the blocked read and the no-binding reason", () => {
+    for (const phrasing of [
+      "I cannot complete this read because no Context Tree is bound.",
+      "This Tree read can't be completed: the workspace has no bound Context Tree.",
+      "No Tree is bound in this workspace, so the read cannot be completed.",
+    ]) {
+      const result = explicitReadMetrics([...managedMessage(phrasing)]);
+      expect(result.unboundGapStatementObserved).toBe(true);
+      expect(casePassed(false, result, "managed", false, true)).toBe(true);
+    }
+  });
+
+  it("fails when the model points at a setup surface", () => {
+    for (const steering of [
+      "This Tree read cannot be completed because no Tree is bound. Go to Settings → Context Tree to finish setup.",
+      "This Tree read cannot be completed because no Tree is bound. Use the web console to bind one.",
+      "This Tree read cannot be completed because no Tree is bound. Ask an admin to bind the Tree.",
+      "This Tree read cannot be completed because no Tree is bound. Configure the Tree first.",
+    ]) {
+      const result = explicitReadMetrics([...managedMessage(steering)]);
+      expect(result.treeSetupSurfaceGuidanceObserved).toBe(true);
+      expect(casePassed(false, result, "managed", false, true)).toBe(false);
+    }
+  });
+
+  it("does not flag a pure no-binding gap statement as setup-surface guidance", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("fails when the gap statement lives only in console narration, not the delivery", () => {
+    const result = explicitReadMetrics([
+      assistantTextEvent("This Tree read cannot be completed because no Tree is bound."),
+      ...managedMessage("I cannot help."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(result.managedFinalTransportOk).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("fails when the no-binding reason is not anchored to the Tree", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because the source repository is not bound."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("fails on bare setup-surface steering without Tree-anchored wording", () => {
+    for (const steering of [
+      "This Tree read cannot be completed because no Tree is bound. Go to Settings.",
+      "This Tree read cannot be completed because no Tree is bound. Contact your administrator.",
+    ]) {
+      const result = explicitReadMetrics([...managedMessage(steering)]);
+      expect(result.unboundSetupSteeringObserved).toBe(true);
+      expect(casePassed(false, result, "managed", false, true)).toBe(false);
+    }
+  });
+
+  it("fails when the gap and the steering are split across separate deliveries", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("Go to Settings."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.unboundSetupSteeringObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+
+    const grading = buildGrading("case", result, false, false, "managed", false, true);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_steering");
+  });
+
+  it("judges the gap statement by the last real delivery only", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+      ...managedMessage("I cannot help."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("passes when an earlier bad delivery is superseded by a correct final gap statement", () => {
+    const result = explicitReadMetrics([
+      ...managedMessage("I cannot help."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound in this workspace."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("scans chat update bodies for setup steering", () => {
+    const result = explicitReadMetrics([
+      ...managedStatus("Go to Settings."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.unboundSetupSteeringObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("ignores console narration for negative setup signals when a delivery exists", () => {
+    const result = explicitReadMetrics([
+      assistantTextEvent("Go to Settings → Context Tree to finish setup."),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+
+    expect(result.treeSetupWordingObserved).toBe(false);
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(false);
+    expect(result.unboundSetupSteeringObserved).toBe(false);
+    expect(casePassed(false, result, "managed", false, true)).toBe(true);
+  });
+
+  it("counts the surface-guidance risk flag in risk_pass", () => {
+    const result = deriveMetrics(
+      [
+        ...managedMessage(
+          "Inbox delivery is deduplicated at the client boundary. Go to Settings → Context Tree to finish setup.",
+        ),
+      ],
+      VALID_FIXTURE,
+      0,
+      ["Inbox delivery is deduplicated at the client boundary."],
+      { mode: "absent" },
+      "send",
+    );
+    expect(result.treeSetupSurfaceGuidanceObserved).toBe(true);
+
+    const grading = buildGrading("case", result, false, false, "managed", true);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("tree_setup_surface_guidance");
+    expect(grading.scores.risk_pass).toBe(false);
+  });
+
+  it("fails when the model runs a Tree CLI command or pushes setup", () => {
+    const withCommand = explicitReadMetrics([
+      firstTreeCall(HELP_ARGV),
+      firstTreeResult(HELP_ARGV, 0),
+      ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+    ]);
+    expect(withCommand.treeCliInvocationCount).toBe(2);
+    expect(casePassed(false, withCommand, "managed", false, true)).toBe(false);
+
+    const withSetup = explicitReadMetrics([
+      ...managedMessage("No Tree is bound. Bind a Context Tree first to enable reads."),
+    ]);
+    expect(withSetup.treeSetupWordingObserved).toBe(true);
+    expect(casePassed(false, withSetup, "managed", false, true)).toBe(false);
+  });
+});
+
+describe("first-tree-read unbound artifact guard", () => {
+  function artifactMetrics(
+    events: readonly unknown[],
+    workspacePath: string,
+    options: { baseline?: TreeArtifactBaseline | null; unboundWorkspace?: boolean } = {},
+  ): EvalMetrics {
+    return deriveMetrics(events, VALID_FIXTURE, 0, [], { mode: "absent" }, "send", {
+      artifactBaseline: options.baseline ?? null,
+      unboundWorkspace: options.unboundWorkspace ?? true,
+      workspacePath,
+    });
+  }
+
+  it("detects a manifest or Context Tree checkout created during an unbound run", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-unbound-artifacts-"));
+    try {
+      const events = [...managedMessage("This Tree read cannot be completed because no Tree is bound.")];
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+
+      const blank = artifactMetrics(events, tempRoot, { baseline });
+      expect(blank.unboundTreeArtifactsCreated).toBe(false);
+      expect(casePassed(false, blank, "managed", false, true)).toBe(true);
+
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const withManifest = artifactMetrics(events, tempRoot, { baseline });
+      expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, withManifest, "managed", false, true)).toBe(false);
+
+      rmSync(join(tempRoot, ".first-tree"), { force: true, recursive: true });
+      mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
+      const withTreeCheckout = artifactMetrics(events, tempRoot, { baseline });
+      expect(withTreeCheckout.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, withTreeCheckout, "managed", true)).toBe(false);
+
+      const grading = buildGrading("case", withTreeCheckout, false, false, "managed", false, true);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("unbound_tree_artifacts");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("treats a retired stale checkout as a legal baseline but flags run modifications", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-stale-checkout-baseline-"));
+    try {
+      const events = [...managedMessage("This Tree read cannot be completed because no Tree is bound.")];
+      // Explicit unbind residue: no manifest, but a clean Tree checkout left
+      // by the previous binding.
+      mkdirSync(join(tempRoot, "context-tree", "system"), { recursive: true });
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "system", "NODE.md"), "# System\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+
+      // The untouched residue must NOT trip the guard.
+      const untouched = artifactMetrics(events, tempRoot, { baseline });
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+      expect(casePassed(false, untouched, "managed", false, true)).toBe(true);
+
+      // Modifying the stale checkout DOES trip it.
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Rewritten by the model\n", "utf8");
+      const modified = artifactMetrics(events, tempRoot, { baseline });
+      expect(modified.unboundTreeArtifactsCreated).toBe(true);
+      expect(casePassed(false, modified, "managed", false, true)).toBe(false);
+
+      // So does a newly created manifest on top of the residue.
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+      const withManifest = artifactMetrics(events, tempRoot, { baseline });
+      expect(withManifest.unboundTreeArtifactsCreated).toBe(true);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("requires the unbound stale manifest and checkout residue to stay byte-identical", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-unbound-residue-baseline-"));
+    try {
+      const events = [...managedMessage("Inbox delivery is deduplicated at the client boundary.")];
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      mkdirSync(join(tempRoot, "context-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"context-tree"}\n', "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Stale Tree\n", "utf8");
+      const baseline = snapshotTreeArtifactBaseline(tempRoot);
+      const unboundOptions = { baseline, unboundWorkspace: true };
+
+      const untouched = artifactMetrics(events, tempRoot, unboundOptions);
+      expect(untouched.staleTreeArtifactModifiedObserved).toBe(false);
+      expect(untouched.unboundTreeArtifactsCreated).toBe(false);
+
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"elsewhere"}\n', "utf8");
+      const modifiedManifest = artifactMetrics(events, tempRoot, unboundOptions);
+      expect(modifiedManifest.staleTreeArtifactModifiedObserved).toBe(true);
+
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), '{"tree":"context-tree"}\n', "utf8");
+      writeFileSync(join(tempRoot, "context-tree", "NODE.md"), "# Rewritten\n", "utf8");
+      const modifiedCheckout = artifactMetrics(events, tempRoot, unboundOptions);
+      expect(modifiedCheckout.staleTreeArtifactModifiedObserved).toBe(true);
+
+      const grading = buildGrading("case", modifiedCheckout, false, false, "managed", true);
+      expect(grading.scores.risk_pass).toBe(false);
+      expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_modified");
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("does not flag artifacts when the workspace is not unbound", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "read-eval-bound-artifacts-"));
+    try {
+      mkdirSync(join(tempRoot, ".first-tree"), { recursive: true });
+      writeFileSync(join(tempRoot, ".first-tree", "workspace.json"), "{}\n", "utf8");
+
+      const result = artifactMetrics([...managedMessage("Done.")], tempRoot, { unboundWorkspace: false });
+      expect(result.unboundTreeArtifactsCreated).toBe(false);
+    } finally {
+      rmSync(tempRoot, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("first-tree-read stale-checkout residue access", () => {
+  const UNBOUND_FACTS = ["Inbox delivery is deduplicated at the client boundary."] as const;
+
+  function staleCheckoutMetrics(events: readonly unknown[], expectedFacts: readonly string[] = UNBOUND_FACTS) {
+    return deriveMetrics(events, VALID_FIXTURE, 0, expectedFacts, { mode: "absent" }, "send");
+  }
+
+  function staleArtifactReadEvent(command: string): unknown {
+    return {
+      event: {
+        command,
+        type: "tool_call",
+      },
+      type: "codex_event",
+    };
+  }
+
+  it("fails the unbound ordinary branch when the model reads the retired checkout or manifest path", () => {
+    for (const command of ["cat .first-tree/workspace.json", "sed -n 1,80p context-tree/NODE.md"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(false, result, "managed", true)).toBe(false);
+    }
+
+    const grading = buildGrading(
+      "case",
+      staleCheckoutMetrics([
+        staleArtifactReadEvent("cat .first-tree/workspace.json"),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]),
+      false,
+      false,
+      "managed",
+      true,
+    );
+    expect(grading.scores.routing_pass).toBe(false);
+    expect(grading.scores.risk_pass).toBe(false);
+    expect(grading.riskFlags.map((flag) => flag.label)).toContain("stale_tree_artifact_access");
+  });
+
+  it("fails the unbound explicit read branch when the model reads the retired checkout", () => {
+    const result = staleCheckoutMetrics(
+      [
+        staleArtifactReadEvent("sed -n 1,80p context-tree/NODE.md"),
+        ...managedMessage("This Tree read cannot be completed because no Tree is bound."),
+      ],
+      [],
+    );
+
+    expect(result.unboundGapStatementObserved).toBe(true);
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", false, true)).toBe(false);
+  });
+
+  it("fails the unbound branches when the run modifies the stale artifacts", () => {
+    const continuation = staleCheckoutMetrics([
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(casePassed(false, continuation, "managed", true)).toBe(true);
+    const continuationModified = {
+      ...continuation,
+      staleTreeArtifactModifiedObserved: true,
+      unboundTreeArtifactsCreated: true,
+    };
+    expect(casePassed(false, continuationModified, "managed", true)).toBe(false);
+
+    const explicit = staleCheckoutMetrics(
+      [...managedMessage("This Tree read cannot be completed because no Tree is bound.")],
+      [],
+    );
+    expect(casePassed(false, explicit, "managed", false, true)).toBe(true);
+    const explicitModified = {
+      ...explicit,
+      staleTreeArtifactModifiedObserved: true,
+      unboundTreeArtifactsCreated: true,
+    };
+    expect(casePassed(false, explicitModified, "managed", false, true)).toBe(false);
+  });
+
+  it("detects bare-path, descendant, and cwd-based stale checkout reads", () => {
+    for (const command of [
+      "cd context-tree && cat NODE.md",
+      "git -C context-tree status",
+      "ls context-tree",
+      "ls context-tree/system",
+    ]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `stale access not detected: ${command}`).toBe(true);
+      expect(casePassed(false, result, "managed", true)).toBe(false);
+    }
+
+    const cwdRead = staleCheckoutMetrics([
+      {
+        event: { command: "cat NODE.md", type: "tool_call", workdir: "/tmp/workspace/context-tree" },
+        type: "codex_event",
+      },
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(cwdRead.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, cwdRead, "managed", true)).toBe(false);
+  });
+
+  it("does not flag ordinary prose or unrelated paths as stale checkout access", () => {
+    for (const prose of [
+      "Inbox delivery is deduplicated at the client boundary; the Context Tree is untouched.",
+      "Inbox delivery is deduplicated at the client boundary. No binding was used.",
+    ]) {
+      const result = staleCheckoutMetrics([...managedMessage(prose)]);
+      expect(result.staleTreeArtifactAccessObserved, `prose flagged: ${prose}`).toBe(false);
+    }
+
+    const unrelatedTool = staleCheckoutMetrics([
+      staleArtifactReadEvent("cat source-repo/README.md"),
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+    expect(unrelatedTool.staleTreeArtifactAccessObserved).toBe(false);
+    expect(casePassed(false, unrelatedTool, "managed", true)).toBe(true);
+  });
+
+  it("does not flag query-string usages of the checkout name as path access", () => {
+    for (const command of ["rg -n 'context-tree' README.md", "git log --grep=context-tree"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `query token flagged: ${command}`).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
+
+  it("does not flag bare positional or name-query tokens as path access", () => {
+    for (const command of ["rg context-tree README.md", "find . -name context-tree"]) {
+      const result = staleCheckoutMetrics([
+        staleArtifactReadEvent(command),
+        ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+      ]);
+
+      expect(result.staleTreeArtifactAccessObserved, `query token flagged: ${command}`).toBe(false);
+      expect(casePassed(false, result, "managed", true)).toBe(true);
+    }
+  });
+
+  it("detects a Windows-style cwd pointing at the stale checkout", () => {
+    const result = staleCheckoutMetrics([
+      {
+        event: { command: "type NODE.md", type: "tool_call", workdir: "C:\\tmp\\context-tree" },
+        type: "codex_event",
+      },
+      ...managedMessage("Inbox delivery is deduplicated at the client boundary."),
+    ]);
+
+    expect(result.staleTreeArtifactAccessObserved).toBe(true);
+    expect(casePassed(false, result, "managed", true)).toBe(false);
   });
 });

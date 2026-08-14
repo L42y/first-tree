@@ -25,6 +25,7 @@ const sdkMocks = (() => {
   const handlers = new Map<string, (payload: unknown) => unknown>();
   const disconnect = vi.fn().mockResolvedValue(undefined);
   const connect = vi.fn().mockResolvedValue(undefined);
+  const addReaction = vi.fn().mockResolvedValue("reaction-ack");
   const request = vi.fn().mockResolvedValue(DEFAULT_BOT_INFO_RESPONSE);
   const channel = {
     botIdentity: { openId: "ou_created_bot" },
@@ -32,12 +33,14 @@ const sdkMocks = (() => {
       handlers.set(name, handler);
       return channel;
     }),
+    addReaction,
     connect,
     disconnect,
   };
   return {
     handlers,
     channel,
+    addReaction,
     connect,
     disconnect,
     request,
@@ -86,6 +89,7 @@ function createIsolatedSdk(
   const handlers = new Map<string, (payload: unknown) => unknown>();
   const connect = vi.fn().mockResolvedValue(undefined);
   const disconnect = vi.fn().mockResolvedValue(undefined);
+  const addReaction = vi.fn().mockResolvedValue("reaction-ack");
   const request = vi.fn().mockResolvedValue({
     code: 0,
     msg: "ok",
@@ -97,6 +101,7 @@ function createIsolatedSdk(
       handlers.set(name, handler);
       return channel;
     }),
+    addReaction,
     connect,
     disconnect,
   };
@@ -114,7 +119,31 @@ function createIsolatedSdk(
       },
     })),
   } as unknown as FeishuSdkDependencies;
-  return { sdk, registerApp, channel, connect, disconnect, request, handlers };
+  return { sdk, registerApp, channel, addReaction, connect, disconnect, request, handlers };
+}
+
+function receivedMessage(id: string) {
+  return {
+    messageId: `om_${id}`,
+    chatId: "oc_acknowledge",
+    chatType: "p2p",
+    senderId: "ou_human",
+    senderName: "Human",
+    content: "hello",
+    rawContentType: "text",
+    resources: [],
+    mentions: [],
+    mentionAll: false,
+    mentionedBot: false,
+    createTime: Date.now(),
+    raw: {
+      header: { event_id: `event_${id}` },
+      event: {
+        sender: { tenant_key: "tenant-a", sender_id: { open_id: "ou_human" } },
+        message: { message_type: "text", content: JSON.stringify({ text: "hello" }) },
+      },
+    },
+  };
 }
 
 describe("official Feishu QR registration", () => {
@@ -127,6 +156,7 @@ describe("official Feishu QR registration", () => {
     sdkMocks.connect.mockResolvedValue(undefined);
     sdkMocks.disconnect.mockResolvedValue(undefined);
     sdkMocks.request.mockReset().mockResolvedValue(DEFAULT_BOT_INFO_RESPONSE);
+    sdkMocks.addReaction.mockResolvedValue("reaction-ack");
   });
 
   async function prepareSupersededReauthorization(suffix: string) {
@@ -415,12 +445,14 @@ describe("official Feishu QR registration", () => {
     const staleMessageHandler = sdkMocks.handlers.get("message");
     expect(staleMessageHandler).toBeTypeOf("function");
     await staleMessageHandler?.({ messageId: "om_stale" });
+    expect(sdkMocks.addReaction).not.toHaveBeenCalled();
     expect(await app.db.select().from(messages)).toEqual([]);
     const [afterStaleEvent] = await app.db
       .select({ lastEventAt: imBotBindings.lastEventAt })
       .from(imBotBindings)
       .where(eq(imBotBindings.id, stored?.id ?? "missing"));
     expect(afterStaleEvent?.lastEventAt).toBeNull();
+    await app.feishuIntegration.revoke(a.agent.uuid);
   });
 
   it("keeps an active Bot online while reauthorizing the same App", async () => {
@@ -736,11 +768,64 @@ describe("official Feishu QR registration", () => {
       botName: "Agent A · First Tree",
       botAvatarUrl: "https://example.com/agent-a.png",
     });
+    await app.feishuIntegration.revoke(a.agent.uuid);
+  });
+
+  it("uses the owned Bot channel to acknowledge an admitted message", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    await app.feishuIntegration.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      return row?.status === "active";
+    });
+
+    const messageHandler = sdkMocks.handlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    await messageHandler?.(receivedMessage("acknowledge"));
+
+    await vi.waitFor(() => expect(sdkMocks.addReaction).toHaveBeenCalledWith("om_acknowledge", "Get"));
+    expect(await app.db.select().from(messages)).toHaveLength(1);
+    await app.feishuIntegration.revoke(a.agent.uuid);
+  });
+
+  it("bounds acknowledgement reactions when provider calls never settle", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    sdkMocks.addReaction.mockImplementation(() => new Promise<string>(() => undefined));
+    await app.feishuIntegration.startRegistration({
+      agentId: a.agent.uuid,
+      organizationId: a.organizationId,
+      displayName: "Agent A · First Tree",
+    });
+    await waitFor(async () => {
+      const [row] = await app.db.select().from(imBotBindings).where(eq(imBotBindings.agentId, a.agent.uuid));
+      return row?.status === "active";
+    });
+
+    const messageHandler = sdkMocks.handlers.get("message");
+    expect(messageHandler).toBeTypeOf("function");
+    for (let index = 0; index < 20; index += 1) {
+      await messageHandler?.(receivedMessage(`bounded_${index}`));
+    }
+
+    await vi.waitFor(() => expect(sdkMocks.addReaction).toHaveBeenCalledTimes(16));
+    expect(await app.db.select().from(messages)).toHaveLength(20);
+    await app.feishuIntegration.revoke(a.agent.uuid);
   });
 
   it("maintains the provisioning lease while connection and Bot profile enrichment are pending", async () => {
     const app = getApp();
     const a = await createTestAgent(app, { displayName: "Agent A", visibility: "organization" });
+    // This test drives its own manager with accelerated lease timings. Pause
+    // the app-owned manager so its background cleanup cannot satisfy the
+    // shared disconnect spy or compete for the test binding.
+    await app.feishuIntegration.stop();
+    vi.clearAllMocks();
     const connectStarted = deferred<void>();
     const connectCompletion = deferred<void>();
     sdkMocks.connect.mockImplementationOnce(() => {
@@ -810,7 +895,12 @@ describe("official Feishu QR registration", () => {
     } finally {
       connectCompletion.resolve();
       await new Promise((resolve) => setTimeout(resolve, 70));
-      await manager.stop();
+      try {
+        await manager.stop();
+        if (await manager.getBinding(a.agent.uuid)) await manager.revoke(a.agent.uuid);
+      } finally {
+        app.feishuIntegration.start();
+      }
     }
   });
 

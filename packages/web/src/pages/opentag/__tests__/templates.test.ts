@@ -1,6 +1,10 @@
 import type { AgentTemplatePublicTemplate } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
-import { OPENTAG_RECOMMENDED_TEMPLATE_SLUG, resolveOpenTagTemplateChoices } from "../templates.js";
+import {
+  OPENTAG_RECOMMENDED_TEMPLATE_SLUG,
+  openTagTemplateTagline,
+  resolveOpenTagTemplateChoices,
+} from "../templates.js";
 
 function template(slug: string, status: "active" | "retired" = "active"): AgentTemplatePublicTemplate {
   return {
@@ -22,7 +26,7 @@ function template(slug: string, status: "active" | "retired" = "active"): AgentT
 }
 
 describe("resolveOpenTagTemplateChoices", () => {
-  it("leads with the recommendation regardless of the order the catalog returned", () => {
+  it("preserves public catalog order while identifying its recommendation", () => {
     const choices = resolveOpenTagTemplateChoices([
       template("researcher"),
       template("software-engineer"),
@@ -30,9 +34,9 @@ describe("resolveOpenTagTemplateChoices", () => {
     ]);
 
     expect(choices.ordered.map((t) => t.slug)).toEqual([
-      OPENTAG_RECOMMENDED_TEMPLATE_SLUG,
       "researcher",
       "software-engineer",
+      OPENTAG_RECOMMENDED_TEMPLATE_SLUG,
     ]);
     expect(choices.recommendedSlug).toBe(OPENTAG_RECOMMENDED_TEMPLATE_SLUG);
   });
@@ -50,5 +54,18 @@ describe("resolveOpenTagTemplateChoices", () => {
 
   it("returns nothing to choose when the deployment publishes no catalog", () => {
     expect(resolveOpenTagTemplateChoices([])).toEqual({ ordered: [], recommendedSlug: null });
+  });
+
+  it("uses approved onboarding taglines without replacing catalog-backed choices", () => {
+    expect(openTagTemplateTagline(template("team-assistant"))).toBe(
+      "For team questions, decisions, and follow-through.",
+    );
+    expect(openTagTemplateTagline(template("software-engineer"))).toBe(
+      "For debugging, code review, and implementation planning.",
+    );
+    expect(openTagTemplateTagline(template("researcher"))).toBe(
+      "For evidence gathering, comparison, and decision support.",
+    );
+    expect(openTagTemplateTagline(template("custom"))).toBe("t");
   });
 });

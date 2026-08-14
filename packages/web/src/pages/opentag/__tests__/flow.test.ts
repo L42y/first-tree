@@ -1,4 +1,6 @@
+import type { FeishuBotBinding } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
+import { isFeishuHandoffUsable } from "../../../features/feishu/binding-view.js";
 import { shouldEnterOnboarding } from "../../onboarding/steps.js";
 import { classifyOpenTagAgent, type OpenTagAgentRead, resolveOpenTagStep } from "../flow.js";
 
@@ -141,20 +143,29 @@ describe("classifyOpenTagAgent", () => {
 
 describe("resolveOpenTagStep", () => {
   it("starts at the Agent choice with no Agent, and recovers there from a wrong Agent", () => {
-    expect(resolveOpenTagStep({ state: "none" })).toBe("choose-agent");
-    expect(resolveOpenTagStep({ state: "unavailable" })).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "none" }, false)).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "unavailable" }, true)).toBe("choose-agent");
   });
 
   it("holds the step until the authoritative read settles", () => {
-    expect(resolveOpenTagStep({ state: "loading" })).toBeNull();
-    expect(resolveOpenTagStep({ state: "unreadable" })).toBeNull();
-    expect(resolveOpenTagStep({ state: "team-unreadable" })).toBeNull();
+    expect(resolveOpenTagStep({ state: "loading" }, false)).toBeNull();
+    expect(resolveOpenTagStep({ state: "unreadable" }, false)).toBeNull();
+    expect(resolveOpenTagStep({ state: "team-unreadable" }, false)).toBeNull();
   });
 
-  it("sends an existing Agent straight to Feishu", () => {
+  it("keeps an existing Agent on setup until the Feishu handoff is usable", () => {
     // Both setup choices already happened at creation, so there is nothing
-    // between an existing Agent and its Bot.
-    expect(resolveOpenTagStep({ state: "resolved" })).toBe("connect-feishu");
+    // between an existing Agent and its bot, but provisioning is still Step 3.
+    expect(resolveOpenTagStep({ state: "resolved" }, false)).toBe("connect-feishu");
+  });
+
+  it("enters the real-first-use step only when both bot and tools are ready", () => {
+    expect(resolveOpenTagStep({ state: "resolved" }, true)).toBe("use-in-feishu");
+  });
+
+  it("cannot advance a bot belonging to an Agent that is not usable here", () => {
+    expect(resolveOpenTagStep({ state: "unavailable" }, true)).toBe("choose-agent");
+    expect(resolveOpenTagStep({ state: "unreadable" }, true)).toBeNull();
   });
 });
 
@@ -174,5 +185,48 @@ describe("why the readiness refresh has to be authoritative", () => {
     };
     expect(shouldEnterOnboarding(stale)).toBe(true);
     expect(shouldEnterOnboarding({ ...stale, currentOrgHasPersonalAgent: true })).toBe(false);
+  });
+});
+
+describe("when the Feishu handoff is genuinely usable", () => {
+  const usable: FeishuBotBinding = {
+    id: "binding-1",
+    agentId: "agent-1",
+    appId: "cli_1",
+    botOpenId: null,
+    botName: null,
+    botAvatarUrl: null,
+    tenantKey: null,
+    status: "active",
+    connectionStatus: "connected",
+    grantedScopes: [],
+    registrationUrl: null,
+    registrationExpiresAt: null,
+    lastConnectedAt: null,
+    lastEventAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
+  };
+
+  it("needs both halves at once", () => {
+    expect(isFeishuHandoffUsable(usable)).toBe(true);
+    expect(isFeishuHandoffUsable(null)).toBe(false);
+  });
+
+  it("refuses a reachable Bot the Agent could not answer", () => {
+    // Messages would arrive and go unanswered, and the Task they create would
+    // otherwise finish onboarding on a handoff that does not work.
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "missing", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+    expect(isFeishuHandoffUsable({ ...usable, cli: { state: "unknown", version: null, clientId: "client-1" } })).toBe(
+      false,
+    );
+  });
+
+  it("refuses a ready Computer with no reachable Bot", () => {
+    expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
+    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(false);
   });
 });

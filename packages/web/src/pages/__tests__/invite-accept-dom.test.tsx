@@ -14,10 +14,6 @@ const clientMocks = vi.hoisted(() => ({
   post: vi.fn(),
 }));
 
-const onboardingMocks = vi.hoisted(() => ({
-  markOnboardingResume: vi.fn(),
-}));
-
 const navigateMock = vi.hoisted(() => vi.fn());
 
 const authMock = vi.hoisted(() => {
@@ -59,7 +55,6 @@ vi.mock("../../auth/auth-context.js", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
   useAuth: () => authMock.value,
 }));
-vi.mock("../../utils/onboarding-flags.js", () => onboardingMocks);
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
   return { ...actual, useNavigate: () => navigateMock };
@@ -150,7 +145,6 @@ beforeEach(() => {
   clientMocks.get.mockReset();
   providerAvailability = { google: true, github: true };
   clientMocks.post.mockReset();
-  onboardingMocks.markOnboardingResume.mockReset();
   clientMocks.get.mockImplementation(async (path: string) => {
     if (path === "/bootstrap/config") return { authProviders: providerAvailability };
     if (path === "/me/organizations") return [org()];
@@ -181,7 +175,7 @@ afterEach(async () => {
 });
 
 describe("InviteAcceptPage", () => {
-  it("loads a preview, warns about switching teams, joins, and resumes onboarding", async () => {
+  it("loads a preview, warns about switching teams, joins, and opens Team Agents", async () => {
     const { InviteAcceptPage } = await import("../invite-accept.js");
     const container = await renderDom(<InviteAcceptPage />);
 
@@ -194,8 +188,7 @@ describe("InviteAcceptPage", () => {
     await click(buttonByText(container, "Join New Team"));
     expect(clientMocks.post).toHaveBeenCalledWith("/me/organizations/join", { token: "token-1" });
     expect(authMock.value.selectOrganization).toHaveBeenCalledWith("org-new");
-    expect(onboardingMocks.markOnboardingResume).toHaveBeenCalledWith("invite");
-    expect(navigateMock).toHaveBeenCalledWith("/onboarding", { replace: true });
+    expect(navigateMock).toHaveBeenCalledWith("/team", { replace: true });
   });
 
   it("renders public OAuth and invalid invitation states", async () => {
