@@ -374,7 +374,9 @@ export function TeamPage() {
           queryClient.invalidateQueries({ queryKey: ["activity"] });
           // The draft-open event only fires on this real navigate path.
           trackEvent("agent_create_draft_open", { template_count: templateCount });
-          navigate(`/?c=draft&with=${encodeURIComponent(agent.uuid)}`);
+          navigate(`/?c=draft&with=${encodeURIComponent(agent.uuid)}`, {
+            state: { newAgentId: agent.uuid },
+          });
         }}
       />
 

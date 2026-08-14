@@ -893,7 +893,7 @@ describe("web DOM interaction coverage", () => {
         displayName: "Deploy Bot",
         clientId: "client-1",
         runtimeProvider: "codex",
-        visibility: "private",
+        visibility: "organization",
         organizationId: "org-1",
       }),
     );
@@ -911,6 +911,29 @@ describe("web DOM interaction coverage", () => {
     await waitForText("~/.local/bin/first-tree login connect-token");
     await click([...document.body.querySelectorAll("button")].find((button) => button.textContent === "Copy") ?? null);
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(PROD_BOOTSTRAP_COMMAND);
+  });
+
+  it("offers the existing Feishu Channels path only for an explicit managed post-create draft", async () => {
+    const { NewChatDraft } = await import("../workspace/conversations/new-chat-draft.js");
+    const managed = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-1"]} postCreateAgentId="agent-1" />,
+    );
+    await waitForText("Add to Feishu", managed.container);
+    expect(managed.container.querySelector<HTMLAnchorElement>('a[href="/agents/agent-1/channels"]')).not.toBeNull();
+    await unmountRoot(managed.root);
+
+    const ordinaryDirectChat = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-1"]} />,
+    );
+    await waitForText("Nova", ordinaryDirectChat.container);
+    expect(ordinaryDirectChat.container.textContent).not.toContain("Add to Feishu");
+    await unmountRoot(ordinaryDirectChat.root);
+
+    const unmanaged = await renderDom(
+      <NewChatDraft onCreated={() => undefined} initialParticipantIds={["agent-2"]} postCreateAgentId="agent-2" />,
+    );
+    await waitForText("Design Critique", unmanaged.container);
+    expect(unmanaged.container.textContent).not.toContain("Add to Feishu");
   });
 
   it("renders ClientsPage admin groups, member empty state, and fallback banner", async () => {

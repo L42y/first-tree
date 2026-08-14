@@ -159,6 +159,14 @@ export function WorkspaceBody() {
   const { unread, watching } = parseUnreadWatching(searchParams);
   const origin = parseOriginList(searchParams);
   const participants = parseParticipantList(searchParams);
+  const postCreateAgentId =
+    selectedChatId === DRAFT_CHAT_ID &&
+    typeof location.state === "object" &&
+    location.state !== null &&
+    "newAgentId" in location.state &&
+    typeof location.state.newAgentId === "string"
+      ? location.state.newAgentId
+      : null;
   // Explicit URL value wins (shareable links); otherwise restore the
   // remembered per-device choice, which itself defaults to `recency`.
   const group = parseGroupMode(searchParams.get("group")) ?? readStoredGroupMode();
@@ -336,6 +344,7 @@ export function WorkspaceBody() {
             narrow={isNarrow}
             onShowConversations={null}
             initialParticipantIds={participants}
+            postCreateAgentId={postCreateAgentId}
             isTrial
           />
         </main>
@@ -407,6 +416,7 @@ export function WorkspaceBody() {
           narrow={isNarrow}
           onShowConversations={isNarrow ? () => setConvOverlayOpen(true) : null}
           initialParticipantIds={participants}
+          postCreateAgentId={postCreateAgentId}
         />
       </main>
       <DocPreviewDrawer />

@@ -185,13 +185,9 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
   const queryClient = useQueryClient();
   const { refreshMe, organizationId } = useAuth();
   const [displayName, setDisplayName] = useState("");
-  // Default is "private": newly-created agents are scoped to the creator
-  // by default, matching the conservative "only I see it" framing. Sharing
-  // with the team is an explicit decision the user opts into; the previous
-  // default ("organization") quietly published every onboarding agent into
-  // the team roster, which surprised users who expected new agents to be
-  // personal until explicitly shared.
-  const [visibility, setVisibility] = useState<AgentVisibility>("private");
+  // Ordinary Team creation starts collaborative. "Organization" means this
+  // First Tree Team only; Private remains available as an explicit choice.
+  const [visibility, setVisibility] = useState<AgentVisibility>("organization");
   const [runtime, setRuntime] = useState<RuntimeProvider>(PREFERRED_RUNTIME_PROVIDER);
   const runtimeSelectionIsManualRef = useRef(false);
 
@@ -269,6 +265,10 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
       wasOpenRef.current = true;
       openGenRef.current += 1;
     }
+    // The ordinary Team entry deliberately has no Responsibilities UI and
+    // must not pay for a Template catalog request. Explicit Template-origin
+    // entry points pass a slug and retain the existing intent workflow below.
+    if (!initialTemplateSlug) return;
     const gen = openGenRef.current;
     let cancelled = false;
     void listAgentTemplates()
@@ -287,12 +287,12 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, initialTemplateSlug]);
 
   useEffect(() => {
     if (open) {
       setDisplayName("");
-      setVisibility("private");
+      setVisibility("organization");
       setRuntime(PREFERRED_RUNTIME_PROVIDER);
       runtimeSelectionIsManualRef.current = false;
       setResolvedHandle("");
@@ -887,7 +887,7 @@ export function NewAgentDialog({ open, onOpenChange, onCreated, initialTemplateS
                 : "The template you started from is no longer available — you can still create your agent from scratch."}
             </p>
           )}
-          {templateCatalogLoaded && templateCatalog.length > 0 && (
+          {initialTemplateSlug && templateCatalogLoaded && templateCatalog.length > 0 && (
             <div className="space-y-2">
               <Label>Responsibilities (optional)</Label>
               {selectedTemplates.length === 0 && !templatePickerOpen && (
