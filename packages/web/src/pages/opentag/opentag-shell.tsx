@@ -23,7 +23,11 @@ export function OpenTagShell({
   const { logout } = useAuth();
 
   return (
-    <div className="min-h-screen" style={{ background: "var(--opentag-bg)", color: "var(--fg)" }}>
+    <div
+      data-opentag-theme="light"
+      className="min-h-screen"
+      style={{ background: "var(--opentag-bg)", color: "var(--fg)" }}
+    >
       <header
         className="flex items-center justify-between border-b border-border-faint"
         style={{ padding: "var(--sp-8) var(--sp-12)" }}

@@ -1,10 +1,11 @@
 import {
   type CapabilityEntry,
+  enabledOkRuntimeProviders,
   enabledRuntimeProviders,
   hasCurrentFeishuRequiredScopes,
   opentagEntryPath,
-  orderRuntimeProvidersByPreference,
   parseOpenTagEntryPath,
+  type RuntimeAuthProvider,
   type RuntimeProvider,
   runtimeProviderComputerSetupCommand,
   runtimeProviderInProductAuthTarget,
@@ -44,6 +45,8 @@ import { OpenTagView, type RuntimeChoice } from "./opentag-view.js";
 import { isAgentNameConflict, recoverCreatedAgent } from "./recover-created-agent.js";
 
 const FEISHU_RECOVERY_DELAY_MS = 90_000;
+const AUTH_POLL_MS = 3_000;
+const AUTH_STARTING_LATCH_MS = 30_000;
 
 /**
  * `/opentag` is one conditional page. Before creation it watches one Computer
@@ -116,11 +119,16 @@ export function OpenTagPage(): ReactElement | null {
     const reported = enabledRuntimeProviders().filter(
       (provider) => selectedComputerCapabilities?.[provider] || computer.okRuntimes.includes(provider),
     );
-    return orderRuntimeProvidersByPreference(reported.length > 0 ? reported : enabledRuntimeProviders());
+    return reported.length > 0 ? reported : enabledRuntimeProviders();
   }, [selectedComputerCapabilities, computer.okRuntimes]);
   const readyRuntimeProviders = useMemo(
-    () => runtimeCandidates.filter((provider) => runtimeIsReady(selectedComputerCapabilities?.[provider])),
-    [runtimeCandidates, selectedComputerCapabilities],
+    () =>
+      selectedComputerCapabilities
+        ? enabledOkRuntimeProviders(selectedComputerCapabilities).filter((provider) =>
+            runtimeIsReady(selectedComputerCapabilities[provider]),
+          )
+        : [],
+    [selectedComputerCapabilities],
   );
   const selectedRuntime =
     selectedLocalAgent && runtimeCandidates.includes(selectedLocalAgent)
@@ -131,7 +139,11 @@ export function OpenTagPage(): ReactElement | null {
     provider: selectedRuntime,
     entry: selectedRuntime ? selectedComputerCapabilities?.[selectedRuntime] : null,
   });
-  const runtimeChoices: RuntimeChoice[] = runtimeCandidates.map((provider) => ({
+  const readyRuntimeSet = new Set(readyRuntimeProviders);
+  const runtimeChoices: RuntimeChoice[] = [
+    ...readyRuntimeProviders,
+    ...runtimeCandidates.filter((provider) => !readyRuntimeSet.has(provider)),
+  ].map((provider) => ({
     provider,
     ready: runtimeIsReady(selectedComputerCapabilities?.[provider]),
     status: runtimeStatusCopy(selectedComputerCapabilities?.[provider]),
@@ -307,14 +319,47 @@ export function OpenTagPage(): ReactElement | null {
     return () => window.clearTimeout(timer);
   }, [handoffStartedAt, handoffSlow]);
 
+  const authAttemptKey =
+    computer.selectedClientId && selectedRuntime ? `${computer.selectedClientId}:${selectedRuntime}` : null;
+  const selectedRuntimeEntry = selectedRuntime ? selectedComputerCapabilities?.[selectedRuntime] : null;
+  const pendingRuntimeAuth = runtimeHasLivePendingAuth(selectedRuntimeEntry);
+  const [startingAuth, setStartingAuth] = useState<{ key: string; startedAt: number } | null>(null);
+  const lastAuthFailureAt = selectedRuntimeEntry?.lastAuthError
+    ? Date.parse(selectedRuntimeEntry.lastAuthError.at)
+    : Number.NaN;
+  const authFailedSinceStart =
+    !!startingAuth && Number.isFinite(lastAuthFailureAt) && lastAuthFailureAt >= startingAuth.startedAt;
+  const authStarting =
+    !!startingAuth &&
+    startingAuth.key === authAttemptKey &&
+    !pendingRuntimeAuth &&
+    !authFailedSinceStart &&
+    Date.now() - startingAuth.startedAt < AUTH_STARTING_LATCH_MS;
+  useEffect(() => {
+    if (!startingAuth) return;
+    if (startingAuth.key !== authAttemptKey || pendingRuntimeAuth || authFailedSinceStart) {
+      setStartingAuth(null);
+      return;
+    }
+    const poll = window.setInterval(() => {
+      computer.refreshCapabilities?.();
+      setStartingAuth((current) =>
+        current && Date.now() - current.startedAt < AUTH_STARTING_LATCH_MS ? current : null,
+      );
+    }, AUTH_POLL_MS);
+    return () => window.clearInterval(poll);
+  }, [startingAuth, authAttemptKey, pendingRuntimeAuth, authFailedSinceStart, computer.refreshCapabilities]);
+
   const signIn = useMutation({
-    mutationFn: () => {
-      if (!computer.selectedClientId || !selectedRuntime) throw new Error("No local Agent is selected.");
-      const provider = runtimeProviderInProductAuthTarget(selectedRuntime);
-      if (!provider) throw new Error("This local Agent uses its own sign-in command.");
-      return startRuntimeAuth(computer.selectedClientId, { provider });
+    mutationFn: ({ clientId, provider }: { clientId: string; provider: RuntimeAuthProvider }) =>
+      startRuntimeAuth(clientId, { provider }),
+    onSuccess: (_result, target) => {
+      setStartingAuth({ key: `${target.clientId}:${target.provider}`, startedAt: Date.now() });
     },
-    onSuccess: () => computer.refreshCapabilities?.(),
+    onError: () => setStartingAuth(null),
+    onSettled: () => {
+      computer.refreshCapabilities?.();
+    },
   });
 
   if (facts.state === "loading") return null;
@@ -464,9 +509,14 @@ export function OpenTagPage(): ReactElement | null {
           onContinueRecovery={() => {
             if (recoverableAgent) navigate(opentagEntryPath(recoverableAgent.uuid), { replace: true });
           }}
-          signingIn={signIn.isPending}
+          signingIn={signIn.isPending || authStarting}
           signInError={signIn.error instanceof Error ? signIn.error.message : null}
-          onSignIn={() => signIn.mutate()}
+          onSignIn={() => {
+            if (!computer.selectedClientId || !selectedRuntime || signIn.isPending || authStarting) return;
+            const provider = runtimeProviderInProductAuthTarget(selectedRuntime);
+            if (!provider) return;
+            signIn.mutate({ clientId: computer.selectedClientId, provider });
+          }}
           onRefreshRuntime={() => computer.refreshCapabilities?.()}
           feishu={{
             appId: binding?.appId ?? null,

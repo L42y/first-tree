@@ -1,10 +1,11 @@
-import { orderRuntimeProvidersByPreference, type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
+import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { type ReactElement, type ReactNode, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
 import type { HubClient } from "../../api/activity.js";
 import { Button } from "../../components/ui/button.js";
 import { Popover } from "../../components/ui/popover.js";
+import { useCopyFeedback } from "../../lib/use-copy-feedback.js";
 import type { OpenTagPageState, OpenTagRuntimeState } from "./flow.js";
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
@@ -266,18 +267,16 @@ function RuntimeStatus({
         <ChoicePopover label="Change Agent">
           {(close) => (
             <ChoiceList>
-              {orderRuntimeProvidersByPreference(choices.map((choice) => choice.provider)).map((provider) => {
-                const choice = choices.find((candidate) => candidate.provider === provider);
-                if (!choice) return null;
+              {choices.map((choice) => {
                 return (
                   <ChoiceRow
-                    key={provider}
-                    selected={provider === selectedRuntime}
-                    label={runtimeProviderLabel(provider)}
+                    key={choice.provider}
+                    selected={choice.provider === selectedRuntime}
+                    label={runtimeProviderLabel(choice.provider)}
                     status={choice.status}
                     ready={choice.ready}
                     onClick={() => {
-                      onSelect(provider);
+                      onSelect(choice.provider);
                       close();
                     }}
                   />
@@ -406,19 +405,22 @@ function CommandAction({
   fallback: string;
   buttonLabel: string;
 }): ReactElement {
-  const [copied, setCopied] = useState(false);
-  const copy = async (): Promise<void> => {
-    if (!command) return;
-    await navigator.clipboard.writeText(command);
-    setCopied(true);
-  };
+  const copyFeedback = useCopyFeedback();
+  const priorCommand = useRef(command);
+  useEffect(() => {
+    if (priorCommand.current === command) return;
+    priorCommand.current = command;
+    copyFeedback.reset();
+  }, [command, copyFeedback.reset]);
+  const feedbackLabel =
+    copyFeedback.status === "copied" ? "Copied" : copyFeedback.status === "failed" ? "Copy failed" : buttonLabel;
   return (
     <div className="flex w-full items-center justify-between" style={{ gap: "var(--sp-8)" }}>
       <pre className="min-w-0 flex-1 whitespace-pre-wrap text-body font-mono" style={{ margin: 0 }}>
         {command ?? fallback}
       </pre>
-      <PrimaryAction disabled={!command} onClick={() => void copy()}>
-        {copied ? "Copied" : buttonLabel}
+      <PrimaryAction disabled={!command} onClick={() => command && void copyFeedback.copy(command)}>
+        {feedbackLabel}
       </PrimaryAction>
     </div>
   );

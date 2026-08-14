@@ -1,6 +1,12 @@
 // @vitest-environment happy-dom
 
-import { type Agent, type CapabilityEntry, FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
+import {
+  type Agent,
+  type CapabilityEntry,
+  type ClientCapabilities,
+  FEISHU_REQUIRED_SCOPES,
+  type FeishuBotBinding,
+} from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -16,6 +22,7 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const AGENT_UUID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708192";
 const ORG = "org-1";
 const MEMBER = "member-1";
+const clipboardWriteText = vi.fn();
 
 const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
 const applyOnboardingStamp = vi.hoisted(() => vi.fn(() => true));
@@ -64,7 +71,11 @@ function capability(overrides: Partial<CapabilityEntry> = {}): CapabilityEntry {
   };
 }
 
-function client(id = "client-1", hostname = "Studio Mac", capabilities = { codex: capability() }): HubClient {
+function client(
+  id = "client-1",
+  hostname = "Studio Mac",
+  capabilities: ClientCapabilities = { codex: capability() },
+): HubClient {
   return {
     id,
     userId: "user-1",
@@ -100,7 +111,7 @@ function computer(overrides: Partial<ComputerConnection> = {}): ComputerConnecti
   };
 }
 
-function readyComputer(capabilities = { codex: capability() }): ComputerConnection {
+function readyComputer(capabilities: ClientCapabilities = { codex: capability() }): ComputerConnection {
   const connected = client("client-1", "Studio Mac", capabilities);
   const okRuntimes = Object.entries(capabilities)
     .filter(([, entry]) => entry.state === "ok")
@@ -252,6 +263,11 @@ beforeEach(() => {
   agentsApi.createAgentFeishuSetupChat.mockReset().mockResolvedValue({ chatId: "setup-chat" });
   agentsApi.completeAgentFeishuOnboarding.mockReset().mockResolvedValue({ completedAt: "2026-08-14T00:05:00.000Z" });
   activityApi.startRuntimeAuth.mockReset().mockResolvedValue({ ref: "auth-ref", started: true });
+  clipboardWriteText.mockReset().mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: clipboardWriteText },
+  });
   lastLocation = "";
 });
 
@@ -259,6 +275,7 @@ afterEach(async () => {
   if (root) await act(async () => root?.unmount());
   root = null;
   document.body.innerHTML = "";
+  document.documentElement.classList.remove("dark");
 });
 
 describe("OpenTag single-page Desktop flow", () => {
@@ -286,6 +303,20 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(retry).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps copy feedback truthful across Clipboard rejection and command rotation", async () => {
+    const container = await renderAt("/opentag");
+    await click(button(container, "Copy command"));
+    expect(button(container, "Copied")).not.toBeNull();
+
+    computerMock.value = computer({ cliCommand: "first-tree login ROTATED" });
+    await click(button(container, "Change name"));
+    expect(button(container, "Copy command")).not.toBeNull();
+
+    clipboardWriteText.mockRejectedValueOnce(new Error("denied"));
+    await click(button(container, "Copy command"));
+    expect(button(container, "Copy failed")).not.toBeNull();
+  });
+
   it("shows and starts concrete Codex sign-in recovery inside the Action surface", async () => {
     const caps = {
       codex: capability({ lastAuthError: { reason: "timeout", at: "2026-08-14T00:00:00.000Z" } }),
@@ -297,6 +328,33 @@ describe("OpenTag single-page Desktop flow", () => {
     await click(button(container, "Sign in to Codex"));
     expect(activityApi.startRuntimeAuth).toHaveBeenCalledWith("client-1", { provider: "codex" });
     expect(agentsApi.createAgent).not.toHaveBeenCalled();
+  });
+
+  it("latches runtime sign-in until delayed capability publication prevents duplicate auth", async () => {
+    const caps = {
+      codex: capability({ lastAuthError: { reason: "timeout", at: "2026-08-14T00:00:00.000Z" } }),
+    };
+    computerMock.value = readyComputer(caps);
+    const container = await renderAt("/opentag");
+
+    await click(button(container, "Sign in to Codex"));
+    const opening = button(container, "Opening…");
+    expect(opening.disabled).toBe(true);
+    await click(opening);
+    expect(activityApi.startRuntimeAuth).toHaveBeenCalledTimes(1);
+
+    computerMock.value = readyComputer({
+      codex: capability({
+        pendingAuth: {
+          method: "browser",
+          expiresAt: "2999-08-14T00:00:00.000Z",
+          authUrl: "https://auth.example/start",
+        },
+      }),
+    });
+    await click(button(container, "Change name"));
+    expect(container.textContent).toContain("Finish signing in on this Computer.");
+    expect(activityApi.startRuntimeAuth).toHaveBeenCalledTimes(1);
   });
 
   it("auto-selects a stable ready Agent, offers the lightweight picker, and creates once without a Template", async () => {
@@ -331,6 +389,33 @@ describe("OpenTag single-page Desktop flow", () => {
     });
     expect(agentsApi.createAgent.mock.calls[0]?.[0]).not.toHaveProperty("templateIds");
     expect(lastLocation).toBe(`/opentag?agent=${AGENT_UUID}`);
+  });
+
+  it("preserves Client capability order for ready providers outside the shared preference prefix", async () => {
+    const caps = { pi: capability(), grok: capability() };
+    computerMock.value = readyComputer(caps);
+    agentsApi.createAgent.mockResolvedValue(agentRow({ runtimeProvider: "pi" }));
+    const container = await renderAt("/opentag");
+
+    expect(container.textContent).toContain("Agent · Pi ready");
+    await click(buttonExact(container, "Change"));
+    const choices = document.querySelector("[role='dialog'][aria-label='Change Agent']");
+    if (!choices) throw new Error("missing Agent picker");
+    expect([...choices.querySelectorAll("button")].map((choice) => choice.textContent)).toEqual([
+      "PiReady",
+      "Grok BuildReady",
+    ]);
+    await click(button(container, "Create agent"));
+    expect(agentsApi.createAgent.mock.calls[0]?.[0]).toMatchObject({ runtimeProvider: "pi" });
+  });
+
+  it("pins the OpenTag light palette when the persisted root theme is dark", async () => {
+    document.documentElement.classList.add("dark");
+    const container = await renderAt("/opentag");
+
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(container.querySelector("[data-opentag-theme='light']")).not.toBeNull();
+    expect(container.querySelector("h1")?.textContent).toBe("Bring your agent to Feishu");
   });
 
   it("lets the default display name be edited before the one durable click", async () => {
