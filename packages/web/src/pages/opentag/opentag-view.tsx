@@ -7,6 +7,7 @@ import { Button } from "../../components/ui/button.js";
 import { Popover } from "../../components/ui/popover.js";
 import type { OpenTagPageState, OpenTagRuntimeState } from "./flow.js";
 
+const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
 const FEISHU_MESSENGER_URL = "https://www.feishu.cn/product/messenger";
 
 export type RuntimeChoice = {
@@ -65,6 +66,7 @@ export function OpenTagView({
   onSignIn: () => void;
   onRefreshRuntime: () => void;
   feishu: {
+    appId: string | null;
     registrationUrl: string | null;
     starting: boolean;
     preparingTools: boolean;
@@ -159,7 +161,7 @@ export function OpenTagView({
                   {displayName} is connected to Feishu.
                 </p>
               </div>
-              <PrimaryAction asLink href={FEISHU_MESSENGER_URL}>
+              <PrimaryAction asLink href={feishuDestination(feishu.appId)}>
                 Open Feishu
               </PrimaryAction>
             </div>
@@ -680,4 +682,11 @@ function safeHttpUrl(value: string | undefined): value is string {
   } catch {
     return false;
   }
+}
+
+function feishuDestination(appId: string | null): string {
+  if (!appId) return FEISHU_MESSENGER_URL;
+  const destination = new URL(FEISHU_BOT_APP_LINK);
+  destination.searchParams.set("appId", appId);
+  return destination.toString();
 }

@@ -18,7 +18,7 @@ const ORG = "org-1";
 const MEMBER = "member-1";
 
 const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
-const markOnboardingCompleted = vi.hoisted(() => vi.fn(async () => undefined));
+const applyOnboardingStamp = vi.hoisted(() => vi.fn(() => true));
 const authMock = vi.hoisted(() => ({
   value: {
     organizationId: "org-1" as string | null,
@@ -27,7 +27,7 @@ const authMock = vi.hoisted(() => ({
     meAuthoritative: true,
     currentOrgHasPersonalAgent: true,
     refreshMeStrict,
-    markOnboardingCompleted,
+    applyOnboardingStamp,
     logout: vi.fn(),
   },
 }));
@@ -40,6 +40,7 @@ const agentsApi = vi.hoisted(() => ({
   getAgentFeishuBinding: vi.fn(),
   startAgentFeishuRegistration: vi.fn(),
   createAgentFeishuSetupChat: vi.fn(),
+  completeAgentFeishuOnboarding: vi.fn(),
 }));
 vi.mock("../../../api/agents.js", () => agentsApi);
 
@@ -237,11 +238,11 @@ beforeEach(() => {
     meAuthoritative: true,
     currentOrgHasPersonalAgent: true,
     refreshMeStrict,
-    markOnboardingCompleted,
+    applyOnboardingStamp,
     logout: vi.fn(),
   };
   refreshMeStrict.mockReset().mockResolvedValue(undefined);
-  markOnboardingCompleted.mockReset().mockResolvedValue(undefined);
+  applyOnboardingStamp.mockReset().mockReturnValue(true);
   computerMock.value = computer();
   agentsApi.getAgent.mockReset().mockResolvedValue(agentRow());
   agentsApi.createAgent.mockReset();
@@ -249,6 +250,7 @@ beforeEach(() => {
   agentsApi.getAgentFeishuBinding.mockReset().mockResolvedValue({ binding: null });
   agentsApi.startAgentFeishuRegistration.mockReset().mockResolvedValue({ binding: binding() });
   agentsApi.createAgentFeishuSetupChat.mockReset().mockResolvedValue({ chatId: "setup-chat" });
+  agentsApi.completeAgentFeishuOnboarding.mockReset().mockResolvedValue({ completedAt: "2026-08-14T00:05:00.000Z" });
   activityApi.startRuntimeAuth.mockReset().mockResolvedValue({ ref: "auth-ref", started: true });
   lastLocation = "";
 });
@@ -396,8 +398,17 @@ describe("OpenTag single-page Desktop flow", () => {
     agentsApi.getAgentFeishuBinding.mockResolvedValue({ binding: usableBinding() });
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
-    expect(markOnboardingCompleted).toHaveBeenCalledTimes(1);
+    expect(agentsApi.completeAgentFeishuOnboarding).toHaveBeenCalledWith(AGENT_UUID);
+    expect(applyOnboardingStamp).toHaveBeenCalledWith("completed", "2026-08-14T00:05:00.000Z", {
+      id: MEMBER,
+      organizationId: ORG,
+    });
     expect(container.querySelector("[data-opentag-state='ready']")?.textContent).toContain("Open Feishu");
+    expect(
+      container.querySelector<HTMLAnchorElement>(
+        "[data-opentag-state='ready'] a[href='https://applink.feishu.cn/client/bot/open?appId=cli_1']",
+      ),
+    ).not.toBeNull();
     expect(container.textContent).not.toContain("first message");
     expect(container.textContent).not.toContain("first task is ready");
   });
@@ -424,7 +435,7 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.querySelectorAll("button")).toHaveLength(0);
     expect(agentsApi.startAgentFeishuRegistration).not.toHaveBeenCalled();
     expect(agentsApi.createAgentFeishuSetupChat).not.toHaveBeenCalled();
-    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    expect(agentsApi.completeAgentFeishuOnboarding).not.toHaveBeenCalled();
   });
 
   it("keeps completion closed while only the Bot is ready and prepares tools automatically", async () => {
@@ -442,7 +453,7 @@ describe("OpenTag single-page Desktop flow", () => {
     });
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
 
-    expect(markOnboardingCompleted).not.toHaveBeenCalled();
+    expect(agentsApi.completeAgentFeishuOnboarding).not.toHaveBeenCalled();
     expect(agentsApi.createAgentFeishuSetupChat).toHaveBeenCalledWith(AGENT_UUID, { retry: false });
     expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.textContent).toContain(
       "Preparing Feishu tools",

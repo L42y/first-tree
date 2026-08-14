@@ -13,7 +13,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { startRuntimeAuth } from "../../api/activity.js";
-import { createAgent, createAgentFeishuSetupChat, getAgent, startAgentFeishuRegistration } from "../../api/agents.js";
+import {
+  completeAgentFeishuOnboarding,
+  createAgent,
+  createAgentFeishuSetupChat,
+  getAgent,
+  startAgentFeishuRegistration,
+} from "../../api/agents.js";
 import { ApiError } from "../../api/client.js";
 import { useAuth } from "../../auth/auth-context.js";
 import { Button } from "../../components/ui/button.js";
@@ -56,7 +62,7 @@ export function OpenTagPage(): ReactElement | null {
     meAuthoritative,
     currentOrgHasPersonalAgent,
     refreshMeStrict,
-    markOnboardingCompleted,
+    applyOnboardingStamp,
   } = useAuth();
 
   const target = parseOpenTagEntryPath(`${location.pathname}${location.search}${location.hash}`);
@@ -239,13 +245,44 @@ export function OpenTagPage(): ReactElement | null {
     prepareToolsMutate({ retry: false });
   }, [shouldPrepareTools, toolsIdentity, prepareTools.isPending, askedToolsFor, prepareToolsMutate]);
 
-  const complete = useMutation({ mutationFn: () => markOnboardingCompleted() });
+  const complete = useMutation({
+    mutationFn: (target: { agentUuid: string; memberId: string; organizationId: string }) =>
+      completeAgentFeishuOnboarding(target.agentUuid),
+    onSuccess: ({ completedAt }, target) => {
+      const projected = applyOnboardingStamp("completed", completedAt, {
+        id: target.memberId,
+        organizationId: target.organizationId,
+      });
+      if (!projected) void refreshMeStrict().catch(() => undefined);
+    },
+  });
   const completeMutate = complete.mutate;
   const handoffUsable = isFeishuHandoffUsable(binding);
   useEffect(() => {
-    if (!ownsUrlAgent || !handoffUsable || complete.isPending || complete.isSuccess || complete.isError) return;
-    completeMutate();
-  }, [ownsUrlAgent, handoffUsable, complete.isPending, complete.isSuccess, complete.isError, completeMutate]);
+    if (
+      !ownsUrlAgent ||
+      !agentUuid ||
+      !memberId ||
+      !organizationId ||
+      !handoffUsable ||
+      complete.isPending ||
+      complete.isSuccess ||
+      complete.isError
+    ) {
+      return;
+    }
+    completeMutate({ agentUuid, memberId, organizationId });
+  }, [
+    ownsUrlAgent,
+    agentUuid,
+    memberId,
+    organizationId,
+    handoffUsable,
+    complete.isPending,
+    complete.isSuccess,
+    complete.isError,
+    completeMutate,
+  ]);
   const handoffComplete = handoffUsable && (!ownsUrlAgent || complete.isSuccess);
   const hasRegistrationQr = binding?.status === "provisioning" && !!binding.registrationUrl;
   const recoveryClockActive = !!binding && !handoffUsable && !hasRegistrationQr;
@@ -432,6 +469,7 @@ export function OpenTagPage(): ReactElement | null {
           onSignIn={() => signIn.mutate()}
           onRefreshRuntime={() => computer.refreshCapabilities?.()}
           feishu={{
+            appId: binding?.appId ?? null,
             registrationUrl: binding?.status === "provisioning" ? binding.registrationUrl : null,
             starting: startFeishu.isPending || (!binding && feishuQuery.isPending),
             preparingTools:
