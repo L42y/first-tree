@@ -191,7 +191,7 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
     currentOrgHasUsableAgent,
     refreshMe,
     dismissOnboarding,
-    applyOnboardingKickoffStamp,
+    applyOnboardingStamp,
   } = useAuth();
 
   // Org-aware step. `onboardingStep` from /me is account-level: its
@@ -427,11 +427,11 @@ export function OnboardingFlowProvider({ path, children }: { path: OnboardingPat
       // completion clears it; `finishLater` deliberately keeps it so the user
       // resumes their selection.
       if (organizationId) writeOnboardingSelectedRepos(organizationId, null);
-      applyOnboardingKickoffStamp(stamp);
+      applyOnboardingStamp(stamp);
       reportStepEvent("step_completed", sourceStep, { outcome: "chat_started" });
       navigate(`/?c=${encodeURIComponent(chatId)}`);
     },
-    [applyOnboardingKickoffStamp, navigate, organizationId, path, reportStepEvent],
+    [applyOnboardingStamp, navigate, organizationId, path, reportStepEvent],
   );
 
   const finishLater = useCallback(async () => {

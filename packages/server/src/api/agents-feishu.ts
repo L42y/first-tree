@@ -1,4 +1,10 @@
-import { createFeishuSetupChatSchema, MESSAGE_SOURCES, startFeishuRegistrationSchema } from "@first-tree/shared";
+import {
+  completeFeishuOnboardingResponseSchema,
+  completeFeishuOnboardingSchema,
+  createFeishuSetupChatSchema,
+  MESSAGE_SOURCES,
+  startFeishuRegistrationSchema,
+} from "@first-tree/shared";
 import { desc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import type { Database } from "../db/connection.js";
@@ -11,6 +17,7 @@ import {
   type TaskChatReuseContext,
 } from "../services/chat/conversation.js";
 import { sendMessage } from "../services/chat/message.js";
+import { completeFeishuOnboarding } from "../services/integrations/feishu/onboarding-completion.js";
 import { notifyRecipients } from "../services/notifier.js";
 import { feishuCliSetupKickoffKey } from "../services/onboarding-kickoff.js";
 
@@ -149,6 +156,27 @@ export async function agentFeishuBindingRoutes(app: FastifyInstance): Promise<vo
       return reply.status(201).send({ binding });
     },
   );
+
+  app.post<{ Params: { uuid: string } }>("/:uuid/feishu-binding/onboarding-completed", async (request, reply) => {
+    const { agent, scope } = await requireAgentAccess(request, app.db, "manage");
+    completeFeishuOnboardingSchema.parse(request.body);
+    const completed = await completeFeishuOnboarding(app.db, {
+      userId: scope.userId,
+      organizationId: agent.organizationId,
+      agentUuid: agent.uuid,
+    });
+    if (completed.newlyCompleted) {
+      app.log.info(
+        { event: "onboarding.completed", userId: scope.userId, agentUuid: agent.uuid },
+        "onboarding funnel: OpenTag Feishu setup completed",
+      );
+    }
+    return reply.status(200).send(
+      completeFeishuOnboardingResponseSchema.parse({
+        completedAt: completed.completedAt.toISOString(),
+      }),
+    );
+  });
 
   app.delete<{ Params: { uuid: string } }>("/:uuid/feishu-binding", async (request, reply) => {
     await requireAgentAccess(request, app.db, "manage");

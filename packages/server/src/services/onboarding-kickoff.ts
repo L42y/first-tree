@@ -18,6 +18,7 @@ import { members } from "../db/schema/members.js";
 import { messages } from "../db/schema/messages.js";
 import { createChat } from "./chat/conversation.js";
 import { runDeferredSendMessagePostCommitEffects, sendMessage } from "./chat/message.js";
+import { stampOnboardingCompleted } from "./onboarding-completion.js";
 
 /**
  * Shared idempotency key for the Agent's own Feishu CLI setup Task.
@@ -455,15 +456,7 @@ export async function kickoffOnboarding(db: Database, args: KickoffOnboardingArg
   //    only the suppressor with reason="invitee_skip", keeping the member's
   //    personal-agent journey pending and resumable.
   if (args.stamp === "completed") {
-    const now = new Date();
-    await db
-      .update(members)
-      .set({
-        onboardingCompletedAt: now,
-        onboardingSuppressedAt: now,
-        onboardingSuppressedReason: "completed",
-      })
-      .where(and(eq(members.id, args.memberId), isNull(members.onboardingCompletedAt)));
+    await stampOnboardingCompleted(db, args.memberId);
   } else if (args.stamp === "invitee_skip") {
     // Guarded like PATCH /me/onboarding: only the first suppressor wins, so a
     // retry (or a member who already dismissed/completed) never rewrites an

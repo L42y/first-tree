@@ -147,6 +147,15 @@ export const createFeishuSetupChatResponseSchema = z.object({
 });
 export type CreateFeishuSetupChatResponse = z.infer<typeof createFeishuSetupChatResponseSchema>;
 
+/** All completion facts are resolved from the Agent UUID on the server. */
+export const completeFeishuOnboardingSchema = z.object({}).strict();
+export type CompleteFeishuOnboarding = z.infer<typeof completeFeishuOnboardingSchema>;
+
+export const completeFeishuOnboardingResponseSchema = z.object({
+  completedAt: z.string().datetime(),
+});
+export type CompleteFeishuOnboardingResponse = z.infer<typeof completeFeishuOnboardingResponseSchema>;
+
 export const feishuOutboundIntentRequestSchema = z
   .object({
     chatId: z.string().min(1),

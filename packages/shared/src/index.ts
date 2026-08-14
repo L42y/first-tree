@@ -809,8 +809,12 @@ export {
   updateDocRequestSchema,
 } from "./schemas/document.js";
 export {
+  type CompleteFeishuOnboarding,
+  type CompleteFeishuOnboardingResponse,
   type CreateFeishuSetupChat,
   type CreateFeishuSetupChatResponse,
+  completeFeishuOnboardingResponseSchema,
+  completeFeishuOnboardingSchema,
   createFeishuSetupChatResponseSchema,
   createFeishuSetupChatSchema,
   FEISHU_REQUIRED_SCOPES,

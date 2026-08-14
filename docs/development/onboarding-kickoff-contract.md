@@ -77,6 +77,22 @@ and the adjacent campaign quickstart handoff.
   `complete` when both are present; the kickoff key stays the normal
   `<humanAgent>:<agent>:onboarding` key, so a team-agent start and a later
   personal-agent start-chat are distinct chats.
+- OpenTag Feishu completion uses the separate Agent-scoped
+  `POST /api/v1/agents/:uuid/feishu-binding/onboarding-completed` contract.
+  Its strict empty body deliberately carries no organization, Client, binding,
+  or readiness snapshot. The server resolves the exact managing membership
+  from the Agent resource and, in one short transaction, locks and validates
+  the membership, active non-human Agent, current usable and connected Bot
+  binding with a live ownership lease, and the Agent's current non-retired
+  Client with `lark-cli.available=true` before writing the membership completion
+  and suppressor stamps. An already completed membership returns its original
+  timestamp without rechecking later operational degradation.
+- The generic `POST /api/v1/me/onboarding-completed` endpoint and kickoff
+  `stamp="completed"` remain compatible completion paths for non-OpenTag
+  journeys. All three paths share the same membership completion writer, but
+  only the Agent-scoped Feishu path has the provider-readiness transaction.
+  No persistent readiness model is introduced; current Agent, Bot binding, and
+  Client metadata remain the authoritative facts.
 - A campaign result action carries `campaignAction: { campaign, repoSlug }`
   through either `/me/onboarding/kickoff` or the already-onboarded direct task
   path (`POST /api/v1/orgs/:orgId/chats`). Both endpoints compose the same
