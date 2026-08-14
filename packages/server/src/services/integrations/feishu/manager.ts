@@ -1,4 +1,9 @@
-import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding, feishuBotBindingSchema } from "@first-tree/shared";
+import {
+  FEISHU_REQUIRED_SCOPES,
+  type FeishuBotBinding,
+  type FeishuReferenceContext,
+  feishuBotBindingSchema,
+} from "@first-tree/shared";
 import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
@@ -14,6 +19,8 @@ import type { Notifier } from "../../notifier.js";
 import { isFeishuBotUsable } from "./binding-state.js";
 import { Client, createLarkChannel, type LarkChannel, LoggerLevel, registerApp } from "./channel-sdk.js";
 import { ingestFeishuMessage, logFeishuInboundFailure } from "./inbound.js";
+import { readFeishuParentMessage, withFeishuAbortTimeout } from "./provider-reader.js";
+import { loadFeishuReferenceContextTarget, readFeishuReferenceContext } from "./reference-context.js";
 import { safeFeishuErrorContext, safeFeishuErrorMessage } from "./safe-error.js";
 import { createFeishuSenderNameResolver } from "./sender-name.js";
 
@@ -22,6 +29,8 @@ const LEASE_MS = 45_000;
 const CLAIM_INTERVAL_MS = 15_000;
 const REGISTRATION_QR_TIMEOUT_MS = 20_000;
 const BOT_PROFILE_TIMEOUT_MS = 5_000;
+const INBOUND_PARENT_LOOKUP_TIMEOUT_MS = 3_000;
+const REFERENCE_CONTEXT_TIMEOUT_MS = 5_000;
 const MAX_ACKNOWLEDGEMENT_REACTIONS_IN_FLIGHT = 16;
 // The SDK's generic request logger may receive transport errors that include
 // Authorization headers. Callers record redacted operation context instead.
@@ -55,6 +64,7 @@ export type FeishuIntegrationManager = {
     appId: string;
     appSecret: string;
   }>;
+  getReferenceContext(agentId: string, firstTreeMessageId: string): Promise<FeishuReferenceContext>;
 };
 
 export type FeishuSdkDependencies = {
@@ -660,10 +670,12 @@ export function createFeishuIntegrationManager(input: {
     channel.on("message", async (message) => {
       try {
         const current = await requireOwnedBinding(row.id, row.connectionEpoch);
-        await ingestFeishuMessage(db, notifier, current, message, {
+        const result = await ingestFeishuMessage(db, notifier, current, message, {
           senderNames,
           attachmentObjectQuota,
           addReaction: addAcknowledgementReaction,
+          readParentMessage: (messageId) =>
+            readFeishuParentMessage(client, messageId, INBOUND_PARENT_LOOKUP_TIMEOUT_MS),
           readMembers: async ({ chatId, idType, pageToken }) =>
             client.im.v1.chatMembers.get({
               path: { chat_id: chatId },
@@ -677,6 +689,7 @@ export function createFeishuIntegrationManager(input: {
             return { stream: response.getReadableStream(), headers: response.headers as Record<string, unknown> };
           },
         });
+        if (result.state === "ignored") return;
         await db
           .update(imBotBindings)
           .set({ lastEventAt: new Date(), tenantKey: tenantKeyFromRaw(message.raw) ?? current.tenantKey })
@@ -847,6 +860,43 @@ export function createFeishuIntegrationManager(input: {
     };
   }
 
+  async function getReferenceContext(agentId: string, firstTreeMessageId: string): Promise<FeishuReferenceContext> {
+    const target = await loadFeishuReferenceContextTarget(db, agentId, firstTreeMessageId);
+    if (!target.binding.appId || !target.binding.appSecretCipher) {
+      throw new NotFoundError("Active Feishu Bot binding not found");
+    }
+    const { appSecret } = decryptSecret(target.binding.appSecretCipher);
+    const client = sdk.createClient({
+      appId: target.binding.appId,
+      appSecret,
+      loggerLevel: LoggerLevel.warn,
+      logger: SILENT_FEISHU_CLIENT_LOGGER,
+    });
+    try {
+      return await withFeishuAbortTimeout(
+        (signal) => readFeishuReferenceContext(client, target, signal),
+        REFERENCE_CONTEXT_TIMEOUT_MS,
+        "Timed out loading Feishu reference context",
+      );
+    } catch (error) {
+      const safe = safeFeishuErrorContext(error);
+      log.warn(
+        { bindingId: target.binding.id, firstTreeMessageId, ...safe },
+        "Failed to load Feishu reference context",
+      );
+      const permissionDenied =
+        ["99991672", "99991679", "403"].includes(safe.errorCode ?? "") ||
+        /permission|scope|forbidden/i.test(safe.errorMessage);
+      return {
+        state: "unavailable",
+        scope: target.scope,
+        messages: [],
+        truncated: false,
+        reason: permissionDenied ? "permission_denied" : "provider_unavailable",
+      };
+    }
+  }
+
   function decryptSecret(cipher: string): { appSecret: string } {
     const value = decryptCredentials(cipher, encryptionKey);
     if (!value || typeof value !== "object" || typeof (value as { appSecret?: unknown }).appSecret !== "string") {
@@ -915,6 +965,7 @@ export function createFeishuIntegrationManager(input: {
     startRegistration,
     revoke,
     getCliGrant,
+    getReferenceContext,
   };
 }
 

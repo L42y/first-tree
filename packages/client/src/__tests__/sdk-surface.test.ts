@@ -111,6 +111,25 @@ describe("FirstTreeHubSDK public surface", () => {
     });
   });
 
+  it("loads Feishu reference context through the Agent-only canonical message route", async () => {
+    const response = { state: "available", scope: "thread", messages: [], truncated: false };
+    const fetchMock = makeFetchMock([jsonResponse(response)]);
+
+    await expect(makeSdk().getFeishuReferenceContext("019a1111-1111-7111-8111-111111111111")).resolves.toEqual(
+      response,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://first-tree.example/api/v1/agent/feishu/messages/019a1111-1111-7111-8111-111111111111/reference-context",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: "Bearer access-token",
+          [AGENT_SELECTOR_HEADER]: "agent-1",
+        }),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
   it("sends auth, agent selector, user agent, and JSON content headers", async () => {
     const fetchMock = makeFetchMock([jsonResponse({ id: "m1", chatId: "chat-1", content: "hi" })]);
 

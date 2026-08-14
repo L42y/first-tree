@@ -19,6 +19,7 @@ import {
   isImageRefContent,
   MAX_MESSAGE_ATTACHMENT_REFS,
   parseProviderRetryEventMessage,
+  readFeishuMessageMetadata,
   runtimeProviderSchema,
   SOURCE_REPOS_DIRNAME,
 } from "@first-tree/shared";
@@ -703,6 +704,8 @@ export class SessionRuntime {
         // history work is best-effort and bounded; anything not fetched still
         // renders with a filename and an unavailable placeholder.
         await this.ensureImagesLocal(message);
+        const feishuReferenceContextLoad = this.ensureFeishuReferenceContext(message);
+        if (feishuReferenceContextLoad) await feishuReferenceContextLoad;
 
         // 4c. Lazily resolve a tree-LESS Context Tree binding before routing this
         // message to a (possibly new) session. The binding is frozen at
@@ -853,6 +856,55 @@ export class SessionRuntime {
       }),
     );
     if (goneIds.size > 0) message.unavailableAttachmentIds = goneIds;
+  }
+
+  private ensureFeishuReferenceContext(message: SessionMessage): Promise<void> | null {
+    if (message.feishuReferenceContext !== undefined) return null;
+    const feishu = readFeishuMessageMetadata(message.metadata);
+    if (
+      message.senderKind !== "integration" ||
+      message.senderProvider !== "feishu" ||
+      message.source !== "feishu" ||
+      !feishu ||
+      feishu.direction !== "inbound"
+    ) {
+      return null;
+    }
+
+    const scope = feishu.reference.threadId ? "thread" : "chat";
+    return this.loadFeishuReferenceContext(message, scope);
+  }
+
+  private async loadFeishuReferenceContext(message: SessionMessage, scope: "thread" | "chat"): Promise<void> {
+    try {
+      const context = await this.config.sdk.getFeishuReferenceContext(message.id);
+      if (context.state !== "available") {
+        message.feishuReferenceContext = context;
+        return;
+      }
+      const canonicalExternalIds = new Set(
+        (message.precedingMessages ?? []).flatMap((preceding) => {
+          const metadata = readFeishuMessageMetadata(preceding.metadata);
+          return metadata?.direction === "inbound" ? [metadata.reference.messageId] : [];
+        }),
+      );
+      message.feishuReferenceContext = {
+        ...context,
+        messages: context.messages.filter((item) => !canonicalExternalIds.has(item.externalMessageId)),
+      };
+    } catch (err) {
+      this.config.log.warn(
+        { chatId: message.chatId, messageId: message.id, err },
+        "Feishu reference context unavailable",
+      );
+      message.feishuReferenceContext = {
+        state: "unavailable",
+        scope,
+        messages: [],
+        truncated: false,
+        reason: "provider_unavailable",
+      };
+    }
   }
 
   /**

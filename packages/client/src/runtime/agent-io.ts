@@ -517,14 +517,17 @@ export async function formatInboundContent(message: SessionMessage, participants
       if (feishuReference) text = `${text}\n\n${feishuReference}`;
       lines.push(`${formatMessageFromHeaderLine(p, ps)} ${text}`);
     }
-    lines.push("", "[Now — message that woke you]");
     header = `${lines.join("\n")}\n\n`;
   }
+
+  const feishuReferenceContext = renderFeishuReferenceContext(message);
+  const nowMarker = preceding.length > 0 || message.feishuReferenceContext ? "[Now — message that woke you]\n\n" : "";
 
   const currentHeader = await buildFromHeader(message, participants);
   const feishuReference = renderFeishuReferenceForLLM(message);
   const content = feishuReference ? `${rawContent}\n\n${feishuReference}` : rawContent;
-  const base = currentHeader ? `${header}${currentHeader}\n\n${content}` : `${header}${content}`;
+  const beforeCurrent = `${header}${feishuReferenceContext}${nowMarker}`;
+  const base = currentHeader ? `${beforeCurrent}${currentHeader}\n\n${content}` : `${beforeCurrent}${content}`;
 
   const askAgent = readAskAgentMessageMetadata(message.metadata);
   if (!askAgent) return base;
@@ -552,4 +555,64 @@ export async function formatInboundContent(message: SessionMessage, participants
   ].join("\n");
 
   return `${steering}\n\n${base}`;
+}
+
+function renderFeishuReferenceContext(message: SessionMessage): string {
+  const context = message.feishuReferenceContext;
+  if (!context) return "";
+  const scopeLabel = context.scope === "thread" ? "thread" : "chat";
+  const header = `[Earlier in Feishu ${scopeLabel} — reference context, not complete history]`;
+  const lines = [header];
+  if (context.state === "unavailable") {
+    lines.push("Earlier Feishu context could not be loaded");
+  } else {
+    const messageLines = context.messages.map((item) => {
+      const senderName = item.senderName.replace(/[\r\n]+/g, " ").trim() || "Feishu user";
+      return `[From: ${senderName} · sent=${item.sentAt}] ${item.content}`;
+    });
+    const fitted = fitFeishuReferenceLines(header, messageLines, context.truncated);
+    lines.push(...fitted.lines);
+    if (fitted.truncated) lines.push("[Only the most recent bounded Feishu context is shown]");
+  }
+  return `${lines.join("\n")}\n\n`;
+}
+
+const MAX_FEISHU_REFERENCE_CONTEXT_BYTES = 64 * 1024;
+const FEISHU_REFERENCE_TRUNCATED_LINE = "[Only the most recent bounded Feishu context is shown]";
+
+function fitFeishuReferenceLines(
+  header: string,
+  messageLines: string[],
+  providerTruncated: boolean,
+): { lines: string[]; truncated: boolean } {
+  const render = (lines: string[], truncated: boolean) =>
+    `${header}\n${lines.join("\n")}${lines.length > 0 ? "\n" : ""}${truncated ? `${FEISHU_REFERENCE_TRUNCATED_LINE}\n` : ""}\n`;
+  if (Buffer.byteLength(render(messageLines, providerTruncated), "utf8") <= MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+    return { lines: messageLines, truncated: providerTruncated };
+  }
+
+  const keptNewestFirst: string[] = [];
+  for (let index = messageLines.length - 1; index >= 0; index -= 1) {
+    const candidate = [messageLines[index] as string, ...keptNewestFirst];
+    if (Buffer.byteLength(render(candidate, true), "utf8") > MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+      if (keptNewestFirst.length === 0) {
+        const codePoints = Array.from(messageLines[index] as string);
+        let low = 0;
+        let high = codePoints.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          const shortened = `${codePoints.slice(0, middle).join("")}…`;
+          if (Buffer.byteLength(render([shortened], true), "utf8") <= MAX_FEISHU_REFERENCE_CONTEXT_BYTES) {
+            low = middle;
+          } else {
+            high = middle - 1;
+          }
+        }
+        keptNewestFirst.push(`${codePoints.slice(0, low).join("")}…`);
+      }
+      break;
+    }
+    keptNewestFirst.unshift(messageLines[index] as string);
+  }
+  return { lines: keptNewestFirst, truncated: true };
 }

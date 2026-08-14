@@ -5,6 +5,7 @@ const FEISHU_MESSAGING_SCOPES = [
   "im:message",
   "im:message:send_as_bot",
   "im:message.group_at_msg:readonly",
+  "im:message.group_msg",
   "im:message.p2p_msg:readonly",
   "im:chat.members:read",
   "im:chat:readonly",
@@ -89,6 +90,12 @@ export const FEISHU_REQUIRED_SCOPES = [
   ...FEISHU_CALENDAR_SCOPES,
   ...FEISHU_TASK_SCOPES,
 ] as const;
+
+/** Whether a binding has every permission required by the current Feishu contract. */
+export function hasCurrentFeishuRequiredScopes(grantedScopes: readonly string[]): boolean {
+  const granted = new Set(grantedScopes);
+  return FEISHU_REQUIRED_SCOPES.every((scope) => granted.has(scope));
+}
 
 export const feishuBotBindingStatusSchema = z.enum(["provisioning", "active", "error", "revoked"]);
 export const feishuConnectionStatusSchema = z.enum(["disconnected", "connecting", "connected", "error"]);
@@ -186,3 +193,22 @@ export const feishuReferenceSelectionSchema = feishuMessageReferenceSchema.pick(
   rootId: true,
   parentId: true,
 });
+
+export const feishuReferenceContextMessageSchema = z.object({
+  externalMessageId: z.string().min(1),
+  senderId: z.string().min(1),
+  senderName: z.string().min(1),
+  isBot: z.boolean(),
+  content: z.string(),
+  sentAt: z.string().datetime(),
+});
+export type FeishuReferenceContextMessage = z.infer<typeof feishuReferenceContextMessageSchema>;
+
+export const feishuReferenceContextSchema = z.object({
+  state: z.enum(["available", "unavailable"]),
+  scope: z.enum(["thread", "chat"]),
+  messages: z.array(feishuReferenceContextMessageSchema),
+  truncated: z.boolean(),
+  reason: z.enum(["permission_denied", "provider_unavailable", "reference_unavailable"]).optional(),
+});
+export type FeishuReferenceContext = z.infer<typeof feishuReferenceContextSchema>;

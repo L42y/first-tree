@@ -285,6 +285,151 @@ function createSessionRuntime(opts: {
 }
 
 describe("SessionRuntime", () => {
+  it("loads Feishu reference context once before routing and removes canonical preceding duplicates", async () => {
+    const handler = createMockHandler();
+    const sdk = mockSdk();
+    sdk.getFeishuReferenceContext = vi.fn().mockResolvedValue({
+      state: "available",
+      scope: "thread",
+      messages: [
+        {
+          externalMessageId: "om_duplicate",
+          senderId: "ou_human",
+          senderName: "Human",
+          isBot: false,
+          content: "duplicate",
+          sentAt: "2026-08-14T02:00:00.000Z",
+        },
+        {
+          externalMessageId: "om_reference",
+          senderId: "ou_human",
+          senderName: "Human",
+          isBot: false,
+          content: "reference",
+          sentAt: "2026-08-14T02:01:00.000Z",
+        },
+      ],
+      truncated: false,
+    });
+    const entry = mockEntry({
+      id: 900,
+      messageId: "019a1111-1111-7111-8111-111111111111",
+      metadata: {
+        feishu: {
+          version: 1,
+          direction: "inbound",
+          botBindingId: "binding-a",
+          reference: {
+            messageId: "om_current",
+            chatId: "oc_chat",
+            chatType: "group",
+            threadId: "omt_thread",
+            rootId: "om_root",
+            parentId: null,
+            sentAt: "2026-08-14T02:02:00.000Z",
+          },
+          externalAuthor: { openId: "ou_human", displayName: "Human" },
+          messageType: "text",
+          mentions: [],
+          resources: [],
+        },
+      },
+      precedingMessages: [
+        {
+          id: "preceding-1",
+          senderId: "integration:feishu",
+          senderKind: "integration",
+          senderProvider: "feishu",
+          format: "text",
+          content: "already canonical",
+          metadata: {
+            feishu: {
+              version: 1,
+              direction: "inbound",
+              botBindingId: "binding-a",
+              reference: {
+                messageId: "om_duplicate",
+                chatId: "oc_chat",
+                chatType: "group",
+                threadId: "omt_thread",
+                rootId: "om_root",
+                parentId: null,
+                sentAt: "2026-08-14T02:00:00.000Z",
+              },
+              externalAuthor: { openId: "ou_human", displayName: "Human" },
+              messageType: "text",
+              mentions: [],
+              resources: [],
+            },
+          },
+          source: "feishu",
+          createdAt: "2026-08-14T02:00:00.000Z",
+        },
+      ],
+    });
+    entry.message.senderId = "integration:feishu";
+    entry.message.senderKind = "integration";
+    entry.message.senderProvider = "feishu";
+    entry.message.source = "feishu";
+    const sm = createSessionRuntime({ handler, sdk });
+
+    await sm.dispatch(entry);
+
+    expect(sdk.getFeishuReferenceContext).toHaveBeenCalledOnce();
+    expect(sdk.getFeishuReferenceContext).toHaveBeenCalledWith(entry.message.id);
+    const routed = (handler.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as SessionMessage;
+    expect(routed.feishuReferenceContext?.messages.map((item) => item.externalMessageId)).toEqual(["om_reference"]);
+    await sm.shutdown();
+  });
+
+  it("degrades an unsupported reference-context endpoint without blocking the Feishu trigger", async () => {
+    const handler = createMockHandler();
+    const sdk = mockSdk();
+    sdk.getFeishuReferenceContext = vi.fn().mockRejectedValue(new SdkError(404, "not found"));
+    const entry = mockEntry({
+      id: 901,
+      messageId: "019a1111-1111-7111-8111-111111111112",
+      metadata: {
+        feishu: {
+          version: 1,
+          direction: "inbound",
+          botBindingId: "binding-a",
+          reference: {
+            messageId: "om_current",
+            chatId: "oc_chat",
+            chatType: "group",
+            threadId: null,
+            rootId: null,
+            parentId: null,
+            sentAt: "2026-08-14T02:02:00.000Z",
+          },
+          externalAuthor: { openId: "ou_human", displayName: "Human" },
+          messageType: "text",
+          mentions: [],
+          resources: [],
+        },
+      },
+    });
+    entry.message.senderId = "integration:feishu";
+    entry.message.senderKind = "integration";
+    entry.message.senderProvider = "feishu";
+    entry.message.source = "feishu";
+    const sm = createSessionRuntime({ handler, sdk });
+
+    await sm.dispatch(entry);
+
+    expect(handler.start).toHaveBeenCalledOnce();
+    const routed = (handler.start as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as SessionMessage;
+    expect(routed.feishuReferenceContext).toEqual({
+      state: "unavailable",
+      scope: "chat",
+      messages: [],
+      truncated: false,
+      reason: "provider_unavailable",
+    });
+    await sm.shutdown();
+  });
+
   it("creates a new session on first message to a chat", async () => {
     const handler = createMockHandler();
     const sm = createSessionRuntime({ handler });

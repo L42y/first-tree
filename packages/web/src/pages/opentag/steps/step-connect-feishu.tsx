@@ -1,4 +1,4 @@
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { type FeishuBotBinding, hasCurrentFeishuRequiredScopes } from "@first-tree/shared";
 import type { LucideIcon } from "lucide-react";
 import { CircleAlert, CircleCheck, Clock3, QrCode } from "lucide-react";
 import type { ReactElement } from "react";
@@ -200,6 +200,22 @@ function BotColumn({
 
   if (binding.status === "provisioning" && binding.registrationUrl) {
     return <FeishuRegistrationQr registrationUrl={binding.registrationUrl} />;
+  }
+
+  if (isFeishuBotReachable(binding) && !hasCurrentFeishuRequiredScopes(binding.grantedScopes)) {
+    return (
+      <>
+        <FlowHint tone="info" role="status">
+          This bot needs updated permissions for group replies, active threads, and bounded chat context.
+        </FlowHint>
+        <div className="flex">
+          <Button type="button" variant="cta" disabled={starting} onClick={onConnect}>
+            <QrCode className="h-4 w-4" />
+            <span>{starting ? "Preparing…" : "Update permissions"}</span>
+          </Button>
+        </div>
+      </>
+    );
   }
 
   if (isFeishuBotReachable(binding)) {

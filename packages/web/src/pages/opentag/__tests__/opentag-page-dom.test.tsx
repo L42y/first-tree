@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { Agent, FeishuBotBinding } from "@first-tree/shared";
+import { type Agent, FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -129,6 +129,7 @@ function connectedBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotB
     connectionStatus: "connected",
     appId: "cli_1",
     botOpenId: "ou_bot",
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     ...overrides,
   });
 }
@@ -140,6 +141,7 @@ function connectedBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotB
  */
 function usableBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
   return connectedBinding({
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
     ...overrides,
   });
@@ -862,6 +864,35 @@ describe("OpenTag entry — the Feishu handoff", () => {
     expect(container.textContent).toContain("Scan with Feishu");
     expect(container.querySelector("svg title")?.textContent).toBe("Feishu bot registration QR code");
     expect(container.querySelector("a[href='https://feishu.example/confirm/abc']")).not.toBeNull();
+  });
+
+  it("offers an in-place permission update for a reachable Bot with stale scopes and shows its QR", async () => {
+    api.getAgent.mockResolvedValue(agentRow());
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: connectedBinding({
+        grantedScopes: FEISHU_REQUIRED_SCOPES.filter((scope) => scope !== "im:message.group_msg"),
+        cli: { state: "ready", version: "1.4.0", clientId: "client-1" },
+      }),
+    });
+    const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
+
+    expect(container.textContent).toContain("needs updated permissions");
+    expect(container.textContent).not.toContain("Feishu bot connected");
+
+    api.getAgentFeishuBinding.mockResolvedValue({
+      binding: feishuBinding({
+        status: "provisioning",
+        connectionStatus: "connected",
+        appId: "cli_1",
+        botOpenId: "ou_bot",
+        registrationUrl: "https://feishu.example/confirm/permissions",
+      }),
+    });
+    await click(button(container, "Update permissions"));
+
+    expect(api.startAgentFeishuRegistration).toHaveBeenCalledWith(AGENT_UUID, "Ada assistant · OpenTag");
+    expect(container.textContent).toContain("Scan with Feishu");
+    expect(container.querySelector("a[href='https://feishu.example/confirm/permissions']")).not.toBeNull();
   });
 
   it("only calls the Bot connected once it is actually reachable", async () => {

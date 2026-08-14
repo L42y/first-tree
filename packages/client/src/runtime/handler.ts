@@ -1,4 +1,4 @@
-import type { AgentVisibility, RuntimeProvider, SessionEvent } from "@first-tree/shared";
+import type { AgentVisibility, FeishuReferenceContext, RuntimeProvider, SessionEvent } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
 
 /** Agent identity fields flowing from Server through the runtime pipeline. */
@@ -335,6 +335,11 @@ export type SessionMessage = {
    * wording.
    */
   unavailableAttachmentIds?: ReadonlySet<string>;
+  /**
+   * One-delivery provider history window. The runtime fetches it from the
+   * Agent-only endpoint and never sends it back to Cloud or canonical metadata.
+   */
+  feishuReferenceContext?: FeishuReferenceContext;
 };
 
 export type PrecedingMessage = {

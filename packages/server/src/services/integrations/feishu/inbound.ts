@@ -21,6 +21,11 @@ import { claimEvent, unclaimEvent } from "../../event-dedup.js";
 import { type Notifier, notifyRecipients } from "../../notifier.js";
 import { isFeishuBotUsable } from "./binding-state.js";
 import { convertFeishuContent } from "./content.js";
+import {
+  type FeishuParentMessageReader,
+  findActiveChatBinding,
+  resolveFeishuInboundTrigger,
+} from "./inbound-trigger.js";
 import { type FeishuResourceDownloader, hydrateFeishuResources } from "./resource-hydrator.js";
 import { safeFeishuErrorContext } from "./safe-error.js";
 import { externalAuthorIdentity, type FeishuChatMembersReader, type FeishuSenderNameResolver } from "./sender-name.js";
@@ -31,7 +36,7 @@ const ACKNOWLEDGEMENT_EMOJI = "Get";
 type Binding = typeof imBotBindings.$inferSelect;
 
 export type FeishuInboundResult =
-  | { state: "ignored"; reason: "group_without_mention" | "bot_echo" | "inactive_binding" }
+  | { state: "ignored"; reason: "group_without_trigger" | "bot_echo" | "inactive_binding" }
   | { state: "duplicate" }
   | { state: "created"; chatId: string; messageId: string };
 
@@ -45,15 +50,14 @@ export async function ingestFeishuMessage(
     readMembers: FeishuChatMembersReader;
     downloadResource: FeishuResourceDownloader;
     addReaction: (input: { messageId: string; emojiType: string }) => Promise<unknown>;
+    readParentMessage: FeishuParentMessageReader;
     attachmentObjectQuota: AttachmentObjectQuota;
   },
 ): Promise<FeishuInboundResult> {
   if (!isFeishuBotUsable(binding)) return { state: "ignored", reason: "inactive_binding" };
   if (input.senderId === binding.botOpenId) return { state: "ignored", reason: "bot_echo" };
-  const exactBotMention = input.mentions.some((mention) => mention.openId === binding.botOpenId);
-  if (input.chatType === "group" && (!input.mentionedBot || !exactBotMention)) {
-    return { state: "ignored", reason: "group_without_mention" };
-  }
+  const trigger = await resolveFeishuInboundTrigger(db, binding, input, dependencies.readParentMessage);
+  if (trigger.state === "ignored") return trigger;
 
   if (await findExistingMessage(db, binding.id, input.messageId)) return { state: "duplicate" };
   const eventId = extractEventId(input.raw) ?? input.messageId;
@@ -63,7 +67,7 @@ export async function ingestFeishuMessage(
   acknowledgeFeishuMessage(binding.id, input.messageId, dependencies.addReaction);
 
   try {
-    const chatBinding = await resolveOrCreateChatBinding(db, binding, input);
+    const chatBinding = trigger.chatBinding ?? (await resolveOrCreateChatBinding(db, binding, input));
     const authorIdentity = externalAuthorIdentity(input, binding.tenantKey);
     const displayName = await dependencies.senderNames.resolve({
       botBindingId: binding.id,
@@ -222,7 +226,7 @@ async function claimRecoverableEvent(db: Database, eventId: string, platform: st
 }
 
 async function resolveOrCreateChatBinding(db: Database, binding: Binding, input: NormalizedMessage) {
-  const existing = await findChatBinding(db, binding.id, input.chatId);
+  const existing = await findActiveChatBinding(db, binding.id, input.chatId);
   if (existing) return existing;
 
   try {
@@ -268,25 +272,10 @@ async function resolveOrCreateChatBinding(db: Database, binding: Binding, input:
       return created;
     });
   } catch (error) {
-    const raced = await findChatBinding(db, binding.id, input.chatId);
+    const raced = await findActiveChatBinding(db, binding.id, input.chatId);
     if (raced) return raced;
     throw error;
   }
-}
-
-async function findChatBinding(db: Database, botBindingId: string, feishuChatId: string) {
-  const [row] = await db
-    .select()
-    .from(imChatBindings)
-    .where(
-      and(
-        eq(imChatBindings.botBindingId, botBindingId),
-        eq(imChatBindings.feishuChatId, feishuChatId),
-        eq(imChatBindings.status, "active"),
-      ),
-    )
-    .limit(1);
-  return row;
 }
 
 function rawMessageFromEvent(raw: unknown): { messageType: string; content: string } | null {

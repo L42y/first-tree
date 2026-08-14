@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { FeishuBotBinding } from "@first-tree/shared";
+import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding } from "@first-tree/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -58,7 +58,7 @@ function binding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
     tenantKey: "tenant-a",
     status: "active",
     connectionStatus: "connected",
-    grantedScopes: ["im:message"],
+    grantedScopes: [...FEISHU_REQUIRED_SCOPES],
     registrationUrl: null,
     registrationExpiresAt: null,
     lastConnectedAt: "2026-08-12T00:00:00.000Z",
@@ -174,7 +174,7 @@ describe("Feishu Agent Detail section", () => {
 
   it("only reports Ready when both the Bot is reachable and the CLI is ready", async () => {
     apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
-      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" }, grantedScopes: [] }),
+      binding: binding({ cli: { state: "ready", version: "1.2.3", clientId: "client-a" } }),
     });
     const ready = await renderSection();
     expect(ready.querySelector('[data-channel-state="ready"]')).not.toBeNull();
@@ -188,6 +188,22 @@ describe("Feishu Agent Detail section", () => {
     const incomplete = await renderSection();
     expect(incomplete.querySelector('[data-channel-state="setup-incomplete"]')).not.toBeNull();
     expect(incomplete.textContent).toContain("The Bot is reachable. Finish the Agent setup");
+  });
+
+  it("keeps the existing Bot online while clearly requiring a permission update", async () => {
+    apiMocks.getAgentFeishuBinding.mockResolvedValueOnce({
+      binding: binding({
+        cli: { state: "ready", version: "1.2.3", clientId: "client-a" },
+        grantedScopes: ["im:message"],
+      }),
+    });
+    const container = await renderSection();
+
+    expect(container.querySelector('[data-channel-state="setup-incomplete"]')).not.toBeNull();
+    expect(container.textContent).toContain("The Bot is online with its existing access");
+    expect(container.textContent).toContain("Update required");
+    expect(container.textContent).toContain("group replies, continue active threads");
+    expect(buttonByText(container, "Update permissions")).not.toBeNull();
   });
 
   it("separates an offline Computer from Bot reachability and marks the aggregate channel for attention", async () => {
