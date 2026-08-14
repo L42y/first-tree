@@ -16,6 +16,7 @@ import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import type { ComputerConnection } from "../../../features/agent-setup/use-computer-connection.js";
 import { OpenTagPage } from "../opentag-page.js";
+import { openTagPickerTop } from "../opentag-view.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +24,19 @@ const AGENT_UUID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708192";
 const ORG = "org-1";
 const MEMBER = "member-1";
 const clipboardWriteText = vi.fn();
+
+describe("OpenTag picker placement", () => {
+  const viewport = { panelHeight: 168, viewportTop: 0, viewportHeight: 768, margin: 8, gap: 4 };
+
+  it("opens upward when it fits and clamps a scrolled trigger to the viewport top", () => {
+    expect(openTagPickerTop({ ...viewport, triggerTop: 302 })).toBe(130);
+    expect(openTagPickerTop({ ...viewport, triggerTop: 24 })).toBe(8);
+  });
+
+  it("clamps a lower trigger's upward panel inside the viewport", () => {
+    expect(openTagPickerTop({ ...viewport, triggerTop: 800 })).toBe(592);
+  });
+});
 
 const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
 const applyOnboardingStamp = vi.hoisted(() => vi.fn(() => true));
@@ -284,7 +298,7 @@ describe("OpenTag single-page Desktop flow", () => {
     const state = container.querySelector("[data-opentag-state='connect-computer']");
 
     expect(container.querySelector("h1")?.textContent).toBe("Bring your agent to Feishu");
-    expect(container.textContent).toContain("Your agentOpenTagChange name");
+    expect(container.querySelector("[data-opentag-identity]")?.textContent).toBe("OpenTagChange name");
     expect(state?.textContent).toContain("Copy command");
     expect(state?.querySelectorAll("button")).toHaveLength(1);
     for (const retired of ["Template", "Step 1", "Continue", "Next", "First Tree Client", "progress"]) {

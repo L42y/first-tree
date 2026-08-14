@@ -30,7 +30,7 @@ export function OpenTagShell({
     >
       <header
         className="flex items-center justify-between border-b border-border-faint"
-        style={{ padding: "var(--sp-8) var(--sp-12)" }}
+        style={{ padding: "var(--sp-5) var(--sp-12)" }}
       >
         <OpenTagLogo />
         <Button type="button" variant="link" className="h-auto p-0 text-lead font-normal" onClick={logout}>
@@ -60,10 +60,11 @@ export function OpenTagShell({
             Your agent runs on your computer. Work with it from Feishu.
           </p>
 
-          <div className="flex items-center" style={{ gap: "var(--sp-6)", marginTop: "var(--opentag-identity-top)" }}>
-            <span className="text-lead" style={{ color: "var(--fg-2)" }}>
-              Your agent
-            </span>
+          <div
+            data-opentag-identity
+            className="flex items-center"
+            style={{ gap: "var(--sp-6)", marginTop: "var(--opentag-identity-top)" }}
+          >
             {editingName ? (
               <label className="flex items-center" style={{ gap: "var(--sp-2)" }}>
                 <span className="sr-only">Agent name</span>

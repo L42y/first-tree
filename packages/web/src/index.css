@@ -351,7 +351,9 @@ video[data-onboarding-orientation-video]::cue {
   --opentag-status-bottom: 4.25rem;
   --opentag-status-gap: var(--sp-10);
   --opentag-picker-max-height: 10.5rem;
-  --opentag-picker-lift: calc((var(--opentag-picker-max-height) + var(--sp-7)) * -1);
+  --opentag-picker-anchor-gap: var(--sp-1);
+  --opentag-picker-viewport-margin: var(--sp-2);
+  --opentag-picker-shift: 0;
   --opentag-action-height: 10.5rem;
   --opentag-action-qr-height: 21.75rem;
   --opentag-action-padding: var(--sp-8);
@@ -651,7 +653,7 @@ video[data-onboarding-orientation-video]::cue {
 }
 
 .opentag-choice-panel {
-  transform: translateY(var(--opentag-picker-lift));
+  transform: translateY(calc(var(--opentag-picker-shift) * 1px));
 }
 
 .opentag-choice-list {
@@ -659,10 +661,18 @@ video[data-onboarding-orientation-video]::cue {
   overflow-y: auto;
 }
 
+.opentag-picker-placement {
+  position: absolute;
+  width: 0;
+  height: 0;
+  scroll-margin-top: var(--opentag-picker-anchor-gap);
+  scroll-margin-bottom: var(--opentag-picker-viewport-margin);
+}
+
 /* OpenTag remains a Desktop-only flow, but its asymmetric composition must
    stay usable on common narrow laptop viewports. Keep these adjustments local
    to the product surface rather than changing dashboard breakpoints. */
-@media (max-width: 80rem) {
+@media (max-width: 88rem) {
   [data-opentag-theme="light"] {
     --opentag-page-gutter: var(--sp-8);
     --opentag-grid-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);

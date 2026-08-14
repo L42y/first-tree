@@ -1,7 +1,7 @@
 import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
+import { type ReactElement, type ReactNode, type RefObject, useEffect, useRef } from "react";
 import type { HubClient } from "../../api/activity.js";
 import { Button } from "../../components/ui/button.js";
 import { Popover } from "../../components/ui/popover.js";
@@ -319,26 +319,110 @@ function ChoicePopover({
   label: string;
   children: (close: () => void) => ReactElement;
 }): ReactElement {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+
   return (
-    <Popover
-      align="end"
-      panelAriaLabel={label}
-      panelClassName="opentag-choice-panel surface-overlay w-[var(--sp-90)] p-3"
-      trigger={({ toggle, open }) => (
-        <Button
-          type="button"
-          variant="link"
-          className="h-auto shrink-0 p-0 text-body font-normal"
-          aria-expanded={open}
-          onClick={toggle}
-        >
-          Change <ChevronDown className="h-3.5 w-3.5" />
-        </Button>
-      )}
-    >
-      {({ close }) => children(close)}
-    </Popover>
+    <span ref={anchorRef} className="contents">
+      <Popover
+        align="end"
+        panelAriaLabel={label}
+        panelClassName="opentag-choice-panel surface-overlay w-[var(--sp-90)] p-3"
+        trigger={({ toggle, open }) => (
+          <Button
+            type="button"
+            variant="link"
+            className="h-auto shrink-0 p-0 text-body font-normal"
+            aria-expanded={open}
+            onClick={toggle}
+          >
+            Change <ChevronDown className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      >
+        {({ close }) => (
+          <>
+            <OpenTagPickerPlacement anchorRef={anchorRef} />
+            {children(close)}
+          </>
+        )}
+      </Popover>
+    </span>
   );
+}
+
+type PickerPlacement = {
+  triggerTop: number;
+  panelHeight: number;
+  viewportTop: number;
+  viewportHeight: number;
+  margin: number;
+  gap: number;
+};
+
+export function openTagPickerTop({
+  triggerTop,
+  panelHeight,
+  viewportTop,
+  viewportHeight,
+  margin,
+  gap,
+}: PickerPlacement): number {
+  const minimum = viewportTop + margin;
+  const maximum = Math.max(minimum, viewportTop + viewportHeight - margin - panelHeight);
+  const above = triggerTop - gap - panelHeight;
+  return Math.max(minimum, Math.min(above, maximum));
+}
+
+function OpenTagPickerPlacement({ anchorRef }: { anchorRef: RefObject<HTMLSpanElement | null> }): ReactElement {
+  const markerRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let frame = 0;
+    const place = (): void => {
+      const marker = markerRef.current;
+      const panel = marker?.parentElement;
+      const trigger = anchorRef.current?.querySelector("button");
+      if (!marker || !panel || !trigger) return;
+
+      const markerStyles = window.getComputedStyle(marker);
+      const margin = Number.parseFloat(markerStyles.scrollMarginBottom);
+      const gap = Number.parseFloat(markerStyles.scrollMarginTop);
+      const viewportTop = window.visualViewport?.offsetTop ?? 0;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const triggerRect = trigger.getBoundingClientRect();
+      const top = openTagPickerTop({
+        triggerTop: triggerRect.top,
+        panelHeight: panel.offsetHeight,
+        viewportTop,
+        viewportHeight,
+        margin,
+        gap,
+      });
+      const baseTop = Number.parseFloat(panel.style.top);
+      panel.style.setProperty("--opentag-picker-shift", String(top - baseTop));
+    };
+    const schedule = (): void => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(place);
+      });
+    };
+
+    schedule();
+    window.addEventListener("scroll", schedule, true);
+    window.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+    };
+  }, [anchorRef]);
+
+  return <span ref={markerRef} className="opentag-picker-placement" aria-hidden="true" />;
 }
 
 function ChoiceList({ children }: { children: ReactElement | Array<ReactElement | null> }): ReactElement {
