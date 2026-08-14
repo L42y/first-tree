@@ -21,8 +21,7 @@ export { isFeishuHandoffUsable } from "../../features/feishu/binding-view.js";
 
 /**
  * The guided path the member sees. `use-in-feishu` is the destination this
- * entry hands off to: the member reaches it by using their Agent in Feishu, not
- * by pressing anything here, so this flow only ever *observes* that it happened.
+ * entry hands off to once the Bot and the Agent's Feishu tools are both ready.
  */
 export const OPENTAG_STEPS = ["choose-agent", "set-up-runtime", "connect-feishu", "use-in-feishu"] as const;
 export type OpenTagStepId = (typeof OPENTAG_STEPS)[number];
@@ -111,23 +110,6 @@ export function classifyOpenTagAgent(read: OpenTagAgentRead): OpenTagAgentFacts 
 }
 
 /**
- * Whether this exact Agent has a real Feishu Task yet.
- *
- * `unknown` is deliberately not `absent`. A read that has not landed — or that
- * failed — is evidence about the request, not about the member: treating it as
- * "no Task" would be harmless here, but treating a failure as "Task" would
- * finish onboarding for someone who has never used their Agent. Both wrong
- * answers are kept out by making the absence of an answer its own state.
- */
-export type OpenTagFirstUse =
-  /** No answer yet: no Bot to have a Task, a read in flight, or a failed read. */
-  | { state: "unknown" }
-  /** Established: this Agent has no Feishu Task. */
-  | { state: "absent" }
-  /** Established: this Agent's Feishu Task exists, and this is its chat. */
-  | { state: "present"; chatId: string };
-
-/**
  * How long this step is allowed to look ordinary.
  *
  * Both halves usually land well inside it, so a longer wait is the first honest
@@ -143,10 +125,9 @@ export const FEISHU_TOOLS_SLOW_MS = 90_000;
  * anything unusable starts over from the Agent choice, where nothing has been
  * created yet.
  *
- * A genuinely usable handoff moves the member to the first-use step. Bot
+ * A genuinely usable handoff moves the member to the ready step. Bot
  * reachability alone is not enough: the Agent must also have the Feishu tools
- * ready on its Computer. First use remains a read-only wait until the exact Bot
- * binding has produced a real Feishu Task.
+ * ready on its current Computer.
  */
 export function resolveOpenTagStep(facts: OpenTagAgentFacts, handoffUsable: boolean): OpenTagStepId | null {
   switch (facts.state) {

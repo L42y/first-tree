@@ -1,6 +1,6 @@
 import { opentagEntryPath, parseOpenTagEntryPath, type RuntimeProvider } from "@first-tree/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactElement, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   completeAgentFeishuOnboarding,
@@ -20,13 +20,10 @@ import {
 } from "../../features/feishu/binding-view.js";
 import { slugify } from "../../utils/agent-naming.js";
 import { FlowHint } from "../onboarding/flow-ui.js";
-import { OPENTAG_FIRST_TASK_COMPLETE_COPY } from "./copy.js";
-import { createOpenTagFirstUseScan, FIRST_USE_POLL_MS } from "./first-use.js";
 import {
   classifyOpenTagAgent,
   FEISHU_TOOLS_SLOW_MS,
   OPENTAG_STEPS,
-  type OpenTagFirstUse,
   type OpenTagStepId,
   resolveOpenTagStep,
 } from "./flow.js";
@@ -250,12 +247,6 @@ export function OpenTagPage(): ReactElement | null {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: feishuBindingQueryKey(agentUuid ?? "") }),
   });
 
-  // Real first use is a fact about a Bot that already exists, so there is
-  // nothing to ask about until one does — a Bot the member is still confirming
-  // in Feishu cannot have carried a message yet. Past that point the binding id
-  // is what makes the answer this Agent's and no one else's, so it is part of
-  // the key: a re-registered Bot asks the question again rather than serving
-  // the previous Bot's answer.
   const binding = feishuQuery.data?.binding ?? null;
 
   // Committing to Feishu is what licenses this, and the binding is the durable
@@ -336,55 +327,9 @@ export function OpenTagPage(): ReactElement | null {
   // way out on screen, but it is no reason to ask the Agent to prepare a
   // Computer that is already getting on with it.
   const canRetryTools = hasComputer && !toolsReady && (setupFailed || stepSlow);
-  const botBindingId = binding && binding.status !== "provisioning" ? binding.id : null;
-  // Ownership, not readability, is what licenses the stamp below.
-  //
-  // The Bot binding proves which Agent the Task belongs to. It says nothing
-  // about which member's onboarding is being finished, and the two genuinely
-  // come apart: an admin may continue a teammate's Agent here, and if that
-  // admin manages some other Agent the primary invited into its Task, the
-  // ordinary watcher projection hands them a membership in that very Task. The
-  // read would then succeed, the binding would match exactly, and the stamp
-  // would land on the admin's membership because a teammate used a teammate's
-  // Agent. Completion means this member owns the setup, so the question is not
-  // asked at all unless they do.
-  //
-  // The member id is in the key for the same reason: a cached answer belongs to
-  // whoever it was read for.
-  // One scan per (Agent, Bot), reused across polls so its verdict cache
-  // survives them; either changing throws the whole thing away. It is not keyed
-  // by member because what it remembers — which chat carries which Bot
-  // binding — is the same answer whoever asks. Who may act on that answer is
-  // decided by the ownership gate and the query key, not here.
-  const scanFirstUse = useMemo(
-    () => createOpenTagFirstUseScan(agentUuid ?? "", botBindingId ?? ""),
-    [agentUuid, botBindingId],
-  );
-  // Both halves of the handoff gate the search itself, not its answer. An Agent
-  // whose Computer cannot call Feishu would receive a first message it can
-  // never reply to, and finding that Task would stamp onboarding complete on a
-  // handoff that does not work. Gating the read rather than masking its result
-  // also means a Task already found stays found: the conversation is a durable
-  // fact, and a later capability blip should not walk the member back through a
-  // step they finished.
-  const firstUseQuery = useQuery({
-    queryKey: ["opentag-feishu-first-use", agentUuid, botBindingId, memberId],
-    queryFn: ({ signal }) => scanFirstUse(signal),
-    enabled: feishuReady && ownsUrlAgent && !!botBindingId && isFeishuHandoffUsable(binding),
-    // A failed read must stay "we don't know", never "not used yet" — and never
-    // a blank frame. The poll below is the retry.
-    retry: false,
-    refetchInterval: (query) => (query.state.data?.state === "present" ? false : FIRST_USE_POLL_MS),
-  });
-  // Anything but a landed, successful read is `unknown`: an error here says
-  // something about the request, never about whether the member has used their
-  // Agent.
-  const firstUse: OpenTagFirstUse = firstUseQuery.data ?? { state: "unknown" };
-  const firstUseChatId = firstUse.state === "present" ? firstUse.chatId : null;
-
-  // The one write this discovery makes, and only after the Task is a fact. The
-  // server stamp is idempotent, so a reload after first use converges on the
-  // same membership instead of producing a second onboarding state.
+  // The handoff itself is the completion fact. The server stamp is idempotent,
+  // so a reload after readiness converges on the same membership instead of
+  // producing a second onboarding state.
   const complete = useMutation({
     mutationFn: (target: { agentUuid: string; memberId: string; organizationId: string }) =>
       completeAgentFeishuOnboarding(target.agentUuid),
@@ -409,15 +354,13 @@ export function OpenTagPage(): ReactElement | null {
     // feeds it: this is the line that changes durable state, and it should not
     // depend on a caller upstream having kept a cached answer honest.
     if (!ownsUrlAgent || !agentUuid || !memberId || !organizationId) return;
-    // The handoff is re-checked at the write for the same reason. The scan that
-    // produced this Task ran against an earlier read, and a capability that has
-    // since gone means the Agent cannot answer the very Task about to finish
-    // its setup. Holding here costs a member nothing — the poll behind this
-    // keeps the answer current — while stamping would be wrong for good.
+    // The handoff is re-checked at the write for the same reason. The endpoint
+    // independently fences the live Bot lease and the current Computer's CLI
+    // readiness at the membership stamp.
     if (!isFeishuHandoffUsable(binding)) return;
-    // Once per landed Task: a failure holds until the member retries, so a
-    // failing endpoint is not hammered by the first-use poll behind it.
-    if (!firstUseChatId || completePending || completeSettled || completeFailed) return;
+    // A failure holds until the member retries, so a failing endpoint is not
+    // hammered by binding polls behind it.
+    if (completePending || completeSettled || completeFailed) return;
     completeMutate({ agentUuid, memberId, organizationId });
   }, [
     ownsUrlAgent,
@@ -425,14 +368,13 @@ export function OpenTagPage(): ReactElement | null {
     memberId,
     organizationId,
     binding,
-    firstUseChatId,
     completePending,
     completeSettled,
     completeFailed,
     completeMutate,
   ]);
 
-  // The handoff itself opens the real first-use step. A completed stamp keeps
+  // The handoff itself opens the ready step. A completed stamp keeps
   // that durable destination stable across a later capability blip in this
   // session; before completion, any loss returns to the repair surface.
   const step = resolveOpenTagStep(facts, isFeishuHandoffUsable(binding) || completeSettled);
@@ -456,10 +398,8 @@ export function OpenTagPage(): ReactElement | null {
   const shellStep: OpenTagStepId = draftStep ?? (facts.state === "team-unreadable" ? "choose-agent" : "set-up-runtime");
 
   const completedSteps = OPENTAG_STEPS.slice(0, OPENTAG_STEPS.indexOf(shellStep));
-  const stepCopy = step === "use-in-feishu" && firstUseChatId ? OPENTAG_FIRST_TASK_COMPLETE_COPY : undefined;
-
   return (
-    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps} stepCopy={stepCopy}>
+    <OpenTagShell activeStep={shellStep} completedSteps={completedSteps}>
       {facts.state === "unreadable" && (
         <OpenTagRecoverableError
           message="We couldn't load your agent. Nothing was lost — it and its setup are still there."
@@ -559,10 +499,11 @@ export function OpenTagPage(): ReactElement | null {
       {step === "use-in-feishu" && agent && (
         <StepUseInFeishu
           agentDisplayName={agent.displayName}
-          chatId={firstUseChatId}
-          readFailed={firstUseQuery.isError}
-          settled={completeSettled}
-          failed={completeFailed}
+          // Only the exact manager's membership needs this page to stamp it.
+          // An admin inspecting a teammate's ready Agent gets the same read-only
+          // handoff without waiting on a mutation that must never start.
+          settled={!ownsUrlAgent || completeSettled}
+          failed={ownsUrlAgent && completeFailed}
           onRetry={completeReset}
         />
       )}

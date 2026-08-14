@@ -26,10 +26,9 @@ import { OPENTAG_FEISHU_READINESS_COPY } from "../copy.js";
  * something the Agent does for itself, so this surface never asks anyone to
  * understand or approve it.
  *
- * Reaching a connected Bot does not complete onboarding: real first use in
- * Feishu is what turns this into work, and that happens in Feishu — but only
- * once the Agent can actually reply, so the invitation to message the Bot is
- * withheld until both halves are ready.
+ * Reaching a connected Bot is only half of completion. Once the Agent can also
+ * answer through its current Computer, the authoritative completion endpoint
+ * validates both facts and this surface hands the member off to Feishu.
  */
 export function StepConnectFeishu({
   agentUuid,
@@ -209,13 +208,9 @@ function BotColumn({
         <p className="text-subtitle font-semibold" style={{ margin: 0, color: "var(--fg)" }}>
           Feishu bot connected
         </p>
-        {/* The invitation to use the Bot is the last thing this step says, and
-            only once the Agent could actually answer. Asking earlier would send
-            the member to a chat that goes unanswered and, worse, let a first
-            Task finish setup the Agent cannot yet deliver on. */}
         <p className="text-body" style={{ margin: 0, color: "var(--fg-3)" }}>
           {isFeishuHandoffUsable(binding)
-            ? "Message it in Feishu — a private message or an exact group mention starts the first task."
+            ? "Your agent is ready to work in Feishu."
             : "Your bot and its permissions are kept."}
         </p>
       </div>
