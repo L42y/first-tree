@@ -441,6 +441,7 @@ describe("OpenTag single-page Desktop flow", () => {
 
     expect(container.textContent).toContain("Agent · Claude Code ready");
     expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector<HTMLElement>("[data-opentag-statuses]")?.dataset.opentagRuntimePicker).toBe("true");
   });
 
   it("pins the OpenTag light palette when the persisted root theme is dark", async () => {

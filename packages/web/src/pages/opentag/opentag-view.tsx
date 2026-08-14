@@ -79,12 +79,14 @@ export function OpenTagView({
   };
 }): ReactElement {
   const hasComputer = connectedClients.length > 0;
+  const hasRuntimePicker = runtimeChoices.filter((choice) => choice.ready).length > 1;
   const runtimeLabel = selectedRuntime ? runtimeProviderLabel(selectedRuntime) : "Agent";
 
   return (
     <div style={{ marginTop: pageState === "add-to-feishu" ? "calc(var(--opentag-qr-flow-offset) * -1)" : undefined }}>
       <div
         data-opentag-statuses
+        data-opentag-runtime-picker={hasRuntimePicker || undefined}
         className="opentag-statuses grid"
         style={{
           gap: "var(--opentag-status-gap)",
