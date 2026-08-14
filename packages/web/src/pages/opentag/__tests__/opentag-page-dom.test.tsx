@@ -388,7 +388,9 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(document.body.textContent).toContain("Cursor");
     expect(document.body.textContent).toContain("Install required");
     expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector("[data-opentag-statuses]")?.classList.contains("opentag-statuses")).toBe(true);
+    const statuses = container.querySelector<HTMLElement>("[data-opentag-statuses]");
+    expect(statuses?.classList.contains("opentag-statuses")).toBe(true);
+    expect(statuses?.style.gridTemplateColumns).toBe("var(--opentag-status-columns)");
     expect(document.querySelector("[role='dialog'][aria-label='Change Agent']")?.classList).toContain(
       "opentag-choice-panel",
     );

@@ -85,9 +85,10 @@ export function OpenTagView({
     <div style={{ marginTop: pageState === "add-to-feishu" ? "calc(var(--opentag-qr-flow-offset) * -1)" : undefined }}>
       <div
         data-opentag-statuses
-        className="opentag-statuses grid grid-cols-2"
+        className="opentag-statuses grid"
         style={{
           gap: "var(--opentag-status-gap)",
+          gridTemplateColumns: "var(--opentag-status-columns)",
           marginBottom: pageState === "add-to-feishu" ? "calc(var(--opentag-status-bottom) + var(--sp-5))" : undefined,
         }}
       >
