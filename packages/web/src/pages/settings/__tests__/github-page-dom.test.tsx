@@ -331,6 +331,7 @@ describe("SettingsGithubPage — automatic handling", () => {
     expect(taskRouting.textContent).toContain(
       "Context Tree activity uses Context Reviewer. These roles must use different Agents.",
     );
+    expect(taskRouting.textContent).toContain("Only public Agents with a managed runtime appear here.");
 
     const controls = await waitForSelector<HTMLElement>(taskRouting, '[data-github-task-agent-controls="admin"]');
     expect(controls.parentElement?.style.cssText).toContain("border-top");

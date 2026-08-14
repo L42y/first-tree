@@ -174,6 +174,9 @@ export function GithubTaskAgentControls({
             searchable={candidates.length > 6}
           />
           <div className="text-caption" style={{ color: "var(--fg-4)" }}>
+            Only public Agents with a managed runtime appear here.
+          </div>
+          <div className="text-caption" style={{ color: "var(--fg-4)" }}>
             Context Tree activity uses Context Reviewer. These roles must use different Agents.
           </div>
         </div>
