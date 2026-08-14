@@ -397,12 +397,9 @@ describe("NewAgentDialog initial Template", () => {
     await rerenderHarness(undefined);
     await click(buttonByText("harness-open"));
     await flush();
-    await waitForCondition(
-      () => templateMocks.listAgentTemplates.mock.calls.length >= 2,
-      "catalog not refetched on reopen",
-    );
-    await flush();
-    expect(document.body.textContent).toContain("Choose a template");
+    expect(templateMocks.listAgentTemplates).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain("Responsibilities");
+    expect(document.body.textContent).not.toContain("Choose a template");
     expect(document.body.textContent).not.toContain("Purpose of PR Engineer");
   });
 

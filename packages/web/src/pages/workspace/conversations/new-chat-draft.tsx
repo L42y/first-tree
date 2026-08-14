@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUp, Check, Menu, Paperclip, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Link } from "react-router";
 import { getNewChatDefaultCandidates } from "../../../api/agents.js";
 import { uploadAttachment, uploadMimeFor } from "../../../api/attachments.js";
 import { type ImageRefContent, readFileAsBase64 } from "../../../api/chats.js";
@@ -27,6 +28,7 @@ import {
   useMentionAutocomplete,
 } from "../../../components/mention-autocomplete.js";
 import { triggerOverlapsToken } from "../../../components/mention-composer-model.js";
+import { Button } from "../../../components/ui/button.js";
 import { FileChip } from "../../../components/ui/file-chip.js";
 import { useMentionComposer } from "../../../components/use-mention-composer.js";
 import { clearDraft, type DraftSnapshot, loadDraft, newChatDraftScope, saveDraft } from "../../../lib/draft-store.js";
@@ -360,6 +362,21 @@ export function NewChatDraft({
     }
     return Array.from(byId.values());
   }, [knownAgents, triggerSearchPage?.items, agentIdentity, myAgentId, myMemberId]);
+
+  // `?c=draft&with=<uuid>` is also the post-create landing path. When it
+  // points at one Agent managed by the viewer, expose the existing long-term
+  // Channels surface as a quiet secondary action; the composer remains the
+  // primary task and private-Agent authorization continues to be enforced by
+  // Agent Detail rather than widened here.
+  const feishuTarget = useMemo(() => {
+    if (initialParticipantIds?.length !== 1 || chips.length !== 1) return null;
+    const targetId = initialParticipantIds[0];
+    if (!targetId || chips[0] !== targetId) return null;
+    const candidate = knownAgents.get(targetId);
+    const row = knownAgentRows.get(targetId);
+    if (!candidate?.managedByMe || row?.type !== "agent") return null;
+    return { uuid: targetId };
+  }, [chips, initialParticipantIds, knownAgents, knownAgentRows]);
 
   useEffect(() => {
     if (seededDefaultRef.current) return;
@@ -956,6 +973,13 @@ export function NewChatDraft({
             <p className="mono text-label" style={{ color: "var(--state-error)", marginTop: 8 }}>
               {error}
             </p>
+          )}
+          {feishuTarget && (
+            <div className="mt-3 flex justify-center">
+              <Button asChild variant="ghost" size="xs">
+                <Link to={`/agents/${encodeURIComponent(feishuTarget.uuid)}/channels`}>Add to Feishu</Link>
+              </Button>
+            </div>
           )}
         </div>
       </div>
