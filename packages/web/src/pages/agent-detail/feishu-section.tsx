@@ -252,6 +252,16 @@ export function FeishuSection({ onOpenProfile, poll = true }: FeishuSectionProps
             action={
               ctx.canManageAgent ? (
                 <div className="flex gap-1">
+                  {binding.status === "active" && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      disabled={start.isPending || !canConnect}
+                      onClick={() => start.mutate()}
+                    >
+                      <QrCode className="h-3.5 w-3.5" /> Update permissions
+                    </Button>
+                  )}
                   {binding.status === "error" && (
                     <Button
                       size="xs"
@@ -280,7 +290,11 @@ export function FeishuSection({ onOpenProfile, poll = true }: FeishuSectionProps
           {ctx.canManageAgent && binding.registrationUrl && binding.status === "provisioning" && (
             <FeishuRegistrationQr registrationUrl={binding.registrationUrl} />
           )}
-          {binding.status === "active" && (
+          {(binding.status === "active" ||
+            (binding.status === "provisioning" &&
+              binding.connectionStatus === "connected" &&
+              binding.appId !== null &&
+              binding.botOpenId !== null)) && (
             <ConfigRow
               label="Feishu CLI"
               value={

@@ -1,5 +1,5 @@
 import { FEISHU_REQUIRED_SCOPES, type FeishuBotBinding, feishuBotBindingSchema } from "@first-tree/shared";
-import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agents } from "../../../db/schema/agents.js";
 import { clients } from "../../../db/schema/clients.js";
@@ -11,6 +11,7 @@ import { uuidv7 } from "../../../uuid.js";
 import type { AttachmentObjectQuota } from "../../attachment.js";
 import { decryptCredentials, encryptCredentials } from "../../crypto.js";
 import type { Notifier } from "../../notifier.js";
+import { isFeishuBotUsable } from "./binding-state.js";
 import { Client, createLarkChannel, type LarkChannel, LoggerLevel, registerApp } from "./channel-sdk.js";
 import { ingestFeishuMessage, logFeishuInboundFailure } from "./inbound.js";
 import { safeFeishuErrorContext, safeFeishuErrorMessage } from "./safe-error.js";
@@ -85,6 +86,9 @@ export function createFeishuIntegrationManager(input: {
     initialClaimDelayMs?: number;
     registrationQrTimeoutMs?: number;
     botProfileTimeoutMs?: number;
+  };
+  testHooks?: {
+    afterCredentialCommit?(bindingId: string): Promise<void>;
   };
 }): FeishuIntegrationManager {
   const { db, notifier, encryptionKey, instanceId, attachmentObjectQuota } = input;
@@ -176,19 +180,52 @@ export function createFeishuIntegrationManager(input: {
     if (agent.visibility !== "organization") {
       throw new BadRequestError("Feishu Bot binding requires an organization-visible Agent");
     }
-    const existing = await getBindingRow(registration.agentId);
-    if (existing) {
-      if (existing.status === "error") await revoke(registration.agentId);
-      else throw new ConflictError("This Agent already has a current Feishu Bot binding");
+    let existing = await getBindingRow(registration.agentId);
+    if (existing?.status === "error") {
+      await revoke(registration.agentId);
+      existing = null;
+    } else if (existing?.status === "provisioning") {
+      throw new ConflictError("This Agent already has a Feishu registration in progress");
     }
-    const id = uuidv7();
+    const restoresExistingBinding = existing?.status === "active";
+    const previousAppId = existing?.status === "active" ? existing.appId : null;
+    const previousBotOpenId = existing?.status === "active" ? existing.botOpenId : null;
+    const id = existing?.id ?? uuidv7();
+    if (registrations.has(id)) throw new ConflictError("This Agent already has a Feishu registration in progress");
     const controller = new AbortController();
-    await db.insert(imBotBindings).values({
-      id,
-      organizationId: registration.organizationId,
-      agentId: registration.agentId,
-      registrationStateCipher: encryptCredentials({ phase: "starting" }, encryptionKey),
-    });
+    const startingStateCipher = encryptCredentials({ phase: "starting" }, encryptionKey);
+    let attemptStateCipher = startingStateCipher;
+    let qrStateWrite: Promise<void> | null = null;
+    const startingExpiresAt = new Date(Date.now() + registrationQrTimeoutMs);
+    if (restoresExistingBinding) {
+      const [updated] = await db
+        .update(imBotBindings)
+        .set({
+          status: "provisioning",
+          registrationStateCipher: startingStateCipher,
+          registrationExpiresAt: startingExpiresAt,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(imBotBindings.id, id),
+            eq(imBotBindings.status, "active"),
+            isNull(imBotBindings.registrationStateCipher),
+          ),
+        )
+        .returning({ id: imBotBindings.id });
+      if (!updated) throw new ConflictError("This Agent's Feishu Bot binding changed; retry the update");
+    } else {
+      await db.insert(imBotBindings).values({
+        id,
+        organizationId: registration.organizationId,
+        agentId: registration.agentId,
+        registrationStateCipher: startingStateCipher,
+        registrationExpiresAt: startingExpiresAt,
+      });
+    }
 
     let resolveQr!: () => void;
     let rejectQr!: (error: unknown) => void;
@@ -221,20 +258,24 @@ export function createFeishuIntegrationManager(input: {
       // concurrent revoke can legitimately make the conditional UPDATE a
       // no-op while the provider ignores AbortSignal forever.
       registrationEntry.cancel(error);
-      void transitionRegistrationToError(id, error, false).catch(() => undefined);
+      void transitionCurrentAttemptToError(error)
+        .catch(() => undefined)
+        .finally(() => {
+          if (registrations.get(id) === registrationEntry) registrations.delete(id);
+        });
     }, registrationQrTimeoutMs);
 
     void sdk
       .registerApp({
         source: "first-tree",
         signal: controller.signal,
-        createOnly: true,
+        createOnly: false,
         appPreset: {
           name: registration.displayName,
           desc: "由 First Tree Agent 提供服务",
         },
         addons: {
-          preset: false,
+          preset: true,
           scopes: { tenant: [...FEISHU_REQUIRED_SCOPES] },
           events: { items: { tenant: ["im.message.receive_v1"] } },
         },
@@ -244,10 +285,11 @@ export function createFeishuIntegrationManager(input: {
             return;
           }
           const expiresAt = new Date(Date.now() + expireIn * 1000);
-          void db
+          const qrCipher = encryptCredentials({ url, expiresAt: expiresAt.toISOString() }, encryptionKey);
+          qrStateWrite = db
             .update(imBotBindings)
             .set({
-              registrationStateCipher: encryptCredentials({ url, expiresAt: expiresAt.toISOString() }, encryptionKey),
+              registrationStateCipher: qrCipher,
               registrationExpiresAt: expiresAt,
               updatedAt: new Date(),
             })
@@ -255,16 +297,20 @@ export function createFeishuIntegrationManager(input: {
               and(
                 eq(imBotBindings.id, id),
                 eq(imBotBindings.status, "provisioning"),
-                isNull(imBotBindings.appId),
-                isNull(imBotBindings.registrationExpiresAt),
-                isNotNull(imBotBindings.registrationStateCipher),
+                previousAppId ? eq(imBotBindings.appId, previousAppId) : isNull(imBotBindings.appId),
+                eq(imBotBindings.registrationExpiresAt, startingExpiresAt),
+                eq(imBotBindings.registrationStateCipher, startingStateCipher),
               ),
             )
             .returning({ id: imBotBindings.id })
             .then((updated) => {
               if (updated.length === 0) throw new Error("Feishu registration is no longer active");
+              attemptStateCipher = qrCipher;
               resolveQr();
-            }, rejectQr);
+            })
+            .catch((error) => {
+              rejectQr(error);
+            });
         },
       })
       .then(async (result) => {
@@ -273,37 +319,115 @@ export function createFeishuIntegrationManager(input: {
         // late callback update cannot restore stale registration metadata.
         await qrReady;
         await qrResponseRead;
+        const candidateClient = sdk.createClient({
+          appId: result.client_id,
+          appSecret: result.client_secret,
+          loggerLevel: LoggerLevel.warn,
+          logger: SILENT_FEISHU_CLIENT_LOGGER,
+        });
+        const validatedBot = await getBotIdentity(candidateClient, botProfileTimeoutMs);
+        if (
+          previousAppId === result.client_id &&
+          previousBotOpenId !== null &&
+          validatedBot.botOpenId !== previousBotOpenId
+        ) {
+          throw new Error("Feishu Bot identity changed while reauthorizing the existing App");
+        }
         const cipher = encryptCredentials({ appSecret: result.client_secret }, encryptionKey);
-        const [updated] = await db
-          .update(imBotBindings)
-          .set({
-            appId: result.client_id,
-            appSecretCipher: cipher,
-            registrationStateCipher: null,
-            registrationExpiresAt: null,
-            grantedScopes: [...FEISHU_REQUIRED_SCOPES],
-            status: "provisioning",
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(imBotBindings.id, id),
-              eq(imBotBindings.status, "provisioning"),
-              isNull(imBotBindings.appId),
-              isNotNull(imBotBindings.registrationExpiresAt),
-              isNotNull(imBotBindings.registrationStateCipher),
-            ),
-          )
-          .returning({ id: imBotBindings.id });
-        if (!updated) return;
-        await connectNewBinding(id);
+        const replacesBot = previousAppId !== null && previousAppId !== result.client_id;
+        const nextBindingId = replacesBot ? uuidv7() : id;
+        const updatedBindingId = await db.transaction(async (tx) => {
+          const now = new Date();
+          if (replacesBot) {
+            const [revoked] = await tx
+              .update(imBotBindings)
+              .set({
+                status: "revoked",
+                appSecretCipher: null,
+                registrationStateCipher: null,
+                registrationExpiresAt: null,
+                connectionStatus: "disconnected",
+                connectionOwnerInstanceId: null,
+                connectionLeaseExpiresAt: null,
+                connectionEpoch: sql`${imBotBindings.connectionEpoch} + 1`,
+                revokedAt: now,
+                updatedAt: now,
+              })
+              .where(
+                and(
+                  eq(imBotBindings.id, id),
+                  eq(imBotBindings.status, "provisioning"),
+                  eq(imBotBindings.appId, previousAppId),
+                  isNotNull(imBotBindings.registrationExpiresAt),
+                  gt(imBotBindings.registrationExpiresAt, now),
+                  eq(imBotBindings.registrationStateCipher, attemptStateCipher),
+                ),
+              )
+              .returning({ id: imBotBindings.id });
+            if (!revoked) return null;
+            await tx
+              .update(imChatBindings)
+              .set({ status: "detached", updatedAt: now })
+              .where(and(eq(imChatBindings.botBindingId, id), eq(imChatBindings.status, "active")));
+            const [replacement] = await tx
+              .insert(imBotBindings)
+              .values({
+                id: nextBindingId,
+                organizationId: registration.organizationId,
+                agentId: registration.agentId,
+                appId: result.client_id,
+                appSecretCipher: cipher,
+                botOpenId: validatedBot.botOpenId,
+                botName: validatedBot.botName,
+                botAvatarUrl: validatedBot.botAvatarUrl,
+                grantedScopes: [...FEISHU_REQUIRED_SCOPES],
+                status: "provisioning",
+              })
+              .returning({ id: imBotBindings.id });
+            return replacement?.id ?? null;
+          }
+          const [row] = await tx
+            .update(imBotBindings)
+            .set({
+              appId: result.client_id,
+              appSecretCipher: cipher,
+              botOpenId: validatedBot.botOpenId,
+              botName: validatedBot.botName,
+              botAvatarUrl: validatedBot.botAvatarUrl,
+              registrationStateCipher: null,
+              registrationExpiresAt: null,
+              grantedScopes: [...FEISHU_REQUIRED_SCOPES],
+              status: "provisioning",
+              connectionStatus: "disconnected",
+              connectionOwnerInstanceId: null,
+              connectionLeaseExpiresAt: null,
+              connectionEpoch: sql`${imBotBindings.connectionEpoch} + 1`,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(imBotBindings.id, id),
+                eq(imBotBindings.status, "provisioning"),
+                previousAppId ? eq(imBotBindings.appId, previousAppId) : isNull(imBotBindings.appId),
+                isNotNull(imBotBindings.registrationExpiresAt),
+                gt(imBotBindings.registrationExpiresAt, now),
+                eq(imBotBindings.registrationStateCipher, attemptStateCipher),
+              ),
+            )
+            .returning({ id: imBotBindings.id });
+          return row?.id ?? null;
+        });
+        if (!updatedBindingId) return;
+        await input.testHooks?.afterCredentialCommit?.(updatedBindingId);
+        if (replacesBot) await disconnectLocalChannel(id);
+        await connectNewBinding(updatedBindingId);
       })
       .catch(async (error) => {
-        await transitionRegistrationToError(id, error, false);
+        await transitionCurrentAttemptToError(error);
         rejectQr(error);
       })
       .finally(() => {
-        registrations.delete(id);
+        if (registrations.get(id) === registrationEntry) registrations.delete(id);
       });
 
     try {
@@ -315,14 +439,26 @@ export function createFeishuIntegrationManager(input: {
       clearTimeout(qrTimeout);
       releaseQrResponse();
     }
+
+    async function transitionCurrentAttemptToError(error: unknown): Promise<boolean> {
+      await qrStateWrite?.catch(() => undefined);
+      return transitionRegistrationToError(id, error, restoresExistingBinding, attemptStateCipher);
+    }
   }
 
-  async function transitionRegistrationToError(id: string, error: unknown, requireNoQr: boolean): Promise<boolean> {
+  async function transitionRegistrationToError(
+    id: string,
+    error: unknown,
+    restoresExistingBinding: boolean,
+    attemptStateCipher: string,
+  ): Promise<boolean> {
     const updated = await db
       .update(imBotBindings)
       .set({
-        status: "error",
-        connectionStatus: "error",
+        status: restoresExistingBinding ? "active" : "error",
+        registrationStateCipher: null,
+        registrationExpiresAt: null,
+        ...(!restoresExistingBinding ? { connectionStatus: "error" as const } : {}),
         lastErrorCode: safeFeishuErrorContext(error).errorCode,
         lastErrorMessage: safeFeishuErrorMessage(error),
         updatedAt: new Date(),
@@ -331,9 +467,8 @@ export function createFeishuIntegrationManager(input: {
         and(
           eq(imBotBindings.id, id),
           eq(imBotBindings.status, "provisioning"),
-          isNull(imBotBindings.appId),
-          isNotNull(imBotBindings.registrationStateCipher),
-          ...(requireNoQr ? [isNull(imBotBindings.registrationExpiresAt)] : []),
+          restoresExistingBinding ? isNotNull(imBotBindings.appId) : isNull(imBotBindings.appId),
+          eq(imBotBindings.registrationStateCipher, attemptStateCipher),
         ),
       )
       .returning({ id: imBotBindings.id });
@@ -360,12 +495,23 @@ export function createFeishuIntegrationManager(input: {
         ),
       )
       .returning();
-    if (claimed) await connectClaimed(claimed);
+    if (!claimed) return;
+    await disconnectLocalChannel(id);
+    await connectClaimed(claimed);
+  }
+
+  async function disconnectLocalChannel(id: string): Promise<void> {
+    const previous = channels.get(id);
+    if (!previous) return;
+    channels.delete(id);
+    senderNames.clearBinding(id);
+    await previous.channel.disconnect().catch(() => undefined);
   }
 
   async function claimAndMaintain(): Promise<void> {
     if (stopped) return;
     const now = new Date();
+    await recoverExpiredRegistrations(now);
     const leaseUntil = new Date(Date.now() + leaseMs);
     const channelIds = [...channels.keys()];
     if (channelIds.length > 0) {
@@ -424,6 +570,57 @@ export function createFeishuIntegrationManager(input: {
           log.warn({ bindingId: claimed.id, ...safeFeishuErrorContext(error) }, "Feishu connection failed"),
         );
       }
+    }
+  }
+
+  async function recoverExpiredRegistrations(now: Date): Promise<void> {
+    const restored = await db
+      .update(imBotBindings)
+      .set({
+        status: "active",
+        registrationStateCipher: null,
+        registrationExpiresAt: null,
+        lastErrorCode: "registration_expired",
+        lastErrorMessage: "Feishu authorization expired; the existing Bot remains connected",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imBotBindings.status, "provisioning"),
+          isNotNull(imBotBindings.appId),
+          isNotNull(imBotBindings.appSecretCipher),
+          isNotNull(imBotBindings.botOpenId),
+          isNotNull(imBotBindings.registrationStateCipher),
+          isNotNull(imBotBindings.registrationExpiresAt),
+          lt(imBotBindings.registrationExpiresAt, now),
+        ),
+      )
+      .returning({ id: imBotBindings.id });
+    const failed = await db
+      .update(imBotBindings)
+      .set({
+        status: "error",
+        connectionStatus: "error",
+        registrationStateCipher: null,
+        registrationExpiresAt: null,
+        lastErrorCode: "registration_expired",
+        lastErrorMessage: "Feishu authorization expired",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imBotBindings.status, "provisioning"),
+          isNull(imBotBindings.appId),
+          isNotNull(imBotBindings.registrationStateCipher),
+          isNotNull(imBotBindings.registrationExpiresAt),
+          lt(imBotBindings.registrationExpiresAt, now),
+        ),
+      )
+      .returning({ id: imBotBindings.id });
+    for (const { id } of [...restored, ...failed]) {
+      const registration = registrations.get(id);
+      registration?.cancel(new Error("Feishu authorization expired"));
+      if (registrations.get(id) === registration) registrations.delete(id);
     }
   }
 
@@ -508,11 +705,14 @@ export function createFeishuIntegrationManager(input: {
       await channel.connect();
       const botOpenId = channel.botIdentity?.openId;
       if (!botOpenId) throw new Error("Feishu Channel connected without Bot identity");
+      if (row.botOpenId && row.botOpenId !== botOpenId) {
+        throw new Error("Feishu Channel Bot identity did not match the validated credential identity");
+      }
       const [activated] = await db
         .update(imBotBindings)
         .set({
           botOpenId,
-          status: "active",
+          status: sql`CASE WHEN ${imBotBindings.registrationStateCipher} IS NULL THEN 'active' ELSE 'provisioning' END`,
           connectionStatus: "connected",
           lastConnectedAt: new Date(),
           lastErrorCode: null,
@@ -539,7 +739,7 @@ export function createFeishuIntegrationManager(input: {
               eq(imBotBindings.id, row.id),
               eq(imBotBindings.connectionOwnerInstanceId, instanceId),
               eq(imBotBindings.connectionEpoch, row.connectionEpoch),
-              eq(imBotBindings.status, "active"),
+              inArray(imBotBindings.status, ["active", "provisioning"]),
               eq(imBotBindings.botOpenId, botOpenId),
             ),
           );
@@ -636,7 +836,7 @@ export function createFeishuIntegrationManager(input: {
 
   async function getCliGrant(agentId: string) {
     const binding = await getBindingRow(agentId);
-    if (!binding || binding.status !== "active" || !binding.appId || !binding.appSecretCipher) {
+    if (!binding || !isFeishuBotUsable(binding)) {
       throw new NotFoundError("Active Feishu Bot binding not found");
     }
     const { appSecret } = decryptSecret(binding.appSecretCipher);
@@ -723,6 +923,17 @@ async function getBotProfile(
   expectedOpenId: string,
   timeoutMs: number,
 ): Promise<{ botName: string | null; botAvatarUrl: string | null }> {
+  const identity = await getBotIdentity(client, timeoutMs);
+  if (identity.botOpenId !== expectedOpenId) {
+    throw new Error("Feishu Bot info did not match the connected Bot identity");
+  }
+  return { botName: identity.botName, botAvatarUrl: identity.botAvatarUrl };
+}
+
+async function getBotIdentity(
+  client: Pick<Client, "request">,
+  timeoutMs: number,
+): Promise<{ botOpenId: string; botName: string | null; botAvatarUrl: string | null }> {
   const controller = new AbortController();
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -742,12 +953,10 @@ async function getBotProfile(
     if (response.code !== 0 || !response.bot) {
       throw new Error(`Feishu Bot info failed: ${response.msg ?? `code ${response.code ?? "unknown"}`}`);
     }
-    if (response.bot.open_id !== expectedOpenId) {
-      throw new Error("Feishu Bot info did not match the connected Bot identity");
-    }
+    if (!response.bot.open_id) throw new Error("Feishu Bot info did not include a Bot identity");
     const botName = response.bot.app_name?.trim() || null;
     const botAvatarUrl = normalizeHttpUrl(response.bot.avatar_url);
-    return { botName, botAvatarUrl };
+    return { botOpenId: response.bot.open_id, botName, botAvatarUrl };
   } finally {
     if (timeout) clearTimeout(timeout);
   }

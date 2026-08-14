@@ -137,6 +137,27 @@ describe("controlled Feishu CLI preflight", () => {
     expect(changedRetry.statusCode).toBe(403);
   });
 
+  it("records outbound intent while the existing Bot awaits permission reauthorization", async () => {
+    const { app, a, binding, chat } = await setup();
+    const registrationStateCipher = "encrypted-registration-state";
+    await app.db
+      .update(imBotBindings)
+      .set({ status: "provisioning", registrationStateCipher })
+      .where(eq(imBotBindings.id, binding.id));
+    Object.assign(binding, { status: "provisioning", registrationStateCipher });
+
+    const response = await a.request("POST", "/api/v1/agent/feishu/intents", {
+      chatId: chat.id,
+      operation: "send",
+      targetChatId: "oc_feishu",
+      replyInThread: false,
+      format: "text",
+      content: "still online",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ targetChatId: "oc_feishu" });
+  });
+
   it("allows only A to reply to an inbound reference from the same Bot and chat", async () => {
     const { app, a, b, binding, chat } = await setup();
     await app.db.insert(messages).values({

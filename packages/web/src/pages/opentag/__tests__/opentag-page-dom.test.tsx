@@ -124,7 +124,13 @@ function feishuBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBind
 
 /** A Bot that is provisioned and actually carrying messages. */
 function connectedBinding(overrides: Partial<FeishuBotBinding> = {}): FeishuBotBinding {
-  return feishuBinding({ status: "active", connectionStatus: "connected", appId: "cli_1", ...overrides });
+  return feishuBinding({
+    status: "active",
+    connectionStatus: "connected",
+    appId: "cli_1",
+    botOpenId: "ou_bot",
+    ...overrides,
+  });
 }
 
 /**
@@ -861,7 +867,12 @@ describe("OpenTag entry — the Feishu handoff", () => {
   it("only calls the Bot connected once it is actually reachable", async () => {
     api.getAgent.mockResolvedValue(agentRow());
     api.getAgentFeishuBinding.mockResolvedValue({
-      binding: feishuBinding({ status: "active", connectionStatus: "connecting", appId: "cli_1" }),
+      binding: feishuBinding({
+        status: "active",
+        connectionStatus: "connecting",
+        appId: "cli_1",
+        botOpenId: "ou_bot",
+      }),
     });
 
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
@@ -872,7 +883,7 @@ describe("OpenTag entry — the Feishu handoff", () => {
     expect(container.textContent).not.toContain("Feishu bot connected");
 
     api.getAgentFeishuBinding.mockResolvedValue({
-      binding: feishuBinding({ status: "active", connectionStatus: "connected", appId: "cli_1" }),
+      binding: connectedBinding(),
     });
     const connected = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     // Reachability without the CLI keeps Step 3 open.

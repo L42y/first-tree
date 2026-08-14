@@ -65,7 +65,7 @@ describe("member Team Agent selection", () => {
     });
   }
 
-  it("filters every non-ready, private, lifecycle, human, and imprecisely-addressed row", () => {
+  it("keeps a usable Bot pending reauthorization while filtering every non-ready or ineligible row", () => {
     const agents = [
       agent(1),
       agent(2, { visibility: "private" }),
@@ -89,7 +89,7 @@ describe("member Team Agent selection", () => {
       ["agent-9", binding(9, { appId: null })],
     ]);
 
-    expect(selectReadyTeamAgents(agents, bindings).map(({ agent: item }) => item.uuid)).toEqual(["agent-1"]);
+    expect(selectReadyTeamAgents(agents, bindings).map(({ agent: item }) => item.uuid)).toEqual(["agent-1", "agent-6"]);
   });
 });
 

@@ -14,6 +14,7 @@ import { messages } from "../../db/schema/messages.js";
 import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
 import { requireAgent } from "../../middleware/require-identity.js";
 import * as messageService from "../../services/chat/message.js";
+import { isFeishuBotUsable } from "../../services/integrations/feishu/binding-state.js";
 import { renderCodeSpan } from "../../services/integrations/feishu/markdown.js";
 import { uuidv7 } from "../../uuid.js";
 
@@ -58,14 +59,19 @@ async function loadBoundConversation(
       feishuChatType: imChatBindings.feishuChatType,
       botBindingId: imBotBindings.id,
       agentId: imBotBindings.agentId,
+      status: imBotBindings.status,
+      appId: imBotBindings.appId,
+      appSecretCipher: imBotBindings.appSecretCipher,
+      botOpenId: imBotBindings.botOpenId,
+      registrationStateCipher: imBotBindings.registrationStateCipher,
     })
     .from(imChatBindings)
     .innerJoin(imBotBindings, eq(imBotBindings.id, imChatBindings.botBindingId))
-    .where(
-      and(eq(imChatBindings.chatId, chatId), eq(imChatBindings.status, "active"), eq(imBotBindings.status, "active")),
-    )
+    .where(and(eq(imChatBindings.chatId, chatId), eq(imChatBindings.status, "active")))
     .limit(1);
-  if (!binding) throw new NotFoundError("This chat is not bound to an active Feishu conversation");
+  if (!binding || !isFeishuBotUsable(binding)) {
+    throw new NotFoundError("This chat is not bound to an active Feishu conversation");
+  }
   if (binding.agentId !== agentId) {
     throw new ForbiddenError("Only the Agent bound to this Feishu Bot may send externally");
   }

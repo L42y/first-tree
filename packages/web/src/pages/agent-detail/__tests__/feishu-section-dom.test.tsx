@@ -168,6 +168,8 @@ describe("Feishu Agent Detail section", () => {
     expect(container.textContent).toContain("Agent A · First Tree");
     expect(container.textContent).toContain("App ID: cli_app");
     expect(container.querySelector('img[src="https://example.com/bot.png"]')).not.toBeNull();
+    await click(buttonByText(container, "Update permissions"));
+    expect(apiMocks.startAgentFeishuRegistration).toHaveBeenCalledWith("agent-a", "Agent A · First Tree");
   });
 
   it("only reports Ready when both the Bot is reachable and the CLI is ready", async () => {

@@ -193,7 +193,7 @@ describe("when the Feishu handoff is genuinely usable", () => {
     id: "binding-1",
     agentId: "agent-1",
     appId: "cli_1",
-    botOpenId: null,
+    botOpenId: "ou_bot",
     botName: null,
     botAvatarUrl: null,
     tenantKey: null,
@@ -214,6 +214,12 @@ describe("when the Feishu handoff is genuinely usable", () => {
     expect(isFeishuHandoffUsable(null)).toBe(false);
   });
 
+  it("requires a verified Bot identity for active and pending bindings", () => {
+    expect(isFeishuHandoffUsable({ ...usable, botOpenId: null })).toBe(false);
+    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(true);
+    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning", botOpenId: null })).toBe(false);
+  });
+
   it("refuses a reachable Bot the Agent could not answer", () => {
     // Messages would arrive and go unanswered, and the Task they create would
     // otherwise finish onboarding on a handoff that does not work.
@@ -227,6 +233,5 @@ describe("when the Feishu handoff is genuinely usable", () => {
 
   it("refuses a ready Computer with no reachable Bot", () => {
     expect(isFeishuHandoffUsable({ ...usable, connectionStatus: "connecting" })).toBe(false);
-    expect(isFeishuHandoffUsable({ ...usable, status: "provisioning" })).toBe(false);
   });
 });
