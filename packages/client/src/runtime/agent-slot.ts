@@ -253,6 +253,9 @@ export class AgentSlot {
         // reconcile. Reconnects with an existing SessionRuntime are handled
         // here.
         if (!this.sessionRuntime) return;
+        void this.sessionRuntime.reconcileAckSettlementAfterBind?.().catch((err) => {
+          this.logger.warn({ err }, "inbox ACK settlement rebind reconciliation failed; will retry on next bind");
+        });
         // Replay-fence reconciliation on every (re)bind: an ACK committed
         // while this client was offline can leave a stale fence the startup
         // pass never revisits. Outstanding truth counts pending+delivered,

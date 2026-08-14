@@ -1367,6 +1367,14 @@ export class SessionRuntime {
     this.projection.noteBindRecoveryComplete();
   }
 
+  /**
+   * Retry ACK-confirm settlement only for chats that failed inbox:ack
+   * confirmation. Independent of runtime-proof and Reset-fence recovery.
+   */
+  async reconcileAckSettlementAfterBind(): Promise<void> {
+    await this.inboxDelivery.reconcileAckSettlementAfterBind();
+  }
+
   // ---- Internal -----------------------------------------------------------
 
   private hasHealthyLiveHandler(chatId: string): boolean {
