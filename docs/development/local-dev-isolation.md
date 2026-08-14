@@ -108,10 +108,12 @@ Dev binaries refuse self-update entirely (`packageName === null`).
 
 On macOS, the generated launchd wrapper supervises the daemon across the
 reserved self-update exit code `75`. This keeps the already-running launchd job
-alive while it starts the newly installed CLI, rather than depending on a new
-launchd spawn that macOS may defer while the GUI session is in on-demand-only
-mode after display sleep or screen lock. Other exit codes still return to
-launchd so its ordinary crash throttling and stop behavior remain authoritative.
+alive while it reloads the atomically replaced wrapper and starts the newly
+installed CLI, including updates that change the resolved command or install
+path. It does not depend on a new launchd spawn that macOS may defer while the
+GUI session is in on-demand-only mode after display sleep or screen lock. Other
+exit codes still return to launchd so its ordinary crash throttling and stop
+behavior remain authoritative.
 
 If you need to swap dev for staging without `git pull`, install staging
 side-by-side:

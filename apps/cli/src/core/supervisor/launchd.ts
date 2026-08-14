@@ -119,8 +119,9 @@ ${argsXml}
 /**
  * Render the launchd launcher script. launchd runs this file (its basename
  * is the macOS background-item display name); the script supervises the
- * resolved CLI invocation and immediately relaunches it after the reserved
- * self-update exit code 75.
+ * resolved CLI invocation and reloads itself after the reserved self-update
+ * exit code 75. Reloading matters because `daemon refresh-unit` may have
+ * atomically replaced this script with a new command or install path.
  *
  * Why the loop lives here instead of relying only on KeepAlive: macOS can put
  * a GUI launchd domain into on-demand-only mode after display sleep / screen
@@ -150,6 +151,7 @@ while :; do
   if [ "$status" -ne 75 ]; then
     exit "$status"
   fi
+  exec "$0"
 done
 `;
 }

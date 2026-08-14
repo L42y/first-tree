@@ -175,34 +175,51 @@ describe("renderLaunchdWrapper — launcher script supervises the resolved CLI",
   });
 
   it.skipIf(process.platform === "win32")(
-    "restarts exit 75 inside the live wrapper without waiting for launchd to respawn it",
+    "reloads an atomically replaced wrapper after exit 75 without waiting for launchd to respawn it",
     () => {
       const dir = mkdtempSync(join(tmpdir(), "first-tree-launchd-wrapper-"));
-      const daemon = join(dir, "fake daemon");
+      const oldDaemon = join(dir, "old daemon");
+      const newDaemon = join(dir, "new daemon");
       const wrapperPath = join(dir, "First Tree");
-      const countPath = join(dir, "count");
+      const replacementPath = join(dir, "First Tree.next");
+      const markerPath = join(dir, "invocations");
       try {
         writeFileSync(
-          daemon,
+          oldDaemon,
           `#!/bin/sh
-count=0
-if [ -f "$FIRST_TREE_TEST_COUNT" ]; then count=$(cat "$FIRST_TREE_TEST_COUNT"); fi
-count=$((count + 1))
-printf '%s' "$count" > "$FIRST_TREE_TEST_COUNT"
-if [ "$count" -eq 1 ]; then exit 75; fi
+if [ -f "$FIRST_TREE_TEST_MARKER" ]; then
+  printf 'old-again\n' >> "$FIRST_TREE_TEST_MARKER"
+  exit 9
+fi
+printf 'old\n' > "$FIRST_TREE_TEST_MARKER"
+mv "$FIRST_TREE_TEST_REPLACEMENT" "$FIRST_TREE_TEST_WRAPPER"
+exit 75
+`,
+          { mode: 0o755 },
+        );
+        writeFileSync(
+          newDaemon,
+          `#!/bin/sh
+printf 'new\n' >> "$FIRST_TREE_TEST_MARKER"
 exit 0
 `,
           { mode: 0o755 },
         );
-        writeFileSync(wrapperPath, renderLaunchdWrapper({ kind: "bin", program: daemon }), { mode: 0o755 });
+        writeFileSync(wrapperPath, renderLaunchdWrapper({ kind: "bin", program: oldDaemon }), { mode: 0o755 });
+        writeFileSync(replacementPath, renderLaunchdWrapper({ kind: "bin", program: newDaemon }), { mode: 0o755 });
 
         const result = spawnSync("/bin/sh", [wrapperPath], {
-          env: { ...process.env, FIRST_TREE_TEST_COUNT: countPath },
+          env: {
+            ...process.env,
+            FIRST_TREE_TEST_MARKER: markerPath,
+            FIRST_TREE_TEST_REPLACEMENT: replacementPath,
+            FIRST_TREE_TEST_WRAPPER: wrapperPath,
+          },
           encoding: "utf8",
         });
 
         expect(result.status, result.stderr).toBe(0);
-        expect(readFileSync(countPath, "utf8")).toBe("2");
+        expect(readFileSync(markerPath, "utf8")).toBe("old\nnew\n");
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

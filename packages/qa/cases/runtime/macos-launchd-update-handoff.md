@@ -31,13 +31,15 @@ that CLI status surfaces distinguish `running` from `not running` exactly.
    wrapper remains the launchd-owned process and starts the daemon child.
 2. Trigger a managed update to the second artifact while the GUI launchd domain
    is in on-demand-only mode. The daemon child exits with status 75; the same
-   live wrapper immediately starts the newly installed daemon without waiting
-   for launchd to spawn a new job.
+   live wrapper process reloads the atomically replaced script and immediately
+   starts the newly installed daemon without waiting for launchd to spawn a new
+   job.
 3. Verify the client re-registers, all owned agents rebind, CLI and daemon report
    the second version, and no persistent computer-disconnected interval remains.
-4. Repeat one more managed update after a normal display wake. Confirm the
-   wrapper loop remains intact after `daemon refresh-unit` atomically replaces
-   the on-disk wrapper and plist.
+4. Repeat one more managed update after a normal display wake, using a candidate
+   whose resolved CLI command or install path differs from the first artifact.
+   Confirm the live wrapper reloads the atomically replaced script and launches
+   the new command rather than reusing the command embedded in the old script.
 5. Stop the disposable service normally and inspect `launchctl print`. When it
    reports `state = not running`, both `status` and `daemon doctor` must report
    the service as stopped rather than matching the `running` substring.
@@ -48,9 +50,9 @@ that CLI status surfaces distinguish `running` from `not running` exactly.
 ## Expected result
 
 `PASS` requires two managed version handoffs with matching CLI/daemon versions,
-continuous wrapper ownership across exit 75, a recovered WebSocket registration,
-no deferred launchd respawn dependency, exact stopped-state reporting, and
-preserved non-75 launchd behavior.
+continuous wrapper PID ownership and script reload across exit 75, a recovered
+WebSocket registration, no deferred launchd respawn dependency, exact stopped-
+state reporting, and preserved non-75 launchd behavior.
 
 `FAIL` means exit 75 leaves the client offline, the wrapper itself exits during
 the managed handoff, refresh truncates or corrupts the live wrapper, CLI/daemon
