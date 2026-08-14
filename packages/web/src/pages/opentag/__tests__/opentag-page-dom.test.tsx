@@ -16,6 +16,7 @@ import type { HubClient } from "../../../api/activity.js";
 import { ApiError } from "../../../api/client.js";
 import type { ComputerConnection } from "../../../features/agent-setup/use-computer-connection.js";
 import { OpenTagPage } from "../opentag-page.js";
+import { openTagPickerTop } from "../opentag-view.js";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,6 +24,19 @@ const AGENT_UUID = "0198b2c4-1f6a-7c31-9a02-4d5e6f708192";
 const ORG = "org-1";
 const MEMBER = "member-1";
 const clipboardWriteText = vi.fn();
+
+describe("OpenTag picker placement", () => {
+  const viewport = { panelHeight: 168, viewportTop: 0, viewportHeight: 768, margin: 8, gap: 4 };
+
+  it("opens upward when it fits and clamps a scrolled trigger to the viewport top", () => {
+    expect(openTagPickerTop({ ...viewport, triggerTop: 302 })).toBe(130);
+    expect(openTagPickerTop({ ...viewport, triggerTop: 24 })).toBe(8);
+  });
+
+  it("clamps a lower trigger's upward panel inside the viewport", () => {
+    expect(openTagPickerTop({ ...viewport, triggerTop: 800 })).toBe(592);
+  });
+});
 
 const refreshMeStrict = vi.hoisted(() => vi.fn(async () => undefined));
 const applyOnboardingStamp = vi.hoisted(() => vi.fn(() => true));
@@ -284,7 +298,15 @@ describe("OpenTag single-page Desktop flow", () => {
     const state = container.querySelector("[data-opentag-state='connect-computer']");
 
     expect(container.querySelector("h1")?.textContent).toBe("Bring your agent to Feishu");
-    expect(container.textContent).toContain("Your agentOpenTagChange name");
+    expect(container.querySelector<HTMLElement>("header")?.style.padding).toBe("var(--sp-2) var(--sp-12)");
+    expect(container.querySelector("header img")?.classList).toContain("h-10");
+    expect(container.querySelector("header img")?.classList).toContain("w-auto");
+    expect(container.querySelector("header [role='img']")?.getAttribute("style")).toContain("var(--sp-2)");
+    expect(container.querySelector("header [role='img'] span")?.classList).toContain("text-lead");
+    expect(container.querySelector<HTMLElement>("main")?.style.paddingTop).toBe("var(--opentag-content-top)");
+    const identity = container.querySelector<HTMLElement>("[data-opentag-identity]");
+    expect(identity?.textContent).toBe("OpenTagChange name");
+    expect(identity?.style.marginTop).toBe("var(--opentag-identity-top)");
     expect(state?.textContent).toContain("Copy command");
     expect(state?.querySelectorAll("button")).toHaveLength(1);
     for (const retired of ["Template", "Step 1", "Continue", "Next", "First Tree Client", "progress"]) {
@@ -369,12 +391,29 @@ describe("OpenTag single-page Desktop flow", () => {
 
     expect(container.textContent).toContain("Agent · Codex ready");
     expect(container.querySelector("[data-opentag-state='create-agent']")).not.toBeNull();
+    expect(
+      container.querySelector<HTMLElement>("[data-opentag-state='create-agent'] [data-opentag-action]")?.style
+        .minHeight,
+    ).toBe("var(--opentag-action-height)");
     await click(buttonExact(container, "Change"));
     expect(document.body.textContent).toContain("Claude Code");
     expect(document.body.textContent).toContain("Cursor");
     expect(document.body.textContent).toContain("Install required");
     expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector("[data-opentag-statuses]")?.classList.contains("opentag-statuses")).toBe(true);
+    const statuses = container.querySelector<HTMLElement>("[data-opentag-statuses]");
+    expect(statuses?.classList.contains("opentag-statuses")).toBe(true);
+    expect(statuses?.style.gridTemplateColumns).toBe("var(--opentag-status-columns)");
+    expect(statuses?.style.marginBottom).toBe("");
+    expect(statuses?.parentElement?.style.marginTop).toBe("");
+    expect(statuses?.querySelector("span[aria-hidden='true']")?.getAttribute("style")).toContain(
+      "var(--opentag-status-dot-size)",
+    );
+    expect(statuses?.querySelector(".text-subtitle")).not.toBeNull();
+    expect(statuses?.querySelector(".text-subtitle")?.classList).toContain("opentag-status-label");
+    expect(document.querySelector("[role='dialog'][aria-label='Change Agent']")?.classList).toContain(
+      "opentag-choice-panel",
+    );
+    expect(document.querySelector(".opentag-choice-list")).not.toBeNull();
 
     await click(button(container, "Create agent"));
     expect(agentsApi.createAgent).toHaveBeenCalledTimes(1);
@@ -407,6 +446,33 @@ describe("OpenTag single-page Desktop flow", () => {
     ]);
     await click(button(container, "Create agent"));
     expect(agentsApi.createAgent.mock.calls[0]?.[0]).toMatchObject({ runtimeProvider: "pi" });
+  });
+
+  it("keeps Change available after selecting the longest ready runtime label", async () => {
+    const ready = readyComputer({ codex: capability(), "claude-code": capability() });
+    computerMock.value = computer({
+      ...ready,
+      connectedClients: [
+        ready.connectedClient as HubClient,
+        client("client-2", "Travel Mac", ready.capabilities ?? {}),
+      ],
+    });
+    const container = await renderAt("/opentag");
+
+    const computerChange = container.querySelector<HTMLButtonElement>("button[aria-label='Change Computer']");
+    expect(computerChange?.classList.contains("opentag-choice-trigger--compact")).toBe(true);
+    const runtimeChange = container.querySelector<HTMLButtonElement>(
+      "[data-opentag-statuses] > div:nth-child(2) button",
+    );
+    if (!runtimeChange) throw new Error("missing Agent picker trigger");
+    await click(runtimeChange);
+    const choices = document.querySelector("[role='dialog'][aria-label='Change Agent']");
+    if (!choices) throw new Error("missing Agent picker");
+    await click(button(choices, "Claude Code"));
+
+    expect(container.textContent).toContain("Agent · Claude Code ready");
+    expect(buttonExact(container, "Change").getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector<HTMLElement>("[data-opentag-statuses]")?.dataset.opentagRuntimePicker).toBe("true");
   });
 
   it("pins the OpenTag light palette when the persisted root theme is dark", async () => {
@@ -451,6 +517,10 @@ describe("OpenTag single-page Desktop flow", () => {
     const container = await renderAt(`/opentag?agent=${AGENT_UUID}`);
     expect(agentsApi.startAgentFeishuRegistration).toHaveBeenCalledWith(AGENT_UUID, "OpenTag");
     expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.textContent).toContain("Scan with Feishu");
+    expect(
+      container.querySelector<HTMLElement>("[data-opentag-state='add-to-feishu'] [data-opentag-action]")?.style
+        .minHeight,
+    ).toBe("var(--opentag-action-qr-height)");
     expect(container.querySelector("[data-opentag-qr] title")?.textContent).toBe("Feishu bot registration QR code");
     expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.querySelectorAll("button")).toHaveLength(0);
     expect(agentsApi.createAgentFeishuSetupChat).toHaveBeenCalledWith(AGENT_UUID, { retry: false });
@@ -543,6 +613,10 @@ describe("OpenTag single-page Desktop flow", () => {
     expect(container.querySelector("[data-opentag-state='add-to-feishu']")?.textContent).toContain(
       "Preparing Feishu tools",
     );
+    expect(
+      container.querySelector<HTMLElement>("[data-opentag-state='add-to-feishu'] [data-opentag-action]")?.style
+        .minHeight,
+    ).toBe("var(--opentag-action-qr-height)");
   });
 
   it("preserves the Agent URL through transient read failures and retries in place", async () => {

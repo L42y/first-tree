@@ -1,7 +1,7 @@
 import { type RuntimeProvider, runtimeProviderLabel } from "@first-tree/shared";
 import { Check, ChevronDown, LoaderCircle } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { type ReactElement, type ReactNode, useEffect, useRef } from "react";
+import { type ReactElement, type ReactNode, type RefObject, useEffect, useRef } from "react";
 import type { HubClient } from "../../api/activity.js";
 import { Button } from "../../components/ui/button.js";
 import { Popover } from "../../components/ui/popover.js";
@@ -79,16 +79,18 @@ export function OpenTagView({
   };
 }): ReactElement {
   const hasComputer = connectedClients.length > 0;
+  const hasRuntimePicker = runtimeChoices.filter((choice) => choice.ready).length > 1;
   const runtimeLabel = selectedRuntime ? runtimeProviderLabel(selectedRuntime) : "Agent";
 
   return (
-    <div style={{ marginTop: pageState === "add-to-feishu" ? "calc(var(--opentag-qr-flow-offset) * -1)" : undefined }}>
+    <div>
       <div
         data-opentag-statuses
-        className="opentag-statuses grid grid-cols-2"
+        data-opentag-runtime-picker={hasRuntimePicker || undefined}
+        className="opentag-statuses grid"
         style={{
-          gap: "var(--sp-10)",
-          marginBottom: pageState === "add-to-feishu" ? "calc(var(--opentag-status-bottom) + var(--sp-5))" : undefined,
+          gap: "var(--opentag-status-gap)",
+          gridTemplateColumns: "var(--opentag-status-columns)",
         }}
       >
         <ComputerStatus clients={connectedClients} selectedClientId={selectedClientId} onSelect={onSelectClient} />
@@ -109,7 +111,7 @@ export function OpenTagView({
           {leadFor(pageState, displayName, runtimeLabel, runtimeState)}
         </p>
 
-        <ActionSurface qr={pageState === "add-to-feishu" && !!feishu.registrationUrl}>
+        <ActionSurface qr={pageState === "add-to-feishu"}>
           {pageState === "connect-computer" &&
             (bootstrapError ? (
               <InlineRecovery message={bootstrapError} retrying={false} onRetry={onRetryBootstrap} />
@@ -209,7 +211,7 @@ function ComputerStatus({
   return (
     <StatusLine ready={connected} label={`Computer · ${label}`}>
       {clients.length > 1 ? (
-        <ChoicePopover label="Change Computer">
+        <ChoicePopover label="Change Computer" compactOnNarrow>
           {(close) => (
             <ChoiceList>
               {clients.map((client) => (
@@ -300,13 +302,20 @@ function StatusLine({
   children?: ReactElement | null;
 }): ReactElement {
   return (
-    <div className="flex min-w-0 items-center" style={{ gap: "var(--sp-3)" }}>
+    <div
+      className="flex min-w-0 items-center"
+      style={{ gap: "var(--opentag-status-item-gap)", minHeight: "var(--opentag-status-row-height)" }}
+    >
       <span
         aria-hidden="true"
-        className="h-5 w-5 shrink-0 rounded-[var(--radius-full)]"
-        style={{ background: ready ? "var(--opentag-accent)" : "var(--state-offline)" }}
+        className="shrink-0 rounded-[var(--radius-full)]"
+        style={{
+          width: "var(--opentag-status-dot-size)",
+          height: "var(--opentag-status-dot-size)",
+          background: ready ? "var(--opentag-accent)" : "var(--state-offline)",
+        }}
       />
-      <span className="min-w-0 truncate text-lead">{label}</span>
+      <span className="opentag-status-label min-w-0 truncate text-subtitle">{label}</span>
       {children}
     </div>
   );
@@ -315,35 +324,122 @@ function StatusLine({
 function ChoicePopover({
   label,
   children,
+  compactOnNarrow = false,
 }: {
   label: string;
   children: (close: () => void) => ReactElement;
+  compactOnNarrow?: boolean;
 }): ReactElement {
+  const anchorRef = useRef<HTMLSpanElement>(null);
+
   return (
-    <Popover
-      align="end"
-      panelAriaLabel={label}
-      panelClassName="surface-overlay w-[var(--sp-90)] p-3"
-      trigger={({ toggle, open }) => (
-        <Button
-          type="button"
-          variant="link"
-          className="h-auto shrink-0 p-0 text-body font-normal"
-          aria-expanded={open}
-          onClick={toggle}
-        >
-          Change <ChevronDown className="h-3.5 w-3.5" />
-        </Button>
-      )}
-    >
-      {({ close }) => children(close)}
-    </Popover>
+    <span ref={anchorRef} className="contents">
+      <Popover
+        align="end"
+        panelAriaLabel={label}
+        panelClassName="opentag-choice-panel surface-overlay w-[var(--sp-90)] p-3"
+        trigger={({ toggle, open }) => (
+          <Button
+            type="button"
+            variant="link"
+            className={`h-auto shrink-0 p-0 text-body font-normal${compactOnNarrow ? " opentag-choice-trigger--compact" : ""}`}
+            aria-label={compactOnNarrow ? label : undefined}
+            aria-expanded={open}
+            onClick={toggle}
+          >
+            <span className="opentag-choice-label">Change</span> <ChevronDown className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      >
+        {({ close }) => (
+          <>
+            <OpenTagPickerPlacement anchorRef={anchorRef} />
+            {children(close)}
+          </>
+        )}
+      </Popover>
+    </span>
   );
+}
+
+type PickerPlacement = {
+  triggerTop: number;
+  panelHeight: number;
+  viewportTop: number;
+  viewportHeight: number;
+  margin: number;
+  gap: number;
+};
+
+export function openTagPickerTop({
+  triggerTop,
+  panelHeight,
+  viewportTop,
+  viewportHeight,
+  margin,
+  gap,
+}: PickerPlacement): number {
+  const minimum = viewportTop + margin;
+  const maximum = Math.max(minimum, viewportTop + viewportHeight - margin - panelHeight);
+  const above = triggerTop - gap - panelHeight;
+  return Math.max(minimum, Math.min(above, maximum));
+}
+
+function OpenTagPickerPlacement({ anchorRef }: { anchorRef: RefObject<HTMLSpanElement | null> }): ReactElement {
+  const markerRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let frame = 0;
+    const place = (): void => {
+      const marker = markerRef.current;
+      const panel = marker?.parentElement;
+      const trigger = anchorRef.current?.querySelector("button");
+      if (!marker || !panel || !trigger) return;
+
+      const markerStyles = window.getComputedStyle(marker);
+      const margin = Number.parseFloat(markerStyles.scrollMarginBottom);
+      const gap = Number.parseFloat(markerStyles.scrollMarginTop);
+      const viewportTop = window.visualViewport?.offsetTop ?? 0;
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const triggerRect = trigger.getBoundingClientRect();
+      const top = openTagPickerTop({
+        triggerTop: triggerRect.top,
+        panelHeight: panel.offsetHeight,
+        viewportTop,
+        viewportHeight,
+        margin,
+        gap,
+      });
+      const baseTop = Number.parseFloat(panel.style.top);
+      panel.style.setProperty("--opentag-picker-shift", String(top - baseTop));
+    };
+    const schedule = (): void => {
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = window.requestAnimationFrame(place);
+      });
+    };
+
+    schedule();
+    window.addEventListener("scroll", schedule, true);
+    window.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    window.visualViewport?.addEventListener("resize", schedule);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", schedule, true);
+      window.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+      window.visualViewport?.removeEventListener("resize", schedule);
+    };
+  }, [anchorRef]);
+
+  return <span ref={markerRef} className="opentag-picker-placement" aria-hidden="true" />;
 }
 
 function ChoiceList({ children }: { children: ReactElement | Array<ReactElement | null> }): ReactElement {
   return (
-    <div className="flex flex-col" style={{ gap: "var(--sp-1)" }}>
+    <div className="opentag-choice-list flex flex-col" style={{ gap: "var(--sp-1)" }}>
       {children}
     </div>
   );
@@ -385,7 +481,7 @@ function ActionSurface({ children, qr = false }: { children: ReactNode; qr?: boo
       className="flex w-full items-center text-opentag-action"
       style={{
         minHeight: qr ? "var(--opentag-action-qr-height)" : "var(--opentag-action-height)",
-        padding: "var(--sp-8)",
+        padding: "var(--opentag-action-padding)",
         borderRadius: "var(--radius-opentag-action)",
         background: "var(--opentag-action)",
         color: "var(--opentag-action-fg)",
