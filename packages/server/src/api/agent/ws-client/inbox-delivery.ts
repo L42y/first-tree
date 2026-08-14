@@ -14,7 +14,6 @@ import type { ClientWsConnectionContext } from "./connection-context.js";
 const INBOX_BACKLOG_BATCH_LIMIT = 50;
 const INBOX_BACKLOG_REPAIR_INTERVAL_MS = 30_000;
 const INBOX_RECOVER_NO_PROGRESS_LIMIT = 2;
-const INBOX_ACK_DELIVERY_SNAPSHOT_LIMIT = 8;
 
 export type InboxDeliveryCoordinator = ReturnType<typeof createInboxDeliveryCoordinator>;
 
@@ -153,7 +152,8 @@ export function createInboxDeliveryCoordinator(
     if (!owner) return [];
     const bucket = inboxInFlightByAgent.get(owner.agentId)?.get(owner.chatKey);
     if (!bucket) return [];
-    return [...bucket.entryIds].sort((left, right) => left - right).slice(0, INBOX_ACK_DELIVERY_SNAPSHOT_LIMIT);
+    // Already bounded by `inboxMaxInFlightPerAgentChat` (schema 1–1024).
+    return [...bucket.entryIds].sort((left, right) => left - right);
   }
 
   function addInboxInFlight(agentId: string, chatId: string | null, entryId: number): void {
