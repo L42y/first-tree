@@ -27,9 +27,11 @@ import {
 } from "../services/runtime/connection-manager.js";
 import { isClientConnectedSomewhere, readModelCatalogRpcResult } from "../services/runtime/rpc/provider-models.js";
 import {
+  beginRuntimeInstallProgress,
   metadataSupportsRuntimeInstallV1,
   RUNTIME_INSTALL_REPLY_TIMEOUT_MS,
   runtimeInstallClientLiveness,
+  takeRuntimeInstallProgress,
 } from "../services/runtime/rpc/runtime-install.js";
 import { serializeDate } from "../utils.js";
 import { clientCommandVersionHint } from "./client-command-version.js";
@@ -144,6 +146,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
     if (!targetInstanceId) throw new Error("unreachable: live client missing instance id");
 
     const ref = randomUUID();
+    beginRuntimeInstallProgress(clientId, body.provider, ref);
     const replyPromise = waitForClientReply(clientId, ref, RUNTIME_INSTALL_REPLY_TIMEOUT_MS);
     const command = { type: RUNTIME_INSTALL_START_TYPE, provider: body.provider, ref };
     if (targetInstanceId === app.config.instanceId) {
@@ -151,6 +154,7 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
       if (!delivered) {
         cancelClientReply(clientId, ref, new Error("Computer not connected"));
         await replyPromise.catch(() => undefined);
+        takeRuntimeInstallProgress(clientId, ref);
         throw new ServiceUnavailableError(
           "Runtime installation could not start because this computer is not connected. Start its daemon, then retry.",
         );
@@ -165,13 +169,11 @@ export async function clientRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       const terminal = runtimeInstallTerminalResultFrameSchema.parse(await replyPromise);
-      const progress =
-        terminal.status === "failed" && terminal.reasonCode === "already_in_progress"
-          ? []
-          : (["accepted", "in-progress"] as const);
+      const progress = takeRuntimeInstallProgress(clientId, ref);
       const { type: _type, ...result } = terminal;
       return runtimeInstallStartResponseSchema.parse({ ...result, progress });
     } catch (err) {
+      takeRuntimeInstallProgress(clientId, ref);
       const timedOut = err instanceof Error && err.message.toLowerCase().includes("timed out");
       if (timedOut) {
         throw new GatewayTimeoutError(

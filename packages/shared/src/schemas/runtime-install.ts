@@ -68,7 +68,7 @@ export type RuntimeInstallTerminalResultFrame = z.infer<typeof runtimeInstallTer
 /** Terminal HTTP response. `progress` proves the daemon accepted and started the controlled install. */
 export const runtimeInstallStartResponseSchema = z.discriminatedUnion("status", [
   runtimeInstallTerminalResultFrameSchema.options[0].omit({ type: true }).extend({
-    progress: z.tuple([z.literal("accepted"), z.literal("in-progress")]),
+    progress: z.array(runtimeInstallProgressStatusSchema).max(2),
   }),
   runtimeInstallTerminalResultFrameSchema.options[1].omit({ type: true }).extend({
     progress: z.array(runtimeInstallProgressStatusSchema).max(2),

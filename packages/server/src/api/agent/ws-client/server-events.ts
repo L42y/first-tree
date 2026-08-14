@@ -9,7 +9,10 @@ import type { Notifier } from "../../../services/notifier.js";
 import * as clientService from "../../../services/runtime/client.js";
 import * as connectionManager from "../../../services/runtime/connection-manager.js";
 import { readModelCatalogRpcResult } from "../../../services/runtime/rpc/provider-models.js";
-import { metadataSupportsRuntimeInstallV1 } from "../../../services/runtime/rpc/runtime-install.js";
+import {
+  metadataSupportsRuntimeInstallV1,
+  recordRuntimeInstallProgress,
+} from "../../../services/runtime/rpc/runtime-install.js";
 import { agentRoutedTo, readSessionCommandRpcResult } from "../../../services/runtime/rpc/session-command.js";
 
 export function registerClientWsServerEvents(app: FastifyInstance, notifier: Notifier, instanceId: string): void {
@@ -107,6 +110,7 @@ export function registerClientWsServerEvents(app: FastifyInstance, notifier: Not
 
   notifier.onDaemonClientCommandResult((payload) => {
     if (payload.result) {
+      recordRuntimeInstallProgress(payload.clientId, payload.result);
       const terminal = runtimeInstallTerminalResultFrameSchema.safeParse(payload.result);
       if (terminal.success) {
         connectionManager.resolveClientReply(payload.clientId, payload.ref, terminal.data);

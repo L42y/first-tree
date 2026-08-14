@@ -51,15 +51,29 @@ describe("POST /clients/:clientId/runtime-install/start", () => {
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalledTimes(1));
       const command = JSON.parse(String(ws.send.mock.calls[0]?.[0]));
       expect(command).toMatchObject({ type: "runtime-install:start", provider: "codex" });
-      expect(
-        resolveClientReply(owner.clientId, command.ref, {
-          type: "runtime-install:result",
-          provider: "codex",
+      for (const result of [
+        {
+          type: "runtime-install:result" as const,
+          provider: "codex" as const,
           ref: command.ref,
-          status: "succeeded",
+          status: "accepted" as const,
+        },
+        {
+          type: "runtime-install:result" as const,
+          provider: "codex" as const,
+          ref: command.ref,
+          status: "in-progress" as const,
+        },
+        {
+          type: "runtime-install:result" as const,
+          provider: "codex" as const,
+          ref: command.ref,
+          status: "succeeded" as const,
           installedVersion: "0.140.0",
-        }),
-      ).toBe(true);
+        },
+      ]) {
+        await app.notifier.notifyDaemonClientCommandResult({ clientId: owner.clientId, ref: command.ref, result });
+      }
 
       const response = await pending;
       expect(response.statusCode).toBe(200);
@@ -157,7 +171,12 @@ describe("POST /clients/:clientId/runtime-install/start", () => {
       });
       const failed = await first;
       expect(failed.statusCode).toBe(200);
-      expect(failed.json()).toMatchObject({ status: "failed", reasonCode: "network_error", retryable: true });
+      expect(failed.json()).toMatchObject({
+        status: "failed",
+        reasonCode: "network_error",
+        retryable: true,
+        progress: [],
+      });
 
       const retry = request();
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalledTimes(2));
@@ -204,11 +223,33 @@ describe("POST /clients/:clientId/runtime-install/start", () => {
           type: "runtime-install:result",
           provider: "codex",
           ref: command.ref,
+          status: "in-progress",
+        },
+      });
+      await app.notifier.notifyDaemonClientCommandResult({
+        clientId: owner.clientId,
+        ref: command.ref,
+        result: {
+          type: "runtime-install:result",
+          provider: "codex",
+          ref: command.ref,
+          status: "accepted",
+        },
+      });
+      await app.notifier.notifyDaemonClientCommandResult({
+        clientId: owner.clientId,
+        ref: command.ref,
+        result: {
+          type: "runtime-install:result",
+          provider: "codex",
+          ref: command.ref,
           status: "succeeded",
           installedVersion: null,
         },
       });
-      expect((await pending).statusCode).toBe(200);
+      const response = await pending;
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ status: "succeeded", progress: ["accepted"] });
     } finally {
       notify.mockRestore();
     }

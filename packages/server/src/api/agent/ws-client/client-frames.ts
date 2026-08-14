@@ -18,7 +18,10 @@ import * as clientService from "../../../services/runtime/client.js";
 import * as connectionManager from "../../../services/runtime/connection-manager.js";
 import * as runtimeLivenessService from "../../../services/runtime/liveness.js";
 import { storeModelCatalogRpcResult } from "../../../services/runtime/rpc/provider-models.js";
-import { metadataSupportsRuntimeInstallV1 } from "../../../services/runtime/rpc/runtime-install.js";
+import {
+  metadataSupportsRuntimeInstallV1,
+  recordRuntimeInstallProgress,
+} from "../../../services/runtime/rpc/runtime-install.js";
 import { setAuthWsAttrs } from "./auth.js";
 import type { ClientWsConnectionContext } from "./connection-context.js";
 import type { InboxDeliveryCoordinator } from "./inbox-delivery.js";
@@ -224,6 +227,7 @@ export function createClientFrameHandler(
         );
         return;
       }
+      recordRuntimeInstallProgress(clientId, result.data);
       const terminal = runtimeInstallTerminalResultFrameSchema.safeParse(result.data);
       if (terminal.success) {
         connectionManager.resolveClientReply(clientId, terminal.data.ref, terminal.data);

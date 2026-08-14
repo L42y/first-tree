@@ -1656,7 +1656,9 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           // servers ignore the unknown v1 field.
           wireCapabilities: {
             ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
-            ...(this.serverSupportsRuntimeInstallV1 ? { runtimeInstallV1: true } : {}),
+            ...(this.serverSupportsRuntimeInstallV1 && this.listenerCount("runtime-install:start") > 0
+              ? { runtimeInstallV1: true }
+              : {}),
           },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),

@@ -85,4 +85,24 @@ describe("runtime install runner", () => {
       retryable: true,
     });
   });
+
+  it("redacts secrets before publishing installer failures", async () => {
+    const sent: RuntimeInstallResultFrame[] = [];
+    const runner = createRuntimeInstallRunner({
+      installClaude: vi.fn(),
+      installCodex: vi.fn().mockResolvedValue({
+        ok: false,
+        reason: "registry rejected token=ghp_AbCdEf0123456789abcdef0123456789abcd",
+        reasonCode: "npm_auth",
+        retryable: false,
+      }),
+      reprobe: vi.fn(),
+      send: (result) => sent.push(result),
+      log: vi.fn(),
+    });
+
+    await runner.run(CODEX);
+    expect(sent.at(-1)).toMatchObject({ status: "failed", reasonCode: "npm_auth" });
+    expect(sent.at(-1)).not.toEqual(expect.objectContaining({ reason: expect.stringContaining("ghp_") }));
+  });
 });

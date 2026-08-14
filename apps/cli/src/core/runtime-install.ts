@@ -1,3 +1,4 @@
+import { redactErrorPreview } from "@first-tree/client";
 import type { RuntimeInstallProvider, RuntimeInstallResultFrame } from "@first-tree/shared";
 import type { InstallClaudeResult } from "./install-claude-runtime.js";
 import type { InstallCodexResult } from "./install-codex-runtime.js";
@@ -18,7 +19,7 @@ export type RuntimeInstallRunner = {
 
 function boundedReason(reason: string): string {
   const trimmed = reason.trim() || "Runtime installation failed";
-  return trimmed.length <= 500 ? trimmed : `${trimmed.slice(0, 497)}...`;
+  return redactErrorPreview(trimmed, 499);
 }
 
 /**
