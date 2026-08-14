@@ -567,9 +567,12 @@ describe("Agent client WS branch fakes", () => {
     await emitMessage(socket, { type: "inbox:ack", entryId: 209, ref: "ack-cap12-tail" });
     await waitUntil(() => vi.mocked(inboxService.ackEntryByIdForBoundAgents).mock.calls.length > 0);
 
-    expect(inboxService.ackEntryByIdForBoundAgents).toHaveBeenCalledWith(db, 209, ["inbox_1"], [
-      201, 202, 203, 204, 205, 206, 207, 208, 209,
-    ]);
+    expect(inboxService.ackEntryByIdForBoundAgents).toHaveBeenCalledWith(
+      db,
+      209,
+      ["inbox_1"],
+      [201, 202, 203, 204, 205, 206, 207, 208, 209],
+    );
     expect(socket.sent).toContainEqual({
       type: "inbox:ack:accepted",
       entryId: 209,
