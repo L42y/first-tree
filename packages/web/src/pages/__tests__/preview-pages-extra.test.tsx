@@ -350,6 +350,7 @@ describe("extra preview pages", () => {
     expect(text(rendered.container)).toContain("waiting");
     expect(text(rendered.container)).toContain("Loading");
     expect(text(rendered.container)).toContain("Waiting for GitHub");
+    expect(text(rendered.container)).toContain("Only public Agents with a managed runtime appear here.");
 
     const detailsButtons = [...rendered.container.querySelectorAll("button")].filter((button) =>
       button.textContent?.includes("Connection details"),
