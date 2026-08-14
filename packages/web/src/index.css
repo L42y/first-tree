@@ -349,10 +349,10 @@ video[data-onboarding-orientation-video]::cue {
   --opentag-content-top: 11.5rem;
   --opentag-identity-top: 5.5rem;
   --opentag-status-bottom: 4.25rem;
-  --opentag-status-columns: minmax(0, 0.84fr) minmax(0, 1.16fr);
+  --opentag-status-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
   --opentag-status-picker-columns: var(--opentag-status-columns);
-  --opentag-status-gap: var(--sp-10);
-  --opentag-status-item-gap: var(--sp-3);
+  --opentag-status-gap: var(--sp-3);
+  --opentag-status-item-gap: var(--sp-2);
   --opentag-picker-max-height: 10.5rem;
   --opentag-picker-anchor-gap: var(--sp-1);
   --opentag-picker-viewport-margin: var(--sp-2);
@@ -690,6 +690,10 @@ video[data-onboarding-orientation-video]::cue {
     --opentag-status-item-gap: var(--sp-2);
     --opentag-action-padding: var(--sp-7);
   }
+
+  .opentag-choice-trigger--compact .opentag-choice-label {
+    display: none;
+  }
 }
 
 @media (max-width: 68rem) {
@@ -697,7 +701,9 @@ video[data-onboarding-orientation-video]::cue {
     --opentag-page-gutter: var(--sp-4);
     --opentag-column-gap: var(--sp-3);
     --opentag-status-columns: minmax(0, 0.93fr) minmax(0, 1.07fr);
-    --opentag-status-picker-columns: minmax(0, 0.66fr) minmax(0, 1fr);
+    --opentag-status-picker-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+    --opentag-status-gap: var(--sp-2);
+    --opentag-status-item-gap: var(--sp-1);
     --opentag-action-padding: var(--sp-6);
     --opentag-qr-flow-offset: var(--sp-8);
     --opentag-qr-size: 10rem;

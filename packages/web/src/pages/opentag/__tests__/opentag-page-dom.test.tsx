@@ -431,10 +431,23 @@ describe("OpenTag single-page Desktop flow", () => {
   });
 
   it("keeps Change available after selecting the longest ready runtime label", async () => {
-    computerMock.value = readyComputer({ codex: capability(), "claude-code": capability() });
+    const ready = readyComputer({ codex: capability(), "claude-code": capability() });
+    computerMock.value = computer({
+      ...ready,
+      connectedClients: [
+        ready.connectedClient as HubClient,
+        client("client-2", "Travel Mac", ready.capabilities ?? {}),
+      ],
+    });
     const container = await renderAt("/opentag");
 
-    await click(buttonExact(container, "Change"));
+    const computerChange = container.querySelector<HTMLButtonElement>("button[aria-label='Change Computer']");
+    expect(computerChange?.classList.contains("opentag-choice-trigger--compact")).toBe(true);
+    const runtimeChange = container.querySelector<HTMLButtonElement>(
+      "[data-opentag-statuses] > div:nth-child(2) button",
+    );
+    if (!runtimeChange) throw new Error("missing Agent picker trigger");
+    await click(runtimeChange);
     const choices = document.querySelector("[role='dialog'][aria-label='Change Agent']");
     if (!choices) throw new Error("missing Agent picker");
     await click(button(choices, "Claude Code"));

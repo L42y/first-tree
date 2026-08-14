@@ -212,7 +212,7 @@ function ComputerStatus({
   return (
     <StatusLine ready={connected} label={`Computer · ${label}`}>
       {clients.length > 1 ? (
-        <ChoicePopover label="Change Computer">
+        <ChoicePopover label="Change Computer" compactOnNarrow>
           {(close) => (
             <ChoiceList>
               {clients.map((client) => (
@@ -318,9 +318,11 @@ function StatusLine({
 function ChoicePopover({
   label,
   children,
+  compactOnNarrow = false,
 }: {
   label: string;
   children: (close: () => void) => ReactElement;
+  compactOnNarrow?: boolean;
 }): ReactElement {
   const anchorRef = useRef<HTMLSpanElement>(null);
 
@@ -334,11 +336,12 @@ function ChoicePopover({
           <Button
             type="button"
             variant="link"
-            className="h-auto shrink-0 p-0 text-body font-normal"
+            className={`h-auto shrink-0 p-0 text-body font-normal${compactOnNarrow ? " opentag-choice-trigger--compact" : ""}`}
+            aria-label={compactOnNarrow ? label : undefined}
             aria-expanded={open}
             onClick={toggle}
           >
-            Change <ChevronDown className="h-3.5 w-3.5" />
+            <span className="opentag-choice-label">Change</span> <ChevronDown className="h-3.5 w-3.5" />
           </Button>
         )}
       >
