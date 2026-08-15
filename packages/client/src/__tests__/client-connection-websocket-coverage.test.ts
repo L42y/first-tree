@@ -581,6 +581,60 @@ describe("ClientConnection — WebSocket edge coverage", () => {
       disposition: "acked",
     });
     await expect(ackPromise).resolves.toBeUndefined();
+    expect(socket.closeCalls).toHaveLength(0);
+  });
+
+  it("fail-closes confirmed inbox ACKs after the second timeout without sending a third frame", async () => {
+    vi.useFakeTimers();
+    const connection = await makeConnection();
+    const events: string[] = [];
+    connection.on("reconnecting", () => events.push("reconnecting"));
+    const socket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
+
+    const firstAck = connection.sendInboxAck(80);
+    const secondAck = connection.sendInboxAck(81);
+    const initialAckFrames = socket.sent
+      .map((raw) => JSON.parse(raw) as { type?: string; entryId?: number; ref?: string })
+      .filter((message) => message.type === "inbox:ack");
+    expect(initialAckFrames).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(3000);
+    const ackFramesAfterRetry = socket.sent
+      .map((raw) => JSON.parse(raw) as { type?: string; entryId?: number; ref?: string })
+      .filter((message) => message.type === "inbox:ack");
+    expect(ackFramesAfterRetry).toHaveLength(4);
+    expect(ackFramesAfterRetry[2]).toEqual(initialAckFrames[0]);
+    expect(ackFramesAfterRetry[3]).toEqual(initialAckFrames[1]);
+
+    const firstRejection = expect(firstAck).rejects.toThrow("inbox ack timeout");
+    const secondRejection = expect(secondAck).rejects.toThrow("inbox ack timeout");
+    await vi.advanceTimersByTimeAsync(3000);
+    await firstRejection;
+    await secondRejection;
+
+    const ackFramesAfterClose = socket.sent
+      .map((raw) => JSON.parse(raw) as { type?: string })
+      .filter((message) => message.type === "inbox:ack");
+    expect(ackFramesAfterClose).toHaveLength(4);
+    expect(socket.closeCalls).toEqual([{ code: 1011, reason: "inbox ack timeout" }]);
+    expect(events).toContain("reconnecting");
+
+    priv(connection).clearTimers();
+  });
+
+  it("fail-closes when the pending confirmed ACK cap is hit", async () => {
+    const connection = await makeConnection();
+    const socket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
+
+    const pending = Array.from({ length: 1024 }, (_, index) => connection.sendInboxAck(index + 1, "agent-cap"));
+    const overflow = connection.sendInboxAck(2000, "agent-cap");
+    await expect(overflow).rejects.toThrow("inbox ack timeout");
+    await Promise.all(pending.map((ack) => expect(ack).rejects.toThrow("inbox ack timeout")));
+    expect(socket.closeCalls).toEqual([{ code: 1011, reason: "inbox ack timeout" }]);
+    expect(
+      socket.sent.map((raw) => JSON.parse(raw) as { type?: string }).filter((message) => message.type === "inbox:ack"),
+    ).toHaveLength(0);
+
+    priv(connection).clearTimers();
   });
 
   it("sends inbox recovery requests and settles on accepted or rejected frames", async () => {
@@ -757,7 +811,7 @@ describe("ClientConnection — WebSocket edge coverage", () => {
     await expect(ackPromise).rejects.toThrow("agent_bind_rejected:wrong_client");
   });
 
-  it("rejects held agent-scoped ACKs when unbinding on a closed socket", async () => {
+  it("rejects held agent-scoped ACKs when the socket closes", async () => {
     const connection = await makeConnection();
     const internal = priv(connection);
     const socket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
@@ -766,20 +820,21 @@ describe("ClientConnection — WebSocket edge coverage", () => {
     internal.closing = true;
     socket.close(1006, "test close");
 
+    await expect(ackPromise).rejects.toThrow("WebSocket closed");
     await connection.unbindAgent("agent-1");
-
-    await expect(ackPromise).rejects.toThrow("agent_unbound");
   });
 
-  it("flushes pending confirmed inbox ACKs after reconnect and bind", async () => {
+  it("does not flush old confirmed inbox ACKs after a later socket bind", async () => {
     const connection = await makeConnection();
     const internal = priv(connection);
     const firstSocket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
 
     const ackPromise = connection.sendInboxAck(46);
     const firstAck = parseSent(firstSocket, firstSocket.sent.length - 1);
+    expect(firstAck).toMatchObject({ type: "inbox:ack", entryId: 46 });
     internal.closing = true;
     firstSocket.close(1006, "test close");
+    await expect(ackPromise).rejects.toThrow("WebSocket closed");
     internal.closing = false;
 
     const secondSocket = await openRegisteredConnection(connection, { wsInboxAckConfirm: true });
@@ -794,14 +849,10 @@ describe("ClientConnection — WebSocket edge coverage", () => {
     });
     await bindPromise;
 
-    const resentAck = parseSent(secondSocket, secondSocket.sent.length - 1);
-    expect(resentAck).toEqual(firstAck);
-    secondSocket.emitMessage({
-      type: "inbox:ack:accepted",
-      entryId: 46,
-      ref: firstAck.ref,
-      disposition: "already_acked",
-    });
-    await expect(ackPromise).resolves.toBeUndefined();
+    expect(
+      secondSocket.sent
+        .map((raw) => JSON.parse(raw) as { type?: string; entryId?: number })
+        .filter((message) => message.type === "inbox:ack"),
+    ).toEqual([]);
   });
 });

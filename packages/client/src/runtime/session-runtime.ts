@@ -340,9 +340,11 @@ type SessionRuntimeConfig = {
   ackEntry: (entryId: number) => Promise<void>;
   /**
    * Same-socket chat recovery: reset delivered-but-unacked entries for the
-   * chat back to pending and redeliver them on this connection.
+   * chat back to pending and redeliver them on this connection. A resolved
+   * `{ unackedOutstanding: 0 }` proves the chat has no pending+delivered
+   * notify rows left; omit the field on older servers (unknown, not zero).
    */
-  recoverChat?: (chatId: string) => Promise<void>;
+  recoverChat?: (chatId: string) => Promise<unknown>;
   /**
    * Read-only settlement probe for concrete fenced deliveries: resolves
    * with the probed message ids the server proves settled (no unsettled
@@ -1356,6 +1358,14 @@ export class SessionRuntime {
    */
   noteBindRecoveryComplete(): void {
     this.projection.noteBindRecoveryComplete();
+  }
+
+  /**
+   * Retry ACK-confirm settlement only for chats that failed inbox:ack
+   * confirmation. Independent of runtime-proof and Reset-fence recovery.
+   */
+  async reconcileAckSettlementAfterBind(): Promise<void> {
+    await this.inboxDelivery.reconcileAckSettlementAfterBind();
   }
 
   // ---- Internal -----------------------------------------------------------

@@ -353,6 +353,166 @@ describe("InboxDeliveryCoordinator additional delivery coverage", () => {
     expect(coordinator.snapshot("chat-ack-fail").entries).toEqual([]);
   });
 
+  it("releases terminal ledger when recover proves unackedOutstanding is 0", async () => {
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("ack confirm lost"));
+    const recoverChat = vi
+      .fn<(chatId: string) => Promise<{ unackedOutstanding: number }>>()
+      .mockResolvedValue({ unackedOutstanding: 0 });
+    const onDeliveriesCommitted = vi.fn();
+    const coordinator = new InboxDeliveryCoordinator({
+      ackEntry,
+      recoverChat,
+      onWorkChanged: vi.fn(),
+      onDeliveriesCommitted,
+      log: silentLogger(),
+    });
+    const entry = mockEntry({ id: 110, chatId: "chat-ack-committed", messageId: "msg-ack-committed" });
+    const message = toSessionMessage(entry);
+
+    expect(coordinator.receive(entry).kind).toBe("deliver");
+    await coordinator.finishTurn("chat-ack-committed", message, { status: "success", terminal: true });
+
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-ack-committed"));
+    await vi.waitFor(() => expect(coordinator.snapshot("chat-ack-committed").entries).toEqual([]));
+    expect(coordinator.snapshot("chat-ack-committed").recoveryDebt).toBe("none");
+    expect(coordinator.hasRecoveryDebt("chat-ack-committed")).toBe(false);
+    expect(coordinator.takeRecoveryActivationReady("chat-ack-committed")).toBe(false);
+    expect(onDeliveriesCommitted).toHaveBeenCalledWith("chat-ack-committed", ["msg-ack-committed"]);
+    expect(coordinator.markOwned({ chatId: "chat-ack-committed", entryId: 110, messageId: "msg-ack-committed" })).toBe(
+      "settled",
+    );
+    expect(coordinator.receive(entry)).toEqual({ kind: "duplicate-in-flight" });
+    expect(ackEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: "unackedOutstanding is 1", result: { unackedOutstanding: 1 } },
+    { name: "old servers omit unackedOutstanding", result: undefined },
+  ])("retains terminal ledger when recovery $name and re-ACKs redelivery", async ({ result }) => {
+    const ackEntry = vi
+      .fn<(entryId: number) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("ack confirm lost"))
+      .mockResolvedValue(undefined);
+    const recoverChat = vi.fn<(chatId: string) => Promise<unknown>>().mockResolvedValue(result);
+    const onDeliveriesCommitted = vi.fn();
+    const coordinator = new InboxDeliveryCoordinator({
+      ackEntry,
+      recoverChat,
+      onWorkChanged: vi.fn(),
+      onDeliveriesCommitted,
+      log: silentLogger(),
+    });
+    const entry = mockEntry({ id: 111, chatId: "chat-ack-unsettled", messageId: "msg-ack-unsettled" });
+
+    expect(coordinator.receive(entry).kind).toBe("deliver");
+    await coordinator.finishTurn("chat-ack-unsettled", toSessionMessage(entry), { status: "success", terminal: true });
+
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-ack-unsettled"));
+    expect(coordinator.snapshot("chat-ack-unsettled").entries).toEqual([
+      { entryId: 111, messageId: "msg-ack-unsettled", phase: "terminal" },
+    ]);
+    expect(onDeliveriesCommitted).not.toHaveBeenCalled();
+
+    expect(coordinator.receive(entry)).toEqual({ kind: "duplicate-in-flight" });
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledTimes(2));
+    expect(ackEntry).toHaveBeenNthCalledWith(2, 111);
+    expect(coordinator.snapshot("chat-ack-unsettled").entries).toEqual([]);
+    expect(onDeliveriesCommitted).toHaveBeenCalledWith("chat-ack-unsettled", ["msg-ack-unsettled"]);
+  });
+
+  it("retries ACK settlement on rebind after recover fails because the socket is closing", async () => {
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockRejectedValue(new Error("inbox ack timeout"));
+    const recoverChat = vi
+      .fn<(chatId: string) => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("inbox:recover unavailable; socket not bound"))
+      .mockResolvedValueOnce({ unackedOutstanding: 0 });
+    const onDeliveriesCommitted = vi.fn();
+    const coordinator = new InboxDeliveryCoordinator({
+      ackEntry,
+      recoverChat,
+      onWorkChanged: vi.fn(),
+      onDeliveriesCommitted,
+      log: silentLogger(),
+    });
+    const entry = mockEntry({ id: 120, chatId: "chat-ack-rebind-zero", messageId: "msg-ack-rebind-zero" });
+
+    expect(coordinator.receive(entry).kind).toBe("deliver");
+    await coordinator.finishTurn("chat-ack-rebind-zero", toSessionMessage(entry), {
+      status: "success",
+      terminal: true,
+    });
+
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(coordinator.snapshot("chat-ack-rebind-zero")).toMatchObject({
+      entries: [{ entryId: 120, messageId: "msg-ack-rebind-zero", phase: "terminal" }],
+      recoveryDebt: "required",
+      needsAckSettlementReconcile: true,
+    });
+    expect(coordinator.takeRecoveryActivationReady("chat-ack-rebind-zero")).toBe(false);
+    expect(onDeliveriesCommitted).not.toHaveBeenCalled();
+
+    await coordinator.reconcileAckSettlementAfterBind();
+
+    expect(recoverChat).toHaveBeenCalledTimes(2);
+    expect(coordinator.snapshot("chat-ack-rebind-zero")).toMatchObject({
+      entries: [],
+      recoveryDebt: "none",
+      needsAckSettlementReconcile: false,
+    });
+    expect(coordinator.hasRecoveryDebt("chat-ack-rebind-zero")).toBe(false);
+    expect(coordinator.takeRecoveryActivationReady("chat-ack-rebind-zero")).toBe(false);
+    expect(onDeliveriesCommitted).toHaveBeenCalledWith("chat-ack-rebind-zero", ["msg-ack-rebind-zero"]);
+    expect(coordinator.receive(entry)).toEqual({ kind: "duplicate-in-flight" });
+    expect(ackEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: "unackedOutstanding is 1", result: { unackedOutstanding: 1 } },
+    { name: "old servers omit unackedOutstanding", result: undefined },
+  ])("keeps terminal after rebind recovery $name and re-ACKs redelivery", async ({ result }) => {
+    const ackEntry = vi
+      .fn<(entryId: number) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("inbox ack timeout"))
+      .mockResolvedValue(undefined);
+    const recoverChat = vi
+      .fn<(chatId: string) => Promise<unknown>>()
+      .mockRejectedValueOnce(new Error("inbox:recover unavailable; socket not bound"))
+      .mockResolvedValueOnce(result);
+    const onDeliveriesCommitted = vi.fn();
+    const coordinator = new InboxDeliveryCoordinator({
+      ackEntry,
+      recoverChat,
+      onWorkChanged: vi.fn(),
+      onDeliveriesCommitted,
+      log: silentLogger(),
+    });
+    const entry = mockEntry({ id: 121, chatId: "chat-ack-rebind-unsettled", messageId: "msg-ack-rebind-unsettled" });
+
+    expect(coordinator.receive(entry).kind).toBe("deliver");
+    await coordinator.finishTurn("chat-ack-rebind-unsettled", toSessionMessage(entry), {
+      status: "success",
+      terminal: true,
+    });
+
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledTimes(1));
+    expect(coordinator.snapshot("chat-ack-rebind-unsettled").needsAckSettlementReconcile).toBe(true);
+
+    await coordinator.reconcileAckSettlementAfterBind();
+
+    expect(recoverChat).toHaveBeenCalledTimes(2);
+    expect(coordinator.snapshot("chat-ack-rebind-unsettled")).toMatchObject({
+      entries: [{ entryId: 121, messageId: "msg-ack-rebind-unsettled", phase: "terminal" }],
+      needsAckSettlementReconcile: false,
+    });
+    expect(onDeliveriesCommitted).not.toHaveBeenCalled();
+
+    expect(coordinator.receive(entry)).toEqual({ kind: "duplicate-in-flight" });
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledTimes(2));
+    expect(ackEntry).toHaveBeenNthCalledWith(2, 121);
+    expect(coordinator.snapshot("chat-ack-rebind-unsettled").entries).toEqual([]);
+    expect(onDeliveriesCommitted).toHaveBeenCalledWith("chat-ack-rebind-unsettled", ["msg-ack-rebind-unsettled"]);
+  });
+
   it("keeps a recovery redelivery burst in recovery mode until unsettled work drains", async () => {
     const ackEntry = mockAckEntry();
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);

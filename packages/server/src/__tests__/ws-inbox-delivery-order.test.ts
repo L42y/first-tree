@@ -62,8 +62,8 @@ describe("Agent WS — inbox delivery ordering", () => {
     });
   }
 
-  async function loadNotifyRow(inboxId: string, messageId: string) {
-    const [row] = await app.db
+  async function loadNotifyRow(inboxId: string, messageId: string, db = app.db) {
+    const [row] = await db
       .select({
         id: inboxEntries.id,
         status: inboxEntries.status,
@@ -426,6 +426,163 @@ describe("Agent WS — inbox delivery ordering", () => {
 
       expect(postAckFrames.map((frame) => frame.message.id).sort()).toEqual([lastChatAMessageId, b2.message.id].sort());
       expect(postAckFrames.map((frame) => frame.message.content).sort()).toEqual(["A9", "B2"]);
+    } finally {
+      ws.close();
+      await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    }
+  }, 15000);
+
+  it("accepts an ACK for the current socket delivery set and frees the in-flight slot", async () => {
+    const admin = await createAdminContext(app, { username: `ws-ack-ok-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `ws-ack-ok-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+      organizationId: admin.organizationId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [agent.uuid],
+    });
+    const ws = await openBoundSocket({
+      accessToken: admin.accessToken,
+      clientId: admin.clientId,
+      agentId: agent.uuid,
+      runtimeProvider: agent.runtimeProvider,
+    });
+
+    try {
+      const first = await sendMessage(app.db, chat.id, admin.humanAgentUuid, {
+        source: "api",
+        format: "text",
+        content: "ack current",
+        metadata: { mentions: [agent.uuid] },
+      });
+      const firstFramesPromise = collectDeliverFrames(ws, 1);
+      await app.notifier.notify(agent.inboxId, first.message.id);
+      const [firstFrame] = await firstFramesPromise;
+      if (!firstFrame) throw new Error("expected current-socket delivery");
+
+      const acceptedPromise = waitForFrame(
+        ws,
+        (message) =>
+          (message as { type?: string; ref?: string }).type === "inbox:ack:accepted" &&
+          (message as { ref?: string }).ref === "ack-current",
+      );
+      ws.send(JSON.stringify({ type: "inbox:ack", entryId: firstFrame.entryId, ref: "ack-current" }));
+      const accepted = await acceptedPromise;
+      expect(accepted).toMatchObject({
+        type: "inbox:ack:accepted",
+        entryId: firstFrame.entryId,
+        ref: "ack-current",
+        disposition: "acked",
+      });
+      expect((await loadNotifyRow(agent.inboxId, first.message.id))?.status).toBe("acked");
+
+      const nextPromise = collectDeliverFrames(ws, 1);
+      const second = await sendMessage(app.db, chat.id, admin.humanAgentUuid, {
+        source: "api",
+        format: "text",
+        content: "ack next",
+        metadata: { mentions: [agent.uuid] },
+      });
+      await app.notifier.notify(agent.inboxId, second.message.id);
+      const [nextFrame] = await nextPromise;
+      expect(nextFrame?.message.id).toBe(second.message.id);
+    } finally {
+      ws.close();
+      await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    }
+  }, 15000);
+
+  it("rejects an ACK whose target or prefix is not in the current socket delivery set", async () => {
+    const admin = await createAdminContext(app, { username: `ws-ack-foreign-${crypto.randomUUID().slice(0, 6)}` });
+    const agent = await createAgent(app.db, {
+      name: `ws-ack-foreign-agent-${crypto.randomUUID().slice(0, 6)}`,
+      type: "agent",
+      managerId: admin.memberId,
+      clientId: admin.clientId,
+      organizationId: admin.organizationId,
+    });
+    const chat = await createChat(app.db, admin.humanAgentUuid, {
+      type: "group",
+      participantIds: [agent.uuid],
+    });
+    const ws = await openBoundSocket({
+      accessToken: admin.accessToken,
+      clientId: admin.clientId,
+      agentId: agent.uuid,
+      runtimeProvider: agent.runtimeProvider,
+    });
+
+    try {
+      const first = await sendMessage(app.db, chat.id, admin.humanAgentUuid, {
+        source: "api",
+        format: "text",
+        content: "foreign prefix",
+        metadata: { mentions: [agent.uuid] },
+      });
+      const second = await sendMessage(app.db, chat.id, admin.humanAgentUuid, {
+        source: "api",
+        format: "text",
+        content: "current tail",
+        metadata: { mentions: [agent.uuid] },
+      });
+      const framesPromise = collectDeliverFrames(ws, 2);
+      await app.notifier.notify(agent.inboxId, second.message.id);
+      const frames = await framesPromise;
+      const firstFrame = frames.find((frame) => frame.message.id === first.message.id);
+      const secondFrame = frames.find((frame) => frame.message.id === second.message.id);
+      if (!firstFrame || !secondFrame) throw new Error("expected both deliveries");
+
+      const acceptedFirstPromise = waitForFrame(
+        ws,
+        (message) =>
+          (message as { type?: string; ref?: string }).type === "inbox:ack:accepted" &&
+          (message as { ref?: string }).ref === "ack-release-prefix",
+      );
+      ws.send(JSON.stringify({ type: "inbox:ack", entryId: firstFrame.entryId, ref: "ack-release-prefix" }));
+      await acceptedFirstPromise;
+
+      await app.db
+        .update(inboxEntries)
+        .set({ status: "delivered", ackedAt: null })
+        .where(eq(inboxEntries.id, firstFrame.entryId));
+
+      const rejectedPrefixPromise = waitForFrame(
+        ws,
+        (message) =>
+          (message as { type?: string; ref?: string }).type === "inbox:ack:rejected" &&
+          (message as { ref?: string }).ref === "ack-foreign-prefix",
+      );
+      ws.send(JSON.stringify({ type: "inbox:ack", entryId: secondFrame.entryId, ref: "ack-foreign-prefix" }));
+      await expect(rejectedPrefixPromise).resolves.toMatchObject({
+        type: "inbox:ack:rejected",
+        entryId: secondFrame.entryId,
+        ref: "ack-foreign-prefix",
+        reason: "not_found_or_not_bound",
+      });
+      expect((await loadNotifyRow(agent.inboxId, first.message.id))?.status).toBe("delivered");
+      expect((await loadNotifyRow(agent.inboxId, second.message.id))?.status).toBe("delivered");
+
+      await app.db.update(inboxEntries).set({ status: "pending" }).where(eq(inboxEntries.id, firstFrame.entryId));
+
+      const rejectedResetPrefixPromise = waitForFrame(
+        ws,
+        (message) =>
+          (message as { type?: string; ref?: string }).type === "inbox:ack:rejected" &&
+          (message as { ref?: string }).ref === "ack-reset-prefix",
+      );
+      ws.send(JSON.stringify({ type: "inbox:ack", entryId: secondFrame.entryId, ref: "ack-reset-prefix" }));
+      await expect(rejectedResetPrefixPromise).resolves.toMatchObject({
+        type: "inbox:ack:rejected",
+        entryId: secondFrame.entryId,
+        ref: "ack-reset-prefix",
+        reason: "not_found_or_not_bound",
+      });
+      expect((await loadNotifyRow(agent.inboxId, first.message.id))?.status).toBe("pending");
+      expect((await loadNotifyRow(agent.inboxId, second.message.id))?.status).toBe("delivered");
     } finally {
       ws.close();
       await new Promise<void>((resolve) => ws.once("close", () => resolve()));

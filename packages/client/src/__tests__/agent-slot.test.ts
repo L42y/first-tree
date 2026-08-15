@@ -45,6 +45,7 @@ type FakeSessionState = {
   releaseParkedResetFenceRecovery: ReturnType<typeof vi.fn<(chatId: string, ref?: string) => ResetFenceReleaseVerdict>>;
   supersedeResetGeneration: ReturnType<typeof vi.fn<(chatId: string, reason: string) => ResetFenceReleaseVerdict>>;
   reconcileReplayFencesWithServer: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  reconcileAckSettlementAfterBind: ReturnType<typeof vi.fn<() => Promise<void>>>;
   updateTransport: ReturnType<typeof vi.fn<(sdk: unknown, agentConfigCache?: unknown) => void>>;
   shutdown: ReturnType<typeof vi.fn<(reason?: string, opts?: unknown) => Promise<void>>>;
 };
@@ -283,6 +284,7 @@ function installMocks(
             () => "accepted",
           ),
           reconcileReplayFencesWithServer: vi.fn(async () => {}),
+          reconcileAckSettlementAfterBind: vi.fn(async () => {}),
           updateTransport: vi.fn(),
           shutdown: vi.fn(async () => {}),
         };
@@ -348,6 +350,10 @@ function installMocks(
 
       reconcileReplayFencesWithServer(): Promise<void> {
         return this.state.reconcileReplayFencesWithServer();
+      }
+
+      reconcileAckSettlementAfterBind(): Promise<void> {
+        return this.state.reconcileAckSettlementAfterBind();
       }
 
       updateTransport(sdk: unknown, agentConfigCache?: unknown): void {
@@ -1313,6 +1319,30 @@ describe("AgentSlot", () => {
     expect(vi.mocked(sdk.listActiveRuntimeChatIds)).not.toHaveBeenCalled();
     expect(session.updateTransport).toHaveBeenCalledWith(nextSdk, expect.anything());
     expect(session.noteBindRecoveryComplete).toHaveBeenCalled();
+    expect(session.reconcileReplayFencesWithServer).toHaveBeenCalledTimes(1);
+    expect(session.reconcileAckSettlementAfterBind).toHaveBeenCalledTimes(1);
+
+    await slot.stop();
+  });
+
+  it("reconciles ACK settlement on this agent's bind without using runtime-proof recovery", async () => {
+    const { slot, connection, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
+    await slot.start();
+    const session = state.sessions[0];
+    if (!session) throw new Error("session missing");
+    session.noteBindRecoveryComplete.mockClear();
+    session.reconcileAckSettlementAfterBind.mockClear();
+    session.reconcileReplayFencesWithServer.mockClear();
+
+    connection.emit("agent:bound", { agentId: "other-agent" });
+    expect(session.reconcileAckSettlementAfterBind).not.toHaveBeenCalled();
+    expect(session.noteBindRecoveryComplete).not.toHaveBeenCalled();
+
+    connection.emit("agent:bound", { agentId: "agent-1" });
+    await Promise.resolve();
+
+    expect(session.reconcileAckSettlementAfterBind).toHaveBeenCalledTimes(1);
+    expect(session.noteBindRecoveryComplete).not.toHaveBeenCalled();
     expect(session.reconcileReplayFencesWithServer).toHaveBeenCalledTimes(1);
 
     await slot.stop();

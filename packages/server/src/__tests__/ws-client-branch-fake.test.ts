@@ -72,7 +72,10 @@ function throwingSelectDb(error: unknown): unknown {
   };
 }
 
-function routeHarness(db: unknown): { handler: WsHandler; notifier: Record<string, unknown> } {
+function routeHarness(
+  db: unknown,
+  inbox: { maxInFlightPerAgent?: number; maxInFlightPerAgentChat?: number } = {},
+): { handler: WsHandler; notifier: Record<string, unknown> } {
   let handler: WsHandler | null = null;
   const notifier = {
     onAgentRouteChange: vi.fn(),
@@ -86,7 +89,7 @@ function routeHarness(db: unknown): { handler: WsHandler; notifier: Record<strin
   const app = {
     commandVersion: () => "test-version",
     config: {
-      inbox: { maxInFlightPerAgent: 1, maxInFlightPerAgentChat: 1 },
+      inbox: { maxInFlightPerAgent: 1, maxInFlightPerAgentChat: 1, ...inbox },
       secrets: { jwtSecret: "test-jwt-secret-key-for-vitest" },
     },
     db,
@@ -524,6 +527,59 @@ describe("Agent client WS branch fakes", () => {
 
     expect(socket.sent).toContainEqual(expect.objectContaining({ type: "inbox:deliver", entryId: 303, chatId: null }));
     expect(socket.sent).not.toContainEqual(expect.objectContaining({ type: "inbox:ack:accepted", entryId: 303 }));
+  });
+
+  it("passes the complete 9-id snapshot when the configured per-chat cap is 12", async () => {
+    mockSuccessfulBindServices();
+    const entryIds = [201, 209, 202, 208, 203, 207, 204, 206, 205];
+    vi.spyOn(inboxService, "claimBacklogForPushFair")
+      .mockResolvedValueOnce(
+        entryIds.map((id) =>
+          inboxEntry({
+            id,
+            messageId: `msg_${id}`,
+            message: messageRow({ id: `msg_${id}`, content: `cap12 ${id}` }),
+          }),
+        ),
+      )
+      .mockResolvedValue([]);
+    vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValueOnce({
+      ok: true,
+      throughEntry: inboxDbRow({ id: 209 }),
+      disposition: "acked",
+      ackedCount: 9,
+      ackedEntryIds: [...entryIds].sort((left, right) => left - right),
+    });
+    const db = queuedDb([
+      [{ id: "user_1", status: "active" }],
+      [{ userId: "user_1", retiredAt: null }],
+      [activeAgentRow()],
+      [activeAgentRow()],
+      [activeAgentRow()],
+    ]);
+    const { handler } = routeHarness(db, { maxInFlightPerAgent: 8192, maxInFlightPerAgentChat: 12 });
+    const socket = new FakeSocket();
+    await bindAgent(socket, handler, "bind-cap12");
+    await waitUntil(
+      () => socket.sent.filter((frame) => (frame as { type?: string }).type === "inbox:deliver").length === 9,
+    );
+
+    await emitMessage(socket, { type: "inbox:ack", entryId: 209, ref: "ack-cap12-tail" });
+    await waitUntil(() => vi.mocked(inboxService.ackEntryByIdForBoundAgents).mock.calls.length > 0);
+
+    expect(inboxService.ackEntryByIdForBoundAgents).toHaveBeenCalledWith(
+      db,
+      209,
+      ["inbox_1"],
+      [201, 202, 203, 204, 205, 206, 207, 208, 209],
+    );
+    expect(socket.sent).toContainEqual({
+      type: "inbox:ack:accepted",
+      entryId: 209,
+      ref: "ack-cap12-tail",
+      disposition: "acked",
+      ackedCount: 9,
+    });
   });
 
   it("treats runtime-switch claimed routes as no longer routed here without dropping the local binding", async () => {
