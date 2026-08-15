@@ -13,10 +13,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { contextTreeActiveBindingSchema } from "@first-tree/shared";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
+import { resolveAgentContextSource } from "./context-source.js";
 import type { AgentIdentity } from "./handler.js";
-import { CONTEXT_TREE_DIRNAME } from "./workspace-manifest.js";
+import { requireTrustedDirectory } from "./trusted-workspace-paths.js";
+import { atomicWriteText, workspaceHasRemoteLatch } from "./workspace-manifest.js";
 
 /**
  * Resolved Context Tree binding the runtime threads through every layer:
@@ -38,54 +39,18 @@ export type ContextTreeBinding = {
 };
 
 /**
- * Resolve the Context Tree binding for the authenticated runtime agent —
- * pure configuration resolution, no filesystem or git side effects.
- *
- * Uses the SDK's agent-scoped `/api/v1/agent/context-tree/info` route, so
- * the binding follows the agent's own organization rather than the
- * caller's default organization. The local path is fixed at
- * `<workspaceRoot>/context-tree`: the agent maintains its own clone there
- * (one clone per agent home — the shared `<dataDir>/context-tree-repos/`
- * pool is retired; existing pool checkouts are left on disk untouched for
- * the operator to clean up, and a legacy `context-tree` symlink into the
- * pool keeps working for reads until the agent replaces it per its
- * briefing protocol).
- *
- * Returns `null` when no tree is configured or the server is unreachable
- * (graceful degradation — the agent starts tree-less).
+ * Resolve a remote Context Tree binding for the authenticated runtime agent.
+ * Local and unknown sources return `null` — callers that need the discriminant
+ * should use {@link resolveAgentContextSource}.
  */
 export async function resolveAgentContextTreeBinding(
   sdk: FirstTreeHubSDK,
   workspaceRoot: string,
   log: (msg: string) => void,
 ): Promise<ContextTreeBinding | null> {
-  try {
-    const config: unknown = await sdk.getAgentContextTreeConfig();
-    if (
-      typeof config === "object" &&
-      config !== null &&
-      "repo" in config &&
-      (config.repo === null || config.repo === undefined)
-    ) {
-      log("Context Tree binding skipped: not configured on server");
-      return null;
-    }
-
-    const binding = contextTreeActiveBindingSchema.safeParse(config);
-    if (!binding.success) {
-      log("Context Tree binding skipped: server returned an invalid binding");
-      return null;
-    }
-
-    return {
-      path: join(workspaceRoot, CONTEXT_TREE_DIRNAME),
-      repoUrl: binding.data.repo,
-      branch: binding.data.branch,
-    };
-  } catch {
-    log("Context Tree binding skipped: failed to fetch config from server");
-    return null;
-  }
+  const source = await resolveAgentContextSource(sdk, workspaceRoot, log);
+  if (source.kind !== "remote") return null;
+  return { path: source.path, repoUrl: source.repoUrl, branch: source.branch };
 }
 
 /**
@@ -112,7 +77,7 @@ export const IDENTITY_JSON_REL = join(FIRST_TREE_RUNTIME_DIR, "identity.json");
  * the {@link buildAgentBriefing} producer.
  */
 export function writeAgentBriefing(workspacePath: string, content: string): void {
-  writeFileSync(join(workspacePath, "AGENTS.md"), content, "utf-8");
+  atomicWriteText(join(workspacePath, "AGENTS.md"), content);
   ensureClaudeMdSymlink(workspacePath, content);
 }
 
@@ -260,11 +225,18 @@ function mergeLegacyRuntimeDir(sourceDir: string, targetDir: string): void {
  * here does not participate in CLI workspace detection.
  */
 export function ensureWorkspaceRuntimeDir(workspacePath: string): string {
-  const runtimeDir = join(workspacePath, FIRST_TREE_RUNTIME_DIR);
-  const legacyAgentDir = join(workspacePath, LEGACY_AGENT_RUNTIME_DIR);
+  const workspaceRoot = requireTrustedDirectory(workspacePath, "Agent workspace root");
+  const runtimeDir = join(workspaceRoot, FIRST_TREE_RUNTIME_DIR);
+  const legacyAgentDir = join(workspaceRoot, LEGACY_AGENT_RUNTIME_DIR);
   const runtimeStats = lstatIfExists(runtimeDir);
 
+  if (runtimeStats?.isSymbolicLink()) {
+    throw new Error(`refusing to use symlinked Agent runtime directory: ${runtimeDir}`);
+  }
   if (runtimeStats && !runtimeStats.isDirectory()) {
+    if (!runtimeStats.isFile()) {
+      throw new Error(`refusing to replace special Agent runtime entry: ${runtimeDir}`);
+    }
     unlinkSync(runtimeDir);
   }
 
@@ -279,6 +251,7 @@ export function ensureWorkspaceRuntimeDir(workspacePath: string): string {
   }
 
   mkdirSync(runtimeDir, { recursive: true });
+  requireTrustedDirectory(runtimeDir, "Agent runtime directory");
   return runtimeDir;
 }
 
@@ -305,7 +278,10 @@ export function migrateLegacyRuntimeLayout(workspacePath: string): string {
 export type BootstrapOptions = {
   workspacePath: string;
   identity: AgentIdentity;
+  /** Stable AgentSlot `config.name`. Never inferred from displayName or path. */
+  agentName: string;
   contextTreePath: string | null;
+  contextSourceKind?: "remote" | "local" | "none";
   serverUrl: string;
 };
 
@@ -329,8 +305,17 @@ export type BootstrapOptions = {
  * `.first-tree-workspace/init-complete` sentinel is already present.
  */
 export function bootstrapWorkspace(options: BootstrapOptions): void {
-  const { workspacePath, identity, contextTreePath, serverUrl } = options;
+  const { workspacePath, identity, agentName, contextTreePath, contextSourceKind, serverUrl } = options;
+  if (typeof agentName !== "string" || agentName.length === 0) {
+    throw new Error(
+      "bootstrap requires AgentSlot config.name; refusing to infer agentName from displayName or workspace path",
+    );
+  }
   const agentDir = migrateLegacyRuntimeLayout(workspacePath);
+  const resolvedKind = contextSourceKind ?? "none";
+  if (resolvedKind === "local" && workspaceHasRemoteLatch(workspacePath)) {
+    return;
+  }
 
   // 1. Write identity.json — agent-level stable fields only. chatId /
   //    chatContext used to live here but are now injected per turn so a
@@ -338,6 +323,7 @@ export function bootstrapWorkspace(options: BootstrapOptions): void {
   //    cached participants.
   const identityData = {
     agentId: identity.agentId,
+    agentName,
     displayName: identity.displayName,
     type: identity.type,
     visibility: identity.visibility,
@@ -345,8 +331,9 @@ export function bootstrapWorkspace(options: BootstrapOptions): void {
     metadata: identity.metadata,
     serverUrl,
     contextTreePath,
+    contextSourceKind: resolvedKind,
   };
-  writeFileSync(join(agentDir, "identity.json"), JSON.stringify(identityData, null, 2), "utf-8");
+  atomicWriteText(join(agentDir, "identity.json"), JSON.stringify(identityData, null, 2));
 }
 
 /**

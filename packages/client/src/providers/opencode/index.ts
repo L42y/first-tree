@@ -23,17 +23,22 @@ import type {
   ProviderProcessSupervisor,
 } from "../../runtime/provider-support/index.js";
 import {
+  assertContextSourceCurrent,
   buildBriefingUpdateNotice,
   buildProviderRetryEvent,
   classifyProviderFailure,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createDefaultProviderProcessSupervisor,
+  isContextSourceTransitionError,
   isManagedSkillsUnsafeDiscoveryError,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
   projectManagedWorkspace,
   readSessionBriefingFingerprint,
   redactErrorPreview,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
@@ -298,11 +303,15 @@ function queuedUnsafeDiscoveryRetryDelayMs(attempt: number): number {
 
 export const createOpenCodeHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   const resolveBinary =
     (config.opencodeBinaryResolver as typeof resolveOpenCodeRuntimeBinary | undefined) ?? resolveOpenCodeRuntimeBinary;
   const processSupervisor =
@@ -410,6 +419,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   }> {
     if (!cwd) throw new Error("OpenCode workspace is not prepared");
     let runtimeConfig = activeConfig;
+    const existingPayload = activeConfig?.payload;
     if (agentConfigCache) {
       runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
     }
@@ -430,16 +440,20 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     const projected = await projectManagedWorkspace({
       sessionCtx,
       workspace: cwd,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: runtimeConfig !== null,
+      existingPayload,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
+      reresolveSource: true,
       markInitComplete: true,
     });
     activeConfig = runtimeConfig;
@@ -936,6 +950,17 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         turnGeneration,
       });
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) return false;
+      await assertContextSourceCurrent({
+        sessionCtx,
+        sourceAuthorityRoot: workspaceRoot,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+      });
+      if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) return false;
 
       const oneShotPrompt = pendingChatContextPrompt;
       const providerPrompt = oneShotPrompt ? `${oneShotPrompt}\n\n${prompt}` : prompt;
@@ -1102,6 +1127,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     try {
       return await promise;
     } catch (error) {
+      if (isContextSourceTransitionError(error)) {
+        token.retry(messages, "opencode_context_source_changed");
+        sessionCtx.failSessionForRecovery?.("opencode_context_source_changed", providerSessionId ?? undefined);
+        return false;
+      }
       if (isManagedSkillsUnsafeDiscoveryError(error)) {
         if (unsafeDiscoveryAction === "throw") throw error;
         token.retry(messages, "opencode_managed_skills_unsafe");
@@ -1166,15 +1196,17 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     const prepared = await prepareManagedSession({
       sessionCtx,
       workspaceRoot,
+      agentName,
       runtimeProvider,
       providerSkillRoots: PROVIDER_SKILL_ROOTS,
       runtimeConfig,
       payload,
       payloadResolved: runtimeConfig !== null,
       contextTree: {
-        path: contextTreePath,
-        repoUrl: contextTreeRepoUrl,
-        branch: contextTreeBranch,
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
       },
     });
     cwd = prepared.workspace;
@@ -1235,6 +1267,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         finishDrainingBatch(drained);
         return;
       } catch (error) {
+        if (isContextSourceTransitionError(error)) {
+          retryDrainingBatch(drained, "opencode_context_source_changed");
+          sessionCtx.failSessionForRecovery?.("opencode_context_source_changed", providerSessionId ?? undefined);
+          return;
+        }
         if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
         if (!sessionActive || drainingBatch !== drained) return;
 

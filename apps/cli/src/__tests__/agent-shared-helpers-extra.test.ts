@@ -105,7 +105,12 @@ describe("local agent shared helpers", () => {
   it("resolves explicit, env, and single local agents and creates scoped SDK clients", async () => {
     const { createSdk, resolveLocalAgent } = await import("../commands/_shared/local-agent.js");
 
-    expect(resolveLocalAgent("nova")).toEqual({ serverUrl: "https://hub.example", agentId: "agent-1" });
+    expect(resolveLocalAgent("nova")).toEqual({
+      serverUrl: "https://hub.example",
+      agentId: "agent-1",
+      agentName: "nova",
+      workspaceRoot: expect.stringMatching(/\/workspaces\/nova$/),
+    });
 
     process.env.FIRST_TREE_AGENT_ID = "agent-2";
     configMocks.loadAgents.mockReturnValueOnce(
@@ -114,7 +119,12 @@ describe("local agent shared helpers", () => {
         ["mira", { agentId: "agent-2" }],
       ]),
     );
-    expect(resolveLocalAgent()).toEqual({ serverUrl: "https://hub.example", agentId: "agent-2" });
+    expect(resolveLocalAgent()).toEqual({
+      serverUrl: "https://hub.example",
+      agentId: "agent-2",
+      agentName: "mira",
+      workspaceRoot: expect.stringMatching(/\/workspaces\/mira$/),
+    });
 
     createSdk("nova");
     expect(clientMocks.FirstTreeHubSDK).toHaveBeenCalledWith(
@@ -153,6 +163,37 @@ describe("local agent shared helpers", () => {
 
       writeFileSync(tokenFile, "runtime-token-3\n", "utf8");
       expect(resolveRuntimeSessionToken()).toBe("runtime-token-3");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("builds the Local Context SDK from one resolved runtime snapshot without rereading Agent config or proof", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "first-tree-runtime-snapshot-"));
+    try {
+      const tokenFile = join(dir, "runtime.token");
+      writeFileSync(tokenFile, "runtime-token-snapshot\n", "utf8");
+      process.env.FIRST_TREE_AGENT_ID = "agent-1";
+      process.env.FIRST_TREE_RUNTIME_SESSION_TOKEN_FILE = tokenFile;
+      const { createSdkFromResolvedRuntimeAgent, resolveRuntimeLocalAgent } = await import(
+        "../commands/_shared/local-agent.js"
+      );
+
+      const snapshot = resolveRuntimeLocalAgent();
+      configMocks.loadAgents.mockImplementation(() => {
+        throw new Error("Agent config changed after runtime admission");
+      });
+      writeFileSync(tokenFile, "runtime-token-replaced\n", "utf8");
+
+      expect(() => createSdkFromResolvedRuntimeAgent(snapshot)).not.toThrow();
+      expect(clientMocks.FirstTreeHubSDK).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          serverUrl: "https://hub.example",
+          agentId: "agent-1",
+        }),
+      );
+      expect(latestRuntimeSessionTokenProvider()()).toBe("runtime-token-snapshot");
+      expect(configMocks.loadAgents).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

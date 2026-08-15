@@ -138,6 +138,11 @@ let workspaceRoot: string;
 
 function makeContext(opts: {
   events: SessionEvent[];
+  contextTreeRepoUrl?: string;
+  getAgentContextTreeConfig?: () => Promise<
+    | { bindingState: "bound"; repo: string; branch: string; provider: "github" }
+    | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+  >;
   forwardResult?: (text: string) => Promise<void>;
   replaceSessionId?: (sessionId: string, reason: string) => void;
 }): SessionContext {
@@ -155,7 +160,16 @@ function makeContext(opts: {
     },
     // fetchChatContext failures are logged and tolerated — a throwing fake sdk
     // exercises that path without network.
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "https://first-tree.test",
+      sendMessage,
+      getAgentContextTreeConfig:
+        opts.getAgentContextTreeConfig ??
+        (async () =>
+          opts.contextTreeRepoUrl
+            ? { bindingState: "bound", repo: opts.contextTreeRepoUrl, branch: "main", provider: "github" as const }
+            : { bindingState: "invalid", repo: null, branch: null, provider: null }),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-cursor",
     log: () => {},
     recordProviderActivity: () => {},
@@ -171,6 +185,7 @@ function makeContext(opts: {
 function makeHandler(spawnFn: unknown, extraConfig: Record<string, unknown> = {}) {
   return createCursorHandler({
     workspaceRoot,
+    agentName: "cursor-test-agent",
     runtimeProvider: "cursor",
     cursorSpawnFn: spawnFn,
     cursorMcpEnableFn: async () => {},
@@ -412,7 +427,11 @@ describe("cursor handler — per-turn CLI transport", () => {
       contextTreeBranch: "main",
     });
 
-    await handler.start(makeMessage("m1", "read the node"), makeContext({ events }), makeToken());
+    await handler.start(
+      makeMessage("m1", "read the node"),
+      makeContext({ events, contextTreeRepoUrl: "https://github.com/acme/tree.git" }),
+      makeToken(),
+    );
 
     const completed = events.find(
       (e) => e.kind === "tool_call" && e.payload.status === "ok" && e.payload.name === "shell",
@@ -453,7 +472,11 @@ describe("cursor handler — per-turn CLI transport", () => {
       contextTreeBranch: "main",
     });
 
-    await handler.start(makeMessage("m1", "edit the node"), makeContext({ events }), makeToken());
+    await handler.start(
+      makeMessage("m1", "edit the node"),
+      makeContext({ events, contextTreeRepoUrl: "https://github.com/acme/tree.git" }),
+      makeToken(),
+    );
 
     const completed = events.find(
       (e) => e.kind === "tool_call" && e.payload.name === "edit" && e.payload.status === "ok",
@@ -548,6 +571,163 @@ describe("cursor handler — per-turn CLI transport", () => {
     expect(token.completed).toMatchObject([{ status: "error", completion: "consumed" }]);
   });
 
+  it("does not spawn a retry after the authoritative Context source changes during backoff", async () => {
+    const events: SessionEvent[] = [];
+    const failSessionForRecovery = vi.fn();
+    const { spawnFn, calls } = makeFakeSpawn([
+      (child) => {
+        child.stdout.emit(
+          "data",
+          line({
+            type: "result",
+            subtype: "error",
+            is_error: true,
+            result: "429 Too Many Requests: provider overloaded, retry later",
+            session_id: "s-retry",
+          }),
+        );
+        child.stdout.emit("end");
+        child.emit("close", 1, null);
+      },
+      successScript({ sessionId: "must-not-spawn", text: "stale" }),
+    ]);
+    const handler = makeHandler(spawnFn);
+    const token = makeToken();
+    const ctx = makeContext({
+      events,
+      getAgentContextTreeConfig: async () => {
+        return calls.length === 0
+          ? { bindingState: "invalid", repo: null, branch: null, provider: null }
+          : {
+              bindingState: "bound",
+              repo: "https://github.com/acme/new-tree.git",
+              branch: "main",
+              provider: "github",
+            };
+      },
+    });
+    ctx.failSessionForRecovery = failSessionForRecovery;
+
+    await handler.start(makeMessage("m-source-flip", "hi"), ctx, token);
+
+    expect(calls).toHaveLength(1);
+    expect(token.retried).toContain("cursor_context_source_changed");
+    expect(failSessionForRecovery).toHaveBeenCalledWith("cursor_context_source_changed", "s-retry");
+  });
+
+  it("retries the first active injected turn without spawning after its captured remote source flips", async () => {
+    const events: SessionEvent[] = [];
+    const failSessionForRecovery = vi.fn();
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-source-a", text: "ready" })]);
+    const handler = makeHandler(spawnFn, {
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+    });
+    const ctx = makeContext({
+      events,
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+    ctx.failSessionForRecovery = failSessionForRecovery;
+
+    await handler.start(makeMessage("m-source-a", "start"), ctx, makeToken());
+    expect(calls).toHaveLength(1);
+
+    authoritativeRepo = repoB;
+    const injectedToken = makeToken();
+    expect(handler.inject(makeMessage("m-source-b", "continue"), injectedToken)).toMatchObject({
+      kind: "owned",
+      mode: "queued",
+    });
+    await vi.waitFor(() => {
+      expect(injectedToken.retried).toContain("cursor_context_source_changed");
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(injectedToken.completed).toEqual([]);
+    expect(failSessionForRecovery).toHaveBeenCalledWith("cursor_context_source_changed", "s-source-a");
+  });
+
+  it("rechecks source after a paused MCP projection before the next provider spawn", async () => {
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    const emptyPayload: AgentRuntimeConfigPayload = {
+      kind: "cursor",
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const managedPayload: AgentRuntimeConfigPayload = {
+      ...emptyPayload,
+      mcpServers: [{ name: "docs", transport: "stdio", command: "docs-server" }],
+    };
+    let payload = emptyPayload;
+    let releaseSetup: () => void = () => {};
+    const setupMayFinish = new Promise<void>((resolvePromise) => {
+      releaseSetup = resolvePromise;
+    });
+    let markSetupStarted: () => void = () => {};
+    const setupStarted = new Promise<void>((resolvePromise) => {
+      markSetupStarted = resolvePromise;
+    });
+    const failSessionForRecovery = vi.fn();
+    const { spawnFn, calls } = makeFakeSpawn([successScript({ sessionId: "s-before-setup", text: "ready" })]);
+    const handler = makeHandler(spawnFn, {
+      agentConfigCache: {
+        refresh: async () => ({ payload }),
+        get: () => ({ payload }),
+      },
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+      cursorMcpEnableFn: async () => {
+        markSetupStarted();
+        await setupMayFinish;
+      },
+    });
+    const ctx = makeContext({
+      events: [],
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+    ctx.failSessionForRecovery = failSessionForRecovery;
+
+    await handler.start(makeMessage("m-setup-a", "start"), ctx, makeToken());
+    expect(calls).toHaveLength(1);
+
+    payload = managedPayload;
+    const injectedToken = makeToken();
+    handler.inject(makeMessage("m-setup-b", "continue"), injectedToken);
+    await setupStarted;
+    authoritativeRepo = repoB;
+    releaseSetup();
+    await vi.waitFor(() => {
+      expect(injectedToken.retried).toContain("cursor_context_source_changed");
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(injectedToken.completed).toEqual([]);
+    expect(failSessionForRecovery).toHaveBeenCalledWith("cursor_context_source_changed", "s-before-setup");
+  });
+
   it("fails closed for landing campaign trial agents (app-server-only contract)", async () => {
     const { spawnFn } = makeFakeSpawn([]);
     const handler = makeHandler(spawnFn);
@@ -614,7 +794,11 @@ describe("cursor handler — per-turn CLI transport", () => {
       contextTreeBranch: "main",
     });
 
-    await handler.start(makeMessage("m1", "read the node"), makeContext({ events }), makeToken());
+    await handler.start(
+      makeMessage("m1", "read the node"),
+      makeContext({ events, contextTreeRepoUrl: "https://github.com/acme/tree.git" }),
+      makeToken(),
+    );
 
     const completed = events.find(
       (e) => e.kind === "tool_call" && e.payload.name === "shell" && e.payload.status === "ok",
@@ -713,7 +897,7 @@ describe("cursor handler — per-turn CLI transport", () => {
     if (process.platform !== "win32") {
       expect(statSync(configPath).mode & 0o777).toBe(0o600);
     }
-    expect(readdirSync(join(workspaceRoot, ".cursor"))).toEqual(["mcp.json"]);
+    expect(readdirSync(join(workspaceRoot, ".cursor")).sort()).toEqual(["mcp.json", "skills"]);
     expect(
       events.some((e) => e.kind === "error" && e.payload.source === "runtime" && /MCP server/.test(e.payload.message)),
     ).toBe(false);
@@ -811,6 +995,7 @@ describe("cursor handler — per-turn CLI transport", () => {
       const token = makeToken();
 
       const started = handler.start(makeMessage("m-timeout", "hi"), makeContext({ events }), token);
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBeGreaterThan(0));
       await vi.runAllTimersAsync();
       await started;
 

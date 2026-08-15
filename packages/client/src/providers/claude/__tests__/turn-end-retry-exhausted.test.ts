@@ -146,6 +146,7 @@ describe("claude-code handler — retry-exhausted surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -263,6 +264,7 @@ describe("claude-code handler — retry-exhausted surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const plumbing = mockCtxPlumbing({ sendMessage }, "chat-retry");
@@ -361,6 +363,7 @@ describe("claude-code handler — retry-exhausted surfacing", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {

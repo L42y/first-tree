@@ -85,7 +85,7 @@ export function resolveContextTreeRelativePath(
   absolutePath: string,
   attribution: ContextTreeAttribution,
 ): string | null {
-  if (attribution.contextTreePath) {
+  if (attribution.contextTreePath && attribution.contextTreeRepoUrl) {
     const contained = contextTreeRelativePathOf(absolutePath, attribution.contextTreePath);
     if (contained !== null) return contained;
   }

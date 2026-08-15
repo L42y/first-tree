@@ -11,6 +11,13 @@ export const CORE_SKILL_NAMES = FIRST_TREE_CORE_SKILL_NAMES;
 
 export type CoreSkillName = (typeof CORE_SKILL_NAMES)[number];
 
+export const LOCAL_CONTEXT_SKILL_VARIANT = "local-context";
+export const LOCAL_CONTEXT_VARIANT_SKILL_NAMES = ["first-tree-read", "first-tree-write"] as const;
+
+export function localContextVariantSourcePath(bundledSkillsRoot: string, name: string): string {
+  return join(bundledSkillsRoot, ".variants", LOCAL_CONTEXT_SKILL_VARIANT, name);
+}
+
 /**
  * Walk up from the running module to find the @first-tree/client package root,
  * then return its bundled `skills/` directory.

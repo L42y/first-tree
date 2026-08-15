@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,7 +34,12 @@ vi.mock("../runtime/workspace.js", async () => {
   return {
     ...actual,
     acquireAgentHome: (root: string) => acquireAgentHome(root),
-    markWorkspaceInitComplete: (workspace: string) => markWorkspaceInitComplete(workspace),
+    markWorkspaceInitComplete: (workspace: string) => {
+      markWorkspaceInitComplete(workspace);
+      const sentinel = join(workspace, INIT_COMPLETE_SENTINEL_REL);
+      mkdirSync(join(workspace, ".first-tree-workspace"), { recursive: true });
+      writeFileSync(sentinel, JSON.stringify({ schemaVersion: 1, completedAt: new Date().toISOString() }));
+    },
   };
 });
 
@@ -49,16 +54,41 @@ vi.mock("../runtime/source-repos.js", () => ({
 }));
 
 vi.mock("../runtime/managed-skills.js", () => ({
-  reconcileManagedSkillsForConfig: (
+  allowedTargetRootsFromProjection: (roots: Record<string, string>) => new Set(Object.values(roots)),
+  providerSkillRoot: (provider: keyof typeof TEST_PROVIDER_SKILL_ROOTS, roots: typeof TEST_PROVIDER_SKILL_ROOTS) =>
+    roots[provider],
+  reconcileManagedSkillsForConfig: async (
     workspace: unknown,
     provider: unknown,
     providerSkillRoots: unknown,
     runtimeConfig: unknown,
     log: unknown,
     resolver: unknown,
-  ) => reconcileManagedSkillsForConfig(workspace, provider, providerSkillRoots, runtimeConfig, log, resolver),
+  ) => {
+    const result = await reconcileManagedSkillsForConfig(
+      workspace,
+      provider,
+      providerSkillRoots,
+      runtimeConfig,
+      log,
+      resolver,
+    );
+    const root = join(
+      workspace as string,
+      (providerSkillRoots as Record<string, string>)[provider as string] as string,
+    );
+    for (const name of ["first-tree-read", "first-tree-write"]) {
+      const skillDir = join(root, name);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, "SKILL.md"), `# ${name}\n`);
+      writeFileSync(join(skillDir, ".first-tree-managed.json"), JSON.stringify({ revision: "test-public:1" }));
+    }
+    return result;
+  },
   reconcileManagedSkills: vi.fn(),
+  verifyManagedSkillsProjectionForAdmission: vi.fn(async () => ({ resourceConfigVersion: 0, teamSkills: [] })),
   isManagedSkillsUnsafeDiscoveryError: () => false,
+  ManagedSkillsUnsafeDiscoveryError: class ManagedSkillsUnsafeDiscoveryError extends Error {},
 }));
 
 vi.mock("../runtime/team-skill-bundle-resolver.js", () => ({
@@ -70,7 +100,47 @@ vi.mock("../runtime/agent-briefing.js", () => ({
 }));
 
 vi.mock("../runtime/agent-bootstrap.js", () => ({
-  ensureAgentBootstrap: (params: unknown) => ensureAgentBootstrap(params),
+  ensureAgentBootstrap: (params: {
+    workspace: string;
+    sessionCtx: SessionContext;
+    agentName: string;
+    contextTreePath: string | null;
+    contextSourceKind: "remote" | "local" | "none";
+    briefing: string;
+    currentSourceRepoNames: ReadonlySet<string> | null;
+  }) => {
+    ensureAgentBootstrap(params);
+    const runtimeDir = join(params.workspace, ".first-tree-workspace");
+    mkdirSync(runtimeDir, { recursive: true });
+    writeFileSync(
+      join(runtimeDir, "identity.json"),
+      JSON.stringify({
+        agentId: params.sessionCtx.agent.agentId,
+        agentName: params.agentName,
+        displayName: params.sessionCtx.agent.displayName,
+        type: params.sessionCtx.agent.type,
+        visibility: params.sessionCtx.agent.visibility,
+        delegateMention: params.sessionCtx.agent.delegateMention,
+        metadata: params.sessionCtx.agent.metadata,
+        serverUrl: params.sessionCtx.sdk.serverUrl,
+        contextTreePath: params.contextTreePath,
+        contextSourceKind: params.contextSourceKind,
+      }),
+    );
+    writeFileSync(join(params.workspace, "AGENTS.md"), params.briefing);
+    const claudePath = join(params.workspace, "CLAUDE.md");
+    rmSync(claudePath, { force: true });
+    if (process.platform === "win32") writeFileSync(claudePath, params.briefing);
+    else symlinkSync("AGENTS.md", claudePath);
+    if (params.contextSourceKind !== "none" && params.currentSourceRepoNames !== null) {
+      const stateDir = join(params.workspace, ".first-tree");
+      mkdirSync(stateDir, { recursive: true });
+      writeFileSync(
+        join(stateDir, "workspace.json"),
+        JSON.stringify({ tree: params.contextSourceKind === "local" ? "local-context" : "context-tree" }),
+      );
+    }
+  },
 }));
 
 describe("prepareManagedSession", () => {
@@ -189,9 +259,19 @@ describe("prepareManagedSession", () => {
       updatedBy: "test",
     };
 
+    const ctx = sessionCtx();
+    (ctx.sdk as unknown as { getAgentContextTreeConfig: ReturnType<typeof vi.fn> }).getAgentContextTreeConfig = vi.fn(
+      async () => ({
+        bindingState: "bound",
+        repo: "https://example.test/tree",
+        branch: "main",
+        provider: null,
+      }),
+    );
     const result = await prepareManagedSession({
-      sessionCtx: sessionCtx(),
+      sessionCtx: ctx,
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: runtimeConfig as never,
@@ -271,6 +351,7 @@ describe("prepareManagedSession", () => {
     const result = await prepareManagedSession({
       sessionCtx: sessionCtx(logs),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -312,6 +393,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "cursor",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -345,6 +427,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "grok",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -372,6 +455,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -397,6 +481,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -429,6 +514,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -447,11 +533,12 @@ describe("prepareManagedSession", () => {
       beforeBriefing,
     });
 
-    expect(atProjectionEntry).toHaveBeenCalledTimes(1);
+    expect(atProjectionEntry).toHaveBeenCalledTimes(2);
     expect(beforeBriefing).toHaveBeenCalledTimes(1);
     expect(callOrder).toEqual([
       "acquire",
       "chatContext",
+      "atProjectionEntry",
       "atProjectionEntry",
       "sourceRepos",
       "skills",
@@ -476,6 +563,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "cursor",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -510,6 +598,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "cursor",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -534,13 +623,12 @@ describe("prepareManagedSession", () => {
     expect(reconcileManagedSkillsForConfig).not.toHaveBeenCalled();
   });
 
-  it("enters reconcile in the same synchronous turn as atProjectionEntry", async () => {
+  it("enters reconcile in the same synchronous turn as the in-lock atProjectionEntry", async () => {
     const prepareManagedSession = await loadPrepare();
     let microtaskRan = false;
+    let projectionEntryCount = 0;
 
     reconcileManagedSkillsForConfig.mockImplementation(async () => {
-      // Must observe the flag still false — an `await` after the checkpoint
-      // (old beforeProjection gap) would let the queued microtask run first.
       expect(microtaskRan).toBe(false);
       callOrder.push("skills");
       return {
@@ -567,6 +655,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -582,13 +671,17 @@ describe("prepareManagedSession", () => {
       payloadResolved: false,
       contextTree: { path: null, repoUrl: null, branch: null },
       atProjectionEntry: (): undefined => {
-        queueMicrotask(() => {
-          microtaskRan = true;
-        });
+        projectionEntryCount += 1;
+        if (projectionEntryCount === 2) {
+          queueMicrotask(() => {
+            microtaskRan = true;
+          });
+        }
         return undefined;
       },
     });
 
+    expect(projectionEntryCount).toBe(2);
     expect(reconcileManagedSkillsForConfig).toHaveBeenCalled();
     await Promise.resolve();
     expect(microtaskRan).toBe(true);
@@ -620,6 +713,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -654,6 +748,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -696,6 +791,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "cursor",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -734,6 +830,7 @@ describe("prepareManagedSession", () => {
     await prepareManagedSession({
       sessionCtx: sessionCtx(),
       workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "cursor",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -772,6 +869,7 @@ describe("prepareManagedSession", () => {
       prepareManagedSession({
         sessionCtx: sessionCtx(),
         workspaceRoot,
+        agentName: "prep-agent",
         runtimeProvider: "cursor",
         providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
         runtimeConfig: null,
@@ -869,6 +967,7 @@ describe("projectManagedWorkspace", () => {
     await projectManagedWorkspace({
       sessionCtx: sessionCtx(),
       workspace: workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "pi",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,
@@ -894,6 +993,7 @@ describe("projectManagedWorkspace", () => {
     await projectManagedWorkspace({
       sessionCtx: sessionCtx(),
       workspace: workspaceRoot,
+      agentName: "prep-agent",
       runtimeProvider: "opencode",
       providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
       runtimeConfig: null,

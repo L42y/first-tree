@@ -126,6 +126,7 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
 
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "test-agent",
       runtimeProvider: "pi",
       piBinaryResolver: () => ({ ok: true as const, binary: "/usr/bin/pi", version: "0.0.0" }),
       providerProcessSupervisor: {
@@ -189,6 +190,7 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
 
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "test-agent",
       runtimeProvider: "pi",
       piBinaryResolver: () => ({ ok: true as const, binary: "/usr/bin/pi", version: "0.0.0" }),
       providerProcessSupervisor: {

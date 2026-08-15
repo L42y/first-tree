@@ -176,6 +176,7 @@ describe("claude-code handler — transient stream-error retry replays user mess
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -275,6 +276,83 @@ describe("claude-code handler — transient stream-error retry replays user mess
     }
   });
 
+  it("does not respawn the Claude query when Context authority changes during auto-resume backoff", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    resetSdkMockState();
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const logs: string[] = [];
+    const failSessionForRecovery = vi.fn();
+    let bindingReads = 0;
+    const cache = buildCache();
+    await cache.refresh(AGENT_ID);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache: cache,
+    });
+    const ctx: SessionContext = {
+      agent: {
+        agentId: AGENT_ID,
+        inboxId: "inbox-test",
+        displayName: "test",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: {
+        serverUrl: "http://test",
+        sendMessage,
+        getAgentContextTreeConfig: async () => {
+          bindingReads += 1;
+          return bindingReads <= 2
+            ? { bindingState: "invalid" as const, repo: null, branch: null, provider: null }
+            : {
+                bindingState: "bound" as const,
+                repo: "https://github.com/acme/new-tree.git",
+                branch: "main",
+                provider: "github" as const,
+              };
+        },
+      } as unknown as SessionContext["sdk"],
+      chatId: "chat-stream-source-flip",
+      log: (message) => logs.push(message),
+      recordProviderActivity: () => {},
+      emitEvent: () => {},
+      ...mockCtxPlumbing({ sendMessage }, "chat-stream-source-flip"),
+      failSessionForRecovery,
+    };
+
+    try {
+      await handler.start(
+        {
+          id: "m-source-flip",
+          chatId: ctx.chatId,
+          senderId: "user-1",
+          format: "text",
+          content: ORIGINAL_PROMPT,
+          metadata: null,
+        },
+        ctx,
+        deliveryTokenFromSessionContext(ctx),
+      );
+      await waitForCondition(
+        () => logs.some((line) => line.includes("Attempting auto-resume")),
+        "scheduled source-flip retry",
+      );
+      expect(attemptIdx).toBe(1);
+      await vi.advanceTimersByTimeAsync(500);
+      await waitForCondition(() => failSessionForRecovery.mock.calls.length === 1, "source transition recovery");
+
+      expect(attemptIdx).toBe(1);
+      expect(failSessionForRecovery).toHaveBeenCalledWith("claude_context_source_changed", expect.any(String));
+    } finally {
+      await handler.suspend();
+      vi.useRealTimers();
+    }
+  });
+
   it("replays every provider-entered input in a coalesced transient retry", async () => {
     resetSdkMockState();
     requiredInputsBeforeResultByAttempt.set(1, 2);
@@ -292,6 +370,7 @@ describe("claude-code handler — transient stream-error retry replays user mess
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {
@@ -393,6 +472,7 @@ describe("claude-code handler — transient stream-error retry replays user mess
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const plumbing = mockCtxPlumbing({ sendMessage }, "chat-stream-retry");

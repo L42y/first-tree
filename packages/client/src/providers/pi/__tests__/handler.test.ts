@@ -10,7 +10,6 @@ import type { AgentConfigCache } from "../../../runtime/agent-config-cache.js";
 import { clearGitRepoIdentityCacheForTests } from "../../../runtime/git-repo-identity.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../../../runtime/handler.js";
 import { noopDeliveryToken } from "../../../runtime/handler.js";
-import * as managedSkills from "../../../runtime/managed-skills.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
 import {
@@ -470,7 +469,14 @@ function makeToken(): DeliveryToken & {
   };
 }
 
-function makeContext(events: SessionEvent[], logs: string[] = []): SessionContext {
+function makeContext(
+  events: SessionEvent[],
+  logs: string[] = [],
+  getAgentContextTreeConfig?: () => Promise<
+    | { bindingState: "bound"; repo: string; branch: string; provider: "github" }
+    | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+  >,
+): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   return {
     agent: {
@@ -482,7 +488,21 @@ function makeContext(events: SessionEvent[], logs: string[] = []): SessionContex
       delegateMention: null,
       metadata: {},
     },
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "https://first-tree.test",
+      sendMessage,
+      getAgentContextTreeConfig:
+        getAgentContextTreeConfig ??
+        (async () =>
+          process.env.FT_PI_TREE_PATH
+            ? {
+                bindingState: "bound",
+                repo: "https://github.com/acme/first-tree-context.git",
+                branch: "main",
+                provider: "github" as const,
+              }
+            : { bindingState: "invalid", repo: null, branch: null, provider: null }),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-pi",
     log: (line) => void logs.push(line),
     recordProviderActivity: () => {},
@@ -681,6 +701,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -734,6 +755,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -781,6 +803,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: gatedCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -817,6 +840,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(
         runtimeConfig({
@@ -839,6 +863,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ mcp: true })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -856,6 +881,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -879,6 +905,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -917,6 +944,7 @@ describe("Pi handler", () => {
     const logs: string[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -942,6 +970,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -968,6 +997,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -996,6 +1026,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1017,6 +1048,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1043,6 +1075,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1074,6 +1107,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ model: "openai-codex/gpt-test:high" })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1090,6 +1124,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ model: "openai-codex/gpt-test:high" })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1106,6 +1141,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ model: "ollama/llama3.2:latest" })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1121,6 +1157,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig({ model: "openai-codex/gpt-test" })),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1130,39 +1167,15 @@ describe("Pi handler", () => {
   });
 
   it("rewrites AGENTS.md and restarts RPC when prompt/skills digest change between turns", async () => {
-    let skillRevision = 1;
-    vi.spyOn(managedSkills, "reconcileManagedSkillsForConfig").mockImplementation(async () => ({
-      ok: true,
-      resourceConfigVersion: skillRevision,
-      installed: [],
-      skipped: [],
-      removed: [],
-      teamSkills: [
-        {
-          key: "resource:demo",
-          name: "demo",
-          description: "demo skill",
-          target: "demo",
-          revision: String(skillRevision),
-          installedDigest: `sha256:${"ab".repeat(32)}` as `sha256:${string}`,
-        },
-      ],
-      failures: [],
-      staleTeamSnapshot: false,
-    }));
-
-    const skillDir = join(workspaceRoot, ".agents", "skills", "demo");
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "marker.txt"), "skill-v1");
-
     const agentCache = cache(runtimeConfig({ prompt: { append: "briefing-v1" } }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
-      providerProcessSupervisor: createSyntheticSupervisor(specs, { skillMarkerDir: skillDir }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
     });
     const sessionCtx = makeContext([]);
     await handler.start(message("m1", "first"), sessionCtx, makeToken());
@@ -1170,9 +1183,7 @@ describe("Pi handler", () => {
     const rpcSpawnsAfterFirst = specs.filter((spec) => spec.args.includes("--mode")).length;
     expect(rpcSpawnsAfterFirst).toBe(1);
 
-    skillRevision = 2;
-    writeFileSync(join(skillDir, "marker.txt"), "skill-v2");
-    agentCache.set(runtimeConfig({ prompt: { append: "briefing-v2" } }));
+    agentCache.set({ ...runtimeConfig({ prompt: { append: "briefing-v2" } }), version: 2 });
     await handler.resume(
       message("m2", "second"),
       freshStartPiSessionId("agent-pi", "chat-pi", "m1"),
@@ -1190,6 +1201,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1217,6 +1229,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1233,6 +1246,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1251,6 +1265,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1279,6 +1294,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1306,6 +1322,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1355,6 +1372,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1387,6 +1405,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1409,6 +1428,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1420,32 +1440,12 @@ describe("Pi handler", () => {
     await handler.shutdown();
   });
 
-  it("hot-path inject advances each new briefing once without resume reset", async () => {
-    let skillRevision = 1;
-    vi.spyOn(managedSkills, "reconcileManagedSkillsForConfig").mockImplementation(async () => ({
-      ok: true,
-      resourceConfigVersion: skillRevision,
-      installed: [],
-      skipped: [],
-      removed: [],
-      teamSkills: [
-        {
-          key: "resource:demo",
-          name: "demo",
-          description: "demo skill",
-          target: "demo",
-          revision: String(skillRevision),
-          installedDigest: `sha256:${"cd".repeat(32)}` as `sha256:${string}`,
-        },
-      ],
-      failures: [],
-      staleTeamSnapshot: false,
-    }));
-
+  it("hot-path inject keeps the captured briefing and live RPC until a real restart", async () => {
     const agentCache = cache(runtimeConfig({ prompt: { append: "briefing-hot-1" } }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1458,33 +1458,207 @@ describe("Pi handler", () => {
     expect(fp1).toBeTypeOf("string");
     expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).toContain("briefing-hot-1");
 
-    skillRevision = 2;
-    agentCache.set(runtimeConfig({ prompt: { append: "briefing-hot-2" } }));
+    agentCache.set({ ...runtimeConfig({ prompt: { append: "briefing-hot-2" } }), version: 2 });
     const token2 = makeToken();
     expect(handler.inject(message("m2", "second"), token2)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token2.completed.length).toBe(1));
     expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
-    expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).toContain("briefing-hot-2");
+    expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).toContain("briefing-hot-1");
+    expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).not.toContain("briefing-hot-2");
     const fp2 = readSessionBriefingFingerprint(workspaceRoot, expectedId);
     expect(fp2).toBeTypeOf("string");
-    expect(fp2).not.toBe(fp1);
+    expect(fp2).toBe(fp1);
     const secondPrompt = readFileSync(lastPromptFile, "utf8");
-    expect(secondPrompt).toContain("re-read your instructions");
+    expect(secondPrompt).not.toContain("re-read your instructions");
 
     const token3 = makeToken();
     expect(handler.inject(message("m3", "third"), token3)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token3.completed.length).toBe(1));
     const thirdPrompt = readFileSync(lastPromptFile, "utf8");
     expect(thirdPrompt).not.toContain("re-read your instructions");
-    expect(specs.filter((spec) => spec.args.includes("--mode")).length).toBe(2);
+    expect(specs.filter((spec) => spec.args.includes("--mode")).length).toBe(1);
     await handler.shutdown();
   });
 
-  it("emits durable terminal notice for live MCP rejection without writing a prompt", async () => {
+  it("keeps a healthy live RPC on its captured source without rewriting after authority flips", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    let current:
+      | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+      | { bindingState: "bound"; repo: string; branch: string; provider: "github" } = {
+      bindingState: "invalid",
+      repo: null,
+      branch: null,
+      provider: null,
+    };
+    const getBinding = vi.fn(async () => current);
+    const handler = createPiHandler({
+      workspaceRoot,
+      agentName: "pi-test-agent",
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig({ prompt: { append: "captured-source" } })),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const ctx = makeContext([], [], getBinding);
+    await handler.start(message("m-source-a", "first"), ctx, makeToken());
+    const briefingBefore = readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8");
+    const bindingReadsBeforeInject = getBinding.mock.calls.length;
+    current = {
+      bindingState: "bound",
+      repo: "https://github.com/acme/new-tree.git",
+      branch: "main",
+      provider: "github",
+    };
+
+    const token = makeToken();
+    handler.inject(message("m-source-b", "still active"), token);
+    await vi.waitFor(() => expect(token.completed.length).toBe(1));
+
+    expect(getBinding).toHaveBeenCalledTimes(bindingReadsBeforeInject);
+    expect(readFileSync(join(workspaceRoot, "AGENTS.md"), "utf8")).toBe(briefingBefore);
+    expect(specs.filter((spec) => spec.args.includes("--mode"))).toHaveLength(1);
+    await handler.shutdown();
+  });
+
+  it("does not respawn a closed RPC after Context authority changes", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const baseSupervisor = createSyntheticSupervisor(specs);
+    let rpcChild: ReturnType<ProviderProcessSupervisor["spawn"]>["child"] | null = null;
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        const process = baseSupervisor.spawn(spec);
+        if (spec.args.includes("--mode")) rpcChild = process.child;
+        return process;
+      },
+    };
+    let current:
+      | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+      | { bindingState: "bound"; repo: string; branch: string; provider: "github" } = {
+      bindingState: "invalid",
+      repo: null,
+      branch: null,
+      provider: null,
+    };
+    const ctx = makeContext([], [], async () => current);
+    const failSessionForRecovery = vi.fn();
+    ctx.failSessionForRecovery = failSessionForRecovery;
+    const handler = createPiHandler({
+      workspaceRoot,
+      agentName: "pi-test-agent",
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: supervisor,
+    });
+    await handler.start(message("m-before-close", "first"), ctx, makeToken());
+    const child = rpcChild as ReturnType<ProviderProcessSupervisor["spawn"]>["child"] | null;
+    if (!child) throw new Error("expected a live Pi RPC child");
+    const childClosed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    child.kill("SIGTERM");
+    await childClosed;
+    let releaseFormatting: () => void = () => {};
+    const formattingMayFinish = new Promise<void>((resolvePromise) => {
+      releaseFormatting = resolvePromise;
+    });
+    let markFormattingStarted: () => void = () => {};
+    const formattingStarted = new Promise<void>((resolvePromise) => {
+      markFormattingStarted = resolvePromise;
+    });
+    ctx.formatInboundContent = async (entry) => {
+      markFormattingStarted();
+      await formattingMayFinish;
+      return typeof entry.content === "string" ? entry.content : JSON.stringify(entry.content);
+    };
+
+    const token = makeToken();
+    handler.inject(message("m-after-close", "must recover"), token);
+    await formattingStarted;
+    current = {
+      bindingState: "bound",
+      repo: "https://github.com/acme/new-tree.git",
+      branch: "main",
+      provider: "github",
+    };
+    releaseFormatting();
+    await vi.waitFor(() => expect(token.retried).toContain("pi_context_source_changed"));
+
+    expect(specs.filter((spec) => spec.args.includes("--mode"))).toHaveLength(1);
+    expect(failSessionForRecovery).toHaveBeenCalledWith("pi_context_source_changed", expect.any(String));
+    await handler.shutdown();
+  });
+
+  it("rechecks Context authority after a paused initial version gate before spawning RPC", async () => {
+    const specs: ProviderProcessSpec[] = [];
+    const baseSupervisor = createSyntheticSupervisor(specs);
+    const releaseVersionFile = join(workspaceRoot, "release-version-gate");
+    const pauseVersionGate = true;
+    let markVersionStarted: () => void = () => {};
+    const versionStarted = new Promise<void>((resolvePromise) => {
+      markVersionStarted = resolvePromise;
+    });
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        let supervised: ReturnType<ProviderProcessSupervisor["spawn"]>;
+        if (pauseVersionGate && spec.args[0] === "--version") {
+          specs.push(spec);
+          const child = spawn(
+            process.execPath,
+            [
+              "-e",
+              `const fs=require("node:fs");const releasePath=process.argv[1];const timer=setInterval(()=>{if(fs.existsSync(releasePath)){clearInterval(timer);process.stdout.write("pi 0.80.5\\n");}},5);`,
+              releaseVersionFile,
+            ],
+            { ...spec.options, detached: false },
+          );
+          supervised = { child, exited: new Promise<void>((resolve) => child.on("close", () => resolve())) };
+          markVersionStarted();
+        } else {
+          supervised = baseSupervisor.spawn(spec);
+        }
+        return supervised;
+      },
+    };
+    let current:
+      | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+      | { bindingState: "bound"; repo: string; branch: string; provider: "github" } = {
+      bindingState: "invalid",
+      repo: null,
+      branch: null,
+      provider: null,
+    };
+    const ctx = makeContext([], [], async () => current);
+    const handler = createPiHandler({
+      workspaceRoot,
+      agentName: "pi-test-agent",
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: supervisor,
+    });
+    const token = makeToken();
+    const startPromise = handler.start(message("m-version-a", "first"), ctx, token);
+    await versionStarted;
+    current = {
+      bindingState: "bound",
+      repo: "https://github.com/acme/new-tree.git",
+      branch: "main",
+      provider: "github",
+    };
+    writeFileSync(releaseVersionFile, "release");
+    await expect(startPromise).rejects.toMatchObject({ name: "ContextSourceTransitionError" });
+
+    expect(specs.filter((spec) => spec.args.includes("--mode"))).toHaveLength(0);
+    expect(token.retried).toEqual([]);
+    expect(token.completed).toEqual([]);
+    await handler.shutdown();
+  });
+
+  it("defers a changed MCP config while the captured RPC remains healthy", async () => {
     const agentCache = cache(runtimeConfig());
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1498,25 +1672,19 @@ describe("Pi handler", () => {
     const token2 = makeToken();
     expect(handler.inject(message("m2", "mcp-now"), token2)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token2.completed.length).toBe(1));
-    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart + 1);
     expect(token2.retried).toEqual([]);
-    expect(token2.completed).toEqual([expect.objectContaining({ status: "error", completion: "consumed" })]);
-    expect(
-      events.some(
-        (event) =>
-          event.kind === "error" &&
-          event.payload?.source === "runtime" &&
-          String(event.payload?.message).includes("provider_failure_terminal"),
-      ),
-    ).toBe(true);
+    expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(events.some((event) => event.kind === "error" && event.payload?.source === "runtime")).toBe(false);
     await handler.shutdown();
   });
 
-  it("consumes active wrong get_state session id with protocol terminal notice", async () => {
+  it("does not respawn a healthy RPC for an inactive env config change", async () => {
     const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1531,31 +1699,19 @@ describe("Pi handler", () => {
     const token2 = makeToken();
     expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token2.completed.length).toBe(1));
-    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart + 1);
     expect(token2.retried).toEqual([]);
-    expect(token2.completed).toEqual([
-      expect.objectContaining({
-        status: "error",
-        completion: "consumed",
-        reason: "pi_protocol_error",
-      }),
-    ]);
-    expect(
-      events.some(
-        (event) =>
-          event.kind === "error" &&
-          event.payload?.source === "runtime" &&
-          String(event.payload?.message).includes("provider_failure_terminal"),
-      ),
-    ).toBe(true);
+    expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(events.some((event) => event.kind === "error" && event.payload?.source === "runtime")).toBe(false);
     await handler.shutdown();
   });
 
-  it("consumes active malformed get_state with protocol terminal notice", async () => {
+  it("does not query replacement state for a healthy captured RPC", async () => {
     const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1570,31 +1726,19 @@ describe("Pi handler", () => {
     const token2 = makeToken();
     expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token2.completed.length).toBe(1));
-    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart + 1);
     expect(token2.retried).toEqual([]);
-    expect(token2.completed).toEqual([
-      expect.objectContaining({
-        status: "error",
-        completion: "consumed",
-        reason: "pi_protocol_error",
-      }),
-    ]);
-    expect(
-      events.some(
-        (event) =>
-          event.kind === "error" &&
-          event.payload?.source === "runtime" &&
-          String(event.payload?.message).includes("provider_failure_terminal"),
-      ),
-    ).toBe(true);
+    expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(events.some((event) => event.kind === "error" && event.payload?.source === "runtime")).toBe(false);
     await handler.shutdown();
   });
 
-  it("exhausts active version-gate timeout through shared finite retry then consumes", async () => {
+  it("does not run a replacement version gate while the captured RPC remains healthy", async () => {
     const agentCache = cache(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v1", sensitive: false }] }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1611,21 +1755,15 @@ describe("Pi handler", () => {
     agentCache.set(runtimeConfig({ env: [{ key: "FT_PI_TEST_ENV", value: "v2", sensitive: false }] }));
     const token2 = makeToken();
     expect(handler.inject(message("m2", "restart"), token2)).toEqual({ kind: "owned", mode: "queued" });
-    await vi.waitFor(() => expect(token2.completed.length).toBe(1), { timeout: 10_000 });
-    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    await vi.waitFor(() => expect(token2.completed.length).toBe(1));
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart + 1);
     expect(token2.retried).toEqual([]);
-    expect(token2.completed).toEqual([
-      expect.objectContaining({
-        status: "error",
-        completion: "consumed",
-        reason: "provider_retry_exhausted",
-      }),
-    ]);
+    expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
     const runtimeMessages = events
       .filter((event) => event.kind === "error")
       .map((event) => JSON.stringify(event.payload));
-    expect(runtimeMessages.some((message) => message.includes("provider_retry_scheduled"))).toBe(true);
-    expect(runtimeMessages.some((message) => message.includes("provider_retry_exhausted"))).toBe(true);
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_scheduled"))).toBe(false);
+    expect(runtimeMessages.some((message) => message.includes("provider_retry_exhausted"))).toBe(false);
     await handler.shutdown();
   });
 
@@ -1633,6 +1771,7 @@ describe("Pi handler", () => {
     const gate = createGateableRetrySleep();
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1671,6 +1810,7 @@ describe("Pi handler", () => {
     const gate = createGateableRetrySleep();
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1708,6 +1848,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1743,6 +1884,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "bash_hold_until_abort";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1762,6 +1904,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "happy";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1790,6 +1933,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1825,6 +1969,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1844,6 +1989,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "prompt_write_tool_no_response";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1876,6 +2022,7 @@ describe("Pi handler", () => {
     process.env.FT_PI_TEST_MODE = "prompt_accepted_no_events";
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1912,6 +2059,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1944,13 +2092,14 @@ describe("Pi handler", () => {
     await handler.shutdown();
   }, 35_000);
 
-  it("consumes active model-refresh mismatch with durable notice and no prompt rewrite", async () => {
+  it("defers a model change while the captured RPC remains healthy", async () => {
     process.env.FT_PI_STATE_PROVIDER = "openai-codex";
     process.env.FT_PI_STATE_MODEL = "gpt-test";
     const agentCache = cache(runtimeConfig({ model: "openai-codex/gpt-test" }));
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: agentCache,
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -1960,29 +2109,16 @@ describe("Pi handler", () => {
     const sessionCtx = makeContext(events);
     await handler.start(message("m1", "first"), sessionCtx, makeToken());
     const promptsAfterStart = readCount(promptCountFile);
-    // Mutate cached model so the next hot-path inject restarts RPC and fails
-    // assertConfiguredModel against the still-reported get_state id.
+    // The live RPC retains its captured model; the change applies only after
+    // SessionManager performs a real provider restart.
     agentCache.set(runtimeConfig({ model: "openai-codex/other-model" }));
     const token2 = makeToken();
     expect(handler.inject(message("m2", "model-now"), token2)).toEqual({ kind: "owned", mode: "queued" });
     await vi.waitFor(() => expect(token2.completed.length).toBe(1));
-    expect(readCount(promptCountFile)).toBe(promptsAfterStart);
+    expect(readCount(promptCountFile)).toBe(promptsAfterStart + 1);
     expect(token2.retried).toEqual([]);
-    expect(token2.completed).toEqual([
-      expect.objectContaining({
-        status: "error",
-        completion: "consumed",
-        reason: "pi_model_configuration_error",
-      }),
-    ]);
-    expect(
-      events.some(
-        (event) =>
-          event.kind === "error" &&
-          event.payload?.source === "runtime" &&
-          String(event.payload?.message).includes("provider_failure_terminal"),
-      ),
-    ).toBe(true);
+    expect(token2.completed).toEqual([expect.objectContaining({ status: "success" })]);
+    expect(events.some((event) => event.kind === "error" && event.payload?.source === "runtime")).toBe(false);
     await handler.shutdown();
   });
 
@@ -2010,6 +2146,7 @@ describe("Pi handler", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),

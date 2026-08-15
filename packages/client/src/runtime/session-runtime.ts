@@ -34,9 +34,15 @@ import {
   resolveSenderLabel,
 } from "./agent-io.js";
 import { findAttachmentFile, writeAttachmentFile } from "./attachment-store.js";
-import { type ContextTreeBinding, resolveAgentContextTreeBinding } from "./bootstrap.js";
+import type { ContextTreeBinding } from "./bootstrap.js";
 import type { SessionConfig } from "./config.js";
-import { reresolveUnboundTree } from "./context-tree-rebind.js";
+import {
+  applyContextSourceToHandlerConfig,
+  type ContextSource,
+  type ContextSourceAdmissionSnapshot,
+  captureContextSourceAdmission,
+  contextSourceFromHandlerConfig,
+} from "./context-source.js";
 import type { SelfFence } from "./doc-snapshots.js";
 import { clampRetryAttempt } from "./error-taxonomy.js";
 import type {
@@ -55,6 +61,7 @@ import type {
 } from "./handler.js";
 import { findImagePath, writeImage } from "./image-store.js";
 import { type DeliveryRouteOwnership, InboxDeliveryCoordinator } from "./inbox-delivery-coordinator.js";
+import { ManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
 import type { SubprocessProbe } from "./process-tree-probe.js";
 import {
   buildProviderRetryEvent,
@@ -63,6 +70,7 @@ import {
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
 import { isAttachmentGoneError } from "./provider-support/attachment-availability.js";
+import { isContextSourceTransitionError } from "./provider-support/preparation.js";
 import { redactErrorPreview } from "./redact-error-preview.js";
 import { type ResetFenceReleaseVerdict, ResetReplayAuthority } from "./reset-replay-authority.js";
 import { createResultSink } from "./result-sink.js";
@@ -83,6 +91,8 @@ type SessionEntry = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
+  /** Context source captured by the handler factory that owns this entry. */
+  handlerSourceKey: string;
   status: SessionState;
   lastActivity: number;
   /** In-flight suspend promise; awaited before resume to avoid race conditions. */
@@ -345,6 +355,8 @@ type SessionRuntimeConfig = {
    * callback is agent-wide and must coalesce concurrent chat failures.
    */
   recoverRuntimeSessionProof?: (reasonCode: string) => Promise<void>;
+  /** Resolve and authorize the agent's current remote/local/none Context source. */
+  resolveContextSource?: () => Promise<ContextSource>;
   /**
    * Resolver for the agent's Context Tree binding, used to lazily upgrade a
    * tree-LESS slot to tree-bound at session start (new-tree onboarding sets the
@@ -384,15 +396,6 @@ type SessionRuntimeConfig = {
  * - Registry persistence for crash recovery
  */
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
-
-/**
- * Minimum spacing between lazy Context-Tree re-resolutions for a slot that is
- * currently tree-LESS. Caps the per-new-session HTTP probe for a
- * permanently-tree-less agent at once per minute, while still picking up a tree
- * configured later within this window. Tree-BOUND slots never reach this gate
- * (they exit on the cheap already-bound check).
- */
-const TREE_RERESOLVE_INTERVAL_MS = 60_000;
 
 /** Structured terminal provider-failure events that feed the durable runtime notice. */
 function isTerminalProviderFailureSessionEvent(event: SessionEvent): boolean {
@@ -497,7 +500,8 @@ export class SessionRuntime {
       isShuttingDown: () => this.shuttingDown,
       getSession: (chatId) => this.projection.getSession(chatId),
       isActiveSlotHeld: (entry) => this.slotScheduler.isActiveSlotHeld(entry as SessionEntry),
-      createHandler: () => this.createHandler(),
+      createHandler: () =>
+        this.createHandler(captureContextSourceAdmission(contextSourceFromHandlerConfig(this.config.handlerConfig))),
       invalidateDeliveryAdmission: (chatId) => this.slotScheduler.invalidateDeliveryAdmission(chatId),
       runtimeProvider: () => this.runtimeProvider(),
       emitResilienceEvent: (chatId, eventName, payload) => this.emitResilienceEvent(chatId, eventName, payload),
@@ -562,7 +566,9 @@ export class SessionRuntime {
       routeMessage: (chatId, message, deliveryKind) => this.routeMessage(chatId, message, deliveryKind),
       resumeSession: (entry, message, deliveryKind) => this.resumeSession(entry as SessionEntry, message, deliveryKind),
       retryDeliveryTurn: (chatId, messages, reason) => this.retryDeliveryTurn(chatId, messages, reason),
-      createHandler: () => this.createHandler(),
+      authorizeContextSource: () => this.ensureContextTreeBinding(),
+      createHandler: (admission) => this.createHandler(admission),
+      recordHandlerSource: (entry, sourceKey) => this.projection.recordHandlerSource(entry as SessionEntry, sourceKey),
       buildSessionContext: (chatId, lease) => this.buildSessionContext(chatId, lease),
       createDeliveryToken: (chatId, lease) => this.createDeliveryToken(chatId, lease),
       setCurrentTrigger: (chatId, message) => this.projection.setCurrentTrigger(chatId, message),
@@ -706,19 +712,6 @@ export class SessionRuntime {
         await this.ensureImagesLocal(message);
         const feishuReferenceContextLoad = this.ensureFeishuReferenceContext(message);
         if (feishuReferenceContextLoad) await feishuReferenceContextLoad;
-
-        // 4c. Lazily resolve a tree-LESS Context Tree binding before routing this
-        // message to a (possibly new) session. The binding is frozen at
-        // `AgentSlot.start()`, but the new-tree onboarding flow sets the org
-        // `context_tree` only afterwards — without this the fresh agent would
-        // never pick up its tree until a daemon restart. Done INSIDE the
-        // admission barrier so the `handlerConfig` patch lands before routing and
-        // a same-chat follow-up can't race a half-resolved binding, and only when
-        // no live session exists for this chat (a start / resume, never an inject
-        // into an active turn). No-op + no network once bound.
-        if (!this.hasHealthyLiveHandler(chatId)) {
-          await this.ensureContextTreeBinding();
-        }
 
         if (!admissionValid()) {
           if (this.inboxDelivery.hasEntry(work)) {
@@ -1419,13 +1412,14 @@ export class SessionRuntime {
     await this.resetReplay.reconcileReplayFencesWithServer();
   }
 
-  private createHandler(): AgentHandler {
+  private createHandler(admission: ContextSourceAdmissionSnapshot): AgentHandler {
     const replayFence = this.resetReplay.createHandlerReplayFenceWriter();
     const handlerCfg = {
       ...this.config.handlerConfig,
       ...(this.config.agentConfigCache ? { agentConfigCache: this.config.agentConfigCache } : {}),
       ...(replayFence ? { replayFence } : {}),
     };
+    applyContextSourceToHandlerConfig(handlerCfg, admission.source);
     return this.config.handlerFactory(handlerCfg);
   }
 
@@ -2010,44 +2004,54 @@ export class SessionRuntime {
     await this.startNewSession(chatId, message, deliveryKind);
   }
 
-  /**
-   * Lazily resolve the agent's Context Tree binding when its slot came up
-   * tree-less. The binding is resolved once at `AgentSlot.start()` and frozen
-   * into `handlerConfig`; the new-tree onboarding flow sets the org
-   * `context_tree` only AFTER that, so a fresh agent would otherwise stay
-   * unbound until a daemon restart. Re-resolving at each new session is cheap
-   * once bound (`reresolveUnboundTree` short-circuits without a network call)
-   * and patches `handlerConfig` in place — so the handler built in
-   * `startNewSession`, and every later session on this slot, sees the tree,
-   * installs the First Tree skills, and writes the W1 workspace manifest.
-   */
-  private async ensureContextTreeBinding(): Promise<void> {
+  /** Resolve current source authority before every new/resumed provider route. */
+  private async ensureContextTreeBinding(): Promise<ContextSourceAdmissionSnapshot> {
     const cfg = this.config.handlerConfig;
-    // Already bound — cheapest exit (no clock read, no resolver, no network).
-    if (typeof cfg.contextTreePath === "string" && cfg.contextTreePath.length > 0) return;
-    // Tree-less: rate-limit re-resolution so a permanently-tree-less agent (the
-    // common case) doesn't fire an HTTP GET on EVERY new session for the
-    // slot's whole life. A tree configured later is still picked up within
-    // TREE_RERESOLVE_INTERVAL_MS on the next new session.
-    const now = Date.now();
-    if (now - this.projection.getLastTreeResolveAttemptAt() < TREE_RERESOLVE_INTERVAL_MS) return;
-    this.projection.noteTreeResolveAttempt(now);
+    const current = contextSourceFromHandlerConfig(cfg);
 
-    const resolve =
-      this.config.resolveContextTreeBinding ??
-      (() =>
-        resolveAgentContextTreeBinding(this.config.sdk, this.config.handlerConfig.workspaceRoot, (msg) =>
-          this.config.log.info(msg),
-        ));
-    const binding = await reresolveUnboundTree(cfg.contextTreePath, resolve);
-    if (!binding) return;
-    cfg.contextTreePath = binding.path;
-    cfg.contextTreeRepoUrl = binding.repoUrl;
-    cfg.contextTreeBranch = binding.branch;
+    if (this.config.resolveContextSource) {
+      const source = await this.config.resolveContextSource();
+      if (source.kind === "none" && current.kind !== "none") {
+        throw new ManagedSkillsUnsafeDiscoveryError(
+          "Current Context authority is unavailable; preserving the existing non-none projection and refusing provider admission",
+        );
+      }
+      applyContextSourceToHandlerConfig(cfg, source);
+      this.config.log.info(
+        { kind: source.kind, path: source.kind === "none" ? null : source.path },
+        "context source resolved lazily",
+      );
+      return captureContextSourceAdmission(source);
+    }
+
+    const resolve = this.config.resolveContextTreeBinding;
+    if (!resolve) {
+      if (current.kind === "none") return captureContextSourceAdmission(current);
+      throw new ManagedSkillsUnsafeDiscoveryError(
+        "No Context source resolver is available for this non-none provider admission",
+      );
+    }
+    const binding = await resolve();
+    if (!binding) {
+      if (current.kind !== "none") {
+        throw new ManagedSkillsUnsafeDiscoveryError(
+          "Current Context binding could not be authorized; preserving the existing non-none projection",
+        );
+      }
+      return captureContextSourceAdmission(current);
+    }
+    const source = captureContextSourceAdmission({
+      kind: "remote",
+      path: binding.path,
+      repoUrl: binding.repoUrl,
+      branch: binding.branch,
+    });
+    applyContextSourceToHandlerConfig(cfg, source.source);
     this.config.log.info(
       { path: binding.path, repoUrl: binding.repoUrl },
       "context tree binding resolved lazily (agent was unbound at slot start)",
     );
+    return source;
   }
 
   private async startNewSession(
@@ -2055,6 +2059,8 @@ export class SessionRuntime {
     message: SessionMessage,
     deliveryKind: SlotDeliveryKind,
   ): Promise<void> {
+    const admissionGeneration = this.slotScheduler.currentAdmissionGeneration(chatId);
+    const admissionStillValid = () => this.slotScheduler.currentAdmissionGeneration(chatId) === admissionGeneration;
     if (this.shuttingDown) {
       this.retryDeliveryTurn(chatId, message, "manager_shutdown");
       return;
@@ -2078,10 +2084,22 @@ export class SessionRuntime {
     // The settle awaited: a terminate may have started meanwhile — or a prior
     // Reset flush may have failed — either owns the chat's delivery state now,
     // so hold instead of installing a route.
-    if (this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
+    if (!admissionStillValid() || this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     // The settle also made the route selection stale: another path may have
     // created the session meanwhile. Re-dispatch through routeMessage's
     // selection instead of creating a duplicate entry (or overwriting one).
+    if (this.projection.hasSession(chatId)) {
+      await this.routeMessage(chatId, message, deliveryKind);
+      return;
+    }
+    // Provider admission starts only after source authority is re-resolved.
+    // Repeat the route CAS because the resolver may perform network I/O.
+    const admission = await this.ensureContextTreeBinding();
+    if (this.shuttingDown) {
+      this.retryDeliveryTurn(chatId, message, "manager_shutdown_after_context_source");
+      return;
+    }
+    if (!admissionStillValid() || this.resetReplay.isProviderRouteAdmissionFenced(chatId)) return;
     if (this.projection.hasSession(chatId)) {
       await this.routeMessage(chatId, message, deliveryKind);
       return;
@@ -2093,12 +2111,13 @@ export class SessionRuntime {
     // Enforce concurrency limit
     if (!this.slotScheduler.acquireActiveSlot(chatId, message, deliveryKind)) return;
 
-    const handler = this.createHandler();
+    const handler = this.createHandler(admission);
 
     const entry: SessionEntry = {
       chatId,
       claudeSessionId: "",
       handler,
+      handlerSourceKey: admission.sourceKey,
       status: "active",
       lastActivity: Date.now(),
       suspending: null,
@@ -2173,6 +2192,10 @@ export class SessionRuntime {
         return;
       }
       this.routeTeardown.invalidateRouteTransition(entry, "session_start_failed");
+      if (isContextSourceTransitionError(err)) {
+        this.failSessionForRecovery(chatId, "session_context_source_changed", evicted?.claudeSessionId);
+        return;
+      }
       const phase: "start" | "resume" = evicted ? "resume" : "start";
       const classification = classifyProviderFailure(err, {
         provider: this.runtimeProvider(),
@@ -2198,6 +2221,9 @@ export class SessionRuntime {
     message: SessionMessage | null | undefined,
     deliveryKind: SlotDeliveryKind = "fresh",
   ): Promise<void> {
+    const admissionGeneration = this.slotScheduler.currentAdmissionGeneration(entry.chatId);
+    const admissionStillValid = () =>
+      this.slotScheduler.currentAdmissionGeneration(entry.chatId) === admissionGeneration;
     const stopForManagerShutdown = (reason: string): boolean => {
       if (!this.shuttingDown) return false;
       if (message) this.retryDeliveryTurn(entry.chatId, message, reason);
@@ -2209,13 +2235,14 @@ export class SessionRuntime {
       await entry.suspending;
     }
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_suspend")) return;
-    if (!this.projection.isSameSession(entry.chatId, entry)) return;
+    if (!admissionStillValid() || !this.projection.isSameSession(entry.chatId, entry)) return;
     if (this.routeTeardown.isProviderAdmissionRestartRequired(entry.chatId)) {
       throw this.routeTeardown.quarantineRestartRequiredError(entry.chatId, "provider admission");
     }
     if (await this.recoverDebtBeforeResume(entry.chatId, "session_resume:recovery_debt")) return;
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_recovery")) return;
     if (
+      !admissionStillValid() ||
       !this.projection.isSameSession(entry.chatId, entry) ||
       (entry.status !== "suspended" && entry.status !== "evicted") ||
       this.slotScheduler.isActiveSlotHeld(entry) ||
@@ -2252,7 +2279,7 @@ export class SessionRuntime {
     // running. Abort instead; the route callers treat the failure with
     // resume's existing error semantics (the terminate clears admission and
     // pending delivery state on its own).
-    if (!this.projection.isSameSession(entry.chatId, entry)) {
+    if (!admissionStillValid() || !this.projection.isSameSession(entry.chatId, entry)) {
       // The entry was replaced while this resume waited — the new owner
       // routes the chat; keep the delivery in recovery custody.
       if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_entry_replaced");
@@ -2277,13 +2304,62 @@ export class SessionRuntime {
       return;
     }
 
+    let admission = await this.ensureContextTreeBinding();
+    if (!admissionStillValid() || !this.projection.isSameSession(entry.chatId, entry)) {
+      if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_context_source_cas_lost");
+      return;
+    }
+    if (this.routeTeardown.hasInFlightTransition(entry)) {
+      if (message) this.slotScheduler.deferMessage(entry, message);
+      return;
+    }
+    if (this.slotScheduler.isActiveSlotHeld(entry) || (entry.status !== "suspended" && entry.status !== "evicted")) {
+      if (message && (entry.status as SessionState) === "active" && this.slotScheduler.isActiveSlotHeld(entry)) {
+        this.injectIntoActiveRoute(entry, message);
+      } else if (message) {
+        this.retryDeliveryTurn(entry.chatId, message, "resume_context_source_cas_lost");
+      }
+      return;
+    }
+
+    if (admission.sourceKey !== this.projection.handlerSourceKey(entry)) {
+      try {
+        await this.routeTeardown.retireHandlerForContextSourceChange(entry);
+      } catch (error) {
+        throw new ManagedSkillsUnsafeDiscoveryError(
+          `Context source changed but the previous provider handler could not be retired: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      // Authority may have changed again while strict retirement awaited.
+      admission = await this.ensureContextTreeBinding();
+      if (!admissionStillValid() || !this.projection.isSameSession(entry.chatId, entry)) {
+        if (message) this.retryDeliveryTurn(entry.chatId, message, "resume_source_retire_cas_lost");
+        return;
+      }
+      if (this.routeTeardown.hasInFlightTransition(entry)) {
+        if (message) this.slotScheduler.deferMessage(entry, message);
+        return;
+      }
+      if (this.slotScheduler.isActiveSlotHeld(entry) || (entry.status !== "suspended" && entry.status !== "evicted")) {
+        if (message && (entry.status as SessionState) === "active" && this.slotScheduler.isActiveSlotHeld(entry)) {
+          this.injectIntoActiveRoute(entry, message);
+        } else if (message) {
+          this.retryDeliveryTurn(entry.chatId, message, "resume_source_retire_cas_lost");
+        }
+        return;
+      }
+    }
+
     // Admin-triggered resume has no provider input. It may use idle capacity,
     // but it must not preempt unrelated working turns.
     const slotKind: SlotDeliveryKind = message ? deliveryKind : "control";
     if (!this.slotScheduler.acquireActiveSlot(entry.chatId, message ?? null, slotKind)) return;
     if (stopForManagerShutdown("session_resume:manager_shutdown_after_slot")) return;
 
-    const routeHandler = this.routeTeardown.handlerForRouteTransition(entry);
+    const routeHandler = this.routeTeardown.handlerForRouteTransition(entry, () => this.createHandler(admission));
+    this.projection.recordHandlerSource(entry, admission.sourceKey);
     entry.status = "active";
     this.slotScheduler.claimActiveSlot(entry);
     const transition = this.routeTeardown.beginRouteTransition(entry, routeHandler, "resume");
@@ -2337,6 +2413,10 @@ export class SessionRuntime {
         return;
       }
       this.routeTeardown.invalidateRouteTransition(entry, "session_resume_failed");
+      if (isContextSourceTransitionError(err)) {
+        this.failSessionForRecovery(entry.chatId, "session_context_source_changed", entry.claudeSessionId);
+        return;
+      }
       const classification = classifyProviderFailure(err, {
         provider: this.runtimeProvider(),
         scope: "session_resume",

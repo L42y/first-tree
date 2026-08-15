@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import type { DeliveryToken, SessionContext, SessionMessage, TurnOutcome } from "../../../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
@@ -310,6 +310,11 @@ let workspaceRoot: string;
 
 function makeContext(opts: {
   events: SessionEvent[];
+  contextTreeRepoUrl?: string;
+  getAgentContextTreeConfig?: () => Promise<
+    | { bindingState: "bound"; repo: string; branch: string; provider: "github" }
+    | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+  >;
   logs?: string[];
   forwardResult?: (text: string) => Promise<void>;
   replaceSessionId?: (sessionId: string, reason: string) => void;
@@ -328,7 +333,16 @@ function makeContext(opts: {
     },
     // fetchChatContext failures are logged and tolerated — a throwing fake sdk
     // exercises that path without network.
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "https://first-tree.test",
+      sendMessage,
+      getAgentContextTreeConfig:
+        opts.getAgentContextTreeConfig ??
+        (async () =>
+          opts.contextTreeRepoUrl
+            ? { bindingState: "bound", repo: opts.contextTreeRepoUrl, branch: "main", provider: "github" as const }
+            : { bindingState: "invalid", repo: null, branch: null, provider: null }),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-grok",
     log: (msg) => {
       opts.logs?.push(msg);
@@ -360,6 +374,7 @@ function grokPayload(over: Record<string, unknown> = {}) {
 function makeHandler(supervisor: ProviderProcessSupervisor, extraConfig: Record<string, unknown> = {}) {
   return createGrokHandler({
     workspaceRoot,
+    agentName: "grok-test-agent",
     runtimeProvider: "grok",
     providerProcessSupervisor: supervisor,
     grokBinaryResolver: () => ({ ok: true, binary: "/fake/bin/grok", version: "0.2.117" }),
@@ -531,6 +546,78 @@ describe("grok handler — per-turn ACP transport", () => {
       "provider_retry_scheduled",
       "provider_retry_exhausted",
     ]);
+  });
+
+  it("does not spawn a retry after the authoritative Context source changes during backoff", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("source-flip", { GROK_FAKE_SCENARIO: "load_fail" });
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv));
+    const token = makeToken();
+    const failSessionForRecovery = vi.fn();
+    const ctx = makeContext({
+      events,
+      getAgentContextTreeConfig: async () => {
+        return specs.length === 0
+          ? { bindingState: "invalid", repo: null, branch: null, provider: null }
+          : {
+              bindingState: "bound",
+              repo: "https://github.com/acme/new-tree.git",
+              branch: "main",
+              provider: "github",
+            };
+      },
+    });
+    ctx.failSessionForRecovery = failSessionForRecovery;
+
+    await handler.resume(makeMessage("m-source-flip", "continue"), "grok-sess-1", ctx, token);
+
+    expect(specs).toHaveLength(1);
+    expect(token.retried).toContain("grok_context_source_changed");
+    expect(failSessionForRecovery).toHaveBeenCalledWith("grok_context_source_changed", "grok-sess-1");
+  });
+
+  it("retries the first active injected turn without spawning after its captured remote source flips", async () => {
+    const events: SessionEvent[] = [];
+    const specs: ProviderProcessSpec[] = [];
+    const fakeEnv = fakeEnvFor("active-source-flip");
+    const failSessionForRecovery = vi.fn();
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    const handler = makeHandler(createFakeAcpSupervisor(specs, fakeEnv), {
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+    });
+    const ctx = makeContext({
+      events,
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+    ctx.failSessionForRecovery = failSessionForRecovery;
+
+    await handler.start(makeMessage("m-source-a", "start"), ctx, makeToken());
+    expect(specs).toHaveLength(1);
+
+    authoritativeRepo = repoB;
+    const injectedToken = makeToken();
+    expect(handler.inject(makeMessage("m-source-b", "continue"), injectedToken)).toMatchObject({
+      kind: "owned",
+      mode: "queued",
+    });
+    await vi.waitFor(() => {
+      expect(injectedToken.retried).toContain("grok_context_source_changed");
+    });
+
+    expect(specs).toHaveLength(1);
+    expect(injectedToken.completed).toEqual([]);
+    expect(failSessionForRecovery).toHaveBeenCalledWith("grok_context_source_changed", "grok-sess-1");
   });
 
   it("first-turn auth failure settles consumed-terminal, returns a synthetic id, and upgrades on the next turn", async () => {
@@ -1519,7 +1606,11 @@ describe("grok handler — per-turn ACP transport", () => {
       contextTreeBranch: "main",
     });
 
-    await handler.start(makeMessage("m1", "edit the node"), makeContext({ events }), makeToken());
+    await handler.start(
+      makeMessage("m1", "edit the node"),
+      makeContext({ events, contextTreeRepoUrl: "https://github.com/acme/tree.git" }),
+      makeToken(),
+    );
 
     const pending = events.find((e) => e.kind === "tool_call" && e.payload.status === "pending");
     expect(pending).toMatchObject({
@@ -1554,7 +1645,11 @@ describe("grok handler — per-turn ACP transport", () => {
       contextTreeBranch: "main",
     });
 
-    await handler.start(makeMessage("m1", "read the node"), makeContext({ events }), makeToken());
+    await handler.start(
+      makeMessage("m1", "read the node"),
+      makeContext({ events, contextTreeRepoUrl: "https://github.com/acme/tree.git" }),
+      makeToken(),
+    );
 
     const completed = events.find((e) => e.kind === "tool_call" && e.payload.status === "ok");
     if (completed?.kind !== "tool_call") throw new Error("expected an ok tool_call event");

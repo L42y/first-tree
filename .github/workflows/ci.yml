@@ -65,6 +65,7 @@ jobs:
               - 'packages/client/**'
               - 'packages/shared/**'
               - 'skills/**'
+              - 'skill-variants/**'
               - 'scripts/**'
               - 'patches/**'
               - 'package.json'
@@ -76,6 +77,7 @@ jobs:
               - '.github/**'
             skills:
               - 'skills/**'
+              - 'skill-variants/**'
 
   validate-skill:
     name: Validate Skill

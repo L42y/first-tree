@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,8 @@ const doctorCoreMocks = vi.hoisted(() => ({
   checkServerReachable: vi.fn(),
   checkWebSocket: vi.fn(),
   ensureFreshAccessToken: vi.fn(),
+  inspectLocalContextTree: vi.fn(),
+  listLocalContextDataLoss: vi.fn(),
   reconcileAgentConfigs: vi.fn(),
   resolveServerUrl: vi.fn(),
   runtimeProviderChecks: vi.fn(),
@@ -28,6 +30,8 @@ const clientMocks = vi.hoisted(() => ({
 
 const configMocks = vi.hoisted(() => ({
   clientConfigSchema: {},
+  defaultDataDir: vi.fn(),
+  defaultHome: vi.fn(),
   initConfig: vi.fn(),
   resetConfig: vi.fn(),
   resetConfigMeta: vi.fn(),
@@ -39,6 +43,10 @@ const outputMocks = vi.hoisted(() => ({
   fail: vi.fn((code: string, message: string, exitCode = 1) => {
     throw Object.assign(new Error(message), { code, exitCode });
   }),
+}));
+
+const doctorVerifyMocks = vi.hoisted(() => ({
+  verifyTreeRoot: vi.fn(),
 }));
 
 const printMocks = vi.hoisted(() => ({
@@ -55,6 +63,7 @@ vi.mock("@first-tree/shared/config", () => configMocks);
 vi.mock("../core/cli-fetch.js", () => ({ cliFetch: cliFetchMock }));
 vi.mock("../cli/output.js", () => outputMocks);
 vi.mock("../core/output.js", () => ({ print: printMocks }));
+vi.mock("../commands/tree/verify.js", () => doctorVerifyMocks);
 
 let tempDir = "";
 const originalExit = process.exit;
@@ -83,11 +92,15 @@ beforeEach(() => {
   doctorCoreMocks.checkServerReachable.mockResolvedValue({ label: "Server", ok: true, detail: "ok" });
   doctorCoreMocks.checkWebSocket.mockResolvedValue({ label: "WebSocket", ok: true, detail: "ok" });
   doctorCoreMocks.ensureFreshAccessToken.mockResolvedValue("token");
+  doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([]);
   doctorCoreMocks.reconcileAgentConfigs.mockResolvedValue({ label: "Agents", ok: true, detail: "reconciled" });
   doctorCoreMocks.resolveServerUrl.mockReturnValue("https://hub.example");
   doctorCoreMocks.runtimeProviderChecks.mockReturnValue([{ label: "codex", ok: true, detail: "ok — bundled" }]);
+  doctorVerifyMocks.verifyTreeRoot.mockReturnValue({ ok: true });
   clientMocks.probeCapabilities.mockResolvedValue({});
   configMocks.initConfig.mockResolvedValue({ client: { id: "client-1" } });
+  configMocks.defaultDataDir.mockReturnValue(join(tempDir, "data"));
+  configMocks.defaultHome.mockReturnValue(tempDir);
   clientMocks.FirstTreeHubSDK.mockImplementation(() => ({ listMyAgents: vi.fn(async () => []) }));
   process.exit = vi.fn(((code?: number) => {
     throw Object.assign(new Error("process.exit"), { code });
@@ -147,6 +160,16 @@ describe("command context and command groups", () => {
 });
 
 describe("doctor checks and agent resolver", () => {
+  function validLocalIdentity(workspace: string): Record<string, unknown> {
+    return {
+      agentId: "agent-uuid",
+      agentName: "agent-local",
+      contextSourceKind: "local",
+      contextTreePath: join(workspace, "local-context"),
+      serverUrl: "https://hub.example",
+    };
+  }
+
   it("runs server-aware daemon checks and falls back to local agent checks", async () => {
     const { runDaemonChecks } = await import("../commands/_shared/doctor-checks.js");
 
@@ -158,6 +181,7 @@ describe("doctor checks and agent resolver", () => {
       { label: "WebSocket", ok: true, detail: "ok" },
       { label: "Service", ok: true, detail: "running" },
       { label: "Owner", ok: true, detail: "pid 123" },
+      { label: "Local Context", ok: true, detail: "no Agent Local Context directories" },
       { label: "codex", ok: true, detail: "ok — bundled" },
     ]);
     expect(configMocks.resetConfig).toHaveBeenCalled();
@@ -166,6 +190,126 @@ describe("doctor checks and agent resolver", () => {
     configMocks.initConfig.mockRejectedValueOnce(new Error("no config"));
     const fallback = await runDaemonChecks();
     expect(fallback[3]).toEqual({ label: "Agents", ok: true, detail: "local" });
+  });
+
+  it.each([
+    {
+      label: "dangling symlink",
+      setup: (path: string) => symlinkSync(`${path}.missing`, path),
+    },
+    {
+      label: "directory",
+      setup: (path: string) => mkdirSync(path),
+    },
+  ])("reports a source-state.json $label as unhealthy instead of active", async ({ setup }) => {
+    const workspace = join(tempDir, "workspaces", "agent-local");
+    const localContext = join(workspace, "local-context");
+    const runtimeState = join(workspace, ".first-tree-workspace");
+    mkdirSync(localContext, { recursive: true });
+    mkdirSync(runtimeState, { recursive: true });
+    writeFileSync(join(runtimeState, "identity.json"), JSON.stringify(validLocalIdentity(workspace)));
+    setup(join(runtimeState, "source-state.json"));
+    doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([
+      { agentName: "agent-local", path: localContext, storage: "active" },
+    ]);
+    const { checkLocalContexts } = await import("../commands/_shared/doctor-checks.js");
+
+    expect(checkLocalContexts()).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("source-state.json is not a trusted regular file"),
+    });
+  });
+
+  it.each([
+    {
+      label: "dangling",
+      setup: (identityPath: string) => symlinkSync(`${identityPath}.missing`, identityPath),
+    },
+    {
+      label: "externally valid",
+      setup: (identityPath: string) => {
+        const externalIdentity = join(tempDir, "external-identity.json");
+        writeFileSync(externalIdentity, JSON.stringify(validLocalIdentity(join(tempDir, "workspaces", "agent-local"))));
+        symlinkSync(externalIdentity, identityPath);
+      },
+    },
+  ])("reports an $label identity symlink as unhealthy even when its target is readable", async ({ setup }) => {
+    const workspace = join(tempDir, "workspaces", "agent-local");
+    const localContext = join(workspace, "local-context");
+    const runtimeState = join(workspace, ".first-tree-workspace");
+    mkdirSync(localContext, { recursive: true });
+    mkdirSync(runtimeState, { recursive: true });
+    setup(join(runtimeState, "identity.json"));
+    doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([
+      { agentName: "agent-local", path: localContext, storage: "active" },
+    ]);
+    const { checkLocalContexts } = await import("../commands/_shared/doctor-checks.js");
+
+    expect(checkLocalContexts()).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("identity.json is not a trusted regular file"),
+    });
+  });
+
+  it("reports an incomplete identity instead of counting Local Context as active", async () => {
+    const workspace = join(tempDir, "workspaces", "agent-local");
+    const localContext = join(workspace, "local-context");
+    const runtimeState = join(workspace, ".first-tree-workspace");
+    mkdirSync(localContext, { recursive: true });
+    mkdirSync(runtimeState, { recursive: true });
+    writeFileSync(
+      join(runtimeState, "identity.json"),
+      JSON.stringify({ agentName: "agent-local", contextSourceKind: "local" }),
+    );
+    doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([
+      { agentName: "agent-local", path: localContext, storage: "active" },
+    ]);
+    const { checkLocalContexts } = await import("../commands/_shared/doctor-checks.js");
+
+    expect(checkLocalContexts()).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("identity.json is malformed or incomplete"),
+    });
+  });
+
+  it("reports an active Local identity whose contextTreePath does not name that workspace tree", async () => {
+    const workspace = join(tempDir, "workspaces", "agent-local");
+    const localContext = join(workspace, "local-context");
+    const runtimeState = join(workspace, ".first-tree-workspace");
+    mkdirSync(localContext, { recursive: true });
+    mkdirSync(runtimeState, { recursive: true });
+    writeFileSync(
+      join(runtimeState, "identity.json"),
+      JSON.stringify({ ...validLocalIdentity(workspace), contextTreePath: join(workspace, "other-context") }),
+    );
+    doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([
+      { agentName: "agent-local", path: localContext, storage: "active" },
+    ]);
+    const { checkLocalContexts } = await import("../commands/_shared/doctor-checks.js");
+
+    expect(checkLocalContexts()).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("Local identity contextTreePath mismatch"),
+    });
+  });
+
+  it("reports an incomplete V1 latch instead of counting Local Context as frozen", async () => {
+    const workspace = join(tempDir, "workspaces", "agent-local");
+    const localContext = join(workspace, "local-context");
+    const runtimeState = join(workspace, ".first-tree-workspace");
+    mkdirSync(localContext, { recursive: true });
+    mkdirSync(runtimeState, { recursive: true });
+    writeFileSync(join(runtimeState, "identity.json"), JSON.stringify(validLocalIdentity(workspace)));
+    writeFileSync(join(runtimeState, "source-state.json"), JSON.stringify({ schemaVersion: 1, remoteObserved: true }));
+    doctorCoreMocks.listLocalContextDataLoss.mockReturnValue([
+      { agentName: "agent-local", path: localContext, storage: "active" },
+    ]);
+    const { checkLocalContexts } = await import("../commands/_shared/doctor-checks.js");
+
+    expect(checkLocalContexts()).toMatchObject({
+      ok: false,
+      detail: expect.stringContaining("corrupt or unsupported source-state.json"),
+    });
   });
 
   it("resolves managed agents by name or uuid and maps fetch/not-found failures", async () => {

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,11 +21,45 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../../runtime/agent-bootstrap.js", () => ({
-  ensureAgentBootstrap: vi.fn(),
+  ensureAgentBootstrap: vi.fn(
+    (args: {
+      workspace: string;
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind: string;
+      briefing: string;
+      sessionCtx: { agent: SessionContext["agent"]; sdk: { serverUrl: string } };
+    }) => {
+      const runtimeDir = join(args.workspace, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: args.sessionCtx.agent.agentId,
+          agentName: args.agentName,
+          displayName: args.sessionCtx.agent.displayName,
+          type: args.sessionCtx.agent.type,
+          visibility: args.sessionCtx.agent.visibility,
+          delegateMention: args.sessionCtx.agent.delegateMention,
+          metadata: args.sessionCtx.agent.metadata,
+          serverUrl: args.sessionCtx.sdk.serverUrl,
+          contextSourceKind: args.contextSourceKind,
+          contextTreePath: args.contextTreePath,
+        }),
+      );
+      writeFileSync(join(args.workspace, "AGENTS.md"), args.briefing);
+      const claudePath = join(args.workspace, "CLAUDE.md");
+      rmSync(claudePath, { force: true });
+      if (process.platform === "win32") writeFileSync(claudePath, args.briefing);
+      else symlinkSync("AGENTS.md", claudePath);
+    },
+  ),
 }));
 
 vi.mock("../../../../runtime/agent-briefing.js", () => ({
-  buildAgentBriefing: vi.fn(() => ""),
+  buildAgentBriefing: vi.fn(
+    () => "<!-- first-tree:generated -->\nThis briefing was generated without a safe Context source.\n",
+  ),
 }));
 
 vi.mock("../../../../runtime/chat-context.js", () => ({
@@ -43,7 +77,11 @@ vi.mock("../../../../runtime/source-repos.js", () => ({
 
 vi.mock("../../../../runtime/workspace.js", () => ({
   acquireAgentHome: vi.fn(() => state.workspaceRoot),
-  markWorkspaceInitComplete: vi.fn(),
+  markWorkspaceInitComplete: vi.fn((workspace: string) => {
+    const runtimeDir = join(workspace, ".first-tree-workspace");
+    mkdirSync(runtimeDir, { recursive: true });
+    writeFileSync(join(runtimeDir, "init-complete"), JSON.stringify({ schemaVersion: 1, completedAt: "now" }));
+  }),
 }));
 
 vi.mock("../../tool-call-processor.js", () => ({
@@ -98,7 +136,7 @@ vi.mock("../../tui/transcript-tail.js", () => ({
 
 import { deliveryTokenFromSessionContext } from "../../../../runtime/handler.js";
 import { createClaudeCodeTuiHandler } from "../../tui/index.js";
-import { newSession } from "../../tui/tmux-session.js";
+import { newSession, sessionExists } from "../../tui/tmux-session.js";
 
 const AGENT_ID = "019eca71-0000-7000-8000-000000000001";
 const CHAT_ID = "chat-tui-suspend-queued-recovery";
@@ -115,7 +153,12 @@ function makeMessage(id: string, content: string): SessionMessage {
   };
 }
 
-function makeContext(opts: { formatInboundContent?: SessionContext["formatInboundContent"] } = {}): SessionContext {
+function makeContext(
+  opts: {
+    formatInboundContent?: SessionContext["formatInboundContent"];
+    getAgentContextTreeConfig?: () => Promise<unknown>;
+  } = {},
+): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const plumbing = mockCtxPlumbing({ sendMessage }, CHAT_ID);
   return {
@@ -128,7 +171,11 @@ function makeContext(opts: { formatInboundContent?: SessionContext["formatInboun
       delegateMention: null,
       metadata: {},
     },
-    sdk: { serverUrl: "http://test", sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "http://test",
+      sendMessage,
+      ...(opts.getAgentContextTreeConfig ? { getAgentContextTreeConfig: opts.getAgentContextTreeConfig } : {}),
+    } as unknown as SessionContext["sdk"],
     chatId: CHAT_ID,
     log: () => {},
     recordProviderActivity: () => {},
@@ -161,10 +208,57 @@ afterEach(() => {
 });
 
 describe("claude-code-tui suspend queued recovery", () => {
+  it("rechecks Context authority after a paused tmux existence check before creating a session", async () => {
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    let releaseExists: () => void = () => {};
+    const existsMayFinish = new Promise<void>((resolvePromise) => {
+      releaseExists = resolvePromise;
+    });
+    let markExistsStarted: () => void = () => {};
+    const existsStarted = new Promise<void>((resolvePromise) => {
+      markExistsStarted = resolvePromise;
+    });
+    vi.mocked(sessionExists).mockImplementationOnce(async () => {
+      markExistsStarted();
+      await existsMayFinish;
+      return false;
+    });
+    const handler = createClaudeCodeTuiHandler({
+      runtimeProvider: "claude-code-tui",
+      workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
+      clientId: "client-test",
+      contextSourceKind: "remote",
+      contextTreePath: join(state.workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+    });
+    const ctx = makeContext({
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+
+    const startPromise = handler.start(makeMessage("m-source-a", "start"), ctx, deliveryTokenFromSessionContext(ctx));
+    await existsStarted;
+    authoritativeRepo = repoB;
+    releaseExists();
+
+    await expect(startPromise).rejects.toMatchObject({ name: "ContextSourceTransitionError" });
+    expect(newSession).not.toHaveBeenCalled();
+    await handler.shutdown();
+  });
+
   it("starts claude with the runtime output contract and Current Chat Context", async () => {
     const handler = createClaudeCodeTuiHandler({
       runtimeProvider: "claude-code-tui",
       workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
       clientId: "client-test",
     });
     const ctx = makeContext();
@@ -198,6 +292,7 @@ describe("claude-code-tui suspend queued recovery", () => {
     const handler = createClaudeCodeTuiHandler({
       runtimeProvider: "claude-code-tui",
       workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
       clientId: "client-test",
     });
     const ctx = makeContext();
@@ -232,6 +327,7 @@ describe("claude-code-tui suspend queued recovery", () => {
     const handler = createClaudeCodeTuiHandler({
       runtimeProvider: "claude-code-tui",
       workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
       clientId: "client-test",
     });
     const queued = makeMessage("m2", "format-held queued turn");
@@ -273,6 +369,7 @@ describe("claude-code-tui suspend queued recovery", () => {
     const handler = createClaudeCodeTuiHandler({
       runtimeProvider: "claude-code-tui",
       workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
       clientId: "client-test",
     });
     const queued = makeMessage("m3", "format-fail queued turn");
@@ -311,6 +408,7 @@ describe("claude-code-tui suspend queued recovery", () => {
     const handler = createClaudeCodeTuiHandler({
       runtimeProvider: "claude-code-tui",
       workspaceRoot: state.workspaceRoot,
+      agentName: "test-agent",
       clientId: "client-test",
     });
     const ctx = makeContext({

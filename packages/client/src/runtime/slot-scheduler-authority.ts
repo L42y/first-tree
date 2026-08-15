@@ -1,6 +1,7 @@
 import type { RuntimeProvider, RuntimeState, SessionState } from "@first-tree/shared";
 import { encodeProviderRetryEventMessage } from "@first-tree/shared";
 import type { pino } from "../cloud/observability/logger.js";
+import type { ContextSourceAdmissionSnapshot } from "./context-source.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -17,6 +18,7 @@ import {
   MANAGED_SKILLS_UNSAFE_DISCOVERY_REASON_CODE,
   type ProviderFailureClassification,
 } from "./provider-retry-policy.js";
+import { isContextSourceTransitionError } from "./provider-support/preparation.js";
 import type { RouteTeardownAuthority } from "./route-teardown-authority.js";
 
 export type SlotDeliveryKind = "fresh" | "recovery" | "control";
@@ -128,7 +130,9 @@ export type SlotSchedulerAuthorityDeps = {
     deliveryKind: SlotDeliveryKind,
   ) => Promise<void>;
   retryDeliveryTurn: (chatId: string, messages: SessionMessage | readonly SessionMessage[], reason: string) => void;
-  createHandler: () => AgentHandler;
+  authorizeContextSource: () => Promise<ContextSourceAdmissionSnapshot>;
+  createHandler: (admission: ContextSourceAdmissionSnapshot) => AgentHandler;
+  recordHandlerSource: (entry: SlotSchedulerSessionEntry, sourceKey: string) => void;
   buildSessionContext: (
     chatId: string,
     lease: { mutationValid: () => boolean; settlementValid: () => boolean },
@@ -287,10 +291,16 @@ export class SlotSchedulerAuthority {
    * the stale retry to abandon: no new teardown debt, no second old-handler
    * shutdown, no fresh route.
    */
-  private isRetryAdmissionOpen(chatId: string, entry: SlotSchedulerSessionEntry): boolean {
+  private isRetryAdmissionOpen(
+    chatId: string,
+    entry: SlotSchedulerSessionEntry,
+    expectedAdmissionGeneration?: number,
+  ): boolean {
     return (
       !this.deps.isShuttingDown() &&
       !this.deps.isProviderRouteAdmissionFenced(chatId) &&
+      (expectedAdmissionGeneration === undefined ||
+        this.currentAdmissionGeneration(chatId) === expectedAdmissionGeneration) &&
       this.deps.getSession(chatId) === entry &&
       this.isRetryEligible(entry)
     );
@@ -481,8 +491,9 @@ export class SlotSchedulerAuthority {
   }
 
   async executeRetry(chatId: string): Promise<void> {
+    const admissionGeneration = this.currentAdmissionGeneration(chatId);
     const entry = this.deps.getSession(chatId);
-    if (!entry || !this.isRetryAdmissionOpen(chatId, entry)) return;
+    if (!entry || !this.isRetryAdmissionOpen(chatId, entry, admissionGeneration)) return;
     if (this.deps.inbox.hasRecoveryDebt(chatId)) {
       this.clearRetryState(entry);
       await this.deps.inbox.recoverIfNeeded(chatId, "session_retry:recovery_debt");
@@ -576,7 +587,7 @@ export class SlotSchedulerAuthority {
     // semantics at the top of this function: no new handler is installed,
     // and the retry choreography is left to whoever now owns the chat
     // (terminate clears the entry; shutdown clears the timers).
-    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
+    if (!this.isRetryAdmissionOpen(chatId, entry, admissionGeneration)) return;
 
     // Re-materialize the retried head message's attachments: local cache hits
     // skip the network, still-missing bytes re-fetch, and the transient 404
@@ -589,7 +600,7 @@ export class SlotSchedulerAuthority {
     // the same fence/session-entry/status CAS before registering teardown
     // debt so a stale retry cannot add debt or shut down the old handler
     // after termination has acknowledged.
-    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
+    if (!this.isRetryAdmissionOpen(chatId, entry, admissionGeneration)) return;
 
     // Fresh handler — the old one may have closed its SDK transport. But the
     // replaced handler must be CONFIRMED stopped before the fresh one is
@@ -616,7 +627,20 @@ export class SlotSchedulerAuthority {
     // already have installed the replacement route. Abandon the install
     // instead of opening a second provider route for the same retry head;
     // the winner's route owns the head's custody.
-    if (!this.isRetryAdmissionOpen(chatId, entry)) return;
+    if (!this.isRetryAdmissionOpen(chatId, entry, admissionGeneration)) return;
+
+    // A retry is a fresh provider admission. Authorize after the old handler
+    // is confirmed stopped, then repeat the generation/session CAS before a
+    // replacement can claim capacity or publish a handler.
+    let admission: ContextSourceAdmissionSnapshot;
+    try {
+      admission = await this.deps.authorizeContextSource();
+    } catch (err) {
+      this.deps.log.warn({ chatId, err }, "session retry Context source authorization failed");
+      this.rearmRetryTimer(chatId, entry);
+      return;
+    }
+    if (!this.isRetryAdmissionOpen(chatId, entry, admissionGeneration)) return;
 
     // Capacity decision LAST, immediately before the synchronous install.
     // Acquiring earlier would be a check-then-act race across chats: two
@@ -632,8 +656,9 @@ export class SlotSchedulerAuthority {
       return;
     }
 
-    const newHandler = this.deps.createHandler();
+    const newHandler = this.deps.createHandler(admission);
     entry.handler = newHandler;
+    this.deps.recordHandlerSource(entry, admission.sourceKey);
     entry.status = "active";
     this.claimActiveSlot(entry);
     entry.lastActivity = Date.now();
@@ -735,6 +760,10 @@ export class SlotSchedulerAuthority {
         return;
       }
       this.deps.routeTeardown.invalidateRouteTransition(entry, "session_retry_failed");
+      if (isContextSourceTransitionError(err)) {
+        this.deps.failSessionForRecovery(chatId, "session_context_source_changed", entry.claudeSessionId);
+        return;
+      }
       const phase = retryRoute.kind;
       const classification = classifyProviderFailure(err, {
         provider: this.deps.runtimeProvider(),
@@ -765,6 +794,9 @@ export class SlotSchedulerAuthority {
   triggerImmediateRetry(chatId: string): void {
     const entry = this.deps.getSession(chatId);
     if (!entry || !this.hasPendingTransientRetry(entry)) return;
+    // Do not clear the sole re-arm timer while another retry flight still
+    // owns the failure path that will install it.
+    if (this.retryFlights.has(chatId)) return;
     const state = this.slot(entry);
     // Managed-Skill discovery safety is a local provider-preflight gate, not
     // an availability hint that newer input can bypass. Keep the original

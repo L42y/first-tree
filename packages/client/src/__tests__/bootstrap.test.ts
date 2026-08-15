@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,8 +7,10 @@ import {
   deepEqualIdentity,
   FIRST_TREE_RUNTIME_DIR,
   IDENTITY_JSON_REL,
+  writeAgentBriefing,
 } from "../runtime/bootstrap.js";
 import type { AgentIdentity } from "../runtime/handler.js";
+import { AGENT_RUNTIME_STATE_DIRNAME, SOURCE_STATE_FILENAME } from "../runtime/workspace-manifest.js";
 
 // Use a real temp directory for file-based tests
 const tmpBase = join(import.meta.dirname ?? __dirname, "../../.test-tmp-bootstrap");
@@ -46,6 +49,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity({ agentId: "my-agent", type: "agent", delegateMention: "owner" }),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -55,6 +59,8 @@ describe("bootstrapWorkspace", () => {
 
     const data = JSON.parse(readFileSync(identityPath, "utf-8"));
     expect(data.agentId).toBe("my-agent");
+    expect(data.agentName).toBe("slot-agent");
+    expect(data.agentName).not.toBe("ws-identity");
     expect(data.type).toBe("agent");
     expect(data.delegateMention).toBe("owner");
     expect(data.serverUrl).toBe("http://localhost:8000");
@@ -77,6 +83,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -93,6 +100,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity({ agentId: "new-agent" }),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -113,6 +121,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -132,6 +141,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -143,21 +153,47 @@ describe("bootstrapWorkspace", () => {
     expect(existsSync(join(workspace, ".agent"))).toBe(false);
   });
 
-  it("replaces a dangling .first-tree-workspace symlink with the runtime directory", () => {
+  it("refuses a dangling .first-tree-workspace symlink without following or replacing it", () => {
     const workspace = join(tmpBase, "ws-dangling-runtime-marker");
     mkdirSync(workspace, { recursive: true });
     symlinkSync(join(workspace, "missing-marker-target"), join(workspace, FIRST_TREE_RUNTIME_DIR));
 
-    bootstrapWorkspace({
-      workspacePath: workspace,
-      identity: makeIdentity(),
-      contextTreePath: null,
-      serverUrl: "http://localhost:8000",
-    });
+    expect(() =>
+      bootstrapWorkspace({
+        workspacePath: workspace,
+        identity: makeIdentity(),
+        agentName: "slot-agent",
+        contextTreePath: null,
+        serverUrl: "http://localhost:8000",
+      }),
+    ).toThrow("refusing to use symlinked Agent runtime directory");
 
-    expect(lstatSync(join(workspace, FIRST_TREE_RUNTIME_DIR)).isDirectory()).toBe(true);
-    expect(existsSync(join(workspace, IDENTITY_JSON_REL))).toBe(true);
+    expect(lstatSync(join(workspace, FIRST_TREE_RUNTIME_DIR)).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(workspace, "missing-marker-target"))).toBe(false);
   });
+
+  it.runIf(process.platform !== "win32")(
+    "refuses a special .first-tree-workspace entry without deleting or replacing it",
+    () => {
+      const workspace = join(tmpBase, "ws-fifo-runtime-marker");
+      const runtime = join(workspace, FIRST_TREE_RUNTIME_DIR);
+      mkdirSync(workspace, { recursive: true });
+      execFileSync("mkfifo", [runtime]);
+
+      expect(() =>
+        bootstrapWorkspace({
+          workspacePath: workspace,
+          identity: makeIdentity(),
+          agentName: "slot-agent",
+          contextTreePath: null,
+          serverUrl: "http://localhost:8000",
+        }),
+      ).toThrow("refusing to replace special Agent runtime entry");
+
+      expect(lstatSync(runtime).isFIFO()).toBe(true);
+      expect(existsSync(join(runtime, "identity.json"))).toBe(false);
+    },
+  );
 
   it("prunes a legacy `.agent/context/` staging directory on re-bootstrap", () => {
     // Pre-PR-797 the runtime staged `agent-instructions.md` and
@@ -174,6 +210,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -188,6 +225,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity({ agentId: "my-agent" }),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -203,6 +241,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -220,6 +259,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity({ agentId: "nonexistent" }),
+      agentName: "slot-agent",
       contextTreePath: ctxTree,
       serverUrl: "http://localhost:8000",
     });
@@ -245,6 +285,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: ctxTree,
       serverUrl: "http://localhost:8000",
     });
@@ -261,6 +302,7 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity(),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
@@ -282,12 +324,99 @@ describe("bootstrapWorkspace", () => {
     bootstrapWorkspace({
       workspacePath: workspace,
       identity: makeIdentity({ agentId: "new-agent" }),
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://localhost:8000",
     });
 
     const data = JSON.parse(readFileSync(join(workspace, IDENTITY_JSON_REL), "utf-8"));
     expect(data.agentId).toBe("new-agent");
+  });
+
+  it("does not rewrite identity to Local after a remote latch is on disk", () => {
+    const workspace = join(tmpBase, "ws-local-latch");
+    mkdirSync(workspace, { recursive: true });
+    bootstrapWorkspace({
+      workspacePath: workspace,
+      identity: makeIdentity(),
+      agentName: "slot-agent",
+      contextTreePath: join(workspace, "context-tree"),
+      contextSourceKind: "remote",
+      serverUrl: "http://localhost:8000",
+    });
+    mkdirSync(join(workspace, AGENT_RUNTIME_STATE_DIRNAME), { recursive: true });
+    writeFileSync(
+      join(workspace, AGENT_RUNTIME_STATE_DIRNAME, SOURCE_STATE_FILENAME),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        remoteObserved: true,
+        observedAt: "2026-08-13T00:00:00.000Z",
+        repoUrl: "git@github.com:acme/tree.git",
+        branch: "main",
+      })}\n`,
+    );
+    const before = readFileSync(join(workspace, IDENTITY_JSON_REL), "utf-8");
+
+    bootstrapWorkspace({
+      workspacePath: workspace,
+      identity: makeIdentity(),
+      agentName: "slot-agent",
+      contextTreePath: join(workspace, "local-context"),
+      contextSourceKind: "local",
+      serverUrl: "http://localhost:8000",
+    });
+
+    expect(readFileSync(join(workspace, IDENTITY_JSON_REL), "utf-8")).toBe(before);
+    expect(JSON.parse(before).contextSourceKind).toBe("remote");
+  });
+
+  it("refuses to infer agentName from the workspace basename", () => {
+    const workspace = join(tmpBase, "looks-like-an-agent-name");
+    mkdirSync(workspace, { recursive: true });
+    expect(() =>
+      bootstrapWorkspace({
+        workspacePath: workspace,
+        identity: makeIdentity(),
+        agentName: "",
+        contextTreePath: null,
+        serverUrl: "http://localhost:8000",
+      }),
+    ).toThrow(/refusing to infer agentName/);
+  });
+
+  it("replaces an identity.json symlink instead of writing through it", () => {
+    const workspace = join(tmpBase, "ws-identity-symlink");
+    const outside = join(tmpBase, "outside-identity.json");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(outside, "external-identity\n");
+    mkdirSync(join(workspace, FIRST_TREE_RUNTIME_DIR), { recursive: true });
+    symlinkSync(outside, join(workspace, IDENTITY_JSON_REL));
+
+    bootstrapWorkspace({
+      workspacePath: workspace,
+      identity: makeIdentity(),
+      agentName: "slot-agent",
+      contextTreePath: null,
+      serverUrl: "http://localhost:8000",
+    });
+
+    expect(lstatSync(join(workspace, IDENTITY_JSON_REL)).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(join(workspace, IDENTITY_JSON_REL), "utf-8")).agentName).toBe("slot-agent");
+    expect(readFileSync(outside, "utf-8")).toBe("external-identity\n");
+  });
+
+  it("replaces an AGENTS.md symlink instead of writing through it", () => {
+    const workspace = join(tmpBase, "ws-briefing-symlink");
+    const outside = join(tmpBase, "outside-agents.md");
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(outside, "external-briefing\n");
+    symlinkSync(outside, join(workspace, "AGENTS.md"));
+
+    writeAgentBriefing(workspace, "trusted briefing\n");
+
+    expect(lstatSync(join(workspace, "AGENTS.md")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(workspace, "AGENTS.md"), "utf-8")).toBe("trusted briefing\n");
+    expect(readFileSync(outside, "utf-8")).toBe("external-briefing\n");
   });
 });
 

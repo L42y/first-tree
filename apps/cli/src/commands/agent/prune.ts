@@ -1,4 +1,6 @@
+import { join } from "node:path";
 import { FirstTreeHubSDK } from "@first-tree/client";
+import { defaultDataDir } from "@first-tree/shared/config";
 import { confirm } from "@inquirer/prompts";
 import type { Command } from "commander";
 import { fail } from "../../cli/output.js";
@@ -7,6 +9,7 @@ import {
   ensureFreshAccessToken,
   findStaleAliases,
   formatStaleReason,
+  localContextDataLossForAgent,
   removeLocalAgent,
   resolveServerUrl,
 } from "../../core/index.js";
@@ -51,6 +54,10 @@ export function registerAgentPruneCommand(agent: Command): void {
         for (const s of stale) {
           const id = s.agentId ?? "—";
           print.line(`    - ${s.name.padEnd(30)} ${id.padEnd(38)} ${formatStaleReason(s.reason)}\n`);
+          const localContext = localContextDataLossForAgent(join(defaultDataDir(), "workspaces"), s.name);
+          if (localContext) {
+            print.line(`      unmigrated Local Context will be permanently deleted: ${localContext.path}\n`);
+          }
         }
         print.line("\n");
 

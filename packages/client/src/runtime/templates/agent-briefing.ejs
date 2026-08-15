@@ -329,9 +329,9 @@ detail stays in source systems; the tree carries the durable *what* and
 *why* a future agent must respect. Each domain is a directory; each node
 is Markdown with frontmatter such as `owners` and `soft_links`.
 
-<% if (contextTree.bound) { %>The policy below is the always-present baseline. For task-scoped file selection and operational read workflow, load `first-tree-read`. For source-backed tree edits, load `first-tree-write`.<% } else { %>The policy below is the always-present baseline for judging what belongs in a Context Tree. This briefing was generated without a bound tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree; only a request whose result genuinely needs a tree read/write/audit/setup names that specific capability impact. Re-check the workspace binding only if the user says a tree was created or bound this session; an explicit build/set-up request loads `first-tree-seed`.<% } %>
+<% if (contextTree.source === 'remote') { %>The policy below is the always-present baseline. For task-scoped file selection and operational read workflow, load `first-tree-read`. For source-backed tree edits, load `first-tree-write`.<% } else if (contextTree.source === 'local') { %>The policy below is the always-present baseline. This workspace uses an Agent-private Local Context Tree, not a Team remote tree. Load `first-tree-read` / `first-tree-write` (same names; Local payloads are already projected). Do not treat Local content as Team truth. Do not load `first-tree-seed`, `context-tree-review`, or `context-tree-audit` against this Local tree.<% } else { %>The policy below is the always-present baseline for judging what belongs in a Context Tree. This briefing was generated without a bound tree — a supported state, not a gap to fix. Ordinary tasks proceed from the user's messages, chat context, and local inputs with no prompt to bind or create a tree; only a request whose result genuinely needs a tree read/write/audit/setup names that specific capability impact. Re-check the workspace binding only if the user says a tree was created or bound this session; an explicit build/set-up request loads `first-tree-seed`.<% } %>
 
-<%- contextTreePolicy %><% if (contextTree.bound) { %>
+<%- contextTreePolicy %><% if (contextTree.source === 'remote') { %>
 
 ## Reading the Tree
 
@@ -360,7 +360,18 @@ you read manually, refresh first per Tree Location.
 
 Default to normal content as current truth. Apply the Content Classes policy
 above when archive/supporting or member content appears; label non-normal facts
-separately and do not promote them to canonical decisions.<% } else { %>
+separately and do not promote them to canonical decisions.<% } else if (contextTree.source === 'local') { %>
+
+## Reading the Tree
+
+When a task has a repo/path/feature/domain/owner/source signal, load
+`first-tree-read` before acting. Resolve the live Local root with
+`<%- contextTree.localResolveReadCommand %>` — never accept a caller-supplied
+path. Then inspect `<%- contextTree.hierarchyHelpCommand %>`, run
+`<%- contextTree.verifyCommand %>` before using content, and read files with
+native tools. There is no Git pull, no stable snapshot, and no PR/MR identity.
+A concurrent writer may tear the tree; if verify fails, discard the read.
+Do not load `context-tree-review` or `context-tree-audit` against Local content.<% } else { %>
 
 ## Reading the Tree
 
@@ -371,7 +382,7 @@ says a tree was created or bound during this session; if a tree is now bound,
 load `first-tree-read`. Only when the user explicitly asks for a Tree read
 result and no binding exists does the missing binding block that step: state
 the impact without pushing the user to bind or create one. An explicit
-build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.bound) { %>
+build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.source === 'remote') { %>
 
 ## Writing the Tree
 
@@ -380,7 +391,18 @@ build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.bound) { 
 Before editing, read the target/parent/soft-linked nodes the skill identifies;
 after editing, run `<%- contextTree.verifyCommand %>`.
 Do not put PR/MR numbers, commit history, diffs, or implementation details in
-tree node prose.<% } else { %>
+tree node prose.<% } else if (contextTree.source === 'local') { %>
+
+## Writing the Tree
+
+Local writes are still source-driven. Apply the generated policy's Double Test,
+What/Why/Who, ownership, and de-duplication checks. Resolve the live root with
+`<%- contextTree.localResolveWriteCommand %>`, edit the live Tree directly (no
+content lock, candidate, fingerprint, or per-write human approval), reread the
+changed nodes, then run `<%- contextTree.verifyCommand %>` until it passes.
+Last-write-wins. If verify fails, repair; do not guess or delete facts to pass
+validation. Recheck binding after the write; if remote is observed, freeze Local
+and do not upload, merge, or auto-reactivate.<% } else { %>
 
 ## Writing the Tree
 
@@ -390,7 +412,7 @@ user says a tree was created or bound during this session; if a tree is now
 bound, load `first-tree-write`. Only when the user explicitly asks for a
 source artifact to be reflected into the Context Tree does the missing
 binding block that step: state the impact and do not attempt the edit. An
-explicit build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.bound) { %>
+explicit build/set-up request loads `first-tree-seed`.<% } %><% if (contextTree.source === 'remote') { %>
 
 ## Tree Location (agent-managed clone)
 
@@ -417,7 +439,19 @@ Upstream: `<%- contextTree.upstreamUrl %>` (branch `<%- contextTree.branch %>`).
   it blocks only Tree operations while unrelated work continues.<% } %>
 - **Read-only**: never edit this clone in place. Tree writes branch a
   worktree off it (`<%- contextTree.addWorktreeCommand %>`) and go through
-  a PR/MR.<% } else { %>
+  a PR/MR.<% } else if (contextTree.source === 'local') { %>
+
+## Tree Location (agent-private Local Context)
+
+The Agent-private Local Context Tree for this workspace lives at:
+
+    <%- contextTree.path %>
+
+This directory is not Team shared truth. The same Agent's chats share this live
+tree; other Agents do not. There is no Git clone, pull, worktree, or PR/MR.
+Resolve it only through `tree local resolve`; do not invent a path. The directory
+survives beside a later remote `context-tree/` clone but becomes frozen once a
+remote binding is observed.<% } else { %>
 
 ## Tree Location
 
@@ -439,7 +473,7 @@ command failure.<% } %>
 
 ## Team Skills
 <% for (const row of resourceSkillRows) { %>
-- <%- row.name %>: <%- row.description %><% } %><% } %><% if (contextTree.bound) { %>
+- <%- row.name %>: <%- row.description %><% } %><% } %><% if (contextTree.source === 'remote') { %>
 
 ## First Tree Family
 
@@ -456,7 +490,21 @@ harness skills (`tdoc`, `review`, `simplify`, `update-config`, …).
 | `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
 | `first-tree-file-bug` | you hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and want it reported — gathers repro + version + chat/user IDs and opens an issue on First Tree's own repo (not the user's own/bound repo) via the user's `gh` CLI |
 | `context-tree-review` | a trusted provider-scoped Context Reviewer run or an explicit request to review a GitHub Context Tree PR or GitLab MR; GitHub publishes an App verdict, while GitLab uses Reviewer-local notes, repair, push, and exact-SHA merge without the GitHub publisher |
-| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |<% } else { %>
+| `context-tree-audit` | a human explicitly asks to audit the whole stored Context Tree, a domain, or selected normal paths for drift, contradictions, duplication, density, metadata, placement, or relationship problems |<% } else if (contextTree.source === 'local') { %>
+
+## First Tree Family
+
+The generated Context Tree Policy is always present. Public Skill names are
+unchanged; Local Read/Write payloads are already projected for this source.
+Do not load Seed, Reviewer, or Audit against the Local tree.
+
+| Skill | Load when |
+|---|---|
+| `first-tree-welcome` | the First Tree onboarding first chat — a natural welcome / "help me get started" message from the user; not a repo scan or tree setup chat, and never an external-channel or `type=integration` message such as Feishu, even when it is a new chat or greeting |
+| `first-tree-read`    | read relevant Local Context Tree files before acting from task / path / feature signals |
+| `first-tree-write`   | reflect a concrete source artifact into this Agent's Local Context Tree |
+| `first-tree-qa` | test, validate, reproduce, release-qualify, or assess performance by establishing the complete product harness before task-specific execution |
+| `first-tree-file-bug` | you hit a bug in First Tree itself (CLI, runtime, chat, web, GitHub or GitLab integration, or tree tooling) and want it reported |<% } else { %>
 
 ## First Tree Family
 

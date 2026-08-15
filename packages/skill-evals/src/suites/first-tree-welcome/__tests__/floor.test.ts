@@ -271,20 +271,20 @@ describe("first-tree-welcome floor invariants", () => {
     expect(yamlDescription).toContain("repo scans");
   });
 
-  it("hardens both agent-briefing welcome skill-map rows with the scan / tree-setup exclusion", () => {
-    // agent-briefing.ejs ships TWO `first-tree-welcome` "Load when" rows (the
-    // tree-less and tree-bound briefing variants) — routing hints the agent
-    // reads. If either omits the scan / tree-setup exclusion it can misroute a
-    // scan-first chat into the welcome launcher. Bind both so neither drifts back
-    // to an un-hardened hint.
+  it("hardens every agent-briefing welcome skill-map row with the scan / tree-setup exclusion", () => {
+    // agent-briefing.ejs ships THREE `first-tree-welcome` "Load when" rows (the
+    // remote, Local, and no-safe-source briefing variants) — routing hints the
+    // agent reads. If any omits the scan / tree-setup exclusion it can misroute
+    // a scan-first chat into the welcome launcher. Bind all three so none drifts
+    // back to an un-hardened hint.
     const briefingTemplate = readFileSync(
       join(process.cwd(), "../client/src/runtime/templates/agent-briefing.ejs"),
       "utf8",
     );
     const welcomeRows = briefingTemplate.match(/^\|[ \t]*`first-tree-welcome`[ \t]*\|[^\n]*$/gm) ?? [];
-    expect(welcomeRows, "template must contain both tree-bound and tree-less welcome rows").toHaveLength(2);
+    expect(welcomeRows, "template must contain remote, Local, and no-safe-source welcome rows").toHaveLength(3);
     for (const row of welcomeRows) {
-      expect(row, "both welcome rows must carry the scan/tree-setup exclusion").toContain(
+      expect(row, "every welcome row must carry the scan/tree-setup exclusion").toContain(
         "not a repo scan or tree setup chat",
       );
     }

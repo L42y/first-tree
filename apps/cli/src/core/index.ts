@@ -172,6 +172,30 @@ export type { InstallClaudeResult } from "./install-claude-runtime.js";
 export { installClaudeRuntime } from "./install-claude-runtime.js";
 export type { InstallCodexResult } from "./install-codex-runtime.js";
 export { installCodexRuntime } from "./install-codex-runtime.js";
+// Agent-private Local Context guard and lifecycle inspection.
+export type {
+  LocalContextBinding,
+  LocalContextDataLoss,
+  LocalContextIntent,
+  LocalContextResolveResult,
+  LocalContextScaffold,
+  LocalContextTreeStats,
+  ResolveLocalContextDeps,
+  ResolveLocalContextOptions,
+} from "./local-context/index.js";
+export {
+  assertLocalContextAgentName,
+  formatLocalContextLossWarning,
+  inspectLocalContextTree,
+  LOCAL_CONTEXT_DIRNAME,
+  LOCAL_CONTEXT_IDENTITY_REL,
+  LOCAL_CONTEXT_LIMITS,
+  LOCAL_CONTEXT_SOURCE_STATE_REL,
+  LocalContextError,
+  listLocalContextDataLoss,
+  localContextDataLossForAgent,
+  resolveLocalContext,
+} from "./local-context/index.js";
 export {
   type MemberOrganizationProfile,
   type MemberOrganizationResolutionCode,

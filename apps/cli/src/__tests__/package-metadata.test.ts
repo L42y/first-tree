@@ -175,6 +175,7 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(existsSync(materialize)).toBe(true);
     expect(existsSync(safety)).toBe(true);
     expect(pkg.scripts?.prepack ?? "").toContain("materialize-bundled-deps.mjs prepare");
+    expect(pkg.scripts?.prepack ?? "").toContain("copy-skill-payloads.mjs --target skills --clean");
     expect(pkg.scripts?.postpack ?? "").toContain("materialize-bundled-deps.mjs restore");
     // Restore must run before skill cleanup so a failed restore still leaves the
     // workspace symlink graph recoverable by a subsequent prepare/restore.
@@ -182,6 +183,9 @@ describe("trusted-publishing npm toolchain contract", () => {
     expect(postpack.indexOf("materialize-bundled-deps.mjs restore")).toBeLessThan(postpack.indexOf("rm -rf skills"));
     const smoke = readText(join(REPO_ROOT, "scripts", "release-pack-smoke.mjs"));
     expect(smoke).toContain("assertNpmTarballRegistrySafe");
+    expect(smoke).toContain("assertTarballContainsLocalSkillVariants");
+    expect(smoke).toContain("package/skills/.variants/local-context/first-tree-read/SKILL.md");
+    expect(smoke).toContain("package/skills/.variants/local-context/first-tree-write/SKILL.md");
     // Pack into a run-owned destination so the deterministic name/version
     // filename cannot overwrite a pre-existing apps/cli artifact.
     expect(smoke).toContain("--pack-destination");

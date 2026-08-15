@@ -1,11 +1,16 @@
 import { createLogger, SdkError } from "@first-tree/client";
-import { contextTreeActiveBindingSchema, contextTreeInfoSchema } from "@first-tree/shared";
+import {
+  agentContextTreeInfoSchema,
+  contextTreeActiveBindingSchema,
+  contextTreeBranchSchema,
+} from "@first-tree/shared";
 import { AuthRefreshFailedError } from "./bootstrap.js";
 import { classifyCliTransportError } from "./transport-error.js";
 
 export type ContextTreeBindingResult =
   | { status: "bound"; repo: string; branch: string }
-  | { status: "unbound"; repo: null; branch: null };
+  | { status: "unbound"; repo: null; branch: string }
+  | { status: "invalid"; repo: null; branch: null };
 
 export type ContextTreeUnreadableCategory =
   | "authentication"
@@ -56,21 +61,35 @@ export class ContextTreeUnreadableError extends Error {
 /**
  * Validate and normalize the agent-scoped Context Tree wire response.
  *
- * `repo` alone determines bound state. This deliberately ignores a default
- * branch on an unbound response and supplies `main` only for a bound response
- * whose branch is null.
+ * The explicit Agent-scoped `bindingState` determines state. A legacy payload
+ * without it, or any state/coordinate conflict, is invalid response data and
+ * cannot authorize Local Context.
  */
 export function normalizeContextTreeBinding(response: unknown): ContextTreeBindingResult {
-  const parsed = contextTreeInfoSchema.safeParse(response);
+  const parsed = agentContextTreeInfoSchema.safeParse(response);
   if (!parsed.success) {
     throw invalidResponseError();
   }
 
-  if (parsed.data.repo === null) {
-    return { status: "unbound", repo: null, branch: null };
+  if (parsed.data.bindingState === "unbound") {
+    const branch = contextTreeBranchSchema.safeParse(parsed.data.branch);
+    if (!branch.success || parsed.data.provider != null) {
+      throw invalidResponseError();
+    }
+    return { status: "unbound", repo: null, branch: branch.data };
+  }
+  if (parsed.data.bindingState === "invalid") {
+    if (parsed.data.branch !== null || parsed.data.provider != null) {
+      throw invalidResponseError();
+    }
+    return { status: "invalid", repo: null, branch: null };
   }
 
-  const binding = contextTreeActiveBindingSchema.safeParse(parsed.data);
+  const binding = contextTreeActiveBindingSchema.safeParse({
+    repo: parsed.data.repo,
+    branch: parsed.data.branch,
+    ...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
+  });
   if (!binding.success) {
     throw invalidResponseError();
   }

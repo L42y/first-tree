@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
 import type { AgentConfigCache } from "../runtime/agent-config-cache.js";
 import type { ContextTreeBinding } from "../runtime/bootstrap.js";
+import type { ContextSource } from "../runtime/context-source.js";
 import type {
   AgentHandler,
   DeliveryToken,
@@ -26,6 +27,7 @@ import type {
 } from "../runtime/handler.js";
 import { InboxDeliveryCoordinator } from "../runtime/inbox-delivery-coordinator.js";
 import type { SubprocessProbe } from "../runtime/process-tree-probe.js";
+import { ContextSourceTransitionError } from "../runtime/provider-support/preparation.js";
 import { ReplayFenceStore, type ReplayFenceWriter } from "../runtime/replay-fence.js";
 import { SessionRuntime } from "../runtime/session-runtime.js";
 import { recordingLogger, silentLogger } from "./_logger-helpers.js";
@@ -222,6 +224,7 @@ function createSessionRuntime(opts: {
   handlerConfig?: HandlerConfig;
   handlerFactory?: HandlerFactory;
   resolveContextTreeBinding?: () => Promise<ContextTreeBinding | null>;
+  resolveContextSource?: () => Promise<ContextSource>;
   ackEntry?: (entryId: number) => Promise<void>;
   session?: {
     idle_timeout: number;
@@ -260,6 +263,7 @@ function createSessionRuntime(opts: {
     // Tests never want the live git-backed resolver — default to a no-op so a
     // tree-less handlerConfig stays tree-less unless a test opts in.
     resolveContextTreeBinding: opts.resolveContextTreeBinding ?? (async () => null),
+    resolveContextSource: opts.resolveContextSource,
     agentIdentity: {
       agentId: "agent-1",
       inboxId: "inbox-agent-1",
@@ -2941,20 +2945,65 @@ describe("SessionRuntime lazy Context Tree binding", () => {
     await sm.shutdown();
   });
 
-  it("does not re-resolve when already bound (steady state pays nothing)", async () => {
-    const resolve = vi.fn(async () => BINDING);
+  it("re-resolves a prior Remote before a new route and can switch repositories", async () => {
+    const resolve = vi.fn(
+      async (): Promise<ContextSource> => ({
+        kind: "remote",
+        path: "/clones/new",
+        repoUrl: "https://github.com/acme/new-tree",
+        branch: "release",
+      }),
+    );
     const handlerConfig: HandlerConfig = {
       workspaceRoot: "/tmp/test",
       runtimeProvider: "codex",
       contextTreePath: "/already/bound",
+      contextTreeRepoUrl: "https://github.com/acme/old-tree",
+      contextTreeBranch: "main",
+      contextSourceKind: "remote",
     };
-    const sm = createSessionRuntime({ handlerConfig, resolveContextTreeBinding: resolve });
+    const sm = createSessionRuntime({ handlerConfig, resolveContextSource: resolve });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "c-bound", messageId: "m1" }));
 
-    expect(resolve).not.toHaveBeenCalled();
-    expect(handlerConfig.contextTreePath).toBe("/already/bound");
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(handlerConfig).toMatchObject({
+      contextTreePath: "/clones/new",
+      contextTreeRepoUrl: "https://github.com/acme/new-tree",
+      contextTreeBranch: "release",
+      contextSourceKind: "remote",
+    });
 
+    await sm.shutdown();
+  });
+
+  it.each([
+    "unbound",
+    "unknown",
+  ] as const)("blocks a new provider route when prior Remote authority becomes %s", async (reason) => {
+    const handler = createMockHandler();
+    const handlerConfig: HandlerConfig = {
+      workspaceRoot: "/tmp/test",
+      runtimeProvider: "codex",
+      contextTreePath: "/already/bound",
+      contextTreeRepoUrl: "https://github.com/acme/old-tree",
+      contextTreeBranch: "main",
+      contextSourceKind: "remote",
+    };
+    const sm = createSessionRuntime({
+      handler,
+      handlerConfig,
+      resolveContextSource: async () => ({ kind: "none", reason }),
+    });
+
+    await expect(sm.dispatch(mockEntry({ id: 1, chatId: `c-${reason}`, messageId: "m1" }))).rejects.toThrow(
+      /preserving the existing non-none projection/,
+    );
+    expect(handler.start).not.toHaveBeenCalled();
+    expect(handlerConfig).toMatchObject({
+      contextTreeRepoUrl: "https://github.com/acme/old-tree",
+      contextSourceKind: "remote",
+    });
     await sm.shutdown();
   });
 
@@ -2968,6 +3017,285 @@ describe("SessionRuntime lazy Context Tree binding", () => {
 
     expect(resolve).toHaveBeenCalledTimes(1);
 
+    await sm.shutdown();
+  });
+
+  it("constructs interleaved cross-Chat handlers from each resolver completion's immutable source snapshot", async () => {
+    const sourceA: ContextSource = {
+      kind: "remote",
+      path: "/tree-a",
+      repoUrl: "https://github.com/acme/tree-a.git",
+      branch: "main",
+    };
+    const sourceB: ContextSource = {
+      kind: "remote",
+      path: "/tree-b",
+      repoUrl: "https://github.com/acme/tree-b.git",
+      branch: "release",
+    };
+    const firstResolution = deferred<ContextSource>();
+    let resolveCalls = 0;
+    const captured = new Map<string, HandlerConfig>();
+    const sm = createSessionRuntime({
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      resolveContextSource: () => {
+        resolveCalls += 1;
+        return resolveCalls === 1 ? firstResolution.promise : Promise.resolve(sourceB);
+      },
+      handlerFactory: (config) =>
+        createMockHandler({
+          start: vi.fn(async (message) => {
+            captured.set(message.chatId, { ...config });
+            return {
+              sessionId: `session-${message.chatId}`,
+              route: { kind: "owned" as const, mode: "queued" as const },
+            };
+          }),
+        }),
+    });
+
+    const chatA = sm.dispatch(mockEntry({ id: 1, chatId: "chat-source-a", messageId: "message-a" }));
+    await vi.waitFor(() => expect(resolveCalls).toBe(1));
+    await sm.dispatch(mockEntry({ id: 2, chatId: "chat-source-b", messageId: "message-b" }));
+    firstResolution.resolve(sourceA);
+    await chatA;
+
+    expect(captured.get("chat-source-a")).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: sourceA.path,
+      contextTreeRepoUrl: sourceA.repoUrl,
+      contextTreeBranch: sourceA.branch,
+    });
+    expect(captured.get("chat-source-b")).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: sourceB.path,
+      contextTreeRepoUrl: sourceB.repoUrl,
+      contextTreeBranch: sourceB.branch,
+    });
+    await sm.shutdown();
+  });
+
+  it("recovers an initial start source transition without terminal settlement and admits a fresh-source handler", async () => {
+    const sourceA: ContextSource = {
+      kind: "remote",
+      path: "/tree-a",
+      repoUrl: "https://github.com/acme/tree-a.git",
+      branch: "main",
+    };
+    const sourceB: ContextSource = {
+      kind: "remote",
+      path: "/tree-b",
+      repoUrl: "https://github.com/acme/tree-b.git",
+      branch: "release",
+    };
+    let current = sourceA;
+    const first = createMockHandler({
+      start: vi.fn().mockRejectedValue(new ContextSourceTransitionError()),
+    });
+    const replacement = createMockHandler();
+    const configs: HandlerConfig[] = [];
+    const handlers = [first, replacement];
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const events: SessionEvent[] = [];
+    const sm = createSessionRuntime({
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      resolveContextSource: async () => current,
+      recoverChat,
+      onSessionEvent: (_chatId, event) => events.push(event),
+      handlerFactory: (config) => {
+        configs.push({ ...config });
+        const handler = handlers.shift();
+        if (!handler) throw new Error("handler factory exhausted");
+        return handler;
+      },
+    });
+    const entry = mockEntry({ id: 1, chatId: "chat-source-start-transition", messageId: "message-1" });
+
+    await sm.dispatch(entry);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-source-start-transition"));
+    expect(sm.totalCount).toBe(0);
+    expect(events).toEqual([]);
+
+    current = sourceB;
+    await sm.dispatch(entry);
+
+    expect(first.start).toHaveBeenCalledTimes(1);
+    expect(replacement.start).toHaveBeenCalledTimes(1);
+    expect(configs).toHaveLength(2);
+    expect(configs[1]).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: sourceB.path,
+      contextTreeRepoUrl: sourceB.repoUrl,
+      contextTreeBranch: sourceB.branch,
+    });
+    expect(events).toEqual([]);
+    await sm.shutdown();
+  });
+
+  it("recovers a resume source transition without terminal settlement and resumes through a fresh-source handler", async () => {
+    const sourceA: ContextSource = {
+      kind: "remote",
+      path: "/tree-a",
+      repoUrl: "https://github.com/acme/tree-a.git",
+      branch: "main",
+    };
+    const sourceB: ContextSource = {
+      kind: "remote",
+      path: "/tree-b",
+      repoUrl: "https://github.com/acme/tree-b.git",
+      branch: "release",
+    };
+    let current = sourceA;
+    const first = createMockHandler({
+      start: vi.fn(async (message, _ctx, token) => {
+        token.processingStarted(message);
+        await token.complete(message, { status: "success", terminal: true });
+        return { sessionId: "source-a-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      resume: vi.fn().mockRejectedValue(new ContextSourceTransitionError()),
+    });
+    const replacement = createMockHandler();
+    const configs: HandlerConfig[] = [];
+    const handlers = [first, replacement];
+    const recoverChat = vi.fn<(chatId: string) => Promise<void>>().mockResolvedValue(undefined);
+    const events: SessionEvent[] = [];
+    const sm = createSessionRuntime({
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      resolveContextSource: async () => current,
+      recoverChat,
+      onSessionEvent: (_chatId, event) => events.push(event),
+      handlerFactory: (config) => {
+        configs.push({ ...config });
+        const handler = handlers.shift();
+        if (!handler) throw new Error("handler factory exhausted");
+        return handler;
+      },
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "chat-source-resume-transition", messageId: "message-1" }));
+    await sm.handleCommand("chat-source-resume-transition", "session:suspend");
+    const resumedEntry = mockEntry({ id: 2, chatId: "chat-source-resume-transition", messageId: "message-2" });
+    await sm.dispatch(resumedEntry);
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-source-resume-transition"));
+    expect(sm.totalCount).toBe(0);
+    expect(events).toEqual([]);
+
+    current = sourceB;
+    await sm.dispatch(resumedEntry);
+
+    expect(first.resume).toHaveBeenCalledTimes(1);
+    expect(replacement.resume).toHaveBeenCalledTimes(1);
+    expect(configs).toHaveLength(2);
+    expect(configs[1]).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: sourceB.path,
+      contextTreeRepoUrl: sourceB.repoUrl,
+      contextTreeBranch: sourceB.branch,
+    });
+    expect(events).toEqual([]);
+    await sm.shutdown();
+  });
+
+  it("re-resolves after retiring a stale suspended handler and creates the replacement from the latest source", async () => {
+    const sourceA: ContextSource = {
+      kind: "remote",
+      path: "/tree-a",
+      repoUrl: "https://github.com/acme/tree-a.git",
+      branch: "main",
+    };
+    const sourceB: ContextSource = {
+      kind: "remote",
+      path: "/tree-b",
+      repoUrl: "https://github.com/acme/tree-b.git",
+      branch: "main",
+    };
+    const sourceC: ContextSource = {
+      kind: "remote",
+      path: "/tree-c",
+      repoUrl: "https://github.com/acme/tree-c.git",
+      branch: "release",
+    };
+    let current = sourceA;
+    const first = createMockHandler({
+      start: vi.fn(async (message, _ctx, token) => {
+        token.processingStarted(message);
+        await token.complete(message, { status: "success" });
+        return { sessionId: "source-a-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      shutdown: vi.fn(async () => {
+        current = sourceC;
+      }),
+    });
+    const replacement = createMockHandler();
+    const configs: HandlerConfig[] = [];
+    const handlers = [first, replacement];
+    const sm = createSessionRuntime({
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      resolveContextSource: async () => current,
+      handlerFactory: (config) => {
+        configs.push({ ...config });
+        const handler = handlers.shift();
+        if (!handler) throw new Error("handler factory exhausted");
+        return handler;
+      },
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "c-source-switch", messageId: "m1" }));
+    await sm.handleCommand("c-source-switch", "session:suspend");
+    current = sourceB;
+    await sm.handleCommand("c-source-switch", "session:resume");
+
+    expect(first.resume).not.toHaveBeenCalled();
+    expect(first.shutdown).toHaveBeenCalledTimes(1);
+    expect(configs).toHaveLength(2);
+    expect(configs[1]).toMatchObject({
+      contextSourceKind: "remote",
+      contextTreePath: "/tree-c",
+      contextTreeRepoUrl: "https://github.com/acme/tree-c.git",
+      contextTreeBranch: "release",
+    });
+    await sm.shutdown();
+  });
+
+  it("does not create a replacement when authority becomes unknown while the stale handler is stopping", async () => {
+    const sourceA: ContextSource = {
+      kind: "remote",
+      path: "/tree-a",
+      repoUrl: "https://github.com/acme/tree-a.git",
+      branch: "main",
+    };
+    let current: ContextSource = sourceA;
+    const first = createMockHandler({
+      start: vi.fn(async (message, _ctx, token) => {
+        token.processingStarted(message);
+        await token.complete(message, { status: "success" });
+        return { sessionId: "source-a-session", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      shutdown: vi.fn(async () => {
+        current = { kind: "none", reason: "unknown" };
+      }),
+    });
+    const replacement = createMockHandler();
+    const factory = vi.fn(() => (factory.mock.calls.length === 1 ? first : replacement));
+    const sm = createSessionRuntime({
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      resolveContextSource: async () => current,
+      handlerFactory: factory,
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "c-source-freeze", messageId: "m1" }));
+    await sm.handleCommand("c-source-freeze", "session:suspend");
+    current = {
+      kind: "remote",
+      path: "/tree-b",
+      repoUrl: "https://github.com/acme/tree-b.git",
+      branch: "main",
+    };
+    await expect(sm.handleCommand("c-source-freeze", "session:resume")).rejects.toThrow(
+      /preserving the existing non-none projection/,
+    );
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(replacement.resume).not.toHaveBeenCalled();
     await sm.shutdown();
   });
 });

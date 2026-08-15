@@ -163,4 +163,20 @@ describe("createContextTreeGitWriteTracker", () => {
       },
     ]);
   });
+
+  it("does not run git status against a Local path that has no remote repo URL", () => {
+    const tracker = createContextTreeGitWriteTracker({
+      contextTreePath: tree,
+      contextTreeRepoUrl: null,
+      contextTreeBranch: null,
+    });
+    writeFileSync(join(tree, "NODE.md"), "updated without attribution\n");
+    expect(
+      tracker.refsForSuccessfulToolCall({
+        toolName: "Bash",
+        toolUseId: "tu-local-path",
+        existingRefs: [],
+      }),
+    ).toEqual([]);
+  });
 });

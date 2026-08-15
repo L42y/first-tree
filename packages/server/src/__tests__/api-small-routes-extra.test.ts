@@ -360,6 +360,7 @@ describe("small API route handlers", () => {
     });
     routeMocks.getTeamSafeOrgContextReviewRuntime
       .mockResolvedValueOnce({
+        bindingState: "bound",
         provider: "gitlab",
         branch: "main",
         repo: "git@gitlab.example:owner/tree.git",
@@ -371,6 +372,7 @@ describe("small API route handlers", () => {
         contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
       })
       .mockResolvedValueOnce({
+        bindingState: "bound",
         provider: "gitlab",
         branch: "main",
         repo: "git@gitlab.example:owner/tree.git",
@@ -382,6 +384,7 @@ describe("small API route handlers", () => {
         contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
       })
       .mockResolvedValueOnce({
+        bindingState: "bound",
         provider: "gitlab",
         branch: "main",
         repo: "git@gitlab.example:owner/tree.git",
@@ -395,6 +398,7 @@ describe("small API route handlers", () => {
 
     await expect(route(routes, "GET", "/config").handler({})).resolves.toEqual({ env: { A: "1" }, resources: [] });
     await expect(route(routes, "GET", "/context-tree/info").handler({})).resolves.toEqual({
+      bindingState: "bound",
       provider: "gitlab",
       branch: "main",
       repo: "git@gitlab.example:owner/tree.git",
@@ -406,6 +410,7 @@ describe("small API route handlers", () => {
       contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
     });
     await expect(route(routes, "GET", "/context-tree/info").handler({})).resolves.toEqual({
+      bindingState: "bound",
       provider: "gitlab",
       branch: "main",
       repo: "git@gitlab.example:owner/tree.git",
@@ -417,6 +422,7 @@ describe("small API route handlers", () => {
       contextReviewer: { enabled: true, agentUuid: "reviewer-1" },
     });
     await expect(route(routes, "GET", "/context-tree/info").handler({})).resolves.toEqual({
+      bindingState: "bound",
       provider: "gitlab",
       branch: "main",
       repo: "git@gitlab.example:owner/tree.git",

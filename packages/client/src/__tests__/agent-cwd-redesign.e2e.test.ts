@@ -1,5 +1,14 @@
 import { execSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -70,7 +79,7 @@ let workRoot: string;
 let fixtureBareRepo: string;
 
 beforeAll(() => {
-  workRoot = mkdtempSync(join(tmpdir(), "ftt-cwd-redesign-"));
+  workRoot = mkdtempSync(join(realpathSync(tmpdir()), "ftt-cwd-redesign-"));
   const seed = join(workRoot, "seed");
   mkdirSync(seed, { recursive: true });
   execSync("git init -q -b main", { cwd: seed });
@@ -152,7 +161,7 @@ function makeMessage(chatId: string, id: string) {
 describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
   it("converges the legacy file marker before the first managed Skill reconcile", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-legacy-marker-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-legacy-marker-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
     mkdirSync(workspaceRoot, { recursive: true });
     writeFileSync(join(workspaceRoot, ".first-tree-workspace"), "legacy boundary marker\n");
@@ -162,6 +171,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     try {
@@ -182,7 +192,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
 
   it("E2: worktrees/ subdir is NOT pre-created by start()", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e2-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e2-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     const cache = buildCache([{ url: fixtureBareRepo, localPath: "first-tree" }]);
@@ -191,6 +201,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await handler.start(makeMessage("chat-e2", "msg-1"), buildSessionCtx("chat-e2"), noopDeliveryToken());
@@ -207,7 +218,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
 
   it("E3: second chat on same agent skips bootstrap (sentinel guard); declared repos are never cloned by the runtime", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e3-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e3-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     const cache = buildCache([{ url: fixtureBareRepo, localPath: "repo-a" }]);
@@ -217,6 +228,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const h1 = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await h1.start(makeMessage("chat-A", "msg-A1"), buildSessionCtx("chat-A"), noopDeliveryToken());
@@ -238,6 +250,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const h2 = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await h2.start(makeMessage("chat-B", "msg-B1"), buildSessionCtx("chat-B"), noopDeliveryToken());
@@ -256,7 +269,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
 
   it("E4: unified briefing contains new redesign sections in AGENTS.md (CLAUDE.md symlinks to it); no legacy 'Predeclared worktrees' wording", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e4-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e4-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     const cache = buildCache([{ url: fixtureBareRepo, localPath: "lib" }]);
@@ -265,6 +278,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await handler.start(makeMessage("chat-e4", "msg-e4"), buildSessionCtx("chat-e4"), noopDeliveryToken());
@@ -319,7 +333,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
 
   it("E6: identity.json carries agent-level stable fields only (no chatId / chatContext)", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e6-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e6-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     const cache = buildCache([]);
@@ -328,6 +342,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await handler.start(makeMessage("chat-e6", "msg-e6"), buildSessionCtx("chat-e6"), noopDeliveryToken());
@@ -350,7 +365,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
 
   it("E7: legacy <chatId>/ directories pre-dating the redesign survive a fresh session start", async () => {
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e7-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e7-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     // Simulate a v1.x-era residual directory inside the agent home.
@@ -365,6 +380,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     await handler.start(makeMessage("chat-e7", "msg-e7"), buildSessionCtx("chat-e7"), noopDeliveryToken());
@@ -390,7 +406,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     // SessionRuntime then persists the returned id, so subsequent inbox
     // messages resume against the new id cleanly (no permanent error loop).
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e8-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e8-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
 
     const cache = buildCache([]);
@@ -399,6 +415,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     // No transcript exists anywhere under `~/.claude/projects/<encoded-cwd>/`.
@@ -431,7 +448,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
     // `resume()` must detect this and run the SDK against the legacy cwd
     // verbatim, preserving the agent's SDK turn history across upgrade.
     capturedSdkOptions.length = 0;
-    const dataDir = mkdtempSync(join(tmpdir(), "ftt-e9-"));
+    const dataDir = mkdtempSync(join(realpathSync(tmpdir()), "ftt-e9-"));
     const workspaceRoot = join(dataDir, "workspaces", "agent-1");
     const chatId = "chat-e9";
 
@@ -459,6 +476,7 @@ describe("Phase E · agent cwd redesign — end-to-end invariants", () => {
       const handler = createClaudeCodeHandler({
         runtimeProvider: "claude-code",
         workspaceRoot,
+        agentName: "test-agent",
         agentConfigCache: cache,
       });
       const returnedSessionId = await handler.resume(

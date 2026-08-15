@@ -25,6 +25,12 @@ import { CLI_USER_AGENT } from "../../core/version.js";
 export type ResolvedAgentConfig = {
   serverUrl: string;
   agentId: string;
+  agentName: string;
+  workspaceRoot: string;
+};
+
+export type ResolvedRuntimeAgentConfig = ResolvedAgentConfig & {
+  runtimeSessionToken: string;
 };
 
 /**
@@ -84,7 +90,57 @@ export function resolveLocalAgent(
     fail("MISSING_SERVER_URL", msg, 2);
   }
 
-  return { serverUrl, agentId: cfg.agentId };
+  return {
+    serverUrl,
+    agentId: cfg.agentId,
+    agentName: resolvedName,
+    workspaceRoot: join(defaultDataDir(), "workspaces", resolvedName),
+  };
+}
+
+/**
+ * Resolve the currently running Agent, not an operator-selected alias.
+ *
+ * Local Context is Agent-private runtime state. Requiring the injected Agent
+ * UUID prevents a shell launched outside a provider session from selecting a
+ * different local alias merely because it is the only configured Agent.
+ */
+export function resolveRuntimeLocalAgent(): ResolvedRuntimeAgentConfig {
+  const runtimeAgentId = process.env.FIRST_TREE_AGENT_ID?.trim();
+  if (!runtimeAgentId) {
+    fail(
+      "LOCAL_CONTEXT_RUNTIME_REQUIRED",
+      "Local Context can only be resolved from an active First Tree Agent runtime session.",
+      2,
+    );
+  }
+
+  const resolved = resolveLocalAgent();
+  if (resolved.agentId !== runtimeAgentId) {
+    fail(
+      "LOCAL_CONTEXT_IDENTITY_MISMATCH",
+      "The active runtime Agent does not match the resolved local Agent configuration.",
+      2,
+    );
+  }
+
+  const runtimeSessionToken = resolveRuntimeSessionToken(resolved.agentId);
+  if (!runtimeSessionToken) {
+    fail("LOCAL_CONTEXT_RUNTIME_PROOF_MISSING", "The active Agent runtime session proof is missing or unreadable.", 3);
+  }
+
+  return { ...resolved, runtimeSessionToken };
+}
+
+/** Build an SDK from one immutable runtime Agent resolution snapshot. */
+export function createSdkFromResolvedRuntimeAgent(agent: ResolvedRuntimeAgentConfig): FirstTreeHubSDK {
+  return new FirstTreeHubSDK({
+    serverUrl: agent.serverUrl,
+    getAccessToken: (opts) => ensureFreshAccessToken(opts),
+    agentId: agent.agentId,
+    runtimeSessionToken: () => agent.runtimeSessionToken,
+    userAgent: CLI_USER_AGENT,
+  });
 }
 
 /** Build an SDK client scoped to the resolved local agent. */

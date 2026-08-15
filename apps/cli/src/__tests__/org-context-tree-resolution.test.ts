@@ -23,6 +23,7 @@ const configMocks = vi.hoisted(() => ({
   agentConfigSchema: {},
   clientConfigSchema: {},
   defaultConfigDir: vi.fn(),
+  defaultDataDir: vi.fn(),
   loadAgents: vi.fn(),
   resolveConfigReadonly: vi.fn(),
 }));
@@ -51,12 +52,15 @@ describe("org context-tree local agent resolution", () => {
     vi.clearAllMocks();
     delete process.env.FIRST_TREE_AGENT_ID;
     configMocks.defaultConfigDir.mockReturnValue("/tmp/first-tree-config");
+    configMocks.defaultDataDir.mockReturnValue("/tmp/first-tree-data");
     configMocks.resolveConfigReadonly.mockReturnValue({});
     bootstrapMocks.ensureFreshAccessToken.mockResolvedValue("token");
     bootstrapMocks.resolveServerUrl.mockReturnValue("https://hub.example");
     clientMocks.getAgentContextTreeConfig.mockResolvedValue({
+      bindingState: "bound",
       repo: "https://github.com/acme/context-tree.git",
       branch: "main",
+      provider: "github",
     });
     clientMocks.setAgentContextTreeConfig.mockImplementation(async (input: { repo: string; branch?: string }) => ({
       repo: input.repo,
@@ -151,6 +155,36 @@ describe("org context-tree local agent resolution", () => {
     await parse();
 
     expect(clientMocks.FirstTreeHubSDK).toHaveBeenCalledWith(expect.objectContaining({ agentId: "agent-writer" }));
+  });
+
+  it.each([
+    ["unbound", { bindingState: "unbound", repo: null, branch: "main", provider: null }],
+    ["invalid", { bindingState: "invalid", repo: null, branch: null, provider: null }],
+  ] as const)("preserves explicit %s agent binding state", async (status, response) => {
+    configMocks.loadAgents.mockReturnValue(new Map([["writer", { agentId: "agent-writer" }]]));
+    clientMocks.getAgentContextTreeConfig.mockResolvedValueOnce(response);
+
+    await parse();
+
+    expect(outputMocks.success).toHaveBeenCalledWith({
+      status,
+      repo: null,
+      branch: status === "unbound" ? "main" : null,
+    });
+  });
+
+  it("fails closed on a legacy read response while keeping set responses backward-compatible", async () => {
+    configMocks.loadAgents.mockReturnValue(new Map([["writer", { agentId: "agent-writer" }]]));
+    clientMocks.getAgentContextTreeConfig.mockResolvedValueOnce({ repo: null, branch: null });
+
+    await expect(parse()).rejects.toMatchObject({ code: "CONTEXT_TREE_UNREADABLE", exitCode: 1 });
+
+    await expect(parseSet()).resolves.toBeUndefined();
+    expect(outputMocks.success).toHaveBeenLastCalledWith({
+      status: "bound",
+      repo: "git@github.com:acme/context-tree.git",
+      branch: "main",
+    });
   });
 
   it("uses the explicit agent for set before an environment-selected agent", async () => {

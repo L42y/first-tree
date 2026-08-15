@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
@@ -26,7 +26,40 @@ vi.mock("../../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
-  bootstrapWorkspace: vi.fn(),
+  bootstrapWorkspace: vi.fn(
+    (options: {
+      workspacePath: string;
+      identity: SessionContext["agent"];
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind?: "remote" | "local" | "none";
+      serverUrl: string;
+    }) => {
+      const runtimeDir = join(options.workspacePath, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: options.identity.agentId,
+          agentName: options.agentName,
+          displayName: options.identity.displayName,
+          type: options.identity.type,
+          visibility: options.identity.visibility,
+          delegateMention: options.identity.delegateMention,
+          metadata: options.identity.metadata,
+          serverUrl: options.serverUrl,
+          contextTreePath: options.contextTreePath,
+          contextSourceKind: options.contextSourceKind ?? "none",
+        }),
+      );
+      for (const name of ["first-tree-read", "first-tree-write"]) {
+        const skillDir = join(options.workspacePath, ".agents", "skills", name);
+        mkdirSync(skillDir, { recursive: true });
+        writeFileSync(join(skillDir, "SKILL.md"), `# ${name}\n`);
+        writeFileSync(join(skillDir, ".first-tree-managed.json"), JSON.stringify({ revision: "test-public:1" }));
+      }
+    },
+  ),
   deepEqualIdentity: vi.fn(() => true),
   ensureWorkspaceRuntimeDir: vi.fn((workspacePath: string) => {
     const dir = join(workspacePath, ".first-tree-workspace");
@@ -40,7 +73,13 @@ vi.mock("../../../../runtime/bootstrap.js", () => ({
   readCachedContextTreeHead: vi.fn(() => null),
   readContextTreeHead: vi.fn(() => null),
   resolveBundledCliVersion: vi.fn(() => "0.0.0-test"),
-  writeAgentBriefing: vi.fn(),
+  writeAgentBriefing: vi.fn((workspacePath: string, content: string) => {
+    writeFileSync(join(workspacePath, "AGENTS.md"), content);
+    const claudePath = join(workspacePath, "CLAUDE.md");
+    rmSync(claudePath, { force: true });
+    if (process.platform === "win32") writeFileSync(claudePath, content);
+    else symlinkSync("AGENTS.md", claudePath);
+  }),
   writeBundledCliVersion: vi.fn(),
   writeContextTreeHead: vi.fn(),
 }));
@@ -237,6 +276,7 @@ function makeContext(
       typeof vi.fn<(chatId: string) => Promise<{ accessToken: string; expiresIn: number }>>
     >;
     agentMetadata?: Record<string, unknown>;
+    getAgentContextTreeConfig?: () => Promise<unknown>;
   } = {},
 ): SessionContext {
   const sendMessage =
@@ -258,7 +298,12 @@ function makeContext(
       delegateMention: null,
       metadata: opts.agentMetadata ?? {},
     },
-    sdk: { serverUrl: "http://test", sendMessage, createAgentOutboxToken } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "http://test",
+      sendMessage,
+      createAgentOutboxToken,
+      ...(opts.getAgentContextTreeConfig ? { getAgentContextTreeConfig: opts.getAgentContextTreeConfig } : {}),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-app-server",
     log: () => {},
     recordProviderActivity: () => {},
@@ -277,6 +322,7 @@ function makeHandler(fake: FakeAppServerClient, extraConfig: Record<string, unkn
   return createCodexAppServerHandler({
     runtimeProvider: "codex",
     workspaceRoot,
+    agentName: "codex-test-agent",
     codexRuntimeBinaryResolver: async () => ({
       ok: true,
       binary: "/tmp/fake-codex",
@@ -299,10 +345,10 @@ function makeHandler(fake: FakeAppServerClient, extraConfig: Record<string, unkn
  * prompt change. Only the methods the handler actually calls are real.
  */
 function makeMutableConfigCache(initialAppend: string, serviceTier = "default") {
-  const state = { append: initialAppend, serviceTier };
+  const state = { append: initialAppend, serviceTier, version: 1 };
   const config = () => ({
     agentId: AGENT_ID,
-    version: 1,
+    version: state.version,
     payload: {
       kind: "codex" as const,
       prompt: { append: state.append },
@@ -327,6 +373,7 @@ function makeMutableConfigCache(initialAppend: string, serviceTier = "default") 
     } as unknown as Record<string, unknown>,
     setAppend: (value: string) => {
       state.append = value;
+      state.version += 1;
     },
   };
 }
@@ -1106,6 +1153,110 @@ describe("codex app-server handler", () => {
     expect(token.retry).not.toHaveBeenCalled();
     expect(retryTurn).not.toHaveBeenCalled();
     expect(failSessionForRecovery).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Context source change while app-server starts before creating a thread", async () => {
+    const fake = new FakeAppServerClient();
+    const repoA = "https://github.com/acme/tree-a.git";
+    let authoritativeRepo = repoA;
+    let markResolverEntered: (() => void) | undefined;
+    let releaseResolver: (() => void) | undefined;
+    const resolverEntered = new Promise<void>((resolve) => {
+      markResolverEntered = resolve;
+    });
+    const resolverGate = new Promise<void>((resolve) => {
+      releaseResolver = resolve;
+    });
+    const handler = makeHandler(fake, {
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+      codexRuntimeBinaryResolver: async () => {
+        markResolverEntered?.();
+        await resolverGate;
+        return {
+          ok: true,
+          binary: "/tmp/fake-codex",
+          runtimeSource: "path",
+          runtimePath: "/tmp/fake-codex",
+          version: "0.0.0-test",
+        };
+      },
+    });
+    const ctx = makeContext({
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+    const token = makeDeliveryToken();
+
+    const startPromise = handler.start(makeMessage("m-source-start", "first"), ctx, token);
+    await resolverEntered;
+    authoritativeRepo = "https://github.com/acme/tree-b.git";
+    releaseResolver?.();
+
+    await expect(startPromise).rejects.toMatchObject({ name: "ContextSourceTransitionError" });
+    expect(fake.requests.filter((request) => request.method === "thread/start")).toHaveLength(0);
+    expect(fake.requests.filter((request) => request.method === "thread/resume")).toHaveLength(0);
+    expect(token.complete).not.toHaveBeenCalled();
+    await handler.shutdown();
+    expect(fake.isClosed).toBe(true);
+  });
+
+  it("retries an active stale-rollout turn without starting a thread after Context source changes", async () => {
+    const fake = new FakeAppServerClient();
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    const retryTurn = vi.fn<SessionContext["retryTurn"]>();
+    const failSessionForRecovery = vi.fn<NonNullable<SessionContext["failSessionForRecovery"]>>();
+    const handler = makeHandler(fake, {
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+    });
+    const ctx = makeContext({
+      retryTurn,
+      failSessionForRecovery,
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+    });
+
+    const initialToken = makeDeliveryToken();
+    const resumePromise = handler.resume(makeMessage("m-source-a", "first"), "thread-app-server", ctx, initialToken);
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+    completeTurn(fake, "turn-1", "ready");
+    await resumePromise;
+
+    fake.turnStartError = new Error(
+      "thread/resume failed: no rollout found for thread id thread-app-server (code -32600)",
+    );
+    authoritativeRepo = repoB;
+    const injectedToken = makeDeliveryToken();
+    expect(handler.inject(makeMessage("m-source-b", "continue"), injectedToken)).toMatchObject({
+      kind: "owned",
+      mode: "queued",
+    });
+    await waitFor(() => vi.mocked(injectedToken.retry).mock.calls.length > 0);
+
+    expect(fake.requests.filter((request) => request.method === "thread/start")).toHaveLength(0);
+    expect(injectedToken.retry).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-source-b" })],
+      "codex_app_server_context_source_changed",
+    );
+    expect(injectedToken.complete).not.toHaveBeenCalled();
+    expect(retryTurn).not.toHaveBeenCalled();
+    expect(failSessionForRecovery).toHaveBeenCalledWith("codex_app_server_context_source_changed", "thread-app-server");
+    await handler.shutdown();
   });
 
   it("uses late replayed cumulative usage as the current resumed turn baseline", async () => {

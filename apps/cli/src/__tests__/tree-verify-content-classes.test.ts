@@ -573,6 +573,7 @@ describe("tree verify strict content policy", () => {
     expect(tree?.commands.map((command) => command.name())).toEqual([
       "verify",
       "tree",
+      "local",
       "read",
       "io",
       "write",

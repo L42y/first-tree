@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentRuntimeConfig } from "@first-tree/shared";
@@ -309,7 +318,7 @@ function context(
 
 describe("OpenCode V1 handler", () => {
   it("passes an SDK-backed Team Skill bundle resolver to every projection refresh", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-team-skill-resolver-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-team-skill-resolver-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const bytes = Buffer.from("bundle bytes");
@@ -325,6 +334,7 @@ describe("OpenCode V1 handler", () => {
     reconcile.mockClear();
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -349,7 +359,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("retries unsafe managed-skill discovery before starting the provider turn", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-managed-skills-unsafe-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-managed-skills-unsafe-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const sessionCtx = context([], []);
@@ -361,6 +371,7 @@ describe("OpenCode V1 handler", () => {
       .mockRejectedValueOnce(new ManagedSkillsUnsafeDiscoveryError("unsafe discovery"));
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -382,11 +393,80 @@ describe("OpenCode V1 handler", () => {
     await handler.shutdown();
   });
 
+  it("rechecks Context authority after a paused DB gate before starting a provider turn", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-source-gate-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const baseSupervisor = createSyntheticSupervisor(specs);
+    const releaseDbFile = join(root, "release-db-gate");
+    let markDbStarted: () => void = () => {};
+    const dbStarted = new Promise<void>((resolvePromise) => {
+      markDbStarted = resolvePromise;
+    });
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        if (spec.args[0] !== "db") return baseSupervisor.spawn(spec);
+        specs.push(spec);
+        const child = spawn(
+          process.execPath,
+          [
+            "-e",
+            `const fs=require("node:fs");const releasePath=process.argv[1];const timer=setInterval(()=>{if(fs.existsSync(releasePath)){clearInterval(timer);process.stdout.write('[{"ready":1}]\\n');}},5);`,
+            releaseDbFile,
+          ],
+          { ...spec.options, detached: false },
+        );
+        markDbStarted();
+        return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+      },
+    };
+    const repoA = "https://github.com/acme/tree-a.git";
+    const repoB = "https://github.com/acme/tree-b.git";
+    let authoritativeRepo = repoA;
+    const sessionCtx = context([], []);
+    sessionCtx.sdk.getAgentContextTreeConfig = async () => ({
+      bindingState: "bound",
+      repo: authoritativeRepo,
+      branch: "main",
+      provider: "github",
+    });
+    const token = deliveryToken();
+    const handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      agentName: "opencode-test-agent",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      contextSourceKind: "remote",
+      contextTreePath: join(root, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: supervisor,
+      opencodeTurnTimeoutMs: 5_000,
+    });
+
+    const startPromise = handler.start(message("m-source-gate", "must not reach OpenCode"), sessionCtx, token);
+    await dbStarted;
+    authoritativeRepo = repoB;
+    writeFileSync(releaseDbFile, "release");
+    await startPromise;
+
+    expect(specs.filter((spec) => spec.args[0] === "run")).toHaveLength(0);
+    expect(token.processingStarted).not.toHaveBeenCalled();
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(token.retry).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-source-gate" })],
+      "opencode_context_source_changed",
+    );
+    expect(sessionCtx.failSessionForRecovery).toHaveBeenCalledWith("opencode_context_source_changed", undefined);
+    await handler.shutdown();
+  });
+
   it.each([
     ["queued preflight", 2],
     ["turn preflight", 4],
   ] as const)("parks persistent unsafe discovery at the %s and resumes the ordered batch once", async (failurePoint, expectedUnsafeRefreshes) => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-managed-skills-parked-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-managed-skills-parked-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
@@ -406,6 +486,7 @@ describe("OpenCode V1 handler", () => {
     });
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -492,7 +573,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it.each(["suspend", "shutdown"] as const)("releases a parked unsafe batch exactly once on %s", async (lifecycle) => {
-    const root = mkdtempSync(join(tmpdir(), `ft-opencode-managed-skills-${lifecycle}-`));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), `ft-opencode-managed-skills-${lifecycle}-`));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const sessionCtx = context([], []);
@@ -505,6 +586,7 @@ describe("OpenCode V1 handler", () => {
     });
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -546,7 +628,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("keeps ordinary queued projection failures on the generic recovery path", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-queued-generic-failure-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-queued-generic-failure-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const sessionCtx = context([], []);
@@ -558,6 +640,7 @@ describe("OpenCode V1 handler", () => {
     });
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -633,7 +716,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("moves oversized private config out of the Windows-sensitive environment block and cleans it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-config-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-config-"));
     roots.push(root);
     const lease = await acquireOpenCodePrivateConfigLease({
       workspace: root,
@@ -683,13 +766,14 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("keeps the managed agent identity stable across fresh handlers and distinct across agents", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-stable-agent-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-stable-agent-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const supervisor = createSyntheticSupervisor(specs);
     const run = async (agentId: string) => {
       const handler = createOpenCodeHandler({
         workspaceRoot: join(root, agentId),
+        agentName: agentId,
         runtimeProvider: "opencode",
         agentConfigCache: cache(runtimeConfig()),
         opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -713,11 +797,12 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("uses a handler-owned private config generation and removes that generation on shutdown", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-recovery-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-private-config-recovery-"));
     roots.push(root);
     const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -733,13 +818,14 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("keeps a replacement handler usable after the older generation shuts down late", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-replacement-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-private-config-replacement-"));
     roots.push(root);
     const scopeRoot = join(root, ".first-tree-workspace", "opencode-config", stableOpenCodeScope("agent-1\0chat-1"));
     const supervisor = createSyntheticSupervisor([]);
     const makeHandler = () =>
       createOpenCodeHandler({
         workspaceRoot: root,
+        agentName: "opencode-test-agent",
         runtimeProvider: "opencode",
         agentConfigCache: cache(runtimeConfig()),
         opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -764,12 +850,13 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("fails closed before a file-backed write when a live generation leaf becomes a symlink", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-swap-"));
-    const external = mkdtempSync(join(tmpdir(), "ft-opencode-private-config-outside-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-private-config-swap-"));
+    const external = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-private-config-outside-"));
     roots.push(root, external);
     const cfg = runtimeConfig();
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(cfg),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -801,7 +888,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("fails closed when even the file-backed projection cannot fit a Windows environment block", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-config-overflow-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-config-overflow-"));
     roots.push(root);
     const lease = await acquireOpenCodePrivateConfigLease({
       workspace: root,
@@ -819,7 +906,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("serializes DB readiness, sends prompt only on stdin, and resumes the confirmed session", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-handler-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-handler-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const events: unknown[] = [];
@@ -829,6 +916,7 @@ describe("OpenCode V1 handler", () => {
     cfg.payload.env.push({ key: "OPENCODE_CONFIG", value: "/operator/custom-opencode.json", sensitive: false });
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(cfg),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -867,12 +955,13 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("queues active injects instead of steering the current process", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-queue-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-queue-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -897,7 +986,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("fails closed on unknown JSONL even when it carries a valid session id, then preserves one-shot context", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-protocol-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-protocol-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const inputs: string[] = [];
@@ -905,6 +994,7 @@ describe("OpenCode V1 handler", () => {
     const sessionCtx = context(events, []);
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -934,7 +1024,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("bounds stream-started retries across fresh handlers and observes the retry-policy delays", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-window-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-retry-window-"));
     roots.push(root);
     const sleep = vi.fn<(delayMs: number) => Promise<void>>(async () => {});
     const sessionCtx = context([], []);
@@ -942,6 +1032,7 @@ describe("OpenCode V1 handler", () => {
     for (const token of tokens) {
       const handler = createOpenCodeHandler({
         workspaceRoot: root,
+        agentName: "opencode-test-agent",
         runtimeProvider: "opencode",
         agentConfigCache: cache(runtimeConfig()),
         opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -964,7 +1055,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("keeps bounded retry custody across real SessionRuntime handler replacement", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-session-manager-retry-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-session-manager-retry-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const sleep = vi.fn<(delayMs: number) => Promise<void>>(async () => {});
@@ -978,6 +1069,7 @@ describe("OpenCode V1 handler", () => {
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
     const sendMessage = vi.fn(async () => ({ id: "runtime-notice" }));
     const sdk = {
+      serverUrl: "https://first-tree.test",
       sendMessage,
       getChatDetail: vi.fn(async () => ({
         id: "chat-sm-retry",
@@ -1002,7 +1094,7 @@ describe("OpenCode V1 handler", () => {
           providerProcessSupervisor: supervisor,
           opencodeRetrySleep: sleep,
         }),
-      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      handlerConfig: { workspaceRoot: root, agentName: "opencode-test-agent", runtimeProvider: "opencode" },
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-1",
@@ -1056,7 +1148,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("abandons no custody mutation when suspend interrupts a provider retry delay", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-suspend-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-retry-suspend-"));
     roots.push(root);
     let sleepStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => {
@@ -1071,6 +1163,7 @@ describe("OpenCode V1 handler", () => {
     );
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1091,7 +1184,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("continues the same retry window after SessionRuntime preempts an unacked delivery delay", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-preempt-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-retry-preempt-"));
     roots.push(root);
     let firstDelayStarted!: () => void;
     const delayStarted = new Promise<void>((resolveStarted) => {
@@ -1117,6 +1210,7 @@ describe("OpenCode V1 handler", () => {
     const recoverChat = vi.fn<(chatId: string) => Promise<void>>(async () => {});
     const sendMessage = vi.fn(async () => ({ id: "runtime-notice" }));
     const sdk = {
+      serverUrl: "https://first-tree.test",
       sendMessage,
       getChatDetail: vi.fn(async (chatId: string) => ({
         id: chatId,
@@ -1141,7 +1235,7 @@ describe("OpenCode V1 handler", () => {
           providerProcessSupervisor: supervisor,
           opencodeRetrySleep: sleep,
         }),
-      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      handlerConfig: { workspaceRoot: root, agentName: "opencode-test-agent", runtimeProvider: "opencode" },
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-1",
@@ -1189,7 +1283,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("expires abandoned provider-attempt windows before admitting a new delivery head", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-retry-expiry-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-retry-expiry-"));
     roots.push(root);
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
@@ -1197,6 +1291,7 @@ describe("OpenCode V1 handler", () => {
     const runFailure = async (id: string, hasPendingDelivery: () => boolean) => {
       const handler = createOpenCodeHandler({
         workspaceRoot: root,
+        agentName: "opencode-test-agent",
         runtimeProvider: "opencode",
         agentConfigCache: cache(runtimeConfig()),
         opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1221,7 +1316,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("retries durable failure notice through SessionRuntime recovery without re-entering the provider", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-session-manager-notice-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-session-manager-notice-"));
     roots.push(root);
     const inputs: string[] = [];
     const credentialOutput = [
@@ -1240,6 +1335,7 @@ describe("OpenCode V1 handler", () => {
       .mockRejectedValueOnce(new Error("runtime notice write failed"))
       .mockResolvedValue({ id: "runtime-notice" });
     const sdk = {
+      serverUrl: "https://first-tree.test",
       sendMessage,
       getChatDetail: vi.fn(async () => ({
         id: "chat-sm-notice",
@@ -1263,7 +1359,7 @@ describe("OpenCode V1 handler", () => {
           opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
           providerProcessSupervisor: supervisor,
         }),
-      handlerConfig: { workspaceRoot: root, runtimeProvider: "opencode" },
+      handlerConfig: { workspaceRoot: root, agentName: "opencode-test-agent", runtimeProvider: "opencode" },
       agentIdentity: {
         agentId: "agent-1",
         inboxId: "inbox-1",
@@ -1309,7 +1405,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("emits a standard terminal provider failure before consuming a credential failure", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-auth-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-auth-"));
     roots.push(root);
     const events: Array<{ kind?: string; payload?: { message?: string } }> = [];
     const output = [
@@ -1322,6 +1418,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1343,7 +1440,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("retains one-shot context and briefing custody when terminal completion is returned for redelivery", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-notice-redelivery-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-notice-redelivery-"));
     roots.push(root);
     const inputs: string[] = [];
     const credentialOutput = [
@@ -1356,6 +1453,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1383,12 +1481,13 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("fails closed when OpenCode warns that the managed agent fell back", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-agent-fallback-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-agent-fallback-"));
     roots.push(root);
     const forwarded: string[] = [];
     const output = `agent "first-tree-missing" not found. Falling back to default agent\n${successfulTurn()}\n`;
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1406,7 +1505,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("treats a completed non-read-only tool event as an unsafe replay fence", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-effect-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-effect-"));
     roots.push(root);
     const output = [
       JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
@@ -1423,6 +1522,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1442,7 +1542,7 @@ describe("OpenCode V1 handler", () => {
     "completed",
     "failed",
   ] as const)("settles a %s write-tool timeout as unsafe instead of replaying it", async (status) => {
-    const root = mkdtempSync(join(tmpdir(), `ft-opencode-timeout-${status}-`));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), `ft-opencode-timeout-${status}-`));
     roots.push(root);
     const output = [
       JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
@@ -1458,6 +1558,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1475,7 +1576,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("settles an explicit abort after a write tool as unsafe instead of replaying it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-abort-effect-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-abort-effect-"));
     roots.push(root);
     const events: Array<{ kind?: string }> = [];
     const output = [
@@ -1492,6 +1593,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1512,7 +1614,7 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("preserves the unsafe-effect fence when private-config cleanup fails after provider exit", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-cleanup-effect-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-cleanup-effect-"));
     roots.push(root);
     const output = [
       JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
@@ -1529,6 +1631,7 @@ describe("OpenCode V1 handler", () => {
     ].join("\n");
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1552,13 +1655,14 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("serializes one shared data-home DB gate across handler instances", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-db-shared-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-db-shared-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const supervisor = createSyntheticSupervisor(specs, { turnDelayMs: 25 });
     const create = () =>
       createOpenCodeHandler({
         workspaceRoot: root,
+        agentName: "opencode-test-agent",
         runtimeProvider: "opencode",
         agentConfigCache: cache(runtimeConfig()),
         opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1580,11 +1684,12 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("accepts later compatible 1.x releases", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-version-ok-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-version-ok-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
@@ -1599,11 +1704,12 @@ describe("OpenCode V1 handler", () => {
   });
 
   it("fails closed through the supervisor before DB or turn launch outside the supported range", async () => {
-    const root = mkdtempSync(join(tmpdir(), "ft-opencode-version-"));
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-version-"));
     roots.push(root);
     const specs: ProviderProcessSpec[] = [];
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
+      agentName: "opencode-test-agent",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),

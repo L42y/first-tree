@@ -100,12 +100,15 @@ export type {
 // preparation
 export {
   acquireAgentHome,
+  assertContextSourceCurrent,
   buildAgentBriefing,
+  ContextSourceTransitionError,
   currentSourceRepoNamesFromPayload,
   declaredSourceRepos,
   ensureAgentBootstrap,
   fetchChatContext,
   fetchChatContextOrLog,
+  isContextSourceTransitionError,
   isManagedSkillsUnsafeDiscoveryError,
   markWorkspaceInitComplete,
   prepareManagedSession,
@@ -125,16 +128,15 @@ export {
   ProviderProcessSupervisionUnsupportedError,
   supportsDefaultProviderProcessSupervision,
 } from "./process-supervision.js";
-export type {
-  ContextTreeAttribution,
-  ContextTreeGitWriteTracker,
-  ShellCommandFileRefsInput,
-} from "./tree-tracking.js";
+export type { ContextTreeAttribution, ContextTreeGitWriteTracker, ShellCommandFileRefsInput } from "./tree-tracking.js";
 // tree-tracking
 export {
   canonicalizeFsPath,
+  contextSourceFromHandlerConfig,
   contextTreeRelativePathOf,
   createContextTreeGitWriteTracker,
+  preparationCoordinatesFromSource,
+  remoteGitAttributionFromSource,
   resolveContextTreeRelativePath,
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,

@@ -84,6 +84,7 @@ describe("claude-code handler — turn_end on SDK-reported subtype error", () =>
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx: SessionContext = {

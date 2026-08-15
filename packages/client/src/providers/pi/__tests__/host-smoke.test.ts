@@ -131,7 +131,7 @@ function makeContext(events: SessionEvent[]): SessionContext {
       delegateMention: null,
       metadata: {},
     },
-    sdk: { sendMessage } as unknown as SessionContext["sdk"],
+    sdk: { serverUrl: "https://first-tree.test", sendMessage } as unknown as SessionContext["sdk"],
     chatId: "chat-pi-smoke",
     log: () => {},
     recordProviderActivity: () => {},
@@ -225,6 +225,7 @@ describe.runIf(runHostSmoke)("Pi host smoke (real 0.83.x)", () => {
     const specs: ProviderProcessSpec[] = [];
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: process.env.PI_BIN ?? "pi" }),
@@ -304,6 +305,7 @@ describe.runIf(runHostSmoke)("Pi host smoke (real 0.83.x)", () => {
     const token = makeToken();
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: process.env.PI_BIN ?? "pi" }),
@@ -366,6 +368,7 @@ describe.runIf(runHostSmoke)("Pi host smoke (real 0.83.x)", () => {
       const token = makeToken();
       const handler = createPiHandler({
         workspaceRoot,
+        agentName: "test-agent",
         runtimeProvider: "pi",
         agentConfigCache: cache(
           runtimeConfig([

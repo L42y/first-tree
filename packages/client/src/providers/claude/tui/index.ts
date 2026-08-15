@@ -16,8 +16,12 @@ import type {
 import { noopDeliveryToken, requireDeliveryToken } from "../../../runtime/contracts.js";
 import type { AgentConfigCache, ChatContext } from "../../../runtime/provider-support/index.js";
 import {
+  assertContextSourceCurrent,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
 } from "../../../runtime/provider-support/index.js";
@@ -135,11 +139,15 @@ async function orphanSweep(clientId: string): Promise<void> {
  */
 export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
   // Identifies this client process; scopes tmux session ownership so the orphan
   // sweep and session names never collide with another live client / QA slot
   // on the shared tmux server. Empty string is tolerated (falls back to a
@@ -271,6 +279,17 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
       payload,
       workspaceCwd: cwd,
       claudeBin: claudeCodeExecutable,
+    });
+
+    await assertContextSourceCurrent({
+      sessionCtx,
+      sourceAuthorityRoot: workspaceRoot,
+      contextTree: {
+        kind: contextTree.kind,
+        path: contextTree.path,
+        repoUrl: contextTree.repoUrl,
+        branch: contextTree.branch,
+      },
     });
 
     await newSession({
@@ -644,6 +663,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           const prepared = await prepareManagedSession({
             sessionCtx,
             workspaceRoot,
+            agentName,
             runtimeProvider,
             providerSkillRoots: PROVIDER_SKILL_ROOTS,
             runtimeConfig,
@@ -653,9 +673,10 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
             // manifest write is deferred for this session.
             payloadResolved: resolvedPayload !== null && resolvedPayload !== undefined,
             contextTree: {
-              path: contextTreePath,
-              repoUrl: contextTreeRepoUrl,
-              branch: contextTreeBranch,
+              kind: contextTree.kind,
+              path: contextTree.path,
+              repoUrl: contextTree.repoUrl,
+              branch: contextTree.branch,
             },
           });
           cwd = prepared.workspace;
@@ -706,6 +727,7 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
           const prepared = await prepareManagedSession({
             sessionCtx,
             workspaceRoot,
+            agentName,
             runtimeProvider,
             providerSkillRoots: PROVIDER_SKILL_ROOTS,
             runtimeConfig,
@@ -713,9 +735,10 @@ export const createClaudeCodeTuiHandler: HandlerFactory = (config) => {
             // See PR #869 baixiaohang round-3 P0 — same gate as start().
             payloadResolved: resumePayloadResolved !== null && resumePayloadResolved !== undefined,
             contextTree: {
-              path: contextTreePath,
-              repoUrl: contextTreeRepoUrl,
-              branch: contextTreeBranch,
+              kind: contextTree.kind,
+              path: contextTree.path,
+              repoUrl: contextTree.repoUrl,
+              branch: contextTree.branch,
             },
           });
           cwd = prepared.workspace;
