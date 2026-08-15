@@ -211,6 +211,22 @@ describe("buildCursorTurnArgs — canonical spawn contract", () => {
     ]);
     expect(buildCursorMcpEnableArgs("managed-docs")).toEqual(["mcp", "enable", "managed-docs"]);
   });
+
+  it("passes a parameterized Cursor Router id through as a single verbatim --model argument", () => {
+    // Cursor Router ("Auto") optimization modes ride the model string via the
+    // CLI's `model[param=value]` syntax — the handler must not parse, split,
+    // or escape it. https://cursor.com/docs/cursor-router
+    expect(buildCursorTurnArgs({ model: "auto-smart[optimize_for=cost]", resumeSessionId: null })).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--sandbox",
+      "disabled",
+      "--force",
+      "--model",
+      "auto-smart[optimize_for=cost]",
+    ]);
+  });
 });
 
 describe("cursor handler — per-turn CLI transport", () => {

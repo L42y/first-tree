@@ -71,6 +71,33 @@ export const CODEX_MODEL_OPTIONS: Array<ModelOption & { value: CodexModelId }> =
 ];
 
 /**
+ * Cursor Router ("Auto") optimization modes, always offered on the Cursor
+ * path — with or without a discovered catalog. The Cursor CLI accepts a
+ * parameterized model id (`model[param=value]`), and the handler passes the
+ * saved value verbatim as the next `--model` argument, so these exact ids
+ * carry the mode. Router model id and parameter values per
+ * https://cursor.com/docs/cursor-router. Order matches Cursor's own picker:
+ * Intelligence, Balance, Cost.
+ */
+export const CURSOR_AUTO_MODEL_OPTIONS: ModelOption[] = [
+  {
+    value: "auto-smart[optimize_for=intelligence]",
+    label: "Auto · Intelligence",
+    hint: "Router · billed per routed model",
+  },
+  {
+    value: "auto-smart[optimize_for=balanced]",
+    label: "Auto · Balance",
+    hint: "Router · billed per routed model",
+  },
+  {
+    value: "auto-smart[optimize_for=cost]",
+    label: "Auto · Cost",
+    hint: "Router · bundled Auto pricing",
+  },
+];
+
+/**
  * Curated per-provider fallback, rendered when no computer is bound or the
  * daemon's catalog is unavailable. Cursor/Kimi have no curated list on
  * purpose (the account-dependent SKU catalog is large and shifting), so
@@ -92,7 +119,7 @@ const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   "claude-code-tui": "Applies to new sessions immediately. Model swap restarts the tmux session (~2–4s).",
   codex: "Applies to new sessions immediately. Unset lets the CLI pick by auth mode.",
   cursor:
-    "Options come from this computer's Cursor CLI when reachable. The id is passed through verbatim on the next turn — one your account can't use fails visibly, no silent fallback. Unset uses the Cursor default (auto).",
+    "Options come from this computer's Cursor CLI when reachable. The Auto · * picks route through the Cursor Router (Cursor Teams/Enterprise only). The id is passed through verbatim on the next turn — one your account or team can't use fails visibly, no silent fallback. Auto · Balance/Intelligence bill per routed model; Auto · Cost uses bundled Auto pricing. Unset uses the Cursor default (auto).",
   grok: "Options come from this computer's Grok Build CLI when reachable. The id is passed through verbatim on the next turn — one your account can't use fails visibly, no silent fallback. Unset uses the Grok default (auto).",
   "kimi-code":
     "Options come from this computer's ~/.kimi-code config when reachable. Passed to new sessions. Unset uses the model configured in ~/.kimi-code.",
@@ -270,20 +297,28 @@ function emptyUnavailableCatalog(provider: RuntimeProvider): ProviderModelCatalo
   };
 }
 
-/** The loaded catalog as a Select list: unset (+ local default hint) → models → current custom value → custom entry. */
+/** The loaded catalog as a Select list: unset (+ local default hint) → provider presets → models → current custom value → custom entry. */
 export function buildCatalogModelOptions(
   catalog: Pick<ProviderModelCatalog, "models" | "defaultModelId">,
   value: string,
+  provider?: RuntimeProvider,
 ): ModelOption[] {
+  // Cursor's Router modes are First Tree presets, not daemon-discovered ids —
+  // they must survive loading/unavailable/empty catalogs, and must not repeat
+  // when the provider catalog already lists the same exact parameterized id.
+  const presetOptions = provider === "cursor" ? CURSOR_AUTO_MODEL_OPTIONS : [];
+  const presetValues = new Set(presetOptions.map((o) => o.value));
+  const models = catalog.models.filter((m) => !presetValues.has(m.id));
   const items: ModelOption[] = [
     { ...UNSET_OPTION, hint: catalog.defaultModelId ? `default: ${catalog.defaultModelId}` : undefined },
-    ...catalog.models.map((m) => ({
+    ...presetOptions,
+    ...models.map((m) => ({
       value: m.id,
       label: m.label ?? m.id,
       hint: [m.hint, m.isDefault ? "default" : null].filter(Boolean).join(" · ") || undefined,
     })),
   ];
-  if (value !== "" && !catalog.models.some((m) => m.id === value)) {
+  if (value !== "" && !presetValues.has(value) && !models.some((m) => m.id === value)) {
     items.push({ value, label: value, hint: "custom" });
   }
   items.push({ value: CUSTOM_MODEL_OPTION_VALUE, label: "Custom model id…" });
@@ -308,7 +343,7 @@ function CatalogModelPicker({
   description?: ReactNode;
 }) {
   const [customMode, setCustomMode] = useState(false);
-  const items = useMemo(() => buildCatalogModelOptions(catalog, value), [catalog, value]);
+  const items = useMemo(() => buildCatalogModelOptions(catalog, value, provider), [catalog, value, provider]);
   const helpText = helpSuffix ? `${MODEL_HELP_BY_PROVIDER[provider]} ${helpSuffix}` : MODEL_HELP_BY_PROVIDER[provider];
 
   if (customMode) {
