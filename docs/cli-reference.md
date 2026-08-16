@@ -131,6 +131,9 @@ runtime markers for the active client before clearing credentials/state. If the
 daemon is active and cannot be stopped, a foreground runtime cannot be stopped,
 or the server-side retire fails, `--purge` refuses to delete local client state.
 The default keeps local client/agent state for the same user to reconnect later.
+If any active or parked Agent Workspace contains an unmigrated
+`local-context/`, the command lists each affected Agent and path before the
+destructive purge begins.
 
 ## computer
 
@@ -154,6 +157,8 @@ intentionally want to discard every local First Tree client stored in this
 installation. This is local-only and does not retire server client rows. Normal
 different-user switching should use
 `first-tree login <code>` instead, which parks inactive clients.
+`computer reset` also lists every active or parked unmigrated Local Context it
+will permanently delete. It never uploads or migrates those files.
 
 ## status
 
@@ -172,7 +177,9 @@ first-tree doctor
 
 Cross-subsystem readiness check covering the daemon, server reachability,
 WebSocket, and configured agents. Use this when `status` flags something
-red and you want a guided drill-down.
+red and you want a guided drill-down. Local Context rows report active/frozen
+source state plus identity, containment, resource-limit, and `tree verify`
+health; doctor does not repair content.
 
 ## upgrade
 
@@ -288,6 +295,9 @@ first-tree agent prune [--yes] [--dry-run]  # remove every local alias the serve
 ```
 
 `prune` is the counterpart to `daemon doctor`'s "stale aliases" warning.
+`remove` and `prune` separately identify an unmigrated `local-context/` before
+deleting the Agent Workspace. Local Context has no built-in history or remote
+backup, so this warning represents permanent data loss.
 
 ### agent status / agent reset
 
@@ -1442,8 +1452,8 @@ ordinary provider work can continue.
 
 Context Tree task-read activation, source-backed write and Seed preflight,
 GitHub App-backed review publication, provider-aware creation/adoption,
-structural validation, hierarchy browsing, and durable IO readback. The `tree` namespace carries `read`, `write`, `review`, `seed`,
-`verify`, `tree`, `init`, and `io`; the rest (`migrate` / `upgrade` / `status` /
+structural validation, hierarchy browsing, Local Context resolution, and durable IO readback. The `tree` namespace carries `read`, `write`, `review`, `seed`,
+`verify`, `tree`, `local`, `init`, and `io`; the rest (`migrate` / `upgrade` / `status` /
 `codeowners` / `claude-hook` / `inject` / `automation` / `skill` groups) was
 retired in the 2026-06 cleanup because the cloud now owns workspace + tree
 provisioning and the client runtime inlines its own skill payload install.
@@ -1461,8 +1471,11 @@ first-tree tree
 ├── seed --team ID \
 │        [--confirm-source URL] \
 │        [--expected-source-key KEY]          # preflight and optional Admin-confirmed source batch
-├── verify [--tree-path PATH]                # validate a Context Tree repo
-├── tree [path] [-L depth] [-P pattern]      # browse Context Tree nodes as a hierarchy
+├── verify [--tree-path PATH]                # validate a Context Tree repo or filesystem tree
+├── tree [path] [-L depth] [-P pattern] \
+│        [--tree-path PATH]                  # browse a Git checkout or filesystem Tree
+├── local resolve --ensure --intent read|write
+│                                            # resolve this Agent's live Local Context root
 └── io [--chat ID] [--action read|write] \
 │      [--since TS] [--until TS] \
 │      [--limit N] [--cursor C] [--all]    # this agent's own Context Tree read/write events
@@ -1867,11 +1880,42 @@ or normal-to-archive links: mechanical syntax can be corrected directly, while
 ownership assignments and promotion of durable archive content require human
 or source-backed decisions. Run `first-tree tree verify --help` for options.
 
+`first-tree tree local resolve --ensure --intent read|write` is the narrow
+managed-Agent guard for Local Context. It accepts no caller path and resolves
+only `<agent-workspace>/local-context/` from the active runtime Agent identity.
+It compares the stable Agent name, UUID, Server URL, source kind, fixed path,
+and runtime session proof; requires the Agent name to be one non-hidden,
+platform-independent member-directory segment; rejects symlinks, special files, escapes, oversized
+trees, corrupt/unknown remote-observed state, and any binding state other than
+authoritative `unbound`; and lazily fills only missing deterministic scaffold
+files. Read intent refuses an invalid Tree. Write intent may return
+`repairOnly: true` so the caller can repair the live files, but it does not edit
+business content. The guard reads Server binding both before and after
+scaffold/verification. A newly observed remote binding is recorded through the
+same Client source-publication lock used by runtime projection, then Local is
+frozen.
+
+Local Context is Agent-private, shared only among that Agent's Chats, and uses
+no content lock, snapshot, candidate, fingerprint, journal, rollback, Git, or
+per-write approval. Writers edit the live Tree directly, re-read changed nodes
+for semantic policy checks, run full `tree verify`, and call the guard again.
+Readers verify before reading and again before using content. Last-write-wins,
+moving reads, and crash-left repair are explicit V0 limitations.
+
 `first-tree tree tree [path]` resolves `path` relative to the current
 working directory, then renders from the current git repository root down
 to that target directory and its descendants. Without `path`, the target is
 the current directory. The target must be an existing directory inside the
 current git repo.
+
+`--tree-path <root>` selects filesystem mode. In this mode `path` is resolved
+relative to the explicit Tree root, the root must be a real directory rather
+than a symlink, and the command performs no Git discovery, pull, branch lookup,
+snapshot identity, or attribution. Human output begins with
+`Mode: filesystem`; JSON reports `mode: "filesystem"`, `branch: null`, and
+`readSnapshot: null`. This is the hierarchy mode used after the Local guard
+returns a trusted live root and it remains usable when Git is absent from
+`PATH`.
 
 Directory nodes come from that directory's `NODE.md`. Leaf nodes come from
 Markdown files other than `NODE.md`, `AGENTS.md`, and `CLAUDE.md`. A
@@ -1917,6 +1961,7 @@ Options:
 
 - `-L, --level <depth>` — maximum descendant depth below the target directory. Ancestors from the git repo root to the target are always kept. For path-tolerant CLI use, `tree tree -L docs/development` is treated as `tree tree docs/development`; `tree tree -L 2 docs/development` applies depth `2` to that path.
 - `-P, --pattern <pattern>` — case-sensitive shell-style glob filter matched against relative path, filename, `title`, and `description`; matching descendants keep their ancestors visible.
+- `--tree-path <root>` — browse an explicit filesystem Context Tree without Git discovery or refresh.
 
 With global `--json` or `FIRST_TREE_JSON=1`, `first-tree tree tree`
 emits a single `{ ok: true, data }` envelope on stdout. `data.root` is the

@@ -74,12 +74,15 @@ type SourceRepositoryRow = Readonly<{
 }>;
 
 type ContextTreeRenderModel = Readonly<{
+  source: "remote" | "local" | "none";
   bound: boolean;
   path: string | null;
   upstreamUrl: string | null;
   branch: string;
   verifyCommand: string;
   hierarchyHelpCommand: string;
+  localResolveReadCommand: string | null;
+  localResolveWriteCommand: string | null;
   cloneCommand: string | null;
   removeSymlinkCommand: string | null;
   pullCommand: string | null;
@@ -132,6 +135,7 @@ export type BuildAgentBriefingOptions = {
   /** Upstream coordinates used by the agent-managed Context Tree clone. */
   contextTreeRepoUrl?: string | null;
   contextTreeBranch?: string | null;
+  contextSourceKind?: "remote" | "local" | "none";
 };
 
 /** Build the unified agent-level briefing materialized as `AGENTS.md`. */
@@ -188,6 +192,7 @@ function buildAgentBriefingRenderModel(opts: BuildAgentBriefingOptions): AgentBr
       opts.contextTreePath,
       opts.contextTreeRepoUrl ?? null,
       opts.contextTreeBranch ?? null,
+      opts.contextSourceKind,
     ),
     contextTreePolicy: readCanonicalContextTreePolicy(),
     contextTreeWriteRouting: readCanonicalContextTreeWriteRouting(),
@@ -212,16 +217,21 @@ function buildContextTreeRenderModel(
   path: string | null,
   upstreamUrl: string | null,
   configuredBranch: string | null,
+  sourceKind?: "remote" | "local" | "none",
 ): ContextTreeRenderModel {
   const branch = configuredBranch ?? "main";
-  if (path === null) {
+  const source = sourceKind ?? (path && upstreamUrl ? "remote" : path ? "remote" : "none");
+  if (source === "none" || path === null) {
     return {
+      source: "none",
       bound: false,
       path: null,
       upstreamUrl: null,
       branch,
       verifyCommand: `${bin} tree verify`,
       hierarchyHelpCommand: `${bin} tree tree --help`,
+      localResolveReadCommand: null,
+      localResolveWriteCommand: null,
       cloneCommand: null,
       removeSymlinkCommand: null,
       pullCommand: null,
@@ -230,13 +240,34 @@ function buildContextTreeRenderModel(
   }
 
   const quotedPath = shellQuote(path);
+  if (source === "local") {
+    return {
+      source: "local",
+      bound: true,
+      path,
+      upstreamUrl: null,
+      branch,
+      verifyCommand: `${bin} tree verify --tree-path ${quotedPath}`,
+      hierarchyHelpCommand: `${bin} tree tree --tree-path ${quotedPath} --help`,
+      localResolveReadCommand: `${bin} tree local resolve --ensure --intent read`,
+      localResolveWriteCommand: `${bin} tree local resolve --ensure --intent write`,
+      cloneCommand: null,
+      removeSymlinkCommand: null,
+      pullCommand: null,
+      addWorktreeCommand: null,
+    };
+  }
+
   return {
+    source: "remote",
     bound: true,
     path,
     upstreamUrl,
     branch,
     verifyCommand: `${bin} tree verify`,
     hierarchyHelpCommand: `${bin} tree tree --help`,
+    localResolveReadCommand: null,
+    localResolveWriteCommand: null,
     cloneCommand: upstreamUrl
       ? `git clone --branch ${shellQuote(branch)} --single-branch ${shellQuote(upstreamUrl)} ${quotedPath}`
       : `git clone --branch <branch> --single-branch <tree-repo-url> ${quotedPath}`,

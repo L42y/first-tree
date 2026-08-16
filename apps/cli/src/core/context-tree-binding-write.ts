@@ -6,7 +6,6 @@ import {
   type ContextTreeReadLogger,
   type ContextTreeUnreadableCategory,
   classifyContextTreeReadError,
-  normalizeContextTreeBinding,
 } from "./context-tree-binding.js";
 
 export type ContextTreeBindingInput = {
@@ -114,10 +113,14 @@ export async function setAgentContextTreeBinding(
     ) {
       throw invalidUpdateResponseError();
     }
-    const binding = normalizeContextTreeBinding(parsedResponse.data);
-    if (binding.status !== "bound" || binding.repo !== input.repo) {
+    if (parsedResponse.data.repo !== input.repo) {
       throw invalidUpdateResponseError();
     }
+    const binding: Extract<ContextTreeBindingResult, { status: "bound" }> = {
+      status: "bound",
+      repo: parsedResponse.data.repo,
+      branch: parsedResponse.data.branch,
+    };
 
     logger.debug({ agent, status: binding.status }, "updated agent organization Context Tree binding");
     return binding;

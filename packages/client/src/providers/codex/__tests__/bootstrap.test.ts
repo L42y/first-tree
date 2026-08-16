@@ -59,6 +59,7 @@ describe("bootstrapWorkspace — codex briefing + workspace marker", () => {
         delegateMention: null,
         metadata: {},
       },
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://first-tree.test",
     });
@@ -84,6 +85,7 @@ describe("bootstrapWorkspace — codex briefing + workspace marker", () => {
         delegateMention: null,
         metadata: {},
       },
+      agentName: "slot-agent",
       contextTreePath: null,
       serverUrl: "http://first-tree.test",
     });

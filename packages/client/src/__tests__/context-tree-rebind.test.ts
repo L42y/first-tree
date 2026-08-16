@@ -12,21 +12,21 @@ describe("reresolveUnboundTree", () => {
     expect(await reresolveUnboundTree("", async () => BINDING)).toEqual(BINDING);
   });
 
-  it("does NOT re-resolve when already bound (steady state untouched)", async () => {
-    const resolve = vi.fn();
-    expect(await reresolveUnboundTree("/already/bound", resolve)).toBeNull();
-    expect(resolve).not.toHaveBeenCalled();
+  it("re-resolves when already bound because the old binding is not a lease", async () => {
+    const resolve = vi.fn(async () => BINDING);
+    expect(await reresolveUnboundTree("/already/bound", resolve)).toEqual(BINDING);
+    expect(resolve).toHaveBeenCalledTimes(1);
   });
 
   it("returns null when the org has no tree configured yet", async () => {
     expect(await reresolveUnboundTree(undefined, async () => null)).toBeNull();
   });
 
-  it("swallows a resolver failure and returns null (session starts unbound)", async () => {
-    expect(
-      await reresolveUnboundTree(undefined, async () => {
+  it("propagates resolver failure so stale authority cannot start", async () => {
+    await expect(
+      reresolveUnboundTree(undefined, async () => {
         throw new Error("network down");
       }),
-    ).toBeNull();
+    ).rejects.toThrow("network down");
   });
 });

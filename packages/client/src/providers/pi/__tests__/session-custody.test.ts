@@ -362,6 +362,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     const ackEntry = mockAckEntry();
     const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-pi" });
     const sdk = {
+      serverUrl: "https://first-tree.test",
       register: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
       postRuntimeNotice,
@@ -371,6 +372,7 @@ describe("Pi handler → SessionRuntime custody", () => {
 
     const handler = createPiHandler({
       workspaceRoot,
+      agentName: "pi-custody-test-agent",
       runtimeProvider: "pi",
       agentConfigCache: cache(runtimeConfig()),
       piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -386,7 +388,7 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       concurrency: 5,
       handlerFactory: () => handler,
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -433,6 +435,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     registryPath?: string;
   }): SessionRuntime {
     const sdk = {
+      serverUrl: "https://first-tree.test",
       register: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
       postRuntimeNotice: input.postRuntimeNotice,
@@ -450,6 +453,7 @@ describe("Pi handler → SessionRuntime custody", () => {
       handlerFactory: () => {
         const handler = createPiHandler({
           workspaceRoot,
+          agentName: "pi-custody-test-agent",
           runtimeProvider: "pi",
           agentConfigCache: cache(runtimeConfig()),
           piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
@@ -458,7 +462,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         input.onHandler?.(handler);
         return handler;
       },
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -577,6 +581,7 @@ describe("Pi handler → SessionRuntime custody", () => {
     const ackEntry = mockAckEntry();
     const postRuntimeNotice = vi.fn().mockResolvedValue({ id: "runtime-notice-unused" });
     const sdk = {
+      serverUrl: "https://first-tree.test",
       register: vi.fn(),
       sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
       postRuntimeNotice,
@@ -607,13 +612,14 @@ describe("Pi handler → SessionRuntime custody", () => {
       handlerFactory: () =>
         createPiHandler({
           workspaceRoot,
+          agentName: "pi-custody-test-agent",
           runtimeProvider: "pi",
           agentConfigCache: cache(runtimeConfig()),
           piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
           providerProcessSupervisor: createSyntheticSupervisor(specs),
           piRetrySleep: gatedSleep,
         }),
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -743,7 +749,7 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       concurrency: 5,
       handlerFactory: () => deferredHandler,
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -755,6 +761,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         metadata: {},
       },
       sdk: {
+        serverUrl: "https://first-tree.test",
         register: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
         postRuntimeNotice,
@@ -963,7 +970,7 @@ describe("Pi handler → SessionRuntime custody", () => {
       },
       concurrency: 5,
       handlerFactory: () => deferredHandler,
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -975,6 +982,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         metadata: {},
       },
       sdk: {
+        serverUrl: "https://first-tree.test",
         register: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
         postRuntimeNotice,
@@ -1126,12 +1134,13 @@ describe("Pi handler → SessionRuntime custody", () => {
       handlerFactory: () =>
         createPiHandler({
           workspaceRoot,
+          agentName: "pi-custody-test-agent",
           runtimeProvider: "pi",
           agentConfigCache: gatedCache,
           piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -1143,6 +1152,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         metadata: {},
       },
       sdk: {
+        serverUrl: "https://first-tree.test",
         register: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
         postRuntimeNotice,
@@ -1514,26 +1524,14 @@ describe("Pi handler → SessionRuntime custody", () => {
     await sm.shutdown();
   });
 
-  it("active inject before prompt write: operator suspend leaves recoverable debt (no notice/ACK)", async () => {
+  it("active inject on a healthy RPC bypasses config refresh and remains routable", async () => {
     setPiTestMode("happy");
     let refreshCount = 0;
-    let releaseRefresh: (() => void) | undefined;
-    let signalRefresh: (() => void) | undefined;
-    const refreshStarted = new Promise<void>((resolve) => {
-      signalRefresh = resolve;
-    });
-    const refreshGate = new Promise<void>((resolve) => {
-      releaseRefresh = resolve;
-    });
     const config = runtimeConfig();
     const gatedCache: AgentConfigCache = {
       get: () => config,
       refresh: async () => {
         refreshCount++;
-        if (refreshCount >= 2) {
-          signalRefresh?.();
-          await refreshGate;
-        }
         return config;
       },
       refreshIfNewer: async () => config,
@@ -1557,12 +1555,13 @@ describe("Pi handler → SessionRuntime custody", () => {
       handlerFactory: () =>
         createPiHandler({
           workspaceRoot,
+          agentName: "pi-custody-test-agent",
           runtimeProvider: "pi",
           agentConfigCache: gatedCache,
           piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -1574,6 +1573,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         metadata: {},
       },
       sdk: {
+        serverUrl: "https://first-tree.test",
         register: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
         postRuntimeNotice,
@@ -1606,21 +1606,18 @@ describe("Pi handler → SessionRuntime custody", () => {
         content: "blocked before write",
       }),
     );
-    await refreshStarted;
-    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
+    await injectPromise;
+    await vi.waitFor(() => expect(ackEntry.mock.calls.filter((call) => call[0] === 115)).toHaveLength(1));
 
-    const suspendPromise = sm.handleCommand(chatId, "session:suspend");
-    const suspending = (
-      sm as unknown as { projection: { sessions: Map<string, { suspending: Promise<void> | null }> } }
-    ).projection.sessions.get(chatId)?.suspending;
-    releaseRefresh?.();
-    await Promise.all([suspendPromise, suspending ?? Promise.resolve(), injectPromise]);
-
-    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish);
-    expect(ackEntry.mock.calls.filter((call) => call[0] === 115)).toHaveLength(0);
+    expect(refreshCount).toBe(1);
+    expect(Number(readFileSync(promptCountFile, "utf8")) || 0).toBe(promptsAfterEstablish + 1);
+    // `main` rewrote this case; the "no operator-facing write happened" leg now
+    // watches the dedicated runtime-notice endpoint, which is where a notice
+    // goes on this branch.
     expect(postRuntimeNotice).not.toHaveBeenCalled();
-    expect(recoverChat).toHaveBeenCalledWith(chatId);
+    expect(recoverChat).not.toHaveBeenCalled();
 
+    await sm.handleCommand(chatId, "session:suspend");
     await sm.shutdown();
   });
 
@@ -1661,12 +1658,13 @@ describe("Pi handler → SessionRuntime custody", () => {
       handlerFactory: () =>
         createPiHandler({
           workspaceRoot,
+          agentName: "pi-custody-test-agent",
           runtimeProvider: "pi",
           agentConfigCache: gatedCache,
           piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
           providerProcessSupervisor: createSyntheticSupervisor(specs),
         }),
-      handlerConfig: { workspaceRoot, runtimeProvider: "pi" },
+      handlerConfig: { workspaceRoot, agentName: "pi-custody-test-agent", runtimeProvider: "pi" },
       resolveContextTreeBinding: async () => null,
       agentIdentity: {
         agentId: "agent-1",
@@ -1678,6 +1676,7 @@ describe("Pi handler → SessionRuntime custody", () => {
         metadata: {},
       },
       sdk: {
+        serverUrl: "https://first-tree.test",
         register: vi.fn(),
         sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
         postRuntimeNotice,

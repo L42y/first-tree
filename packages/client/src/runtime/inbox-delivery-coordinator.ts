@@ -21,6 +21,16 @@ export type DeliveryDecision =
 
 export type DeliveryRouteOwnership = "owned" | "settled" | "lost";
 
+type InboxRecoverChatResult = {
+  unackedOutstanding?: number;
+};
+
+function recoverProvedChatSettled(result: unknown): boolean {
+  if (typeof result !== "object" || result === null) return false;
+  if (!("unackedOutstanding" in result)) return false;
+  return (result as InboxRecoverChatResult).unackedOutstanding === 0;
+}
+
 export type WorkSnapshot = {
   entries: Array<{
     entryId: number;
@@ -29,6 +39,7 @@ export type WorkSnapshot = {
   }>;
   recoveryDebt: RecoveryDebt;
   admissionPending: boolean;
+  needsAckSettlementReconcile: boolean;
 };
 
 type DeliveryPhase = "open" | "owned" | "terminal";
@@ -82,13 +93,20 @@ type ChatInboxLedger = {
   // Server recovery can redeliver several frames after one accepted request;
   // keep classifying that burst as recovery while any redelivered work is unsettled.
   recoveryWindowOpen: boolean;
+  /**
+   * ACK-through failed before the Client saw a confirm. The row may already
+   * be `acked` on the server, so bind reset will not redeliver it. Rebind
+   * must call `inbox:recover` to learn settlement; do not wait for dispatch.
+   */
+  needsAckSettlementReconcile: boolean;
   admissionQueue: Promise<void> | null;
   ackQueue: Promise<unknown> | null;
 };
 
 type InboxDeliveryCoordinatorConfig = {
   ackEntry: (entryId: number) => Promise<void>;
-  recoverChat?: (chatId: string) => Promise<void>;
+  /** Resolving `{ unackedOutstanding: 0 }` proves the chat settled; omitted is unknown. */
+  recoverChat?: (chatId: string) => Promise<unknown>;
   /** Retry a captured terminal runtime notice during recovery/redelivery. */
   postRuntimeFailureNotice?: (chatId: string, payload: ProviderRetryEventPayload) => Promise<void>;
   onWorkChanged: (chatId: string) => void;
@@ -210,6 +228,24 @@ export class InboxDeliveryCoordinator {
     await this.requestRecovery(chatId, reason);
   }
 
+  /**
+   * After `agent:bound`, retry `inbox:recover` only for chats whose ACK
+   * confirm was lost. Fail-close closes the socket before the first recover
+   * can send; acked rows are not redelivered, so dispatch never retries.
+   */
+  async reconcileAckSettlementAfterBind(): Promise<void> {
+    const chatIds: string[] = [];
+    for (const [chatId, ledger] of this.ledgers) {
+      if (ledger.needsAckSettlementReconcile) chatIds.push(chatId);
+    }
+    for (const chatId of chatIds) {
+      const inFlight = this.recoveringChats.get(chatId);
+      if (inFlight) await inFlight;
+      if (!this.ledgers.get(chatId)?.needsAckSettlementReconcile) continue;
+      await this.requestRecovery(chatId, "ack_settlement_rebind");
+    }
+  }
+
   private async requestRecovery(chatId: string, reason: string): Promise<void> {
     const existing = this.recoveringChats.get(chatId);
     if (existing) {
@@ -234,9 +270,22 @@ export class InboxDeliveryCoordinator {
 
     let recovery: Promise<void>;
     recovery = recoverChat(chatId)
-      .then(() => {
-        this.clearEntriesForRecoverySuccess(chatId);
+      .then((result) => {
         const current = this.ledger(chatId);
+        current.needsAckSettlementReconcile = false;
+        if (recoverProvedChatSettled(result)) {
+          this.commitRemainingEntriesFromServerProof(chatId);
+          current.recoveryDebt = "none";
+          current.recoveryActivationReady = false;
+          current.recoveryWindowOpen = false;
+          this.cleanupLedger(chatId);
+          this.config.log.info(
+            { chatId, reason, unackedOutstanding: 0 },
+            "inbox recover proved chat settled; released retained ledger",
+          );
+          return;
+        }
+        this.clearEntriesForRecoverySuccess(chatId);
         current.recoveryDebt = "none";
         current.recoveryActivationReady = true;
         current.recoveryWindowOpen = false;
@@ -610,7 +659,12 @@ export class InboxDeliveryCoordinator {
   hasUnsettledWork(chatId: string): boolean {
     const ledger = this.ledgers.get(chatId);
     if (!ledger) return false;
-    return ledger.entries.length > 0 || ledger.recoveryDebt !== "none" || ledger.admissionQueue !== null;
+    return (
+      ledger.entries.length > 0 ||
+      ledger.recoveryDebt !== "none" ||
+      ledger.admissionQueue !== null ||
+      ledger.needsAckSettlementReconcile
+    );
   }
 
   hasProcessingOwnedWork(chatId: string): boolean {
@@ -634,6 +688,7 @@ export class InboxDeliveryCoordinator {
       })),
       recoveryDebt: ledger?.recoveryDebt ?? "none",
       admissionPending: ledger?.admissionQueue !== null,
+      needsAckSettlementReconcile: ledger?.needsAckSettlementReconcile === true,
     };
   }
 
@@ -719,6 +774,7 @@ export class InboxDeliveryCoordinator {
             tracked.ackAttempt = undefined;
           }
         }
+        current.needsAckSettlementReconcile = true;
       }
       this.emitWorkChanged(chatId);
       void this.markRecoveryDebt(chatId, `${reason}:ack_failed`, {
@@ -743,6 +799,7 @@ export class InboxDeliveryCoordinator {
         committed.map((tracked) => tracked.messageId),
       );
     }
+    current.needsAckSettlementReconcile = false;
     if (current.entries.length === 0 && current.recoveryDebt === "required") {
       current.recoveryDebt = "none";
     }
@@ -790,6 +847,34 @@ export class InboxDeliveryCoordinator {
       this.deduplicator.drop(tracked.dedupKey);
     }
     ledger.entries = retained;
+  }
+
+  /**
+   * `inbox:recover` reported no pending+delivered rows. Bind reset cannot
+   * redeliver already-acked work, so retained terminals are settlement
+   * proof rather than recovery debt.
+   */
+  private commitRemainingEntriesFromServerProof(chatId: string): void {
+    const current = this.ledgers.get(chatId);
+    if (!current || current.entries.length === 0) {
+      if (current) current.needsAckSettlementReconcile = false;
+      this.cleanupLedger(chatId);
+      return;
+    }
+    const committed = current.entries;
+    current.entries = [];
+    current.needsAckSettlementReconcile = false;
+    const messageIds = committed.map((tracked) => tracked.messageId);
+    this.markFenceSettled(chatId, messageIds);
+    for (const tracked of committed) {
+      this.deduplicator.drop(tracked.dedupKey);
+      this.recentlySettled.isDuplicate(
+        this.settledKey({ chatId, entryId: tracked.entryId, messageId: tracked.messageId }),
+      );
+    }
+    this.config.onDeliveriesCommitted?.(chatId, messageIds);
+    this.cleanupLedger(chatId);
+    this.emitWorkChanged(chatId);
   }
 
   private async settleNoticeRequiredRedelivery(chatId: string, tracked: TrackedDelivery): Promise<void> {
@@ -905,6 +990,7 @@ export class InboxDeliveryCoordinator {
       recoveryDebt: "none",
       recoveryActivationReady: false,
       recoveryWindowOpen: false,
+      needsAckSettlementReconcile: false,
       admissionQueue: null,
       ackQueue: null,
     };
@@ -929,6 +1015,7 @@ export class InboxDeliveryCoordinator {
       ledger.recoveryDebt === "none" &&
       !ledger.recoveryActivationReady &&
       !ledger.recoveryWindowOpen &&
+      !ledger.needsAckSettlementReconcile &&
       ledger.admissionQueue === null &&
       ledger.ackQueue === null
     ) {

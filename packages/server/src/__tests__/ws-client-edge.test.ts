@@ -834,7 +834,7 @@ describe("Agent client WS edge protocol coverage", () => {
         ackedCount: 1,
       });
       expect(claimSpy).toHaveBeenCalled();
-      expect(ackSpy).toHaveBeenCalledWith(app.db, entryId, [agent.inboxId]);
+      expect(ackSpy).toHaveBeenCalledWith(app.db, entryId, [agent.inboxId], [entryId]);
     } finally {
       await closeSocket(ws);
       claimSpy.mockRestore();
@@ -1316,7 +1316,7 @@ describe("Agent client WS edge protocol coverage", () => {
         .spyOn(inboxService, "ackEntryByIdForBoundAgents")
         .mockRejectedValueOnce(new Error("ack db failed"));
       ws.send(JSON.stringify({ type: "inbox:ack", entryId: 888_888_888, ref: "ack-throws" }));
-      await vi.waitFor(() => expect(ackThrowSpy).toHaveBeenCalledWith(app.db, 888_888_888, [agent.inboxId]));
+      await vi.waitFor(() => expect(ackThrowSpy).toHaveBeenCalledWith(app.db, 888_888_888, [agent.inboxId], []));
 
       const ackOwnerFallbackSpy = vi.spyOn(inboxService, "ackEntryByIdForBoundAgents").mockResolvedValueOnce({
         ok: true,
@@ -1339,7 +1339,7 @@ describe("Agent client WS edge protocol coverage", () => {
         ref: "ack-owner-fallback",
         disposition: "acked",
       });
-      expect(ackOwnerFallbackSpy).toHaveBeenCalledWith(app.db, 777_777_777, [agent.inboxId]);
+      expect(ackOwnerFallbackSpy).toHaveBeenCalledWith(app.db, 777_777_777, [agent.inboxId], []);
 
       ws.send(JSON.stringify({ type: "inbox:ack", entryId: 999_999_999, ref: "ack-missing" }));
       await expect(

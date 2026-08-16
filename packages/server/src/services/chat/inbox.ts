@@ -619,11 +619,20 @@ async function collectPrecedingContext(
  *
  * Trusts only the `inboxId` set the connected socket has bound (no `inboxId`
  * on the wire), and short-circuits on an empty `inboxIds`.
+ *
+ * `currentSocketDeliveredEntryIds` is an in-process snapshot of the calling
+ * socket's current in-flight notify deliveries for the target chat. Every
+ * notify row that would move from `delivered` or reset-pending to `acked`
+ * must be in that snapshot; otherwise the commit is refused and left for
+ * bind/recovery redelivery. Duplicate ACKs against an already-acked prefix
+ * still succeed without consulting the snapshot, but they do not drain
+ * additional silent rows.
  */
 export async function ackThroughEntryIdForBoundAgents(
   db: Database,
   entryId: number,
   inboxIds: string[],
+  currentSocketDeliveredEntryIds: readonly number[],
 ): Promise<AckEntryResult> {
   if (inboxIds.length === 0) return { ok: false, reason: "not_found_or_not_bound" };
   return withSpan("inbox.ack.ws", { [FIRST_TREE_ATTR.INBOX_ENTRY_ID]: String(entryId) }, async () => {
@@ -677,7 +686,6 @@ export async function ackThroughEntryIdForBoundAgents(
       };
 
       if (committableIds.length === 0) {
-        await drainPendingSilentRows();
         return {
           ok: true,
           throughEntry: entry,
@@ -685,6 +693,11 @@ export async function ackThroughEntryIdForBoundAgents(
           ackedCount: 0,
           ackedEntryIds: [],
         };
+      }
+
+      const currentSocketDeliveredSet = new Set(currentSocketDeliveredEntryIds);
+      if (committableIds.some((id) => !currentSocketDeliveredSet.has(id))) {
+        return { ok: false, reason: "not_found_or_not_bound" };
       }
 
       const updated = await tx

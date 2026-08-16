@@ -97,6 +97,15 @@ describe("inbox WS data-plane claim helpers", () => {
       .orderBy(asc(inboxEntries.id));
   }
 
+  function ackThrough(
+    app: FastifyInstance,
+    entryId: number,
+    inboxIds: string[],
+    currentSocketDeliveredEntryIds: readonly number[],
+  ) {
+    return inboxService.ackEntryByIdForBoundAgents(app.db, entryId, inboxIds, currentSocketDeliveredEntryIds);
+  }
+
   it("claimAndBuildForPush atomically claims a pending entry and bundles it", async () => {
     const app = getApp();
     const { a2, messageId } = await seedDeliverable(app);
@@ -232,7 +241,7 @@ describe("inbox WS data-plane claim helpers", () => {
     expect(silentBeforeAck.length).toBeGreaterThan(0);
     expect(silentBeforeAck.every((r) => r.status === "pending")).toBe(true);
 
-    const acked = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [observer.inboxId]);
+    const acked = await ackThrough(app, entry.id, [observer.inboxId], [entry.id]);
     expect(acked.ok).toBe(true);
     if (!acked.ok) throw new Error("ack-through unexpectedly rejected");
     expect(acked.ackedCount).toBe(1);
@@ -291,7 +300,7 @@ describe("inbox WS data-plane claim helpers", () => {
       { allowRecipientlessSend: true },
     );
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [observer.agent.inboxId]);
+    const accepted = await ackThrough(app, entry.id, [observer.agent.inboxId], [entry.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.ackedEntryIds).toEqual([entry.id]);
@@ -357,7 +366,12 @@ describe("inbox WS data-plane claim helpers", () => {
     if (!secondDelivery) throw new Error("expected second delivery");
     expect(secondDelivery.message.precedingMessages.map((p) => p.content)).toEqual(["between triggers"]);
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, secondDelivery.id, [observer.agent.inboxId]);
+    const accepted = await ackThrough(
+      app,
+      secondDelivery.id,
+      [observer.agent.inboxId],
+      [firstDelivery.id, secondDelivery.id],
+    );
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.ackedEntryIds).toEqual([firstDelivery.id, secondDelivery.id]);
@@ -412,7 +426,7 @@ describe("inbox WS data-plane claim helpers", () => {
     expect(precedingContents).not.toContain("silent-1");
     expect(precedingContents).toContain(`silent-${total - 1}`);
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [observer.agent.inboxId]);
+    const accepted = await ackThrough(app, entry.id, [observer.agent.inboxId], [entry.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.ackedCount).toBe(1);
@@ -600,7 +614,7 @@ describe("inbox WS data-plane claim helpers", () => {
     const drained = await inboxService.claimBacklogForPush(app.db, a2.agent.inboxId, 10);
     expect(drained.map((entry) => entry.id)).toEqual([first.id, second.id]);
 
-    const firstAck = await inboxService.ackEntryByIdForBoundAgents(app.db, first.id, [a2.agent.inboxId]);
+    const firstAck = await ackThrough(app, first.id, [a2.agent.inboxId], [first.id]);
     expect(firstAck.ok).toBe(true);
     if (!firstAck.ok) throw new Error("ack-through unexpectedly rejected");
     expect(firstAck.ackedEntryIds).toEqual([first.id]);
@@ -615,7 +629,7 @@ describe("inbox WS data-plane claim helpers", () => {
       [second.id, "delivered"],
     ]);
 
-    const secondAck = await inboxService.ackEntryByIdForBoundAgents(app.db, second.id, [a2.agent.inboxId]);
+    const secondAck = await ackThrough(app, second.id, [a2.agent.inboxId], [second.id]);
     expect(secondAck.ok).toBe(true);
     if (!secondAck.ok) throw new Error("ack-through unexpectedly rejected");
     expect(secondAck.ackedEntryIds).toEqual([second.id]);
@@ -631,7 +645,7 @@ describe("inbox WS data-plane claim helpers", () => {
     await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[0] ?? "");
     await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[1] ?? "");
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, second.id, [a2.agent.inboxId]);
+    const accepted = await ackThrough(app, second.id, [a2.agent.inboxId], [first.id, second.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.disposition).toBe("acked");
@@ -664,7 +678,7 @@ describe("inbox WS data-plane claim helpers", () => {
       .set({ status: "pending" })
       .where(inArray(inboxEntries.id, [first.id, second.id]));
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, second.id, [a2.agent.inboxId]);
+    const accepted = await ackThrough(app, second.id, [a2.agent.inboxId], [first.id, second.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.disposition).toBe("accepted_from_pending");
@@ -694,7 +708,7 @@ describe("inbox WS data-plane claim helpers", () => {
       .set({ status: "delivered", deliveredAt: new Date() })
       .where(eq(inboxEntries.id, second.id));
 
-    const rejected = await inboxService.ackEntryByIdForBoundAgents(app.db, second.id, [a2.agent.inboxId]);
+    const rejected = await ackThrough(app, second.id, [a2.agent.inboxId], [second.id]);
     expect(rejected).toEqual({ ok: false, reason: "prefix_gap" });
 
     const after = await app.db
@@ -721,7 +735,7 @@ describe("inbox WS data-plane claim helpers", () => {
       .where(eq(inboxEntries.id, first.id));
     await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[1] ?? "");
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, second.id, [a2.agent.inboxId]);
+    const accepted = await ackThrough(app, second.id, [a2.agent.inboxId], [second.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
     expect(accepted.ackedCount).toBe(1);
@@ -739,14 +753,14 @@ describe("inbox WS data-plane claim helpers", () => {
     // Wrong scope: an inboxId set that does NOT include the entry's owner —
     // server treats this as 'no-op', preventing one socket from acking
     // another agent's deliveries.
-    const denied = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, ["inbox_other"]);
+    const denied = await ackThrough(app, entry.id, ["inbox_other"], [entry.id]);
     expect(denied).toEqual({ ok: false, reason: "not_found_or_not_bound" });
 
     const stillDelivered = await app.db.select().from(inboxEntries).where(eq(inboxEntries.id, entry.id));
     expect(stillDelivered[0]?.status).toBe("delivered");
 
     // Right scope: ack succeeds and flips status.
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [a2.agent.inboxId]);
+    const accepted = await ackThrough(app, entry.id, [a2.agent.inboxId], [entry.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack unexpectedly rejected");
     expect(accepted.disposition).toBe("acked");
@@ -767,11 +781,7 @@ describe("inbox WS data-plane claim helpers", () => {
     const entry = claimed[0];
     if (!entry) throw new Error("seed claim failed");
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [
-      "inbox_other_a",
-      a2.agent.inboxId,
-      "inbox_other_b",
-    ]);
+    const accepted = await ackThrough(app, entry.id, ["inbox_other_a", a2.agent.inboxId, "inbox_other_b"], [entry.id]);
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) throw new Error("ack unexpectedly rejected");
     expect(accepted.throughEntry.status).toBe("acked");
@@ -786,10 +796,10 @@ describe("inbox WS data-plane claim helpers", () => {
     const entry = claimed[0];
     if (!entry) throw new Error("seed claim failed");
 
-    const first = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [a2.agent.inboxId]);
+    const first = await ackThrough(app, entry.id, [a2.agent.inboxId], [entry.id]);
     expect(first.ok).toBe(true);
 
-    const second = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [a2.agent.inboxId]);
+    const second = await ackThrough(app, entry.id, [a2.agent.inboxId], []);
     expect(second.ok).toBe(true);
     if (!second.ok) throw new Error("duplicate ack unexpectedly rejected");
     expect(second.disposition).toBe("already_acked");
@@ -805,13 +815,108 @@ describe("inbox WS data-plane claim helpers", () => {
     if (!entry) throw new Error("seed entry missing");
     expect(entry.status).toBe("pending");
 
-    const accepted = await inboxService.ackEntryByIdForBoundAgents(app.db, entry.id, [a2.agent.inboxId]);
+    const accepted = await ackThrough(app, entry.id, [a2.agent.inboxId], []);
     expect(accepted).toEqual({ ok: false, reason: "prefix_gap" });
   });
 
   it("ackEntryByIdForBoundAgents short-circuits on empty inbox list", async () => {
     const app = getApp();
-    const res = await inboxService.ackEntryByIdForBoundAgents(app.db, 1, []);
+    const res = await ackThrough(app, 1, [], []);
     expect(res).toEqual({ ok: false, reason: "not_found_or_not_bound" });
+  });
+
+  it("ackEntryByIdForBoundAgents rejects when a committable prefix row is missing from the current-socket snapshot", async () => {
+    const app = getApp();
+    const { a2, messageIds, rows } = await seedDeliverables(app, 2);
+    const first = rows[0];
+    const second = rows[1];
+    if (!first || !second) throw new Error("expected two inbox rows");
+
+    await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[0] ?? "");
+    await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[1] ?? "");
+
+    const rejected = await ackThrough(app, second.id, [a2.agent.inboxId], [second.id]);
+    expect(rejected).toEqual({ ok: false, reason: "not_found_or_not_bound" });
+
+    const after = await app.db
+      .select({ id: inboxEntries.id, status: inboxEntries.status })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.inboxId, a2.agent.inboxId), eq(inboxEntries.notify, true)))
+      .orderBy(asc(inboxEntries.id));
+    expect(after.map((row) => [row.id, row.status])).toEqual([
+      [first.id, "delivered"],
+      [second.id, "delivered"],
+    ]);
+  });
+
+  it("ackEntryByIdForBoundAgents accepts after recovery redelivery rebuilds the snapshot", async () => {
+    const app = getApp();
+    const { a2, chatId, messageIds, rows } = await seedDeliverables(app, 2);
+    const first = rows[0];
+    const second = rows[1];
+    if (!first || !second) throw new Error("expected two inbox rows");
+
+    await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[0] ?? "");
+    await inboxService.claimAndBuildForPush(app.db, a2.agent.inboxId, messageIds[1] ?? "");
+
+    const rejected = await ackThrough(app, second.id, [a2.agent.inboxId], [second.id]);
+    expect(rejected).toEqual({ ok: false, reason: "not_found_or_not_bound" });
+
+    await inboxService.recoverUnackedForScope(app.db, { inboxId: a2.agent.inboxId, chatId });
+    const redelivered = await inboxService.claimBacklogForPush(app.db, a2.agent.inboxId, 10);
+    expect(redelivered.map((entry) => entry.id).sort((left, right) => left - right)).toEqual([first.id, second.id]);
+
+    const accepted = await ackThrough(app, second.id, [a2.agent.inboxId], [first.id, second.id]);
+    expect(accepted.ok).toBe(true);
+    if (!accepted.ok) throw new Error("ack-through unexpectedly rejected");
+    expect([...accepted.ackedEntryIds].sort((left, right) => left - right)).toEqual([first.id, second.id]);
+  });
+
+  it("already_acked does not drain leftover silent rows even with an empty snapshot", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const human = await createTestAgent(app, { type: "human", name: `dup-h-${uid}` });
+    const observer = await createTestAgent(app, { type: "agent", name: `dup-obs-${uid}` });
+    const peer = await createTestAgent(app, { type: "agent", name: `dup-peer-${uid}` });
+    const chat = await createChat(app.db, human.agent.uuid, {
+      type: "group",
+      participantIds: [observer.agent.uuid, peer.agent.uuid],
+    });
+    await app.db
+      .update(chatMembership)
+      .set({ mode: "mention_only" })
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, observer.agent.uuid)));
+
+    await sendMessage(
+      app.db,
+      chat.id,
+      human.agent.uuid,
+      { source: "api", format: "text", content: "silent leftover" },
+      { allowRecipientlessSend: true },
+    );
+    const trigger = await sendMessage(app.db, chat.id, human.agent.uuid, {
+      source: "api",
+      format: "text",
+      content: "notify leftover",
+      metadata: { mentions: [observer.agent.uuid] },
+    });
+    const claimed = await inboxService.claimAndBuildForPush(app.db, observer.agent.inboxId, trigger.message.id);
+    const entry = claimed[0];
+    if (!entry) throw new Error("expected trigger claim");
+
+    await app.db
+      .update(inboxEntries)
+      .set({ status: "acked", ackedAt: new Date() })
+      .where(eq(inboxEntries.id, entry.id));
+
+    const silentBefore = await loadSilentRows(app, observer.agent.inboxId, chat.id);
+    expect(silentBefore.length).toBeGreaterThan(0);
+    expect(silentBefore.every((row) => row.status === "pending")).toBe(true);
+
+    const duplicate = await ackThrough(app, entry.id, [observer.agent.inboxId], []);
+    expect(duplicate).toMatchObject({ ok: true, disposition: "already_acked", ackedCount: 0 });
+
+    const silentAfter = await loadSilentRows(app, observer.agent.inboxId, chat.id);
+    expect(silentAfter.every((row) => row.status === "pending")).toBe(true);
   });
 });

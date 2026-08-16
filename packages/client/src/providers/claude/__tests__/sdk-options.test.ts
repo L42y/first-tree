@@ -118,6 +118,7 @@ describe("claude-code handler — SDK options", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx = buildSessionCtx("chat-settings");
@@ -143,6 +144,7 @@ describe("claude-code handler — SDK options", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx = buildSessionCtx("chat-perm");
@@ -168,6 +170,7 @@ describe("claude-code handler — SDK options", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
       agentConfigCache: cache,
     });
     const ctx = buildSessionCtx("chat-disallow");
@@ -209,6 +212,7 @@ describe("claude-code handler — SDK options", () => {
       const handler = createClaudeCodeHandler({
         runtimeProvider: "claude-code",
         workspaceRoot,
+        agentName: "test-agent",
         agentConfigCache: cache,
       });
       const buildAgentEnv = vi.fn((env: NodeJS.ProcessEnv) => ({ ...env, PATH: finalProviderBin }));

@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
+import { copyAllSkillPayloads, privateSkillVariantEntries, withTrustedSkillsTarget } from "../copy-skill-payloads.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(SCRIPT_DIR, "..", "..");
@@ -231,6 +232,9 @@ function assertInputBuildExists() {
     join(CLI_ROOT, "dist", "index.mjs"),
     join(CLI_ROOT, "package.json"),
     join(REPO_ROOT, "skills", "first-tree-write", "SKILL.md"),
+    ...privateSkillVariantEntries().map(({ variant, name }) =>
+      join(REPO_ROOT, "skill-variants", variant, name, "SKILL.md"),
+    ),
     join(CLI_ROOT, "README.md"),
     join(CLI_ROOT, "LICENSE"),
   ];
@@ -238,6 +242,16 @@ function assertInputBuildExists() {
   if (missing.length > 0) {
     fail(`portable build inputs are missing; run pnpm --filter first-tree-dev build first:\n${missing.join("\n")}`);
   }
+}
+
+export function copyPortableSkillPayloads(appDir) {
+  // The portable app is assembled in a run-owned mkdtemp directory; canonicalize
+  // it here (macOS tmpdir is a /var → /private/var alias) before establishing
+  // the verified skills-target transaction.
+  const trustedParentDir = realpathSync(appDir);
+  withTrustedSkillsTarget({ repoRoot: REPO_ROOT, trustedParentDir }, (target) => {
+    copyAllSkillPayloads({ target, clean: true });
+  });
 }
 
 function readJson(path) {
@@ -677,7 +691,7 @@ async function prepareAppTemplate({ channel, channelConfig, version }) {
     corePolicyPath: "runtime-assets/context-tree-policy.md",
   });
   await rewriteBundleChannel(appDir, channel);
-  cpSync(join(REPO_ROOT, "skills"), join(appDir, "skills"), { recursive: true });
+  copyPortableSkillPayloads(appDir);
   cpSync(join(CLI_ROOT, "README.md"), join(appDir, "README.md"));
   cpSync(join(CLI_ROOT, "LICENSE"), join(appDir, "LICENSE"));
   copyPruneScripts(appDir);

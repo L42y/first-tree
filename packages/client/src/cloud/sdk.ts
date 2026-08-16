@@ -10,6 +10,7 @@ import {
   type ArchiveChatResponse,
   ATTACHMENT_FILENAME_HEADER,
   ATTACHMENT_MIME_HEADER,
+  agentContextTreeInfoSchema,
   type Chat,
   type ChatDetail,
   type ChatEngagementView,
@@ -162,12 +163,19 @@ export type RegisterResult = {
 };
 
 export type ContextTreeConfig = {
-  provider?: "github" | "gitlab";
+  provider?: "github" | "gitlab" | null;
   repo: string | null;
   branch: string | null;
 };
 
-export type ContextReviewRuntimeConfig = ContextTreeConfig & {
+export type AgentContextTreeConfig = {
+  bindingState: "bound" | "unbound" | "invalid";
+  provider: "github" | "gitlab" | null;
+  repo: string | null;
+  branch: string | null;
+};
+
+export type ContextReviewRuntimeConfig = AgentContextTreeConfig & {
   contextReviewer: OrgContextTreeFeaturesStorage["contextReviewer"];
 };
 
@@ -968,9 +976,18 @@ export class FirstTreeHubSDK {
   }
 
   /** Fetch Context Tree configuration for this SDK's authenticated agent. */
-  async getAgentContextTreeConfig(): Promise<ContextTreeConfig> {
-    const info = await this.requestJson<ContextReviewRuntimeConfig>("/api/v1/agent/context-tree/info");
-    return { repo: info.repo, branch: info.branch };
+  async getAgentContextTreeConfig(): Promise<AgentContextTreeConfig> {
+    const info = await this.requestJson<unknown>("/api/v1/agent/context-tree/info");
+    const parsed = agentContextTreeInfoSchema.safeParse(info);
+    if (!parsed.success) {
+      throw new Error("Agent Context Tree info failed the Agent-scoped binding schema");
+    }
+    return {
+      bindingState: parsed.data.bindingState,
+      repo: parsed.data.repo,
+      branch: parsed.data.branch,
+      provider: parsed.data.provider,
+    };
   }
 
   /** Read the live bound Tree plus Reviewer assignment as one runtime tuple. */

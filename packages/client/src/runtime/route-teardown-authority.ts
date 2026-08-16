@@ -290,6 +290,22 @@ export class RouteTeardownAuthority {
     this.retiredHandlers.add(handler);
   }
 
+  /**
+   * Strictly retire the handler whose Context source is no longer current.
+   * Teardown debt and retired-handler custody stay inside this authority; the
+   * host only decides when a source transition requires the operation.
+   */
+  async retireHandlerForContextSourceChange(entry: RouteTeardownHostEntry): Promise<void> {
+    const staleHandler = entry.handler;
+    if (entry.handlerStoppedBySuspend !== staleHandler && !this.isCurrentHandlerQuarantined(entry)) {
+      this.registerPendingTeardown(entry.chatId, staleHandler);
+      await this.shutdownHandler(staleHandler, "session_resume_context_source_changed", { observeFailure: true });
+      this.dropPendingTeardown(entry.chatId, staleHandler);
+      entry.handlerStoppedBySuspend = staleHandler;
+    }
+    this.retiredHandlers.add(staleHandler);
+  }
+
   quarantineMatches(chatId: string, lease: RouteLeaseToken): boolean {
     const quarantined = this.quarantinedSessions.get(chatId);
     return quarantined?.handler === lease.handler && quarantined.generation === lease.generation;
@@ -341,10 +357,13 @@ export class RouteTeardownAuthority {
     this.deps.emitResilienceEvent(entry.chatId, "resilience.session.operator_suspend_timeout", details);
   }
 
-  handlerForRouteTransition(entry: RouteTeardownHostEntry): AgentHandler {
+  handlerForRouteTransition(
+    entry: RouteTeardownHostEntry,
+    createReplacement: () => AgentHandler = this.deps.createHandler,
+  ): AgentHandler {
     if (!this.retiredHandlers.has(entry.handler)) return entry.handler;
     const previous = entry.handler;
-    const handler = this.deps.createHandler();
+    const handler = createReplacement();
     entry.handler = handler;
     // The quarantined generation has no trustworthy teardown join. Keep it
     // exclusively in quarantinedSessions: ordinary pendingTeardowns would

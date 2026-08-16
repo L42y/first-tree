@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   coalesceFirstResultAfterInputs: null as number | null,
   resultMessagesForInput: null as ((turn: number) => unknown[]) | null,
   closeAfterInput: false,
+  queryCalls: 0,
 }));
 
 function wakeQuery(): void {
@@ -29,6 +30,7 @@ function flattenContent(content: unknown): string {
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: (args: { prompt: AsyncIterable<{ message: { content: unknown } }> }) => {
+    state.queryCalls += 1;
     let closed = false;
 
     void (async () => {
@@ -81,7 +83,39 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 vi.mock("../../../runtime/agent-bootstrap.js", () => ({
-  ensureAgentBootstrap: vi.fn(),
+  ensureAgentBootstrap: vi.fn(
+    (args: {
+      workspace: string;
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind: string;
+      briefing: string;
+      sessionCtx: { agent: SessionContext["agent"]; sdk: { serverUrl: string } };
+    }) => {
+      const runtimeDir = join(args.workspace, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: args.sessionCtx.agent.agentId,
+          agentName: args.agentName,
+          displayName: args.sessionCtx.agent.displayName,
+          type: args.sessionCtx.agent.type,
+          visibility: args.sessionCtx.agent.visibility,
+          delegateMention: args.sessionCtx.agent.delegateMention,
+          metadata: args.sessionCtx.agent.metadata,
+          serverUrl: args.sessionCtx.sdk.serverUrl,
+          contextSourceKind: args.contextSourceKind,
+          contextTreePath: args.contextTreePath,
+        }),
+      );
+      writeFileSync(join(args.workspace, "AGENTS.md"), args.briefing);
+      const claudePath = join(args.workspace, "CLAUDE.md");
+      rmSync(claudePath, { force: true });
+      if (process.platform === "win32") writeFileSync(claudePath, args.briefing);
+      else symlinkSync("AGENTS.md", claudePath);
+    },
+  ),
 }));
 
 vi.mock("../../../runtime/bootstrap.js", () => ({
@@ -96,7 +130,9 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
 }));
 
 vi.mock("../../../runtime/agent-briefing.js", () => ({
-  buildAgentBriefing: vi.fn(() => ""),
+  buildAgentBriefing: vi.fn(
+    () => "<!-- first-tree:generated -->\nThis briefing was generated without a safe Context source.\n",
+  ),
 }));
 
 vi.mock("../../../runtime/chat-context.js", () => ({
@@ -146,7 +182,10 @@ function makeFileMessage(
 
 function makeContext(
   onFinishTurn: (count?: number) => void,
-  opts: { formatInboundContent?: SessionContext["formatInboundContent"] } = {},
+  opts: {
+    formatInboundContent?: SessionContext["formatInboundContent"];
+    getAgentContextTreeConfig?: () => Promise<unknown>;
+  } = {},
 ): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   return {
@@ -159,7 +198,11 @@ function makeContext(
       delegateMention: null,
       metadata: {},
     },
-    sdk: { serverUrl: "http://test", sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "http://test",
+      sendMessage,
+      ...(opts.getAgentContextTreeConfig ? { getAgentContextTreeConfig: opts.getAgentContextTreeConfig } : {}),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-claude-startup-race",
     log: () => {},
     recordProviderActivity: () => {},
@@ -188,6 +231,7 @@ beforeEach(() => {
   state.coalesceFirstResultAfterInputs = null;
   state.resultMessagesForInput = null;
   state.closeAfterInput = false;
+  state.queryCalls = 0;
   state.chatContextPromise = new Promise((resolve) => {
     state.resolveChatContext = resolve;
   });
@@ -201,15 +245,76 @@ afterEach(() => {
   state.coalesceFirstResultAfterInputs = null;
   state.resultMessagesForInput = null;
   state.closeAfterInput = false;
+  state.queryCalls = 0;
   wakeQuery();
 });
 
 describe("claude-code handler startup inject queue", () => {
+  it.each([
+    "start",
+    "resume",
+  ] as const)("rejects a Context source change during %s message conversion before spawning a query", async (operation) => {
+    const repoA = "https://github.com/acme/tree-a.git";
+    let authoritativeRepo = repoA;
+    let releaseFormat: (() => void) | undefined;
+    let markFormatEntered: (() => void) | undefined;
+    const formatEntered = new Promise<void>((resolve) => {
+      markFormatEntered = resolve;
+    });
+    const formatGate = new Promise<void>((resolve) => {
+      releaseFormat = resolve;
+    });
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      contextSourceKind: "remote",
+      contextTreePath: join(workspaceRoot, "context-tree"),
+      contextTreeRepoUrl: repoA,
+      contextTreeBranch: "main",
+    });
+    const ctx = makeContext(() => {}, {
+      getAgentContextTreeConfig: async () => ({
+        bindingState: "bound",
+        repo: authoritativeRepo,
+        branch: "main",
+        provider: "github",
+      }),
+      formatInboundContent: async (message) => {
+        markFormatEntered?.();
+        await formatGate;
+        const raw = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+        return `[From: ${message.senderId}]\n\n${raw}`;
+      },
+    });
+    state.resolveChatContext?.({
+      chatId: "chat-claude-startup-race",
+      title: "startup race",
+      topic: null,
+      description: null,
+      participants: [],
+    });
+
+    const message = makeMessage(`source-${operation}`, "first");
+    const resultPromise =
+      operation === "start"
+        ? handler.start(message, ctx, deliveryTokenFromSessionContext(ctx))
+        : handler.resume(message, "missing-native-session", ctx, deliveryTokenFromSessionContext(ctx));
+    await formatEntered;
+    authoritativeRepo = "https://github.com/acme/tree-b.git";
+    releaseFormat?.();
+
+    await expect(resultPromise).rejects.toMatchObject({ name: "ContextSourceTransitionError" });
+    expect(state.queryCalls).toBe(0);
+    await handler.shutdown();
+  });
+
   it("materializes legacy inline images and describes unavailable image batches", async () => {
     const completedCounts: Array<number | undefined> = [];
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -302,6 +407,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext((count) => {
       completedCounts.push(count);
@@ -342,6 +448,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -391,6 +498,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.markMessagesConsumed = (messages) => {
@@ -430,6 +538,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(
       (count) => {
@@ -493,6 +602,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.log = (message) => {
@@ -579,6 +689,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.emitEvent = (event) => {
@@ -653,6 +764,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.emitEvent = (event) => {
@@ -700,6 +812,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.emitEvent = (event) => {
@@ -736,6 +849,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.forwardResult = vi.fn(async () => {
@@ -790,6 +904,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.forwardResult = vi.fn(async () => {});
@@ -824,6 +939,7 @@ describe("claude-code handler startup inject queue", () => {
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext(() => {});
     ctx.emitEvent = (event) => {

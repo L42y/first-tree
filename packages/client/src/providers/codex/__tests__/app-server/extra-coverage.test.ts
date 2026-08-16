@@ -30,7 +30,34 @@ vi.mock("../../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
   IDENTITY_JSON_REL: join(".first-tree-workspace", "identity.json"),
-  bootstrapWorkspace: vi.fn(),
+  bootstrapWorkspace: vi.fn(
+    (options: {
+      workspacePath: string;
+      identity: SessionContext["agent"];
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind?: "remote" | "local" | "none";
+      serverUrl: string;
+    }) => {
+      const runtimeDir = join(options.workspacePath, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: options.identity.agentId,
+          agentName: options.agentName,
+          displayName: options.identity.displayName,
+          type: options.identity.type,
+          visibility: options.identity.visibility,
+          delegateMention: options.identity.delegateMention,
+          metadata: options.identity.metadata,
+          serverUrl: options.serverUrl,
+          contextTreePath: options.contextTreePath,
+          contextSourceKind: options.contextSourceKind ?? "none",
+        }),
+      );
+    },
+  ),
   deepEqualIdentity: vi.fn(() => true),
   ensureWorkspaceRuntimeDir: vi.fn((workspacePath: string) => {
     const dir = join(workspacePath, ".first-tree-workspace");
@@ -44,7 +71,13 @@ vi.mock("../../../../runtime/bootstrap.js", () => ({
   readCachedContextTreeHead: vi.fn(() => null),
   readContextTreeHead: vi.fn(() => null),
   resolveBundledCliVersion: vi.fn(() => "0.0.0-test"),
-  writeAgentBriefing: vi.fn(),
+  writeAgentBriefing: vi.fn((workspacePath: string, content: string) => {
+    writeFileSync(join(workspacePath, "AGENTS.md"), content);
+    const claudePath = join(workspacePath, "CLAUDE.md");
+    rmSync(claudePath, { force: true });
+    if (process.platform === "win32") writeFileSync(claudePath, content);
+    else symlinkSync("AGENTS.md", claudePath);
+  }),
   writeBundledCliVersion: vi.fn(),
   writeContextTreeHead: vi.fn(),
 }));
@@ -250,6 +283,7 @@ function sentMessageResponse() {
 
 function makeContext(
   opts: {
+    contextTreeRepoUrl?: string;
     emitEvent?: ReturnType<typeof vi.fn<(event: SessionEvent) => void>>;
     failSessionForRecovery?: NonNullable<SessionContext["failSessionForRecovery"]>;
     formatInboundContent?: SessionContext["formatInboundContent"];
@@ -279,6 +313,20 @@ function makeContext(
       sendMessage,
       postRuntimeNotice,
       createAgentOutboxToken,
+      getAgentContextTreeConfig: async () =>
+        opts.contextTreeRepoUrl
+          ? {
+              bindingState: "bound" as const,
+              repo: opts.contextTreeRepoUrl,
+              branch: "main",
+              provider: "github" as const,
+            }
+          : {
+              bindingState: "invalid" as const,
+              repo: null,
+              branch: null,
+              provider: null,
+            },
     } as unknown as SessionContext["sdk"],
     chatId: "chat-app-server-extra",
     log: opts.log ?? (() => {}),
@@ -294,6 +342,7 @@ function makeHandler(fake: FakeAppServerClient, extraConfig: Record<string, unkn
   return createCodexAppServerHandler({
     runtimeProvider: "codex",
     workspaceRoot,
+    agentName: "codex-extra-test-agent",
     codexRuntimeBinaryResolver: async () => ({
       ok: true,
       binary: "/tmp/fake-codex",
@@ -607,6 +656,7 @@ describe("codex app-server handler extra branches", () => {
     const handler = createCodexAppServerHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-extra-test-agent",
       agentConfigCache,
       codexRuntimeBinaryResolver: async () => ({
         ok: true,
@@ -680,6 +730,7 @@ describe("codex app-server handler extra branches", () => {
     const handler = createCodexAppServerHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "codex-extra-test-agent",
       agentConfigCache,
       codexRuntimeBinaryResolver: async () => ({
         ok: true,
@@ -749,6 +800,7 @@ describe("codex app-server handler extra branches", () => {
       contextTreeBranch: "main",
     });
     const ctx = makeContext({
+      contextTreeRepoUrl: "https://github.com/acme/context-tree.git",
       emitEvent,
       formatInboundContent: async (message) => `body:${message.id}:${message.content}`,
     });

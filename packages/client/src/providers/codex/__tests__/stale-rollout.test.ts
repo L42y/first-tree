@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,7 +61,34 @@ vi.mock("@openai/codex-sdk", () => {
 vi.mock("../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
   FIRST_TREE_WORKSPACE_MARKER: ".first-tree-workspace",
-  bootstrapWorkspace: vi.fn(),
+  bootstrapWorkspace: vi.fn(
+    (args: {
+      workspacePath: string;
+      agentName: string;
+      contextTreePath: string | null;
+      contextSourceKind: string;
+      identity: SessionContext["agent"];
+      serverUrl: string;
+    }) => {
+      const runtimeDir = join(args.workspacePath, ".first-tree-workspace");
+      mkdirSync(runtimeDir, { recursive: true });
+      writeFileSync(
+        join(runtimeDir, "identity.json"),
+        JSON.stringify({
+          agentId: args.identity.agentId,
+          agentName: args.agentName,
+          displayName: args.identity.displayName,
+          type: args.identity.type,
+          visibility: args.identity.visibility,
+          delegateMention: args.identity.delegateMention,
+          metadata: args.identity.metadata,
+          serverUrl: args.serverUrl,
+          contextSourceKind: args.contextSourceKind,
+          contextTreePath: args.contextTreePath,
+        }),
+      );
+    },
+  ),
   deepEqualIdentity: vi.fn(() => true),
   ensureWorkspaceRuntimeDir: vi.fn((workspacePath: string) => {
     const dir = join(workspacePath, ".first-tree-workspace");
@@ -75,7 +102,13 @@ vi.mock("../../../runtime/bootstrap.js", () => ({
   readCachedContextTreeHead: vi.fn(() => null),
   readContextTreeHead: vi.fn(() => null),
   resolveBundledCliVersion: vi.fn(() => "0.0.0-test"),
-  writeAgentBriefing: vi.fn(),
+  writeAgentBriefing: vi.fn((workspacePath: string, briefing: string) => {
+    writeFileSync(join(workspacePath, "AGENTS.md"), briefing);
+    const claudePath = join(workspacePath, "CLAUDE.md");
+    rmSync(claudePath, { force: true });
+    if (process.platform === "win32") writeFileSync(claudePath, briefing);
+    else symlinkSync("AGENTS.md", claudePath);
+  }),
   writeBundledCliVersion: vi.fn(),
   writeContextTreeHead: vi.fn(),
 }));
@@ -109,7 +142,16 @@ function makeMessage(id: string, content: string): SessionMessage {
   };
 }
 
-function makeContext(opts: { replaceSessionId?: SessionContext["replaceSessionId"] } = {}): SessionContext {
+function makeContext(
+  opts: {
+    replaceSessionId?: SessionContext["replaceSessionId"];
+    failSessionForRecovery?: SessionContext["failSessionForRecovery"];
+    getAgentContextTreeConfig?: () => Promise<
+      | { bindingState: "bound"; repo: string; branch: string; provider: "github" }
+      | { bindingState: "invalid"; repo: null; branch: null; provider: null }
+    >;
+  } = {},
+): SessionContext {
   const sendMessage = vi
     .fn<(chatId: string, body: Record<string, unknown>) => Promise<unknown>>()
     .mockResolvedValue({});
@@ -123,13 +165,18 @@ function makeContext(opts: { replaceSessionId?: SessionContext["replaceSessionId
       delegateMention: null,
       metadata: {},
     },
-    sdk: { serverUrl: "http://test", sendMessage } as unknown as SessionContext["sdk"],
+    sdk: {
+      serverUrl: "http://test",
+      sendMessage,
+      ...(opts.getAgentContextTreeConfig ? { getAgentContextTreeConfig: opts.getAgentContextTreeConfig } : {}),
+    } as unknown as SessionContext["sdk"],
     chatId: "chat-stale-rollout",
     log: () => {},
     recordProviderActivity: () => {},
     emitEvent: () => {},
     ...mockCtxPlumbing({ sendMessage }, "chat-stale-rollout"),
     ...(opts.replaceSessionId ? { replaceSessionId: opts.replaceSessionId } : {}),
+    ...(opts.failSessionForRecovery ? { failSessionForRecovery: opts.failSessionForRecovery } : {}),
   };
 }
 
@@ -160,6 +207,7 @@ describe("codex stale rollout recovery", () => {
     const handler = createCodexSdkHandler({
       runtimeProvider: "codex",
       workspaceRoot,
+      agentName: "test-agent",
     });
     const ctx = makeContext({ replaceSessionId });
     const token = makeToken();
@@ -173,5 +221,40 @@ describe("codex stale rollout recovery", () => {
     expect(replaceSessionId).toHaveBeenCalledWith("fresh-thread-1", "codex_stale_rollout_recovered");
     expect(token.retry).not.toHaveBeenCalled();
     expect(token.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not create a fresh thread when Context authority changes after stale-rollout detection", async () => {
+    let bindingReads = 0;
+    const failSessionForRecovery = vi.fn<NonNullable<SessionContext["failSessionForRecovery"]>>();
+    const ctx = makeContext({
+      failSessionForRecovery,
+      getAgentContextTreeConfig: async () => {
+        bindingReads += 1;
+        return bindingReads === 1
+          ? { bindingState: "invalid", repo: null, branch: null, provider: null }
+          : {
+              bindingState: "bound",
+              repo: "https://github.com/acme/new-tree.git",
+              branch: "main",
+              provider: "github",
+            };
+      },
+    });
+    const handler = createCodexSdkHandler({
+      runtimeProvider: "codex",
+      workspaceRoot,
+      agentName: "test-agent",
+    });
+    const token = makeToken();
+
+    await handler.resume(makeMessage("m-source-flip", "hello"), STALE_THREAD_ID, ctx, token);
+
+    expect(state.resumeThreadIds).toEqual([STALE_THREAD_ID]);
+    expect(state.startThreadIds).toEqual([]);
+    expect(token.retry).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "m-source-flip" })],
+      "codex_context_source_changed",
+    );
+    expect(failSessionForRecovery).toHaveBeenCalledWith("codex_context_source_changed", STALE_THREAD_ID);
   });
 });

@@ -64,6 +64,15 @@ that case and the run-local plan, not this one.
 - Free-form model: set an exact model id through Web (free-form input with the `auto` hint — no reasoning-effort
   control for Cursor), confirm it round-trips and reaches the next turn's spawn; an id the provider rejects must fail
   visibly as a configuration failure with no silent fallback, and recover after an explicit config change.
+- Cursor Router modes: the Web Model picker offers `Auto · Intelligence`, `Auto · Balance`, and `Auto · Cost` in
+  that order on both the loaded-catalog list and the catalog-unavailable or unbound fallback; a catalog that already
+  reports the same exact parameterized id must not duplicate the preset, and `(unset — inherits local)`, discovered
+  models, and `Custom model id…` must remain. Selecting Balance round-trips the exact value
+  `auto-smart[optimize_for=balanced]` through save and reload, and it reaches the next turn's spawn as one complete
+  argv item after `--model`, never parsed, split, or rewritten. Sample at least one non-Cursor provider to confirm
+  the three presets never appear there. A missing Cursor Teams/Enterprise entitlement is an external limitation, not
+  a product failure, but any provider rejection must surface visibly as a configuration failure with no silent
+  fallback.
 - Context Tree I/O: in a chat whose agent has a bound Context Tree, have the agent read a tree node via shell and edit
   a tree file; the Context tab must record repo-qualified read/write evidence for both the native edit path and the
   shell-read path (`git_status_delta` may carry the write). This is the regression slice the old prototype missed.

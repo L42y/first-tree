@@ -43,6 +43,7 @@ const coreMocks = vi.hoisted(() => ({
   isServiceSupported: vi.fn(),
   isServiceUnitDriftDetected: vi.fn(),
   loadCredentials: vi.fn(),
+  localContextDataLossForAgent: vi.fn(() => null),
   printResults: vi.fn(),
   refreshClientServiceUnitForUpdate: vi.fn(),
   removeLocalAgent: vi.fn(),

@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bootstrapMocks = vi.hoisted(() => ({
@@ -9,7 +9,12 @@ const bootstrapMocks = vi.hoisted(() => ({
   writeAgentBriefing: vi.fn(),
 }));
 const migrationMocks = vi.hoisted(() => ({ applyPendingMigrations: vi.fn() }));
-const manifestMocks = vi.hoisted(() => ({ ensureWorkspaceManifest: vi.fn() }));
+const manifestMocks = vi.hoisted(() => ({
+  CONTEXT_TREE_DIRNAME: "context-tree",
+  LOCAL_CONTEXT_DIRNAME: "local-context",
+  ensureWorkspaceManifest: vi.fn(),
+  workspaceHasRemoteLatch: vi.fn(() => false),
+}));
 
 vi.mock("../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
@@ -63,6 +68,7 @@ describe("ensureAgentBootstrap", () => {
     ensureAgentBootstrap({
       workspace,
       sessionCtx: fakeSessionCtx(),
+      agentName: "slot-agent",
       contextTreePath: null,
       briefing: "# Current briefing\n",
       currentSourceRepoNames: null,
@@ -84,7 +90,9 @@ describe("ensureAgentBootstrap", () => {
     ensureAgentBootstrap({
       workspace,
       sessionCtx,
+      agentName: "slot-agent",
       contextTreePath: "/tree",
+      contextSourceKind: "remote",
       briefing: "briefing\n",
       currentSourceRepoNames: new Set(["source-repos/first-tree"]),
     });
@@ -92,13 +100,17 @@ describe("ensureAgentBootstrap", () => {
     expect(bootstrapMocks.bootstrapWorkspace).toHaveBeenCalledWith({
       workspacePath: workspace,
       identity: sessionCtx.agent,
+      agentName: "slot-agent",
       contextTreePath: "/tree",
+      contextSourceKind: "remote",
       serverUrl: "https://hub.test",
     });
     expect(manifestMocks.ensureWorkspaceManifest).toHaveBeenCalledWith(
       workspace,
       ["source-repos/first-tree"],
       sessionCtx.log,
+      "context-tree",
+      true,
     );
   });
 
@@ -107,6 +119,7 @@ describe("ensureAgentBootstrap", () => {
     ensureAgentBootstrap({
       workspace,
       sessionCtx,
+      agentName: "slot-agent",
       contextTreePath: null,
       briefing: "fresh briefing\n",
       currentSourceRepoNames: null,
@@ -115,10 +128,32 @@ describe("ensureAgentBootstrap", () => {
     expect(bootstrapMocks.bootstrapWorkspace).toHaveBeenCalledWith({
       workspacePath: workspace,
       identity: sessionCtx.agent,
+      agentName: "slot-agent",
       contextTreePath: null,
+      contextSourceKind: "none",
       serverUrl: "https://hub.test",
     });
+    expect(basename(workspace)).not.toBe("slot-agent");
     expect(bootstrapMocks.writeAgentBriefing).toHaveBeenCalledWith(workspace, "fresh briefing\n");
+  });
+
+  it("does not republish Local identity, manifest, or briefing after a remote latch exists", () => {
+    manifestMocks.workspaceHasRemoteLatch.mockReturnValue(true);
+    const sessionCtx = fakeSessionCtx();
+    ensureAgentBootstrap({
+      workspace,
+      sessionCtx,
+      agentName: "slot-agent",
+      contextTreePath: join(workspace, "local-context"),
+      contextSourceKind: "local",
+      briefing: "stale local briefing\n",
+      currentSourceRepoNames: new Set(["app"]),
+    });
+
+    expect(migrationMocks.applyPendingMigrations).toHaveBeenCalledOnce();
+    expect(manifestMocks.ensureWorkspaceManifest).not.toHaveBeenCalled();
+    expect(bootstrapMocks.bootstrapWorkspace).not.toHaveBeenCalled();
+    expect(bootstrapMocks.writeAgentBriefing).not.toHaveBeenCalled();
   });
 
   it("never writes a workspace manifest without a bound tree, even with resolved source repos", () => {
@@ -129,6 +164,7 @@ describe("ensureAgentBootstrap", () => {
     ensureAgentBootstrap({
       workspace,
       sessionCtx,
+      agentName: "slot-agent",
       contextTreePath: null,
       briefing: "briefing\n",
       currentSourceRepoNames: new Set(["source-repos/first-tree"]),
@@ -144,6 +180,7 @@ describe("ensureAgentBootstrap", () => {
     ensureAgentBootstrap({
       workspace,
       sessionCtx,
+      agentName: "slot-agent",
       contextTreePath: null,
       briefing: "briefing\n",
       currentSourceRepoNames: new Set(["source-repos/first-tree"]),

@@ -354,6 +354,26 @@ describe("tree tree command action", () => {
     });
   });
 
+  it("browses an explicit filesystem Tree without Git discovery or branch metadata", () => {
+    const base = makeTempDir("ft-tree-filesystem-");
+    const root = join(base, "local-context");
+    const domain = join(root, "product");
+    mkdirSync(domain, { recursive: true });
+    writeNode(root, "Local Root");
+    writeNode(domain, "Product");
+    writeLeaf(join(domain, "decision.md"), "Decision", "Durable local decision");
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    process.chdir(base);
+
+    runTreeTreeCommand(context(commandWithOptions({ treePath: root }, ["product"])));
+
+    expect(readMockOutput(stdout)).toBe("");
+    expect(readMockOutput(stderr)).toContain("Mode: filesystem");
+    expect(readMockOutput(stderr)).toContain("product/decision.md [Decision] -> Durable local decision");
+    expect(readMockOutput(stderr)).not.toContain("Branch:");
+  });
+
   it("fails closed on a same-path checkout whose origin and branch do not match the declared binding", () => {
     // A real checkout at the canonical <workspace>/context-tree path, cloned
     // from origin A on main, while the briefing declares origin B / branch

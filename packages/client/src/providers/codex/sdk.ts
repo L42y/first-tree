@@ -35,28 +35,30 @@ import type {
   ContextTreeGitWriteTracker,
   PredeclaredSourceRepo,
   ProviderAttemptSettlement,
-  ReconciledTeamSkill,
 } from "../../runtime/provider-support/index.js";
 import {
+  assertContextSourceCurrent,
   buildAgentBriefing,
   buildBriefingUpdateNotice,
   classifyProviderFailure,
   computeBriefingFingerprint,
+  contextSourceFromHandlerConfig,
   createContextTreeGitWriteTracker,
   FIRST_TREE_WORKSPACE_MARKER,
+  isContextSourceTransitionError,
   isManagedSkillsUnsafeDiscoveryError,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
+  preparationCoordinatesFromSource,
   prepareManagedSession,
+  projectManagedWorkspace,
   readSessionBriefingFingerprint,
-  reconcileManagedSkillsForConfig,
+  remoteGitAttributionFromSource,
   renderChatContextPrompt,
   renderRuntimeOutputContract,
   resolveContextTreeRelativePath,
   resolveGitRepoTargetPath,
-  teamSkillBundleResolverFromSdk,
   toolFileRefsFromShellCommand,
-  writeAgentBriefing,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
 import { chunkAssistantText } from "../handlers/assistant-text.js";
@@ -359,8 +361,8 @@ export function buildCodexThreadOptions(payload: AgentRuntimeConfigPayload, work
 
 /**
  * Thin wrapper over the unified {@link buildAgentBriefing} kept for the
- * codex-bootstrap test suite. Production paths call `buildAgentBriefing`
- * directly via the inner `buildBriefing` helper inside the handler closure.
+ * codex-bootstrap test suite. Production start/resume/hot-switch paths go
+ * through {@link projectManagedWorkspace} / {@link prepareManagedSession}.
  */
 export function buildCodexAgentBriefing(
   identity: AgentIdentity,
@@ -501,14 +503,17 @@ export function toolFileRefsForTerminalCodexTool(input: {
  */
 export const createCodexSdkHandler: HandlerFactory = (config) => {
   const workspaceRoot = config.workspaceRoot as string;
+  const agentName = typeof config.agentName === "string" ? config.agentName : "";
   const runtimeProvider = runtimeProviderSchema.parse(config.runtimeProvider);
   const providerTurnMaxRetries = maxProviderTurnRetryAttempts();
   let activePayload: AgentRuntimeConfigPayload | null = null;
-  let reconciledTeamSkills: readonly ReconciledTeamSkill[] = [];
   const agentConfigCache = (config.agentConfigCache as AgentConfigCache | undefined) ?? null;
-  const contextTreePath = (config.contextTreePath as string | undefined) ?? null;
-  const contextTreeRepoUrl = (config.contextTreeRepoUrl as string | undefined) ?? null;
-  const contextTreeBranch = (config.contextTreeBranch as string | undefined) ?? null;
+  const contextSource = contextSourceFromHandlerConfig(config);
+  const contextTree = preparationCoordinatesFromSource(contextSource);
+  const gitAttribution = remoteGitAttributionFromSource(contextSource);
+  const contextTreePath = gitAttribution.contextTreePath;
+  const contextTreeRepoUrl = gitAttribution.contextTreeRepoUrl;
+  const contextTreeBranch = contextTree.kind === "remote" ? contextTree.branch : null;
 
   let cwd: string | null = null;
   let codex: Codex | null = null;
@@ -550,12 +555,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
    * repeated context block.
    */
   let pendingChatContextPrompt: string | null = null;
-  /**
-   * Predeclared source repos the agent config declares — pure declaration
-   * (`declaredSourceRepos`), no git. Surfaced in the per-session AGENTS.md
-   * so the LLM knows the absolute paths and upstream coordinates.
-   */
-  let sourceReposForPrompt: readonly PredeclaredSourceRepo[] = [];
 
   function emitProviderTurnSettlementEvent(sessionCtx: SessionContext, settlement: ProviderAttemptSettlement): void {
     sessionCtx.emitEvent({
@@ -602,19 +601,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     if (isCodexAuthError(message)) return formatAuthHint("codex", message);
     if (isCodexBinaryMissingError(message)) return formatCodexBinaryMissingMessage(message);
     return message;
-  }
-
-  function buildBriefing(sessionCtx: SessionContext, payload: AgentRuntimeConfigPayload, workspaceCwd: string): string {
-    return buildAgentBriefing({
-      identity: sessionCtx.agent,
-      payload,
-      workspacePath: workspaceCwd,
-      sourceRepos: sourceReposForPrompt,
-      contextTreePath,
-      contextTreeRepoUrl,
-      contextTreeBranch,
-      teamSkills: reconciledTeamSkills,
-    });
   }
 
   function toCodexInput(message: SessionMessage, sessionCtx: SessionContext): Promise<Input> {
@@ -1332,6 +1318,24 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       sessionCtx.emitEvent({ kind: "error", payload: { source: "runtime", message: recoveryMessage } });
       sessionCtx.log(recoveryMessage);
 
+      try {
+        await assertContextSourceCurrent({
+          sessionCtx,
+          sourceAuthorityRoot: workspaceRoot,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+        });
+      } catch (sourceError) {
+        if (!isContextSourceTransitionError(sourceError)) throw sourceError;
+        token.retry(messages, "codex_context_source_changed");
+        sessionCtx.failSessionForRecovery?.("codex_context_source_changed", threadId ?? undefined);
+        return false;
+      }
+
       thread = codex.startThread(buildCodexThreadOptions(payload, cwd));
       threadId = null;
       prevCumulativeUsage = null;
@@ -1413,20 +1417,29 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       const runtimeConfig = agentConfigCache.get(sessionCtx.agent.agentId);
       if (!runtimeConfig) return null;
       const payload = runtimeConfig.payload;
-      reconciledTeamSkills = (
-        await reconcileManagedSkillsForConfig(
-          cwd,
-          runtimeProvider,
-          PROVIDER_SKILL_ROOTS,
-          runtimeConfig,
-          sessionCtx.log,
-          teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-        )
-      ).teamSkills;
-      const briefing = buildBriefing(sessionCtx, payload, cwd);
+      const projected = await projectManagedWorkspace({
+        sessionCtx,
+        workspace: cwd,
+        agentName,
+        runtimeProvider,
+        providerSkillRoots: PROVIDER_SKILL_ROOTS,
+        runtimeConfig,
+        payload,
+        existingPayload: activePayload ?? undefined,
+        payloadResolved: true,
+        contextTree: {
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
+        },
+        reresolveSource: true,
+        markInitComplete: false,
+      });
+      activePayload = payload;
+      const briefing = projected.briefing;
       const fingerprint = computeBriefingFingerprint(briefing);
       if (readSessionBriefingFingerprint(cwd, threadId) === fingerprint) return { fingerprint, changed: false };
-      writeAgentBriefing(cwd, briefing);
       return { fingerprint, changed: true };
     } catch (err) {
       if (isManagedSkillsUnsafeDiscoveryError(err)) throw err;
@@ -1535,21 +1548,21 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       const prepared = await prepareManagedSession({
         sessionCtx,
         workspaceRoot,
+        agentName,
         runtimeProvider,
         providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved,
         contextTree: {
-          path: contextTreePath,
-          repoUrl: contextTreeRepoUrl,
-          branch: contextTreeBranch,
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
         },
       });
       cwd = prepared.workspace;
       pendingChatContextPrompt = renderChatContextPrompt(prepared.chatContext);
-      sourceReposForPrompt = prepared.sourceRepos;
-      reconciledTeamSkills = prepared.teamSkills;
       const briefing = prepared.briefing;
 
       const providerEnv = buildEnv(sessionCtx);
@@ -1622,21 +1635,21 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       const prepared = await prepareManagedSession({
         sessionCtx,
         workspaceRoot,
+        agentName,
         runtimeProvider,
         providerSkillRoots: PROVIDER_SKILL_ROOTS,
         runtimeConfig,
         payload,
         payloadResolved: resumePayloadResolved,
         contextTree: {
-          path: contextTreePath,
-          repoUrl: contextTreeRepoUrl,
-          branch: contextTreeBranch,
+          kind: contextTree.kind,
+          path: contextTree.path,
+          repoUrl: contextTree.repoUrl,
+          branch: contextTree.branch,
         },
       });
       cwd = prepared.workspace;
       pendingChatContextPrompt = renderChatContextPrompt(prepared.chatContext);
-      sourceReposForPrompt = prepared.sourceRepos;
-      reconciledTeamSkills = prepared.teamSkills;
       const briefing = prepared.briefing;
 
       const providerEnv = buildEnv(sessionCtx);

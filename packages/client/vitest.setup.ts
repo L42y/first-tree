@@ -16,8 +16,17 @@
 // This prevents eight fsync-backed Core Skill transactions from becoming an
 // unrelated timing dependency in every provider transport test.
 
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { vi } from "vitest";
 import { setCliBinding } from "./src/runtime/cli-binding.js";
+
+// macOS exposes the temporary root through the `/var` compatibility symlink.
+// Workspace trust tests must start from the canonical `/private/var` path so
+// ordinary fixtures do not accidentally exercise the intentional
+// symlink-ancestor rejection path.
+process.env.TMPDIR = realpathSync(tmpdir());
 
 vi.mock("./src/runtime/managed-skills.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./src/runtime/managed-skills.js")>();
@@ -25,20 +34,37 @@ vi.mock("./src/runtime/managed-skills.js", async (importOriginal) => {
     ...actual,
     reconcileManagedSkillsForConfig: vi.fn(
       async (
-        _workspace: string,
-        _provider: import("@first-tree/shared").RuntimeProvider,
+        workspace: string,
+        provider: import("@first-tree/shared").RuntimeProvider,
+        providerSkillRoots: import("./src/runtime/managed-skills.js").ProviderSkillRootProjection,
         config: import("@first-tree/shared").AgentRuntimeConfig | null | undefined,
-      ) => ({
-        ok: true,
-        resourceConfigVersion: config?.version ?? 0,
-        installed: [],
-        skipped: [],
-        removed: [],
-        teamSkills: [],
-        failures: [],
-        staleTeamSnapshot: false,
-      }),
+        _log?: (message: string) => void,
+        _bundleResolver?: unknown,
+        contextSourceKind: "remote" | "local" | "none" = "remote",
+      ) => {
+        const root = join(workspace, actual.providerSkillRoot(provider, providerSkillRoots));
+        for (const name of ["first-tree-read", "first-tree-write"]) {
+          const skillDir = join(root, name);
+          mkdirSync(skillDir, { recursive: true });
+          writeFileSync(join(skillDir, "SKILL.md"), `# ${name}\n`);
+          writeFileSync(
+            join(skillDir, ".first-tree-managed.json"),
+            JSON.stringify({ revision: contextSourceKind === "local" ? "local-context:test" : "test-public:1" }),
+          );
+        }
+        return {
+          ok: true,
+          resourceConfigVersion: config?.version ?? 0,
+          installed: [],
+          skipped: [],
+          removed: [],
+          teamSkills: [],
+          failures: [],
+          staleTeamSnapshot: false,
+        };
+      },
     ),
+    verifyManagedSkillsProjectionForAdmission: vi.fn(async () => ({ resourceConfigVersion: 0, teamSkills: [] })),
   };
 });
 

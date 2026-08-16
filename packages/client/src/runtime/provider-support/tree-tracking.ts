@@ -6,6 +6,11 @@
  * workspace binding policy.
  */
 
+export {
+  contextSourceFromHandlerConfig,
+  preparationCoordinatesFromSource,
+  remoteGitAttributionFromSource,
+} from "../context-source.js";
 export type { ContextTreeAttribution, ShellCommandFileRefsInput } from "../context-tree-file-refs.js";
 export {
   canonicalizeFsPath,
@@ -14,6 +19,5 @@ export {
   toolFileRefsFromShellCommand,
   withContextTreeRepoHeadCommit,
 } from "../context-tree-file-refs.js";
-
 export type { ContextTreeGitWriteTracker } from "../context-tree-git-status.js";
 export { createContextTreeGitWriteTracker } from "../context-tree-git-status.js";

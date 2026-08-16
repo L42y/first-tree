@@ -160,7 +160,13 @@ describe("FirstTreeHubSDK public surface", () => {
       jsonResponse({ items: [{ id: "m1" }], nextCursor: null }),
       jsonResponse([{ agentId: "agent-1", name: "agent", displayName: "Agent" }]),
       jsonResponse([{ agentId: "agent-2", name: "peer", displayName: "Peer" }]),
-      jsonResponse({ repo: null, branch: null, contextReviewer: { enabled: false, agentUuid: null } }),
+      jsonResponse({
+        bindingState: "unbound",
+        repo: null,
+        branch: "main",
+        provider: null,
+        contextReviewer: { enabled: false, agentUuid: null },
+      }),
       jsonResponse({
         provider: "github",
         repo: "https://github.com/acme/context-tree.git",
@@ -181,7 +187,12 @@ describe("FirstTreeHubSDK public surface", () => {
     await expect(sdk.listMessages("chat-1", { limit: 10, cursor: "m0" })).resolves.toMatchObject({ nextCursor: null });
     await expect(sdk.listChatParticipants("chat-1")).resolves.toHaveLength(1);
     await expect(sdk.addChatParticipant("chat-1", { agentName: "peer" })).resolves.toHaveLength(1);
-    await expect(sdk.getAgentContextTreeConfig()).resolves.toEqual({ repo: null, branch: null });
+    await expect(sdk.getAgentContextTreeConfig()).resolves.toEqual({
+      bindingState: "unbound",
+      repo: null,
+      branch: "main",
+      provider: null,
+    });
     await expect(sdk.getAgentContextReviewConfig()).resolves.toEqual({
       provider: "github",
       repo: "https://github.com/acme/context-tree.git",
@@ -201,6 +212,31 @@ describe("FirstTreeHubSDK public surface", () => {
       "https://first-tree.example/api/v1/agent/context-tree/info",
       "https://first-tree.example/api/v1/agent/context-tree/info",
     ]);
+  });
+
+  it("fail-closes malformed Agent Context Tree read payloads without defaulting required keys", async () => {
+    makeFetchMock([
+      jsonResponse({ bindingState: "unbound", repo: null, branch: "main" }),
+      jsonResponse({ bindingState: "unbound", repo: null, provider: null }),
+      jsonResponse({
+        bindingState: "bound",
+        repo: "https://github.com/acme/tree.git",
+        branch: null,
+        provider: "github",
+      }),
+      jsonResponse({
+        bindingState: "bound",
+        repo: "https://github.com/acme/tree.git",
+        branch: "main",
+        provider: null,
+      }),
+    ]);
+    const sdk = makeSdk();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      await expect(sdk.getAgentContextTreeConfig()).rejects.toThrow(
+        "Agent Context Tree info failed the Agent-scoped binding schema",
+      );
+    }
   });
 
   it("covers void requests and plain-text SDK errors", async () => {

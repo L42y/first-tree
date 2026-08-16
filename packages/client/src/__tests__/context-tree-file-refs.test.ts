@@ -105,6 +105,17 @@ describe("toolFileRefsFromShellCommand", () => {
     ).toEqual([]);
   });
 
+  it("does not emit shell refs for a Local path that has no remote repo URL", () => {
+    expect(
+      toolFileRefsFromShellCommand({
+        command: `cat ${join(tree, "NODE.md")}`,
+        cwd: source,
+        contextTreePath: tree,
+        contextTreeRepoUrl: null,
+      }),
+    ).toEqual([]);
+  });
+
   it("rejects complex or mutating shell candidates", () => {
     const base = {
       cwd: source,
@@ -272,9 +283,18 @@ describe("resolveContextTreeRelativePath — tree PR worktree (repo identity)", 
     expect(
       resolveContextTreeRelativePath(join(sharedClone, "NODE.md"), {
         contextTreePath: sharedClone,
-        contextTreeRepoUrl: null,
+        contextTreeRepoUrl: "https://github.com/acme/first-tree-context.git",
       }),
     ).toBe("NODE.md");
+  });
+
+  it("does not attribute a live Local path that has no remote repo URL", () => {
+    expect(
+      resolveContextTreeRelativePath(join(sharedClone, "NODE.md"), {
+        contextTreePath: sharedClone,
+        contextTreeRepoUrl: null,
+      }),
+    ).toBeNull();
   });
 
   it("emits shell read refs for tree files read inside the tree PR worktree", () => {

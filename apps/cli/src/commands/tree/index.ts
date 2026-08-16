@@ -3,6 +3,7 @@ import { registerSubcommands } from "../groups.js";
 import type { CommandModule } from "../types.js";
 import { initCommand } from "./init.js";
 import { treeIoCommand } from "./io.js";
+import { treeLocalCommand } from "./local.js";
 import { treeReadCommand } from "./read.js";
 import { treeReviewCommand } from "./review.js";
 import { treeSeedCommand } from "./seed.js";
@@ -57,6 +58,7 @@ export const treeCommand: CommandModule = {
     registerSubcommands(command, [
       verifyCommand,
       treeTreeCommand,
+      treeLocalCommand,
       treeReadCommand,
       treeIoCommand,
       treeWriteCommand,

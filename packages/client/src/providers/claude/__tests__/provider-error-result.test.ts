@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ProviderRetryEventPayload, parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const BILLING_RESULT = "Failed to authenticate. API Error: 403 Insufficient account balance.";
 const TRANSIENT_RESULT =
@@ -80,15 +80,13 @@ const AGENT_ID = "019ef431-0000-7000-9000-000000000002";
 
 let workspaceRoot: string;
 
-beforeAll(() => {
-  workspaceRoot = mkdtempSync(join(tmpdir(), "ftt-claude-provider-error-"));
-});
-
 afterAll(() => {
-  rmSync(workspaceRoot, { recursive: true, force: true });
+  if (workspaceRoot) rmSync(workspaceRoot, { recursive: true, force: true });
 });
 
 beforeEach(() => {
+  if (workspaceRoot) rmSync(workspaceRoot, { recursive: true, force: true });
+  workspaceRoot = mkdtempSync(join(realpathSync(tmpdir()), "ftt-claude-provider-error-"));
   mockState.messagesByAttempt.length = 0;
   mockState.configVersion = 1;
   mockState.promptAppend = "";
@@ -160,6 +158,7 @@ async function startSingleResultTurn() {
   const handler = createClaudeCodeHandler({
     runtimeProvider: "claude-code",
     workspaceRoot,
+    agentName: "test-agent",
     agentConfigCache: cache,
   });
   const ctx: SessionContext = {

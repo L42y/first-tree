@@ -41,6 +41,8 @@ export type RuntimeSyncActiveSet = ReadonlySet<string> | null;
 export type SessionProjectionSessionFields = {
   chatId: string;
   claudeSessionId: string;
+  /** Context source captured by the handler factory that owns this entry. */
+  handlerSourceKey: string;
   status: SessionState;
   lastActivity: number;
 };
@@ -137,6 +139,20 @@ export class SessionProjectionAuthority<
 
   isSameSession(chatId: string, entry: TSession): boolean {
     return this.sessions.get(chatId) === entry;
+  }
+
+  /**
+   * Record the Context-source key captured by the handler factory that owns
+   * this session. Written at provider-admission boundaries (start / resume /
+   * retry) when the route installs or confirms its handler.
+   */
+  recordHandlerSource(entry: TSession, sourceKey: string): void {
+    entry.handlerSourceKey = sourceKey;
+  }
+
+  /** Read the source identity the entry's current handler was built from. */
+  handlerSourceKey(entry: TSession): string {
+    return entry.handlerSourceKey;
   }
 
   /**

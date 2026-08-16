@@ -30,6 +30,7 @@ type SessionRecord = {
   chatId: string;
   claudeSessionId: string;
   handler: AgentHandler;
+  handlerSourceKey: string;
   status: SessionState;
   lastActivity: number;
   suspending: Promise<void> | null;
@@ -65,6 +66,7 @@ type SessionRuntimeInternals = {
     recomputeRuntimeState(): void;
     reaffirmRuntimeStates(): void;
     persistRegistry(): void;
+    recordHandlerSource(entry: SessionRecord, sourceKey: string): void;
   };
   resetReplay: {
     terminatingChats: Map<string, Promise<void>>;
@@ -157,7 +159,7 @@ type SessionRuntimeInternals = {
   startNewSession(chatId: string, message: SessionMessage, deliveryKind?: string): Promise<void>;
   resumeSession(entry: SessionRecord, message: SessionMessage | null | undefined): Promise<void>;
   abortUnownedRoute(entry: SessionRecord, reason: string): void;
-  ensureContextTreeBinding(): Promise<void>;
+  ensureContextTreeBinding(): Promise<unknown>;
   markRouteOwned(
     chatId: string,
     message: SessionMessage,
@@ -347,6 +349,7 @@ function makeSessionRecord(chatId: string, overrides: SessionSeed = {}): Session
     chatId,
     claudeSessionId: overrides.claudeSessionId ?? `session-${chatId}`,
     handler: overrides.handler ?? handler(),
+    handlerSourceKey: overrides.handlerSourceKey ?? "none",
     status,
     lastActivity: overrides.lastActivity ?? Date.now(),
     suspending: overrides.suspending ?? null,
@@ -362,6 +365,7 @@ function makeSessionRecord(chatId: string, overrides: SessionSeed = {}): Session
 function bindSeededSession(i: SessionRuntimeInternals, record: SessionRecord): SessionRecord {
   const overrides = pendingSeeds.get(record) ?? {};
   i.projection.sessions.set(record.chatId, record);
+  i.projection.recordHandlerSource(record, "none");
   i.slotScheduler.attachLiveSession(record, { resumeFromEvicted: overrides.retryFromEvicted ?? null });
   i.routeTeardown.attachLiveSession(record);
   if (overrides.activeSlotHeld ?? overrides.status === "active") i.slotScheduler.claimActiveSlot(record);
@@ -1103,7 +1107,9 @@ describe("SessionRuntime edge coverage", () => {
     await firstContext.finishTurn(firstMessage, { status: "success", terminal: true });
 
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-queued"));
-    expect(ackEntry).toHaveBeenCalledWith(10);
+    expect(internals(sm).inboxDelivery.snapshot("chat-working").entries).toEqual([
+      expect.objectContaining({ entryId: 10, phase: "terminal" }),
+    ]);
     expect(internals(sm).slotScheduler.pendingQueue.some((item) => item.chatId === "chat-queued")).toBe(false);
 
     await sm.shutdown();
@@ -4296,9 +4302,12 @@ describe("SessionRuntime edge coverage", () => {
         .mockResolvedValue(undefined),
     });
     const sessionHandler = handler({
-      resume: vi.fn().mockResolvedValue({
-        sessionId: "resumed-session",
-        route: { kind: "owned" as const, mode: "queued" as const },
+      resume: vi.fn(async (message, _sessionId, _ctx, token) => {
+        if (message) token?.processingStarted(message);
+        return {
+          sessionId: "resumed-session",
+          route: { kind: "owned" as const, mode: "queued" as const },
+        };
       }),
     });
     const sm = makeRuntime();
@@ -5033,8 +5042,8 @@ describe("SessionRuntime edge coverage", () => {
 
     rejectReplaceStop?.(boom);
     await delivery;
-    await Promise.resolve();
-    await Promise.resolve();
+    const retryRun = retrySpy.mock.results[0]?.value;
+    if (retryRun) await retryRun;
 
     // Exactly ONE re-arm handle exists (the single-flight failure path ran
     // once), and manager shutdown clears it — no duplicate retry callback

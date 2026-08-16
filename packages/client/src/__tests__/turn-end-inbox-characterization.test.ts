@@ -41,7 +41,7 @@ function dualCompatSinkDeps(opts: {
     clearTrigger: opts.clearTrigger,
     log: opts.log,
     getTrigger: opts.getTrigger ?? (() => null),
-    sdk: { sendMessage } as unknown as FirstTreeHubSDK,
+    sdk: { serverUrl: "https://first-tree.test", sendMessage } as unknown as FirstTreeHubSDK,
     agent: {
       agentId: "agent-me",
       inboxId: "inbox-me",

@@ -147,6 +147,15 @@ export function createInboxDeliveryCoordinator(
     }
   }
 
+  function snapshotCurrentSocketDeliverySet(entryId: number): number[] {
+    const owner = inboxInFlightOwnersByEntryId.get(entryId);
+    if (!owner) return [];
+    const bucket = inboxInFlightByAgent.get(owner.agentId)?.get(owner.chatKey);
+    if (!bucket) return [];
+    // Already bounded by `inboxMaxInFlightPerAgentChat` (schema 1–1024).
+    return [...bucket.entryIds].sort((left, right) => left - right);
+  }
+
   function addInboxInFlight(agentId: string, chatId: string | null, entryId: number): void {
     removeInboxInFlight([entryId]);
     const chatKey = inboxChatKey(chatId);
@@ -426,6 +435,7 @@ export function createInboxDeliveryCoordinator(
             app.db,
             entryId,
             routedBoundAgents.map((a) => a.inboxId),
+            snapshotCurrentSocketDeliverySet(entryId),
           );
           if (!ackResult.ok) {
             if (ref) {

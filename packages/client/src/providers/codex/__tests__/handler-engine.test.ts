@@ -43,6 +43,7 @@ describe("codex handler engine selection", () => {
   it("fails closed instead of running landing campaign trials on the SDK engine", async () => {
     const handler = createCodexHandler({
       workspaceRoot: "/tmp/first-tree-codex-test",
+      agentName: "test-agent",
       runtimeProvider: "codex",
       codexHandlerEngine: "sdk",
     });

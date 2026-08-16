@@ -40,7 +40,7 @@ export type ResetReplayAuthorityDeps = {
   isQuarantineRestartRequired: (chatId: string) => boolean;
   /** Lazy so SessionRuntime can construct inboxDelivery after this authority. */
   inbox: () => ResetReplayInboxHost;
-  recoverChat: () => ((chatId: string) => Promise<void>) | undefined;
+  recoverChat: () => ((chatId: string) => Promise<unknown>) | undefined;
   probeFencedSettlement: () =>
     | ((chatId: string, messageIds: readonly string[]) => Promise<readonly string[]>)
     | undefined;

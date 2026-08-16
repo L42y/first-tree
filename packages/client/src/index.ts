@@ -9,6 +9,7 @@ export {
 } from "./cloud/observability/index.js";
 export type {
   AccessTokenProvider,
+  AgentContextTreeConfig,
   ContextReviewRuntimeConfig,
   ContextTreeConfig,
   MemberProfile,
@@ -187,6 +188,7 @@ export {
 } from "./runtime/client-connection.js";
 export type { AgentSlotYamlConfig, RuntimeConfig, SessionConfig } from "./runtime/config.js";
 export { loadRuntimeConfig } from "./runtime/config.js";
+export { recordRemoteBindingObservation } from "./runtime/context-source.js";
 export { Deduplicator } from "./runtime/deduplicator.js";
 export type { AttachmentUploader, SelfFence, WorkspaceFence } from "./runtime/doc-snapshots.js";
 export { buildMessageDocumentSnapshots } from "./runtime/doc-snapshots.js";

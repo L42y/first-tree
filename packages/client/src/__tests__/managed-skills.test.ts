@@ -218,13 +218,13 @@ describe("managed Skill reconciler", () => {
       "src/providers/opencode/index.ts",
       "src/providers/pi/index.ts",
     ].map((path) => readFileSync(join(process.cwd(), path), "utf-8"));
-    // Normal start/resume admission owns reconcile inside prepareManagedSession;
-    // remaining direct handler calls are hot-switch / legacy compatibility only.
+    // Normal start/resume and hot-switch publication own reconcile inside
+    // projectManagedWorkspace under the source-publication lock.
     const directReconcileCalls = handlerSources.reduce(
       (count, source) => count + (source.match(/reconcileManagedSkillsForConfig\(/g)?.length ?? 0),
       0,
     );
-    expect(directReconcileCalls).toBe(5);
+    expect(directReconcileCalls).toBe(0);
     expect(handlerSources.every((source) => source.includes("prepareManagedSession("))).toBe(true);
     expect(handlerSources.every((source) => !source.includes("reconcileManagedSkills({"))).toBe(true);
     const preparation = readFileSync(join(process.cwd(), "src/runtime/provider-support/preparation.ts"), "utf-8");

@@ -1,6 +1,8 @@
 import { z } from "zod";
+import { resolveContextTreeProvider } from "../canonical-git-repo-url.js";
 import { agentTemplateIdsSchema } from "./agent-template.js";
 import { paginationQuerySchema } from "./common.js";
+import { contextTreeActiveBindingSchema, contextTreeBranchSchema, contextTreeProviderSchema } from "./org-settings.js";
 import { presenceStatusSchema, runtimeStateSchema } from "./presence.js";
 import { runtimeProviderSchema } from "./runtime-provider.js";
 
@@ -290,6 +292,117 @@ export const contextTreeInfoSchema = z.object({
   branch: z.string().nullable(),
 });
 export type ContextTreeInfo = z.infer<typeof contextTreeInfoSchema>;
+
+export const CONTEXT_TREE_BINDING_STATES = ["bound", "unbound", "invalid"] as const;
+export const contextTreeBindingStateSchema = z.enum(CONTEXT_TREE_BINDING_STATES);
+export type ContextTreeBindingState = z.infer<typeof contextTreeBindingStateSchema>;
+
+/**
+ * Agent-scoped Context Tree wire contract. `bindingState`, `repo`, `branch`,
+ * and `provider` are all required keys.
+ *
+ * - `bound` uses the same repo/branch/provider constraints as the active
+ *   Context Tree binding schema.
+ * - `unbound` is `repo: null`, a valid branch (typically `"main"`), and
+ *   `provider: null`.
+ * - `invalid` carries no usable coordinates: repo, branch, and provider are
+ *   all `null`.
+ * Missing keys and any other combination fail closed (schema error → unknown).
+ */
+/**
+ * Agent-scoped bound wire: a recognized GitHub host must carry `provider:
+ * "github"`. Only an unclassified/generic host may omit an executable
+ * provider (`null`). Org `contextTreeActiveBindingSchema` stays compatible
+ * with legacy GitHub + omitted provider; this Agent contract does not.
+ */
+function boundAgentProviderMatchesRepo(repo: string, provider: "github" | "gitlab" | null): boolean {
+  const resolution = resolveContextTreeProvider({ repo });
+  if (resolution.source === "github_host") return provider === "github";
+  if (resolution.identity?.host === "gitlab.com") return provider === "gitlab";
+  if (provider === "github") return false;
+  return true;
+}
+
+export const agentContextTreeInfoSchema = z
+  .object({
+    bindingState: contextTreeBindingStateSchema,
+    repo: z.string().nullable(),
+    branch: z.string().nullable(),
+    provider: contextTreeProviderSchema.nullable(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.bindingState === "bound") {
+      const branch = contextTreeBranchSchema.safeParse(value.branch);
+      const binding = contextTreeActiveBindingSchema.safeParse({
+        repo: value.repo,
+        branch: value.branch,
+        ...(value.provider ? { provider: value.provider } : {}),
+      });
+      if (!binding.success || !branch.success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "bound bindingState must include an active repository and an explicit valid branch",
+          path: branch.success ? ["repo"] : ["branch"],
+        });
+        return;
+      }
+      if (!boundAgentProviderMatchesRepo(binding.data.repo, value.provider)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "bound provider must match a recognized GitHub or GitLab host, or stay null on a generic host",
+          path: ["provider"],
+        });
+      }
+      return;
+    }
+
+    if (value.bindingState === "unbound") {
+      if (value.repo !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unbound bindingState must not include a repository",
+          path: ["repo"],
+        });
+      }
+      if (value.provider !== null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unbound bindingState must not include a provider",
+          path: ["provider"],
+        });
+      }
+      if (!contextTreeBranchSchema.safeParse(value.branch).success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "unbound bindingState requires a valid Git branch",
+          path: ["branch"],
+        });
+      }
+      return;
+    }
+
+    if (value.repo !== null || value.branch !== null || value.provider !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "invalid bindingState must not include usable coordinates",
+      });
+    }
+  })
+  .transform((value) => {
+    if (value.bindingState !== "bound") return value;
+    const binding = contextTreeActiveBindingSchema.parse({
+      repo: value.repo,
+      branch: value.branch,
+      ...(value.provider ? { provider: value.provider } : {}),
+    });
+    return {
+      bindingState: "bound" as const,
+      repo: binding.repo,
+      branch: binding.branch,
+      provider: value.provider,
+    };
+  });
+export type AgentContextTreeInfo = z.infer<typeof agentContextTreeInfoSchema>;
 
 /**
  * Server → client WebSocket frame announcing that an agent has just been

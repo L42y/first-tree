@@ -1044,6 +1044,27 @@ describe("buildAgentBriefing — Context Tree", () => {
     expect(tree).not.toContain("first-tree-onboarding");
   });
 
+  it("projects lockless Local Context playbooks without Git clone or Seed/Reviewer/Audit routes", () => {
+    const briefing = buildAgentBriefing(
+      makeOpts({
+        contextTreePath: `${AGENT_HOME}/local-context`,
+        contextSourceKind: "local",
+      }),
+    );
+    const tree = topLevelSection(briefing, "# Context Tree (First Tree Managed)");
+    const skills = topLevelSection(briefing, "# Skills (First Tree Managed)");
+    expect(tree).toContain("tree local resolve --ensure --intent read");
+    expect(tree).toContain("tree local resolve --ensure --intent write");
+    expect(tree).toContain("edit the live Tree directly");
+    expect(tree).not.toContain("git clone");
+    expect(tree).not.toContain("git -C");
+    expect(skills).toContain("`first-tree-read`");
+    expect(skills).toContain("`first-tree-write`");
+    expect(skills).not.toContain("`first-tree-seed`");
+    expect(skills).not.toContain("`context-tree-review`");
+    expect(skills).not.toContain("`context-tree-audit`");
+  });
+
   it("shell-quotes interpolated tree clone command values", () => {
     const briefing = buildAgentBriefing(
       makeOpts({
