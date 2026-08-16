@@ -154,14 +154,18 @@ export function registerChatCreateCommand(chat: Command): void {
         // Requiring the session agent here also keeps an unrelated agent's
         // membership from becoming a precondition for ordinary creates.
         //
-        // Gated on both agent-session variables, matching `chat open`: an
-        // origin chat only exists inside an agent session, and an operator
-        // terminal may have no agent configured at all.
-        const sessionChatId = process.env.FIRST_TREE_CHAT_ID;
-        if (sessionChatId && process.env.FIRST_TREE_AGENT_ID) {
-          const refusal = await checkFeishuChatContext(createSdk(), sessionChatId, "create");
-          if (refusal) fail(refusal.code, refusal.message, 2);
-        }
+        // The whole decision lives in `checkFeishuChatContext`: no chat id at
+        // all is an operator terminal and proceeds without a lookup, while a
+        // chat id whose bridged-ness cannot be established — no session agent
+        // to read it as, an unreachable or older server, an unrecognised
+        // value — refuses. A half-configured environment must not be the
+        // cheapest way past the guard.
+        const refusal = await checkFeishuChatContext(
+          () => createSdk(),
+          { chatId: process.env.FIRST_TREE_CHAT_ID, agentId: process.env.FIRST_TREE_AGENT_ID },
+          "create",
+        );
+        if (refusal) fail(refusal.code, refusal.message, 2);
 
         // KNOWN GAP (follow-up #1069), out of scope for this PR: no chat exists
         // yet, so the upload org can't be resolved from a chat — doc capture is a

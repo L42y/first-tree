@@ -65,10 +65,34 @@ describe("resolveFeishuChatContext", () => {
     ).toEqual({ kind: "unbridged" });
   });
 
-  it("treats a server that predates the field as unbridged", async () => {
+  /**
+   * The fail-open edge two reviewers landed on. A server older than
+   * `externalChannel` omits it, which is a normal mid-deploy state — and
+   * reading "absent" as "ordinary chat" silently switches the guard off for
+   * the entire rollout.
+   */
+  it("reports `unknown` for a server that predates the field, never `unbridged`", async () => {
+    const state = await resolveFeishuChatContext(
+      reader(async () => ({})),
+      "chat-1",
+    );
+    expect(state.kind).toBe("unknown");
+    expect(state.kind === "unknown" && state.reason).toContain("did not report");
+  });
+
+  it("reports `unknown` for a value this CLI does not recognise", async () => {
+    const state = await resolveFeishuChatContext(
+      reader(async () => ({ externalChannel: "slack" }) as unknown as DetailRow),
+      "chat-1",
+    );
+    expect(state.kind).toBe("unknown");
+    expect(state.kind === "unknown" && state.reason).toContain("slack");
+  });
+
+  it("treats ONLY an explicit null as unbridged", async () => {
     expect(
       await resolveFeishuChatContext(
-        reader(async () => ({})),
+        reader(async () => ({ externalChannel: null })),
         "chat-1",
       ),
     ).toEqual({ kind: "unbridged" });
@@ -86,10 +110,13 @@ describe("resolveFeishuChatContext", () => {
 });
 
 describe("checkFeishuChatContext", () => {
+  /** A session that is fully configured, as an agent runtime exports it. */
+  const SESSION = { chatId: "chat-1", agentId: "agent-1" };
+
   it("refuses `chat create` inside a bridged chat and names the Feishu path", async () => {
     const refusal = await checkFeishuChatContext(
-      reader(async () => ({ externalChannel: "feishu" })),
-      "chat-1",
+      () => reader(async () => ({ externalChannel: "feishu" })),
+      SESSION,
       "create",
     );
     expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_CODE);
@@ -100,8 +127,8 @@ describe("checkFeishuChatContext", () => {
 
   it("refuses `chat open` inside a bridged chat", async () => {
     const refusal = await checkFeishuChatContext(
-      reader(async () => ({ externalChannel: "feishu" })),
-      "chat-1",
+      () => reader(async () => ({ externalChannel: "feishu" })),
+      SESSION,
       "open",
     );
     expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_CODE);
@@ -115,10 +142,11 @@ describe("checkFeishuChatContext", () => {
    */
   it("refuses with a distinct code when the origin lookup is inconclusive", async () => {
     const refusal = await checkFeishuChatContext(
-      reader(async () => {
-        throw Object.assign(new Error("Not a participant of this chat"), { statusCode: 403 });
-      }),
-      "chat-1",
+      () =>
+        reader(async () => {
+          throw Object.assign(new Error("Not a participant of this chat"), { statusCode: 403 });
+        }),
+      SESSION,
       "create",
     );
     expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE);
@@ -126,22 +154,65 @@ describe("checkFeishuChatContext", () => {
     expect(refusal?.message).toContain("Not a participant of this chat");
   });
 
+  it("refuses when the server omits the field, instead of assuming the chat is ordinary", async () => {
+    for (const command of ["create", "open"] as const) {
+      const refusal = await checkFeishuChatContext(() => reader(async () => ({})), SESSION, command);
+      expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE);
+    }
+  });
+
   it("allows both commands in an ordinary chat", async () => {
     for (const command of ["create", "open"] as const) {
       expect(
-        await checkFeishuChatContext(
-          reader(async () => ({ externalChannel: null })),
-          "chat-1",
-          command,
-        ),
+        await checkFeishuChatContext(() => reader(async () => ({ externalChannel: null })), SESSION, command),
       ).toBeNull();
     }
   });
 
-  it("skips the lookup entirely outside an agent session", async () => {
-    const sdk = reader(async () => ({ externalChannel: "feishu" }));
-    expect(await checkFeishuChatContext(sdk, undefined, "create")).toBeNull();
-    expect(sdk.getChatDetail).not.toHaveBeenCalled();
+  /**
+   * THE OPERATOR CASE, which must keep working: `chat open` is run from a human
+   * terminal with no chat context and possibly no agent configured at all. No
+   * chat id means the command is not running inside a chat, so there is nothing
+   * to check — and the reader is never even constructed, because building an
+   * SDK on that machine can legitimately fail.
+   */
+  it("allows, without any lookup, when there is no chat context at all", async () => {
+    const factory = vi.fn(() => reader(async () => ({ externalChannel: "feishu" })));
+    for (const session of [
+      { chatId: undefined, agentId: undefined },
+      { chatId: undefined, agentId: "agent-1" },
+      { chatId: "", agentId: "agent-1" },
+    ]) {
+      expect(await checkFeishuChatContext(factory, session, "open")).toBeNull();
+    }
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The mirror image, and the second half of the reported fail-open: a chat
+   * context EXISTS but nothing can read it as the session agent. Skipping the
+   * check there made a half-configured environment the cheapest way past the
+   * guard.
+   */
+  it("refuses when a chat id is present but no session agent can read it", async () => {
+    const factory = vi.fn(() => reader(async () => ({ externalChannel: "feishu" })));
+    const refusal = await checkFeishuChatContext(factory, { chatId: "chat-1", agentId: undefined }, "create");
+
+    expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE);
+    expect(refusal?.message).toContain("FIRST_TREE_AGENT_ID");
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the reader cannot be constructed at all", async () => {
+    const refusal = await checkFeishuChatContext(
+      () => {
+        throw new Error("No agent configured on this machine");
+      },
+      SESSION,
+      "create",
+    );
+    expect(refusal?.code).toBe(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE);
+    expect(refusal?.message).toContain("No agent configured");
   });
 });
 
@@ -222,6 +293,19 @@ describe("`chat create` origin-chat resolution", () => {
     }));
 
     await expect(runCreate(["hello", "--to", "someone"])).rejects.toThrow(/Could not determine/);
+    expect(createTaskChat).not.toHaveBeenCalled();
+    expect(outputMocks.fail).toHaveBeenCalledWith(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE, expect.any(String), 2);
+  });
+
+  /**
+   * A session that names a chat but exports no agent id used to skip the check
+   * outright, so an incomplete environment was the cheapest way past it.
+   */
+  it("refuses when the session names a chat but exports no agent id", async () => {
+    const { createTaskChat } = wireAgents();
+    delete process.env.FIRST_TREE_AGENT_ID;
+
+    await expect(runCreate(["hello", "--to", "someone"])).rejects.toThrow(/FIRST_TREE_AGENT_ID/);
     expect(createTaskChat).not.toHaveBeenCalled();
     expect(outputMocks.fail).toHaveBeenCalledWith(FEISHU_CHAT_CONTEXT_UNKNOWN_CODE, expect.any(String), 2);
   });

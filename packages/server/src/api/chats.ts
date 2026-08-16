@@ -83,12 +83,24 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
    * way; see that module for why the answer is active-bindings-only.
    *
    * BEHAVIOR CHANGE: this used to match ANY binding row, including detached
-   * ones, which left a detached chat permanently Web-read-only while the agent
+   * ones, which left a detached chat permanently blocked in Web while the agent
    * scope had already let go of it.
+   *
+   * WORDING: not "read-only". The signed-in user's own view state —
+   * read/unread, pin, archive — deliberately keeps working, so "read-only"
+   * describes a stricter product than the one we ship and sends people hunting
+   * for a workaround they do not need. Name the blocked class instead. (The
+   * Web scope blocks more than the agent scope does: a rename is a structural
+   * write here, while an agent is required to keep topic/description current.)
    */
   async function assertWebMutableChat(chatId: string): Promise<void> {
     if (await isFeishuBridgedChat(app.db, chatId)) {
-      throw new ForbiddenError("Feishu chats are read-only in the Web app");
+      throw new ForbiddenError(
+        "This chat is bridged to a Feishu conversation, so structural changes are blocked in the Web app: " +
+          "messages, membership, rename and entity follows all land where the humans in this chat — who only ever " +
+          "see the Feishu group — cannot see them. Reply in the Feishu conversation instead. Reading the chat, and " +
+          "your own read/pin/archive state, keep working normally.",
+      );
     }
   }
 

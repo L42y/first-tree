@@ -112,10 +112,26 @@ describe("controlled Feishu CLI preflight", () => {
     });
     expect((stored?.metadata as { mentions?: unknown } | undefined)?.mentions).toEqual([]);
 
+    // Two independent rules refuse this edit; while the binding is active the
+    // chat-level boundary is the one that answers.
     const edit = await a.request("PATCH", `/api/v1/agent/chats/${chat.id}/messages/${grant.canonicalMessageId}`, {
       content: "edited after provider delivery",
     });
     expect(edit.statusCode).toBe(403);
+    expect(edit.json<{ code?: string }>().code).toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+
+    // Detaching releases the chat-level boundary, and the delivered provider
+    // row must STILL be immutable — First Tree cannot retract what Feishu has
+    // already shown, whatever the binding's current state.
+    await app.db.update(imChatBindings).set({ status: "detached" }).where(eq(imChatBindings.chatId, chat.id));
+    const editAfterDetach = await a.request(
+      "PATCH",
+      `/api/v1/agent/chats/${chat.id}/messages/${grant.canonicalMessageId}`,
+      { content: "edited after the binding detached" },
+    );
+    expect(editAfterDetach.statusCode).toBe(403);
+    expect(editAfterDetach.json<{ error: string }>().error).toContain("Feishu message history cannot be edited");
+    await app.db.update(imChatBindings).set({ status: "active" }).where(eq(imChatBindings.chatId, chat.id));
 
     const inbox = await app.db.select().from(inboxEntries).where(eq(inboxEntries.messageId, grant.canonicalMessageId));
     expect(inbox).toHaveLength(1);

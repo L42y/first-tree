@@ -11,6 +11,13 @@ import { isFeishuBridgedChat } from "../../services/integrations/feishu/chat-bin
  * on the other side can see, so the reply is silently lost. These routes fail
  * fast instead and name the path that actually delivers.
  *
+ * GUARDED ROUTES, matching the documented "messages and membership changes"
+ * boundary — a partial application would just be a differently-shaped hole:
+ *   - `POST   /agent/chats/:chatId/messages`             (`chat send`, `chat ask`)
+ *   - `PATCH  /agent/chats/:chatId/messages/:messageId`  (message edit)
+ *   - `POST   /agent/chats/:chatId/participants`         (`chat invite`)
+ *   - `DELETE /agent/chats/:chatId/participants/:agentId` (membership removal)
+ *
  * Authority is the shared `isFeishuBridgedChat` predicate — live
  * `im_chat_bindings` state restricted to `status = 'active'`, NOT
  * `chats.metadata.source`, which is a soft label that stays `"feishu"` after a
@@ -26,9 +33,11 @@ import { isFeishuBridgedChat } from "../../services/integrations/feishu/chat-bin
  *     route/adapter layer and is applied per-route.
  *   - `POST /agent/chats/:chatId/runtime-notices`. Operator-facing runtime
  *     notices must survive the boundary — an agent that cannot run at all must
- *     not also go silent. That route is exempt because of WHICH ROUTE IT IS,
- *     the same property that makes the bridge safe. The exemption is no longer
- *     expressible in a request body: see the note below.
+ *     not also go silent. That route is exempt because of WHICH ROUTE IT IS.
+ *     Be honest about what that buys: the route is membership-gated exactly
+ *     like an ordinary send, so it is a misuse-prevention rail around a
+ *     client-runtime-reported notice, not an unforgeable authorization
+ *     boundary. See the note below.
  *   - `PATCH /agent/chats/:chatId` (`chat update`). Topic/description are
  *     First-Tree-side metadata the agent briefing requires it to maintain;
  *     they are not a message to a human in the Feishu group.
@@ -37,12 +46,21 @@ import { isFeishuBridgedChat } from "../../services/integrations/feishu/chat-bin
  *     Web boundary deliberately keeps working on Feishu chats (`/read`,
  *     `/unread`, `/pin` are all unguarded there).
  *
- * NO CONTENT-DERIVED EXEMPTION. An earlier revision exempted a send whose body
- * carried `purpose: "agent-final-text"` plus `metadata.runtimeNotice`. Both are
- * request fields any agent credential can set, so the exemption was a hole
- * straight through this 403. The marker is now server-owned
- * (`stripUntrustedMetadataKeys` removes any inbound copy) and the exemption is
- * a property of the route, not of what the caller claims to be sending.
+ * NO GENERAL CONTENT-DERIVED EXEMPTION. An earlier revision let ANY send
+ * decorated with `purpose: "agent-final-text"` plus `metadata.runtimeNotice`
+ * through, which made the boundary depend on what a caller claimed to be
+ * sending. Runtime notices now have their own route, the stored marker is
+ * server-stamped (`stripUntrustedMetadataKeys` removes any inbound copy), and
+ * `POST /messages` is guarded regardless of body.
+ *
+ * The single remaining body-shaped path is the ROLLING-DEPLOY COMPATIBILITY
+ * one in `api/agent/messages.ts`: a body that matches the exact legacy
+ * runtime-notice wire shape is handled as the notice it is, because clients
+ * upgrade independently of the server and a provider-failure notice matters
+ * most mid-deploy. It is not a privilege escalation — the runtime-notice route
+ * is membership-gated exactly like the send route, so that body buys a caller
+ * nothing it could not get by calling the endpoint directly. It should be
+ * deleted once no supported client predates the endpoint.
  */
 
 /** Machine-readable code surfaced to the CLI through `AppError.attrs.code`. */
@@ -54,7 +72,7 @@ export const FEISHU_AGENT_CHAT_WRITE_CODE = "FEISHU_CHAT_AGENT_WRITE_FORBIDDEN";
  * state all keep working, and saying "read-only" would send an agent hunting
  * for a workaround it does not need.
  */
-const FEISHU_AGENT_CHAT_WRITE_MESSAGE =
+export const FEISHU_AGENT_CHAT_WRITE_MESSAGE =
   "This chat is bridged to a Feishu conversation, so messages and membership changes are blocked here: " +
   "a First Tree message reaches nobody, because the humans in this chat only ever see the Feishu group. " +
   "Reply through the Feishu path instead — record the delivery with `feishu intent`, then send it with the " +

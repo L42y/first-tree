@@ -1,13 +1,30 @@
-import { RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
-import { eq } from "drizzle-orm";
+import { legacyRuntimeNoticeSendBody, RUNTIME_NOTICE_METADATA_KEY } from "@first-tree/shared";
+import { and, eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { FEISHU_AGENT_CHAT_WRITE_CODE } from "../api/agent/feishu-chat-guard.js";
+import { FEISHU_AGENT_CHAT_WRITE_CODE, FEISHU_AGENT_CHAT_WRITE_MESSAGE } from "../api/agent/feishu-chat-guard.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { imBotBindings } from "../db/schema/im-bot-bindings.js";
 import { imChatBindings } from "../db/schema/im-chat-bindings.js";
 import { messages } from "../db/schema/messages.js";
 import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
+import { sendMessage } from "../services/chat/message.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
+
+/**
+ * The complete refusal body, asserted with `toEqual` rather than a status +
+ * code spot-check. The message is the actionable half of this boundary — it is
+ * what tells an agent to answer through Feishu instead — so a route that
+ * refuses with the right code and the wrong (or missing) guidance is still a
+ * regression, and only a full-body comparison catches it.
+ */
+const FEISHU_REFUSAL_BODY = {
+  error: FEISHU_AGENT_CHAT_WRITE_MESSAGE,
+  code: FEISHU_AGENT_CHAT_WRITE_CODE,
+};
+
+/** What a non-member sees on any of these routes, bridged chat or not. */
+const NOT_A_PARTICIPANT_BODY = { error: "Not a participant of this chat" };
 
 /**
  * Agent-scope mirror of `feishu-web-readonly.test.ts`. The Web boundary keeps
@@ -52,7 +69,17 @@ describe("Feishu agent chat-tool boundary", () => {
       feishuChatType: "group",
       status: "active",
     });
-    return { app, a, b, c, chat, chatBindingId };
+    // An ordinary agent message that exists in the bridged chat. Seeded through
+    // the service, which is deliberately unguarded (the Feishu bridge reuses
+    // it), so the edit route has a row that is NOT bridge-authored to aim at —
+    // `editMessage`'s own Feishu-history rule would otherwise mask the gap.
+    const seeded = await sendMessage(app.db, chat.id, a.agent.uuid, {
+      source: "cli",
+      format: "text",
+      content: "an ordinary agent message",
+      metadata: { mentions: [b.agent.uuid] },
+    });
+    return { app, a, b, c, chat, chatBindingId, seededMessageId: seeded.message.id };
   }
 
   it("rejects `chat send`, `chat ask` and `chat invite` with an actionable code", async () => {
@@ -86,6 +113,55 @@ describe("Feishu agent chat-tool boundary", () => {
     });
     expect(invite.statusCode).toBe(403);
     expect(invite.json<{ code?: string }>().code).toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+  });
+
+  /**
+   * The documented boundary is "messages AND MEMBERSHIP CHANGES". Adding a
+   * participant was guarded from the start; removing one mutates the same
+   * shared membership of the same invisible room, and editing a message
+   * rewrites the same unreadable history — a boundary that stops one and not
+   * the others is just a differently-shaped hole.
+   */
+  it("blocks membership removal and message edits with the same actionable refusal", async () => {
+    const { app, a, b, chat, seededMessageId } = await setup();
+
+    const removal = await a.request("DELETE", `/api/v1/agent/chats/${chat.id}/participants/${b.agent.uuid}`);
+    expect(removal.statusCode).toBe(403);
+    expect(removal.json()).toEqual(FEISHU_REFUSAL_BODY);
+
+    const edit = await a.request("PATCH", `/api/v1/agent/chats/${chat.id}/messages/${seededMessageId}`, {
+      content: "rewritten after the fact",
+    });
+    expect(edit.statusCode).toBe(403);
+    expect(edit.json()).toEqual(FEISHU_REFUSAL_BODY);
+
+    // A refusal that still mutated would be the worst of both worlds.
+    const [stillMember] = await app.db
+      .select({ agentId: chatMembership.agentId })
+      .from(chatMembership)
+      .where(and(eq(chatMembership.chatId, chat.id), eq(chatMembership.agentId, b.agent.uuid)));
+    expect(stillMember).toBeDefined();
+
+    const [stored] = await app.db.select().from(messages).where(eq(messages.id, seededMessageId));
+    expect(stored?.content).toBe("an ordinary agent message");
+  });
+
+  /** The send and invite refusals carry the same complete body. */
+  it("gives `chat send` and `chat invite` the identical full refusal body", async () => {
+    const { a, b, c, chat } = await setup();
+
+    const send = await a.request("POST", `/api/v1/agent/chats/${chat.id}/messages`, {
+      format: "text",
+      content: "this would vanish",
+      source: "cli",
+      metadata: { mentions: [b.agent.uuid] },
+    });
+    expect(send.json()).toEqual(FEISHU_REFUSAL_BODY);
+
+    const invite = await a.request("POST", `/api/v1/agent/chats/${chat.id}/participants`, {
+      agentIds: [c.agent.uuid],
+    });
+    expect(invite.json()).toEqual(FEISHU_REFUSAL_BODY);
   });
 
   it("keeps reads, `chat update` and the bridge signal working", async () => {
@@ -128,9 +204,11 @@ describe("Feishu agent chat-tool boundary", () => {
   });
 
   /**
-   * Regression for the forgeable exemption. Both markers used to be read off
-   * the request body, so any agent credential could mint its own bypass of the
-   * 403 by decorating an ordinary `chat send`.
+   * Regression for the old blanket body exemption: ANY send that carried the
+   * final-text purpose plus the marker used to pass, which made the boundary
+   * depend on what the caller said it was doing. Only the exact legacy wire
+   * shape is honoured now (see the rolling-deploy test above), and these
+   * decorated ordinary sends are not it.
    */
   it("rejects a forged runtime notice from an ordinary agent credential", async () => {
     const { app, a, b, chat } = await setup();
@@ -196,15 +274,19 @@ describe("Feishu agent chat-tool boundary", () => {
    * difference in error.
    */
   it("authorizes membership before the boundary, so the 403 cannot be probed", async () => {
-    const { app, a, b, c, chat } = await setup();
+    const { app, a, b, c, chat, seededMessageId } = await setup();
     const plain = await createChat(app.db, a.agent.uuid, { type: "group", participantIds: [b.agent.uuid] });
 
+    // Full-body equality across BOTH targets is the actual property under test:
+    // the bridged and the ordinary chat must be indistinguishable to a
+    // non-member, and comparing whole bodies leaves no field free to leak the
+    // difference.
     for (const target of [chat, plain]) {
       const invite = await c.request("POST", `/api/v1/agent/chats/${target.id}/participants`, {
         agentIds: [c.agent.uuid],
       });
       expect(invite.statusCode).toBe(403);
-      expect(invite.json<{ code?: string }>().code).not.toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+      expect(invite.json()).toEqual(NOT_A_PARTICIPANT_BODY);
 
       const send = await c.request("POST", `/api/v1/agent/chats/${target.id}/messages`, {
         format: "text",
@@ -213,7 +295,68 @@ describe("Feishu agent chat-tool boundary", () => {
         metadata: { mentions: [a.agent.uuid] },
       });
       expect(send.statusCode).toBe(403);
-      expect(send.json<{ code?: string }>().code).not.toBe(FEISHU_AGENT_CHAT_WRITE_CODE);
+      expect(send.json()).toEqual(NOT_A_PARTICIPANT_BODY);
+
+      const removal = await c.request("DELETE", `/api/v1/agent/chats/${target.id}/participants/${b.agent.uuid}`);
+      expect(removal.statusCode).toBe(403);
+      expect(removal.json()).toEqual(NOT_A_PARTICIPANT_BODY);
+
+      // The message id only exists in the bridged chat; a non-member must not
+      // learn even that much, so the membership check has to come first.
+      const edit = await c.request("PATCH", `/api/v1/agent/chats/${target.id}/messages/${seededMessageId}`, {
+        content: "probing",
+      });
+      expect(edit.statusCode).toBe(403);
+      expect(edit.json()).toEqual(NOT_A_PARTICIPANT_BODY);
+    }
+  });
+
+  /**
+   * ROLLING DEPLOY, old client → new server. A client that predates
+   * `/runtime-notices` publishes the same notice as a decorated send, and
+   * clients upgrade on their own schedule. Dropping it would silence exactly
+   * the operator signal a deploy is most likely to produce.
+   */
+  it("still delivers a runtime notice sent in the legacy shape by an older client", async () => {
+    const { app, a, chat } = await setup();
+
+    const legacy = await a.request(
+      "POST",
+      `/api/v1/agent/chats/${chat.id}/messages`,
+      legacyRuntimeNoticeSendBody("Claude Code could not run this turn: credentials need attention."),
+    );
+    expect(legacy.statusCode).toBe(201);
+
+    // Same stored shape as the dedicated route produces: the marker is stamped
+    // by the server, not carried over from the request metadata.
+    const [stored] = await app.db.select().from(messages).where(eq(messages.id, legacy.json<{ id: string }>().id));
+    expect(stored?.metadata).toMatchObject({ [RUNTIME_NOTICE_METADATA_KEY]: true });
+    expect(stored?.metadata).not.toHaveProperty("agentFinalText");
+  });
+
+  /**
+   * The compatibility path is an EXACT shape match for what older clients
+   * emit, not a general "say it is a notice and the boundary lifts" escape.
+   */
+  it("does not extend the legacy shape to near-misses", async () => {
+    const { a, b, chat } = await setup();
+
+    const nearMisses = [
+      // A different source: the legacy call sites all sent `api`.
+      { ...legacyRuntimeNoticeSendBody("wrong source"), source: "cli" as const },
+      // Extra metadata — a notice addresses nobody.
+      {
+        ...legacyRuntimeNoticeSendBody("addressed"),
+        metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true, mentions: [b.agent.uuid] },
+      },
+      // The silent delivery purpose on its own never meant "runtime notice".
+      { ...legacyRuntimeNoticeSendBody("no marker"), metadata: {} },
+    ];
+
+    for (const body of nearMisses) {
+      const res = await a.request("POST", `/api/v1/agent/chats/${chat.id}/messages`, body);
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toEqual(FEISHU_REFUSAL_BODY);
     }
   });
 

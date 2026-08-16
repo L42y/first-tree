@@ -1,4 +1,9 @@
-import { paginationQuerySchema, runtimeNoticeRequestSchema, sendMessageSchema } from "@first-tree/shared";
+import {
+  isLegacyRuntimeNoticeSend,
+  paginationQuerySchema,
+  runtimeNoticeRequestSchema,
+  sendMessageSchema,
+} from "@first-tree/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { requireAgent } from "../../middleware/require-identity.js";
@@ -46,23 +51,43 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
       // to require explicit source — it would break unaudited third-
       // party integrations.
       const body = sendMessageSchema.parse(request.body);
+
+      // ROLLING-DEPLOY COMPATIBILITY. A client older than `/runtime-notices`
+      // publishes its provider-failure and usage-limit notices as this exact
+      // send shape, and clients upgrade on their own schedule, so "old client,
+      // new server" is a normal steady state rather than a brief window.
+      // Recognising the legacy shape routes it to the same handling the
+      // dedicated endpoint gets: the notice still lands, and the server — not
+      // the body — stamps the stored marker.
+      //
+      // This is not an authorization decision, and it grants nothing: the
+      // runtime-notice endpoint is membership-gated exactly like this route, so
+      // any caller that could assemble this body could equally have called that
+      // endpoint. Both are misuse-prevention rails around a notice the client
+      // runtime reports, not a security boundary. `isLegacyRuntimeNoticeSend`
+      // is deliberately an exact shape match; remove it once no supported
+      // client predates the endpoint.
+      const legacyRuntimeNotice = isLegacyRuntimeNoticeSend(body);
+
       // Feishu boundary for `chat send` AND `chat ask` (same route; `chat ask`
       // is just `format: "request"`). Applied here rather than inside
       // `messageService.sendMessage`, which the Feishu bridge itself reuses —
       // see `feishu-chat-guard.ts` for that collision.
       //
-      // Unconditional: there is no body-derived exemption. An operator-facing
-      // runtime notice goes to `/runtime-notices` below, which is exempt by
-      // route, so nothing a caller can write in this body opens the boundary.
       // Ordered after `assertParticipant` above so the 403 cannot be probed by
       // a non-member.
-      await assertAgentMutableChat(app.db, request.params.chatId);
+      if (!legacyRuntimeNotice) {
+        await assertAgentMutableChat(app.db, request.params.chatId);
+      }
       const { message: msg, recipients } = await messageService.sendMessage(
         app.db,
         request.params.chatId,
         identity.uuid,
         body,
         {
+          // Legacy spelling of the dedicated endpoint; the marker is still
+          // server-stamped, never carried over from the request metadata.
+          runtimeNotice: legacyRuntimeNotice,
           // Explicit-recipient enforcement is the default in `sendMessage()`;
           // this route carries no business flag. Agent SDK callers (CLI
           // `chat send`, result-sink, etc.) declare routing via `receiverNames`
@@ -94,10 +119,24 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
    * A runtime notice is exempt from the Feishu-bridged chat write boundary,
    * because an agent that could not run at all must not also go silent: the
    * operator needs that row in First Tree history even when ordinary agent
-   * sends into the chat are refused. The exemption therefore has to be
-   * unforgeable. Making it a property of THE ROUTE is what achieves that — the
-   * same reason the Feishu bridge's own delivery route is safe while a
-   * body-shaped discriminator would not be.
+   * sends into the chat are refused.
+   *
+   * WHAT THIS ROUTE IS, PRECISELY. It is a MISUSE-PREVENTION RAIL carrying a
+   * notice the client runtime reports about itself — NOT a security or
+   * authorization boundary, and the exemption it grants is NOT unforgeable.
+   * The route is gated on chat membership and nothing else, exactly like
+   * `POST /messages`, so every credential that can reach one can reach the
+   * other; an agent determined to write into a bridged chat can simply call
+   * this endpoint and label the text a runtime notice. Nothing here verifies
+   * that a provider actually failed.
+   *
+   * What the separate route DOES buy is worth having anyway: the ordinary send
+   * path stays uniformly guarded with no shape of body that opens it, the
+   * server authors the entire stored row so a notice cannot quietly become an
+   * addressed message, and the narrow surface makes accidental misuse visible
+   * in review instead of plausible. Whether the capability should be narrowed
+   * further — to the daemon, or scoped to a chat/turn — is an open posture
+   * question, deliberately not settled here.
    *
    * The server authors everything that carries meaning: `source`, `format`,
    * the silent recipientless delivery profile, and the `runtimeNotice` marker
@@ -105,9 +144,6 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
    * inbound copy). The request contributes only the notice text, and
    * `runtimeNoticeRequestSchema` is strict, so a caller that tries to attach
    * `purpose` or `metadata` gets a 400 instead of a quietly ignored field.
-   *
-   * Membership is still required: this is a narrower capability than
-   * `chat send`, not an unauthenticated back door.
    */
   app.post<{ Params: { chatId: string } }>(
     "/:chatId/runtime-notices",
@@ -144,7 +180,17 @@ export async function agentMessageRoutes(app: FastifyInstance): Promise<void> {
     { config: { otelRecordBody: true } },
     async (request) => {
       const identity = requireAgent(request);
+      // Membership first, boundary second — the same ordering the send and
+      // participant routes use, so neither error reveals a chat's binding
+      // state to a non-member.
       await chatService.assertParticipant(app.db, request.params.chatId, identity.uuid);
+      // An edit is a message write. `editMessage` already refuses to touch a
+      // bridge-authored row, but ordinary agent messages and runtime notices in
+      // a bridged chat are editable without this, and rewriting First Tree
+      // history that the Feishu humans cannot see is exactly what the boundary
+      // exists to stop. Feishu carries no edit, so the two sides would also
+      // silently diverge.
+      await assertAgentMutableChat(app.db, request.params.chatId);
       const body = editMessageSchema.parse(request.body);
       const msg = await messageService.editMessage(
         app.db,

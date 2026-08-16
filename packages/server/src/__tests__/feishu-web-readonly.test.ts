@@ -6,7 +6,12 @@ import { serverInstances } from "../db/schema/server-instances.js";
 import { createChat } from "../services/chat/conversation.js";
 import { createTestAgent, useTestApp } from "./helpers.js";
 
-describe("Feishu Web read-only boundary", () => {
+/**
+ * "Web write boundary", not "Web read-only": personal view state (read, pin,
+ * archive) is deliberately still writable, which is why the 403 text below
+ * names the blocked class instead of claiming the whole chat is read-only.
+ */
+describe("Feishu Web write boundary", () => {
   const getApp = useTestApp();
 
   async function setup() {
@@ -67,6 +72,13 @@ describe("Feishu Web read-only boundary", () => {
       payload: { topic: "Web must not rename Feishu" },
     });
     expect(rename.statusCode).toBe(403);
+    // The refusal must not call the chat read-only: personal state above just
+    // succeeded, so that wording would be actively misleading.
+    const renameBody = rename.json<{ error: string }>();
+    expect(renameBody.error).toContain("structural changes are blocked");
+    expect(renameBody.error).toContain("read/pin/archive");
+    expect(renameBody.error).not.toContain("read-only");
+
     const send = await app.inject({
       method: "POST",
       url: `/api/v1/chats/${chat.id}/messages`,

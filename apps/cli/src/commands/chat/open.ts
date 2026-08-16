@@ -16,15 +16,18 @@ export function registerChatOpenCommand(chat: Command): void {
       try {
         // Agent-session precondition. `chat open` runs on the user scope and
         // drives an interactive REPL, so the server has no chat id to gate on
-        // and no way to tell an operator terminal from an agent. Only consult
-        // it when both agent-session variables are exported — that is the one
-        // shape where the refusal is correct, and it keeps the check off a
-        // human operator's machine that may have no agent configured at all.
-        const sessionChatId = process.env.FIRST_TREE_CHAT_ID;
-        if (sessionChatId && process.env.FIRST_TREE_AGENT_ID) {
-          const refusal = await checkFeishuChatContext(createSdk(), sessionChatId, "open");
-          if (refusal) fail(refusal.code, refusal.message, 2);
-        }
+        // and no way to tell an operator terminal from an agent.
+        //
+        // A human operator's terminal exports no FIRST_TREE_CHAT_ID and may
+        // have no agent configured at all: that case allows without building
+        // an SDK. A session that DOES name a chat is checked, and refuses when
+        // the answer cannot be established.
+        const refusal = await checkFeishuChatContext(
+          () => createSdk(),
+          { chatId: process.env.FIRST_TREE_CHAT_ID, agentId: process.env.FIRST_TREE_AGENT_ID },
+          "open",
+        );
+        if (refusal) fail(refusal.code, refusal.message, 2);
 
         const serverUrl = resolveServerUrl(options.server);
         const adminToken = await ensureFreshAccessToken();

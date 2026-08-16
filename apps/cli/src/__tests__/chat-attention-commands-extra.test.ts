@@ -65,6 +65,7 @@ vi.mock("../core/output.js", () => ({
 vi.mock("node:readline", () => readlineMocks);
 
 const originalChatId = process.env.FIRST_TREE_CHAT_ID;
+const originalAgentId = process.env.FIRST_TREE_AGENT_ID;
 const originalExit = process.exit;
 const originalSetInterval = globalThis.setInterval;
 const originalClearInterval = globalThis.clearInterval;
@@ -89,7 +90,12 @@ async function runChat(args: string[]): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // A real agent session always carries BOTH: the daemon injects them
+  // together. `chat create` / `chat open` now refuse a session that names a
+  // chat with no agent able to read it, so a fixture with only the chat id
+  // would be testing an environment that cannot occur.
   process.env.FIRST_TREE_CHAT_ID = "chat-env";
+  process.env.FIRST_TREE_AGENT_ID = "agent-self";
   bootstrapMocks.ensureFreshAccessToken.mockResolvedValue("user-token");
   bootstrapMocks.resolveServerUrl.mockReturnValue("https://hub.example");
   resolveAgentMock.mockResolvedValue({ uuid: "agent-1", name: "nova", displayName: "Nova" });
@@ -131,6 +137,11 @@ afterEach(() => {
     delete process.env.FIRST_TREE_CHAT_ID;
   } else {
     process.env.FIRST_TREE_CHAT_ID = originalChatId;
+  }
+  if (originalAgentId === undefined) {
+    delete process.env.FIRST_TREE_AGENT_ID;
+  } else {
+    process.env.FIRST_TREE_AGENT_ID = originalAgentId;
   }
   process.exit = originalExit;
   globalThis.setInterval = originalSetInterval;

@@ -73,6 +73,7 @@ import {
   type ListDocCommentsResponse,
   type ListDocsResponse,
   legacyContextActivationResponseSchema,
+  legacyRuntimeNoticeSendBody,
   listMeChatsResponseSchema,
   type Message,
   type OrgContextTreeFeaturesOutput,
@@ -438,17 +439,28 @@ export class FirstTreeHubSDK {
    * usage limit is reached").
    *
    * Its own endpoint rather than a decorated `sendMessage`: a runtime notice is
-   * exempt from the Feishu-bridged chat write boundary, and that exemption is
-   * granted by which route is called, not by anything in the body. The server
-   * authors the delivery profile and the stored `runtimeNotice` marker, so only
-   * the text travels — the endpoint rejects an attempt to pass `purpose` or
-   * `metadata`.
+   * the one agent write that must still land in a Feishu-bridged chat, and
+   * putting it on its own route keeps the ordinary send path uniformly guarded
+   * while letting the server author the whole delivery profile. Only the text
+   * travels — the endpoint rejects an attempt to pass `purpose` or `metadata`.
+   *
+   * ROLLING DEPLOY. A client is upgraded independently of the server it talks
+   * to, so this runtime may well be newer than the server. An older server has
+   * no such route and answers 404; falling back to the legacy send shape keeps
+   * the notice from being dropped in exactly the window where an operator most
+   * needs to see it. The fallback narrows to 404 so a real failure (403, 5xx)
+   * still surfaces rather than being retried as something else.
    */
   async postRuntimeNotice(chatId: string, content: string): Promise<Message> {
-    return this.requestJson<Message>(`/api/v1/agent/chats/${encodeURIComponent(chatId)}/runtime-notices`, {
-      method: "POST",
-      body: JSON.stringify({ content } satisfies RuntimeNoticeRequest),
-    });
+    try {
+      return await this.requestJson<Message>(`/api/v1/agent/chats/${encodeURIComponent(chatId)}/runtime-notices`, {
+        method: "POST",
+        body: JSON.stringify({ content } satisfies RuntimeNoticeRequest),
+      });
+    } catch (error) {
+      if (!(error instanceof SdkError) || error.statusCode !== 404) throw error;
+      return this.sendMessage(chatId, legacyRuntimeNoticeSendBody(content));
+    }
   }
 
   async createAgentOutboxToken(chatId: string): Promise<{ accessToken: string; expiresIn: number }> {

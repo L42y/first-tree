@@ -135,10 +135,10 @@ describe("sendMessage — agent-final-text bypass (v1 §四 改造 4 b)", () => 
   });
 
   /**
-   * The runtime-notice marker exempts a message from the Feishu-bridged chat
-   * write boundary, so it is a capability rather than a label. If a caller
-   * could set it in a request body, every agent credential would carry its own
-   * exemption — which is exactly the hole this strips shut.
+   * The stored marker decides whether a row counts as an agent final-text
+   * mirror, which the staging view toggle filters on. Keeping it server-stamped
+   * means the classification always reflects which endpoint was called rather
+   * than what a body claimed — the route layer decides that, never the service.
    */
   it("strips a client-smuggled runtimeNotice flag so the marker stays server-owned", async () => {
     const app = getApp();
