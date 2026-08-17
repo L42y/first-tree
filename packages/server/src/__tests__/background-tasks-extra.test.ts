@@ -212,4 +212,43 @@ describe("createBackgroundTasks", () => {
     await tasks.stop();
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it("allows callers to disable automatic attachment-retention sweeps", async () => {
+    const { createBackgroundTasks } = await import("../services/background-tasks.js");
+    const tasks = createBackgroundTasks(makeApp(), "srv_5", { attachmentRetentionSweepEnabled: false });
+
+    tasks.start();
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+    await tasks.stop();
+
+    expect(serviceMocks.sweepExpiredMessageAttachments).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waits for an in-flight attachment-retention sweep before stopping", async () => {
+    const { createBackgroundTasks } = await import("../services/background-tasks.js");
+    let finishSweep = (): void => undefined;
+    serviceMocks.sweepExpiredMessageAttachments.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishSweep = () =>
+            resolve({ eligibleObjects: 0, eligibleBytes: 0, deleted: 0, reclaimedBytes: 0, batches: 0 });
+        }),
+    );
+    const tasks = createBackgroundTasks(makeApp(), "srv_6");
+    tasks.start();
+
+    const stop = tasks.stop();
+    const settlement = await Promise.race([
+      stop.then(() => "stopped" as const),
+      Promise.resolve()
+        .then(() => Promise.resolve())
+        .then(() => "sweep-pending" as const),
+    ]);
+    expect(settlement).toBe("sweep-pending");
+
+    finishSweep();
+    await stop;
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
