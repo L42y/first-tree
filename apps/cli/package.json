@@ -11,9 +11,9 @@
     "github",
     "collaboration"
   ],
-  "homepage": "https://github.com/agent-team-foundation/first-tree#readme",
+  "homepage": "https://github.com/first-tree-ai/first-tree#readme",
   "bugs": {
-    "url": "https://github.com/agent-team-foundation/first-tree/issues"
+    "url": "https://github.com/first-tree-ai/first-tree/issues"
   },
   "exports": {
     ".": {
@@ -54,7 +54,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/agent-team-foundation/first-tree.git",
+    "url": "https://github.com/first-tree-ai/first-tree.git",
     "directory": "apps/cli"
   },
   "engines": {
