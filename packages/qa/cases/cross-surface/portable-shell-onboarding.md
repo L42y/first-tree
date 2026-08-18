@@ -103,7 +103,12 @@ For each of `prod` and `staging`:
   `sh`, the installer's own stdin is not a terminal — confirm the progress reporting is gated on stdout/stderr, so a
   runner that captures stdout receives plain text with no carriage returns or ANSI escapes while a terminal run shows
   the bar. A failure surfaces which phase failed, and the checksum, smoke-check, and PATH-guidance messages keep their
-  existing wording.
+  existing wording. `--quiet` is limited to errors and the final summary, including any output the installer relays from
+  the CLI's own service lifecycle. The installer never claims the background service is set up when service repair
+  failed; a warning is not followed by a contradicting success line.
+- `observe process-state`: interrupting the installer mid-download stops the payload transfer itself, not just the shell
+  that waits on it. After the installer exits, no `curl`/`wget` child remains reparented to init writing into the
+  removed work directory, and the previously active version is left untouched.
 - `observe service-state`: login installs and starts the channel-correct systemd service. For a normal Linux user,
   `systemctl --user` reports the user unit active through the runner's real user manager and bus. For root,
   `systemctl status <channel-service-unit>` reports the system unit active, and `journalctl -u <channel-service-unit>`

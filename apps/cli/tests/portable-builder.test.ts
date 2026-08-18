@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   cpSync,
@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -644,7 +645,7 @@ describe("portable installer", () => {
     root: string,
     version: string,
     platform: string,
-    options: { failRuntimeSmoke?: boolean; integrationRuntime?: boolean } = {},
+    options: { failRuntimeSmoke?: boolean; integrationRuntime?: boolean; failEnsureService?: boolean } = {},
   ): Promise<void> {
     const channelDir = join(root, "prod");
     const versionDir = join(channelDir, version);
@@ -662,6 +663,13 @@ if [ -n "\${FT_TEST_NODE_ARGS_LOG:-}" ]; then
 fi
 if [ "$2" = "--version" ]; then ${options.failRuntimeSmoke ? "exit 51" : `echo ${version}; exit 0;`} fi
 if [ "$1" = "--version" ]; then ${options.failRuntimeSmoke ? "exit 51" : `echo ${version}; exit 0;`} fi
+${
+  options.failEnsureService
+    ? `case "$*" in
+  *ensure-service*) printf 'service repair unavailable\\n' >&2; exit 9 ;;
+esac`
+    : ""
+}
 echo node-stub "$@"
 `;
     await writeFile(join(payload, "node", "bin", "node"), nodeScript, { mode: 0o755 });
@@ -1198,4 +1206,173 @@ if (args[0] === "--version") {
     expect(res.status).not.toBe(0);
     expect(readFileSync(join(prefix, "current", "VERSION"), "utf8")).toBe("old\n");
   });
+
+  it("limits --quiet output to errors and the final summary", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = await makeFixture(platform);
+    const home = tempDir("first-tree-home-");
+    const prefix = join(home, "prefix");
+    const binDir = join(home, "bin");
+    const res = spawnSync(
+      "sh",
+      [
+        join(REPO_ROOT, "scripts", "portable", "install.sh"),
+        "--prefix",
+        prefix,
+        "--bin-dir",
+        binDir,
+        "--no-path-edit",
+        "--quiet",
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          HOME: home,
+          FIRST_TREE_PORTABLE_CHANNEL: "prod",
+          FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(res.status, res.stderr || res.stdout).toBe(0);
+    // The fixture runtime echoes "node-stub ..." for `daemon ensure-service`;
+    // quiet mode must hold back successful lifecycle output, not just its own.
+    expect(res.stdout).not.toContain("node-stub");
+    expect(res.stdout).not.toContain("[1/9]");
+    expect(res.stdout).not.toContain("Downloading payload");
+    expect(res.stdout).not.toContain("first-tree.ai");
+    expect(res.stdout).toContain("First Tree 1.2.3 installed");
+    expect(res.stdout).toContain(`Add this to your shell profile: export PATH="${binDir}:$PATH"`);
+  });
+
+  it("does not claim the background service is set up when service repair fails", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = tempDir("first-tree-install-test-");
+    await writeFixtureVersion(fixture, "1.2.3", platform, { failEnsureService: true });
+    const home = tempDir("first-tree-home-");
+    const prefix = join(home, "prefix");
+    const binDir = join(home, "bin");
+    const res = spawnSync(
+      "sh",
+      [join(REPO_ROOT, "scripts", "portable", "install.sh"), "--prefix", prefix, "--bin-dir", binDir, "--no-path-edit"],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          HOME: home,
+          FIRST_TREE_PORTABLE_CHANNEL: "prod",
+          FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    // A recoverable service failure must not fail the install, and must not be
+    // followed by a success line contradicting the warning above it.
+    expect(res.status, res.stderr || res.stdout).toBe(0);
+    expect(res.stdout).toContain("Background service repair failed or is not available yet.");
+    expect(res.stdout).not.toContain("Shell and background service are set up");
+    expect(res.stdout).toContain("Install is complete; background service setup still needs login.");
+    expect(res.stdout).toContain("First Tree 1.2.3 installed");
+    expect(res.stderr).toContain("service repair unavailable");
+  });
+
+  it("reaps the payload transfer when the installer is signalled mid-download", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = await makeFixture(platform);
+    const home = tempDir("first-tree-home-");
+    const prefix = join(home, "prefix");
+    const binDir = join(home, "bin");
+
+    const latestPath = join(fixture, "prod", "latest.json");
+    const latest = JSON.parse(readFileSync(latestPath, "utf8")) as {
+      assets: Array<{ fileName: string; url: string }>;
+    };
+    const payload = readFileSync(join(fixture, "prod", "1.2.3", latest.assets[0].fileName));
+
+    const totalSlices = 20;
+    let requestSeen = false;
+    let transferClosed = false;
+    let slicesSent = 0;
+    const server = createServer(async (_req, res) => {
+      requestSeen = true;
+      res.on("close", () => {
+        transferClosed = true;
+      });
+      res.writeHead(200, { "content-type": "application/gzip", "content-length": String(payload.length) });
+      const slice = Math.max(1, Math.ceil(payload.length / totalSlices));
+      for (let offset = 0; offset < payload.length; offset += slice) {
+        if (res.destroyed) return;
+        res.write(payload.subarray(offset, offset + slice));
+        slicesSent += 1;
+        await new Promise((done) => setTimeout(done, 150));
+      }
+      res.end();
+    });
+    await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+    const address = server.address();
+    if (address === null || typeof address === "string") throw new Error("throttled fixture server has no TCP port");
+    latest.assets[0].url = `http://127.0.0.1:${address.port}/payload.tar.gz`;
+    writeFileSync(latestPath, JSON.stringify(latest, null, 2));
+
+    try {
+      const child = spawn(
+        "sh",
+        [
+          join(REPO_ROOT, "scripts", "portable", "install.sh"),
+          "--prefix",
+          prefix,
+          "--bin-dir",
+          binDir,
+          "--no-path-edit",
+        ],
+        {
+          cwd: REPO_ROOT,
+          env: {
+            ...process.env,
+            HOME: home,
+            FIRST_TREE_PORTABLE_CHANNEL: "prod",
+            FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+            // The background-download path only runs when stderr is a terminal,
+            // which spawn() pipes are not.
+            FIRST_TREE_PORTABLE_FORCE_PROGRESS: "1",
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      child.stdout.resume();
+      child.stderr.resume();
+      const exited = new Promise<number | null>((done) => child.on("exit", (code) => done(code)));
+
+      const startDeadline = Date.now() + 10_000;
+      while (!requestSeen && Date.now() < startDeadline) await new Promise((done) => setTimeout(done, 25));
+      expect(requestSeen).toBe(true);
+      await new Promise((done) => setTimeout(done, 400));
+
+      child.kill("SIGTERM");
+      // The trap aborts instead of resuming, so the shell exits deliberately.
+      expect(await exited).toBe(130);
+
+      // The transfer must die with the installer. Killing only the wrapper that
+      // waits on it reparents curl/wget to init, where it keeps writing into a
+      // work directory that has already been removed.
+      const closeDeadline = Date.now() + 5_000;
+      while (!transferClosed && Date.now() < closeDeadline) await new Promise((done) => setTimeout(done, 25));
+      expect(transferClosed).toBe(true);
+      // Guards against passing vacuously: the signal has to cut the transfer
+      // short rather than the installer quietly finishing the download first.
+      expect(slicesSent).toBeLessThan(totalSlices);
+      const slicesAtAbort = slicesSent;
+      await new Promise((done) => setTimeout(done, 600));
+      expect(slicesSent).toBe(slicesAtAbort);
+      expect(existsSync(join(prefix, "current"))).toBe(false);
+    } finally {
+      await new Promise<void>((closed) => server.close(() => closed()));
+    }
+  }, 30_000);
 });

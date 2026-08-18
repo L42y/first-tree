@@ -73,6 +73,8 @@ G_BAR_EMPTY="."
 DOWNLOADER=""
 SHA_TOOL=""
 DOWNLOAD_PID=""
+DOWNLOAD_CHILD_FILE=""
+DAEMON_SERVICE_STATE="unknown"
 
 usage() {
   cat <<EOF
@@ -125,6 +127,12 @@ ui_detect() {
     UI_COLOR=1
   fi
   if [ "$QUIET" -eq 0 ] && [ -t 2 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    UI_ANIM=1
+  fi
+  # Internal test seam, not an operator switch: the progress and cancellation
+  # paths only run when stderr is a terminal, which a test harness cannot
+  # provide without allocating a pseudo-terminal.
+  if [ "$QUIET" -eq 0 ] && [ -n "${FIRST_TREE_PORTABLE_FORCE_PROGRESS:-}" ]; then
     UI_ANIM=1
   fi
 
@@ -420,14 +428,19 @@ resolve_sha_tool() {
   fi
 }
 
-download_to() {
-  url="$1"
-  dest="$2"
+# Replaces the calling process with the transfer itself. Backgrounded with `&`
+# this makes `$!` the curl/wget pid rather than a wrapper shell's, which is what
+# lets cancellation reach the transfer instead of orphaning it.
+exec_downloader() {
   case "$DOWNLOADER" in
-    curl) curl -fsSL "$url" -o "$dest" ;;
-    wget) wget -qO "$dest" "$url" ;;
-    *) return 1 ;;
+    curl) exec curl -fsSL "$1" -o "$2" ;;
+    wget) exec wget -qO "$2" "$1" ;;
   esac
+  return 1
+}
+
+download_to() {
+  (exec_downloader "$1" "$2")
 }
 
 # Byte-level progress driven by the asset size already present in the release
@@ -456,13 +469,21 @@ download_with_progress() {
   fi
 
   dl_status="$WORK_DIR/download.status"
-  rm -f "$dl_status" "${dl_status}.tmp"
+  DOWNLOAD_CHILD_FILE="$WORK_DIR/download.child"
+  rm -f "$dl_status" "${dl_status}.tmp" "$DOWNLOAD_CHILD_FILE" "${DOWNLOAD_CHILD_FILE}.tmp"
   {
     # Whether a subshell inherits the parent EXIT trap is not portable, and
     # cleanup() removes WORK_DIR. Drop the traps so this child can never delete
     # the directory it is downloading into.
     trap - EXIT HUP INT TERM
-    if download_to "$dl_url" "$dl_dest"; then
+    # Publish the transfer's own pid before waiting on it. Signalling only this
+    # wrapper would reparent curl/wget to init, where it keeps writing into the
+    # work directory cleanup is about to remove.
+    exec_downloader "$dl_url" "$dl_dest" &
+    dl_child=$!
+    printf '%s' "$dl_child" >"${DOWNLOAD_CHILD_FILE}.tmp"
+    mv -f "${DOWNLOAD_CHILD_FILE}.tmp" "$DOWNLOAD_CHILD_FILE"
+    if wait "$dl_child"; then
       printf '0' >"${dl_status}.tmp"
     else
       printf '1' >"${dl_status}.tmp"
@@ -731,21 +752,55 @@ clean_npm_temp_residue() {
   done
 }
 
+# Captured rather than streamed so --quiet can hold back a successful lifecycle
+# line, and so the caller can tell whether the service is actually up instead of
+# claiming success right after a warning.
 ensure_daemon_service() {
   bin_name="$1"
-  if "$BIN_DIR/$bin_name" daemon ensure-service; then
+  if ensure_service_output="$("$BIN_DIR/$bin_name" daemon ensure-service 2>&1)"; then
+    DAEMON_SERVICE_STATE="ready"
+    [ -z "$ensure_service_output" ] || log "$ensure_service_output"
     return 0
   fi
+  DAEMON_SERVICE_STATE="deferred"
+  [ -z "$ensure_service_output" ] || printf '%s\n' "$ensure_service_output" >&2
   ui_warn "Background service repair failed or is not available yet."
   say "  Run $BIN_DIR/$bin_name login <code> to refresh credentials and service state."
 }
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/first-tree-portable.XXXXXX")"
-cleanup() {
-  if [ -n "$DOWNLOAD_PID" ]; then
-    kill "$DOWNLOAD_PID" 2>/dev/null || true
-    DOWNLOAD_PID=""
+# Cancellation has to own the whole transfer, not just the wrapper that waits on
+# it, and has to see it gone before WORK_DIR disappears underneath it.
+stop_download() {
+  [ -n "$DOWNLOAD_PID" ] || return 0
+  stop_child=""
+  if [ -n "$DOWNLOAD_CHILD_FILE" ] && [ -f "$DOWNLOAD_CHILD_FILE" ]; then
+    stop_child="$(cat "$DOWNLOAD_CHILD_FILE" 2>/dev/null || true)"
   fi
+  case "$stop_child" in
+    ''|*[!0-9]*) stop_child="" ;;
+  esac
+
+  # Transfer first, so the wrapper's own `wait` returns on its own.
+  [ -z "$stop_child" ] || kill "$stop_child" 2>/dev/null || true
+  kill "$DOWNLOAD_PID" 2>/dev/null || true
+  wait "$DOWNLOAD_PID" 2>/dev/null || true
+  DOWNLOAD_PID=""
+
+  if [ -n "$stop_child" ]; then
+    stop_wait=0
+    while [ "$stop_wait" -lt 10 ] && kill -0 "$stop_child" 2>/dev/null; do
+      sleep "$UI_TICK"
+      stop_wait=$((stop_wait + 1))
+    done
+    if kill -0 "$stop_child" 2>/dev/null; then
+      kill -9 "$stop_child" 2>/dev/null || true
+    fi
+  fi
+}
+
+cleanup() {
+  stop_download
   if [ "$UI_BAR_ACTIVE" -eq 1 ]; then
     printf '\r\033[K\n' >&2
     UI_BAR_ACTIVE=0
@@ -910,7 +965,14 @@ PATH="$BIN_DIR:${PATH:-}"
 export PATH
 maybe_edit_path "$BIN_NAME"
 ensure_daemon_service "$BIN_NAME"
-ui_ok "Shell and service state updated"
+# Only claim the service is set up when it actually is. ensure_daemon_service
+# deliberately does not fail the install, so the warning it prints must not be
+# followed by a success line contradicting it.
+if [ "$DAEMON_SERVICE_STATE" = "ready" ]; then
+  ui_ok "Shell and background service are set up"
+else
+  ui_detail "Install is complete; background service setup still needs login."
+fi
 
 say ""
 say "${C_BRAND}${C_BOLD}  $G_OK  First Tree $VERSION installed$C_RESET"

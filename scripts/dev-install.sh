@@ -200,6 +200,15 @@ ui_fail() {
   printf '%s  %s  %s%s\n' "$C_WARN" "$G_WARN" "$*" "$C_RESET" >&2
 }
 
+# Relay captured child output on a success path. Suppressed by --quiet, which
+# promises errors and the final summary only; failure paths below print the same
+# text to stderr unconditionally.
+ui_relay() {
+  ((QUIET == 0)) || return 0
+  [[ -n "$1" ]] || return 0
+  printf '%s\n' "$1"
+}
+
 # Always printed.
 say() {
   printf '%s\n' "$*"
@@ -325,10 +334,10 @@ fi
 
 ui_step "Restarting dev daemon"
 if restart_output=$("$BIN_DIR/first-tree-dev" daemon restart 2>&1); then
-  printf "%s\n" "$restart_output"
+  ui_relay "$restart_output"
   ui_ok "Daemon restarted on the new build"
 elif grep -q "No background service installed" <<<"$restart_output"; then
-  printf "%s\n" "$restart_output"
+  ui_relay "$restart_output"
   ui_detail "daemon service is not installed yet; run first-tree-dev login <code> to create it."
   ui_ok "Nothing to restart yet"
 else
