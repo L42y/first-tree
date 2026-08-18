@@ -494,11 +494,9 @@ download_to() {
 }
 
 # Byte-level progress driven by the asset size already present in the release
-# metadata, so curl, wget and busybox wget all render identically. Completion is
-# signalled through a status file rather than process state: whether a shell
-# reaps a background child before `wait` runs is not portable, but the status
-# file is written before the subshell exits.
-# Only the rendering differs from any other transfer; ownership is identical.
+# metadata, so curl, wget and busybox wget all render identically. Only the
+# rendering differs from any other transfer; run_download owns the child and
+# reads its status the same way either way.
 download_with_progress() {
   dl_url="$1"
   dl_dest="$2"
