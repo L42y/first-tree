@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ENSURE_SERVICE_DEFERRED_EXIT_CODE } from "../commands/daemon/ensure-service.js";
 
 const sharedConfigMocks = vi.hoisted(() => ({
   clientConfigSchema: {
@@ -277,13 +278,19 @@ describe("daemon utility commands", () => {
       "supervisor definition rewritten",
     );
 
+    // Both branches deliberately do nothing, which the portable installer has to
+    // tell apart from a real repair; they exit deferred rather than zero.
     coreMocks.isServiceSupported.mockReturnValueOnce(false);
-    await runDaemon(["ensure-service"]);
+    await expect(runDaemon(["ensure-service"])).rejects.toMatchObject({
+      code: ENSURE_SERVICE_DEFERRED_EXIT_CODE,
+    });
     expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain("not supported");
 
     coreMocks.isServiceSupported.mockReturnValue(true);
     coreMocks.loadCredentials.mockReturnValueOnce(null);
-    await runDaemon(["ensure-service"]);
+    await expect(runDaemon(["ensure-service"])).rejects.toMatchObject({
+      code: ENSURE_SERVICE_DEFERRED_EXIT_CODE,
+    });
     expect(printLineMock.mock.calls.map((call) => String(call[0])).join("")).toContain("no credentials");
 
     coreMocks.installClientService.mockClear();

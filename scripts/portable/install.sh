@@ -74,6 +74,7 @@ DOWNLOADER=""
 SHA_TOOL=""
 DOWNLOAD_PID=""
 DOWNLOAD_IN_FLIGHT=0
+DOWNLOAD_PENDING_SIGNAL=""
 DAEMON_SERVICE_STATE="unknown"
 # `daemon ensure-service` exits with this when it deliberately did nothing:
 # unsupported platform, or no credentials yet and `login` owns starting the
@@ -132,12 +133,6 @@ ui_detect() {
     UI_COLOR=1
   fi
   if [ "$QUIET" -eq 0 ] && [ -t 2 ] && [ "${TERM:-dumb}" != "dumb" ]; then
-    UI_ANIM=1
-  fi
-  # Internal test seam, not an operator switch: the progress and cancellation
-  # paths only run when stderr is a terminal, which a test harness cannot
-  # provide without allocating a pseudo-terminal.
-  if [ "$QUIET" -eq 0 ] && [ -n "${FIRST_TREE_PORTABLE_FORCE_PROGRESS:-}" ]; then
     UI_ANIM=1
   fi
 
@@ -444,8 +439,58 @@ exec_downloader() {
   return 1
 }
 
+# Every transfer runs through here, terminal or not: which process owns the
+# download must not depend on whether a progress bar is being drawn. `render`
+# only decides what is printed. Returns the transfer's exit status.
+run_download() {
+  rd_url="$1"
+  rd_dest="$2"
+  rd_expected="$3"
+  rd_render="$4"
+
+  # A signal can arrive between forking the transfer and recording $! below.
+  # Acting on it there would leave the child unowned — and before it reaches
+  # `exec` it still carries this shell's command name, so it cannot be found by
+  # inspecting the process table either. Record the signal instead and honour it
+  # once the pid is captured.
+  DOWNLOAD_PENDING_SIGNAL=""
+  trap 'DOWNLOAD_PENDING_SIGNAL=1' HUP INT TERM
+  DOWNLOAD_IN_FLIGHT=1
+  exec_downloader "$rd_url" "$rd_dest" &
+  DOWNLOAD_PID=$!
+  trap 'cleanup; exit 130' HUP INT TERM
+  if [ -n "$DOWNLOAD_PENDING_SIGNAL" ]; then
+    cleanup
+    exit 130
+  fi
+
+  if [ "$rd_render" -eq 1 ]; then
+    UI_BAR_ACTIVE=1
+  fi
+  while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
+    if [ "$rd_render" -eq 1 ]; then
+      ui_render_bar "$(ui_file_bytes "$rd_dest")" "$rd_expected"
+    fi
+    sleep "$UI_TICK"
+  done
+
+  rd_rc=0
+  wait "$DOWNLOAD_PID" || rd_rc=$?
+  DOWNLOAD_PID=""
+  DOWNLOAD_IN_FLIGHT=0
+
+  if [ "$rd_render" -eq 1 ]; then
+    if [ "$rd_rc" -eq 0 ]; then
+      ui_render_bar "$rd_expected" "$rd_expected"
+      printf '\n' >&2
+    fi
+    UI_BAR_ACTIVE=0
+  fi
+  return "$rd_rc"
+}
+
 download_to() {
-  (exec_downloader "$1" "$2")
+  run_download "$1" "$2" "" 0
 }
 
 # Byte-level progress driven by the asset size already present in the release
@@ -453,50 +498,25 @@ download_to() {
 # signalled through a status file rather than process state: whether a shell
 # reaps a background child before `wait` runs is not portable, but the status
 # file is written before the subshell exits.
+# Only the rendering differs from any other transfer; ownership is identical.
 download_with_progress() {
   dl_url="$1"
   dl_dest="$2"
   dl_expected="$3"
 
-  if [ "$UI_ANIM" -ne 1 ]; then
-    download_to "$dl_url" "$dl_dest"
-    return 0
-  fi
-  case "$dl_expected" in
-    ''|*[!0-9]*)
-      download_to "$dl_url" "$dl_dest"
-      return 0
-      ;;
-  esac
-  if [ "$dl_expected" -le 0 ]; then
-    download_to "$dl_url" "$dl_dest"
-    return 0
+  dl_render=0
+  if [ "$UI_ANIM" -eq 1 ]; then
+    case "$dl_expected" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$dl_expected" -gt 0 ]; then
+          dl_render=1
+        fi
+        ;;
+    esac
   fi
 
-  # No wrapper shell between this script and the transfer: exec_downloader
-  # replaces the forked subshell with curl/wget, so $! is the transfer itself.
-  # An intermediate wrapper would have to publish the real pid somewhere, and a
-  # signal arriving before that publication would orphan the transfer.
-  # DOWNLOAD_IN_FLIGHT is raised first so cancellation knows a transfer may
-  # exist even before $! has been recorded.
-  DOWNLOAD_IN_FLIGHT=1
-  exec_downloader "$dl_url" "$dl_dest" &
-  DOWNLOAD_PID=$!
-  UI_BAR_ACTIVE=1
-
-  while kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
-    ui_render_bar "$(ui_file_bytes "$dl_dest")" "$dl_expected"
-    sleep "$UI_TICK"
-  done
-  dl_rc=0
-  wait "$DOWNLOAD_PID" || dl_rc=$?
-  DOWNLOAD_PID=""
-  DOWNLOAD_IN_FLIGHT=0
-
-  if [ "$dl_rc" -eq 0 ]; then
-    ui_render_bar "$dl_expected" "$dl_expected"
-    printf '\n' >&2
-    UI_BAR_ACTIVE=0
+  if run_download "$dl_url" "$dl_dest" "$dl_expected" "$dl_render"; then
     return 0
   fi
   die "download failed: $dl_url"
@@ -772,38 +792,27 @@ ensure_daemon_service() {
 }
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/first-tree-portable.XXXXXX")"
-# Live transfers, found by parentage and command name rather than by a recorded
-# pid. A signal can land between forking the transfer and recording $!, and a
-# pid-only path leaves it running in exactly that window.
-download_children() {
-  [ -n "$DOWNLOADER" ] || return 0
-  ps -A -o pid=,ppid=,comm= 2>/dev/null |
-    awk -v parent="$$" -v tool="$DOWNLOADER" '$2 == parent && $3 ~ tool { print $1 }' || true
-}
-
 # Cancellation owns the transfer itself and has to see it gone before WORK_DIR
-# disappears underneath it.
+# disappears underneath it. DOWNLOAD_PID is always set whenever a transfer
+# exists: run_download defers signal handling across the fork so this can never
+# be reached with a live-but-unrecorded child.
 stop_download() {
   [ "$DOWNLOAD_IN_FLIGHT" -eq 1 ] || return 0
   DOWNLOAD_IN_FLIGHT=0
+  [ -n "$DOWNLOAD_PID" ] || return 0
 
-  for stop_kid in $(download_children); do
-    kill "$stop_kid" 2>/dev/null || true
-  done
-  if [ -n "$DOWNLOAD_PID" ]; then
-    kill "$DOWNLOAD_PID" 2>/dev/null || true
-    wait "$DOWNLOAD_PID" 2>/dev/null || true
-    DOWNLOAD_PID=""
-  fi
+  kill "$DOWNLOAD_PID" 2>/dev/null || true
+  wait "$DOWNLOAD_PID" 2>/dev/null || true
 
   stop_wait=0
-  while [ "$stop_wait" -lt 10 ] && [ -n "$(download_children)" ]; do
+  while [ "$stop_wait" -lt 10 ] && kill -0 "$DOWNLOAD_PID" 2>/dev/null; do
     sleep "$UI_TICK"
     stop_wait=$((stop_wait + 1))
   done
-  for stop_kid in $(download_children); do
-    kill -9 "$stop_kid" 2>/dev/null || true
-  done
+  if kill -0 "$DOWNLOAD_PID" 2>/dev/null; then
+    kill -9 "$DOWNLOAD_PID" 2>/dev/null || true
+  fi
+  DOWNLOAD_PID=""
 }
 
 cleanup() {

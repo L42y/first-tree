@@ -1327,6 +1327,8 @@ if (args[0] === "--version") {
     expect(res.stdout).toContain("First Tree 1.2.3 installed");
   });
 
+  // stdio here is pipes, not a terminal, so this exercises the same branch a
+  // `curl ... | sh` bootstrap takes: no progress bar, and no test-only flag.
   it("reaps the payload transfer when the installer is signalled mid-download", async () => {
     const platform = currentPlatform();
     if (platform === null) return;
@@ -1384,9 +1386,6 @@ if (args[0] === "--version") {
             HOME: home,
             FIRST_TREE_PORTABLE_CHANNEL: "prod",
             FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
-            // The background-download path only runs when stderr is a terminal,
-            // which spawn() pipes are not.
-            FIRST_TREE_PORTABLE_FORCE_PROGRESS: "1",
           },
           stdio: ["ignore", "pipe", "pipe"],
         },

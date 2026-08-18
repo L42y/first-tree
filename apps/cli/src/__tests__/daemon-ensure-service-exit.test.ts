@@ -1,6 +1,11 @@
+import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENSURE_SERVICE_DEFERRED_EXIT_CODE } from "../commands/daemon/ensure-service.js";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 const outputMocks = vi.hoisted(() => ({
   print: { line: vi.fn() },
@@ -45,9 +50,16 @@ describe("daemon ensure-service — ready / deferred / failed exit contract", ()
     vi.resetModules();
   });
 
-  it("keeps the deferred exit code in sync with the portable installer", () => {
-    // scripts/portable/install.sh mirrors this as ENSURE_SERVICE_DEFERRED=3.
-    expect(ENSURE_SERVICE_DEFERRED_EXIT_CODE).toBe(3);
+  it("keeps the deferred exit code in sync with the portable installer's copy", () => {
+    // The installer is shell and cannot import the constant, so the two copies
+    // are compared directly here rather than asserting a literal on this side.
+    const installer = readFileSync(join(REPO_ROOT, "scripts", "portable", "install.sh"), "utf8");
+    const declared = installer.match(/^ENSURE_SERVICE_DEFERRED=(\d+)$/m);
+    expect(declared, "install.sh must declare ENSURE_SERVICE_DEFERRED").not.toBeNull();
+    expect(Number(declared?.[1])).toBe(ENSURE_SERVICE_DEFERRED_EXIT_CODE);
+
+    // And that it is actually the value the installer branches on.
+    expect(installer).toContain('[ "$ensure_service_rc" -eq "$ENSURE_SERVICE_DEFERRED" ]');
   });
 
   it("defers rather than reporting readiness when no credentials exist yet", async () => {
