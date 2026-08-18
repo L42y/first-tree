@@ -11,6 +11,19 @@ import {
 import { print } from "../../core/output.js";
 
 /**
+ * Returned instead of `0` when the command intentionally did nothing: service
+ * control is unsupported on this platform, or no credentials exist yet and the
+ * follow-up `login` owns starting the daemon.
+ *
+ * The exit status is a three-state contract, because "did nothing" is the
+ * normal first-install path and callers must not report the service as ready
+ * there: `0` means the unit is installed and running, this code means setup is
+ * deferred, and any other non-zero means repair was attempted and failed.
+ * Consumed by `ensure_daemon_service` in `scripts/portable/install.sh`.
+ */
+export const ENSURE_SERVICE_DEFERRED_EXIT_CODE = 3;
+
+/**
  * Hidden recovery hook used by the portable installer after it has switched the
  * channel shim to the freshly installed version. It is intentionally narrower
  * than `login <code>`: credentials are never created or replaced here. If a
@@ -26,12 +39,12 @@ export function registerDaemonEnsureServiceCommand(daemon: Command): void {
       const binName = channelConfig.binName;
       if (!isServiceSupported()) {
         print.line(`  ensure-service: service control is not supported on ${process.platform}; skipping.\n`);
-        return;
+        process.exit(ENSURE_SERVICE_DEFERRED_EXIT_CODE);
       }
 
       if (!loadCredentials()) {
         print.line(`  ensure-service: no credentials found; run \`${binName} login <code>\` after install.\n`);
-        return;
+        process.exit(ENSURE_SERVICE_DEFERRED_EXIT_CODE);
       }
 
       const svc = getClientServiceStatus();

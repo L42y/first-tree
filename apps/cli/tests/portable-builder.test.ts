@@ -645,7 +645,12 @@ describe("portable installer", () => {
     root: string,
     version: string,
     platform: string,
-    options: { failRuntimeSmoke?: boolean; integrationRuntime?: boolean; failEnsureService?: boolean } = {},
+    options: {
+      failRuntimeSmoke?: boolean;
+      integrationRuntime?: boolean;
+      failEnsureService?: boolean;
+      deferEnsureService?: boolean;
+    } = {},
   ): Promise<void> {
     const channelDir = join(root, "prod");
     const versionDir = join(channelDir, version);
@@ -667,6 +672,14 @@ ${
   options.failEnsureService
     ? `case "$*" in
   *ensure-service*) printf 'service repair unavailable\\n' >&2; exit 9 ;;
+esac`
+    : ""
+}
+${
+  // Mirrors ENSURE_SERVICE_DEFERRED_EXIT_CODE: setup skipped, not failed.
+  options.deferEnsureService
+    ? `case "$*" in
+  *ensure-service*) printf '  ensure-service: no credentials found; run login after install.\\n'; exit 3 ;;
 esac`
     : ""
 }
@@ -1279,6 +1292,39 @@ if (args[0] === "--version") {
     expect(res.stdout).toContain("Install is complete; background service setup still needs login.");
     expect(res.stdout).toContain("First Tree 1.2.3 installed");
     expect(res.stderr).toContain("service repair unavailable");
+  });
+
+  it("does not claim readiness when service setup is deferred to a later login", async () => {
+    const platform = currentPlatform();
+    if (platform === null) return;
+    const fixture = tempDir("first-tree-install-test-");
+    await writeFixtureVersion(fixture, "1.2.3", platform, { deferEnsureService: true });
+    const home = tempDir("first-tree-home-");
+    const prefix = join(home, "prefix");
+    const binDir = join(home, "bin");
+    const res = spawnSync(
+      "sh",
+      [join(REPO_ROOT, "scripts", "portable", "install.sh"), "--prefix", prefix, "--bin-dir", binDir, "--no-path-edit"],
+      {
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          HOME: home,
+          FIRST_TREE_PORTABLE_CHANNEL: "prod",
+          FIRST_TREE_PORTABLE_DOWNLOAD_BASE_URL: `file://${fixture}`,
+        },
+        encoding: "utf8",
+      },
+    );
+
+    // A fresh install with no credentials is the normal path: it succeeds, and
+    // must not print a readiness line under the command's own login notice.
+    expect(res.status, res.stderr || res.stdout).toBe(0);
+    expect(res.stdout).toContain("no credentials found");
+    expect(res.stdout).not.toContain("Shell and background service are set up");
+    expect(res.stdout).toContain("Install is complete; the background service starts after login.");
+    expect(res.stdout).not.toContain("Background service repair failed");
+    expect(res.stdout).toContain("First Tree 1.2.3 installed");
   });
 
   it("reaps the payload transfer when the installer is signalled mid-download", async () => {

@@ -104,8 +104,12 @@ For each of `prod` and `staging`:
   runner that captures stdout receives plain text with no carriage returns or ANSI escapes while a terminal run shows
   the bar. A failure surfaces which phase failed, and the checksum, smoke-check, and PATH-guidance messages keep their
   existing wording. `--quiet` is limited to errors and the final summary, including any output the installer relays from
-  the CLI's own service lifecycle. The installer never claims the background service is set up when service repair
-  failed; a warning is not followed by a contradicting success line.
+  the CLI's own service lifecycle.
+- `observe service-readiness`: this flow installs before any login exists, which is the deferred case, not the ready one.
+  Confirm the installer reports readiness only when the unit is actually installed and running: after a first install
+  with no credentials it relays the command's own "run login" notice and must not follow it with a line claiming the
+  background service is set up, and a genuine service-repair failure produces a warning rather than either. Judge this
+  from the installer's own reporting against the observed unit state, not from the exit status of the install alone.
 - `observe process-state`: interrupting the installer mid-download stops the payload transfer itself, not just the shell
   that waits on it. After the installer exits, no `curl`/`wget` child remains reparented to init writing into the
   removed work directory, and the previously active version is left untouched.
