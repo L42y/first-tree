@@ -42,6 +42,34 @@ console. It includes the server and portable download-base overrides when
 needed. Development builds continue to use `scripts/dev-install.sh` and
 `first-tree-dev login <connect-code>`.
 
+### Installer flags
+
+The installer reports each phase as it runs — preflight, metadata, download
+(with a byte-level progress bar), checksum, extraction, runtime smoke check,
+activation, and PATH/service setup. Pass flags after `--` when piping:
+
+```bash
+curl -fsSL https://download.first-tree.ai/releases/prod/install.sh | sh -s -- --quiet
+```
+
+| Flag | Effect |
+|---|---|
+| `--version <version>` | Install an immutable version instead of latest. |
+| `--prefix <path>` | Install root (default `~/.local/share/first-tree/<channel>`). Must be absolute. |
+| `--bin-dir <path>` | Shim directory (default `~/.local/bin`). Must be absolute. |
+| `--no-path-edit` | Do not edit shell startup files. Same as `--path-mode off`. |
+| `--path-mode <mode>` | `auto` (default), `prompt`, or `off`. `prompt` requires an interactive shell. |
+| `--quiet`, `-q` | Print only errors and the final summary. |
+| `--no-banner` | Skip the startup banner, keep the phase reporting. |
+| `--help` | Print installer help. |
+
+Colour, the progress bar, and the full banner are enabled only when the
+installer is attached to a terminal, so piped and CI output stays plain text.
+Set `NO_COLOR` to any value to disable colour on a terminal too.
+
+`scripts/dev-install.sh` accepts the same `--quiet` / `--no-banner` / `--help`
+flags and honours `NO_COLOR`.
+
 ## Global flags
 
 | Flag | Effect |

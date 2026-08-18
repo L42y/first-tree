@@ -28,3 +28,21 @@ login command receive the correct server and download-base overrides.
 
 Development builds use `scripts/dev-install.sh` from a source checkout and
 sign in with `first-tree-dev login <connect-code>`.
+
+## Installer output and flags
+
+The installer names each phase as it runs and shows a byte-level progress bar
+while downloading. Colour, the bar, and the full banner appear only on a
+terminal, so piped and CI output stays plain text; `NO_COLOR` disables colour
+on a terminal as well.
+
+Flags go after `--` when piping:
+
+```bash
+curl -fsSL https://download.first-tree.ai/releases/prod/install.sh | sh -s -- --quiet
+```
+
+`--quiet` prints only errors and the final summary, and `--no-banner` drops the
+banner while keeping the phase reporting. `--version`, `--prefix`, `--bin-dir`,
+`--no-path-edit`, and `--path-mode` are documented in
+[the CLI reference](https://github.com/agent-team-foundation/first-tree/blob/main/docs/cli-reference.md#installer-flags).
