@@ -45,6 +45,13 @@ service picks up the new build:
 ./scripts/dev-install.sh
 ```
 
+The script reports each phase (dev home, dependencies, build, linking, CLI
+verification, daemon restart) with timings, and passes `pnpm` / `turbo` output
+through untouched. `--quiet` buffers that output and replays it only on
+failure, printing just errors and the final summary; `--no-banner` drops the
+banner and keeps the phase reporting. `NO_COLOR` disables colour, and colour is
+off automatically when stdout is not a terminal.
+
 After login, on Linux:
 
 ```bash

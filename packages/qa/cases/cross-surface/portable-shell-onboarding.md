@@ -97,6 +97,22 @@ For each of `prod` and `staging`:
   shell profile, and installed metadata identifies the matching channel and portable install mode.
 - `observe cli-output`: the installed executable launches with its bundled Node.js runtime and the first `login` exits
   successfully against the isolated server without `--no-start`.
+- `observe installer-output`: the installer identifies itself as First Tree before doing any work, names each phase as it
+  runs, and reports the resolved channel, platform, version, and download size. The payload download reports byte
+  progress against the size in the release metadata rather than going silent. Because the bootstrap is piped through
+  `sh`, the installer's own stdin is not a terminal — confirm the progress reporting is gated on stdout/stderr, so a
+  runner that captures stdout receives plain text with no carriage returns or ANSI escapes while a terminal run shows
+  the bar. A failure surfaces which phase failed, and the checksum, smoke-check, and PATH-guidance messages keep their
+  existing wording. `--quiet` is limited to errors and the final summary, including any output the installer relays from
+  the CLI's own service lifecycle.
+- `observe service-readiness`: this flow installs before any login exists, which is the deferred case, not the ready one.
+  Confirm the installer reports readiness only when the unit is actually installed and running: after a first install
+  with no credentials it relays the command's own "run login" notice and must not follow it with a line claiming the
+  background service is set up, and a genuine service-repair failure produces a warning rather than either. Judge this
+  from the installer's own reporting against the observed unit state, not from the exit status of the install alone.
+- `observe process-state`: interrupting the installer mid-download stops the payload transfer itself, not just the shell
+  that waits on it. After the installer exits, no `curl`/`wget` child remains reparented to init writing into the
+  removed work directory, and the previously active version is left untouched.
 - `observe service-state`: login installs and starts the channel-correct systemd service. For a normal Linux user,
   `systemctl --user` reports the user unit active through the runner's real user manager and bus. For root,
   `systemctl status <channel-service-unit>` reports the system unit active, and `journalctl -u <channel-service-unit>`
