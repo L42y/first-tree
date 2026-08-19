@@ -311,11 +311,11 @@ function messages(items: MessageWithDelivery[]): PaginatedMessages {
   return { items, nextCursor: null };
 }
 
-function teamSkillResourceRow(overrides: { mode?: string; payload?: unknown } = {}) {
+function teamSkillResourceRow(overrides: { mode?: string; resourceId?: string | null; payload?: unknown } = {}) {
   return {
     id: "row-1",
     bindingId: null,
-    resourceId: "res-1",
+    resourceId: overrides.resourceId === undefined ? "res-1" : overrides.resourceId,
     replacesResourceId: null,
     type: "skill",
     name: "Team Skill",
@@ -1685,12 +1685,13 @@ describe("ChatView", () => {
         mcp: [],
         unavailable: [],
         skills: [
-          teamSkillResourceRow(),
+          teamSkillResourceRow({ resourceId: "res-code-review" }),
           teamSkillResourceRow({
+            resourceId: "res-hidden",
             mode: "disabled",
             payload: { name: "Hidden Skill", description: "d", body: "b" },
           }),
-          teamSkillResourceRow({ payload: { name: "Missing Body", description: "d" } }),
+          teamSkillResourceRow({ resourceId: "res-broken", payload: { name: "Missing Body", description: "d" } }),
         ],
       },
     });
@@ -1705,11 +1706,9 @@ describe("ChatView", () => {
       (qc) => seedChat(qc, direct),
     );
 
-    await waitForCondition(
-      () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
-      "Expected the resources catalog fetch for the slash scope",
-    );
-    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledWith("agent-1");
+    // The heavy resources catalog is NOT fetched on an ordinary chat
+    // mount — only a legal slash trigger enables it.
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     if (!textarea) throw new Error("Composer textarea missing");
@@ -1720,6 +1719,12 @@ describe("ChatView", () => {
       textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
     });
     await flush();
+
+    await waitForCondition(
+      () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
+      "Expected the resources catalog fetch once the slash trigger opened",
+    );
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledWith("agent-1");
 
     // The Team Skill surfaces under its portable materializer slug; the
     // daemon-reported runtime row survives the merge; disabled and
@@ -1760,6 +1765,8 @@ describe("ChatView", () => {
       () => textarea.value === "@Nova ",
       "Expected the restored draft to hydrate the @nova mention token",
     );
+    // No slash trigger yet — the heavy resources catalog must not load.
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
     const typeDisplay = async (value: string) => {
       await act(async () => {
@@ -1774,9 +1781,16 @@ describe("ChatView", () => {
     // Plain prose between the mention and the slash must NOT open the menu.
     await typeDisplay("@Nova hi /code");
     expect(container.querySelector('[role="listbox"][aria-label="Slash command suggestions"]')).toBeNull();
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
-    // Mention-prefixed mode: the menu opens with the merged catalog.
+    // Mention-prefixed mode: the trigger opens, the catalog loads for the
+    // mentioned recipient only, and the menu shows the merged skills.
     await typeDisplay("@Nova /");
+    await waitForCondition(
+      () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
+      "Expected the resources catalog fetch once the mention-prefixed trigger opened",
+    );
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledWith("agent-1");
     await waitForText(container, "/code-review");
     expect(container.textContent).toContain("/review");
 

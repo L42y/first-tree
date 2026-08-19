@@ -200,6 +200,45 @@ export function normalizeTeamSkillTargetSlug(input: string): string {
   return slug;
 }
 
+/** A target directory name the materializer may safely place on disk. */
+export function isSafeTeamSkillTargetName(name: string): boolean {
+  if (name.length === 0 || name.length > TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength) return false;
+  if (name === "." || name === ".." || WINDOWS_RESERVED_NAMES.has(name.toLocaleLowerCase("en-US"))) return false;
+  return /^[a-z0-9][a-z0-9-]*$/.test(name);
+}
+
+/**
+ * Append a collision suffix to a requested slug, truncating the base so the
+ * result still fits the portable length limit. Throws when no safe spelling
+ * exists (mirrors the materializer's failure instead of silently producing
+ * an unreachable command name).
+ */
+export function suffixTeamSkillTargetName(base: string, suffix: string): string {
+  const trimmed = base.slice(0, TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength - suffix.length).replace(/-+$/g, "");
+  const result = `${trimmed}${suffix}`;
+  if (!isSafeTeamSkillTargetName(result)) throw new Error(`cannot allocate safe suffixed Skill name for ${base}`);
+  return result;
+}
+
+/** Maximum number of collision candidates tried for one Team Skill target. */
+export const TEAM_SKILL_TARGET_SUFFIX_LIMIT = 10_000;
+
+/**
+ * The deterministic collision-candidate sequence for a requested Team Skill
+ * target name: the base slug, then `<base>-first-tree`, then
+ * `<base>-first-tree-<n>`. This is the single source of truth for the
+ * Client materializer's allocation order; Web projections (e.g. the
+ * slash-command menu) consume the same sequence so a display name stays
+ * stable no matter which side computes it.
+ */
+export function* teamSkillTargetNameCandidates(requestedSlug: string): Generator<string, void, void> {
+  yield requestedSlug;
+  yield suffixTeamSkillTargetName(requestedSlug, "-first-tree");
+  for (let suffix = 2; suffix < TEAM_SKILL_TARGET_SUFFIX_LIMIT; suffix++) {
+    yield suffixTeamSkillTargetName(requestedSlug, `-first-tree-${suffix}`);
+  }
+}
+
 export type StrictTeamSkillMarkdown = Readonly<{
   frontmatter: Record<string, unknown>;
   body: string;

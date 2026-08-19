@@ -143,11 +143,16 @@ describe("buildSlashInsert", () => {
   });
 });
 
-function teamSkillRow(overrides: { mode?: EffectiveResourceRow["mode"]; payload?: unknown }): EffectiveResourceRow {
+let teamRowSeq = 0;
+function teamSkillRow(overrides: {
+  mode?: EffectiveResourceRow["mode"];
+  resourceId?: string | null;
+  payload?: unknown;
+}): EffectiveResourceRow {
   return {
     id: "row-1",
     bindingId: null,
-    resourceId: "res-1",
+    resourceId: overrides.resourceId === undefined ? `res-${++teamRowSeq}` : overrides.resourceId,
     replacesResourceId: null,
     type: "skill",
     name: "Team Skill",
@@ -303,5 +308,48 @@ describe("buildSlashInsert — mention-prefixed drafts", () => {
     expect(insert.text).toBe("@Nova /review ");
     expect(insert.cursor).toBe("@Nova /review ".length);
     expect(insert.kind).toBe("skill");
+  });
+});
+
+describe("teamSkillRowsToSlashSkills — materializer-mirroring allocation", () => {
+  const payloadNamed = (name: string, description: string) => ({ name, description, body: "b" });
+
+  it("allocates colliding normalized slugs through the shared candidate sequence", () => {
+    // `foo_bar` and `foo-bar` both normalize to `foo-bar`; the lower
+    // resourceId wins the base slug, the other gets `-first-tree`.
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+    ]);
+    expect(got).toEqual([
+      { name: "foo-bar", description: "first" },
+      { name: "foo-bar-first-tree", description: "second" },
+    ]);
+  });
+
+  it("produces the same projection regardless of API row order", () => {
+    const forward = teamSkillRowsToSlashSkills([
+      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+    ]);
+    const reversed = teamSkillRowsToSlashSkills([
+      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+    ]);
+    expect(reversed).toEqual(forward);
+  });
+
+  it("rejects a duplicate resourceId group like the materializer does", () => {
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Alpha", "a") }),
+      teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Beta", "b") }),
+      teamSkillRow({ resourceId: "res-ok", payload: payloadNamed("Gamma", "g") }),
+    ]);
+    expect(got).toEqual([{ name: "gamma", description: "g" }]);
+  });
+
+  it("skips rows without a resourceId — they never reach the materializer", () => {
+    const got = teamSkillRowsToSlashSkills([teamSkillRow({ resourceId: null, payload: payloadNamed("Ghost", "g") })]);
+    expect(got).toEqual([]);
   });
 });

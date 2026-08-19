@@ -1,7 +1,9 @@
 import {
   type EffectiveResourceRow,
+  foldPortableTeamSkillPath,
   normalizeTeamSkillTargetSlug,
   skillResourcePayloadSchema,
+  teamSkillTargetNameCandidates,
 } from "@first-tree/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComposerMentionToken } from "./mention-composer-model.js";
@@ -191,31 +193,63 @@ function commandLabelKey(skill: SlashSkillInfo): string {
 /**
  * Project the recipient agent's effective Team Skill rows (from
  * `GET /agents/:uuid/resources` → `effective.skills`) into slash-menu
- * descriptors. Only `enabled` rows whose payload passes the shared Skill
- * Resource schema qualify — `disabled` / `replaced` / `unavailable` rows
- * and malformed payloads are skipped individually so one bad Team Skill
- * never blanks the rest of the menu.
+ * descriptors, mirroring the Client materializer's deterministic
+ * allocation so the advertised command matches what the runtime
+ * installs:
  *
- * The slash name is derived with the same portable slug rule the Client
- * materializer uses (`normalizeTeamSkillTargetSlug`), so the menu never
- * advertises a command the runtime could not install (e.g. a display
- * name with spaces). Names that fail the slug rule are skipped. The
- * payload `namespace` is dropped on purpose: the runtime projection does
- * not carry it, so the materialized command is the plain slug.
+ *   - only `mode === "enabled"` rows with a `resourceId` qualify — the
+ *     runtime projection (`runtimeSkills()`) applies the same membership
+ *     rule before the materializer ever sees a skill;
+ *   - a `resourceId` appearing on more than one row rejects the whole
+ *     group, exactly like the materializer's duplicate-id guard;
+ *   - payloads must pass the shared Skill Resource schema and names must
+ *     produce a portable slug via `normalizeTeamSkillTargetSlug`; bad
+ *     rows are skipped individually so one malformed Team Skill never
+ *     blanks the rest of the menu;
+ *   - surviving rows are processed in `resourceId` order and allocated
+ *     through the shared `teamSkillTargetNameCandidates` sequence
+ *     (base, `-first-tree`, `-first-tree-2`, …), so two display names
+ *     that normalize to the same slug (`foo_bar` vs `foo-bar`) both
+ *     surface, in the same order and under the same names the
+ *     materializer would pick, independent of API row order.
+ *
+ * The payload `namespace` is dropped on purpose: the runtime projection
+ * does not carry it, so the materialized command is the plain target
+ * name. A *local* on-disk collision can still push the materializer to
+ * a later candidate than this projection predicts — that window is an
+ * accepted boundary: the daemon-reported runtime catalog always wins
+ * the merge dedup below, so an actually-installed command is never
+ * shadowed by a projected one.
  */
 export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashSkillInfo[] {
-  const out: SlashSkillInfo[] = [];
+  const eligible: Array<{ resourceId: string; slug: string; description: string }> = [];
+  const resourceIdCounts = new Map<string, number>();
   for (const row of rows) {
-    if (row.mode !== "enabled") continue;
+    if (row.mode !== "enabled" || !row.resourceId) continue;
+    resourceIdCounts.set(row.resourceId, (resourceIdCounts.get(row.resourceId) ?? 0) + 1);
     const parsed = skillResourcePayloadSchema.safeParse(row.payload);
     if (!parsed.success) continue;
-    let name: string;
+    let slug: string;
     try {
-      name = normalizeTeamSkillTargetSlug(parsed.data.name);
+      slug = normalizeTeamSkillTargetSlug(parsed.data.name);
     } catch {
       continue;
     }
-    out.push({ name, description: parsed.data.description });
+    eligible.push({ resourceId: row.resourceId, slug, description: parsed.data.description });
+  }
+  eligible.sort((a, b) => a.resourceId.localeCompare(b.resourceId));
+
+  const occupied = new Set<string>();
+  const out: SlashSkillInfo[] = [];
+  for (const skill of eligible) {
+    if ((resourceIdCounts.get(skill.resourceId) ?? 0) > 1) continue;
+    for (const name of teamSkillTargetNameCandidates(skill.slug)) {
+      const folded = foldPortableTeamSkillPath(name);
+      if (occupied.has(folded)) continue;
+      occupied.add(folded);
+      out.push({ name, description: skill.description });
+      break;
+    }
   }
   return out;
 }

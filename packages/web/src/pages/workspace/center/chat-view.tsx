@@ -147,6 +147,7 @@ import {
   rehypeMentions,
 } from "../../../components/rehype-mentions.js";
 import {
+  detectSlashTrigger,
   mergeSlashSkills,
   resolveMentionContext,
   SlashCommandPopover,
@@ -4423,6 +4424,25 @@ export function ChatView({
     staleTime: 60_000,
   });
 
+  // Defer the resources fetch until the composer actually holds a legal
+  // slash trigger: `GET /agents/:uuid/resources` returns the full
+  // effective-resources model (bindings, the available Team catalog,
+  // complete Skill bodies), so an ordinary conversation must not pay
+  // for it on mount. A disabled composer can never trigger, so it never
+  // fetches either.
+  const slashTriggerActive = useMemo(() => {
+    if (landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading) return false;
+    return detectSlashTrigger(mentionComposer.displayText, cursor, mentionComposer.tokens) !== null;
+  }, [
+    mentionComposer.displayText,
+    mentionComposer.tokens,
+    cursor,
+    landingCampaignChatLocked,
+    composerLockedNoRecipient,
+    sendMut.isPending,
+    uploading,
+  ]);
+
   // Team Skills configured in First Tree reach the composer through the
   // same visible `effective.skills` view the Agent Detail page reads —
   // the daemon catalog alone only covers what the local runtime scanned
@@ -4437,7 +4457,7 @@ export function ChatView({
       if (!id) return Promise.resolve(null);
       return getAgentResources(id);
     },
-    enabled: Boolean(slashMentionContext?.agentId),
+    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive,
     staleTime: 60_000,
   });
 
