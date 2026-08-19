@@ -15,6 +15,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   type NoSecretMcpServer,
   normalizeRepoLocalPath,
+  normalizeTeamSkillTargetSlug,
   noSecretMcpServerSchema,
   PROMPT_APPEND_MAX_LENGTH,
   type PromptSection,
@@ -664,6 +665,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
     applyRepoLocalPathDedup(repos, unavailable);
     await applySkillBundleAvailability(skills, resourceRows, agent.organizationId, unavailable);
     applyPayloadValidation(skills, mcp, unavailable);
+    applySkillTargetNameDedup(skills, unavailable);
     applyMcpNameDedup(mcp, unavailable);
 
     return {
@@ -717,6 +719,47 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         });
       }
       seen.add(localPath);
+    }
+  }
+
+  function applySkillTargetNameDedup(
+    rows: EffectiveResourceRow[],
+    unavailable: EffectiveAgentResources["unavailable"],
+  ): void {
+    // The runtime installs each Team Skill under the target name derived
+    // from its display name (`normalizeTeamSkillTargetSlug`). Two distinct
+    // Skills whose names normalize to the same target (`foo_bar` vs
+    // `foo-bar`) cannot be addressed unambiguously: the materializer's
+    // collision suffixes depend on local install history the control
+    // plane cannot see, so neither the runtime projection nor the Web
+    // slash menu may guess a winner. The whole group becomes unavailable
+    // instead — same fail-closed rule as duplicate MCP names.
+    const groups = new Map<string, EffectiveResourceRow[]>();
+    for (const row of rows) {
+      if (row.mode !== "enabled" || !row.resourceId) continue;
+      const parsed = skillResourcePayloadSchema.safeParse(row.payload);
+      if (!parsed.success) continue;
+      let target: string;
+      try {
+        target = normalizeTeamSkillTargetSlug(parsed.data.name);
+      } catch {
+        continue;
+      }
+      const group = groups.get(target) ?? [];
+      group.push(row);
+      groups.set(target, group);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      for (const row of group) {
+        row.mode = "unavailable";
+        row.unavailableReason = "duplicate_skill_target_name";
+        unavailable.push({
+          type: "skill",
+          id: row.resourceId ?? row.bindingId ?? row.id,
+          reason: "duplicate_skill_target_name",
+        });
+      }
     }
   }
 

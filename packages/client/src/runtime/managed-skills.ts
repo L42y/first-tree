@@ -21,7 +21,6 @@ import {
   foldPortableTeamSkillPath,
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
-  isSafeTeamSkillTargetName,
   normalizeTeamSkillTargetSlug,
   parseStrictTeamSkillMarkdown,
   type RuntimeProvider,
@@ -30,7 +29,6 @@ import {
   recordPortableTeamSkillPath,
   TEAM_SKILL_BUNDLE_LIMITS,
   TEAM_SKILL_OWNERSHIP_MARKER,
-  teamSkillTargetNameCandidates,
 } from "@first-tree/shared";
 import { parseDocument } from "yaml";
 import yauzl, { type Entry, type ZipFile } from "yauzl";
@@ -74,6 +72,30 @@ export function allowedTargetRootsFromProjection(projection: ProviderSkillRootPr
 
 const RETIRED_CORE_SKILL_NAMES = ["first-tree-guide", "first-tree-kickoff", "first-tree-gitlab"] as const;
 const ALL_KNOWN_CORE_SKILL_NAMES = [...CORE_SKILL_NAMES, ...RETIRED_CORE_SKILL_NAMES] as const;
+const WINDOWS_RESERVED_NAMES = new Set<string>([
+  "con",
+  "prn",
+  "aux",
+  "nul",
+  "com1",
+  "com2",
+  "com3",
+  "com4",
+  "com5",
+  "com6",
+  "com7",
+  "com8",
+  "com9",
+  "lpt1",
+  "lpt2",
+  "lpt3",
+  "lpt4",
+  "lpt5",
+  "lpt6",
+  "lpt7",
+  "lpt8",
+  "lpt9",
+]);
 
 export type TeamSkillSnapshot =
   | Readonly<{
@@ -793,7 +815,7 @@ async function loadOrMigrateManagedState(options: ReconcileManagedSkillsOptions)
   }
   for (const name of legacyNames) {
     if (ALL_KNOWN_CORE_SKILL_NAMES.includes(name as (typeof ALL_KNOWN_CORE_SKILL_NAMES)[number])) continue;
-    if (!isSafeTeamSkillTargetName(name)) continue;
+    if (!isSafeSkillName(name)) continue;
     for (const root of [".agents/skills", ".claude/skills"]) {
       const target = `${root}/${name}`;
       const digest = await digestManagedTarget(
@@ -1079,7 +1101,7 @@ async function allocateTargets(
         entry.key === skill.key &&
         entry.requestedSlug === skill.requestedSlug &&
         entry.target.startsWith(`${root}/`) &&
-        isSafeTeamSkillTargetName(entry.effectiveName),
+        isSafeSkillName(entry.effectiveName),
     );
     if (reusable) {
       allocations.set(skill.key, {
@@ -1091,7 +1113,13 @@ async function allocateTargets(
       continue;
     }
 
-    for (const effectiveName of teamSkillTargetNameCandidates(skill.requestedSlug)) {
+    for (let suffix = 0; suffix < 10_000; suffix++) {
+      const effectiveName =
+        suffix === 0
+          ? skill.requestedSlug
+          : suffix === 1
+            ? suffixSkillName(skill.requestedSlug, "-first-tree")
+            : suffixSkillName(skill.requestedSlug, `-first-tree-${suffix}`);
       const target = `${root}/${effectiveName}`;
       const key = foldPortableTeamSkillPath(effectiveName);
       const owner = occupied.get(key);
@@ -2394,6 +2422,19 @@ export function hasUnsafeManagedWriteMode(mode: number, platform: NodeJS.Platfor
   // represent ACL group/other write authority. Enforce this drift gate only
   // where Node exposes meaningful POSIX permission bits.
   return platform !== "win32" && (mode & 0o022) !== 0;
+}
+
+function isSafeSkillName(name: string): boolean {
+  if (name.length === 0 || name.length > TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength) return false;
+  if (name === "." || name === ".." || WINDOWS_RESERVED_NAMES.has(name.toLocaleLowerCase("en-US"))) return false;
+  return /^[a-z0-9][a-z0-9-]*$/.test(name);
+}
+
+function suffixSkillName(base: string, suffix: string): string {
+  const trimmed = base.slice(0, TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength - suffix.length).replace(/-+$/g, "");
+  const result = `${trimmed}${suffix}`;
+  if (!isSafeSkillName(result)) throw new Error(`cannot allocate safe suffixed Skill name for ${base}`);
+  return result;
 }
 
 function teamSkillSource(skill: RuntimeResourceSkill): DesiredManagedSkill["source"] {

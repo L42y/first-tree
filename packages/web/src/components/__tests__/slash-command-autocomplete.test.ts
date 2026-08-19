@@ -311,23 +311,22 @@ describe("buildSlashInsert — mention-prefixed drafts", () => {
   });
 });
 
-describe("teamSkillRowsToSlashSkills — materializer-mirroring allocation", () => {
+describe("teamSkillRowsToSlashSkills — fail-closed ambiguous targets", () => {
   const payloadNamed = (name: string, description: string) => ({ name, description, body: "b" });
 
-  it("allocates colliding normalized slugs through the shared candidate sequence", () => {
-    // `foo_bar` and `foo-bar` both normalize to `foo-bar`; the lower
-    // resourceId wins the base slug, the other gets `-first-tree`.
+  it("skips a normalized-slug collision group entirely and keeps the other skills", () => {
+    // `foo_bar` and `foo-bar` both normalize to `foo-bar`; the
+    // materializer's collision suffix depends on install history the Web
+    // cannot see, so neither row may surface. Unrelated skills survive.
     const got = teamSkillRowsToSlashSkills([
       teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
       teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+      teamSkillRow({ resourceId: "res-c", payload: payloadNamed("Solo Skill", "solo") }),
     ]);
-    expect(got).toEqual([
-      { name: "foo-bar", description: "first" },
-      { name: "foo-bar-first-tree", description: "second" },
-    ]);
+    expect(got).toEqual([{ name: "solo-skill", description: "solo" }]);
   });
 
-  it("produces the same projection regardless of API row order", () => {
+  it("skips the collision group regardless of API row order — never picks a winner", () => {
     const forward = teamSkillRowsToSlashSkills([
       teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
       teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
@@ -336,7 +335,8 @@ describe("teamSkillRowsToSlashSkills — materializer-mirroring allocation", () 
       teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
       teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
     ]);
-    expect(reversed).toEqual(forward);
+    expect(forward).toEqual([]);
+    expect(reversed).toEqual([]);
   });
 
   it("rejects a duplicate resourceId group like the materializer does", () => {

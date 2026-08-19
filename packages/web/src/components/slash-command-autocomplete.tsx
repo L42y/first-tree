@@ -3,7 +3,6 @@ import {
   foldPortableTeamSkillPath,
   normalizeTeamSkillTargetSlug,
   skillResourcePayloadSchema,
-  teamSkillTargetNameCandidates,
 } from "@first-tree/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComposerMentionToken } from "./mention-composer-model.js";
@@ -193,40 +192,40 @@ function commandLabelKey(skill: SlashSkillInfo): string {
 /**
  * Project the recipient agent's effective Team Skill rows (from
  * `GET /agents/:uuid/resources` → `effective.skills`) into slash-menu
- * descriptors, mirroring the Client materializer's deterministic
- * allocation so the advertised command matches what the runtime
- * installs:
+ * descriptors.
  *
- *   - only `mode === "enabled"` rows with a `resourceId` qualify — the
- *     runtime projection (`runtimeSkills()`) applies the same membership
- *     rule before the materializer ever sees a skill;
- *   - a `resourceId` appearing on more than one row rejects the whole
- *     group, exactly like the materializer's duplicate-id guard;
- *   - payloads must pass the shared Skill Resource schema and names must
- *     produce a portable slug via `normalizeTeamSkillTargetSlug`; bad
- *     rows are skipped individually so one malformed Team Skill never
- *     blanks the rest of the menu;
- *   - surviving rows are processed in `resourceId` order and allocated
- *     through the shared `teamSkillTargetNameCandidates` sequence
- *     (base, `-first-tree`, `-first-tree-2`, …), so two display names
- *     that normalize to the same slug (`foo_bar` vs `foo-bar`) both
- *     surface, in the same order and under the same names the
- *     materializer would pick, independent of API row order.
+ * Membership mirrors the runtime projection (`runtimeSkills()`): only
+ * `mode === "enabled"` rows with a `resourceId` qualify, payloads must
+ * pass the shared Skill Resource schema, and the slash name is derived
+ * with the materializer's portable slug rule
+ * (`normalizeTeamSkillTargetSlug`) so the menu never advertises a
+ * command the runtime could not install. Bad rows are skipped
+ * individually — one malformed Team Skill never blanks the rest of the
+ * menu. The payload `namespace` is dropped on purpose: the runtime
+ * projection does not carry it, so the materialized command is the
+ * plain target name.
  *
- * The payload `namespace` is dropped on purpose: the runtime projection
- * does not carry it, so the materialized command is the plain target
- * name. A *local* on-disk collision can still push the materializer to
- * a later candidate than this projection predicts — that window is an
- * accepted boundary: the daemon-reported runtime catalog always wins
+ * Fail-closed on ambiguous targets: the Server already marks a group of
+ * enabled Skills whose names normalize to the same target as
+ * `unavailable` (`duplicate_skill_target_name`), because the
+ * materializer's collision resolution depends on local install history
+ * no off-machine consumer can see. If a stale or malformed response
+ * still carries such a group as enabled, skip the WHOLE group here too
+ * — never pick a winner by API row order and never synthesize a
+ * collision suffix, since either could send the user to the wrong
+ * Skill. A duplicate `resourceId` group is skipped for the same reason
+ * (the materializer rejects it outright).
+ *
+ * A *local* on-disk collision can still make the materializer install
+ * under a suffixed name this projection cannot predict — that window is
+ * an accepted boundary: the daemon-reported runtime catalog always wins
  * the merge dedup below, so an actually-installed command is never
  * shadowed by a projected one.
  */
 export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashSkillInfo[] {
-  const eligible: Array<{ resourceId: string; slug: string; description: string }> = [];
-  const resourceIdCounts = new Map<string, number>();
+  const candidates: Array<{ resourceId: string; slug: string; description: string }> = [];
   for (const row of rows) {
     if (row.mode !== "enabled" || !row.resourceId) continue;
-    resourceIdCounts.set(row.resourceId, (resourceIdCounts.get(row.resourceId) ?? 0) + 1);
     const parsed = skillResourcePayloadSchema.safeParse(row.payload);
     if (!parsed.success) continue;
     let slug: string;
@@ -235,21 +234,21 @@ export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashS
     } catch {
       continue;
     }
-    eligible.push({ resourceId: row.resourceId, slug, description: parsed.data.description });
+    candidates.push({ resourceId: row.resourceId, slug, description: parsed.data.description });
   }
-  eligible.sort((a, b) => a.resourceId.localeCompare(b.resourceId));
 
-  const occupied = new Set<string>();
+  const resourceIdCounts = new Map<string, number>();
+  const slugCounts = new Map<string, number>();
+  for (const c of candidates) {
+    resourceIdCounts.set(c.resourceId, (resourceIdCounts.get(c.resourceId) ?? 0) + 1);
+    const folded = foldPortableTeamSkillPath(c.slug);
+    slugCounts.set(folded, (slugCounts.get(folded) ?? 0) + 1);
+  }
   const out: SlashSkillInfo[] = [];
-  for (const skill of eligible) {
-    if ((resourceIdCounts.get(skill.resourceId) ?? 0) > 1) continue;
-    for (const name of teamSkillTargetNameCandidates(skill.slug)) {
-      const folded = foldPortableTeamSkillPath(name);
-      if (occupied.has(folded)) continue;
-      occupied.add(folded);
-      out.push({ name, description: skill.description });
-      break;
-    }
+  for (const c of candidates) {
+    if ((resourceIdCounts.get(c.resourceId) ?? 0) > 1) continue;
+    if ((slugCounts.get(foldPortableTeamSkillPath(c.slug)) ?? 0) > 1) continue;
+    out.push({ name: c.slug, description: c.description });
   }
   return out;
 }

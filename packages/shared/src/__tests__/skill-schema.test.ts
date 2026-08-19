@@ -4,14 +4,11 @@ import {
   foldPortableTeamSkillPath,
   getPortableTeamSkillRelativePathError,
   getPortableTeamSkillSegmentError,
-  isSafeTeamSkillTargetName,
   normalizeTeamSkillTargetSlug,
   parseStrictTeamSkillMarkdown,
   recordPortableTeamSkillPath,
   skillDescriptorSchema,
   TEAM_SKILL_BUNDLE_LIMITS,
-  TEAM_SKILL_TARGET_SUFFIX_LIMIT,
-  teamSkillTargetNameCandidates,
 } from "../schemas/skill.js";
 
 describe("skillDescriptorSchema", () => {
@@ -161,31 +158,5 @@ describe("portable Team Skill contract", () => {
         "---\nname: review\ndescription: Review\nmetadata:\n  custom: !first-tree value\n---\nBody",
       ),
     ).toThrow(/tag|warning/i);
-  });
-});
-
-describe("teamSkillTargetNameCandidates", () => {
-  it("yields the base slug, then -first-tree, then numbered -first-tree variants", () => {
-    const it = teamSkillTargetNameCandidates("code-review");
-    expect(it.next().value).toBe("code-review");
-    expect(it.next().value).toBe("code-review-first-tree");
-    expect(it.next().value).toBe("code-review-first-tree-2");
-    expect(it.next().value).toBe("code-review-first-tree-3");
-  });
-
-  it("yields exactly TEAM_SKILL_TARGET_SUFFIX_LIMIT candidates", () => {
-    let count = 0;
-    for (const _ of teamSkillTargetNameCandidates("s")) count++;
-    expect(count).toBe(TEAM_SKILL_TARGET_SUFFIX_LIMIT);
-  });
-
-  it("truncates an at-limit base so the suffixed candidate still fits", () => {
-    const base = "a".repeat(TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength);
-    const it = teamSkillTargetNameCandidates(base);
-    expect(it.next().value).toBe(base);
-    const suffixed = it.next().value as string;
-    expect(suffixed.endsWith("-first-tree")).toBe(true);
-    expect(suffixed.length).toBeLessThanOrEqual(TEAM_SKILL_BUNDLE_LIMITS.maxTargetNameLength);
-    expect(isSafeTeamSkillTargetName(suffixed)).toBe(true);
   });
 });
