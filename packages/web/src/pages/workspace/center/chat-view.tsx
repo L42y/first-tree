@@ -60,6 +60,7 @@ import {
 import type { Components } from "react-markdown";
 import { useSearchParams } from "react-router";
 import { getClient } from "../../../api/activity.js";
+import { getAgentResources } from "../../../api/agent-resources.js";
 import { chatAgentStatusQueryKey, fetchChatAgentStatuses } from "../../../api/agent-status.js";
 import { getAgentSkills } from "../../../api/agents.js";
 import { downloadAttachment, uploadAttachment, uploadMimeFor } from "../../../api/attachments.js";
@@ -146,9 +147,12 @@ import {
   rehypeMentions,
 } from "../../../components/rehype-mentions.js";
 import {
+  mergeSlashSkills,
   resolveMentionContext,
   SlashCommandPopover,
+  type SlashSkillInfo,
   type SlashSystemCommand,
+  teamSkillRowsToSlashSkills,
   useSlashCommand,
 } from "../../../components/slash-command-autocomplete.js";
 import { Button } from "../../../components/ui/button.js";
@@ -4419,6 +4423,33 @@ export function ChatView({
     staleTime: 60_000,
   });
 
+  // Team Skills configured in First Tree reach the composer through the
+  // same visible `effective.skills` view the Agent Detail page reads —
+  // the daemon catalog alone only covers what the local runtime scanned
+  // (Claude Code $HOME), so Codex-class runtimes would otherwise show an
+  // empty menu. This query is independent of the skills one above:
+  // either request failing degrades to the other source, never to an
+  // empty menu while one catalog is still reachable.
+  const { data: slashResourcesData } = useQuery({
+    queryKey: ["agent-resources", slashMentionContext?.agentId ?? null],
+    queryFn: () => {
+      const id = slashMentionContext?.agentId;
+      if (!id) return Promise.resolve(null);
+      return getAgentResources(id);
+    },
+    enabled: Boolean(slashMentionContext?.agentId),
+    staleTime: 60_000,
+  });
+
+  const slashMergedSkills = useMemo<SlashSkillInfo[]>(
+    () =>
+      mergeSlashSkills(
+        slashSkillsData?.skills ?? [],
+        teamSkillRowsToSlashSkills(slashResourcesData?.effective.skills ?? []),
+      ),
+    [slashSkillsData, slashResourcesData],
+  );
+
   const slash = useSlashCommand({
     value: mentionComposer.displayText,
     cursor,
@@ -4427,7 +4458,7 @@ export function ChatView({
       ? {
           agentId: slashMentionContext.agentId,
           agentDisplayName: slashMentionContext.displayName,
-          skills: slashSkillsData?.skills ?? [],
+          skills: slashMergedSkills,
         }
       : null,
     mentionedAgent: slashMentionContext,

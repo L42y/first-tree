@@ -35,6 +35,10 @@ const agentMocks = vi.hoisted(() => ({
   getAgentSkills: vi.fn(),
 }));
 
+const agentResourceMocks = vi.hoisted(() => ({
+  getAgentResources: vi.fn(),
+}));
+
 const attachmentMocks = vi.hoisted(() => ({
   downloadAttachment: vi.fn(),
   fetchAttachmentBase64: vi.fn(),
@@ -96,6 +100,11 @@ vi.mock("../../../../api/agent-status.js", () => ({
 vi.mock("../../../../api/agents.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../api/agents.js")>()),
   getAgentSkills: agentMocks.getAgentSkills,
+}));
+
+vi.mock("../../../../api/agent-resources.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../api/agent-resources.js")>()),
+  getAgentResources: agentResourceMocks.getAgentResources,
 }));
 
 vi.mock("../../../../api/attachments.js", () => attachmentMocks);
@@ -554,6 +563,9 @@ beforeEach(() => {
   activityMocks.startRuntimeAuth.mockResolvedValue({ ref: "auth-ref", started: true });
   agentStatusMocks.fetchChatAgentStatuses.mockResolvedValue([]);
   agentMocks.getAgentSkills.mockResolvedValue({ skills: [] });
+  agentResourceMocks.getAgentResources.mockResolvedValue({
+    effective: { version: 1, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+  });
   attachmentMocks.fetchAttachmentBase64.mockResolvedValue({ base64: "image-base64", mimeType: "image/png" });
   attachmentMocks.downloadAttachment.mockReset();
   attachmentMocks.uploadImageAttachment.mockResolvedValue({ id: IMAGE_ID, mimeType: "image/png", size: 3 });

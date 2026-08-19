@@ -42,6 +42,10 @@ const agentMocks = vi.hoisted(() => ({
   listAgents: vi.fn(),
 }));
 
+const agentResourceMocks = vi.hoisted(() => ({
+  getAgentResources: vi.fn(),
+}));
+
 const attachmentMocks = vi.hoisted(() => ({
   downloadAttachment: vi.fn(),
   fetchAttachmentBase64: vi.fn(),
@@ -110,6 +114,11 @@ vi.mock("../../../../api/agents.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../../api/agents.js")>()),
   getAgentSkills: agentMocks.getAgentSkills,
   listAgents: agentMocks.listAgents,
+}));
+
+vi.mock("../../../../api/agent-resources.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../../api/agent-resources.js")>()),
+  getAgentResources: agentResourceMocks.getAgentResources,
 }));
 
 vi.mock("../../../../api/attachments.js", () => attachmentMocks);
@@ -300,6 +309,30 @@ function message(overrides: Partial<MessageWithDelivery> & { id: string; senderI
 
 function messages(items: MessageWithDelivery[]): PaginatedMessages {
   return { items, nextCursor: null };
+}
+
+function teamSkillResourceRow(overrides: { mode?: string; payload?: unknown } = {}) {
+  return {
+    id: "row-1",
+    bindingId: null,
+    resourceId: "res-1",
+    replacesResourceId: null,
+    type: "skill",
+    name: "Team Skill",
+    scope: "team",
+    source: "team_recommended",
+    mode: overrides.mode ?? "enabled",
+    defaultEnabled: "recommended",
+    payload:
+      overrides.payload !== undefined
+        ? overrides.payload
+        : { name: "Code Review", description: "Review a change end to end.", body: "b" },
+    repo: null,
+    promptBody: null,
+    unavailableReason: null,
+    originTemplateId: null,
+    order: 0,
+  };
 }
 
 const BASE_MESSAGES = messages([
@@ -753,6 +786,9 @@ beforeEach(() => {
     },
   ]);
   agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+  agentResourceMocks.getAgentResources.mockResolvedValue({
+    effective: { version: 1, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+  });
   agentMocks.listAgents.mockResolvedValue({ items: ORG_AGENTS, nextCursor: null });
   attachmentMocks.fetchAttachmentBase64.mockResolvedValue({ base64: "image-base64", mimeType: "image/png" });
   attachmentMocks.uploadAttachment.mockResolvedValue({ id: "uploaded-image", mimeType: "image/png", size: 42 });
@@ -1630,6 +1666,68 @@ describe("ChatView", () => {
     expect(container.querySelector('[role="listbox"][aria-label="Mention suggestions"]')).toBeNull();
     expect(container.querySelector("[data-current-agent-output]")).toBeNull();
     expect(document.activeElement).toBe(textarea);
+
+    await act(async () => root.unmount());
+  });
+
+  it("merges configured Team Skills into the slash menu next to the runtime catalog", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue({
+      version: 1,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: {
+        version: 1,
+        repos: [],
+        prompts: [],
+        mcp: [],
+        unavailable: [],
+        skills: [
+          teamSkillResourceRow(),
+          teamSkillResourceRow({
+            mode: "disabled",
+            payload: { name: "Hidden Skill", description: "d", body: "b" },
+          }),
+          teamSkillResourceRow({ payload: { name: "Missing Body", description: "d" } }),
+        ],
+      },
+    });
+    const direct = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-1", name: "nova", displayName: "Nova" }),
+      ],
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    await waitForCondition(
+      () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
+      "Expected the resources catalog fetch for the slash scope",
+    );
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledWith("agent-1");
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // The Team Skill surfaces under its portable materializer slug; the
+    // daemon-reported runtime row survives the merge; disabled and
+    // malformed rows never render.
+    await waitForText(container, "/code-review");
+    expect(container.textContent).toContain("/review");
+    expect(container.textContent).not.toContain("hidden-skill");
+    expect(container.textContent).not.toContain("missing-body");
 
     await act(async () => root.unmount());
   });

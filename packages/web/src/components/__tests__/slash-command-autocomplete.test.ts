@@ -1,12 +1,15 @@
-import type { SkillDescriptor } from "@first-tree/shared";
+import type { EffectiveResourceRow, SkillDescriptor } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import {
   buildSlashInsert,
   detectSlashTrigger,
+  mergeSlashSkills,
   rankSlashCommands,
   resolveMentionContext,
   type SlashCommandItem,
+  type SlashSkillInfo,
   type SlashSystemCommand,
+  teamSkillRowsToSlashSkills,
 } from "../slash-command-autocomplete.js";
 
 function sysCmd(name: string, description = ""): SlashSystemCommand {
@@ -137,5 +140,109 @@ describe("buildSlashInsert", () => {
   it("emits the namespaced literal for plugin skills", () => {
     const insert = buildSlashInsert("/hy", { triggerIndex: 0, query: "hy" }, 3, skillItem("gsap", "hyperframes"));
     expect(insert.text).toBe("/hyperframes:gsap ");
+  });
+});
+
+function teamSkillRow(overrides: { mode?: EffectiveResourceRow["mode"]; payload?: unknown }): EffectiveResourceRow {
+  return {
+    id: "row-1",
+    bindingId: null,
+    resourceId: "res-1",
+    replacesResourceId: null,
+    type: "skill",
+    name: "Team Skill",
+    scope: "team",
+    source: "team_recommended",
+    mode: overrides.mode ?? "enabled",
+    defaultEnabled: "recommended",
+    payload:
+      overrides.payload !== undefined
+        ? overrides.payload
+        : { name: "Code Review", description: "Review a change end to end.", body: "skill body" },
+    repo: null,
+    promptBody: null,
+    unavailableReason: null,
+    originTemplateId: null,
+    order: 0,
+  };
+}
+
+describe("teamSkillRowsToSlashSkills", () => {
+  it("projects an enabled Team Skill under its portable materializer slug", () => {
+    const got = teamSkillRowsToSlashSkills([teamSkillRow({})]);
+    expect(got).toEqual([{ name: "code-review", description: "Review a change end to end." }]);
+  });
+
+  it("drops the payload namespace — the runtime projection installs the plain slug", () => {
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({
+        payload: { name: "Code Review", namespace: "Tools", description: "d", body: "b" },
+      }),
+    ]);
+    expect(got).toEqual([{ name: "code-review", description: "d" }]);
+  });
+
+  it("excludes disabled, replaced, and unavailable rows", () => {
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({ mode: "disabled" }),
+      teamSkillRow({ mode: "replaced" }),
+      teamSkillRow({ mode: "unavailable" }),
+    ]);
+    expect(got).toEqual([]);
+  });
+
+  it("skips malformed payloads without dropping the valid rows", () => {
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({ payload: null }),
+      teamSkillRow({ payload: { name: "No Body" } }),
+      teamSkillRow({ payload: { name: "", description: "d", body: "b" } }),
+      teamSkillRow({ payload: { name: "Good Skill", description: "d", body: "b" } }),
+    ]);
+    expect(got).toEqual([{ name: "good-skill", description: "d" }]);
+  });
+
+  it("skips names that do not produce a portable, triggerable slug", () => {
+    const payloadNamed = (name: string) => ({ name, description: "d", body: "b" });
+    const got = teamSkillRowsToSlashSkills([
+      teamSkillRow({ payload: payloadNamed("!!!") }),
+      teamSkillRow({ payload: payloadNamed("con") }),
+      teamSkillRow({ payload: payloadNamed("first-tree-qa") }),
+      teamSkillRow({ payload: payloadNamed("a/b") }),
+      teamSkillRow({ payload: payloadNamed("Ship It") }),
+    ]);
+    expect(got).toEqual([{ name: "ship-it", description: "d" }]);
+  });
+});
+
+describe("mergeSlashSkills", () => {
+  const runtime = (name: string, namespace?: string): SlashSkillInfo => ({
+    name,
+    description: `runtime ${name}`,
+    ...(namespace ? { namespace } : {}),
+  });
+  const team = (name: string): SlashSkillInfo => ({ name, description: `team ${name}` });
+
+  it("keeps the exact runtime-reported command on a case-insensitive literal match", () => {
+    const got = mergeSlashSkills([runtime("Ship")], [team("ship")]);
+    expect(got).toEqual([{ name: "Ship", description: "runtime Ship" }]);
+  });
+
+  it("dedupes namespaced literals case-insensitively, runtime first", () => {
+    const got = mergeSlashSkills(
+      [runtime("gsap", "HyperFrames")],
+      [{ name: "gsap", namespace: "hyperframes", description: "team gsap" }],
+    );
+    expect(got).toEqual([{ name: "gsap", namespace: "HyperFrames", description: "runtime gsap" }]);
+  });
+
+  it("keeps distinct commands from both sources, sorted by label key", () => {
+    const got = mergeSlashSkills([runtime("ship")], [team("code-review"), team("audit")]);
+    expect(got.map((s) => s.name)).toEqual(["audit", "code-review", "ship"]);
+  });
+
+  it("degrades to whichever source is still available when the other is empty", () => {
+    expect(mergeSlashSkills([], [team("audit")])).toEqual([{ name: "audit", description: "team audit" }]);
+    expect(mergeSlashSkills([runtime("ship")], [])).toEqual([{ name: "ship", description: "runtime ship" }]);
+    expect(mergeSlashSkills([], [])).toEqual([]);
   });
 });

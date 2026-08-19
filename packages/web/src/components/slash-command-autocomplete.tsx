@@ -1,4 +1,8 @@
-import type { SkillDescriptor } from "@first-tree/shared";
+import {
+  type EffectiveResourceRow,
+  normalizeTeamSkillTargetSlug,
+  skillResourcePayloadSchema,
+} from "@first-tree/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -26,9 +30,23 @@ export type SlashSystemCommand = {
   description: string;
 };
 
+/**
+ * Minimal display descriptor for a skill row in the slash popover. The
+ * daemon-reported `SkillDescriptor` satisfies it structurally, and Team
+ * Skills projected from Cloud resources map onto it directly — no new
+ * persisted `source` enum is needed just to render the menu.
+ */
+export type SlashSkillInfo = {
+  /** Skill name without leading slash — the triggerable command. */
+  name: string;
+  /** Optional plugin namespace; rendered as `<namespace>:<name>`. */
+  namespace?: string;
+  description: string;
+};
+
 export type SlashSkillCommand = {
   kind: "skill";
-  skill: SkillDescriptor;
+  skill: SlashSkillInfo;
   /** Agent UUID this skill belongs to — needed by callers that want to
    *  show "from @<agent>" affordances; we drop it on insert because the
    *  caller already has the mention text in the draft. */
@@ -126,8 +144,59 @@ function scoreItem(item: SlashCommandItem, query: string): number {
 }
 
 /** Stable, namespace-aware label key used for matching + sorting. */
-function commandLabelKey(skill: SkillDescriptor): string {
+function commandLabelKey(skill: SlashSkillInfo): string {
   return skill.namespace ? `${skill.namespace}:${skill.name}` : skill.name;
+}
+
+/**
+ * Project the recipient agent's effective Team Skill rows (from
+ * `GET /agents/:uuid/resources` → `effective.skills`) into slash-menu
+ * descriptors. Only `enabled` rows whose payload passes the shared Skill
+ * Resource schema qualify — `disabled` / `replaced` / `unavailable` rows
+ * and malformed payloads are skipped individually so one bad Team Skill
+ * never blanks the rest of the menu.
+ *
+ * The slash name is derived with the same portable slug rule the Client
+ * materializer uses (`normalizeTeamSkillTargetSlug`), so the menu never
+ * advertises a command the runtime could not install (e.g. a display
+ * name with spaces). Names that fail the slug rule are skipped. The
+ * payload `namespace` is dropped on purpose: the runtime projection does
+ * not carry it, so the materialized command is the plain slug.
+ */
+export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashSkillInfo[] {
+  const out: SlashSkillInfo[] = [];
+  for (const row of rows) {
+    if (row.mode !== "enabled") continue;
+    const parsed = skillResourcePayloadSchema.safeParse(row.payload);
+    if (!parsed.success) continue;
+    let name: string;
+    try {
+      name = normalizeTeamSkillTargetSlug(parsed.data.name);
+    } catch {
+      continue;
+    }
+    out.push({ name, description: parsed.data.description });
+  }
+  return out;
+}
+
+/**
+ * Merge the daemon-reported runtime catalog with the Team Skills
+ * projected from Cloud resources. Dedup is on the case-insensitive final
+ * slash literal (`namespace:name`); an exact runtime-reported command
+ * always wins so the menu never shadows what the local harness actually
+ * installed. Output is sorted by label key so the menu is stable.
+ */
+export function mergeSlashSkills(runtime: SlashSkillInfo[], team: SlashSkillInfo[]): SlashSkillInfo[] {
+  const byKey = new Map<string, SlashSkillInfo>();
+  for (const skill of runtime) {
+    byKey.set(commandLabelKey(skill).toLowerCase(), skill);
+  }
+  for (const skill of team) {
+    const key = commandLabelKey(skill).toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, skill);
+  }
+  return [...byKey.values()].sort((a, b) => commandLabelKey(a).localeCompare(commandLabelKey(b)));
 }
 
 export function rankSlashCommands(items: SlashCommandItem[], query: string): SlashCommandItem[] {
@@ -204,7 +273,7 @@ export function useSlashCommand({
   /** Skills for the currently @-mentioned agent. Pass `null` when no
    *  agent is in scope (e.g. group chat without a recipient picked); the
    *  popover then shows only system commands. */
-  agentSkills: { agentId: string; agentDisplayName: string; skills: SkillDescriptor[] } | null;
+  agentSkills: { agentId: string; agentDisplayName: string; skills: SlashSkillInfo[] } | null;
   /** Used only for keyed memoisation — the agent ref the popover should
    *  re-rank when the @mention target flips. Pass `null` for "no
    *  mention". Identical to `agentSkills.agentId` when skills are
@@ -359,11 +428,10 @@ export function SlashCommandPopover({
         const description = item.kind === "system" ? item.description : item.skill.description;
 
         return (
-          // `label` is unique within a single popover render because we
-          // dedupe by `<kind>:<name(:namespace)>` upstream — slash command
-          // names cannot collide across the system/skill split (system
-          // names are a hand-curated allowlist) and within skills the
-          // server already enforces uniqueness per agent.
+          // `label` is unique within a single popover render: system
+          // names are a hand-curated allowlist that cannot collide with
+          // skills, and the skill list is deduped upstream by the
+          // case-insensitive slash literal in `mergeSlashSkills`.
           <div key={`${item.kind}-${label}`}>
             {headerEl}
             <button
