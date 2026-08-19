@@ -59,6 +59,12 @@ export async function discoverProviderModels(
       return discoverGrokModels(deps);
     case "kimi-code":
       return discoverKimiModels(deps);
+    case "amp":
+      return unavailableCatalog(
+        provider,
+        "Amp exposes modes, not a host-local model catalog; pick a mode in agent config",
+        deps,
+      );
     case "opencode":
       return unavailableCatalog(
         provider,

@@ -115,6 +115,15 @@ export function classifyProviderFailure(
   // verification). Both must stop deterministically — never the unknown
   // retry path, never the binary_missing reason code (that one is reserved
   // for "no binary resolved").
+  if (context.provider === "amp" && /not supported on windows in v1/.test(text)) {
+    return {
+      category: "capability",
+      reasonCode: "amp_platform_unsupported",
+      message: base.message,
+      retryAfterMs,
+      sourceKind: base.kind,
+    };
+  }
   if (context.provider === "grok" && /not supported on windows in v1/.test(text)) {
     return {
       category: "capability",
@@ -531,6 +540,14 @@ function isCredential(
   ) {
     return true;
   }
+  // Amp CLI logged-out / missing-key phrasings (kept in sync with isAmpAuthError
+  // in handlers/auth-error-hint.ts). Provider-gated: the official absent-key
+  // path prints "No API key found. Starting login flow..." and never mentions
+  // `amp login` / `AMP_API_KEY`, so those substrings must still classify
+  // credential without leaking them into other providers' traffic.
+  if (provider === "amp" && /not logged in|amp login|amp_api_key|no api key found|starting login flow/.test(text)) {
+    return true;
+  }
   // Cursor CLI logged-out phrasings (kept in sync with isCursorAuthError in
   // handlers/auth-error-hint.ts). Provider-gated: the in-chat "Log in to
   // Cursor" CTA renders only for category=credential, so a wording variant
@@ -587,6 +604,7 @@ function isConfiguration(text: string, base: Classification, provider: RuntimePr
   if (provider === "kimi-code" && /model\.not_configured|model\.config_invalid/.test(text)) return true;
   // Pi model/MCP configuration gates — keep provider-gated so shared English
   // phrases cannot terminalize another provider's retryable failures.
+  if (provider === "amp" && /amp_mode_invalid|amp mode must be one of/.test(text)) return true;
   if (provider === "pi" && (isPiModelConfiguration(text) || isPiMcpConfiguration(text))) return true;
   // Cursor CLI literal invalid-model / explicit-deny / trust-wall phrasings
   // (captured in Phase 0). Gated to the cursor provider: this classifier is

@@ -417,6 +417,25 @@ describe("classifyProviderFailure", () => {
     }
   });
 
+  it("classifies an invalid Amp mode as terminal configuration", () => {
+    const message = 'amp_mode_invalid: Amp --mode must be one of low, medium, high, ultra; received "claude-opus-4.6"';
+    const c = classifyProviderFailure(new Error(message), {
+      provider: "amp",
+      scope: "provider_turn",
+      source: "stream",
+    });
+    expect(c).toMatchObject({
+      category: "configuration",
+      reasonCode: "provider_configuration_error",
+    });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    expect(
+      classifyProviderFailure(new Error(message), { provider: "codex", scope: "provider_turn", source: "session" }),
+    ).toMatchObject({ category: "unknown", reasonCode: "unknown" });
+  });
+
   it("retries Pi version-probe timeout as transient transport", () => {
     const err = new Error(
       "pi --version smoke check did not complete (transient host condition); will retry. Detail: `pi --version` timed out",
@@ -569,6 +588,49 @@ describe("classifyProviderFailure", () => {
         scope: "provider_turn",
       }),
     ).toMatchObject({ category: "deterministic_input", reasonCode: "provider_deterministic_input" });
+  });
+
+  it("amp win32 fail-closed classifies capability/amp_platform_unsupported with a deterministic stop", () => {
+    const c = classifyProviderFailure(
+      new Error(
+        "Amp is not supported on Windows in v1 until the client-wide pre-admission Job Object supervisor is available.",
+      ),
+      { provider: "amp", scope: "provider_turn" },
+    );
+    expect(c).toMatchObject({ category: "capability", reasonCode: "amp_platform_unsupported" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop" });
+  });
+
+  it("classifies Amp credential phrasings as needs_operator", () => {
+    const c = classifyProviderFailure(new Error("Error: not logged in. Run `amp login` or set AMP_API_KEY."), {
+      provider: "amp",
+      scope: "provider_turn",
+      source: "stream",
+    });
+    expect(c).toMatchObject({ category: "credential" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+  });
+
+  it("classifies Amp official absent-key login-flow wording as needs_operator", () => {
+    const c = classifyProviderFailure(new Error("No API key found. Starting login flow..."), {
+      provider: "amp",
+      scope: "provider_turn",
+      source: "stream",
+    });
+    expect(c).toMatchObject({ category: "credential", reasonCode: "provider_credential_required" });
+    expect(
+      decideProviderRetry({ classification: c, scope: "provider_turn", attempt: 1, replaySafety: "pre_provider" }),
+    ).toMatchObject({ action: "stop", terminalKind: "needs_operator" });
+    const other = classifyProviderFailure(new Error("No API key found. Starting login flow..."), {
+      provider: "cursor",
+      scope: "provider_turn",
+      source: "stream",
+    });
+    expect(other.category).not.toBe("credential");
   });
 
   it("grok win32 fail-closed classifies capability/grok_platform_unsupported with a deterministic stop", () => {
