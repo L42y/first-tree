@@ -1732,6 +1732,79 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("opens the slash menu after a committed mention in a group chat and keeps the recipient on send", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    saveDraft(chatDraftScope(null, "chat-1"), { text: "@nova " });
+    agentResourceMocks.getAgentResources.mockResolvedValue({
+      version: 1,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: {
+        version: 1,
+        repos: [],
+        prompts: [],
+        mcp: [],
+        unavailable: [],
+        skills: [teamSkillResourceRow()],
+      },
+    });
+    const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    // The restored canonical draft hydrates into a display mention token
+    // once the candidate roster resolves.
+    await waitForCondition(
+      () => textarea.value === "@Nova ",
+      "Expected the restored draft to hydrate the @nova mention token",
+    );
+
+    const typeDisplay = async (value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(textarea, value);
+        textarea.setSelectionRange(value.length, value.length);
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+      });
+      await flush();
+    };
+
+    // Plain prose between the mention and the slash must NOT open the menu.
+    await typeDisplay("@Nova hi /code");
+    expect(container.querySelector('[role="listbox"][aria-label="Slash command suggestions"]')).toBeNull();
+
+    // Mention-prefixed mode: the menu opens with the merged catalog.
+    await typeDisplay("@Nova /");
+    await waitForText(container, "/code-review");
+    expect(container.textContent).toContain("/review");
+
+    // Narrow to the Team Skill and pick it: the mention token survives
+    // and the literal lands after it.
+    await typeDisplay("@Nova /code");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await flush();
+    expect(textarea.value).toBe("@Nova /code-review ");
+
+    // Send routes to the mentioned agent with the canonical `@nova` form.
+    chatMocks.sendChatMessage.mockClear();
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await flush();
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message to send");
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(
+      "chat-1",
+      expect.stringContaining("@nova /code-review"),
+      ["agent-1"],
+    );
+
+    await act(async () => root.unmount());
+  });
+
   it("renders provider retry events as non-fatal timeline rows when severity is not error", async () => {
     const { ChatView } = await import("../chat-view.js");
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {

@@ -4462,6 +4462,10 @@ export function ChatView({
         }
       : null,
     mentionedAgent: slashMentionContext,
+    // Committed mention tokens unlock the mention-prefixed slash mode
+    // (`@Nova /code`) — the only slash path in group chats, where the
+    // recipient must be addressed first.
+    mentionTokens: mentionComposer.tokens,
     disabled: landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading,
     onSelect: (update, picked) => {
       autoPrimedDraftRef.current = false;

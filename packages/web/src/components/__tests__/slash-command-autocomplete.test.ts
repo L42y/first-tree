@@ -246,3 +246,62 @@ describe("mergeSlashSkills", () => {
     expect(mergeSlashSkills([], [])).toEqual([]);
   });
 });
+
+describe("detectSlashTrigger — mention-prefixed composer mode", () => {
+  it("triggers after a committed mention token + whitespace (`@Nova /re`)", () => {
+    const got = detectSlashTrigger("@Nova /re", 9, [{ start: 0, end: 5 }]);
+    expect(got).toEqual({ triggerIndex: 6, query: "re" });
+  });
+
+  it("handles display names containing spaces via the token span, not text parsing", () => {
+    const got = detectSlashTrigger("@Design Critique /re", 20, [{ start: 0, end: 16 }]);
+    expect(got).toEqual({ triggerIndex: 17, query: "re" });
+  });
+
+  it("accepts several committed tokens before the slash", () => {
+    const got = detectSlashTrigger("@Nova @Design Critique /re", 26, [
+      { start: 0, end: 5 },
+      { start: 6, end: 22 },
+    ]);
+    expect(got).toEqual({ triggerIndex: 23, query: "re" });
+  });
+
+  it("accepts a slash flush against the token end", () => {
+    const got = detectSlashTrigger("@Nova/re", 8, [{ start: 0, end: 5 }]);
+    expect(got).toEqual({ triggerIndex: 5, query: "re" });
+  });
+
+  it("rejects plain prose between the mention and the slash", () => {
+    expect(detectSlashTrigger("@Nova hi /re", 12, [{ start: 0, end: 5 }])).toBeNull();
+  });
+
+  it("rejects a literally-typed `@name` that was never committed as a token", () => {
+    expect(detectSlashTrigger("@nova /re", 9)).toBeNull();
+  });
+
+  it("rejects a slash inside a token span", () => {
+    expect(detectSlashTrigger("@Nov/re", 7, [{ start: 0, end: 5 }])).toBeNull();
+  });
+
+  it("rejects prose before the mention token", () => {
+    expect(detectSlashTrigger("hi @Nova /re", 12, [{ start: 3, end: 8 }])).toBeNull();
+  });
+
+  it("bare mode still wins when the slash is the first non-whitespace char", () => {
+    expect(detectSlashTrigger("/re", 3, [{ start: 5, end: 10 }])).toEqual({ triggerIndex: 0, query: "re" });
+  });
+});
+
+describe("buildSlashInsert — mention-prefixed drafts", () => {
+  it("keeps the mention prefix when a system command clears the draft", () => {
+    const insert = buildSlashInsert("@Nova /cle", { triggerIndex: 6, query: "cle" }, 10, sysCmd("clear"));
+    expect(insert).toEqual({ text: "@Nova ", cursor: 6, kind: "system" });
+  });
+
+  it("inserts the skill literal after the mention prefix", () => {
+    const insert = buildSlashInsert("@Nova /re", { triggerIndex: 6, query: "re" }, 9, skillItem("review"));
+    expect(insert.text).toBe("@Nova /review ");
+    expect(insert.cursor).toBe("@Nova /review ".length);
+    expect(insert.kind).toBe("skill");
+  });
+});

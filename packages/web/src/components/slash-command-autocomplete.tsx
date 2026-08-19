@@ -4,6 +4,7 @@ import {
   skillResourcePayloadSchema,
 } from "@first-tree/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ComposerMentionToken } from "./mention-composer-model.js";
 
 /**
  * `/`-triggered slash-command popover, mirrored on the `@mention`
@@ -65,30 +66,69 @@ type ActiveTrigger = {
 };
 
 /**
- * Locate the active `/<query>` trigger. The `/` opens a slash command
- * iff it is the first char of the textarea (after optional leading
- * whitespace) — composer-wide rather than mid-word — and the query
- * accumulated since contains only command-name chars
- * (`[A-Za-z0-9_:-]`, mirroring the SkillDescriptor name + namespace
- * charset). Anything else (space, newline, punctuation) closes it.
+ * Locate the active `/<query>` trigger. The `/` opens a slash command in
+ * exactly two composer modes:
  *
- * The "first-char only" rule is intentional. Slash commands are a
- * composer mode, not a mid-message escape — Slack and Discord use the
- * same convention. It also avoids the false positives a mid-line `/`
- * would catch (URLs, paths, dates).
+ *   1. Bare mode — the `/` is the first non-whitespace char of the
+ *      textarea, and the query accumulated since contains only
+ *      command-name chars (`[A-Za-z0-9_:-]`, mirroring the skill name +
+ *      namespace charset).
+ *   2. Mention-prefixed mode — the `/` follows a prefix consisting ONLY
+ *      of whitespace and committed mention tokens (e.g. `@Nova /code`).
+ *      Group chats must address the recipient before a command makes
+ *      sense, so this is the only slash path there. The check walks the
+ *      actual token spans — never a `@slug` text regex — so display
+ *      names with spaces work and a literally-typed `@name` look-alike
+ *      does NOT qualify.
+ *
+ * Anything else (plain prose before the slash, URLs, paths, dates)
+ * closes the trigger. The "no mid-word slash" rule is intentional:
+ * slash commands are a composer mode, not a mid-message escape — Slack
+ * and Discord use the same convention.
  */
-export function detectSlashTrigger(text: string, cursor: number): ActiveTrigger | null {
+export function detectSlashTrigger(
+  text: string,
+  cursor: number,
+  mentionTokens: ReadonlyArray<Pick<ComposerMentionToken, "start" | "end">> = [],
+): ActiveTrigger | null {
   if (cursor <= 0 || cursor > text.length) return null;
 
-  // The slash must be at the very start of the line — that is, after a
-  // run of any whitespace from position 0.
+  // Mode 1: the slash is the first non-whitespace char of the buffer.
   const head = text.slice(0, cursor);
-  const m = head.match(/^\s*\/([A-Za-z0-9_:-]*)$/);
-  if (!m) return null;
+  const bare = head.match(/^\s*\/([A-Za-z0-9_:-]*)$/);
+  if (bare) {
+    const triggerIndex = head.indexOf("/");
+    if (triggerIndex < 0) return null;
+    return { triggerIndex, query: (bare[1] ?? "").toLowerCase() };
+  }
 
-  const triggerIndex = head.indexOf("/");
-  if (triggerIndex < 0) return null;
-  return { triggerIndex, query: (m[1] ?? "").toLowerCase() };
+  // Mode 2: mention-prefixed. Without committed tokens there is no
+  // legitimate prefix, so plain text like `hi /path` stays closed.
+  if (mentionTokens.length === 0) return null;
+  const prefixed = head.match(/^([\s\S]*?)\/([A-Za-z0-9_:-]*)$/);
+  if (!prefixed) return null;
+  const triggerIndex = (prefixed[1] ?? "").length;
+  const query = (prefixed[2] ?? "").toLowerCase();
+
+  // Walk the prefix: every char must be whitespace or inside a token
+  // span that starts exactly here and ends at/before the slash.
+  const sorted = [...mentionTokens].sort((a, b) => a.start - b.start);
+  let tokenIndex = 0;
+  let pos = 0;
+  while (pos < triggerIndex) {
+    if (/\s/.test(text[pos] ?? "")) {
+      pos++;
+      continue;
+    }
+    const token = tokenIndex < sorted.length ? sorted[tokenIndex] : undefined;
+    if (token && token.start === pos && token.end <= triggerIndex) {
+      pos = token.end;
+      tokenIndex++;
+      continue;
+    }
+    return null;
+  }
+  return { triggerIndex, query };
 }
 
 /**
@@ -242,10 +282,11 @@ export function buildSlashInsert(
   const after = source.slice(cursor);
 
   if (item.kind === "system") {
-    // System commands are intercepted by the host — clearing the
-    // textarea on insert avoids the user accidentally sending the
-    // literal `/help` to the recipient when the action fires.
-    return { text: "", cursor: 0, kind: "system" };
+    // System commands are intercepted by the host — replace only the
+    // `/<query>` run so a committed mention prefix (`@Nova /clear`)
+    // survives: clearing the whole textarea would wipe the recipient
+    // token along with the draft.
+    return { text: before, cursor: before.length, kind: "system" };
   }
 
   const literal = `/${commandLabelKey(item.skill)}`;
@@ -264,6 +305,7 @@ export function useSlashCommand({
   systemCommands,
   agentSkills,
   mentionedAgent,
+  mentionTokens,
   onSelect,
   disabled,
 }: {
@@ -280,6 +322,10 @@ export function useSlashCommand({
    *  loaded; supplied separately so a loading state still resets the
    *  highlight on switch. */
   mentionedAgent: { agentId: string; displayName: string } | null;
+  /** Committed mention tokens over `value` (display space). Enables the
+   *  mention-prefixed slash mode (`@Nova /code`); omit/empty to keep the
+   *  bare-first-char rule only. */
+  mentionTokens?: ReadonlyArray<Pick<ComposerMentionToken, "start" | "end">>;
   onSelect: (update: SlashInsert, picked: SlashCommandItem) => void;
   disabled?: boolean;
 }): {
@@ -296,8 +342,8 @@ export function useSlashCommand({
 
   const trigger = useMemo(() => {
     if (disabled) return null;
-    return detectSlashTrigger(value, cursor);
-  }, [value, cursor, disabled]);
+    return detectSlashTrigger(value, cursor, mentionTokens ?? []);
+  }, [value, cursor, disabled, mentionTokens]);
 
   const items = useMemo<SlashCommandItem[]>(() => {
     const out: SlashCommandItem[] = [...systemCommands];
