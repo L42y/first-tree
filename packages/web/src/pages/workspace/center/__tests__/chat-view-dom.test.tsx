@@ -1796,11 +1796,9 @@ describe("ChatView", () => {
     });
     await flush();
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message to send");
-    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(
-      "chat-1",
-      expect.stringContaining("@nova /code-review"),
-      ["agent-1"],
-    );
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", expect.stringContaining("@nova /code-review"), [
+      "agent-1",
+    ]);
 
     await act(async () => root.unmount());
   });
