@@ -1923,6 +1923,51 @@ describe("codex app-server handler", () => {
     await handler.shutdown();
   });
 
+  it("settles a pending batch exactly once when the pre-format refresh fails closed", async () => {
+    const fake = new FakeAppServerClient();
+    const mutable = makeMutableConfigCache("append-v1");
+    const handler = makeHandler(fake, { agentConfigCache: mutable.cache });
+    const ctx = makeContext({});
+    const m2Token = makeDeliveryToken();
+    const m3Token = makeDeliveryToken();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, deliveryTokenFromSessionContext(ctx));
+    await waitFor(() => fake.requests.some((request) => request.method === "turn/start"));
+    completeTurn(fake, "turn-1", "first done");
+    await startPromise;
+
+    // The pre-format refresh reconciles managed skills; make it fail closed.
+    // Break the verified projection first so the refresh actually reconciles
+    // instead of taking the consistent-none early return.
+    rmSync(join(workspaceRoot, ".agents", "skills", "first-tree-read"), { recursive: true, force: true });
+    const { reconcileManagedSkillsForConfig, ManagedSkillsUnsafeDiscoveryError } = await import(
+      "../../../../runtime/managed-skills.js"
+    );
+    vi.mocked(reconcileManagedSkillsForConfig).mockRejectedValueOnce(
+      new ManagedSkillsUnsafeDiscoveryError("unsafe discovery"),
+    );
+
+    handler.inject(makeMessage("m2", "second"), m2Token);
+    await waitFor(() => vi.mocked(m2Token.retry).mock.calls.length > 0);
+
+    // Custody moved to recovery exactly once...
+    expect(vi.mocked(m2Token.retry).mock.calls).toEqual([
+      [expect.objectContaining({ id: "m2" }), "codex_managed_skills_unsafe"],
+    ]);
+    // ...and the batch left the pending queue: a later message starts a turn
+    // that carries ONLY itself, never a duplicated m2.
+    handler.inject(makeMessage("m3", "third"), m3Token);
+    await waitFor(() => fake.requests.filter((request) => request.method === "turn/start").length === 2);
+    const secondStart = fake.requests.filter((request) => request.method === "turn/start")[1];
+    const input = JSON.stringify(secondStart?.params ?? {});
+    expect(input).toContain("third");
+    expect(input).not.toContain("second");
+    expect(vi.mocked(m2Token.retry).mock.calls).toHaveLength(1);
+
+    completeTurn(fake, "turn-2", "third done");
+    await handler.shutdown();
+  });
+
   it("terminal-rejects deterministic context-window turn failures instead of retrying delivery", async () => {
     const fake = new FakeAppServerClient();
     const retryTurn = vi.fn<SessionContext["retryTurn"]>();

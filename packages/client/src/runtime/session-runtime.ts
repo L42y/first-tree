@@ -3168,14 +3168,22 @@ export class SessionRuntime {
         this.retryDeliveryTurn(chatId, messages, reason);
         // A version-fenced strict slash command cannot heal inside this
         // handler (its registry is proven for the old config version and
-        // some providers format before they reconcile). After custody is
-        // retained, fail the session for recovery so the redelivery starts
-        // a fresh handler whose preparation reconciles the new version
-        // first.
+        // some providers format before they reconcile). Restart only while
+        // the fenced message still has PENDING INBOX CUSTODY — a synthetic
+        // or already-settled message just drops its marker. After custody
+        // is confirmed, fail the session for recovery so the redelivery
+        // starts a fresh handler whose preparation reconciles the new
+        // version first.
         const batch = Array.isArray(messages) ? messages : [messages];
         let versionMismatched = false;
         for (const message of batch) {
-          if (registryVersionMismatchedMessageIds.delete(message.id)) versionMismatched = true;
+          if (!registryVersionMismatchedMessageIds.delete(message.id)) continue;
+          if (
+            message.inboxEntryId !== undefined &&
+            this.inboxDelivery.hasEntry({ chatId, entryId: message.inboxEntryId, messageId: message.id })
+          ) {
+            versionMismatched = true;
+          }
         }
         if (versionMismatched) {
           this.failSessionForRecovery(chatId, "team_skill_registry_version_mismatch");
@@ -3227,6 +3235,11 @@ export class SessionRuntime {
         // registry. Synthetic messages without a stamp skip the fence.
         const versionMismatched = message.configVersion !== undefined && version !== message.configVersion;
         const fencedRegistry = versionMismatched ? null : registry;
+        // A fresh format attempt always clears any stale marker for this
+        // message; only THIS attempt's version-mismatch throw re-adds it,
+        // so a successful post-refresh format cannot leave a marker that a
+        // later unrelated retry would mistake for a fence failure.
+        registryVersionMismatchedMessageIds.delete(message.id);
         try {
           return await formatInboundContent(
             rewriteSessionMessageCommand(message, fencedRegistry, {

@@ -1787,6 +1787,10 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       refreshed = await refreshBriefingForActiveTurn(sessionCtx);
     } catch (error) {
       if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
+      // Settle the batch exactly once: release it from the pending queue
+      // BEFORE handing custody to recovery, so the same input cannot be
+      // processed twice.
+      removePendingPrefix(batch);
       retryBatch(batch, "codex_managed_skills_unsafe");
       sessionCtx.log(`blocked provider turn: ${error.message}`);
       return;

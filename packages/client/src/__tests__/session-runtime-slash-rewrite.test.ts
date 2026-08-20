@@ -38,20 +38,35 @@ async function captureContext(): Promise<{
   ctx: SessionContext;
   runtime: SessionRuntime;
   startCount: () => number;
+  resumeCount: () => number;
   handlerShutdowns: () => number;
   currentCtx: () => SessionContext;
+  startMessages: SessionMessage[];
+  injectedMessages: SessionMessage[];
+  recoverChat: ReturnType<typeof vi.fn>;
 }> {
   let starts = 0;
+  let resumes = 0;
   let teardowns = 0;
   let capturedCtx: SessionContext | undefined;
+  const startMessages: SessionMessage[] = [];
+  const injectedMessages: SessionMessage[] = [];
   const handler: AgentHandler = {
-    start: vi.fn(async (_msg, ctx) => {
+    start: vi.fn(async (msg, ctx) => {
       starts++;
+      startMessages.push(msg);
       capturedCtx = ctx;
       return { sessionId: `session-${starts}`, route: { kind: "owned" as const, mode: "queued" as const } };
     }),
-    resume: vi.fn(async () => ({ sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } })),
-    inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
+    resume: vi.fn(async (_msg, _sessionId, ctx) => {
+      resumes++;
+      capturedCtx = ctx;
+      return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
+    }),
+    inject: vi.fn((msg) => {
+      injectedMessages.push(msg);
+      return { kind: "owned", mode: "queued" } as const;
+    }),
     suspend: vi.fn(async () => {
       teardowns++;
     }),
@@ -59,6 +74,7 @@ async function captureContext(): Promise<{
       teardowns++;
     }),
   };
+  const recoverChat = vi.fn().mockResolvedValue(undefined);
   const runtime = new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
@@ -76,7 +92,7 @@ async function captureContext(): Promise<{
     sdk: mockSdk(),
     log: silentLogger() as unknown as pino.Logger,
     ackEntry: vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
-    recoverChat: vi.fn().mockResolvedValue(undefined),
+    recoverChat,
   });
   await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
   if (!capturedCtx) throw new Error("expected the handler to receive a session context");
@@ -84,11 +100,15 @@ async function captureContext(): Promise<{
     ctx: capturedCtx,
     runtime,
     startCount: () => starts,
+    resumeCount: () => resumes,
     handlerShutdowns: () => teardowns,
     currentCtx: () => {
       if (!capturedCtx) throw new Error("no session context captured");
       return capturedCtx;
     },
+    startMessages,
+    injectedMessages,
+    recoverChat,
   };
 }
 
@@ -191,61 +211,129 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 });
 
 describe("SessionRuntime registry version-mismatch recovery", () => {
-  it("fails the session for recovery when a fenced message is retried, so a fresh handler reconciles first", async () => {
-    const { ctx, runtime, handlerShutdowns } = await captureContext();
-    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+  it("drives the production custody chain: tracked message → fence → retry → recovery → fresh handler heals", async () => {
+    const cap = await captureContext();
+    // The message handed to the handler is the production extractMessage
+    // output: it must carry both the inbox custody id and the server
+    // config stamp.
+    const startMessage = cap.startMessages[0];
+    if (!startMessage) throw new Error("expected a start message");
+    expect(startMessage.inboxEntryId).toBe(1);
+    expect(startMessage.configVersion).toBe(1);
 
-    // v2 strict slash against the v1 registry: fenced, recorded.
-    const fenced = textMessage("/review src/", undefined, 2);
-    await expect(ctx.formatInboundContent(fenced)).rejects.toThrow(/registry is not published/);
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
-    // The provider retries with custody retained; the session is then
-    // failed for recovery: the live handler is torn down and the session
-    // dropped, so the redelivery starts a FRESH handler whose preparation
-    // reconciles (and republishes) the new version before formatting.
-    // (The redelivery→fresh-start hop itself is the existing inbox
-    // recovery machinery, covered by the session custody suites.)
-    ctx.retryTurn(fenced, "codex_queued_turn_format_failed");
-    await vi.waitFor(() => expect(handlerShutdowns()).toBe(1));
+    // A v2 strict slash command arrives on the live session: injected with
+    // real inbox custody.
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    expect(injected.inboxEntryId).toBe(2);
+    expect(injected.configVersion).toBe(2);
 
-    // A fresh handler's context starts unpublished and heals once the v2
-    // registry is published — no permanent retry loop.
-    const fresh = await captureContext();
-    await expect(fresh.ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).rejects.toThrow(
-      /registry is not published/,
-    );
-    fresh.ctx.publishTeamSkillCommands(PUBLISHED, 2);
-    expect(await fresh.ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).toContain(
-      "/review-first-tree src/",
-    );
-    await fresh.runtime.shutdown();
+    // The fence rejects it against the v1 registry and records the marker.
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
 
-    await runtime.shutdown();
+    // The provider retries with custody still pending: recovery fails the
+    // session, tears the old handler down, and consults recoverChat.
+    cap.ctx.retryTurn(injected, "codex_queued_turn_format_failed");
+    await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
+    await vi.waitFor(() => expect(cap.recoverChat).toHaveBeenCalledWith("chat-a"));
+    // Recovery settles asynchronously after recoverChat resolves.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Redelivering the SAME entry after recovery: the first dispatch runs
+    // the recovery handshake (recoverChat), the second delivers into a
+    // fresh handler (via resume, the production post-eviction route).
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
+
+    // The fresh context starts unpublished; publishing the v2 registry
+    // heals the very same message — no permanent retry loop.
+    const freshCtx = cap.currentCtx();
+    await expect(freshCtx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
+    freshCtx.publishTeamSkillCommands(PUBLISHED, 2);
+    expect(await freshCtx.formatInboundContent(injected)).toContain("/review-first-tree src/");
+
+    await cap.runtime.shutdown();
+  });
+
+  it("does not restart when the fenced message has no pending inbox custody", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // Synthetic message: fence throws and records the marker, but it never
+    // entered the inbox ledger.
+    const synthetic = textMessage("/review src/", undefined, 2);
+    await expect(cap.ctx.formatInboundContent(synthetic)).rejects.toThrow(/registry is not published/);
+    cap.ctx.retryTurn(synthetic, "codex_queued_turn_format_failed");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(cap.handlerShutdowns()).toBe(0);
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again" }));
+    expect(cap.startCount()).toBe(1);
+
+    await cap.runtime.shutdown();
+  });
+
+  it("clears the fence marker once the same message formats successfully after a refresh", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
+
+    // A concurrent refresh republishes v2; the same message now formats
+    // successfully, which must clear its marker...
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 2);
+    expect(await cap.ctx.formatInboundContent(injected)).toContain("/review-first-tree src/");
+
+    // ...so a later unrelated retry of that message does NOT restart the
+    // session.
+    cap.ctx.retryTurn(injected, "some_later_unrelated_retry");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cap.handlerShutdowns()).toBe(0);
+
+    await cap.runtime.shutdown();
   });
 
   it("does not restart the session for a same-version genuinely-unavailable Team command", async () => {
-    const { ctx, runtime, startCount } = await captureContext();
-    ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
 
-    const message = textMessage("/review src/", undefined, 1);
-    await expect(ctx.formatInboundContent(message)).rejects.toThrow(/no verified installed target/);
-    ctx.retryTurn(message, "team_skill_command_unavailable");
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/no verified installed target/);
+    cap.ctx.retryTurn(injected, "team_skill_command_unavailable");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
 
-    await runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again" }));
-    // The existing session is still live — the new message injected into it.
-    expect(startCount()).toBe(1);
+    expect(cap.handlerShutdowns()).toBe(0);
+    expect(cap.startCount()).toBe(1);
 
-    await runtime.shutdown();
+    await cap.runtime.shutdown();
   });
 
   it("does not restart the session when a retried message never hit the fence", async () => {
-    const { ctx, runtime, startCount } = await captureContext();
-    ctx.publishTeamSkillCommands(PUBLISHED, 1);
-    ctx.retryTurn(textMessage("just text", undefined, 1), "some_transient_failure");
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again", configVersion: 1 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    cap.ctx.retryTurn(injected, "some_transient_failure");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
 
-    await runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again" }));
-    expect(startCount()).toBe(1);
+    expect(cap.handlerShutdowns()).toBe(0);
+    expect(cap.startCount()).toBe(1);
 
-    await runtime.shutdown();
+    await cap.runtime.shutdown();
   });
 });
