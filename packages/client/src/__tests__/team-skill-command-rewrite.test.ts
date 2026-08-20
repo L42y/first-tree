@@ -4,6 +4,7 @@ import {
   buildTeamSkillCommandRegistry,
   EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
   rewriteSessionMessageCommand,
+  rewriteSessionMessageCommandForInvocation,
   rewriteTeamSkillCommand,
 } from "../runtime/team-skill-command-rewrite.js";
 
@@ -204,5 +205,71 @@ describe("rewriteSessionMessageCommand — image batch captions", () => {
     expect(rewriteSessionMessageCommand(captionless, registry)).toBe(captionless);
     const unknown = { id: "m1", content: { kind: "other", text: "/review" } };
     expect(rewriteSessionMessageCommand(unknown, registry)).toBe(unknown);
+  });
+});
+
+describe("rewriteSessionMessageCommandForInvocation — server-owned Team intent marker", () => {
+  const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("broken", null)]);
+  const invocation = (slug: string) => ({ resourceId: crypto.randomUUID(), slug, configVersion: 1 });
+
+  it("rewrites a marked command to the verified effective name", () => {
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    expect(rewritten?.content).toBe("/review-first-tree src/");
+    expect(message.content).toBe("/review src/");
+  });
+
+  it("matches the marked slug case-insensitively", () => {
+    const message = { id: "m1", content: "/REVIEW src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    expect(rewritten?.content).toBe("/review-first-tree src/");
+  });
+
+  it("turns a marked command whose Skill left the config into an inert notice — never a local fall-through", () => {
+    // Delayed delivery: chosen at v1, the config moved to v2 without
+    // `review`, and the current (v2) registry no longer knows the slug.
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(
+      message,
+      EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
+      invocation("review"),
+    );
+    const text = rewritten?.content as string;
+    expect(text).toContain('"review"');
+    expect(text).toContain("removed or renamed");
+    expect(text.startsWith("/review")).toBe(false);
+    expect(text).not.toMatch(/^\/[A-Za-z0-9]/);
+  });
+
+  it("keeps the explicit-unavailable notice for a marked command", () => {
+    const message = { id: "m1", content: "/broken please" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("broken"));
+    const text = rewritten?.content as string;
+    expect(text).toContain("currently unavailable");
+    expect(text).not.toContain("/broken");
+  });
+
+  it("returns null when the text no longer starts with the marked command (hand-edited after selection)", () => {
+    const message = { id: "m1", content: "/ship src/" };
+    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"))).toBeNull();
+    const prose = { id: "m1", content: "hello /review" };
+    expect(rewriteSessionMessageCommandForInvocation(prose, registry, invocation("review"))).toBeNull();
+  });
+
+  it("applies to image captions and keeps attachments immutable", () => {
+    const attachments = [{ imageId: "img-1", mimeType: "image/png", filename: "shot.png" }];
+    const message = { id: "m1", content: { caption: "/review src/", attachments } };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    expect(rewritten?.content).toEqual({ caption: "/review-first-tree src/", attachments });
+    expect(message.content.caption).toBe("/review src/");
+  });
+
+  it("honours the mention gate for mention-prefixed marked commands", () => {
+    const message = { id: "m1", content: "@nova /review" };
+    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"))).toBeNull();
+    const gated = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), {
+      allowMentionPrefix: true,
+    });
+    expect(gated?.content).toBe("@nova /review-first-tree");
   });
 });

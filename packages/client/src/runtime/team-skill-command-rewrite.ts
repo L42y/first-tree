@@ -1,4 +1,4 @@
-import { isImageBatchRefContent } from "@first-tree/shared";
+import { isImageBatchRefContent, type TeamSkillInvocation } from "@first-tree/shared";
 import { ManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
 
 /**
@@ -294,4 +294,63 @@ export function rewriteSessionMessageCommand<T extends { content: unknown }>(
     return { ...message, content: { ...message.content, caption } };
   }
   return message;
+}
+
+/** Strict command name in one text payload, or null when there is none. */
+function strictCommandNameIn(text: string, opts?: { allowMentionPrefix?: boolean }): string | null {
+  const match = (opts?.allowMentionPrefix ? MENTIONED_COMMAND_RE : BARE_COMMAND_RE).exec(text);
+  return match?.[2] ?? null;
+}
+
+/** Strict command name anywhere in a session message payload (text or image caption). */
+function messageStrictCommandName(content: unknown, opts?: { allowMentionPrefix?: boolean }): string | null {
+  if (typeof content === "string") return strictCommandNameIn(content, opts);
+  if (isImageBatchRefContent(content) && typeof content.caption === "string") {
+    return strictCommandNameIn(content.caption, opts);
+  }
+  return null;
+}
+
+/**
+ * Resolve a session message against the SERVER-OWNED Team Skill invocation
+ * marker persisted in its metadata. The marker is proof that the leading
+ * command was chosen from this agent's Team Skill menu — so unlike an
+ * unmarked strict command it may NEVER fall through to a same-named local
+ * Skill, even when the config moved on after the send (delayed inbox
+ * delivery) and the current registry no longer knows the slug:
+ *
+ *   - registry has the slug ready → rewrite to the verified effective name;
+ *   - registry has it unavailable → inert unavailable notice;
+ *   - registry no longer knows it → inert notice ("removed or renamed"),
+ *     built by delegating with a synthetic unavailable entry so the notice
+ *     shape stays identical to the ordinary unavailable path;
+ *   - the message text no longer starts with the marked command (hand-edited
+ *     after selection, or no strict command at all) → returns null and the
+ *     caller treats the message as ordinary text.
+ *
+ * Returns null when the marker does not apply; the caller then falls back
+ * to the ordinary registry path. Everything clones immutably.
+ */
+export function rewriteSessionMessageCommandForInvocation<T extends { content: unknown }>(
+  message: T,
+  registry: TeamSkillCommandRegistry,
+  invocation: TeamSkillInvocation,
+  opts?: { allowMentionPrefix?: boolean },
+): T | null {
+  const name = messageStrictCommandName(message.content, opts);
+  if (name === null || name.toLowerCase() !== invocation.slug) return null;
+  const target = registry.get(invocation.slug);
+  if (target === undefined) {
+    const removed: TeamSkillCommandRegistry = new Map([
+      [
+        invocation.slug,
+        {
+          kind: "unavailable",
+          reason: "the Team Skill was removed or renamed after this command was sent",
+        },
+      ],
+    ]);
+    return rewriteSessionMessageCommand(message, removed, opts);
+  }
+  return rewriteSessionMessageCommand(message, registry, opts);
 }

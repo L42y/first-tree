@@ -1676,6 +1676,13 @@ export class ClientConnection extends EventEmitter<ClientConnectionEvents> {
           // servers ignore the unknown v1 field.
           wireCapabilities: {
             ...(this.serverSupportsSessionResetV1 ? { wsSessionResetV1: true } : {}),
+            // One-sided: this build parses the server-owned
+            // `teamSkillInvocation` message metadata marker and resolves
+            // Team Skill slash commands fail-closed against it. Declared
+            // unconditionally — an old server strips the unknown key at
+            // parse, which simply keeps the Web Team Skill menu hidden for
+            // this agent (fail closed, never a same-named local Skill).
+            teamSkillInvocationV1: true,
           },
           ...(lastUpdateAttempt ? { lastUpdateAttempt } : {}),
         }),

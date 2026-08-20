@@ -22,6 +22,7 @@ import {
   readFeishuMessageMetadata,
   runtimeProviderSchema,
   SOURCE_REPOS_DIRNAME,
+  teamSkillInvocationFromMetadata,
 } from "@first-tree/shared";
 import type { pino } from "../cloud/observability/logger.js";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
@@ -90,6 +91,7 @@ import {
   buildTeamSkillCommandRegistry,
   isTeamSkillCommandUnavailableError,
   rewriteSessionMessageCommand,
+  rewriteSessionMessageCommandForInvocation,
   rewriteSessionMessageCommandToNotice,
   TEAM_SKILL_COMMAND_AMBIGUOUS_RECIPIENT_NOTICE,
   TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE,
@@ -3410,6 +3412,27 @@ export class SessionRuntime {
             rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
             participants,
           );
+        }
+        // Server-owned Team Skill invocation marker: the message's leading
+        // command was chosen from this agent's Team Skill menu, so it must
+        // resolve against the registry fail-closed — NEVER fall through to
+        // a same-named local Skill when the registry no longer knows the
+        // slug (e.g. the config moved on while the message waited in the
+        // inbox queue). A marker whose text no longer starts with the
+        // marked command is treated as hand-edited and falls through to the
+        // ordinary path. The fenced-out cases (unpublished / mismatched
+        // registry) are already settled by the guards above.
+        if (fencedRegistry !== null) {
+          const invocation = teamSkillInvocationFromMetadata(message.metadata);
+          if (invocation !== null) {
+            const marked = rewriteSessionMessageCommandForInvocation(message, fencedRegistry, invocation, mentionGate);
+            if (marked !== null) {
+              const formatted = await formatInboundContent(marked, participants);
+              this.clearFenceRecoveryAttempt(chatId, message.id);
+              this.clearPendingFenceFormatFailure(chatId, message.id);
+              return formatted;
+            }
+          }
         }
         try {
           const formatted = await formatInboundContent(

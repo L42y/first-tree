@@ -27,7 +27,11 @@ import type {
   SessionContext,
   SessionMessage,
 } from "../../runtime/contracts.js";
-import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
+import {
+  isTeamSkillCommandUnavailableError,
+  noopDeliveryToken,
+  requireDeliveryToken,
+} from "../../runtime/contracts.js";
 import type {
   AgentConfigCache,
   ChatContext,
@@ -60,7 +64,6 @@ import {
   renderDocumentAttachmentsForLLM,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { isTeamSkillCommandUnavailableError } from "../../runtime/team-skill-command-rewrite.js";
 import { formatAuthHint, isClaudeAuthError } from "../handlers/auth-error-hint.js";
 import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";

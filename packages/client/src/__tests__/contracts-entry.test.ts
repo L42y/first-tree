@@ -40,7 +40,11 @@ const CONTRACT_TYPE_EXPORTS = [
   "ReplayFenceWriter",
 ] as const;
 
-const CONTRACT_VALUE_EXPORTS = ["noopDeliveryToken", "requireDeliveryToken"] as const;
+const CONTRACT_VALUE_EXPORTS = [
+  "isTeamSkillCommandUnavailableError",
+  "noopDeliveryToken",
+  "requireDeliveryToken",
+] as const;
 
 const FORBIDDEN_CONTRACT_EXPORTS = [
   "SessionRuntime",

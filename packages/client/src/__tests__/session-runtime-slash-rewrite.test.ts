@@ -264,6 +264,44 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
     await runtime.shutdown();
   });
+
+  it("resolves a server-marked Team command fail-closed across a delayed delivery", async () => {
+    const { ctx, runtime } = await captureContext();
+    const markedMessage = (content: string, slug: string, configVersion: number): SessionMessage => ({
+      id: "m-marked",
+      chatId: "chat-a",
+      senderId: "sender-1",
+      format: "text",
+      content,
+      metadata: {
+        teamSkillInvocation: { resourceId: crypto.randomUUID(), slug, configVersion: 1 },
+      },
+      configVersion,
+    });
+
+    // Registry v2 still contains the Skill: the delayed command rewrites to
+    // the verified effective name even though it was chosen against v1.
+    ctx.publishTeamSkillCommands(PUBLISHED, 2);
+    expect(await ctx.formatInboundContent(markedMessage("/review src/", "review", 2))).toContain(
+      "/review-first-tree src/",
+    );
+
+    // Registry v2 no longer knows the slug (removed/renamed after the
+    // send): the marked command can NEVER fall through to a same-named
+    // local Skill — it settles as an inert notice instead.
+    ctx.publishTeamSkillCommands([], 2);
+    const removed = await ctx.formatInboundContent(markedMessage("/review src/", "review", 2));
+    expect(removed).toContain('"review"');
+    expect(removed).toContain("removed or renamed");
+    expect(removed).not.toContain("/review");
+    expect(removed).toContain("src/");
+
+    // Hand-edited text that no longer starts with the marked command is
+    // treated as an ordinary (possibly local) command.
+    expect(await ctx.formatInboundContent(markedMessage("/ship src/", "review", 2))).toContain("/ship src/");
+
+    await runtime.shutdown();
+  });
 });
 
 describe("SessionRuntime registry version-mismatch recovery", () => {
