@@ -10,6 +10,7 @@ import type {
   RequestResolution,
   RequestThreadResponse,
 } from "@first-tree/shared";
+import { TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
 
 type PaginatedChats = {
@@ -137,7 +138,13 @@ export function sendChatMessage(
   return api.post<Message>(`/chats/${encodeURIComponent(chatId)}/messages`, {
     format: "text",
     content,
-    ...(opts?.skillPrecondition ? { skillPrecondition: opts.skillPrecondition } : {}),
+    // Protocol pair (server-enforced both directions): a Team Skill
+    // invocation always carries the versioned purpose sentinel with its
+    // precondition, so a rolled-back old Server parse-rejects the send
+    // instead of stripping an unknown field and persisting a bare slash.
+    ...(opts?.skillPrecondition
+      ? { skillPrecondition: opts.skillPrecondition, purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE }
+      : {}),
     ...(metadata ? { metadata } : {}),
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
   });
@@ -253,7 +260,10 @@ export function sendFileMessageBatch(
     // captioned image answering a docked question threads under it just like
     // a text reply.
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
-    ...(opts?.skillPrecondition ? { skillPrecondition: opts.skillPrecondition } : {}),
+    // Same Team Skill invocation protocol pair as sendChatMessage.
+    ...(opts?.skillPrecondition
+      ? { skillPrecondition: opts.skillPrecondition, purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE }
+      : {}),
   });
 }
 

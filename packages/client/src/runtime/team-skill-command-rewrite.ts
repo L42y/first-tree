@@ -336,10 +336,12 @@ function messageStrictCommandName(content: unknown, opts?: { allowMentionPrefix?
  *   - otherwise the exact validated row rewrites the command to its
  *     verified effective name.
  *
- * Returns null when the marker does not apply to this message at all —
- * the text has no strict command position, or no longer starts with the
- * marked command (hand-edited after selection); the caller then falls
- * back to the ordinary registry path. Everything clones immutably.
+ * Returns null only when the text has NO strict command position at all
+ * (plain prose — the marker guards nothing). A strict command literal
+ * that no longer equals the marked slug (hand-edited after selection) is
+ * NOT handed back to the ordinary path: Team intent exists but cannot be
+ * verified, so it becomes the unresolved inert notice. Everything clones
+ * immutably.
  */
 export function rewriteSessionMessageCommandForInvocation<T extends { content: unknown }>(
   message: T,
@@ -354,7 +356,12 @@ export function rewriteSessionMessageCommandForInvocation<T extends { content: u
     // intent exists but is unverifiable — never a local fall-through.
     return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, opts);
   }
-  if (name.toLowerCase() !== invocation.requestedSlug.toLowerCase()) return null;
+  if (name.toLowerCase() !== invocation.requestedSlug.toLowerCase()) {
+    // A strict command whose literal no longer equals the marked slug
+    // (hand-edited after selection): the marker's Team intent cannot be
+    // verified, so this is NOT an ordinary local command either.
+    return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, opts);
+  }
   if (invocation.recipientAgentId !== opts.currentAgentId) {
     return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, opts);
   }

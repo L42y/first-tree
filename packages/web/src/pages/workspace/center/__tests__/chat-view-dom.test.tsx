@@ -2446,6 +2446,30 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the draft and surfaces the error when an old Server rejects the invocation protocol", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    // Rollback simulation: the old Server's purpose enum knows only
+    // `agent-final-text`, so it parse-rejects the sentinel — the send must
+    // fail visibly with the draft preserved, never degrade to a bare slash.
+    chatMocks.sendChatMessage.mockRejectedValue(new Error("Invalid enum value: team-skill-invocation-v1"));
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    await pickSlashCommand(container, "/code");
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the attempted POST");
+    await waitForText(container, "Invalid enum value: team-skill-invocation-v1");
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await waitForCondition(() => textarea.value === "/code-review ", "Expected the draft to be restored");
+
+    await act(async () => root.unmount());
+  });
+
   it("lets a hand-typed runtime command send without any precondition or catalog fetch", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesEmpty());

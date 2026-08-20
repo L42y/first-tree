@@ -34,6 +34,60 @@ function textMessage(content: string, mentions?: string[], configVersion?: numbe
   };
 }
 
+const REVIEW_RESOURCE_ID = "res-review-1";
+
+/**
+ * Attach the server-owned invocation marker to a message. Team-specific
+ * rewrite/fence/notice/recovery behavior is marker-scoped: tests that
+ * exercise the Team path must carry it, exactly like a real
+ * Server-stamped message. `markerVersion` defaults to the delivery stamp
+ * (the common happy-path shape); override it for delayed-delivery cases.
+ */
+function markedMessage<T extends { metadata?: Record<string, unknown> | null }>(
+  message: T,
+  opts?: { slug?: string; resourceId?: string; recipientAgentId?: string; markerVersion?: number },
+): T {
+  const stamp =
+    typeof (message as { configVersion?: number }).configVersion === "number"
+      ? ((message as { configVersion?: number }).configVersion as number)
+      : 1;
+  return {
+    ...message,
+    metadata: {
+      ...(message.metadata ?? {}),
+      teamSkillInvocation: {
+        version: 1,
+        recipientAgentId: opts?.recipientAgentId ?? "agent-1",
+        resourceId: opts?.resourceId ?? REVIEW_RESOURCE_ID,
+        requestedSlug: opts?.slug ?? "review",
+        configVersion: opts?.markerVersion ?? stamp,
+      },
+    },
+  };
+}
+
+/**
+ * Tracked inbox entry variant of markedMessage: dispatch-side Team command
+ * messages carry the same server-owned marker (the production
+ * extractMessage path passes metadata through).
+ */
+function markedEntry(opts: Parameters<typeof mockEntry>[0] = {}): ReturnType<typeof mockEntry> {
+  const stamp = opts.configVersion ?? 1;
+  return mockEntry({
+    ...opts,
+    metadata: {
+      ...(opts.metadata ?? {}),
+      teamSkillInvocation: {
+        version: 1,
+        recipientAgentId: "agent-1",
+        resourceId: REVIEW_RESOURCE_ID,
+        requestedSlug: "review",
+        configVersion: stamp,
+      },
+    },
+  });
+}
+
 async function captureContext(): Promise<{
   ctx: SessionContext;
   runtime: SessionRuntime;
@@ -123,7 +177,6 @@ async function captureContext(): Promise<{
   };
 }
 
-const REVIEW_RESOURCE_ID = "res-review-1";
 const PUBLISHED = [{ requestedSlug: "review", resourceId: REVIEW_RESOURCE_ID, effectiveName: "review-first-tree" }];
 
 describe("SessionRuntime Team Skill slash rewrite wiring", () => {
@@ -131,7 +184,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     const { ctx, runtime } = await captureContext();
     ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
-    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
+    const formatted = await ctx.formatInboundContent(markedMessage(textMessage("/review src/")));
     expect(formatted).toContain("/review-first-tree src/");
     expect(formatted).not.toContain("/review src/");
 
@@ -142,13 +195,15 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     const { ctx, runtime } = await captureContext();
     ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
-    const routed = await ctx.formatInboundContent(textMessage("@nova /review please", ["agent-1"]));
+    const routed = await ctx.formatInboundContent(markedMessage(textMessage("@nova /review please", ["agent-1"])));
     expect(routed).toContain("@nova /review-first-tree please");
     // A typed-but-unrouted mention look-alike never unlocks the rewrite.
-    const unrouted = await ctx.formatInboundContent(textMessage("@nova /review please"));
+    const unrouted = await ctx.formatInboundContent(markedMessage(textMessage("@nova /review please")));
     expect(unrouted).toContain("@nova /review please");
     expect(unrouted).not.toContain("review-first-tree");
-    expect(await ctx.formatInboundContent(textMessage("hello /review", ["agent-1"]))).toContain("hello /review");
+    expect(await ctx.formatInboundContent(markedMessage(textMessage("hello /review", ["agent-1"])))).toContain(
+      "hello /review",
+    );
 
     await runtime.shutdown();
   });
@@ -160,7 +215,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     // Deterministic terminal boundary: the provider receives a First Tree
     // runtime notice with NO slash command token, and the turn can settle
     // normally — no formatter retry, no recovery loop.
-    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
+    const formatted = await ctx.formatInboundContent(markedMessage(textMessage("/review src/")));
     expect(formatted).toContain("currently unavailable");
     expect(formatted).toContain("no verified installed target");
     expect(formatted).not.toContain("/review");
@@ -172,7 +227,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
   it("atomically replaces the registry on the next publication — stale aliases stop rewriting", async () => {
     const { ctx, runtime } = await captureContext();
     ctx.publishTeamSkillCommands(PUBLISHED, 1);
-    expect(await ctx.formatInboundContent(textMessage("/review"))).toContain("/review-first-tree");
+    expect(await ctx.formatInboundContent(markedMessage(textMessage("/review")))).toContain("/review-first-tree");
 
     // A new complete projection without the skill clears its alias.
     ctx.publishTeamSkillCommands([], 1);
@@ -183,7 +238,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     // re-blocks strict slash commands — now as an inert notice rather
     // than keeping the stale map.
     ctx.publishTeamSkillCommands(null, null);
-    const blocked = await ctx.formatInboundContent(textMessage("/review"));
+    const blocked = await ctx.formatInboundContent(markedMessage(textMessage("/review")));
     expect(blocked).toContain("could not be verified");
     expect(blocked).not.toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("plain text"))).toContain("plain text");
@@ -205,17 +260,17 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     });
 
     // Bare caption command rewrites identically to text.
-    expect(await ctx.formatInboundContent(fileMessage("/review see attached"))).toContain(
+    expect(await ctx.formatInboundContent(markedMessage(fileMessage("/review see attached")))).toContain(
       "/review-first-tree see attached",
     );
     // Mention-prefixed caption rewrites only with routed mention metadata.
-    expect(await ctx.formatInboundContent(fileMessage("@nova /review", 1, ["agent-1"]))).toContain(
+    expect(await ctx.formatInboundContent(markedMessage(fileMessage("@nova /review", 1, ["agent-1"])))).toContain(
       "@nova /review-first-tree",
     );
-    expect(await ctx.formatInboundContent(fileMessage("@nova /review", 1))).toContain("@nova /review");
+    expect(await ctx.formatInboundContent(markedMessage(fileMessage("@nova /review", 1)))).toContain("@nova /review");
     // The config-version fence applies to captions too — and with no
     // inbox custody the mismatch settles as an inert notice, not a throw.
-    const fencedCaption = await ctx.formatInboundContent(fileMessage("/review", 2));
+    const fencedCaption = await ctx.formatInboundContent(markedMessage(fileMessage("/review", 2)));
     expect(fencedCaption).toContain("could not be verified");
     expect(fencedCaption).not.toContain("/review");
 
@@ -228,7 +283,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     // the command becomes an inert notice instead of an exception the
     // provider would retry into the same failure. Ordinary text is never
     // affected.
-    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
+    const formatted = await ctx.formatInboundContent(markedMessage(textMessage("/review src/")));
     expect(formatted).toContain("could not be verified");
     expect(formatted).not.toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("hello there"))).toContain("hello there");
@@ -247,19 +302,19 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     // Message stamped v2 against a v1 registry WITHOUT inbox custody:
     // no recovery axis exists, so the strict slash settles as an inert
     // notice instead of a recoverable throw. Ordinary text is unaffected.
-    const fenced = await ctx.formatInboundContent(textMessage("/review src/", undefined, 2));
+    const fenced = await ctx.formatInboundContent(markedMessage(textMessage("/review src/", undefined, 2)));
     expect(fenced).toContain("could not be verified");
     expect(fenced).not.toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("plain text", undefined, 2))).toContain("plain text");
     // Same-version messages resolve normally.
-    expect(await ctx.formatInboundContent(textMessage("/review src/", undefined, 1))).toContain(
+    expect(await ctx.formatInboundContent(markedMessage(textMessage("/review src/", undefined, 1)))).toContain(
       "/review-first-tree src/",
     );
 
     // Recovery: once reconcile publishes the registry proven for v2, the
     // retried message resolves — no permanent deadlock.
     ctx.publishTeamSkillCommands(PUBLISHED, 2);
-    expect(await ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).toContain(
+    expect(await ctx.formatInboundContent(markedMessage(textMessage("/review src/", undefined, 2)))).toContain(
       "/review-first-tree src/",
     );
 
@@ -328,9 +383,15 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     expect(misrouted).toContain("could not be verified");
     expect(misrouted).not.toContain("/review");
 
-    // Hand-edited text that no longer starts with the marked command is
-    // treated as an ordinary (possibly local) command.
-    expect(await ctx.formatInboundContent(markedMessage("/ship src/", {}))).toContain("/ship src/");
+    // Hand-edited strict text that no longer equals the marked slug is NOT
+    // an ordinary local command either: unverifiable Team intent settles as
+    // the unresolved notice. Plain prose still passes through.
+    const edited = await ctx.formatInboundContent(markedMessage("/ship src/", {}));
+    expect(edited).toContain("could not be verified");
+    expect(edited).not.toContain("/ship");
+    expect(await ctx.formatInboundContent(markedMessage("just talking about /ship", {}))).toContain(
+      "just talking about /ship",
+    );
 
     await runtime.shutdown();
   });
@@ -387,7 +448,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // A v2 strict slash command arrives on the live session: injected with
     // real inbox custody.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     expect(injected.inboxEntryId).toBe(2);
@@ -407,9 +468,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     // Redelivering the SAME entry after recovery: the first dispatch runs
     // the recovery handshake (recoverChat), the second delivers into a
     // fresh handler (via resume, the production post-eviction route).
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // Production order: the fresh handler's preparation republishes BEFORE
@@ -437,7 +498,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // A tracked strict-slash message arrives stamped v2 while the
     // registry is UNRESOLVED.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     expect(injected.inboxEntryId).toBe(2);
@@ -450,9 +511,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     // Redelivery handshake, then delivery into the fresh handler.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // The fresh preparation ALSO proves nothing (second consecutive null):
@@ -493,7 +554,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // But this tracked command was stamped back at v1: its configuration
     // has been superseded, and no recovery can republish history.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     expect(injected.configVersion).toBe(1);
@@ -519,7 +580,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     if (!startMessage) throw new Error("expected a start message");
     await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
 
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
 
@@ -529,9 +590,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // The fresh preparation re-publishes the SAME v1 registry — provably
@@ -561,7 +622,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
     // First tracked message: real custody, real recovery cycle.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review one", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review one", configVersion: 2 }));
     const first = cap.injectedMessages[0];
     if (!first) throw new Error("expected the first message to inject");
     await expect(cap.ctx.formatInboundContent(first)).rejects.toThrow(/registry is not published/);
@@ -572,9 +633,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     // its OWN first recoverable throw — the first message's attempt
     // marker must not poison it. Dispatch it into the fresh handler.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 3, chatId: "chat-a", content: "/review two", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 3, chatId: "chat-a", content: "/review two", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 3, chatId: "chat-a", content: "/review two", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 3, chatId: "chat-a", content: "/review two", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
     const freshCtx = cap.currentCtx();
     const second = cap.resumeMessages[cap.resumeMessages.length - 1];
@@ -595,16 +656,16 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     oldCtx.publishTeamSkillCommands(PUBLISHED, 1);
 
     // Drive a REAL recovery on the same runtime so both handlers exist.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     await expect(oldCtx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
     oldCtx.retryTurn(injected, "codex_queued_turn_format_failed");
     await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // The fresh handler publishes its own v2 registry.
@@ -614,8 +675,10 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     // The OLD context still resolves against its OWN v1 snapshot: a v1
     // message rewrites through it, and a v2 message must NOT see the
     // fresh v2 registry — it settles against the OLD snapshot instead.
-    expect(await oldCtx.formatInboundContent(textMessage("/review", undefined, 1))).toContain("/review-first-tree");
-    const staleOnOld = await oldCtx.formatInboundContent(textMessage("/review", undefined, 2));
+    expect(await oldCtx.formatInboundContent(markedMessage(textMessage("/review", undefined, 1)))).toContain(
+      "/review-first-tree",
+    );
+    const staleOnOld = await oldCtx.formatInboundContent(markedMessage(textMessage("/review", undefined, 2)));
     expect(staleOnOld).toContain("could not be verified");
     expect(staleOnOld).not.toContain("/review-first-tree");
 
@@ -628,7 +691,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // Synthetic stamped message: version-mismatched and never entered the
     // inbox ledger, so there is no recovery axis at all.
-    const formatted = await cap.ctx.formatInboundContent(textMessage("/review src/", undefined, 2));
+    const formatted = await cap.ctx.formatInboundContent(markedMessage(textMessage("/review src/", undefined, 2)));
     expect(formatted).toContain("could not be verified");
     expect(formatted).not.toContain("/review");
 
@@ -637,7 +700,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     expect(cap.handlerShutdowns()).toBe(0);
     expect(cap.recoverChat).not.toHaveBeenCalled();
     expect(await cap.ctx.formatInboundContent(textMessage("hello there"))).toContain("hello there");
-    expect(await cap.ctx.formatInboundContent(textMessage("/review", undefined, 1))).toContain("/review-first-tree");
+    expect(await cap.ctx.formatInboundContent(markedMessage(textMessage("/review", undefined, 1)))).toContain(
+      "/review-first-tree",
+    );
 
     await cap.runtime.shutdown();
   });
@@ -645,7 +710,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
   it("clears the fence marker once the same message formats successfully after a refresh", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
 
@@ -681,7 +746,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // A tracked inbox entry carries the unavailable Team command at the
     // SAME config version the registry proves.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     expect(injected.inboxEntryId).toBe(2);
@@ -722,16 +787,16 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     if (!startMessage) throw new Error("expected a start message");
     await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
 
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
     await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
     cap.ctx.retryTurn(injected, "codex_queued_turn_format_failed");
     await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     const freshCtx = cap.currentCtx();
@@ -757,7 +822,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
     // The redelivery retries the settlement; once the ACK finally
     // commits, the marker is reclaimed at the commit callback.
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.ackEntry).toHaveBeenCalledTimes(3));
     expect(markerSeam.hasFenceRecoveryAttempt("chat-a", redelivered.id)).toBe(false);
 
@@ -768,7 +833,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     const injected = cap.injectedMessages[0];
     const token = cap.injectedTokens[0];
     if (!injected || !token) throw new Error("expected the injected message and its production DeliveryToken");
@@ -781,9 +846,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await vi.waitFor(() => expect(cap.recoverChat).toHaveBeenCalledWith("chat-a"));
 
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await cap.runtime.dispatch(markedEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     const freshCtx = cap.currentCtx();
@@ -837,13 +902,13 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     });
 
     // The very first tracked message IS the fenced strict slash.
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-b"));
     // Redelivery after recovery starts a FRESH handler (second start).
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(starts).toBe(2));
 
     // The fresh start published v2 and formatted successfully.
@@ -907,12 +972,12 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     // The very first tracked message IS the fenced strict slash: start
     // throws, the runtime consumes the pending failure through the
     // bounded recovery (never the generic indefinite backoff).
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-c"));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await runtime.dispatch(markedEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(starts).toBe(2));
 
     // The redelivered message reached the fresh start with the SAME
@@ -958,14 +1023,14 @@ describe("SessionRuntime multi-recipient ambiguity", () => {
     ctx.publishTeamSkillCommands(PUBLISHED, 1);
 
     // Mention-prefixed multi-recipient: not run by ANY agent.
-    const multi = textMessage("@nova @design /review", ["agent-1", "agent-2"], 1);
+    const multi = markedMessage(textMessage("@nova @design /review", ["agent-1", "agent-2"], 1));
     const formatted = await ctx.formatInboundContent(multi);
     expect(formatted).toContain("multiple agents");
     expect(formatted).not.toContain("/review");
     expect(formatted).not.toContain("review-first-tree");
 
     // Bare slash with two routed recipients: same treatment.
-    const bare = await ctx.formatInboundContent(textMessage("/review", ["agent-1", "agent-2"], 1));
+    const bare = await ctx.formatInboundContent(markedMessage(textMessage("/review", ["agent-1", "agent-2"], 1)));
     expect(bare).toContain("multiple agents");
     expect(bare).not.toContain("/review");
 
@@ -975,7 +1040,7 @@ describe("SessionRuntime multi-recipient ambiguity", () => {
     ).toContain("@nova @design hello team");
 
     // A single routed recipient keeps the rewrite.
-    expect(await ctx.formatInboundContent(textMessage("@nova /review", ["agent-1"], 1))).toContain(
+    expect(await ctx.formatInboundContent(markedMessage(textMessage("@nova /review", ["agent-1"], 1)))).toContain(
       "/review-first-tree",
     );
 
@@ -987,10 +1052,59 @@ describe("SessionRuntime multi-recipient ambiguity", () => {
     // A caller bug must not create "registry null + matching version",
     // which would skip the mismatch park path and throw without recovery.
     ctx.publishTeamSkillCommands(null, 5);
-    const formatted = await ctx.formatInboundContent(textMessage("/review src/", undefined, 5));
+    const formatted = await ctx.formatInboundContent(markedMessage(textMessage("/review src/", undefined, 5)));
     expect(formatted).toContain("could not be verified");
     expect(formatted).not.toContain("/review");
 
     await runtime.shutdown();
+  });
+});
+
+describe("SessionRuntime marker scoping — unmarked messages keep byte-exact local semantics", () => {
+  it("never touches an unmarked strict slash in ANY Team state, and never starts Team recovery for it", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // Every unmarked form passes through byte-for-byte even though a ready
+    // Team registry claims the same base slug.
+    const cases: Array<[string, SessionMessage]> = [
+      ["same literal", textMessage("/review src/", undefined, 1)],
+      ["case variant", textMessage("/REVIEW src/", undefined, 1)],
+      ["mention-prefixed", textMessage("@nova /review src/", ["agent-1"], 1)],
+      [
+        "image caption",
+        {
+          ...textMessage("unused", undefined, 1),
+          id: "m-file-unmarked",
+          format: "file",
+          content: {
+            caption: "/review src/",
+            attachments: [{ imageId: "img-1", mimeType: "image/png", filename: "s.png" }],
+          },
+        },
+      ],
+      ["version mismatch", textMessage("/review src/", undefined, 2)],
+      ["multi-recipient", textMessage("/review src/", ["agent-1", "agent-2"], 1)],
+    ];
+    for (const [label, message] of cases) {
+      const formatted = await cap.ctx.formatInboundContent(message);
+      const expectedText =
+        typeof message.content === "string" ? message.content : (message.content as { caption: string }).caption;
+      expect(formatted, label).toContain(expectedText);
+      expect(formatted, label).not.toContain("review-first-tree");
+      expect(formatted, label).not.toContain("could not be verified");
+      expect(formatted, label).not.toContain("superseded");
+      expect(formatted, label).not.toContain("multiple agents");
+    }
+
+    // Null registry too: unmarked local commands stay available.
+    cap.ctx.publishTeamSkillCommands(null, null);
+    expect(await cap.ctx.formatInboundContent(textMessage("/review src/", undefined, 1))).toContain("/review src/");
+
+    // Zero Team recovery machinery for unmarked messages.
+    expect(cap.recoverChat).not.toHaveBeenCalled();
+    expect(cap.handlerShutdowns()).toBe(0);
+
+    await cap.runtime.shutdown();
   });
 });

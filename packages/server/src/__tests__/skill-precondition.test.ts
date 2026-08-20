@@ -118,6 +118,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
         format: "text",
         content: "/code-review src/",
         metadata: { mentions: [peerA.uuid] },
+        purpose: "team-skill-invocation-v1",
         skillPrecondition: validPrecondition(ctx),
       },
       { validateTeamSkillInvocation: validate },
@@ -151,6 +152,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
           format: "text",
           content: "/review src/",
           metadata: { mentions: [peerA.uuid] },
+          purpose: "team-skill-invocation-v1",
           skillPrecondition: { ...validPrecondition(ctx), requestedSlug: "review" },
         },
         { validateTeamSkillInvocation: validate },
@@ -172,6 +174,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
           format: "text",
           content: "/code-review src/",
           metadata: { mentions: [peerA.uuid] },
+          purpose: "team-skill-invocation-v1",
           skillPrecondition: { ...validPrecondition(ctx), resourceId: crypto.randomUUID() },
         },
         { validateTeamSkillInvocation: validate },
@@ -199,6 +202,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
           format: "text",
           content: "/code-review src/",
           metadata: { mentions: [peerA.uuid] },
+          purpose: "team-skill-invocation-v1",
           skillPrecondition: validPrecondition(ctx),
         },
         { validateTeamSkillInvocation: validate },
@@ -221,6 +225,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
             format: "text",
             content: "/code-review src/",
             metadata: { mentions },
+            purpose: "team-skill-invocation-v1",
             skillPrecondition: validPrecondition(ctx),
           },
           { validateTeamSkillInvocation: validate },
@@ -239,6 +244,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
         format: "text",
         content: "/code-review src/",
         metadata: { mentions: [peerA.uuid] },
+        purpose: "team-skill-invocation-v1",
         skillPrecondition: validPrecondition(ctx),
       }),
     ).rejects.toThrow(ConflictError);
@@ -290,6 +296,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
           format: "text",
           content: "/code-review src/",
           metadata: { mentions: [peerA.uuid] },
+          purpose: "team-skill-invocation-v1",
           skillPrecondition: validPrecondition(ctx),
         },
         { validateTeamSkillInvocation: validate },
@@ -317,6 +324,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
         format: "text",
         content: "/code-review src/",
         metadata: { mentions: [peerA.uuid] },
+        purpose: "team-skill-invocation-v1",
         skillPrecondition: validPrecondition(ctx),
       },
       {
@@ -404,6 +412,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
             configVersion: 999,
           },
         },
+        purpose: "team-skill-invocation-v1",
         skillPrecondition: validPrecondition(ctx),
       },
       { validateTeamSkillInvocation: validate },
@@ -499,6 +508,7 @@ describe("queued marker message + client rollback before claim (production inbox
         format: "text",
         content: "/code-review src/",
         metadata: { mentions: [peer.uuid] },
+        purpose: "team-skill-invocation-v1",
         skillPrecondition: {
           recipientAgentId: peer.uuid,
           expectedConfigVersion: configRow.version,
@@ -537,5 +547,71 @@ describe("queued marker message + client rollback before claim (production inbox
       requestedSlug: "code-review",
       configVersion: configRow.version,
     });
+  });
+});
+
+/**
+ * Protocol pairing: the versioned purpose sentinel and the request-level
+ * skillPrecondition must arrive together. The service layer enforces the
+ * pair in BOTH directions so no caller can mint a marker from one half —
+ * and an old Server (whose purpose enum knows only `agent-final-text`)
+ * rejects the new Web payload at parse time instead of stripping an
+ * unknown top-level field.
+ */
+describe("team-skill-invocation protocol pairing", () => {
+  const getApp = useTestApp();
+
+  async function setupPair(uid: string) {
+    const app = getApp();
+    const sender = await createTestAgent(app, { name: `pp-s-${uid}` });
+    const { agent: peer } = await createTestAgent(app, { name: `pp-p-${uid}` });
+    const chat = await createChat(app.db, sender.agent.uuid, { type: "group", participantIds: [peer.uuid] });
+    const [configRow] = await app.db
+      .select({ version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, peer.uuid));
+    if (!configRow) throw new Error("expected an agent_configs row for the test agent");
+    return { app, sender, peer, chat, configVersion: configRow.version };
+  }
+
+  it("rejects a skillPrecondition without the sentinel purpose — zero insert", async () => {
+    const { app, sender, peer, chat, configVersion } = await setupPair(crypto.randomUUID().slice(0, 6));
+    await expect(
+      sendMessage(
+        app.db,
+        chat.id,
+        sender.agent.uuid,
+        {
+          source: "web",
+          format: "text",
+          content: "/code-review src/",
+          metadata: { mentions: [peer.uuid] },
+          skillPrecondition: {
+            recipientAgentId: peer.uuid,
+            expectedConfigVersion: configVersion,
+            resourceId: uuidv7(),
+            requestedSlug: "code-review",
+          },
+        },
+        { validateTeamSkillInvocation: async () => null },
+      ),
+    ).rejects.toThrow(/must carry the team-skill-invocation-v1 purpose/);
+    const rows = await app.db.select({ id: messages.id }).from(messages).where(eq(messages.chatId, chat.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("rejects the sentinel purpose without a skillPrecondition — zero insert", async () => {
+    const { app, sender, peer, chat } = await setupPair(crypto.randomUUID().slice(0, 6));
+    await expect(
+      sendMessage(app.db, chat.id, sender.agent.uuid, {
+        source: "web",
+        format: "text",
+        content: "/code-review src/",
+        metadata: { mentions: [peer.uuid] },
+        purpose: "team-skill-invocation-v1",
+      }),
+    ).rejects.toThrow(/must carry the team-skill-invocation-v1 purpose/);
+    const rows = await app.db.select({ id: messages.id }).from(messages).where(eq(messages.chatId, chat.id));
+    expect(rows).toHaveLength(0);
   });
 });

@@ -328,9 +328,16 @@ describe("rewriteSessionMessageCommandForInvocation — server-owned Team intent
     expect(text).not.toContain("/broken");
   });
 
-  it("returns null when the text no longer starts with the marked command (hand-edited after selection)", () => {
+  it("turns a strict literal that no longer equals the marked slug into the unresolved notice — never the ordinary path", () => {
+    // Hand-edited after selection: Team intent exists (the key is present)
+    // but cannot be verified, so it must NOT fall back to a generic
+    // registry/local resolution.
     const message = { id: "m1", content: "/ship src/" };
-    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS)).toBeNull();
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS);
+    const text = rewritten?.content as string;
+    expect(text).toContain("could not be verified");
+    expect(text).not.toContain("/ship");
+    // Plain prose without a strict command position still passes through.
     const prose = { id: "m1", content: "hello /review" };
     expect(rewriteSessionMessageCommandForInvocation(prose, registry, invocation("review"), OPTS)).toBeNull();
   });

@@ -27,6 +27,7 @@ import {
   type SendMessage,
   scanMentionTokens,
   TEAM_SKILL_INVOCATION_MARKER_VERSION,
+  TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE,
   TEAM_SKILL_INVOCATION_METADATA_KEY,
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
@@ -1035,6 +1036,19 @@ async function sendMessageInner(
       ...mergedMentions.filter((id) => id !== senderId),
       ...(options.addressedToAgentIds ?? []).filter((id) => id !== senderId),
     ]);
+
+    // Team Skill invocation protocol pair, enforced at the SERVICE layer
+    // (not just one HTTP caller): the versioned purpose sentinel and the
+    // request-level skillPrecondition must arrive together or not at all.
+    // A new Web always sends both; an old Server's purpose enum rejects
+    // the sentinel at parse time, so a rollback can never silently strip
+    // the precondition and persist a bare, unmarked slash command.
+    const hasSkillInvocationSentinel = data.purpose === TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE;
+    if (hasSkillInvocationSentinel !== (data.skillPrecondition !== undefined)) {
+      throw new BadRequestError(
+        "Team Skill invocation sends must carry the team-skill-invocation-v1 purpose and a skillPrecondition together. Re-open the slash menu and pick the command again.",
+      );
+    }
 
     // Team Skill slash precondition (request-level, never persisted): the
     // sender asserts this command was chosen for exactly one recipient while

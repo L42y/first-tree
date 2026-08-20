@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import {
   hasTeamSkillInvocationMarker,
   sendMessageSchema,
   TEAM_SKILL_INVOCATION_MARKER_VERSION,
+  TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE,
   TEAM_SKILL_INVOCATION_METADATA_KEY,
   teamSkillInvocationFromMetadata,
 } from "../schemas/message.js";
@@ -75,5 +77,63 @@ describe("teamSkillInvocation marker", () => {
       skillPrecondition: { recipientAgentId: crypto.randomUUID(), expectedConfigVersion: 1 },
     });
     expect(incomplete.success).toBe(false);
+  });
+});
+
+describe("team-skill-invocation protocol sentinel + legacy rollback contract", () => {
+  const precondition = {
+    recipientAgentId: crypto.randomUUID(),
+    expectedConfigVersion: 1,
+    resourceId: crypto.randomUUID(),
+    requestedSlug: "code-review",
+  };
+
+  it("accepts the sentinel purpose together with a skillPrecondition", () => {
+    const parsed = sendMessageSchema.safeParse({
+      format: "text",
+      content: "/code-review src/",
+      source: "web",
+      purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE,
+      skillPrecondition: precondition,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("keeps ordinary and agent-final-text sends working without the sentinel", () => {
+    expect(sendMessageSchema.safeParse({ format: "text", content: "hi", source: "web" }).success).toBe(true);
+    expect(
+      sendMessageSchema.safeParse({ format: "text", content: "note", source: "api", purpose: "agent-final-text" })
+        .success,
+    ).toBe(true);
+  });
+
+  it("the LEGACY Server contract rejects the new Web payload outright at parse time", () => {
+    // The old Server's purpose enum knows only `agent-final-text`. A new
+    // Web payload always pairs the precondition with the sentinel, so a
+    // rolled-back Server parse-rejects the whole send — it can never strip
+    // an unknown top-level field and persist a bare, unmarked slash
+    // command the way a plain extra `skillPrecondition` field would allow.
+    const legacyMessagePurposeSchema = z.enum(["agent-final-text"]);
+    const legacySendMessageSchema = sendMessageSchema
+      .omit({ skillPrecondition: true })
+      .extend({ purpose: legacyMessagePurposeSchema.optional() });
+    const newWebPayload = {
+      format: "text",
+      content: "/code-review src/",
+      source: "web",
+      purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE,
+      skillPrecondition: precondition,
+    };
+    expect(legacySendMessageSchema.safeParse(newWebPayload).success).toBe(false);
+    // And a bare unknown-field payload WOULD have been stripped by the old
+    // server — the sentinel is what closes that rollback hole.
+    const strippedShape = legacySendMessageSchema.safeParse({
+      format: "text",
+      content: "/code-review src/",
+      source: "web",
+      skillPrecondition: precondition,
+    });
+    expect(strippedShape.success).toBe(true);
+    expect("skillPrecondition" in (strippedShape.data ?? {})).toBe(false);
   });
 });

@@ -3341,6 +3341,18 @@ export class SessionRuntime {
         };
       },
       formatInboundContent: async (message) => {
+        // Team Skill marker scoping: ONLY a message whose metadata carries
+        // the server-owned invocation marker KEY may touch the Team
+        // registry, fences, notices, or recovery machinery at all. A truly
+        // unmarked message — hand-typed local/runtime slash included, even
+        // one whose literal matches a Team row — keeps its original
+        // local/runtime semantics byte-for-byte and never triggers a Team
+        // retry or recovery.
+        if (!hasTeamSkillInvocationMarker(message.metadata)) {
+          this.clearFenceRecoveryAttempt(chatId, message.id);
+          this.clearPendingFenceFormatFailure(chatId, message.id);
+          return formatInboundContent(message, participants);
+        }
         const { registry, version } = teamSkillCommands;
         const stamp = message.configVersion;
         // Version fence, direction-aware. A strict slash command is only
@@ -3414,18 +3426,17 @@ export class SessionRuntime {
             participants,
           );
         }
-        // Server-owned Team Skill invocation marker: the KEY being present
-        // always means server-validated Team intent — this command must
-        // resolve fail-closed against the registry and the exact validated
-        // identity (recipient, config version, slug AND resourceId), NEVER
-        // fall through to a same-named local Skill. A present-but-malformed
-        // marker, any identity mismatch, or a superseded config version all
-        // become inert notices; only a truly ABSENT key keeps the ordinary
-        // local/runtime semantics below. Text that no longer starts with
-        // the marked command is hand-edited and falls through. The
-        // fenced-out cases (unpublished / mismatched registry) are already
-        // settled by the guards above.
-        if (fencedRegistry !== null && hasTeamSkillInvocationMarker(message.metadata)) {
+        // Server-owned Team Skill invocation marker (its KEY is guaranteed
+        // present here — the unmarked short-circuit above returns first):
+        // the command must resolve fail-closed against the registry and
+        // the exact validated identity (recipient, config version, slug AND
+        // resourceId), NEVER fall through to a same-named local Skill. A
+        // present-but-malformed marker, any identity mismatch, a superseded
+        // config version, or a strict command literal that no longer equals
+        // the marked slug all become inert notices. Non-strict prose falls
+        // through to ordinary formatting. The fenced-out cases (unpublished
+        // / mismatched registry) are already settled by the guards above.
+        if (fencedRegistry !== null) {
           const invocation = teamSkillInvocationFromMetadata(message.metadata);
           const marked = rewriteSessionMessageCommandForInvocation(message, fencedRegistry, invocation, {
             ...mentionGate,
@@ -3438,6 +3449,9 @@ export class SessionRuntime {
             this.clearPendingFenceFormatFailure(chatId, message.id);
             return formatted;
           }
+          // No strict command position (prose / hand-edited-away command):
+          // the marker guards nothing, format plainly.
+          return formatInboundContent(message, participants);
         }
         try {
           const formatted = await formatInboundContent(
