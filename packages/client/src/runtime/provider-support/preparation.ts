@@ -820,48 +820,48 @@ export async function projectManagedWorkspace(
     // capability — a missing one would let a configured-but-colliding
     // base command fall through to a same-named unmanaged Skill.
     //
-    // `null` means this result is not an authoritative publication
-    // (stale/unavailable snapshot or a clean top-level failure), so exact
-    // command identities are unproven. Fail closed rather than "keep the
-    // old registry": prefer the verified ledger (last-known-good), else
-    // mark every Cloud-configured base in the current runtime config
-    // unavailable; with neither, leave the registry unpublished and the
-    // input boundary blocks strict slash commands until a projection
-    // settles.
+    // `null` from reconcile means no authoritative publication (stale or
+    // unavailable snapshot, or a clean top-level failure), so exact
+    // command identities are unproven. The CURRENT runtime config outranks
+    // the ledger: when it is known, every configured Team base fails
+    // closed — a verified older ledger may predate newly added Skills, and
+    // its coverage of the current desired set is unprovable because the
+    // reconciler advances the state version before installing. Zero Team
+    // rows stay unpublished rather than verified-empty: a not-yet-cleaned
+    // stale projection could still exist on disk. Only with no resolved
+    // config at all may the verified ledger serve as last-known-good
+    // command identity; without a ledger the registry publishes UNKNOWN
+    // and strict slash commands stay blocked.
     if (teamSkillCommands !== null) {
       sessionCtx.publishTeamSkillCommands(teamSkillCommands);
+    } else if (runtimeConfig) {
+      const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
+      for (const skill of runtimeConfig.payload.resourceSkills ?? []) {
+        try {
+          fallback.push({ requestedSlug: normalizeTeamSkillTargetSlug(skill.name), effectiveName: null });
+        } catch {
+          // A name with no portable slug never had a typable command.
+        }
+      }
+      if (fallback.length > 0) {
+        sessionCtx.log(
+          "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
+        );
+        sessionCtx.publishTeamSkillCommands(fallback);
+      } else {
+        sessionCtx.publishTeamSkillCommands(null);
+      }
     } else {
       const verified = await verifyManagedSkillsProjectionForAdmission({
         workspace,
         provider: runtimeProvider,
         providerSkillRoots,
       });
-      if (verified) {
-        sessionCtx.publishTeamSkillCommands(
-          verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
-        );
-      } else if (runtimeConfig) {
-        // The resolved runtime config is authoritative knowledge of which
-        // Team commands exist; with no proven install identities they all
-        // fail closed until a verified projection lands.
-        const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
-        for (const skill of runtimeConfig.payload.resourceSkills ?? []) {
-          try {
-            fallback.push({ requestedSlug: normalizeTeamSkillTargetSlug(skill.name), effectiveName: null });
-          } catch {
-            // A name with no portable slug never had a typable command.
-          }
-        }
-        sessionCtx.log(
-          "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
-        );
-        sessionCtx.publishTeamSkillCommands(fallback);
-      } else {
-        // Config unresolved and ledger unverifiable: publish UNKNOWN so a
-        // failed hot-switch can never keep applying a stale registry to a
-        // new configuration.
-        sessionCtx.publishTeamSkillCommands(null);
-      }
+      sessionCtx.publishTeamSkillCommands(
+        verified
+          ? verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name }))
+          : null,
+      );
     }
 
     if (beforeBriefing) {

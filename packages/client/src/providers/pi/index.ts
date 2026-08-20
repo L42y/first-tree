@@ -2151,14 +2151,29 @@ export const createPiHandler: HandlerFactory = (config) => {
         (streaming || turnObservation.promptAccepted === true || turnObservation.promptWriteCommitted === true);
       if (canAttemptSteer) {
         const steerWork = (async () => {
+          // Formatting is provably pre-RPC: ANY failure here is
+          // recoverable (the provider never saw the input) and must retry
+          // — never close/consume. Only errors from the actual steer RPC
+          // fall through to the after-write/unknown branch below.
+          let formatted: string | undefined;
           try {
             const preparedPayload = activePayload ?? { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
             rejectMcpConfiguration(preparedPayload);
-            const formatted = await ctx?.formatInboundContent(message);
-            if (!formatted || !rpcClient) {
-              deliveryToken.retry(message, "pi_steer_unavailable");
-              return;
-            }
+            formatted = await ctx?.formatInboundContent(message);
+          } catch (error) {
+            const messageText = error instanceof Error ? error.message : String(error);
+            ctx?.log(`pi steer formatting failed: ${messageText}`);
+            deliveryToken.retry(
+              message,
+              isTeamSkillCommandUnavailableError(error) ? "team_skill_command_unavailable" : "pi_steer_format_failed",
+            );
+            return;
+          }
+          if (!formatted || !rpcClient) {
+            deliveryToken.retry(message, "pi_steer_unavailable");
+            return;
+          }
+          try {
             const response = await rpcClient.steer(formatted);
             if (!response.success) {
               // Common settle-vs-steer race: retain custody and queue as the next prompt.
@@ -2173,13 +2188,6 @@ export const createPiHandler: HandlerFactory = (config) => {
           } catch (error) {
             const messageText = error instanceof Error ? error.message : String(error);
             ctx?.log(`pi steer failed: ${messageText}`);
-            if (isTeamSkillCommandUnavailableError(error)) {
-              // Formatter-level fail-closed: the steer never reached the RPC
-              // layer, so this is provably before-write — retain custody and
-              // retry instead of consuming the message.
-              deliveryToken.retry(message, "team_skill_command_unavailable");
-              return;
-            }
             if (isPiRpcBeforeWriteError(error)) {
               // Proven before-write: safe to retry without duplicating a JSONL steer.
               deliveryToken.retry(message, "pi_steer_failed_before_write");
