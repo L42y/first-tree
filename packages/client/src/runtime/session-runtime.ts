@@ -86,6 +86,12 @@ import {
 } from "./runtime-notice.js";
 import { type RuntimeSyncActiveSet, SessionProjectionAuthority } from "./session-projection-authority.js";
 import { type SlotDeliveryKind, SlotSchedulerAuthority } from "./slot-scheduler-authority.js";
+import {
+  buildTeamSkillCommandMap,
+  EMPTY_TEAM_SKILL_COMMAND_MAP,
+  rewriteSessionMessageCommand,
+  type TeamSkillCommandMap,
+} from "./team-skill-command-rewrite.js";
 
 type SessionEntry = {
   chatId: string;
@@ -3034,6 +3040,14 @@ export class SessionRuntime {
       ? documentBasePathFromRuntimeConfig(cachedPayload, sessionRoot, workspaceRoot)
       : sessionRoot;
 
+    // Team Skill slash-command rewrite map (base slug → effective on-disk
+    // command name), published by managed-session preparation after every
+    // skills reconcile. Applying it here — inside the SessionContext's
+    // formatInboundContent — covers every provider's start/resume/inject
+    // path at one shared boundary, because all of them render user text
+    // through this method.
+    let teamSkillCommands: TeamSkillCommandMap = EMPTY_TEAM_SKILL_COMMAND_MAP;
+
     const forwardResult = createResultSink({
       clearTrigger: () => {
         this.projection.clearCurrentTrigger(chatId);
@@ -3151,7 +3165,11 @@ export class SessionRuntime {
         this.projection.persistRegistry();
       },
       buildAgentEnv: (parentEnv) => buildAgentEnv(parentEnv, envCtx),
-      formatInboundContent: (message) => formatInboundContent(message, participants),
+      publishTeamSkillCommands: (teamSkills) => {
+        teamSkillCommands = buildTeamSkillCommandMap(teamSkills, log);
+      },
+      formatInboundContent: (message) =>
+        formatInboundContent(rewriteSessionMessageCommand(message, teamSkillCommands), participants),
       resolveSenderLabel: async (senderId) => resolveSenderLabel(senderId, await participants.get()),
       formatFromHeader: (message) => buildFromHeader(message, participants),
     };

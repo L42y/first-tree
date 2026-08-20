@@ -108,6 +108,10 @@ export type TeamSkillSnapshot =
 export type ReconciledTeamSkill = Readonly<{
   key: `resource:${string}`;
   name: string;
+  /** Cloud-declared base slug the user types — retained so the inbound
+   *  slash-command rewrite can map it to the final `name` when a local
+   *  collision pushed the install to a suffixed target. */
+  requestedSlug: string;
   description: string;
   target: string;
   revision: string;
@@ -231,6 +235,7 @@ export async function verifyManagedSkillsProjectionForAdmission(options: {
         verifiedTeamSkills.set(resourceKey, {
           key: resourceKey,
           name: frontmatter.name,
+          requestedSlug: entry.requestedSlug,
           description: frontmatter.description,
           target: entry.target,
           revision: entry.revision,
@@ -1754,6 +1759,7 @@ function buildReconciledTeamRows(
     rows.push({
       key: skill.key as `resource:${string}`,
       name: entry.effectiveName,
+      requestedSlug: entry.requestedSlug,
       description: skill.description,
       target,
       revision: entry.revision,

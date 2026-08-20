@@ -177,6 +177,7 @@ describe("prepareManagedSession", () => {
           {
             key: "resource:skill",
             name: "team-skill",
+            requestedSlug: "team-skill",
             description: "desc",
             revision: "r1",
             installedDigest: "sha256:abc",
@@ -311,6 +312,7 @@ describe("prepareManagedSession", () => {
       {
         key: "resource:skill",
         name: "team-skill",
+        requestedSlug: "team-skill",
         description: "desc",
         revision: "r1",
         installedDigest: "sha256:abc",
@@ -339,6 +341,89 @@ describe("prepareManagedSession", () => {
       }),
     );
     expect(INIT_COMPLETE_SENTINEL_REL).toMatch(/init-complete/);
+  });
+
+  it("publishes the reconciled Team Skill name map to the session context before briefing", async () => {
+    const prepareManagedSession = await loadPrepare();
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [],
+    };
+    const runtimeConfig = {
+      agentId: "019d9a97-90b0-716b-8317-a8c0be8430d7",
+      version: 3,
+      payload,
+      updatedAt: new Date().toISOString(),
+      updatedBy: "test",
+    };
+    reconcileManagedSkillsForConfig.mockImplementation(async () => {
+      callOrder.push("skills");
+      return {
+        ok: true,
+        resourceConfigVersion: 3,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [
+          {
+            key: "resource:skill",
+            name: "team-skill-first-tree",
+            requestedSlug: "team-skill",
+            description: "desc",
+            revision: "r1",
+            installedDigest: "sha256:abc",
+            target: "/tmp/skill-target",
+          },
+        ],
+        failures: [],
+        staleTeamSnapshot: false,
+      };
+    });
+
+    const ctx = sessionCtx();
+    (ctx.sdk as unknown as { getAgentContextTreeConfig: ReturnType<typeof vi.fn> }).getAgentContextTreeConfig = vi.fn(
+      async () => ({
+        bindingState: "bound",
+        repo: "https://example.test/tree",
+        branch: "main",
+        provider: null,
+      }),
+    );
+    // The shared beforeEach briefing stub asserts the default skill name;
+    // this test reconciles a suffixed name instead.
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING_BODY";
+    });
+    const publishTeamSkillCommands = vi.fn();
+    ctx.publishTeamSkillCommands = publishTeamSkillCommands;
+    const result = await prepareManagedSession({
+      sessionCtx: ctx,
+      workspaceRoot,
+      agentName: "prep-agent",
+      runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      runtimeConfig: runtimeConfig as never,
+      payload,
+      payloadResolved: true,
+      contextTree: {
+        path: join(workspaceRoot, "context-tree"),
+        repoUrl: "https://example.test/tree",
+        branch: "main",
+      },
+    });
+
+    // The publish rides the same reconcile rows the briefing receives, and
+    // lands before the briefing/build steps so no provider turn can format
+    // user input with a stale map.
+    expect(publishTeamSkillCommands).toHaveBeenCalledTimes(1);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(result.teamSkills);
+    expect(callOrder.indexOf("skills")).toBeLessThan(callOrder.indexOf("briefing"));
   });
 
   it("continues when chat context fetch fails and logs the failure", async () => {
@@ -642,6 +727,7 @@ describe("prepareManagedSession", () => {
           {
             key: "resource:skill",
             name: "team-skill",
+            requestedSlug: "team-skill",
             description: "desc",
             revision: "r1",
             installedDigest: "sha256:abc",

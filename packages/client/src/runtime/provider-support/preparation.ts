@@ -760,6 +760,10 @@ export async function projectManagedWorkspace(
           }
           const sourceRepos = suppressSourceRepos ? [] : declaredSourceRepos(workspace, payload);
           const teamSkills = projectionState.managed.teamSkills;
+          // Keep the slash-rewrite map current on this read-only path too:
+          // the verified projection still carries each Team Skill's
+          // requestedSlug → effectiveName pair.
+          sessionCtx.publishTeamSkillCommands?.(teamSkills);
           if (beforeBriefing) {
             const result = beforeBriefing({ workspace, sourceRepos, teamSkills });
             if (result) await result;
@@ -805,6 +809,13 @@ export async function projectManagedWorkspace(
       skillKind,
       bundledSkillsRoot,
     );
+
+    // Publish the base-slug → effective-name map BEFORE any provider turn
+    // is formatted from this context: a local collision may have installed
+    // a Team Skill under a suffixed name, and the shared inbound formatter
+    // rewrites the user-facing base command to the real target. Optional on
+    // the context so test doubles and legacy wiring can omit it.
+    sessionCtx.publishTeamSkillCommands?.(teamSkills);
 
     if (beforeBriefing) {
       const result = beforeBriefing({ workspace, sourceRepos, teamSkills });

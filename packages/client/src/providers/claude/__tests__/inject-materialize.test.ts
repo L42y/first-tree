@@ -16,6 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import {
+  buildTeamSkillCommandMap,
+  EMPTY_TEAM_SKILL_COMMAND_MAP,
+  rewriteSessionMessageCommand,
+  type TeamSkillCommandMap,
+} from "../../../runtime/team-skill-command-rewrite.js";
 
 // Use the real managed reconciler instead of the default handler-test double
 // installed by vitest.setup.ts.
@@ -185,12 +191,25 @@ const SCAN_SKILL: RuntimeResourceSkill = {
   metadata: {},
 };
 
+const REVIEW_SKILL: RuntimeResourceSkill = {
+  resourceId: "res-review-1",
+  name: "review",
+  description: "Team review skill",
+  body: "TEAM REVIEW BODY",
+  metadata: {},
+};
+
 function makeMessage(id: string, content: string): SessionMessage {
   return { id, chatId: "chat-materialize", senderId: "sender-1", format: "text", content, metadata: {} };
 }
 
 function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void = () => {}): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
+  const plumbing = mockCtxPlumbing({ sendMessage }, "chat-materialize");
+  // Mirror the production SessionContext wiring (session-runtime.ts): the
+  // reconciled Team Skill name map rewrites base slash commands before the
+  // provider ever sees the text.
+  let teamSkillCommands: TeamSkillCommandMap = EMPTY_TEAM_SKILL_COMMAND_MAP;
   return {
     agent: {
       agentId: AGENT_ID,
@@ -206,7 +225,11 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
     log,
     recordProviderActivity: () => {},
     emitEvent: () => {},
-    ...mockCtxPlumbing({ sendMessage }, "chat-materialize"),
+    ...plumbing,
+    publishTeamSkillCommands: (teamSkills) => {
+      teamSkillCommands = buildTeamSkillCommandMap(teamSkills);
+    },
+    formatInboundContent: (msg) => plumbing.formatInboundContent(rewriteSessionMessageCommand(msg, teamSkillCommands)),
     finishTurn: async () => {},
   };
 }
@@ -436,5 +459,67 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
       chmodSync(discoveryRoot, 0o700);
       await handler.shutdown();
     }
+  });
+
+  it("rewrites a base slash command to the suffixed install when an unmanaged local Skill occupies the base name", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    // An unmanaged local Skill squats on the base name; the server then
+    // binds the Team Skill and the injected turn drives the reconcile.
+    const localDir = join(workspaceRoot, ".claude", "skills", "review");
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(join(localDir, "SKILL.md"), "---\nname: review\ndescription: local\n---\n\nLOCAL REVIEW BODY\n");
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+    handler.inject(makeMessage("m2", "/review src/"), noopDeliveryToken());
+
+    await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review-first-tree", "SKILL.md")));
+    await waitFor(() => state.observedInputs.length === 2);
+
+    // The provider received the rewritten command — never the squatted
+    // local `/review`.
+    expect(readFileSync(join(workspaceRoot, ".claude", "skills", "review-first-tree", "SKILL.md"), "utf-8")).toContain(
+      "TEAM REVIEW BODY",
+    );
+    expect(state.observedInputs[1]).toContain("/review-first-tree src/");
+    expect(state.observedInputs[1]).not.toContain("/review src/");
+
+    await handler.shutdown();
+  });
+
+  it("leaves the command untouched when the Team Skill installs under its base name", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+    handler.inject(makeMessage("m2", "/review src/"), noopDeliveryToken());
+
+    await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review", "SKILL.md")));
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(state.observedInputs[1]).toContain("/review src/");
+
+    await handler.shutdown();
   });
 });
