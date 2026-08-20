@@ -30,12 +30,13 @@ import {
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
+import { agentConfigs } from "../../db/schema/agent-configs.js";
 import { agents } from "../../db/schema/agents.js";
 import { chatMembership } from "../../db/schema/chat-membership.js";
 import { chats } from "../../db/schema/chats.js";
 import { inboxEntries } from "../../db/schema/inbox-entries.js";
 import { messages } from "../../db/schema/messages.js";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../../errors.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../errors.js";
 import { createLogger, messageAttrs, withSpan } from "../../observability/index.js";
 import { uuidv7 } from "../../uuid.js";
 import {
@@ -1009,6 +1010,33 @@ async function sendMessageInner(
       ...mergedMentions.filter((id) => id !== senderId),
       ...(options.addressedToAgentIds ?? []).filter((id) => id !== senderId),
     ]);
+
+    // Team Skill slash precondition (request-level, never persisted): the
+    // sender asserts this command was chosen for exactly one recipient while
+    // the agent's runtime config was at a known version. Re-validate inside
+    // the message transaction — the web's fresh pre-send check and this POST
+    // are not atomic, so the version must be proven here, not trusted. A
+    // removed or renamed Team Skill bumps the config version and turns this
+    // into a conflict instead of falling through to a same-named LOCAL Skill.
+    if (data.skillPrecondition) {
+      const { recipientAgentId, expectedConfigVersion } = data.skillPrecondition;
+      if (routedRecipientIds.size !== 1 || !routedRecipientIds.has(recipientAgentId)) {
+        throw new ConflictError(
+          "Skill command precondition failed: the message is not addressed to exactly the agent the command was chosen for. Re-open the slash menu and pick the command again.",
+        );
+      }
+      const [configRow] = await tx
+        .select({ version: agentConfigs.version })
+        .from(agentConfigs)
+        .where(eq(agentConfigs.agentId, recipientAgentId))
+        .limit(1);
+      if (!configRow || configRow.version !== expectedConfigVersion) {
+        throw new ConflictError(
+          "Skill command precondition failed: the recipient agent's configuration changed after the command was chosen. Re-open the slash menu and pick the command again.",
+        );
+      }
+    }
+
     const continuesFirstChatOrientation =
       orientationTargetAgentId !== null &&
       !prepared.forceSilentFanOut &&

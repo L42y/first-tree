@@ -455,6 +455,22 @@ export const sendMessageSchema = z.object({
    * prefer this over relying on `@<name>` extraction from `content`.
    */
   receiverNames: z.array(z.string().min(1)).optional(),
+  /**
+   * Transient, request-level precondition for a Team Skill slash command
+   * chosen from the slash menu. The sender asserts the command was selected
+   * for exactly this recipient while the agent's runtime config was at this
+   * version. The message transaction re-validates both before inserting:
+   * a removed/renamed Team Skill (version bump) or a different routing set
+   * rejects the send with a conflict instead of letting the command fall
+   * through to a same-named LOCAL Skill. Request-level only — never
+   * persisted into message metadata.
+   */
+  skillPrecondition: z
+    .object({
+      recipientAgentId: z.string().uuid(),
+      expectedConfigVersion: z.number().int().positive(),
+    })
+    .optional(),
 });
 export type SendMessage = z.infer<typeof sendMessageSchema>;
 
