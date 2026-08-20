@@ -14,10 +14,10 @@ import { mockEntry } from "./test-helpers.js";
  * formatInboundContent call rewrites (or fails closed) accordingly.
  */
 
-function mockSdk(): FirstTreeHubSDK {
+function mockSdk(sendMessage = vi.fn().mockResolvedValue({ id: "msg-reply" })): FirstTreeHubSDK {
   return {
     register: vi.fn(),
-    sendMessage: vi.fn().mockResolvedValue({ id: "msg-reply" }),
+    sendMessage,
     listChatParticipants: vi.fn().mockResolvedValue([]),
   } as unknown as FirstTreeHubSDK;
 }
@@ -44,18 +44,22 @@ async function captureContext(): Promise<{
   startMessages: SessionMessage[];
   injectedMessages: SessionMessage[];
   recoverChat: ReturnType<typeof vi.fn>;
+  ackEntry: ReturnType<typeof vi.fn<(entryId: number) => Promise<void>>>;
+  sendMessage: ReturnType<typeof vi.fn>;
 }> {
   let starts = 0;
   let resumes = 0;
   let teardowns = 0;
   let capturedCtx: SessionContext | undefined;
+  let startToken: Parameters<AgentHandler["start"]>[2] | undefined;
   const startMessages: SessionMessage[] = [];
   const injectedMessages: SessionMessage[] = [];
   const handler: AgentHandler = {
-    start: vi.fn(async (msg, ctx) => {
+    start: vi.fn(async (msg, ctx, token) => {
       starts++;
       startMessages.push(msg);
       capturedCtx = ctx;
+      startToken = token;
       return { sessionId: `session-${starts}`, route: { kind: "owned" as const, mode: "queued" as const } };
     }),
     resume: vi.fn(async (_msg, _sessionId, ctx) => {
@@ -75,6 +79,8 @@ async function captureContext(): Promise<{
     }),
   };
   const recoverChat = vi.fn().mockResolvedValue(undefined);
+  const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+  const sendMessage = vi.fn().mockResolvedValue({ id: "runtime-notice-1" });
   const runtime = new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
@@ -89,13 +95,16 @@ async function captureContext(): Promise<{
       delegateMention: null,
       metadata: {},
     },
-    sdk: mockSdk(),
+    sdk: mockSdk(sendMessage),
     log: silentLogger() as unknown as pino.Logger,
-    ackEntry: vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
+    ackEntry,
     recoverChat,
   });
   await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
   if (!capturedCtx) throw new Error("expected the handler to receive a session context");
+  const firstMessage = startMessages[0];
+  if (!startToken || !firstMessage) throw new Error("expected the handler to receive the initial delivery token");
+  await startToken.complete(firstMessage, { status: "success" });
   return {
     ctx: capturedCtx,
     runtime,
@@ -109,6 +118,8 @@ async function captureContext(): Promise<{
     startMessages,
     injectedMessages,
     recoverChat,
+    ackEntry,
+    sendMessage,
   };
 }
 
@@ -137,6 +148,31 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     expect(unrouted).toContain("@nova /review please");
     expect(unrouted).not.toContain("review-first-tree");
     expect(await ctx.formatInboundContent(textMessage("hello /review", ["agent-1"]))).toContain("hello /review");
+
+    await runtime.shutdown();
+  });
+
+  it("rewrites bare and routed-mention commands inside image captions", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    const bare: SessionMessage = {
+      ...textMessage("unused"),
+      format: "file",
+      content: { caption: "/review screenshot", attachments: [] },
+    };
+    expect(await ctx.formatInboundContent(bare)).toContain("/review-first-tree screenshot");
+
+    const mentioned: SessionMessage = {
+      ...bare,
+      id: "m2",
+      content: { caption: "@nova /review screenshot", attachments: [] },
+      metadata: { mentions: ["agent-1"] },
+    };
+    expect(await ctx.formatInboundContent(mentioned)).toContain("@nova /review-first-tree screenshot");
+    expect(await ctx.formatInboundContent({ ...mentioned, id: "m3", metadata: {} })).toContain(
+      "@nova /review screenshot",
+    );
 
     await runtime.shutdown();
   });
@@ -303,7 +339,7 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.shutdown();
   });
 
-  it("does not restart the session for a same-version genuinely-unavailable Team command", async () => {
+  it("durably rejects a same-version unavailable Team command once without recovery redelivery", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
 
@@ -312,11 +348,40 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     if (!injected) throw new Error("expected the message to inject into the live session");
     await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/no verified installed target/);
     cap.ctx.retryTurn(injected, "team_skill_command_unavailable");
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    await vi.waitFor(() => expect(cap.sendMessage).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(cap.ackEntry).toHaveBeenLastCalledWith(2));
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(cap.handlerShutdowns()).toBe(0);
     expect(cap.startCount()).toBe(1);
+    expect(cap.recoverChat).not.toHaveBeenCalled();
+    expect(cap.sendMessage).toHaveBeenCalledWith(
+      "chat-a",
+      expect.objectContaining({
+        content: expect.stringContaining("Team Skill command /review is unavailable"),
+        metadata: { runtimeNotice: true },
+      }),
+    );
+
+    await cap.runtime.shutdown();
+  });
+
+  it("parks same-version unavailable custody without immediate recovery when its notice cannot persist", async () => {
+    const cap = await captureContext();
+    cap.sendMessage.mockRejectedValueOnce(new Error("notice unavailable"));
+    cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
+
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/no verified installed target/);
+    cap.ctx.retryTurn(injected, "team_skill_command_unavailable");
+    await vi.waitFor(() => expect(cap.sendMessage).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(cap.ackEntry).not.toHaveBeenCalledWith(2);
+    expect(cap.recoverChat).not.toHaveBeenCalled();
+    expect(cap.handlerShutdowns()).toBe(0);
 
     await cap.runtime.shutdown();
   });

@@ -168,16 +168,30 @@ export function rewriteTeamSkillCommand(
 }
 
 /**
- * Apply {@link rewriteTeamSkillCommand} to a session message's string
- * content. Non-string payloads (file/image batches) are returned as-is;
- * their rendered text never starts with a user-typed slash command.
+ * Apply {@link rewriteTeamSkillCommand} to user-authored command text while
+ * preserving the message's durable container. Text messages rewrite their
+ * string content; file/image batches rewrite only a string `caption` and keep
+ * every attachment field intact. Other structured payloads are returned as-is.
  */
 export function rewriteSessionMessageCommand<T extends { content: unknown }>(
   message: T,
   registry: TeamSkillCommandRegistry | null,
   opts?: { allowMentionPrefix?: boolean },
 ): T {
-  if (typeof message.content !== "string") return message;
-  const rewritten = rewriteTeamSkillCommand(message.content, registry, opts);
-  return rewritten === message.content ? message : { ...message, content: rewritten };
+  if (typeof message.content === "string") {
+    const rewritten = rewriteTeamSkillCommand(message.content, registry, opts);
+    return rewritten === message.content ? message : { ...message, content: rewritten };
+  }
+  if (message.content === null || typeof message.content !== "object" || Array.isArray(message.content)) {
+    return message;
+  }
+  const caption = Reflect.get(message.content, "caption");
+  if (typeof caption !== "string") return message;
+  const rewritten = rewriteTeamSkillCommand(caption, registry, opts);
+  return rewritten === caption
+    ? message
+    : {
+        ...message,
+        content: { ...message.content, caption: rewritten },
+      };
 }

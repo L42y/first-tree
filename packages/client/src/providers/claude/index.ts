@@ -49,6 +49,7 @@ import {
   findImagePath,
   InputController,
   isContextSourceTransitionError,
+  isTeamSkillCommandUnavailableError,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
   preparationCoordinatesFromSource,
@@ -60,7 +61,6 @@ import {
   renderDocumentAttachmentsForLLM,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { isTeamSkillCommandUnavailableError } from "../../runtime/team-skill-command-rewrite.js";
 import { formatAuthHint, isClaudeAuthError } from "../handlers/auth-error-hint.js";
 import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
@@ -610,7 +610,10 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           ...message,
           format: "text",
           content: text,
-          metadata: null,
+          // Preserve routed mentions while converting the structured file
+          // payload into provider-view text. The shared Team Skill command
+          // boundary needs this metadata to authorize `@agent /command`.
+          metadata: message.metadata,
         });
 
       if (isImageBatchRefContent(message.content)) {

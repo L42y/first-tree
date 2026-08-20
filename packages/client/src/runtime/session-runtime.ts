@@ -19,6 +19,7 @@ import {
   isImageRefContent,
   MAX_MESSAGE_ATTACHMENT_REFS,
   parseProviderRetryEventMessage,
+  RUNTIME_NOTICE_METADATA_KEY,
   readFeishuMessageMetadata,
   runtimeProviderSchema,
   SOURCE_REPOS_DIRNAME,
@@ -80,6 +81,7 @@ import {
   waitForHandlerSuspend,
 } from "./route-teardown-authority.js";
 import {
+  formatProviderFailureRuntimeNotice,
   isRuntimeSessionProofFailure,
   postProviderFailureRuntimeNotice,
   shouldPostProviderFailureRuntimeNotice,
@@ -1653,6 +1655,65 @@ export class SessionRuntime {
     }
   }
 
+  /**
+   * Settle a configured Team Skill command that the current authoritative
+   * registry proves unavailable. Immediate recovery cannot change that fact
+   * and would hot-loop the same inbox row, so persist one visible runtime
+   * notice before ACKing it as a deterministic pre-provider rejection.
+   *
+   * If notice persistence fails, keep the exact row as recovery debt without
+   * opening same-socket recovery. The coordinator also retains the notice
+   * obligation, so a later bind/recovery retries the notice and never sends
+   * the command to a provider or silently consumes it.
+   */
+  private async terminalRejectUnavailableTeamSkillCommand(
+    chatId: string,
+    messages: SessionMessage | readonly SessionMessage[],
+    safeReason: string,
+    settlementLeaseValid: (() => boolean) | null = null,
+  ): Promise<void> {
+    if (settlementLeaseValid && !settlementLeaseValid()) return;
+    const payload: ProviderRetryEventPayload = {
+      event: "provider_failure_terminal",
+      provider: this.runtimeProvider(),
+      scope: "provider_turn",
+      category: "configuration",
+      reasonCode: "team_skill_command_unavailable",
+      replaySafety: "pre_provider",
+      userSeverity: "error",
+      messagePreview: redactErrorPreview(safeReason, 800),
+    };
+
+    try {
+      const notice = await this.config.sdk.sendMessage(chatId, {
+        source: "api",
+        format: "text",
+        content: formatProviderFailureRuntimeNotice(payload),
+        metadata: { [RUNTIME_NOTICE_METADATA_KEY]: true },
+        purpose: "agent-final-text",
+      });
+      if (settlementLeaseValid && !settlementLeaseValid()) return;
+      await this.inboxDelivery.terminalRejected(chatId, messages, "team_skill_command_unavailable", {
+        kind: "chat_message",
+        messageId: notice.id,
+      });
+    } catch (err) {
+      if (settlementLeaseValid && !settlementLeaseValid()) return;
+      this.config.log.warn(
+        { chatId, err },
+        "Team Skill unavailable notice failed; parking inbox custody without immediate recovery",
+      );
+      this.inboxDelivery.markNoticeRequired(chatId, messages, payload);
+      await this.inboxDelivery.parkTurnForDeferredRecovery(
+        chatId,
+        messages,
+        "team_skill_command_unavailable_notice_failed",
+      );
+    } finally {
+      this.projection.projectSessionRuntime(chatId);
+    }
+  }
+
   private async recoverDebtBeforeResume(chatId: string, reason: string): Promise<boolean> {
     if (!this.inboxDelivery.hasRecoveryDebt(chatId)) return false;
     this.config.log.info({ chatId, reason }, "resume deferred because chat has recovery debt");
@@ -3077,6 +3138,13 @@ export class SessionRuntime {
     // never trigger a restart; the set is read-and-cleared per retry to
     // avoid cross-message false positives.
     const registryVersionMismatchedMessageIds = new Set<string>();
+    // Same-version unavailable commands cannot heal through immediate inbox
+    // recovery: redelivery would hit the byte-identical registry and loop.
+    // Retain the generated safe reason until the provider returns custody;
+    // retryTurn then converts that attempt into one durable runtime notice +
+    // deterministic terminal rejection, or parks custody if the notice write
+    // fails. This state is per-handler and cleared on every format attempt.
+    const registryUnavailableMessageReasons = new Map<string, string>();
 
     const forwardResult = createResultSink({
       clearTrigger: () => {
@@ -3165,6 +3233,30 @@ export class SessionRuntime {
       },
       retryTurn: (messages, reason) => {
         if (mutationValid && !mutationValid()) return;
+        const batch = Array.isArray(messages) ? messages : [messages];
+        const unavailableReasons: string[] = [];
+        for (const message of batch) {
+          const unavailableReason = registryUnavailableMessageReasons.get(message.id);
+          registryUnavailableMessageReasons.delete(message.id);
+          if (
+            unavailableReason &&
+            message.inboxEntryId !== undefined &&
+            this.inboxDelivery.hasEntry({ chatId, entryId: message.inboxEntryId, messageId: message.id })
+          ) {
+            unavailableReasons.push(unavailableReason);
+          }
+        }
+        if (unavailableReasons.length > 0) {
+          void this.terminalRejectUnavailableTeamSkillCommand(
+            chatId,
+            messages,
+            unavailableReasons[0] ?? "Team Skill command is unavailable",
+            settlementValid,
+          );
+          this.projection.projectSessionRuntime(chatId);
+          return;
+        }
+
         this.retryDeliveryTurn(chatId, messages, reason);
         // A version-fenced strict slash command cannot heal inside this
         // handler (its registry is proven for the old config version and
@@ -3174,7 +3266,6 @@ export class SessionRuntime {
         // is confirmed, fail the session for recovery so the redelivery
         // starts a fresh handler whose preparation reconciles the new
         // version first.
-        const batch = Array.isArray(messages) ? messages : [messages];
         let versionMismatched = false;
         for (const message of batch) {
           if (!registryVersionMismatchedMessageIds.delete(message.id)) continue;
@@ -3240,6 +3331,7 @@ export class SessionRuntime {
         // so a successful post-refresh format cannot leave a marker that a
         // later unrelated retry would mistake for a fence failure.
         registryVersionMismatchedMessageIds.delete(message.id);
+        registryUnavailableMessageReasons.delete(message.id);
         try {
           return await formatInboundContent(
             rewriteSessionMessageCommand(message, fencedRegistry, {
@@ -3254,6 +3346,11 @@ export class SessionRuntime {
         } catch (error) {
           if (versionMismatched && isTeamSkillCommandUnavailableError(error)) {
             registryVersionMismatchedMessageIds.add(message.id);
+          } else if (isTeamSkillCommandUnavailableError(error)) {
+            registryUnavailableMessageReasons.set(
+              message.id,
+              error instanceof Error ? error.message : "Team Skill command is unavailable",
+            );
           }
           throw error;
         }

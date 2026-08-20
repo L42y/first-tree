@@ -84,6 +84,7 @@ export const PROVIDER_SUPPORT_EXPORT_ALLOWLISTS = {
     "value|isHardFailureCategory|isHardFailureCategory|./failure-policy.js",
     "value|isManagedSkillsUnsafeDiscoveryError|isManagedSkillsUnsafeDiscoveryError|./preparation.js",
     "value|isPiBinaryMissingError|isPiBinaryMissingError|./failure-policy.js",
+    "value|isTeamSkillCommandUnavailableError|isTeamSkillCommandUnavailableError|../team-skill-command-rewrite.js",
     "value|markWorkspaceInitComplete|markWorkspaceInitComplete|./preparation.js",
     "value|maxProviderTurnRetryAttempts|maxProviderTurnRetryAttempts|./failure-policy.js",
     "value|piProviderDetailBinaryMissingReasonCode|piProviderDetailBinaryMissingReasonCode|./failure-policy.js",

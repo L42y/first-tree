@@ -36,6 +36,7 @@ import {
   createDefaultProviderProcessSupervisor,
   isContextSourceTransitionError,
   isExhaustedCapacityPhrasing,
+  isTeamSkillCommandUnavailableError,
   maxProviderTurnRetryAttempts,
   ProviderAttempt,
   piProviderDetailBinaryMissingReasonCode,
@@ -52,7 +53,6 @@ import {
   withContextTreeRepoHeadCommit,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
-import { isTeamSkillCommandUnavailableError } from "../../runtime/team-skill-command-rewrite.js";
 import { formatAuthHint, isPiAuthError } from "../handlers/auth-error-hint.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {

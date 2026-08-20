@@ -23,6 +23,8 @@
  * implementations.
  */
 
+// turn-input command safety
+export { isTeamSkillCommandUnavailableError } from "../team-skill-command-rewrite.js";
 // attachment-availability
 export { ATTACHMENT_UNAVAILABLE_NOTE, isAttachmentGoneError } from "./attachment-availability.js";
 export type {
