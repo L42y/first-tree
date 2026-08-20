@@ -818,6 +818,38 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     }
   });
 
+  it("clears a rejected verified path even when a later candidate keeps the aggregate result transient", async () => {
+    const staleGlobal = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
+    verifiedCandidateTracker.record(staleGlobal);
+    const candidates = () => [staleGlobal, desktop];
+
+    const resolution = await resolveCodexRuntimeBinary(
+      { FIRST_TREE_CHAT_ID: "chat-runtime-mixed-rejection" },
+      {
+        resolveBundled: notFound,
+        findCandidates: candidates,
+        verifyPath: (path) =>
+          path === staleGlobal
+            ? { ok: false, transient: false, reason: "revoked binary" }
+            : { ok: false, transient: true, reason: "Desktop cold-start timeout" },
+        verifiedCandidateTracker,
+      },
+    );
+    const capability = await probeCodexCapability({
+      resolveBundled: notFound,
+      findCandidates: candidates,
+      verifiedCandidateTracker,
+      env: {},
+    });
+
+    expect(resolution).toMatchObject({ ok: false, cause: { name: "CodexBinaryVerifyTransientError" } });
+    expect(verifiedCandidateTracker.get()).toBeNull();
+    expect(capability).toMatchObject({ state: "ok", available: true, runtimeSource: "path" });
+    expect(capability).not.toHaveProperty("runtimePath");
+  });
+
   it("bounds repeated identical runtime-resolver failures for forced app-server startup", async () => {
     const tracker = createCodexAutomaticResolutionFailureTracker();
     const pathBinary = "/Users/test/.npm-global/bin/codex";

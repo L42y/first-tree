@@ -12,7 +12,9 @@ const clientMocks = vi.hoisted(() => ({
   discoverClaudeCodeSkills: vi.fn(),
   flushClientSentry: vi.fn(),
   initClientSentry: vi.fn(),
+  onCodexVerifiedAutomaticCandidateChange: vi.fn(),
   probeCapabilities: vi.fn(),
+  probeCodexCapability: vi.fn(),
   reprobeOnReconnect: vi.fn(),
 }));
 
@@ -94,6 +96,8 @@ const exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | nu
 
 let home: string;
 let runtimeOwnershipRelease: ReturnType<typeof vi.fn>;
+let codexCandidateChangeListener: (() => void) | null;
+let unregisterCodexCandidateChange: ReturnType<typeof vi.fn>;
 let runtimeInstance: {
   addAgent: ReturnType<typeof vi.fn>;
   start: ReturnType<typeof vi.fn>;
@@ -142,6 +146,19 @@ beforeEach(() => {
   });
 
   clientMocks.probeCapabilities.mockResolvedValue({ "claude-code": { state: "ok" } });
+  clientMocks.probeCodexCapability.mockResolvedValue({
+    state: "ok",
+    available: true,
+    runtimeSource: "path",
+    runtimePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+    detectedAt: "2026-08-20T00:00:00.000Z",
+  });
+  codexCandidateChangeListener = null;
+  unregisterCodexCandidateChange = vi.fn();
+  clientMocks.onCodexVerifiedAutomaticCandidateChange.mockImplementation((listener: () => void) => {
+    codexCandidateChangeListener = listener;
+    return unregisterCodexCandidateChange;
+  });
   clientMocks.createLogger.mockReturnValue({
     debug: vi.fn(),
     info: vi.fn(),
@@ -742,6 +759,27 @@ describe("daemon start command", () => {
     expect(refresherInstance.currentEntry).toHaveBeenCalledWith("codex");
     expect(refresherInstance.setProviderEntry).toHaveBeenCalledWith("codex", { state: "ok" });
     expect(output()).toContain("runtime auth progress");
+  });
+
+  it("publishes a runtime-verified Codex selection through the live capability refresher", async () => {
+    runtimeInstance.start.mockImplementationOnce(async () => {
+      codexCandidateChangeListener?.();
+    });
+
+    await expect(runStart(["--foreground"])).rejects.toMatchObject({ exitCode: 1 });
+    await waitForAsyncWork(() => refresherInstance.setProviderEntry.mock.calls.length > 0);
+
+    expect(clientMocks.onCodexVerifiedAutomaticCandidateChange).toHaveBeenCalledTimes(1);
+    expect(clientMocks.probeCodexCapability).toHaveBeenCalledTimes(1);
+    expect(refresherInstance.start).toHaveBeenCalledTimes(1);
+    expect(refresherInstance.setProviderEntry).toHaveBeenCalledWith(
+      "codex",
+      expect.objectContaining({
+        state: "ok",
+        runtimePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      }),
+    );
+    expect(unregisterCodexCandidateChange).toHaveBeenCalledTimes(1);
   });
 
   it("skips skill upload for stale local aliases that are not pinned to this client", async () => {

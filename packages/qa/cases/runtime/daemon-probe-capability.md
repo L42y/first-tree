@@ -44,8 +44,9 @@ entry rather than only checking process exit status:
 - the result is successful for the provider selected by the plan;
 - the provider capability includes availability/state detail;
 - `runtimeSource` explains whether the provider came from a bundled runtime or a binary found on `PATH`;
-- `runtimePath` is consistent with `runtimeSource` (for example, a path string for `runtimeSource: "path"`, or `null`/omitted
-  when a bundled runtime does not expose a host path);
+- `runtimePath` is consistent with `runtimeSource`: it is a path string only for a still-discoverable external artifact
+  that the runtime previously launch-verified, and is omitted when an install-only probe has found external candidates
+  but no current verified selection; bundled runtimes may report `null`/omitted when they do not expose a host path;
 - the no-upload run does not fail because server auth, upload credentials, or an active First Tree session is missing.
 
 If the output shape changes during product work, follow the product's current typed schema, but keep the evidence focused
@@ -55,10 +56,11 @@ upload.
 ## Expected Result
 
 `PASS` means the probe completed in the run cell, the selected provider's capability entry showed a usable runtime source
-and matching path/provenance detail, and the no-upload mode did not require server credentials.
+without claiming an unverified path (and included the matching path when a prior verified selection exists), and the
+no-upload mode did not require server credentials.
 
-`FAIL` means the CLI reproducibly returned incorrect provider provenance, required upload/auth despite `--no-upload`, or
-reported success while omitting the source/path detail needed to debug provider selection.
+`FAIL` means the CLI reproducibly returned incorrect provider provenance, presented an existence-only path as a verified
+selection, required upload/auth despite `--no-upload`, or omitted a previously verified path that is still discoverable.
 
 `BLOCKED` means the run cell could not expose any provider or the CLI under test could not be built/launched.
 

@@ -14,6 +14,7 @@ import {
   findCodexExecutableCandidates,
   formatCodexBinaryMissingMessage,
   resetCodexAutomaticCandidateFailures,
+  resetCodexVerifiedAutomaticCandidateIfRejected,
   resolveVerifiedCodexAutomaticCandidate,
   verifyCodexExecutable,
 } from "./binary.js";
@@ -227,6 +228,7 @@ export async function resolveCodexRuntimeBinary(
     };
   }
   if (resolved.failures.length > 0) {
+    resetCodexVerifiedAutomaticCandidateIfRejected(resolved.failures, verifiedCandidateTracker);
     const failure = codexAutomaticCandidateFailureError(resolved.failures, env, "runtime", deps.failureTracker);
     if (failure.name === "CodexBinaryUnusableError") verifiedCandidateTracker.reset();
     return { ok: false, error: failure.message, cause: failure };

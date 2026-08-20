@@ -63,6 +63,7 @@ export type CodexVerifiedAutomaticCandidateTracker = {
   get(): string | null;
   record(path: string): void;
   reset(): void;
+  subscribe(listener: () => void): () => void;
 };
 
 export type CodexAutomaticFailureBoundary = "runtime" | "sdk";
@@ -124,18 +125,49 @@ const defaultAutomaticResolutionFailureTracker = createCodexAutomaticResolutionF
 
 export function createCodexVerifiedAutomaticCandidateTracker(): CodexVerifiedAutomaticCandidateTracker {
   let path: string | null = null;
+  const listeners = new Set<() => void>();
+  const notify = (): void => {
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // Runtime selection must not fail because a diagnostic publisher did.
+      }
+    }
+  };
   return {
     get: () => path,
     record(nextPath: string): void {
+      if (path === nextPath) return;
       path = nextPath;
+      notify();
     },
     reset(): void {
+      if (path === null) return;
       path = null;
+      notify();
+    },
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
 
 export const codexVerifiedAutomaticCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
+
+export function onCodexVerifiedAutomaticCandidateChange(listener: () => void): () => void {
+  return codexVerifiedAutomaticCandidateTracker.subscribe(listener);
+}
+
+export function resetCodexVerifiedAutomaticCandidateIfRejected(
+  failures: readonly CodexAutomaticCandidateFailure[],
+  tracker: CodexVerifiedAutomaticCandidateTracker = codexVerifiedAutomaticCandidateTracker,
+): void {
+  const verifiedPath = tracker.get();
+  if (!verifiedPath) return;
+  if (failures.some((failure) => failure.path === verifiedPath && !failure.transient)) tracker.reset();
+}
 
 const WINDOWS_CODEX_PLATFORM_PACKAGE_BY_ARCH: Readonly<Record<string, { triple: string; packageName: string }>> = {
   x64: { triple: "x86_64-pc-windows-msvc", packageName: "@openai/codex-win32-x64" },
@@ -292,6 +324,7 @@ export function createCodexClientWithBinaryFallback<TOptions extends CodexOption
     }
 
     if (!resolved.ok) {
+      resetCodexVerifiedAutomaticCandidateIfRejected(resolved.failures, verifiedCandidateTracker);
       const failure = codexAutomaticCandidateFailureError(
         resolved.failures,
         options.env ?? process.env,

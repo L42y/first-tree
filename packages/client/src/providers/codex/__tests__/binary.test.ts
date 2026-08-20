@@ -162,6 +162,31 @@ describe("codex binary resolution", () => {
     expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([first, desktop]);
   });
 
+  it("forgets a previously verified SDK fallback path when that path is deterministically rejected", () => {
+    const staleGlobal = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
+    verifiedCandidateTracker.record(staleGlobal);
+
+    expect(() =>
+      createCodexClientWithBinaryFallback(
+        { env: { FIRST_TREE_CHAT_ID: "chat-mixed-rejection" } },
+        () => {
+          throw new Error("Unable to locate Codex CLI binaries");
+        },
+        {
+          resolveCandidates: () => [staleGlobal, desktop],
+          verifyPath: (path) =>
+            path === staleGlobal
+              ? { ok: false, transient: false, reason: "revoked binary" }
+              : { ok: false, transient: true, reason: "Desktop cold-start timeout" },
+          verifiedCandidateTracker,
+        },
+      ),
+    ).toThrow(CodexBinaryVerifyTransientError);
+    expect(verifiedCandidateTracker.get()).toBeNull();
+  });
+
   it("bounds repeated identical all-candidate transient failures with an actionable terminal error", () => {
     const tracker = createCodexAutomaticResolutionFailureTracker();
     const first = "/Users/test/.npm-global/bin/codex";
