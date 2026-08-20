@@ -123,7 +123,7 @@ describe("github-entity-follow", () => {
         accountType: "Organization",
         accountLogin: `acme-${githubAccountId}`,
         accountGithubId: githubAccountId,
-        permissions: { contents: "read" },
+        permissions: { issues: "read", pull_requests: "read" },
         events: ["pull_request", "issues"],
         suspendedAt: null,
       },
@@ -143,7 +143,7 @@ describe("github-entity-follow", () => {
           JSON.stringify({
             token: "ghs_test_token",
             expires_at: "2099-01-01T00:00:00Z",
-            permissions: { contents: "read" },
+            permissions: { issues: "read", pull_requests: "read" },
             repository_selection: "selected",
           }),
           { status: 201, headers: { "content-type": "application/json" } },
@@ -232,14 +232,12 @@ describe("github-entity-follow", () => {
       expect(parseEntityReference("https://github.com/o/r/discussions/9")).toMatchObject({
         explicitType: "discussion",
       });
-      expect(parseEntityReference("https://github.com/o/r/commit/3F2A91C0")).toEqual({
-        kind: "commit",
-        owner: "o",
-        repo: "r",
-        sha: "3f2a91c0",
-      });
       expect(parseEntityReference("o/r#42")).toMatchObject({ kind: "numeric", explicitType: null, number: 42 });
-      expect(parseEntityReference("o/r@abcdef1")).toMatchObject({ kind: "commit", sha: "abcdef1" });
+    });
+
+    it("does not parse commit references as manual follow targets", () => {
+      expect(parseEntityReference("https://github.com/o/r/commit/3F2A91C0")).toBeNull();
+      expect(parseEntityReference("o/r@abcdef1")).toBeNull();
     });
 
     it("rejects garbage", () => {
@@ -247,6 +245,22 @@ describe("github-entity-follow", () => {
       expect(parseEntityReference("https://github.com/o/r")).toBeNull();
       expect(parseEntityReference("o/r#abc")).toBeNull();
     });
+  });
+
+  it("rejects commit follow and unfollow before minting a token or calling GitHub", async () => {
+    const app = getApp();
+    const s = await setup(app);
+    const fetcher = vi.fn<typeof fetch>().mockRejectedValue(new Error("unexpected GitHub request"));
+
+    await expect(
+      declareEntityFollow(app.db, deps(fetcher), followParams(s, "https://github.com/acme/api/commit/3f2a91c0")),
+    ).rejects.toThrow(/Commit references are not supported/);
+    await expect(removeEntityFollow(app.db, { chatId: s.chatId, entity: "acme/api@3f2a91c0" })).rejects.toThrow(
+      /Commit references are not supported/,
+    );
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(0);
   });
 
   it("follows a short-form entity: discriminates PR vs issue and canonicalises the key (R8/R9)", async () => {
@@ -467,79 +481,6 @@ describe("github-entity-follow", () => {
     expect(row?.entityState).toBe("draft");
   });
 
-  it("follows a commit URL and stores the full sha with its first-line title", async () => {
-    const app = getApp();
-    const s = await setup(app);
-    const fullSha = "3f2a91c0aaaabbbbccccddddeeeeffff00001111";
-    const fetcher = makeFetcher({
-      "/repos/Acme/Api/commits/3f2a91c0": () =>
-        json({
-          sha: fullSha,
-          html_url: `https://github.com/Acme/Api/commit/${fullSha}`,
-          commit: { message: "Fix inbox routing\n\nLonger body" },
-        }),
-      "/repos/acme/api": () => json({ full_name: "Acme/Api" }),
-    });
-
-    const result = await declareEntityFollow(
-      app.db,
-      deps(fetcher),
-      followParams(s, "https://github.com/acme/api/commit/3F2A91C0"),
-    );
-
-    expect(result.outcome).toBe("created");
-    if (result.outcome !== "created") throw new Error("unreachable");
-    expect(result.entity).toMatchObject({
-      entityType: "commit",
-      entityKey: `Acme/Api@${fullSha}`,
-      htmlUrl: `https://github.com/Acme/Api/commit/${fullSha}`,
-      title: "Fix inbox routing",
-      state: null,
-      number: null,
-    });
-
-    const [row] = await app.db
-      .select({
-        entityType: githubEntityChatMappings.entityType,
-        entityKey: githubEntityChatMappings.entityKey,
-        title: githubEntityChatMappings.title,
-        entityState: githubEntityChatMappings.entityState,
-      })
-      .from(githubEntityChatMappings)
-      .where(eq(githubEntityChatMappings.chatId, s.chatId));
-    expect(row).toEqual({
-      entityType: "commit",
-      entityKey: `Acme/Api@${fullSha}`,
-      title: "Fix inbox routing",
-      entityState: "open",
-    });
-  });
-
-  it("allows commit payloads without a commit object and falls back to a null title", async () => {
-    const app = getApp();
-    const s = await setup(app);
-    const fullSha = "3f2a91c0aaaabbbbccccddddeeeeffff00001111";
-    const fetcher = makeFetcher({
-      "/repos/Acme/Api/commits/3f2a91c0": () =>
-        json({
-          sha: fullSha,
-          html_url: `https://github.com/Acme/Api/commit/${fullSha}`,
-          commit: null,
-        }),
-      "/repos/acme/api": () => json({ full_name: "Acme/Api" }),
-    });
-
-    const result = await declareEntityFollow(
-      app.db,
-      deps(fetcher),
-      followParams(s, "https://github.com/acme/api/commit/3F2A91C0"),
-    );
-
-    expect(result.outcome).toBe("created");
-    if (result.outcome !== "created") throw new Error("unreachable");
-    expect(result.entity.title).toBeNull();
-  });
-
   it("falls back to a null live state when GitHub returns an unexpected PR state", async () => {
     const app = getApp();
     const s = await setup(app);
@@ -682,7 +623,7 @@ describe("github-entity-follow", () => {
         return json({
           token: "ghs_test_token",
           expires_at: "2099-01-01T00:00:00Z",
-          permissions: { contents: "read" },
+          permissions: { issues: "read", pull_requests: "read" },
           repository_selection: "selected",
         });
       }
@@ -1510,31 +1451,76 @@ describe("github-entity-follow", () => {
     ).resolves.toEqual({ removed: 1 });
   });
 
-  it("commit unfollow escapes LIKE metacharacters — an underscore repo cannot sweep a sibling", async () => {
+  it("keeps webhook commit rows readable while legacy manual commit rows stay inert", async () => {
     const app = getApp();
     const s = await setup(app);
-    const base = {
+    const webhookDelegate = await seedAgent(app, s.admin.organizationId, s.admin.memberId, "agent");
+    await seedPairMembership(app, s.chatId, s.human, webhookDelegate);
+    await app.db.insert(githubEntityChatMappings).values([
+      {
+        organizationId: s.admin.organizationId,
+        humanAgentId: s.human,
+        delegateAgentId: s.delegate,
+        entityType: "commit",
+        entityKey: "Acme/Api@3f2a91c0aaaabbbbccccddddeeeeffff00001111",
+        chatId: s.chatId,
+        boundVia: "agent_declared",
+        boundAt: new Date("2026-08-20T10:00:00.000Z"),
+      },
+      {
+        organizationId: s.admin.organizationId,
+        humanAgentId: s.human,
+        delegateAgentId: webhookDelegate,
+        entityType: "commit",
+        entityKey: "Acme/Api@3f2a91c0aaaabbbbccccddddeeeeffff00001111",
+        chatId: s.chatId,
+        boundVia: "direct",
+        title: "Webhook-observed commit",
+        boundAt: new Date("2026-08-20T09:00:00.000Z"),
+      },
+    ]);
+
+    const list = await listChatGithubEntities(app.db, { chatId: s.chatId });
+    expect(list.items).toEqual([
+      {
+        entityType: "commit",
+        entityKey: "Acme/Api@3f2a91c0aaaabbbbccccddddeeeeffff00001111",
+        boundVia: "direct",
+        htmlUrl: "https://github.com/Acme/Api/commit/3f2a91c0aaaabbbbccccddddeeeeffff00001111",
+        title: "Webhook-observed commit",
+        state: null,
+        number: null,
+      },
+    ]);
+
+    const storedRows = await app.db
+      .select({ boundVia: githubEntityChatMappings.boundVia })
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.chatId, s.chatId));
+    expect(storedRows).toHaveLength(2);
+  });
+
+  it("does not let a rejected commit unfollow mutate historical rows", async () => {
+    const app = getApp();
+    const s = await setup(app);
+    await app.db.insert(githubEntityChatMappings).values({
       organizationId: s.admin.organizationId,
       humanAgentId: s.human,
       delegateAgentId: s.delegate,
       entityType: "commit",
+      entityKey: "acme/my_app@3f2a91c0aaaabbbbccccddddeeeeffff00001111",
       chatId: s.chatId,
       boundVia: "agent_declared",
-    };
-    await app.db.insert(githubEntityChatMappings).values([
-      { ...base, entityKey: "acme/my_app@3f2a91c0aaaabbbbccccddddeeeeffff00001111" },
-      // `_` as LIKE-any-char would also match this sibling repo's row.
-      { ...base, entityKey: "acme/myxapp@3f2a91c0aaaabbbbccccddddeeeeffff00001111" },
-    ]);
-
-    await expect(removeEntityFollow(app.db, { chatId: s.chatId, entity: "acme/my_app@3f2a91c0" })).resolves.toEqual({
-      removed: 1,
     });
+
+    await expect(removeEntityFollow(app.db, { chatId: s.chatId, entity: "acme/my_app@3f2a91c0" })).rejects.toThrow(
+      /Commit references are not supported/,
+    );
     const remaining = await app.db
       .select({ entityKey: githubEntityChatMappings.entityKey })
       .from(githubEntityChatMappings)
       .where(eq(githubEntityChatMappings.chatId, s.chatId));
-    expect(remaining).toEqual([{ entityKey: "acme/myxapp@3f2a91c0aaaabbbbccccddddeeeeffff00001111" }]);
+    expect(remaining).toEqual([{ entityKey: "acme/my_app@3f2a91c0aaaabbbbccccddddeeeeffff00001111" }]);
   });
 
   it("rebind whose conflicting row vanished concurrently falls back to a real insert (no ghost success)", async () => {
@@ -1806,76 +1792,6 @@ describe("github-entity-follow", () => {
       htmlUrl: "https://github.com/Acme/Api/discussions/42",
       number: 42,
     });
-  });
-
-  it("unfollow by short commit sha prefix removes the full-sha row", async () => {
-    const app = getApp();
-    const s = await setup(app);
-    await app.db.insert(githubEntityChatMappings).values({
-      organizationId: s.admin.organizationId,
-      humanAgentId: s.human,
-      delegateAgentId: s.delegate,
-      entityType: "commit",
-      entityKey: "Acme/Api@3f2a91c0aaaabbbbccccddddeeeeffff00001111",
-      chatId: s.chatId,
-      boundVia: "agent_declared",
-    });
-    await expect(removeEntityFollow(app.db, { chatId: s.chatId, entity: "acme/api@3f2a91c0" })).resolves.toEqual({
-      removed: 1,
-    });
-  });
-
-  it("uses commit resolver fallbacks for repo name, sha, html URL, and blank first-line title", async () => {
-    const app = getApp();
-    const s = await setup(app);
-    const fetcher = makeFetcher({
-      "/repos/acme/api/commits/3f2a91c0": () => json({ commit: { message: "\nbody" } }),
-      "/repos/acme/api": () => json({}),
-    });
-
-    const result = await declareEntityFollow(app.db, deps(fetcher), followParams(s, "acme/api@3f2a91c0"));
-
-    expect(result.outcome).toBe("created");
-    if (result.outcome !== "created") throw new Error("expected created");
-    expect(result.entity).toMatchObject({
-      entityType: "commit",
-      entityKey: "acme/api@3f2a91c0",
-      htmlUrl: "https://github.com/acme/api/commit/3f2a91c0",
-      title: "",
-      state: null,
-      number: null,
-    });
-  });
-
-  it("maps commit GitHub failures after repo resolution", async () => {
-    const app = getApp();
-    const unavailable = await setup(app);
-    await expect(
-      declareEntityFollow(
-        app.db,
-        deps(
-          makeFetcher({
-            "/repos/acme/api/commits/3f2a91c0": () => json({ message: "server error" }, 502),
-            "/repos/acme/api": () => json({ full_name: "Acme/Api" }),
-          }),
-        ),
-        followParams(unavailable, "acme/api@3f2a91c0"),
-      ),
-    ).rejects.toBeInstanceOf(ServiceUnavailableError);
-
-    const missing = await setup(app);
-    await expect(
-      declareEntityFollow(
-        app.db,
-        deps(
-          makeFetcher({
-            "/repos/acme/api/commits/3f2a91c0": () => json({ message: "Not Found" }, 404),
-            "/repos/acme/api": () => json({ full_name: "Acme/Api" }),
-          }),
-        ),
-        followParams(missing, "acme/api@3f2a91c0"),
-      ),
-    ).rejects.toBeInstanceOf(NotFoundError);
   });
 
   it("maps PR second-hop failures without writing a follow row", async () => {

@@ -140,7 +140,7 @@ describe("fetchEntityLiveFields", () => {
     ).resolves.toEqual({ title: "", state: "closed" });
   });
 
-  it("fetches issue state and commit title", async () => {
+  it("fetches issue state", async () => {
     const issueFetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({ title: "Bug", state: "closed" }));
     await expect(
       __testing.fetchEntityLiveFields(
@@ -150,21 +150,9 @@ describe("fetchEntityLiveFields", () => {
         issueFetcher,
       ),
     ).resolves.toEqual({ title: "Bug", state: "closed" });
-
-    const commitFetcher = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(jsonResponse({ commit: { message: "Fix startup\n\nBody" } }));
-    await expect(
-      __testing.fetchEntityLiveFields(
-        "commit",
-        { kind: "sha", owner: "owner", repo: "repo", sha: "abcdef1" },
-        "token",
-        commitFetcher,
-      ),
-    ).resolves.toEqual({ title: "Fix startup", state: null });
   });
 
-  it("normalizes issue and commit live field fallbacks", async () => {
+  it("normalizes issue live field fallbacks", async () => {
     await expect(
       __testing.fetchEntityLiveFields(
         "issue",
@@ -173,24 +161,19 @@ describe("fetchEntityLiveFields", () => {
         vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({ state: "triaged" })),
       ),
     ).resolves.toEqual({ title: null, state: null });
+  });
 
+  it("never resolves commit fields through GitHub REST", async () => {
+    const fetcher = vi.fn<typeof fetch>();
     await expect(
       __testing.fetchEntityLiveFields(
         "commit",
         { kind: "sha", owner: "owner", repo: "repo", sha: "abcdef1" },
         "token",
-        vi.fn<typeof fetch>().mockResolvedValueOnce(new Response("nope", { status: 500 })),
+        fetcher,
       ),
     ).resolves.toEqual({ title: null, state: null });
-
-    await expect(
-      __testing.fetchEntityLiveFields(
-        "commit",
-        { kind: "sha", owner: "owner", repo: "repo", sha: "abcdef1" },
-        "token",
-        vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({ commit: {} })),
-      ),
-    ).resolves.toEqual({ title: null, state: null });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it("returns empty live fields when fetch fails or entity type has no live endpoint", async () => {
@@ -285,7 +268,7 @@ describe("resolveChatGithubEntity", () => {
     });
   });
 
-  it("does not fetch live fields without a token", async () => {
+  it("keeps legacy manually followed commit rows inert and read-safe", async () => {
     const fetcher = vi.fn<typeof fetch>();
 
     await expect(
@@ -294,12 +277,44 @@ describe("resolveChatGithubEntity", () => {
         null,
         fetcher,
       ),
+    ).resolves.toBeNull();
+    await expect(
+      resolveChatGithubEntity(
+        { entityType: "commit", entityKey: "owner/repo@abcdef1", boundVia: "human_declared" },
+        "token",
+        fetcher,
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      resolveChatGithubEntity(
+        { entityType: "commit", entityKey: "owner/repo@abcdef1", boundVia: "agent_created" },
+        "token",
+        fetcher,
+      ),
+    ).resolves.toBeNull();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("materializes webhook commit rows without a live GitHub lookup", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+
+    await expect(
+      resolveChatGithubEntity(
+        {
+          entityType: "commit",
+          entityKey: "owner/repo@abcdef1",
+          boundVia: "direct",
+          title: "Webhook projection",
+        },
+        "token",
+        fetcher,
+      ),
     ).resolves.toEqual({
       entityType: "commit",
       entityKey: "owner/repo@abcdef1",
-      boundVia: "agent_declared",
+      boundVia: "direct",
       htmlUrl: "https://github.com/owner/repo/commit/abcdef1",
-      title: null,
+      title: "Webhook projection",
       state: null,
       number: null,
     });

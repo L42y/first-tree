@@ -3,6 +3,7 @@ import {
   AGENT_TYPES,
   type GithubAppInstallationPermissions,
   type GithubTaskReplyErrorCode,
+  githubEntityBoundViaSchema,
   isDeclaredBoundVia,
   type NormalizedScmEvent,
   type ScmAudienceEntry,
@@ -272,6 +273,15 @@ export async function resolveGithubAudience(
       ),
     );
 
+  const activeSubscribedRows = subscribedRows.filter((row) => {
+    if (event.entity.type !== "commit") return true;
+    const boundVia = githubEntityBoundViaSchema.safeParse(row.boundVia);
+    // Commit attention remains webhook-only. Historical manual rows (including
+    // read-normalized `agent_created`) and unknown legacy provenance are inert,
+    // while direct/human_fallback webhook rows continue to route normally.
+    return boundVia.success && !isDeclaredBoundVia(boundVia.data);
+  });
+
   // Dedup subscribed rows by `(humanAgentId, delegateAgentId, chatId)` (keep
   // earliest `bound_at`). Alias entity keys can leave duplicate rows for the
   // same logical attention line, but distinct delegates are distinct wake
@@ -290,8 +300,8 @@ export async function resolveGithubAudience(
   // share the same fallback human and chat while carrying distinct wake
   // agents. "The chat follows, not the person", so the surviving unit is one
   // row per (human, delegate, chat).
-  const earliestByAttentionLine = new Map<string, (typeof subscribedRows)[number]>();
-  for (const row of subscribedRows) {
+  const earliestByAttentionLine = new Map<string, (typeof activeSubscribedRows)[number]>();
+  for (const row of activeSubscribedRows) {
     const key = `${row.humanAgentId}:${row.delegateAgentId}:${row.chatId}`;
     const current = earliestByAttentionLine.get(key);
     if (!current || row.boundAt < current.boundAt) {
@@ -319,7 +329,7 @@ export async function resolveGithubAudience(
   // comment, …) is a legitimately distinct subscribed signal.
   const isPullRequestOpened = event.eventType === "pull_request" && event.action === "opened";
   const involvedLogins = new Set(event.targets.map((target) => target.externalUsername.toLowerCase()));
-  const keepSubscribedOpened = (row: (typeof subscribedRows)[number]): boolean => {
+  const keepSubscribedOpened = (row: (typeof activeSubscribedRows)[number]): boolean => {
     if (!isPullRequestOpened) return true;
     if (isDeclaredBoundVia(row.boundVia)) return true;
     return row.humanAgentName !== null && involvedLogins.has(row.humanAgentName.toLowerCase());

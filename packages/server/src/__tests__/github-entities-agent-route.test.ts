@@ -53,7 +53,7 @@ describe("agent github-entities routes", () => {
         accountType: "Organization",
         accountLogin: `acme-${githubAccountId}`,
         accountGithubId: githubAccountId,
-        permissions: { contents: "read" },
+        permissions: { issues: "read", pull_requests: "read" },
         events: ["pull_request", "issues"],
         suspendedAt: null,
       },
@@ -70,7 +70,7 @@ describe("agent github-entities routes", () => {
         {
           token: "ghs_test_token",
           expires_at: "2099-01-01T00:00:00Z",
-          permissions: { contents: "read" },
+          permissions: { issues: "read", pull_requests: "read" },
           repository_selection: "selected",
         },
         201,
@@ -111,6 +111,20 @@ describe("agent github-entities routes", () => {
     });
     expect(res.statusCode).toBe(422);
     expect((res.json() as { error: string }).error).toContain("GitHub App");
+  });
+
+  it("rejects commit references at the agent API boundary", async () => {
+    const app = getApp();
+    const a = await createTestAgent(app, { name: `gh-commit-${randomUUID().slice(0, 6)}` });
+    const chatId = await createChatWith(a, [a.humanAgentUuid]);
+
+    const res = await a.request("POST", `/api/v1/agent/chats/${chatId}/github-entities`, {
+      entity: "https://github.com/acme/api/commit/3f2a91c0",
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("Commit references are not supported");
+    expect(await app.db.select().from(githubEntityChatMappings)).toHaveLength(0);
   });
 
   it("follow in an agents-only chat still resolves a pair via the supervising human watcher", async () => {
