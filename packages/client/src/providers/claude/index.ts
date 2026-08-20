@@ -15,10 +15,12 @@ import type {
 import {
   DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD,
   encodeProviderRetryEventMessage,
+  hasTeamSkillInvocationMarker,
   isImageBatchRefContent,
   isImageRefContent,
   runtimeProviderSchema,
   SUPPORTED_IMAGE_MIMES as SHARED_SUPPORTED_IMAGE_MIMES,
+  TEAM_SKILL_INVOCATION_METADATA_KEY,
 } from "@first-tree/shared";
 import type {
   AgentHandler,
@@ -607,17 +609,33 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       // Preserve the specialized current-image prompt while routing it through
       // the shared formatter, which is responsible for the supported generic
       // request images in precedingMessages. Keep ONLY the routed-mention
-      // evidence from the original metadata so the shared Team Skill command
-      // registry can still gate a mention-prefixed caption slash command;
-      // other metadata stays cleared because batch documents are appended
-      // explicitly below.
-      const routingMetadata =
-        message.metadata && Array.isArray(message.metadata.mentions) ? { mentions: message.metadata.mentions } : null;
+      // evidence and the server-owned Team Skill invocation marker from the
+      // original metadata so the shared command boundary can still gate a
+      // mention-prefixed caption slash command and prove Team intent for a
+      // captioned command; other metadata stays cleared because batch
+      // documents are appended explicitly below.
+      const routingMetadata = message.metadata
+        ? (() => {
+            const preserved = {
+              ...(Array.isArray(message.metadata.mentions) ? { mentions: message.metadata.mentions } : {}),
+              ...(hasTeamSkillInvocationMarker(message.metadata)
+                ? { [TEAM_SKILL_INVOCATION_METADATA_KEY]: message.metadata[TEAM_SKILL_INVOCATION_METADATA_KEY] }
+                : {}),
+            };
+            return Object.keys(preserved).length > 0 ? preserved : null;
+          })()
+        : null;
       const formatFileText = async (text: string): Promise<string> =>
         sessionCtx.formatInboundContent({
           ...message,
           format: "text",
           content: text,
+          // Preserve ONLY the two metadata facts the shared Team Skill
+          // boundary needs: routed mentions (authorize `@agent /command`)
+          // and the server-owned invocation marker (prove Team intent for a
+          // captioned command). Every other key stays cleared because batch
+          // documents are appended explicitly below — carrying full metadata
+          // would duplicate the attachment notes.
           metadata: routingMetadata,
         });
 

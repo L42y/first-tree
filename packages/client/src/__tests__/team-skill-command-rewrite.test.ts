@@ -152,7 +152,24 @@ describe("rewriteSessionMessageCommand", () => {
     expect(rewriteSessionMessageCommand(message, registry)).toBe(message);
   });
 
-  it("never touches non-string payloads", () => {
+  it("rewrites a file caption while preserving its structured container", () => {
+    const message = {
+      id: "m1",
+      content: {
+        caption: "@nova /review screenshots",
+        attachments: [{ imageId: "image-1", mimeType: "image/png", filename: "one.png" }],
+      },
+    };
+    const rewritten = rewriteSessionMessageCommand(message, registry, { allowMentionPrefix: true });
+    expect(rewritten).not.toBe(message);
+    expect(rewritten.content).toEqual({
+      caption: "@nova /review-first-tree screenshots",
+      attachments: [{ imageId: "image-1", mimeType: "image/png", filename: "one.png" }],
+    });
+    expect(message.content.caption).toBe("@nova /review screenshots");
+  });
+
+  it("never touches structured payloads without a string caption", () => {
     const message = { id: "m1", content: { kind: "image" } };
     expect(rewriteSessionMessageCommand(message, registry)).toBe(message);
   });

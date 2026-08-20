@@ -6,6 +6,10 @@ import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import { formatInboundContent } from "../../../runtime/agent-io.js";
 import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import {
+  buildTeamSkillCommandRegistry,
+  rewriteSessionMessageCommand,
+} from "../../../runtime/team-skill-command-rewrite.js";
 
 const state = vi.hoisted(() => ({
   chatContextPromise: null as Promise<ChatContext> | null,
@@ -311,6 +315,9 @@ describe("claude-code handler startup inject queue", () => {
 
   it("materializes legacy inline images and describes unavailable image batches", async () => {
     const completedCounts: Array<number | undefined> = [];
+    const registry = buildTeamSkillCommandRegistry([
+      { requestedSlug: "review", resourceId: "res-review-1", effectiveName: "review-first-tree" },
+    ]);
     const handler = createClaudeCodeHandler({
       runtimeProvider: "claude-code",
       workspaceRoot,
@@ -321,7 +328,14 @@ describe("claude-code handler startup inject queue", () => {
         completedCounts.push(count);
       },
       {
-        formatInboundContent: async (message) => formatInboundContent(message, { get: async () => [] }),
+        formatInboundContent: async (message) =>
+          formatInboundContent(
+            rewriteSessionMessageCommand(message, registry, {
+              allowMentionPrefix:
+                Array.isArray(message.metadata?.mentions) && message.metadata.mentions.includes(AGENT_ID),
+            }),
+            { get: async () => [] },
+          ),
       },
     );
     state.resolveChatContext?.({
@@ -347,7 +361,7 @@ describe("claude-code handler startup inject queue", () => {
     );
 
     const batchMessage = makeFileMessage("batch-images", {
-      caption: "Compare these screenshots",
+      caption: "@nova /review Compare these screenshots",
       attachments: [
         {
           imageId: "00000000-0000-4000-8000-000000000001",
@@ -363,6 +377,7 @@ describe("claude-code handler startup inject queue", () => {
         },
       ],
     });
+    batchMessage.metadata = { mentions: [AGENT_ID] };
     batchMessage.precedingMessages = [
       {
         id: "earlier-request",
@@ -390,7 +405,7 @@ describe("claude-code handler startup inject queue", () => {
     expect(state.observedInputs[0]).toContain("Filename: legacy.png");
     expect(state.observedInputs[0]).toContain(join("first-tree", "images", "unknown"));
     expect(state.observedInputs[0]).toContain(".png");
-    expect(state.observedInputs[1]).toContain("Compare these screenshots");
+    expect(state.observedInputs[1]).toContain("@nova /review-first-tree Compare these screenshots");
     expect(state.observedInputs[1]).toContain("[Earlier in chat — context you missed]");
     expect(state.observedInputs[1]).toContain("Which earlier layout should ship?");
     expect(state.observedInputs[1]).toContain('[Image "decision.png" not available on this device]');
