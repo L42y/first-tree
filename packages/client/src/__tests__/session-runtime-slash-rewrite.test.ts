@@ -34,17 +34,30 @@ function textMessage(content: string, mentions?: string[], configVersion?: numbe
   };
 }
 
-async function captureContext(): Promise<{ ctx: SessionContext; runtime: SessionRuntime }> {
+async function captureContext(): Promise<{
+  ctx: SessionContext;
+  runtime: SessionRuntime;
+  startCount: () => number;
+  handlerShutdowns: () => number;
+  currentCtx: () => SessionContext;
+}> {
+  let starts = 0;
+  let teardowns = 0;
   let capturedCtx: SessionContext | undefined;
   const handler: AgentHandler = {
     start: vi.fn(async (_msg, ctx) => {
+      starts++;
       capturedCtx = ctx;
-      return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
+      return { sessionId: `session-${starts}`, route: { kind: "owned" as const, mode: "queued" as const } };
     }),
     resume: vi.fn(async () => ({ sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } })),
     inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
-    suspend: vi.fn().mockResolvedValue(undefined),
-    shutdown: vi.fn().mockResolvedValue(undefined),
+    suspend: vi.fn(async () => {
+      teardowns++;
+    }),
+    shutdown: vi.fn(async () => {
+      teardowns++;
+    }),
   };
   const runtime = new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
@@ -63,10 +76,20 @@ async function captureContext(): Promise<{ ctx: SessionContext; runtime: Session
     sdk: mockSdk(),
     log: silentLogger() as unknown as pino.Logger,
     ackEntry: vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
+    recoverChat: vi.fn().mockResolvedValue(undefined),
   });
   await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
   if (!capturedCtx) throw new Error("expected the handler to receive a session context");
-  return { ctx: capturedCtx, runtime };
+  return {
+    ctx: capturedCtx,
+    runtime,
+    startCount: () => starts,
+    handlerShutdowns: () => teardowns,
+    currentCtx: () => {
+      if (!capturedCtx) throw new Error("no session context captured");
+      return capturedCtx;
+    },
+  };
 }
 
 const PUBLISHED = [{ requestedSlug: "review", effectiveName: "review-first-tree" }];
@@ -162,6 +185,66 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     expect(await ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).toContain(
       "/review-first-tree src/",
     );
+
+    await runtime.shutdown();
+  });
+});
+
+describe("SessionRuntime registry version-mismatch recovery", () => {
+  it("fails the session for recovery when a fenced message is retried, so a fresh handler reconciles first", async () => {
+    const { ctx, runtime, handlerShutdowns } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // v2 strict slash against the v1 registry: fenced, recorded.
+    const fenced = textMessage("/review src/", undefined, 2);
+    await expect(ctx.formatInboundContent(fenced)).rejects.toThrow(/registry is not published/);
+
+    // The provider retries with custody retained; the session is then
+    // failed for recovery: the live handler is torn down and the session
+    // dropped, so the redelivery starts a FRESH handler whose preparation
+    // reconciles (and republishes) the new version before formatting.
+    // (The redelivery→fresh-start hop itself is the existing inbox
+    // recovery machinery, covered by the session custody suites.)
+    ctx.retryTurn(fenced, "codex_queued_turn_format_failed");
+    await vi.waitFor(() => expect(handlerShutdowns()).toBe(1));
+
+    // A fresh handler's context starts unpublished and heals once the v2
+    // registry is published — no permanent retry loop.
+    const fresh = await captureContext();
+    await expect(fresh.ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).rejects.toThrow(
+      /registry is not published/,
+    );
+    fresh.ctx.publishTeamSkillCommands(PUBLISHED, 2);
+    expect(await fresh.ctx.formatInboundContent(textMessage("/review src/", undefined, 2))).toContain(
+      "/review-first-tree src/",
+    );
+    await fresh.runtime.shutdown();
+
+    await runtime.shutdown();
+  });
+
+  it("does not restart the session for a same-version genuinely-unavailable Team command", async () => {
+    const { ctx, runtime, startCount } = await captureContext();
+    ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
+
+    const message = textMessage("/review src/", undefined, 1);
+    await expect(ctx.formatInboundContent(message)).rejects.toThrow(/no verified installed target/);
+    ctx.retryTurn(message, "team_skill_command_unavailable");
+
+    await runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again" }));
+    // The existing session is still live — the new message injected into it.
+    expect(startCount()).toBe(1);
+
+    await runtime.shutdown();
+  });
+
+  it("does not restart the session when a retried message never hit the fence", async () => {
+    const { ctx, runtime, startCount } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    ctx.retryTurn(textMessage("just text", undefined, 1), "some_transient_failure");
+
+    await runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "hello again" }));
+    expect(startCount()).toBe(1);
 
     await runtime.shutdown();
   });

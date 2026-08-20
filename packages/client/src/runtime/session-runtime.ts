@@ -88,6 +88,7 @@ import { type RuntimeSyncActiveSet, SessionProjectionAuthority } from "./session
 import { type SlotDeliveryKind, SlotSchedulerAuthority } from "./slot-scheduler-authority.js";
 import {
   buildTeamSkillCommandRegistry,
+  isTeamSkillCommandUnavailableError,
   rewriteSessionMessageCommand,
   type TeamSkillCommandRegistry,
 } from "./team-skill-command-rewrite.js";
@@ -3067,6 +3068,15 @@ export class SessionRuntime {
       registry: null,
       version: null,
     };
+    // Message ids whose strict slash command failed the registry version
+    // fence. When such a message is later retried, the session is failed
+    // for recovery so a FRESH handler reconciles and republishes a registry
+    // proven for the new config version before the redelivery is formatted
+    // — a format-first provider otherwise loops on its own fence forever.
+    // Same-version genuinely-unavailable commands never land here, so they
+    // never trigger a restart; the set is read-and-cleared per retry to
+    // avoid cross-message false positives.
+    const registryVersionMismatchedMessageIds = new Set<string>();
 
     const forwardResult = createResultSink({
       clearTrigger: () => {
@@ -3156,6 +3166,20 @@ export class SessionRuntime {
       retryTurn: (messages, reason) => {
         if (mutationValid && !mutationValid()) return;
         this.retryDeliveryTurn(chatId, messages, reason);
+        // A version-fenced strict slash command cannot heal inside this
+        // handler (its registry is proven for the old config version and
+        // some providers format before they reconcile). After custody is
+        // retained, fail the session for recovery so the redelivery starts
+        // a fresh handler whose preparation reconciles the new version
+        // first.
+        const batch = Array.isArray(messages) ? messages : [messages];
+        let versionMismatched = false;
+        for (const message of batch) {
+          if (registryVersionMismatchedMessageIds.delete(message.id)) versionMismatched = true;
+        }
+        if (versionMismatched) {
+          this.failSessionForRecovery(chatId, "team_skill_registry_version_mismatch");
+        }
         this.projection.projectSessionRuntime(chatId);
       },
       hasPendingDelivery: (messages) => {
@@ -3201,18 +3225,25 @@ export class SessionRuntime {
         // the registry's proven config version. A message stamped with a
         // different version resolves against UNKNOWN — never a stale
         // registry. Synthetic messages without a stamp skip the fence.
-        const fencedRegistry =
-          message.configVersion !== undefined && version !== message.configVersion ? null : registry;
-        return formatInboundContent(
-          rewriteSessionMessageCommand(message, fencedRegistry, {
-            // A canonical `@slug …` prefix only qualifies as a command
-            // prefix when the message's routed metadata explicitly
-            // mentions this agent — typed-but-unrouted look-alikes never
-            // unlock the mention-prefixed rewrite.
-            allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
-          }),
-          participants,
-        );
+        const versionMismatched = message.configVersion !== undefined && version !== message.configVersion;
+        const fencedRegistry = versionMismatched ? null : registry;
+        try {
+          return await formatInboundContent(
+            rewriteSessionMessageCommand(message, fencedRegistry, {
+              // A canonical `@slug …` prefix only qualifies as a command
+              // prefix when the message's routed metadata explicitly
+              // mentions this agent — typed-but-unrouted look-alikes never
+              // unlock the mention-prefixed rewrite.
+              allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
+            }),
+            participants,
+          );
+        } catch (error) {
+          if (versionMismatched && isTeamSkillCommandUnavailableError(error)) {
+            registryVersionMismatchedMessageIds.add(message.id);
+          }
+          throw error;
+        }
       },
       resolveSenderLabel: async (senderId) => resolveSenderLabel(senderId, await participants.get()),
       formatFromHeader: (message) => buildFromHeader(message, participants),

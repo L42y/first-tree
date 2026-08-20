@@ -1775,20 +1775,13 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   async function startTurnFromPendingInputs(sessionCtx: SessionContext): Promise<void> {
     if (pendingInputs.length === 0 || turnStartInProgress) return;
     const batch = pendingInputs.slice();
-    let text: string;
-    try {
-      text = await formatBatchInput(batch, sessionCtx, "post-turn");
-    } catch (err) {
-      removePendingPrefix(batch);
-      retryBatch(batch, "codex_queued_turn_format_failed");
-      await closeAppServerAfterUnknownCustody(sessionCtx, "codex_queued_turn_format_failed", err);
-      return;
-    }
-    removePendingPrefix(batch);
     const token = batch[0]?.token;
     if (!token) return;
-    // Active-session hot-switch: pick up a mid-session briefing change before
-    // this injected turn and surface the re-read notice.
+    // Active-session hot-switch BEFORE formatting: the Team Skill command
+    // registry fence rejects a message stamped with a newer config version,
+    // and only this reconcile can publish the registry that lets a retried
+    // turn succeed — formatting first would deadlock the turn on its own
+    // fence.
     let refreshed: { fingerprint: string; changed: boolean } | null;
     try {
       refreshed = await refreshBriefingForActiveTurn(sessionCtx);
@@ -1803,6 +1796,16 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
       sessionCtx.log(`Active session briefing changed — prepending re-read notice (${threadId})`);
     }
+    let text: string;
+    try {
+      text = await formatBatchInput(batch, sessionCtx, "post-turn");
+    } catch (err) {
+      removePendingPrefix(batch);
+      retryBatch(batch, "codex_queued_turn_format_failed");
+      await closeAppServerAfterUnknownCustody(sessionCtx, "codex_queued_turn_format_failed", err);
+      return;
+    }
+    removePendingPrefix(batch);
     void runTurnFromText(
       text,
       batch.map((entry) => entry.message),

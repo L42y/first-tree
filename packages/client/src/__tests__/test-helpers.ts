@@ -69,6 +69,8 @@ export function mockEntry(
     precedingMessages?: PrecedingMessage[];
     /** Override the derived `message.id`. */
     messageId?: string;
+    /** Override the stamped `configVersion` (default 1). */
+    configVersion?: number;
   } = {},
 ): InboxEntryWithMessage {
   const chatId = opts.chatId ?? "chat-1";
@@ -95,7 +97,7 @@ export function mockEntry(
       inReplyTo: opts.inReplyTo ?? null,
       source: null,
       createdAt: new Date().toISOString(),
-      configVersion: 1,
+      configVersion: opts.configVersion ?? 1,
       recipientMode: opts.recipientMode ?? "full",
       precedingMessages: opts.precedingMessages ?? [],
     },
