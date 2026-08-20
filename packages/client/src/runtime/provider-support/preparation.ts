@@ -13,6 +13,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   type AgentRuntimeConfig,
   type AgentRuntimeConfigPayload,
+  normalizeTeamSkillTargetSlug,
   type RuntimeProvider,
   WORKSPACE_MANIFEST_FILENAME,
   WORKSPACE_STATE_DIRNAME,
@@ -815,13 +816,47 @@ export async function projectManagedWorkspace(
     // Publish the complete command registry BEFORE any provider turn is
     // formatted from this context: a local collision may have installed a
     // Team Skill under a suffixed name, and a configured-but-uninstalled
-    // base must fail closed. `null` means this result is not an
-    // authoritative publication (stale snapshot / failed reconcile) — the
-    // previously published registry stays in force. The publisher is a
-    // required SessionContext capability — a missing one would let a
-    // configured-but-colliding base command fall through to a same-named
-    // unmanaged Skill.
-    if (teamSkillCommands !== null) sessionCtx.publishTeamSkillCommands(teamSkillCommands);
+    // base must fail closed. The publisher is a required SessionContext
+    // capability — a missing one would let a configured-but-colliding
+    // base command fall through to a same-named unmanaged Skill.
+    //
+    // `null` means this result is not an authoritative publication
+    // (stale/unavailable snapshot or a clean top-level failure), so exact
+    // command identities are unproven. Fail closed rather than "keep the
+    // old registry": prefer the verified ledger (last-known-good), else
+    // mark every Cloud-configured base in the current runtime config
+    // unavailable; with neither, leave the registry unpublished and the
+    // input boundary blocks strict slash commands until a projection
+    // settles.
+    if (teamSkillCommands !== null) {
+      sessionCtx.publishTeamSkillCommands(teamSkillCommands);
+    } else {
+      const verified = await verifyManagedSkillsProjectionForAdmission({
+        workspace,
+        provider: runtimeProvider,
+        providerSkillRoots,
+      });
+      if (verified) {
+        sessionCtx.publishTeamSkillCommands(
+          verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
+        );
+      } else {
+        const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
+        for (const skill of runtimeConfig?.payload.resourceSkills ?? []) {
+          try {
+            fallback.push({ requestedSlug: normalizeTeamSkillTargetSlug(skill.name), effectiveName: null });
+          } catch {
+            // A name with no portable slug never had a typable command.
+          }
+        }
+        if (fallback.length > 0) {
+          sessionCtx.log(
+            "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
+          );
+          sessionCtx.publishTeamSkillCommands(fallback);
+        }
+      }
+    }
 
     if (beforeBriefing) {
       const result = beforeBriefing({ workspace, sourceRepos, teamSkills });

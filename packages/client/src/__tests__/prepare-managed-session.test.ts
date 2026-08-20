@@ -430,6 +430,139 @@ describe("prepareManagedSession", () => {
     expect(callOrder.indexOf("skills")).toBeLessThan(callOrder.indexOf("briefing"));
   });
 
+  it("publishes the verified ledger registry when reconcile returns no authoritative commands", async () => {
+    const prepareManagedSession = await loadPrepare();
+    reconcileManagedSkillsForConfig.mockImplementation(async () => {
+      callOrder.push("skills");
+      return {
+        ok: false,
+        resourceConfigVersion: 0,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [],
+        teamSkillCommands: null,
+        failures: [{ key: "workspace", reason: "clean top-level failure" }],
+        staleTeamSnapshot: false,
+      };
+    });
+    const { verifyManagedSkillsProjectionForAdmission } = (await import("../runtime/managed-skills.js")) as unknown as {
+      verifyManagedSkillsProjectionForAdmission: ReturnType<typeof vi.fn>;
+    };
+    verifyManagedSkillsProjectionForAdmission.mockImplementation(async () => ({
+      resourceConfigVersion: 7,
+      teamSkills: [
+        {
+          key: "resource:skill",
+          name: "team-skill-first-tree",
+          requestedSlug: "team-skill",
+          description: "desc",
+          revision: "r1",
+          installedDigest: "sha256:abc",
+          target: "/tmp/skill-target",
+        },
+      ],
+    }));
+
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING_BODY";
+    });
+    const ctx = sessionCtx();
+    const publishTeamSkillCommands = vi.fn();
+    ctx.publishTeamSkillCommands = publishTeamSkillCommands;
+    await prepareManagedSession({
+      sessionCtx: ctx,
+      workspaceRoot,
+      agentName: "prep-agent",
+      runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      runtimeConfig: null,
+      payload: {
+        kind: "cursor" as const,
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      payloadResolved: false,
+      contextTree: { path: null, repoUrl: null, branch: null },
+    });
+
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith([
+      { requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" },
+    ]);
+  });
+
+  it("marks configured Team commands unavailable when neither reconcile nor the ledger can prove identities", async () => {
+    const prepareManagedSession = await loadPrepare();
+    reconcileManagedSkillsForConfig.mockImplementation(async () => {
+      callOrder.push("skills");
+      return {
+        ok: false,
+        resourceConfigVersion: 0,
+        installed: [],
+        skipped: [],
+        removed: [],
+        teamSkills: [],
+        teamSkillCommands: null,
+        failures: [{ key: "workspace", reason: "clean top-level failure" }],
+        staleTeamSnapshot: false,
+      };
+    });
+    const { verifyManagedSkillsProjectionForAdmission } = (await import("../runtime/managed-skills.js")) as unknown as {
+      verifyManagedSkillsProjectionForAdmission: ReturnType<typeof vi.fn>;
+    };
+    verifyManagedSkillsProjectionForAdmission.mockImplementation(async () => null);
+
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [
+        {
+          resourceId: "res-1",
+          name: "Team Review",
+          description: "d",
+          body: "b",
+          metadata: {},
+        },
+      ],
+    };
+    const runtimeConfig = {
+      agentId: "019d9a97-90b0-716b-8317-a8c0be8430d7",
+      version: 3,
+      payload,
+      updatedAt: new Date().toISOString(),
+      updatedBy: "test",
+    };
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING_BODY";
+    });
+    const ctx = sessionCtx();
+    const publishTeamSkillCommands = vi.fn();
+    ctx.publishTeamSkillCommands = publishTeamSkillCommands;
+    await prepareManagedSession({
+      sessionCtx: ctx,
+      workspaceRoot,
+      agentName: "prep-agent",
+      runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      runtimeConfig: runtimeConfig as never,
+      payload,
+      payloadResolved: true,
+      contextTree: { path: null, repoUrl: null, branch: null },
+    });
+
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith([{ requestedSlug: "team-review", effectiveName: null }]);
+  });
+
   it("continues when chat context fetch fails and logs the failure", async () => {
     const prepareManagedSession = await loadPrepare();
     const logs: string[] = [];

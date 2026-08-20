@@ -21,27 +21,22 @@ describe("buildTeamSkillCommandRegistry", () => {
     expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "no verified installed target" });
   });
 
-  it("fails closed on a duplicate base slug with different effective names", () => {
+  it("fails closed on ANY repeated base slug — even identical rows are inconsistent input", () => {
     const log = vi.fn();
     const registry = buildTeamSkillCommandRegistry(
-      [entry("review", "review-first-tree"), entry("review", "review-first-tree-2")],
+      [entry("review", "review-first-tree"), entry("review", "review-first-tree")],
       log,
     );
     expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "conflicting effective names" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("fails closed"));
   });
 
-  it("fails closed when a ready base later reports unavailable (never row-order wins)", () => {
-    const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("review", null)]);
-    expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "conflicting effective names" });
-  });
-
-  it("accepts the same effective name twice as idempotent, not a conflict", () => {
-    const registry = buildTeamSkillCommandRegistry([
-      entry("review", "review-first-tree"),
-      entry("review", "review-first-tree"),
-    ]);
-    expect(registry.get("review")).toEqual({ kind: "ready", effectiveName: "review-first-tree" });
+  it("fails closed when an identity row and a suffixed row share one base, in either order", () => {
+    const forward = buildTeamSkillCommandRegistry([entry("review", "review"), entry("review", "review-first-tree")]);
+    const reversed = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("review", "review")]);
+    for (const registry of [forward, reversed]) {
+      expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "conflicting effective names" });
+    }
   });
 
   it("skips malformed base slugs", () => {
@@ -98,6 +93,24 @@ describe("rewriteTeamSkillCommand", () => {
     );
     // A mention-looking prefix without the routed gate neither rewrites nor throws.
     expect(rewriteTeamSkillCommand("@nova /broken", registry)).toBe("@nova /broken");
+  });
+
+  it("resolves the registry case-insensitively so case variants cannot bypass a Team claim", () => {
+    expect(rewriteTeamSkillCommand("/REVIEW src/", registry)).toBe("/review-first-tree src/");
+    expect(() => rewriteTeamSkillCommand("/BROKEN", registry)).toThrow(ManagedSkillsUnsafeDiscoveryError);
+    // Unmapped commands keep their original casing and text.
+    expect(rewriteTeamSkillCommand("/Ship it", registry)).toBe("/Ship it");
+  });
+
+  it("blocks strict slash commands while the registry is unpublished; ordinary text still works", () => {
+    expect(() => rewriteTeamSkillCommand("/review", null)).toThrow(ManagedSkillsUnsafeDiscoveryError);
+    expect(() => rewriteTeamSkillCommand("/ship it", null)).toThrow(ManagedSkillsUnsafeDiscoveryError);
+    expect(rewriteTeamSkillCommand("hello /review", null)).toBe("hello /review");
+    expect(rewriteTeamSkillCommand("just text", null)).toBe("just text");
+  });
+
+  it("lets unknown local commands pass once a verified-empty registry is published", () => {
+    expect(rewriteTeamSkillCommand("/ship it", EMPTY_TEAM_SKILL_COMMAND_REGISTRY)).toBe("/ship it");
   });
 
   it("is a no-op for an empty registry", () => {

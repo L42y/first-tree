@@ -119,10 +119,17 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     await runtime.shutdown();
   });
 
-  it("passes commands through untouched before any registry is published", async () => {
+  it("blocks strict slash commands until the first registry publication, then lets unknown local commands pass", async () => {
     const { ctx, runtime } = await captureContext();
-    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
-    expect(formatted).toContain("/review src/");
+    // Unpublished: a strict slash command must NOT reach the provider —
+    // it could hit a same-named unmanaged Skill before exact Team
+    // identities are known. Ordinary text is never blocked.
+    await expect(ctx.formatInboundContent(textMessage("/review src/"))).rejects.toThrow(/registry is not published/);
+    expect(await ctx.formatInboundContent(textMessage("hello there"))).toContain("hello there");
+
+    // Verified-empty publication: unknown local commands pass through.
+    ctx.publishTeamSkillCommands([]);
+    expect(await ctx.formatInboundContent(textMessage("/ship it"))).toContain("/ship it");
 
     await runtime.shutdown();
   });

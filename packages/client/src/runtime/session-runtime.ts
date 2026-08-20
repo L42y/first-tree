@@ -88,7 +88,6 @@ import { type RuntimeSyncActiveSet, SessionProjectionAuthority } from "./session
 import { type SlotDeliveryKind, SlotSchedulerAuthority } from "./slot-scheduler-authority.js";
 import {
   buildTeamSkillCommandRegistry,
-  EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
   rewriteSessionMessageCommand,
   type TeamSkillCommandRegistry,
 } from "./team-skill-command-rewrite.js";
@@ -3054,11 +3053,15 @@ export class SessionRuntime {
     // Team Skill slash-command registry (base slug → ready/unavailable
     // target), published by managed-session preparation after every settled
     // projection. The reference is replaced atomically as a whole — a stale
-    // registry is never cleared by a non-authoritative reconcile. Applying
-    // it here — inside the SessionContext's formatInboundContent — covers
-    // every provider's start/resume/inject path at one shared boundary,
-    // because all of them render user text through this method.
-    let teamSkillCommands: TeamSkillCommandRegistry = EMPTY_TEAM_SKILL_COMMAND_REGISTRY;
+    // registry is never cleared by a non-authoritative reconcile. `null`
+    // means UNPUBLISHED (distinct from a verified-empty registry): the
+    // rewrite boundary blocks strict slash commands until preparation
+    // publishes, so a configured-but-colliding base can never fall through
+    // to a same-named unmanaged Skill before its exact identity is known.
+    // Applying it here — inside the SessionContext's formatInboundContent —
+    // covers every provider's start/resume/inject path at one shared
+    // boundary, because all of them render user text through this method.
+    let teamSkillCommands: TeamSkillCommandRegistry | null = null;
 
     const forwardResult = createResultSink({
       clearTrigger: () => {

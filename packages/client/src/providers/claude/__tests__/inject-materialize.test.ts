@@ -18,7 +18,6 @@ import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
 import {
   buildTeamSkillCommandRegistry,
-  EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
   rewriteSessionMessageCommand,
   type TeamSkillCommandRegistry,
 } from "../../../runtime/team-skill-command-rewrite.js";
@@ -208,8 +207,9 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
   const plumbing = mockCtxPlumbing({ sendMessage }, "chat-materialize");
   // Mirror the production SessionContext wiring (session-runtime.ts): the
   // reconciled Team Skill command registry rewrites base slash commands
-  // before the provider ever sees the text.
-  let teamSkillCommands: TeamSkillCommandRegistry = EMPTY_TEAM_SKILL_COMMAND_REGISTRY;
+  // before the provider ever sees the text. `null` until the first
+  // publication — strict slash commands are blocked before that.
+  let teamSkillCommands: TeamSkillCommandRegistry | null = null;
   return {
     agent: {
       agentId: AGENT_ID,
@@ -519,6 +519,47 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review", "SKILL.md")));
     await waitFor(() => state.observedInputs.length === 2);
     expect(state.observedInputs[1]).toContain("/review src/");
+
+    await handler.shutdown();
+  });
+
+  it("fails closed recoverably when a Team command never gets a verified target: no provider input, no success ACK", async () => {
+    const bundleSkill: RuntimeResourceSkill = {
+      ...REVIEW_SKILL,
+      bundle: {
+        attachmentId: "33333333-3333-4333-8333-333333333333",
+        format: "zip",
+        sizeBytes: 100,
+      },
+    };
+    // The bundle can never be fetched, so `/review` never gets an exact
+    // installed identity.
+    const fetchAttachment = vi.fn().mockRejectedValue(new Error("attachment unavailable"));
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext(fetchAttachment);
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [bundleSkill]);
+    const noop = noopDeliveryToken();
+    const token = { ...noop, retry: vi.fn(), complete: vi.fn(noop.complete) };
+    handler.inject(makeMessage("m2", "/review src/"), token);
+
+    // The formatter rejects pre-provider; inject keeps the turn recoverable
+    // via retry instead of ACKing a success or delivering to the SDK.
+    await waitFor(() => token.retry.mock.calls.length > 0);
+    expect(token.retry).toHaveBeenCalledWith(expect.objectContaining({ id: "m2" }), "claude_inject_format_failed");
+    expect(token.complete).not.toHaveBeenCalled();
+    expect(state.observedInputs).toHaveLength(1);
 
     await handler.shutdown();
   });

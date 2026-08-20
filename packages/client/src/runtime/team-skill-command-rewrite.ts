@@ -68,14 +68,11 @@ export function buildTeamSkillCommandRegistry(
   for (const entry of entries) {
     const base = entry.requestedSlug;
     if (!SAFE_SLUG.test(base)) continue;
-    const existing = registry.get(base);
-    if (existing) {
-      // Idempotent repeats are fine; any disagreement over one base slug
-      // (ready vs unavailable, or two different effective names) fails
-      // closed — never let row order pick a winner.
-      const same =
-        existing.kind === "ready" && entry.effectiveName !== null && existing.effectiveName === entry.effectiveName;
-      if (!same) conflicts.add(base);
+    if (registry.has(base)) {
+      // A complete authoritative registry lists every base exactly once;
+      // ANY repeat — even an identical one — means inconsistent input, so
+      // the base fails closed instead of letting row order pick a winner.
+      conflicts.add(base);
       continue;
     }
     registry.set(
@@ -119,23 +116,34 @@ const MENTIONED_COMMAND_RE = new RegExp(`^(\\s*(?:${MENTION_TOKEN}\\s*)*)/${COMM
  * Resolve the leading slash command of user message text against the
  * registry. Ready entries rewrite to the verified effective name (identity
  * mappings return byte-identical text); unknown commands pass through so
- * local and runtime-reported Skills keep working.
+ * local and runtime-reported Skills keep working. Registry lookup folds
+ * ASCII case (`/REVIEW` resolves the `review` entry), matching the
+ * portable case-fold the materializer applies on disk — a case variant
+ * must not bypass a Team Skill's claim on its base slug and land on a
+ * same-named local Skill on a case-insensitive filesystem. Unmapped
+ * commands return the original text untouched, case included.
  *
- * Throws ManagedSkillsUnsafeDiscoveryError when the command is
- * Cloud-configured but unavailable: passing it through could invoke an
- * identically-named unmanaged Skill, so the turn fails before any provider
- * sees it.
+ * Throws ManagedSkillsUnsafeDiscoveryError in two fail-closed cases: the
+ * command is Cloud-configured but unavailable (no verified target or a
+ * conflicting mapping), or NO registry has been published yet (`null`) —
+ * an unpublished registry must not let a strict slash command fall
+ * through to a possibly identically-named unmanaged Skill. Ordinary text
+ * without a strict command position is never blocked.
  */
 export function rewriteTeamSkillCommand(
   content: string,
-  registry: TeamSkillCommandRegistry,
+  registry: TeamSkillCommandRegistry | null,
   opts?: { allowMentionPrefix?: boolean },
 ): string {
-  if (registry.size === 0) return content;
   const match = (opts?.allowMentionPrefix ? MENTIONED_COMMAND_RE : BARE_COMMAND_RE).exec(content);
   if (!match) return content;
   const [matched, prefix, name] = match;
-  const target = registry.get(name ?? "");
+  if (registry === null) {
+    throw new ManagedSkillsUnsafeDiscoveryError(
+      `Team Skill command registry is not published yet — refusing to hand /${name} to the provider`,
+    );
+  }
+  const target = registry.get((name ?? "").toLowerCase());
   if (!target) return content;
   if (target.kind === "unavailable") {
     throw new ManagedSkillsUnsafeDiscoveryError(
@@ -152,10 +160,10 @@ export function rewriteTeamSkillCommand(
  */
 export function rewriteSessionMessageCommand<T extends { content: unknown }>(
   message: T,
-  registry: TeamSkillCommandRegistry,
+  registry: TeamSkillCommandRegistry | null,
   opts?: { allowMentionPrefix?: boolean },
 ): T {
-  if (registry.size === 0 || typeof message.content !== "string") return message;
+  if (typeof message.content !== "string") return message;
   const rewritten = rewriteTeamSkillCommand(message.content, registry, opts);
   return rewritten === message.content ? message : { ...message, content: rewritten };
 }
