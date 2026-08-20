@@ -107,7 +107,7 @@ export function sendChatMessage(
     inReplyTo?: string;
     resolves?: RequestResolution;
     attachments?: AttachmentRef[];
-    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number };
+    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number; resourceId: string; slug: string };
   },
 ): Promise<Message> {
   // `resolves` is the explicit lifecycle signal — present only when the human
@@ -212,7 +212,7 @@ export function sendFileMessageBatch(
   opts?: {
     inReplyTo?: string;
     resolves?: RequestResolution;
-    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number };
+    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number; resourceId: string; slug: string };
   },
 ): Promise<Message> {
   // Project explicit fields rather than spreading `metadata` whole so future

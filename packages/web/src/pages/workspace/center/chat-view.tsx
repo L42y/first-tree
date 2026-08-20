@@ -2350,7 +2350,7 @@ export function ChatView({
       inReplyTo?: string;
       resolves?: RequestResolution;
       preserveDraft?: boolean;
-      skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number };
+      skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number; resourceId: string; slug: string };
     }) =>
       // `resolves` rides the blocking question's answer send (option
       // selections + free text merged) — see the `dockRequest` branch in
@@ -2544,20 +2544,40 @@ export function ChatView({
     // only sent while the SAME effective Team row still exists at the SAME
     // version — otherwise the base literal would resolve to a same-named
     // LOCAL Skill on the recipient's machine. The server re-checks the
-    // version inside the message transaction (this fresh check only gives
-    // the early, draft-preserving UX). A restored strict-slash draft
-    // without provenance must be re-picked from the menu when it still
-    // matches a Team row — a bare literal is not proof of intent.
-    let skillPrecondition: { recipientAgentId: string; expectedConfigVersion: number } | null = null;
+    // version inside the message transaction and persists a server-owned
+    // `teamSkillInvocation` marker (this fresh check only gives the early,
+    // draft-preserving UX). A restored strict-slash draft without
+    // provenance must be re-picked from the menu — a bare literal is not
+    // proof of Team-or-local intent.
+    let skillPrecondition: {
+      recipientAgentId: string;
+      expectedConfigVersion: number;
+      resourceId: string;
+      slug: string;
+    } | null = null;
     const strictCommand = strictCommandName(text);
     if (strictCommand) {
       const provenance = slashTeamSelectionRef.current;
       const provenanceMatches =
         provenance !== null &&
-        strictCommand === provenance.name &&
+        strictCommand.toLowerCase() === provenance.name.toLowerCase() &&
         routedMentions.length === 1 &&
         routedMentions[0] === provenance.agentId;
       if (provenance !== null && !provenanceMatches) slashTeamSelectionRef.current = null;
+
+      // A strict-slash draft RESTORED from browser storage has no
+      // provenance: it may have been a Team menu pick whose Team row is
+      // long gone. Never send it as-is — require a fresh menu pick so the
+      // command is re-proven (Team picks re-record provenance; runtime
+      // picks send as ordinary local commands). Hand-typed text clears the
+      // restored marker on the first edit, so only untouched restored
+      // drafts hit this guard.
+      if (!provenanceMatches && restoredSlashDraftRef.current !== null && restoredSlashDraftRef.current === draft) {
+        setUploadError(
+          "That slash command was restored from a saved draft — re-open the / menu and pick it again before sending.",
+        );
+        return;
+      }
 
       const checkAgentId = provenanceMatches
         ? provenance.agentId
@@ -2583,12 +2603,14 @@ export function ChatView({
           skillPrecondition = {
             recipientAgentId: provenance.agentId,
             expectedConfigVersion: provenance.version,
+            resourceId: provenance.resourceId,
+            slug: provenance.name,
           };
         } else {
           const matchesTeamRow = teamSkillRowsToSlashSkills(
             freshResources.effective.skills,
             freshResources.version,
-          ).some((skill) => skill.name === strictCommand);
+          ).some((skill) => skill.name.toLowerCase() === strictCommand.toLowerCase());
           if (matchesTeamRow) {
             setUploadError("Pick that Team Skill from the / menu again before sending it.");
             return;
@@ -4516,6 +4538,22 @@ export function ChatView({
     uploading,
   ]);
 
+  // Live-connection capability gate for Team Skill menu entries: only a
+  // client that declared `teamSkillInvocationV1` parses the server-owned
+  // invocation marker fail-closed. An old client — or an offline agent —
+  // would hand the base literal to a same-named LOCAL Skill, so the menu
+  // must not offer Team rows for it. The avatar strip already polls this
+  // query, so the statuses are usually warm; fetching stays lazy on the
+  // slash trigger for chats without the strip.
+  const { data: slashAgentStatuses } = useQuery({
+    queryKey: chatAgentStatusQueryKey(chatId),
+    queryFn: () => fetchChatAgentStatuses(chatId),
+    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
+  });
+  // Fail closed while statuses are unknown: undefined reads as unsupported.
+  const teamSkillMenuSupported =
+    slashAgentStatuses?.find((s) => s.agentId === slashMentionContext?.agentId)?.teamSkillInvocationSupported === true;
+
   // Agent Skills are offered only when exactly ONE agent is the routed
   // recipient. A slash sent to multiple mentioned agents executes on
   // every one of them (the Client's registry resolves the command per
@@ -4536,7 +4574,8 @@ export function ChatView({
       if (!id) return Promise.resolve(null);
       return getAgentResources(id);
     },
-    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
+    enabled:
+      Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient && teamSkillMenuSupported,
     // A legal slash trigger always revalidates the recipient's Team Skill
     // catalog: the previous 60s stale window let a removed or renamed
     // Team row be sent and then resolved by the Client as a same-named
@@ -4551,17 +4590,25 @@ export function ChatView({
   // mismatch in the other direction: a runtime row the Team registry also
   // claims would render with the runtime description but execute as the
   // Team Skill. A failed validation degrades to the runtime-only catalog
-  // once fetching ends.
+  // once fetching ends — and a failed refetch must NOT keep merging the
+  // stale cached rows React Query retains alongside the error.
   const slashMergedSkills = useMemo<SlashSkillInfo[]>(() => {
     if (slashResourcesQuery.isFetching) return [];
-    return mergeSlashSkills(
-      slashSkillsData?.skills ?? [],
-      teamSkillRowsToSlashSkills(
-        slashResourcesQuery.data?.effective.skills ?? [],
-        slashResourcesQuery.data?.version ?? 0,
-      ),
-    );
-  }, [slashSkillsData, slashResourcesQuery.isFetching, slashResourcesQuery.data]);
+    const teamRows =
+      teamSkillMenuSupported && !slashResourcesQuery.isError
+        ? teamSkillRowsToSlashSkills(
+            slashResourcesQuery.data?.effective.skills ?? [],
+            slashResourcesQuery.data?.version ?? 0,
+          )
+        : [];
+    return mergeSlashSkills(slashSkillsData?.skills ?? [], teamRows);
+  }, [
+    slashSkillsData,
+    slashResourcesQuery.isFetching,
+    slashResourcesQuery.isError,
+    slashResourcesQuery.data,
+    teamSkillMenuSupported,
+  ]);
 
   /**
    * In-memory provenance for a Team-menu skill pick: which Team resource,
@@ -4631,15 +4678,36 @@ export function ChatView({
 
   // Provenance dies the moment the draft's command or routing stops
   // matching the pick it came from — a user edit must never inherit a
-  // stale Team precondition.
+  // stale Team precondition. The comparison folds case, matching the
+  // Client's command parser (`/REVIEW` claims the `review` registry row).
   const draftStrictCommand = strictCommandName(draft);
   useEffect(() => {
     const p = slashTeamSelectionRef.current;
     if (!p) return;
-    if (draftStrictCommand !== p.name || effectiveSendMentions.length !== 1 || effectiveSendMentions[0] !== p.agentId) {
+    if (
+      draftStrictCommand?.toLowerCase() !== p.name.toLowerCase() ||
+      effectiveSendMentions.length !== 1 ||
+      effectiveSendMentions[0] !== p.agentId
+    ) {
       slashTeamSelectionRef.current = null;
     }
   }, [draftStrictCommand, effectiveSendMentions]);
+
+  /**
+   * The strict-slash draft text RESTORED from browser storage for this
+   * chat scope (null when the restored draft holds no strict command).
+   * Captured once per chat/user scope: any keystroke changes the draft
+   * away from this exact string, so equality at send time proves the
+   * draft is the untouched restored one — which carries no Team/local
+   * intent proof and must be re-picked from the menu before sending.
+   */
+  const restoredSlashDraftRef = useRef<string | null>(null);
+  // Deliberately keyed on the SCOPE, not the draft: later edits must not
+  // re-arm the guard.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scope-only re-capture
+  useEffect(() => {
+    restoredSlashDraftRef.current = strictCommandName(draft) !== null ? draft : null;
+  }, [chatId, user?.id]);
 
   // Wrapped via a variable (not nested inline) so introducing the provider
   // doesn't re-indent the entire chat body — keeps the diff about the fix.

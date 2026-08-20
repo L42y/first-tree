@@ -537,6 +537,10 @@ function createClient(): QueryClient {
         working: true,
         needsYou: false,
         errored: false,
+        // The default fixture client speaks the Team Skill invocation
+        // marker protocol, so the slash menu may offer Team Skills;
+        // gate tests override this seed explicitly.
+        teamSkillInvocationSupported: true,
         activity: {
           agentId: "agent-1",
           kind: "assistant_text",
@@ -554,6 +558,7 @@ function createClient(): QueryClient {
         working: false,
         needsYou: false,
         errored: false,
+        teamSkillInvocationSupported: true,
         activity: null,
       },
     ],
@@ -765,6 +770,10 @@ beforeEach(() => {
       working: true,
       needsYou: false,
       errored: false,
+      // Default: the connected client parses the server-owned Team Skill
+      // invocation marker, so the slash menu may offer Team Skills. Tests
+      // for the fail-closed gate override this per case.
+      teamSkillInvocationSupported: true,
       activity: {
         agentId: "agent-1",
         kind: "assistant_text",
@@ -782,6 +791,7 @@ beforeEach(() => {
       working: false,
       needsYou: false,
       errored: false,
+      teamSkillInvocationSupported: true,
       activity: null,
     },
   ]);
@@ -1815,7 +1825,12 @@ describe("ChatView", () => {
       expect.stringContaining("@nova /code-review"),
       ["agent-1"],
       expect.objectContaining({
-        skillPrecondition: { recipientAgentId: "agent-1", expectedConfigVersion: 1 },
+        skillPrecondition: {
+          recipientAgentId: "agent-1",
+          expectedConfigVersion: 1,
+          resourceId: "res-1",
+          slug: "code-review",
+        },
       }),
     );
 
@@ -2015,6 +2030,115 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("hides Team Skills and fetches nothing when the recipient client lacks the invocation-marker capability", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => {
+        seedChat(qc, direct);
+        // An OLD client (or one whose server stripped the unknown flag):
+        // no `teamSkillInvocationSupported`, so it would hand the base
+        // literal to a same-named LOCAL Skill. The menu must fail closed.
+        qc.setQueryData(
+          ["chat-agent-status", "chat-1"],
+          [
+            {
+              agentId: "agent-1",
+              main: "ready",
+              reachable: true,
+              engagement: "active",
+              working: false,
+              needsYou: false,
+              errored: false,
+              activity: null,
+            },
+          ],
+        );
+      },
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // Runtime rows and system commands still show; Team rows never load.
+    await waitForText(container, "/review");
+    expect(container.textContent).not.toContain("/code-review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("drops stale Team rows from the menu when catalog revalidation fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // First trigger validates successfully; the SECOND trigger's
+    // revalidation fails, and React Query keeps the stale v1 data alongside
+    // the error — the merge must not keep offering those rows.
+    agentResourceMocks.getAgentResources.mockResolvedValueOnce(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    const typeDraft = async (value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(textarea, value);
+        textarea.setSelectionRange(value.length, value.length);
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+      });
+      await flush();
+    };
+
+    await typeDraft("/");
+    await waitForText(container, "/code-review");
+
+    // Close the trigger, fail the next revalidation, and re-open it.
+    await typeDraft("");
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("resources offline"));
+    await typeDraft("/");
+    await waitForText(container, "/review");
+    expect(container.textContent).not.toContain("/code-review");
+
+    await act(async () => root.unmount());
+  });
+
+  it("treats a case-variant Team command as the Team row and requires a menu re-pick", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    // Hand-typed `/CODE-REVIEW` with no provenance: the Client's parser
+    // folds case, so the send check must fold too — a case variant is not
+    // a bypass into a same-named local Skill.
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await setValue(textarea, "/CODE-REVIEW ");
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    await waitForText(container, "Pick that Team Skill from the / menu again");
+
+    await act(async () => root.unmount());
+  });
+
   const directChat = () =>
     chatDetail({
       participants: [
@@ -2111,7 +2235,12 @@ describe("ChatView", () => {
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
     const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
     expect(opts).toMatchObject({
-      skillPrecondition: { recipientAgentId: "agent-1", expectedConfigVersion: 1 },
+      skillPrecondition: {
+        recipientAgentId: "agent-1",
+        expectedConfigVersion: 1,
+        resourceId: "res-1",
+        slug: "code-review",
+      },
     });
 
     await act(async () => root.unmount());
@@ -2156,9 +2285,14 @@ describe("ChatView", () => {
     );
 
     chatMocks.sendChatMessage.mockClear();
+    agentResourceMocks.getAgentResources.mockClear();
     await pressSend(container);
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
-    await waitForText(container, "Pick that Team Skill from the / menu again");
+    // The restored-draft guard fires BEFORE any catalog re-check: an
+    // untouched restored strict-slash draft carries no Team/local intent
+    // proof at all, whether or not the Team row still exists.
+    await waitForText(container, "restored from a saved draft");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
