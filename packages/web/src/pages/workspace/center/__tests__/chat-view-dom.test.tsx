@@ -2077,6 +2077,39 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the gate closed when the status query errors — a warm cached true never reopens it", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    // No cached statuses and the fetch fails: the gate must read as
+    // unsupported, costing no catalog download and showing no Team rows.
+    agentStatusMocks.fetchChatAgentStatuses.mockRejectedValue(new Error("status offline"));
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => {
+        seedChat(qc, direct);
+        qc.removeQueries({ queryKey: ["chat-agent-status", "chat-1"] });
+      },
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    await waitForText(container, "/review");
+    expect(container.textContent).not.toContain("/code-review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("keeps the gate closed while the status query is pending, then opens it on a fresh supported status", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
