@@ -69,18 +69,6 @@ export function metadataSupportsSessionReset(metadata: unknown): boolean {
 }
 
 /**
- * The one-sided `teamSkillInvocationV1` flag out of a `clients.metadata`
- * blob: this client parses the server-owned Team Skill invocation marker
- * and resolves Team slash commands fail-closed against it. Missing never
- * counts — the Web composer hides Team Skill menu entries for such agents
- * so the base literal can never reach a same-named local Skill through an
- * unaware client.
- */
-export function metadataSupportsTeamSkillInvocation(metadata: unknown): boolean {
-  return wireCapabilities(metadata)?.teamSkillInvocationV1 === true;
-}
-
-/**
  * DB-authoritative route for one agent: consistent route (see
  * `isConsistentAgentRoute`) plus the registered composite Reset capability.
  * `null` when the route is inconsistent or the agent row is missing.

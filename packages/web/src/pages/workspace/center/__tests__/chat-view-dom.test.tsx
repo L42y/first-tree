@@ -537,10 +537,6 @@ function createClient(): QueryClient {
         working: true,
         needsYou: false,
         errored: false,
-        // The default fixture client speaks the Team Skill invocation
-        // marker protocol, so the slash menu may offer Team Skills;
-        // gate tests override this seed explicitly.
-        teamSkillInvocationSupported: true,
         activity: {
           agentId: "agent-1",
           kind: "assistant_text",
@@ -558,7 +554,6 @@ function createClient(): QueryClient {
         working: false,
         needsYou: false,
         errored: false,
-        teamSkillInvocationSupported: true,
         activity: null,
       },
     ],
@@ -770,10 +765,6 @@ beforeEach(() => {
       working: true,
       needsYou: false,
       errored: false,
-      // Default: the connected client parses the server-owned Team Skill
-      // invocation marker, so the slash menu may offer Team Skills. Tests
-      // for the fail-closed gate override this per case.
-      teamSkillInvocationSupported: true,
       activity: {
         agentId: "agent-1",
         kind: "assistant_text",
@@ -791,13 +782,13 @@ beforeEach(() => {
       working: false,
       needsYou: false,
       errored: false,
-      teamSkillInvocationSupported: true,
       activity: null,
     },
   ]);
   agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
   agentResourceMocks.getAgentResources.mockResolvedValue({
     effective: { version: 1, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
+    teamSkillInvocationSupported: true,
   });
   agentMocks.listAgents.mockResolvedValue({ items: ORG_AGENTS, nextCursor: null });
   attachmentMocks.fetchAttachmentBase64.mockResolvedValue({ base64: "image-base64", mimeType: "image/png" });
@@ -1688,6 +1679,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: {
         version: 1,
         repos: [],
@@ -1756,6 +1748,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: {
         version: 1,
         repos: [],
@@ -1846,6 +1839,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     });
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />);
@@ -1889,6 +1883,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     };
     const resourcesEmpty = {
@@ -1897,6 +1892,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
     };
     agentResourceMocks.getAgentResources
@@ -1991,6 +1987,7 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
+      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     });
     await waitForText(container, "/code-review");
@@ -2030,34 +2027,17 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("hides Team Skills and fetches nothing when the recipient client lacks the invocation-marker capability", async () => {
+  it("hides Team Skills when the recipient client is too old to parse the invocation marker", async () => {
     const { ChatView } = await import("../chat-view.js");
-    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    // The Server reports the recipient's bound client as unsupported for
+    // the marker protocol (old / unknown sdk_version / offline): the menu
+    // must fail closed even though the catalog itself fetched fine.
+    agentResourceMocks.getAgentResources.mockResolvedValue({ ...resourcesV1(), teamSkillInvocationSupported: false });
     agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
     const direct = directChat();
     const { container, root } = await renderDom(
       <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
-      (qc) => {
-        seedChat(qc, direct);
-        // An OLD client (or one whose server stripped the unknown flag):
-        // no `teamSkillInvocationSupported`, so it would hand the base
-        // literal to a same-named LOCAL Skill. The menu must fail closed.
-        qc.setQueryData(
-          ["chat-agent-status", "chat-1"],
-          [
-            {
-              agentId: "agent-1",
-              main: "ready",
-              reachable: true,
-              engagement: "active",
-              working: false,
-              needsYou: false,
-              errored: false,
-              activity: null,
-            },
-          ],
-        );
-      },
+      (qc) => seedChat(qc, direct),
     );
 
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
@@ -2070,10 +2050,9 @@ describe("ChatView", () => {
     });
     await flush();
 
-    // Runtime rows and system commands still show; Team rows never load.
+    // Runtime rows and system commands still show; Team rows stay hidden.
     await waitForText(container, "/review");
     expect(container.textContent).not.toContain("/code-review");
-    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -2153,6 +2132,7 @@ describe("ChatView", () => {
     adoptedTemplates: [],
     bindings: [],
     availableTeamResources: [],
+    teamSkillInvocationSupported: true,
     effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
   });
   const resourcesEmpty = () => ({
@@ -2161,6 +2141,7 @@ describe("ChatView", () => {
     adoptedTemplates: [],
     bindings: [],
     availableTeamResources: [],
+    teamSkillInvocationSupported: true,
     effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
   });
 

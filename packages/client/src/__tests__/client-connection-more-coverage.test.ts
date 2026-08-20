@@ -771,7 +771,7 @@ describe("ClientConnection — additional branch coverage", () => {
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
-    expect(registerFrame?.wireCapabilities).toEqual({ teamSkillInvocationV1: true });
+    expect(registerFrame?.wireCapabilities).toEqual({});
     expect(connection.supportsSessionResetV1).toBe(false);
 
     const commands: unknown[] = [];
@@ -810,7 +810,7 @@ describe("ClientConnection — additional branch coverage", () => {
       .find((message) => message.type === "client:register");
     // Composite only: the legacy apply-only flag never rides along, so no
     // server can mistake this client for a pre-v1 one.
-    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionResetV1: true, teamSkillInvocationV1: true });
+    expect(registerFrame?.wireCapabilities).toEqual({ wsSessionResetV1: true });
     expect(connection.supportsSessionResetV1).toBe(true);
 
     await bindAgent(connection, socket);
@@ -903,7 +903,7 @@ describe("ClientConnection — additional branch coverage", () => {
     const registerFrame = socket.sent
       .map((raw) => JSON.parse(raw) as Record<string, unknown>)
       .find((message) => message.type === "client:register");
-    expect(registerFrame?.wireCapabilities).toEqual({ teamSkillInvocationV1: true });
+    expect(registerFrame?.wireCapabilities).toEqual({});
     expect(connection.supportsSessionResetV1).toBe(false);
 
     priv(connection).clearTimers();

@@ -74,18 +74,6 @@ export const clientWireCapabilitiesSchema = z
      * `terminate?waitForApply=true` on this field alone.
      */
     wsSessionResetV1: z.boolean().default(false),
-    /**
-     * The client understands the server-owned `teamSkillInvocation` message
-     * metadata marker and resolves Team Skill slash commands fail-closed
-     * against it (never falling through to a same-named local Skill when the
-     * configured Skill is gone or unverifiable). ONE-SIDED: the client
-     * declares it whenever its build implements the marker, regardless of
-     * the server welcome — an old server strips the unknown key at parse,
-     * which simply hides the Web Team Skill menu (fail closed). The Web
-     * composer gates Team Skill menu entries on this capability via
-     * `AgentChatStatus.teamSkillInvocationSupported`.
-     */
-    teamSkillInvocationV1: z.boolean().default(false),
   })
   .partial();
 export type ClientWireCapabilities = z.infer<typeof clientWireCapabilitiesSchema>;

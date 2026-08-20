@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { supportsRuntimeSwitchClientVersion } from "../client-release.js";
+import { supportsRuntimeSwitchClientVersion, supportsTeamSkillInvocationClientVersion } from "../client-release.js";
 
 describe("supportsRuntimeSwitchClientVersion", () => {
   it.each([
@@ -27,5 +27,34 @@ describe("supportsRuntimeSwitchClientVersion", () => {
     "invalid",
   ])("rejects unsupported release %s", (version) => {
     expect(supportsRuntimeSwitchClientVersion(version)).toBe(false);
+  });
+});
+
+describe("supportsTeamSkillInvocationClientVersion", () => {
+  it.each([
+    "0.5.22",
+    "v0.5.22",
+    "0.5.30",
+    "0.5.22+build.1",
+    "0.5.23-staging.1.1",
+    "0.5.30-staging.123.1",
+  ])("accepts supported release %s", (version) => {
+    expect(supportsTeamSkillInvocationClientVersion(version)).toBe(true);
+  });
+
+  it.each([
+    null,
+    "",
+    "0.5.21",
+    "0.5.12",
+    "0.14.8",
+    "0.5.022",
+    "0.5.22-staging.123.1",
+    "0.5.30-staging.0.1",
+    "0.5.30-staging.123.0",
+    "0.5.22-beta.1",
+    "invalid",
+  ])("rejects unsupported release %s", (version) => {
+    expect(supportsTeamSkillInvocationClientVersion(version)).toBe(false);
   });
 });

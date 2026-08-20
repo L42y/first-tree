@@ -30,15 +30,18 @@ import {
   type RuntimeResourceSkill,
   repoResourcePayloadSchema,
   skillResourcePayloadSchema,
+  supportsTeamSkillInvocationClientVersion,
   type UpdateAgentResources,
   type UpdateTeamResource,
 } from "@first-tree/shared";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agentConfigs } from "../../../db/schema/agent-configs.js";
+import { agentPresence } from "../../../db/schema/agent-presence.js";
 import { agentResourceBindings } from "../../../db/schema/agent-resource-bindings.js";
 import { agents } from "../../../db/schema/agents.js";
 import { attachments } from "../../../db/schema/attachments.js";
+import { clients } from "../../../db/schema/clients.js";
 import { members } from "../../../db/schema/members.js";
 import { resources } from "../../../db/schema/resources.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../../errors.js";
@@ -51,6 +54,7 @@ import {
   LANDING_CAMPAIGN_TRIAL_PROMPT_RESOURCE_NAME,
 } from "../../landing-campaigns/trial-prompt.js";
 import type { Notifier } from "../../notifier.js";
+import { isConsistentAgentRoute } from "../../runtime/rpc/session-command.js";
 import { validateSkillBundle } from "../../skill-bundle.js";
 import { buildAdoptedTemplateSummaries } from "../templates/catalog.js";
 
@@ -325,6 +329,37 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
       .limit(1);
     if (!row || row.status === "deleted") throw new NotFoundError(`Agent "${agentId}" not found`);
     return row;
+  }
+
+  /**
+   * Rollout gate for Team Skill slash commands: true only when the agent's
+   * currently bound, route-consistent connected client runs a version that
+   * parses the server-owned `teamSkillInvocation` message marker
+   * fail-closed. Derived entirely from existing rows (agent binding +
+   * presence + `clients.sdk_version`) with the SAME route-consistency
+   * predicate the status projection uses — an old, unknown-version,
+   * offline, or unbound client reads as false, and no new persisted state
+   * is involved.
+   */
+  async function resolveTeamSkillInvocationSupport(agentId: string): Promise<boolean> {
+    const [route] = await db
+      .select({
+        agentClientId: agents.clientId,
+        agentStatus: agents.status,
+        presenceStatus: agentPresence.status,
+        presenceClientId: agentPresence.clientId,
+        presenceInstanceId: agentPresence.instanceId,
+        clientStatus: clients.status,
+        clientInstanceId: clients.instanceId,
+        clientSdkVersion: clients.sdkVersion,
+      })
+      .from(agents)
+      .innerJoin(agentPresence, eq(agentPresence.agentId, agents.uuid))
+      .innerJoin(clients, eq(clients.id, agentPresence.clientId))
+      .where(eq(agents.uuid, agentId))
+      .limit(1);
+    if (!route || !isConsistentAgentRoute(route)) return false;
+    return supportsTeamSkillInvocationClientVersion(route.clientSdkVersion);
   }
 
   async function getConfigVersion(agentId: string): Promise<number> {
@@ -1479,6 +1514,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),
+        teamSkillInvocationSupported: await resolveTeamSkillInvocationSupport(agentId),
       };
     },
 
@@ -1588,6 +1624,7 @@ export function createResourcesService(opts: ResourcesServiceOptions): Resources
         effective,
         bindings: bindingRows.map(bindingToInput),
         availableTeamResources: availableTeamResources.map(rowToResource),
+        teamSkillInvocationSupported: await resolveTeamSkillInvocationSupport(agentId),
       };
     },
 

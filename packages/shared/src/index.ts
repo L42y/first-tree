@@ -22,7 +22,12 @@ export {
   resolveGitLabRepositoryWebIdentity,
   sameContextTreeRepository,
 } from "./canonical-git-repo-url.js";
-export { MIN_RUNTIME_SWITCH_CLIENT_VERSION, supportsRuntimeSwitchClientVersion } from "./client-release.js";
+export {
+  MIN_RUNTIME_SWITCH_CLIENT_VERSION,
+  MIN_TEAM_SKILL_INVOCATION_CLIENT_VERSION,
+  supportsRuntimeSwitchClientVersion,
+  supportsTeamSkillInvocationClientVersion,
+} from "./client-release.js";
 export {
   buildLoginCommand,
   buildPortableBootstrapCommand,

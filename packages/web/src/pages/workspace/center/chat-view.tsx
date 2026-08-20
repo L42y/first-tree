@@ -4538,22 +4538,6 @@ export function ChatView({
     uploading,
   ]);
 
-  // Live-connection capability gate for Team Skill menu entries: only a
-  // client that declared `teamSkillInvocationV1` parses the server-owned
-  // invocation marker fail-closed. An old client — or an offline agent —
-  // would hand the base literal to a same-named LOCAL Skill, so the menu
-  // must not offer Team rows for it. The avatar strip already polls this
-  // query, so the statuses are usually warm; fetching stays lazy on the
-  // slash trigger for chats without the strip.
-  const { data: slashAgentStatuses } = useQuery({
-    queryKey: chatAgentStatusQueryKey(chatId),
-    queryFn: () => fetchChatAgentStatuses(chatId),
-    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
-  });
-  // Fail closed while statuses are unknown: undefined reads as unsupported.
-  const teamSkillMenuSupported =
-    slashAgentStatuses?.find((s) => s.agentId === slashMentionContext?.agentId)?.teamSkillInvocationSupported === true;
-
   // Agent Skills are offered only when exactly ONE agent is the routed
   // recipient. A slash sent to multiple mentioned agents executes on
   // every one of them (the Client's registry resolves the command per
@@ -4574,8 +4558,7 @@ export function ChatView({
       if (!id) return Promise.resolve(null);
       return getAgentResources(id);
     },
-    enabled:
-      Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient && teamSkillMenuSupported,
+    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
     // A legal slash trigger always revalidates the recipient's Team Skill
     // catalog: the previous 60s stale window let a removed or renamed
     // Team row be sent and then resolved by the Client as a same-named
@@ -4584,6 +4567,16 @@ export function ChatView({
     // no explicit refetch driver is needed.
     staleTime: 0,
   });
+
+  // Rollout gate for Team Skill menu entries: the resources payload
+  // carries a read-only `teamSkillInvocationSupported` computed from the
+  // recipient's bound, route-consistent client `sdk_version`. Only a
+  // client that parses the server-owned invocation marker fail-closed may
+  // be offered Team Skills — an old, unknown-version, or offline client
+  // would hand the base literal to a same-named LOCAL Skill. The catalog
+  // fetch itself is allowed (it is how the gate is learned); the merge
+  // below drops Team rows unless the boolean is exactly true.
+  const teamSkillMenuSupported = slashResourcesQuery.data?.teamSkillInvocationSupported === true;
 
   // While the catalog is being (re)validated the menu stays SYSTEM-ONLY.
   // Showing runtime rows during the window would repeat the winner
