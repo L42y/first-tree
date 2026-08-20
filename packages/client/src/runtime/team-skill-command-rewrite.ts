@@ -205,6 +205,47 @@ export function rewriteTeamSkillCommand(
 }
 
 /**
+ * The inert replacement for a strict slash command while the registry is
+ * UNRESOLVED: preparation has completed (more than once, across a fresh
+ * handler) without proving any command identity, so no recovery cycle can
+ * change the outcome. Carries no Skill name and no slash token.
+ */
+export const TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE =
+  "[First Tree runtime] The user tried to invoke a Team Skill command, but this agent's skill configuration " +
+  "could not be verified right now. Do NOT invoke any slash command or a same-named local Skill on their " +
+  "behalf. Briefly explain to the user that the Team Skill configuration is temporarily unverifiable and " +
+  "the command cannot run.";
+
+/**
+ * Replace a strict-position slash command with an inert notice, preserving
+ * only the mention prefix. Used for the bounded terminal boundary of an
+ * unresolvable command — the alternative (throwing) would loop recovery
+ * forever when no future publication can prove an identity.
+ */
+export function rewriteSessionMessageCommandToNotice<T extends { content: unknown }>(
+  message: T,
+  notice: string,
+  opts?: { allowMentionPrefix?: boolean },
+): T {
+  const replace = (text: string): string => {
+    const match = (opts?.allowMentionPrefix ? MENTIONED_COMMAND_RE : BARE_COMMAND_RE).exec(text);
+    if (!match) return text;
+    const [matched, prefix] = match;
+    return `${prefix}${notice}${text.slice(matched.length).trimStart() ? ` ${text.slice(matched.length).trimStart()}` : ""}`;
+  };
+  if (typeof message.content === "string") {
+    const rewritten = replace(message.content);
+    return rewritten === message.content ? message : { ...message, content: rewritten };
+  }
+  if (isImageBatchRefContent(message.content) && typeof message.content.caption === "string") {
+    const caption = replace(message.content.caption);
+    if (caption === message.content.caption) return message;
+    return { ...message, content: { ...message.content, caption } };
+  }
+  return message;
+}
+
+/**
  * Apply {@link rewriteTeamSkillCommand} to a session message. String
  * content rewrites directly; an image-batch payload rewrites its string
  * caption with identical semantics (the composer persists "caption +

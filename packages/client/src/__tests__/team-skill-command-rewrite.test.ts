@@ -173,9 +173,12 @@ describe("rewriteSessionMessageCommand — image batch captions", () => {
   it("rewrites a mention-prefixed caption only with the routed-mention gate", () => {
     const gated = rewriteSessionMessageCommand(batchMessage("@nova /review"), registry, { allowMentionPrefix: true });
     expect((gated.content as { caption: string }).caption).toBe("@nova /review-first-tree");
-    const ungated = rewriteSessionMessageCommand(batchMessage("@nova /review"), registry);
-    expect(ungated).toBe(ungated); // unchanged
-    expect((ungated.content as { caption: string }).caption).toBe("@nova /review");
+    // Without the routed gate the message object is returned UNCHANGED
+    // (same reference — immutability means no clone was made).
+    const input = batchMessage("@nova /review");
+    const ungated = rewriteSessionMessageCommand(input, registry);
+    expect(ungated).toBe(input);
+    expect(input.content.caption).toBe("@nova /review");
   });
 
   it("turns an unavailable caption command into the inert notice", () => {

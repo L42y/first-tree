@@ -90,6 +90,8 @@ import {
   buildTeamSkillCommandRegistry,
   isTeamSkillCommandUnavailableError,
   rewriteSessionMessageCommand,
+  rewriteSessionMessageCommandToNotice,
+  TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE,
   type TeamSkillCommandRegistry,
 } from "./team-skill-command-rewrite.js";
 
@@ -494,6 +496,31 @@ export class SessionRuntime {
   private readonly slotScheduler: SlotSchedulerAuthority;
   /** One-way lifecycle fence: no provider route may be adopted after manager shutdown begins. */
   private shuttingDown = false;
+
+  /**
+   * Per-chat Team Skill command registry state, shared across handler
+   * restarts for the lifetime of this runtime. `consecutiveNullPublications`
+   * is what lets the version fence distinguish a recoverable mismatch from
+   * an unresolvable registry (two null publications in a row = provably no
+   * progress, bounded terminal notice instead of an infinite recovery loop).
+   */
+  private readonly teamSkillCommandStates = new Map<
+    string,
+    { registry: TeamSkillCommandRegistry | null; version: number | null; consecutiveNullPublications: number }
+  >();
+
+  private teamSkillCommandStateFor(chatId: string): {
+    registry: TeamSkillCommandRegistry | null;
+    version: number | null;
+    consecutiveNullPublications: number;
+  } {
+    let state = this.teamSkillCommandStates.get(chatId);
+    if (!state) {
+      state = { registry: null, version: null, consecutiveNullPublications: 0 };
+      this.teamSkillCommandStates.set(chatId, state);
+    }
+    return state;
+  }
 
   constructor(config: SessionRuntimeConfig) {
     this.config = config;
@@ -3064,10 +3091,11 @@ export class SessionRuntime {
     // Applying it here — inside the SessionContext's formatInboundContent —
     // covers every provider's start/resume/inject path at one shared
     // boundary, because all of them render user text through this method.
-    let teamSkillCommands: { registry: TeamSkillCommandRegistry | null; version: number | null } = {
-      registry: null,
-      version: null,
-    };
+    // Per-chat registry state lives on the SessionRuntime (not the
+    // per-handler closure) so consecutive UNRESOLVED publications are
+    // observable across a fresh handler — that is what bounds the
+    // recovery loop when no preparation can ever prove an identity.
+    const teamSkillCommands = this.teamSkillCommandStateFor(chatId);
     // Message ids whose strict slash command failed the registry version
     // fence. When such a message is later retried, the session is failed
     // for recovery so a FRESH handler reconciles and republishes a registry
@@ -3221,14 +3249,22 @@ export class SessionRuntime {
         // `null` commands = unknown/unpublished: strict slash commands fail
         // closed until a proven registry lands. A list replaces the
         // registry atomically as a whole, stamped with the config version
-        // the publication proves.
-        teamSkillCommands = {
-          registry: commands === null ? null : buildTeamSkillCommandRegistry(commands, log),
-          version: provenVersion,
-        };
+        // the publication proves. Consecutive null publications are
+        // counted across handlers: two in a row means provably no
+        // progress, which switches the fence from recovery to the bounded
+        // terminal notice.
+        if (commands === null) {
+          teamSkillCommands.registry = null;
+          teamSkillCommands.version = null;
+          teamSkillCommands.consecutiveNullPublications += 1;
+        } else {
+          teamSkillCommands.registry = buildTeamSkillCommandRegistry(commands, log);
+          teamSkillCommands.version = provenVersion;
+          teamSkillCommands.consecutiveNullPublications = 0;
+        }
       },
       formatInboundContent: async (message) => {
-        const { registry, version } = teamSkillCommands;
+        const { registry, version, consecutiveNullPublications } = teamSkillCommands;
         // Version fence: a strict slash command is only as trustworthy as
         // the registry's proven config version. A message stamped with a
         // different version resolves against UNKNOWN — never a stale
@@ -3240,6 +3276,19 @@ export class SessionRuntime {
         // so a successful post-refresh format cannot leave a marker that a
         // later unrelated retry would mistake for a fence failure.
         registryVersionMismatchedMessageIds.delete(message.id);
+        // Bounded terminal boundary: preparation has now failed to prove
+        // ANY registry across a fresh handler too, so another recovery
+        // cycle would produce the same null registry forever. Settle the
+        // turn with an inert notice instead of looping.
+        if (versionMismatched && registry === null && consecutiveNullPublications >= 2) {
+          return formatInboundContent(
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, {
+              // Same routed-mention gate as the rewrite path below.
+              allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
+            }),
+            participants,
+          );
+        }
         try {
           return await formatInboundContent(
             rewriteSessionMessageCommand(message, fencedRegistry, {

@@ -298,6 +298,55 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.shutdown();
   });
 
+  it("bounds an unresolvable registry: one recovery, then a terminal notice and ACK — never a third handler", async () => {
+    const cap = await captureContext();
+    // Preparation completes but proves NOTHING: first null publication.
+    cap.ctx.publishTeamSkillCommands(null, null);
+
+    const startMessage = cap.startMessages[0];
+    if (!startMessage) throw new Error("expected a start message");
+    await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
+
+    // A tracked strict-slash message arrives stamped v2 while the
+    // registry is UNRESOLVED.
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    expect(injected.inboxEntryId).toBe(2);
+    expect(injected.configVersion).toBe(2);
+
+    // First fence: recoverable throw — one fresh preparation gets a chance.
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
+    cap.ctx.retryTurn(injected, "codex_queued_turn_format_failed");
+    await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Redelivery handshake, then delivery into the fresh handler.
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
+
+    // The fresh preparation ALSO proves nothing (second consecutive null):
+    // provably no progress, so the bounded terminal boundary fires.
+    const freshCtx = cap.currentCtx();
+    freshCtx.publishTeamSkillCommands(null, null);
+    const formatted = await freshCtx.formatInboundContent(injected);
+    expect(formatted).toContain("could not be verified");
+    expect(formatted).not.toContain("/review");
+
+    // The turn settles through the production completion path; nothing
+    // recovers again and no third handler ever starts.
+    await freshCtx.finishTurn(injected, { status: "success", terminal: true });
+    expect(cap.ackEntry).toHaveBeenCalledWith(2);
+    expect(freshCtx.hasPendingDelivery?.([injected])).toBe(false);
+    expect(cap.startCount() + cap.resumeCount()).toBe(2);
+    // Exactly one recovery cycle total — never a loop.
+    expect(cap.recoverChat).toHaveBeenCalledTimes(1);
+
+    await cap.runtime.shutdown();
+  });
+
   it("does not restart when the fenced message has no pending inbox custody", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
