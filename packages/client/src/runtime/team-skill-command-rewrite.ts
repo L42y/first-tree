@@ -210,6 +210,18 @@ export function rewriteTeamSkillCommand(
  * handler) without proving any command identity, so no recovery cycle can
  * change the outcome. Carries no Skill name and no slash token.
  */
+/**
+ * The inert replacement for a strict slash command whose message was
+ * stamped against an OLDER config version than the published registry.
+ * Recovery can never republish a historical registry, so the command
+ * fails closed immediately — no restart, no slash token.
+ */
+export const TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE =
+  "[First Tree runtime] The user tried to invoke a Team Skill command, but the configuration that command " +
+  "was sent against has been superseded by a newer one, so the command was not run. Do NOT invoke any " +
+  "slash command or a same-named local Skill on their behalf. Briefly explain to the user that the " +
+  "command is out of date and ask them to send it again if they still need it.";
+
 export const TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE =
   "[First Tree runtime] The user tried to invoke a Team Skill command, but this agent's skill configuration " +
   "could not be verified right now. Do NOT invoke any slash command or a same-named local Skill on their " +

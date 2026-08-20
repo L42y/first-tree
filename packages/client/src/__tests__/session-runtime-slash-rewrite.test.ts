@@ -347,6 +347,75 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.shutdown();
   });
 
+  it("settles a stale-version message with an immediate terminal notice — zero recovery, zero restart", async () => {
+    const cap = await captureContext();
+    // The session already runs a registry proven for config v2.
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 2);
+
+    const startMessage = cap.startMessages[0];
+    if (!startMessage) throw new Error("expected a start message");
+    await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
+
+    // But this tracked command was stamped back at v1: its configuration
+    // has been superseded, and no recovery can republish history.
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    expect(injected.configVersion).toBe(1);
+
+    const formatted = await cap.ctx.formatInboundContent(injected);
+    expect(formatted).toContain("superseded");
+    expect(formatted).not.toContain("/review");
+
+    await cap.ctx.finishTurn(injected, { status: "success", terminal: true });
+    expect(cap.ackEntry).toHaveBeenCalledWith(2);
+    expect(cap.handlerShutdowns()).toBe(0);
+    expect(cap.recoverChat).not.toHaveBeenCalled();
+    expect(cap.startCount()).toBe(1);
+
+    await cap.runtime.shutdown();
+  });
+
+  it("bounds an ahead-of-registry message to one recovery, then a terminal notice when the fresh publication does not advance", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    const startMessage = cap.startMessages[0];
+    if (!startMessage) throw new Error("expected a start message");
+    await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
+
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+
+    // The handler is behind: one fresh recovery is allowed.
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
+    cap.ctx.retryTurn(injected, "codex_queued_turn_format_failed");
+    await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
+
+    // The fresh preparation re-publishes the SAME v1 registry — provably
+    // no progress — so the redelivered message hits the terminal boundary.
+    const freshCtx = cap.currentCtx();
+    freshCtx.publishTeamSkillCommands(PUBLISHED, 1);
+    const formatted = await freshCtx.formatInboundContent(injected);
+    expect(formatted).toContain("could not be verified");
+    expect(formatted).not.toContain("/review");
+
+    await freshCtx.finishTurn(injected, { status: "success", terminal: true });
+    expect(cap.ackEntry).toHaveBeenCalledWith(2);
+    expect(freshCtx.hasPendingDelivery?.([injected])).toBe(false);
+    expect(cap.startCount() + cap.resumeCount()).toBe(2);
+    expect(cap.recoverChat).toHaveBeenCalledTimes(1);
+
+    await cap.runtime.shutdown();
+  });
+
   it("does not restart when the fenced message has no pending inbox custody", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);

@@ -91,6 +91,7 @@ import {
   isTeamSkillCommandUnavailableError,
   rewriteSessionMessageCommand,
   rewriteSessionMessageCommandToNotice,
+  TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE,
   TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE,
   type TeamSkillCommandRegistry,
 } from "./team-skill-command-rewrite.js";
@@ -506,17 +507,31 @@ export class SessionRuntime {
    */
   private readonly teamSkillCommandStates = new Map<
     string,
-    { registry: TeamSkillCommandRegistry | null; version: number | null; consecutiveNullPublications: number }
+    {
+      registry: TeamSkillCommandRegistry | null;
+      version: number | null;
+      consecutiveNullPublications: number;
+      fenceRecoveryAttempts: number;
+      publicationsSinceFenceRecovery: number;
+    }
   >();
 
   private teamSkillCommandStateFor(chatId: string): {
     registry: TeamSkillCommandRegistry | null;
     version: number | null;
     consecutiveNullPublications: number;
+    fenceRecoveryAttempts: number;
+    publicationsSinceFenceRecovery: number;
   } {
     let state = this.teamSkillCommandStates.get(chatId);
     if (!state) {
-      state = { registry: null, version: null, consecutiveNullPublications: 0 };
+      state = {
+        registry: null,
+        version: null,
+        consecutiveNullPublications: 0,
+        fenceRecoveryAttempts: 0,
+        publicationsSinceFenceRecovery: 0,
+      };
       this.teamSkillCommandStates.set(chatId, state);
     }
     return state;
@@ -3214,6 +3229,8 @@ export class SessionRuntime {
           }
         }
         if (versionMismatched) {
+          teamSkillCommands.fenceRecoveryAttempts += 1;
+          teamSkillCommands.publicationsSinceFenceRecovery = 0;
           this.failSessionForRecovery(chatId, "team_skill_registry_version_mismatch");
         }
         this.projection.projectSessionRuntime(chatId);
@@ -3253,39 +3270,76 @@ export class SessionRuntime {
         // counted across handlers: two in a row means provably no
         // progress, which switches the fence from recovery to the bounded
         // terminal notice.
+        teamSkillCommands.publicationsSinceFenceRecovery += 1;
         if (commands === null) {
           teamSkillCommands.registry = null;
           teamSkillCommands.version = null;
           teamSkillCommands.consecutiveNullPublications += 1;
         } else {
+          // A version-ADVANCING publication is the only progress evidence
+          // that earns another recovery cycle for an ahead-of-registry
+          // message; a same/lower re-publication is provably no progress.
+          if (
+            provenVersion !== null &&
+            (teamSkillCommands.version === null || provenVersion > teamSkillCommands.version)
+          ) {
+            teamSkillCommands.fenceRecoveryAttempts = 0;
+          }
           teamSkillCommands.registry = buildTeamSkillCommandRegistry(commands, log);
           teamSkillCommands.version = provenVersion;
           teamSkillCommands.consecutiveNullPublications = 0;
         }
       },
       formatInboundContent: async (message) => {
-        const { registry, version, consecutiveNullPublications } = teamSkillCommands;
-        // Version fence: a strict slash command is only as trustworthy as
-        // the registry's proven config version. A message stamped with a
-        // different version resolves against UNKNOWN — never a stale
-        // registry. Synthetic messages without a stamp skip the fence.
-        const versionMismatched = message.configVersion !== undefined && version !== message.configVersion;
+        const {
+          registry,
+          version,
+          consecutiveNullPublications,
+          fenceRecoveryAttempts,
+          publicationsSinceFenceRecovery,
+        } = teamSkillCommands;
+        const stamp = message.configVersion;
+        // Version fence, direction-aware. A strict slash command is only
+        // as trustworthy as the registry's proven config version;
+        // synthetic messages without a stamp skip the fence entirely.
+        const versionMismatched = stamp !== undefined && version !== stamp;
         const fencedRegistry = versionMismatched ? null : registry;
         // A fresh format attempt always clears any stale marker for this
         // message; only THIS attempt's version-mismatch throw re-adds it,
         // so a successful post-refresh format cannot leave a marker that a
         // later unrelated retry would mistake for a fence failure.
         registryVersionMismatchedMessageIds.delete(message.id);
-        // Bounded terminal boundary: preparation has now failed to prove
-        // ANY registry across a fresh handler too, so another recovery
-        // cycle would produce the same null registry forever. Settle the
-        // turn with an inert notice instead of looping.
-        if (versionMismatched && registry === null && consecutiveNullPublications >= 2) {
+        const mentionGate = { allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId) };
+        if (stamp !== undefined && version !== null && stamp < version) {
+          // STALE message: the config it was sent against has been
+          // superseded. Recovery can never republish a historical
+          // registry, so restart would loop forever — settle with an inert
+          // notice immediately, no recovery at all.
           return formatInboundContent(
-            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, {
-              // Same routed-mention gate as the rewrite path below.
-              allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
-            }),
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE, mentionGate),
+            participants,
+          );
+        }
+        // Bounded terminal boundaries: preparation has either failed to
+        // prove ANY registry across a fresh handler too, or one fresh
+        // recovery already failed to reach this message's version — in
+        // both cases another cycle would produce the same outcome forever.
+        // Settle the turn with an inert notice instead of looping.
+        if (
+          versionMismatched &&
+          ((registry === null && consecutiveNullPublications >= 2) ||
+            // No-progress bound: a fresh recovery already happened AND a
+            // publication after it failed to advance to the message's
+            // version (advancing resets the attempt count, so reaching
+            // this branch with attempts intact proves stagnation).
+            (stamp !== undefined &&
+              version !== null &&
+              stamp > version &&
+              fenceRecoveryAttempts >= 1 &&
+              publicationsSinceFenceRecovery >= 1))
+        ) {
+          return formatInboundContent(
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
             participants,
           );
         }
