@@ -1,5 +1,5 @@
 import { chatMetadataSchema, type GithubEntityBoundVia, githubEntityBoundViaSchema } from "@first-tree/shared";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { GithubEntity } from "../../../api/webhooks/github-entity.js";
 import { formatEntityTitle, refreshEntityTitle } from "../../../api/webhooks/github-entity.js";
 import type { Database } from "../../../db/connection.js";
@@ -20,6 +20,12 @@ import { canonicalizeGithubEntityKey, githubEntityKeyCandidates, githubEntityKey
 import type { EntityState, EntityStateSeed } from "./entity-state.js";
 
 const log = createLogger("GithubEntityChat");
+
+const ACTIVE_COMMIT_BOUND_VIA: readonly GithubEntityBoundVia[] = ["direct", "fixes_link", "human_fallback"];
+
+function activeMappingProvenance(entityType: GithubEntity["type"]) {
+  return entityType === "commit" ? inArray(githubEntityChatMappings.boundVia, [...ACTIVE_COMMIT_BOUND_VIA]) : undefined;
+}
 
 /**
  * `bound_via` audit values — the value set is owned by the shared
@@ -45,8 +51,10 @@ const log = createLogger("GithubEntityChat");
  *                         Surfaces in telemetry so both controlled reuse paths
  *                         remain auditable.
  *
- * Routing logic ignores the distinction; the column exists for audit and the
- * narrow `pull_request.opened` carve-out in `github-audience.ts`.
+ * Routing generally ignores the distinction. The exceptions are the narrow
+ * `pull_request.opened` carve-out in `github-audience.ts` and commit rows:
+ * historical declared commit follows are inert, while webhook-created commit
+ * rows remain active.
  */
 export type BoundVia = GithubEntityBoundVia;
 
@@ -127,6 +135,7 @@ export async function resolveGithubPersonnelTargetChat(
             eq(githubEntityChatMappings.organizationId, params.organizationId),
             eq(githubEntityChatMappings.entityType, params.entity.type),
             inArray(githubEntityChatMappings.entityKey, candidateKeys),
+            activeMappingProvenance(params.entity.type),
           ),
         );
       const candidateChatIds = candidateChats.map((row) => row.chatId);
@@ -376,6 +385,7 @@ async function lookupMapping(
         eq(githubEntityChatMappings.delegateAgentId, delegateAgentId),
         eq(githubEntityChatMappings.entityType, entity.type),
         inArray(githubEntityChatMappings.entityKey, candidateKeys),
+        activeMappingProvenance(entity.type),
       ),
     )
     .orderBy(desc(sql`${githubEntityChatMappings.entityKey} = ${canonicalKey}`))
@@ -410,6 +420,7 @@ async function lookupMappingByHuman(
         eq(githubEntityChatMappings.humanAgentId, humanAgentId),
         eq(githubEntityChatMappings.entityType, entity.type),
         inArray(githubEntityChatMappings.entityKey, candidateKeys),
+        activeMappingProvenance(entity.type),
       ),
     )
     .orderBy(
@@ -439,6 +450,40 @@ export async function insertMappingIfAbsent(
   const existing = await lookupMapping(db, params.organizationId, params.humanAgentId, params.delegateAgentId, entity);
   if (existing) {
     return { ...existing, inserted: false };
+  }
+
+  if (entity.type === "commit" && ACTIVE_COMMIT_BOUND_VIA.includes(params.boundVia)) {
+    // A real commit_comment target may collide with a historical manual row's
+    // primary key. Treat that row as absent during placement, then convert it
+    // in place into the webhook-created line instead of failing the delivery
+    // or requiring a migration.
+    const candidateKeys = githubEntityKeyCandidates(entity.type, entity.key);
+    const [reactivated] = await db
+      .update(githubEntityChatMappings)
+      .set({
+        chatId: params.chatId,
+        boundVia: params.boundVia,
+        boundAt: new Date(),
+        ...(params.entityState ? { entityState: params.entityState } : {}),
+        ...(entity.title && entity.title.length > 0 ? { title: entity.title } : {}),
+      })
+      .where(
+        and(
+          eq(githubEntityChatMappings.organizationId, params.organizationId),
+          eq(githubEntityChatMappings.humanAgentId, params.humanAgentId),
+          eq(githubEntityChatMappings.delegateAgentId, params.delegateAgentId),
+          eq(githubEntityChatMappings.entityType, "commit"),
+          inArray(githubEntityChatMappings.entityKey, candidateKeys),
+          notInArray(githubEntityChatMappings.boundVia, [...ACTIVE_COMMIT_BOUND_VIA]),
+        ),
+      )
+      .returning({
+        chatId: githubEntityChatMappings.chatId,
+        boundVia: githubEntityChatMappings.boundVia,
+      });
+    if (reactivated) {
+      return { chatId: reactivated.chatId, boundVia: asBoundVia(reactivated.boundVia), inserted: true };
+    }
   }
 
   const [inserted] = await db

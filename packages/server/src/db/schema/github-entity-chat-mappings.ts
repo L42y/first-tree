@@ -14,9 +14,10 @@ import { organizations } from "./organizations.js";
  * `bound_via` records how the row came to exist — webhook first-touch
  * (`direct`), `Fixes #N` linker (`fixes_link`), human-scoped fallback
  * (`human_fallback`), or an explicit `github follow` (`agent_declared` /
- * `human_declared`). Routing logic ignores the distinction; it exists for
- * audit and the narrow `pull_request.opened` carve-out in
- * `services/scm/github/audience.ts`. Canonical value docs: `BoundVia` in
+ * `human_declared`). Routing generally ignores the distinction; it exists for
+ * audit, the narrow `pull_request.opened` carve-out in
+ * `services/scm/github/audience.ts`, and inert compatibility for historical
+ * declared commit rows. Canonical value docs: `BoundVia` in
  * `services/scm/github/entity-chat.ts`.
  *
  * `entity_state` (added 0048) tracks the upstream PR/Issue lifecycle so

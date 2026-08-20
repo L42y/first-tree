@@ -879,7 +879,7 @@ describe("small API route handlers", () => {
         params: { chatId: "chat_1" },
         query: {},
       }),
-    ).rejects.toThrow("Pass ?entity=<GitHub URL | owner/repo#N | owner/repo@sha> to unfollow.");
+    ).rejects.toThrow("Pass ?entity=<GitHub PR/Issue/Discussion URL | owner/repo#N> to unfollow.");
   });
 
   it("serializes organization identity reads and updates", async () => {

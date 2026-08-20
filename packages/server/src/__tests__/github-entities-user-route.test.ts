@@ -96,4 +96,17 @@ describe("user github-entities follow route", () => {
     expect(res.statusCode).toBe(422);
     expect((res.json() as { error: string }).error).toContain("GitHub App");
   });
+
+  it("rejects commit references at the user API boundary", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app, { username: `u-${randomUUID().slice(0, 8)}` });
+    const delegate = await seedAgent(app, admin.organizationId, admin.memberId, "agent");
+    await app.db.update(agents).set({ delegateMention: delegate }).where(eq(agents.uuid, admin.humanAgentUuid));
+    const chatId = await seedChat(app, admin.organizationId, [admin.humanAgentUuid, delegate]);
+
+    const res = await follow(app, admin.accessToken, chatId, "acme/api@3f2a91c0");
+
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("Commit references are not supported");
+  });
 });

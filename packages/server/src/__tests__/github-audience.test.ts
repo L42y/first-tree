@@ -831,6 +831,63 @@ describe("resolveAudience", () => {
     expect(resolution.appTaskBlocker).toBeNull();
   });
 
+  it("routes commit webhooks only through webhook-created rows, not legacy manual follows", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const declaredDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `declared-${randomUUID().slice(0, 6)}`,
+    });
+    const webhookDelegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `webhook-${randomUUID().slice(0, 6)}`,
+    });
+    const declaredChat = await seedChat(app, admin.organizationId, admin.humanAgentUuid);
+    const webhookChat = await seedChat(app, admin.organizationId, admin.humanAgentUuid);
+    const entityKey = "owner/repo@abc1234";
+    await seedMapping(app, {
+      orgId: admin.organizationId,
+      humanId: admin.humanAgentUuid,
+      delegateId: declaredDelegate,
+      entityType: "commit",
+      entityKey,
+      chatId: declaredChat,
+      boundVia: "agent_declared",
+    });
+    await seedMapping(app, {
+      orgId: admin.organizationId,
+      humanId: admin.humanAgentUuid,
+      delegateId: webhookDelegate,
+      entityType: "commit",
+      entityKey,
+      chatId: webhookChat,
+      boundVia: "direct",
+    });
+
+    const targets = await resolveAudience(
+      app.db,
+      makeEvent({
+        orgId: admin.organizationId,
+        entityType: "commit",
+        entityKey,
+        eventType: "commit_comment",
+        actorLogin: "external",
+        kind: "commit_commented",
+      }),
+    );
+
+    expect(targets).toEqual([
+      expect.objectContaining({
+        kind: "existing",
+        chatId: webhookChat,
+        delegateAgentId: webhookDelegate,
+        provenance: "identity_target",
+      }),
+    ]);
+  });
+
   it("requires a configured App slug and preserves an independent subscription when it is missing", async () => {
     const app = getApp();
     const admin = await createTestAdmin(app);

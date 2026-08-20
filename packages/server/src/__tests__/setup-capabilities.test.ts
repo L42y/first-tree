@@ -380,6 +380,20 @@ describe("Team setup capabilities", () => {
     });
   });
 
+  it("recognizes commit_comment as an active GitHub repository automation event", async () => {
+    const app = getApp();
+    const scenario = await createScenario(app);
+    await seedGithubInstallation(app, scenario, { events: ["commit_comment"] });
+
+    const projection = await project(app, scenario);
+    expect(projection.repositoryAutomation.providers[0]).toMatchObject({
+      provider: "github",
+      adoption: "enabled",
+      health: "ready",
+      blockers: [],
+    });
+  });
+
   it("fails closed for malformed, unresolved, and provider-mismatched Tree bindings", async () => {
     const app = getApp();
     const malformed = await createScenario(app);

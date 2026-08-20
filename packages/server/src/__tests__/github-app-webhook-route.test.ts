@@ -1351,7 +1351,6 @@ describe("POST /webhooks/github-app", () => {
       delegateMention: delegate,
       type: "human",
     });
-
     const res = await postWebhook(app, "pull_request", {
       action: "review_requested",
       pull_request: {
@@ -1434,6 +1433,100 @@ describe("POST /webhooks/github-app", () => {
       .where(eq(githubEntityChatMappings.entityKey, "owner/repo#829"))
       .limit(1);
     expect(mappingRow).toMatchObject({ humanAgentId: human, entityType: "issue", entityState: "closed" });
+  });
+
+  it("routes commit_comment mentions through attention, card, and notifying inbox delivery", async () => {
+    const app = getApp();
+    const admin = await createTestAdmin(app);
+    const installationId = 100048;
+    await seedInstallation(app, { installationId, orgId: admin.organizationId });
+
+    const delegate = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: `commit-dlg-${randomUUID().slice(0, 6)}`,
+    });
+    const humanName = `commit-human-${randomUUID().slice(0, 6)}`;
+    const human = await seedAgent(app, {
+      orgId: admin.organizationId,
+      memberId: admin.memberId,
+      name: humanName,
+      delegateMention: delegate,
+      type: "human",
+    });
+    const legacyChat = await createChat(app.db, human, {
+      type: "group",
+      participantIds: [delegate],
+    });
+    await app.db.insert(githubEntityChatMappings).values({
+      organizationId: admin.organizationId,
+      humanAgentId: human,
+      delegateAgentId: delegate,
+      entityType: "commit",
+      entityKey: "owner/repo@abc1234",
+      chatId: legacyChat.id,
+      boundVia: "agent_declared",
+    });
+
+    const res = await postWebhook(app, "commit_comment", {
+      action: "created",
+      comment: {
+        body: `@${humanName} please inspect this commit`,
+        commit_id: "abc1234",
+        html_url: "https://github.com/owner/repo/commit/abc1234#commitcomment-1",
+        author_association: "MEMBER",
+      },
+      repository: { full_name: "owner/repo" },
+      sender: { login: "external-author", type: "User" },
+      installation: { id: installationId },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ delivered: 1, newChats: 1, failed: 0 });
+
+    const [mapping] = await app.db
+      .select({
+        humanAgentId: githubEntityChatMappings.humanAgentId,
+        delegateAgentId: githubEntityChatMappings.delegateAgentId,
+        entityType: githubEntityChatMappings.entityType,
+        entityKey: githubEntityChatMappings.entityKey,
+        boundVia: githubEntityChatMappings.boundVia,
+        chatId: githubEntityChatMappings.chatId,
+      })
+      .from(githubEntityChatMappings)
+      .where(eq(githubEntityChatMappings.entityKey, "owner/repo@abc1234"))
+      .limit(1);
+    expect(mapping).toMatchObject({
+      humanAgentId: human,
+      delegateAgentId: delegate,
+      entityType: "commit",
+      entityKey: "owner/repo@abc1234",
+      boundVia: "direct",
+    });
+    expect(mapping?.chatId).not.toBe(legacyChat.id);
+
+    const [message] = await app.db.select().from(messages).limit(1);
+    expect(message?.content).toMatchObject({
+      type: "github_event",
+      event: "commit_comment",
+      kind: "commit_commented",
+      reason: "mentioned",
+      entity: { type: "commit", key: "owner/repo@abc1234" },
+    });
+    expect(message?.metadata).toMatchObject({
+      event: "commit_comment",
+      entityType: "commit",
+      entityKey: "owner/repo@abc1234",
+      mentions: [delegate],
+    });
+    expect(message?.chatId).toBe(mapping?.chatId);
+
+    const [entry] = await app.db
+      .select({ notify: inboxEntries.notify })
+      .from(inboxEntries)
+      .where(and(eq(inboxEntries.messageId, message?.id ?? ""), eq(inboxEntries.inboxId, `inbox_${delegate}`)))
+      .limit(1);
+    expect(entry?.notify).toBe(true);
   });
 
   it("issue_comment.created on a PR seeds a new closed PR mapping from the issue payload state", async () => {

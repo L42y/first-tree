@@ -64,27 +64,27 @@ const GITHUB_FETCH_TIMEOUT_MS = 5_000;
 // usually has one); short forms match the stored entity-key syntax.
 const URL_NUMERIC_RE =
   /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+)\/(pull|issues|discussions)\/(\d+)(?:[/?#].*)?$/;
-const URL_COMMIT_RE =
+const UNSUPPORTED_URL_COMMIT_RE =
   /^https?:\/\/(?:www\.)?github\.com\/([^/\s]+)\/([^/\s]+)\/commit\/([0-9a-fA-F]{6,40})(?:[/?#].*)?$/;
 const SHORT_NUMERIC_RE = /^([^/\s]+)\/([^/\s#@]+)#(\d+)$/;
-const SHORT_COMMIT_RE = /^([^/\s]+)\/([^/\s#@]+)@([0-9a-fA-F]{6,40})$/;
+const UNSUPPORTED_SHORT_COMMIT_RE = /^([^/\s]+)\/([^/\s#@]+)@([0-9a-fA-F]{6,40})$/;
 
-const URL_PATH_TYPE: Record<string, GithubEntityType> = {
+type FollowableGithubEntityType = Exclude<GithubEntityType, "commit">;
+
+const URL_PATH_TYPE: Record<string, FollowableGithubEntityType> = {
   pull: "pull_request",
   issues: "issue",
   discussions: "discussion",
 };
 
-export type EntityReference =
-  | {
-      kind: "numeric";
-      owner: string;
-      repo: string;
-      number: number;
-      /** Explicit type from a URL path; null for the short `owner/repo#N` form. */
-      explicitType: Exclude<GithubEntityType, "commit"> | null;
-    }
-  | { kind: "commit"; owner: string; repo: string; sha: string };
+export type EntityReference = {
+  kind: "numeric";
+  owner: string;
+  repo: string;
+  number: number;
+  /** Explicit type from a URL path; null for the short `owner/repo#N` form. */
+  explicitType: FollowableGithubEntityType | null;
+};
 
 /** Parse the raw `entity` argument. Returns null when no shape matches. */
 export function parseEntityReference(raw: string): EntityReference | null {
@@ -95,15 +95,8 @@ export function parseEntityReference(raw: string): EntityReference | null {
     const [, owner, repo, path, numberStr] = urlNumeric;
     if (!owner || !repo || !path || !numberStr) return null;
     const explicitType = URL_PATH_TYPE[path];
-    if (!explicitType || explicitType === "commit") return null;
+    if (!explicitType) return null;
     return { kind: "numeric", owner, repo, number: Number(numberStr), explicitType };
-  }
-
-  const urlCommit = URL_COMMIT_RE.exec(trimmed);
-  if (urlCommit) {
-    const [, owner, repo, sha] = urlCommit;
-    if (!owner || !repo || !sha) return null;
-    return { kind: "commit", owner, repo, sha: sha.toLowerCase() };
   }
 
   const shortNumeric = SHORT_NUMERIC_RE.exec(trimmed);
@@ -113,14 +106,12 @@ export function parseEntityReference(raw: string): EntityReference | null {
     return { kind: "numeric", owner, repo, number: Number(numberStr), explicitType: null };
   }
 
-  const shortCommit = SHORT_COMMIT_RE.exec(trimmed);
-  if (shortCommit) {
-    const [, owner, repo, sha] = shortCommit;
-    if (!owner || !repo || !sha) return null;
-    return { kind: "commit", owner, repo, sha: sha.toLowerCase() };
-  }
-
   return null;
+}
+
+function isUnsupportedCommitReference(raw: string): boolean {
+  const trimmed = raw.trim();
+  return UNSUPPORTED_URL_COMMIT_RE.test(trimmed) || UNSUPPORTED_SHORT_COMMIT_RE.test(trimmed);
 }
 
 /**
@@ -129,35 +120,33 @@ export function parseEntityReference(raw: string): EntityReference | null {
  * one copy.
  */
 function parseEntityReferenceOrThrow(raw: string): EntityReference {
+  if (isUnsupportedCommitReference(raw)) {
+    throw new BadRequestError(
+      "Commit references are not supported by `github follow` or `github unfollow`. " +
+        "Commit comments continue to arrive automatically through GitHub webhooks.",
+    );
+  }
   const ref = parseEntityReference(raw);
   if (!ref) {
     throw new BadRequestError(
       `Unrecognized entity reference "${raw}". Pass a GitHub URL ` +
-        `(https://github.com/owner/repo/pull/42), "owner/repo#42", or "owner/repo@<sha>".`,
+        `(https://github.com/owner/repo/pull/42), ` +
+        `(https://github.com/owner/repo/issues/42), ` +
+        `(https://github.com/owner/repo/discussions/42), or "owner/repo#42".`,
     );
   }
   return ref;
 }
 
-/**
- * Escape SQL LIKE metacharacters (`\`, `%`, `_`) in a literal that will be
- * embedded in a LIKE pattern. GitHub repo names legitimately contain `_`,
- * which LIKE would otherwise treat as match-any-one-char and over-delete
- * across sibling repos.
- */
-function escapeLikeLiteral(value: string): string {
-  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
-}
-
 type ResolvedEntity = {
-  entityType: GithubEntityType;
-  /** Canonical key — GitHub's `full_name` casing, full commit sha. */
+  entityType: FollowableGithubEntityType;
+  /** Canonical key — GitHub's `full_name` casing plus entity number. */
   entityKey: string;
   htmlUrl: string;
   title: string | null;
   liveState: GithubEntityLiveState | null;
   entityState: EntityState;
-  /** Issue / PR / Discussion number; null for commits. Set where `entityKey` is built. */
+  /** Issue / PR / Discussion number. Set where `entityKey` is built. */
   number: number | null;
 };
 
@@ -233,30 +222,6 @@ async function resolveEntityOnGithub(
   // Canonical casing (and current name after a rename — the API follows the
   // redirect) so the written key always matches webhook-side keys. (R8)
   const fullName = readStr(repoRes.body.full_name) ?? `${ref.owner}/${ref.repo}`;
-
-  if (ref.kind === "commit") {
-    const res = await ghGet(`/repos/${fullName}/commits/${ref.sha}`, token, fetcher);
-    if (res.kind === "unavailable") return { ok: false, reason: "github-unavailable" };
-    if (res.kind !== "ok") return { ok: false, reason: "entity-not-found" };
-    const fullSha = readStr(res.body.sha) ?? ref.sha;
-    const commit =
-      typeof res.body.commit === "object" && res.body.commit !== null
-        ? (res.body.commit as Record<string, unknown>)
-        : null;
-    const message = readStr(commit?.message);
-    return {
-      ok: true,
-      entity: {
-        entityType: "commit",
-        entityKey: `${fullName}@${fullSha}`,
-        htmlUrl: readStr(res.body.html_url) ?? `https://github.com/${fullName}/commit/${fullSha}`,
-        title: message ? (message.split("\n", 1)[0]?.trim() ?? null) : null,
-        liveState: null,
-        entityState: "open",
-        number: null,
-      },
-    };
-  }
 
   if (ref.explicitType === "discussion") {
     return resolveDiscussion(fullName, ref.number, token, fetcher);
@@ -366,7 +331,7 @@ export type DeclareFollowParams = {
   humanAgentId: string;
   delegateAgentId: string;
   boundVia: DeclaredBoundVia;
-  /** Raw entity reference — URL, `owner/repo#N`, or `owner/repo@sha`. */
+  /** Raw entity reference — PR / Issue / Discussion URL or `owner/repo#N`. */
   entity: string;
   rebind: boolean;
 };
@@ -604,8 +569,7 @@ export async function declareEntityFollow(
  * succeeds (R4: `removed: 0` is terminal success).
  *
  * Matching is case-insensitive on the key (GitHub repo slugs are
- * case-insensitive) and prefix-based for commit shas so a short sha
- * unfollows the full-sha row. A repo renamed since the row was written
+ * case-insensitive). A repo renamed since the row was written
  * cannot be matched without the API — that is the known whole-table key
  * drift limitation, out of scope here (R8 note).
  */
@@ -620,8 +584,7 @@ export async function removeEntityFollow(
     .where(eq(chats.id, params.chatId))
     .limit(1);
   if (!chat) return { removed: 0 };
-  const entityLockKey =
-    ref.kind === "commit" ? `${ref.owner}/${ref.repo}@${ref.sha}` : `${ref.owner}/${ref.repo}#${ref.number}`;
+  const entityLockKey = `${ref.owner}/${ref.repo}#${ref.number}`;
 
   return withScmEntityAttentionTransaction(
     db,
@@ -632,53 +595,35 @@ export async function removeEntityFollow(
     },
     async (tx) => {
       const chatCond = eq(githubEntityChatMappings.chatId, params.chatId);
-      let removedRows: Array<{ entityKey: string }>;
-      if (ref.kind === "commit") {
-        // Prefix match so a short sha unfollows the full-sha row; LIKE
-        // metacharacters in owner/repo (GitHub allows `_`) are escaped so the
-        // pattern can't over-match sibling repos.
-        const prefix = escapeLikeLiteral(`${ref.owner}/${ref.repo}@${ref.sha}`.toLowerCase());
-        removedRows = await tx
-          .delete(githubEntityChatMappings)
-          .where(
-            and(
-              chatCond,
-              eq(githubEntityChatMappings.entityType, "commit"),
-              sql`lower(${githubEntityChatMappings.entityKey}) LIKE ${`${prefix}%`}`,
-            ),
-          )
-          .returning({ entityKey: githubEntityChatMappings.entityKey });
-      } else {
-        const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
-        // Type matching without a GitHub call (unfollow must not depend on
-        // GitHub being up):
-        //   - Issues and PRs share one numbering space, and follow auto-corrects
-        //     a `/pull/N` URL that actually points at an issue (and vice versa)
-        //     — so an explicit issue/PR reference matches BOTH types, otherwise
-        //     the row created through the auto-corrected follow could never be
-        //     removed with the same reference the caller used to create it.
-        //   - Discussions number independently; an explicit `/discussions/N`
-        //     URL matches only discussions, and only the bare `owner/repo#N`
-        //     form sweeps all three ("make this chat quiet about #N").
-        const types: GithubEntityType[] =
-          ref.explicitType === "discussion"
-            ? ["discussion"]
-            : ref.explicitType !== null
-              ? ["issue", "pull_request"]
-              : ["issue", "pull_request", "discussion"];
-        const lowerKeys = new Set([key]);
-        if (types.includes("discussion")) {
-          const legacyKey = legacyDiscussionEntityKey(key);
-          if (legacyKey) lowerKeys.add(legacyKey);
-        }
-        const keyConditions = [...lowerKeys].map(
-          (lowerKey) => sql`lower(${githubEntityChatMappings.entityKey}) = ${lowerKey}`,
-        );
-        removedRows = await tx
-          .delete(githubEntityChatMappings)
-          .where(and(chatCond, inArray(githubEntityChatMappings.entityType, types), or(...keyConditions)))
-          .returning({ entityKey: githubEntityChatMappings.entityKey });
+      const key = `${ref.owner}/${ref.repo}#${ref.number}`.toLowerCase();
+      // Type matching without a GitHub call (unfollow must not depend on
+      // GitHub being up):
+      //   - Issues and PRs share one numbering space, and follow auto-corrects
+      //     a `/pull/N` URL that actually points at an issue (and vice versa)
+      //     — so an explicit issue/PR reference matches BOTH types, otherwise
+      //     the row created through the auto-corrected follow could never be
+      //     removed with the same reference the caller used to create it.
+      //   - Discussions number independently; an explicit `/discussions/N`
+      //     URL matches only discussions, and only the bare `owner/repo#N`
+      //     form sweeps all three ("make this chat quiet about #N").
+      const types: FollowableGithubEntityType[] =
+        ref.explicitType === "discussion"
+          ? ["discussion"]
+          : ref.explicitType !== null
+            ? ["issue", "pull_request"]
+            : ["issue", "pull_request", "discussion"];
+      const lowerKeys = new Set([key]);
+      if (types.includes("discussion")) {
+        const legacyKey = legacyDiscussionEntityKey(key);
+        if (legacyKey) lowerKeys.add(legacyKey);
       }
+      const keyConditions = [...lowerKeys].map(
+        (lowerKey) => sql`lower(${githubEntityChatMappings.entityKey}) = ${lowerKey}`,
+      );
+      const removedRows = await tx
+        .delete(githubEntityChatMappings)
+        .where(and(chatCond, inArray(githubEntityChatMappings.entityType, types), or(...keyConditions)))
+        .returning({ entityKey: githubEntityChatMappings.entityKey });
 
       if (removedRows.length > 0) {
         log.info({ chatId: params.chatId, entity: params.entity, removed: removedRows.length }, "github unfollow");
@@ -714,14 +659,17 @@ export async function listChatGithubEntities(
 
   if (rows.length === 0) return { items: [] };
 
-  const dedup = new Map<string, (typeof rows)[number]>();
+  const dedup = new Map<string, ChatGithubEntity>();
   for (const r of rows) {
-    const key = githubEntityDedupKey(r.entityType, r.entityKey);
+    // Materialize before deduplication so an inert legacy manual commit row
+    // cannot hide an older webhook-created row for the same commit.
+    const item = materializeChatGithubEntity(r);
+    if (!item) continue;
+    const key = githubEntityDedupKey(item.entityType, item.entityKey);
     // Rows arrive newest-first so the dedup keeps the most recent binding,
     // which carries the `boundVia` the user actually triggered last.
-    if (!dedup.has(key)) dedup.set(key, r);
+    if (!dedup.has(key)) dedup.set(key, item);
   }
 
-  const items = Array.from(dedup.values()).map((r) => materializeChatGithubEntity(r));
-  return { items: items.filter((x): x is NonNullable<typeof x> => x !== null) };
+  return { items: Array.from(dedup.values()) };
 }

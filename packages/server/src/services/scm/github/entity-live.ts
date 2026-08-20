@@ -5,6 +5,7 @@ import {
   type GithubEntityLiveState,
   type GithubEntityType,
   githubEntityBoundViaSchema,
+  isDeclaredBoundVia,
 } from "@first-tree/shared";
 import { GITHUB_API_BASE } from "./api-base.js";
 import { canonicalizeGithubEntityKey } from "./entity-key.js";
@@ -138,17 +139,6 @@ async function fetchEntityLiveFields(
       const state: GithubEntityLiveState | null = body.state === "open" || body.state === "closed" ? body.state : null;
       return { title: body.title ?? null, state };
     }
-    if (entityType === "commit" && parsed.kind === "sha") {
-      const res = await fetcher(
-        `${GITHUB_API_BASE}/repos/${parsed.owner}/${parsed.repo}/commits/${parsed.sha}`,
-        fetchOpts,
-      );
-      if (!res.ok) return { title: null, state: null };
-      const body = (await res.json()) as { commit?: { message?: string } };
-      // First line of the commit message is its de-facto title.
-      const title = body.commit?.message?.split("\n", 1)[0]?.trim() ?? null;
-      return { title, state: null };
-    }
     return { title: null, state: null };
   } catch {
     // Network errors, AbortController timeouts, and JSON parse errors all
@@ -206,6 +196,10 @@ export function materializeChatGithubEntity(row: MappingRow): ChatGithubEntity |
   const boundViaParsed = githubEntityBoundViaSchema.safeParse(row.boundVia);
   if (!boundViaParsed.success) return null;
   const boundVia: GithubEntityBoundVia = boundViaParsed.data;
+  // Manual commit follows are retired. Keep the shared commit representation
+  // for webhook-created rows, but make historical declared rows inert on read
+  // without a migration or a GitHub lookup.
+  if (entityType === "commit" && isDeclaredBoundVia(boundVia)) return null;
   const parsed = parseEntityKey(entityType, row.entityKey);
   if (!parsed) return null;
   return {
@@ -231,6 +225,9 @@ export async function resolveChatGithubEntity(
 ): Promise<ChatGithubEntity | null> {
   const base = materializeChatGithubEntity(row);
   if (!base || !token) return base;
+  // Commit data is webhook-only/local-projection data. Never re-resolve it
+  // through the GitHub Contents-backed commit endpoint.
+  if (base.entityType === "commit") return base;
   const parsed = parseEntityKey(base.entityType, row.entityKey);
   if (!parsed) return base;
   const live = await fetchEntityLiveFields(base.entityType, parsed, token, fetcher);
