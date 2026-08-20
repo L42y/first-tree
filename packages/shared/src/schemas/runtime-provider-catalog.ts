@@ -23,6 +23,23 @@ export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
 export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
+/**
+ * Remediation package list when a Client/CLI install is missing the bundled
+ * DeepSeek Harness closure. The portable First Tree CLI is expected to ship
+ * these already via `bundleDependencies`; this string is for broken/local installs.
+ */
+export const DEEPSEEK_INSTALL_NPM_PACKAGE = [
+  "@deepseek-ai/dsh-sdk-jsonrpc-demo@0.0.1-rc.5",
+  "@deepseek-ai/dsh-sdk-jsonrpc-server@0.0.1-rc.5",
+  "@deepseek-ai/dsh-sdk-client@0.0.1-rc.1",
+  "@deepseek-ai/dsh-sdk-protocol@0.0.1-rc.5",
+  "@deepseek-ai/dsh-agent-spine-demo@0.0.1-rc.5",
+  "@deepseek-ai/dsh-session-persistence-jsonl@0.0.1-rc.5",
+  "@deepseek-ai/dsh-llm-deepseek@0.0.1-rc.5",
+  "@deepseek-ai/dsh-bash-local@0.0.1-rc.5",
+  "@deepseek-ai/dsh-fs-local@0.0.1-rc.5",
+  "@deepseek-ai/dsh-session@0.0.1-rc.5",
+].join(" ");
 
 /** Provider-owned install metadata — npm package or official installer script. */
 export type RuntimeProviderInstall =
@@ -33,8 +50,26 @@ export type RuntimeProviderInstall =
  * Ordered login steps for chat auth-recovery / host-local surfaces.
  * Shell providers have exactly one step; interactive providers (Kimi / Pi)
  * have exactly two (`program`, slash-command).
+ *
+ * Each step MUST be an executable terminal fragment (or a slash-command for
+ * the interactive pair). Natural-language UI guidance does not belong here —
+ * use {@link RuntimeProviderPreferredCredential} for preferred First Tree
+ * placement prose.
  */
 export type RuntimeProviderLoginSteps = readonly [string] | readonly [string, string];
+
+/**
+ * Preferred First Tree credential placement when host-local auth is an API
+ * key (or similar) rather than only a CLI login. Absent → terminal
+ * {@link RuntimeProviderLoginSteps} only.
+ */
+export type RuntimeProviderPreferredCredential = {
+  kind: "agent-runtime-env";
+  /** Env var name stored on the agent's Runtime → Environment variables. */
+  envKey: string;
+  /** Prefer Web "Mark as sensitive" when saving on the agent. */
+  markSensitive: boolean;
+};
 
 /**
  * Where operators recover credentials.
@@ -68,6 +103,12 @@ export type RuntimeProviderCatalogEntry = {
   authRecovery: RuntimeProviderAuthRecovery;
   /** Credential owner named in chat auth-failure hints. */
   authOwnerLabel: string;
+  /**
+   * Optional preferred First Tree placement for the credential. When set,
+   * computers / chat prose may name agent Runtime env; {@link loginSteps}
+   * stay the executable host-shell fallback.
+   */
+  preferredCredential?: RuntimeProviderPreferredCredential;
 };
 
 /**
@@ -84,6 +125,21 @@ export const RUNTIME_PROVIDER_CATALOG = {
     loginSteps: ["amp login"],
     authRecovery: { kind: "host" },
     authOwnerLabel: "Amp",
+  },
+  "deepseek-harness": {
+    id: "deepseek-harness",
+    label: "DeepSeek Harness",
+    displayOrder: 100,
+    selectionPriority: null,
+    install: { kind: "npm", package: DEEPSEEK_INSTALL_NPM_PACKAGE, args: [] },
+    loginSteps: ["export DEEPSEEK_API_KEY=<your DeepSeek API key>"],
+    authRecovery: { kind: "host" },
+    authOwnerLabel: "DeepSeek",
+    preferredCredential: {
+      kind: "agent-runtime-env",
+      envKey: "DEEPSEEK_API_KEY",
+      markSensitive: true,
+    },
   },
   "claude-code": {
     id: "claude-code",
@@ -289,6 +345,28 @@ export function runtimeProviderInteractiveLoginCue(provider: RuntimeProvider): s
 /** Credential-owner label used in chat auth-failure hints. */
 export function runtimeProviderAuthOwnerLabel(provider: RuntimeProvider): string {
   return RUNTIME_PROVIDER_CATALOG[provider].authOwnerLabel;
+}
+
+/** Preferred First Tree credential placement, when the catalog declares one. */
+export function runtimeProviderPreferredCredential(
+  provider: RuntimeProvider,
+): RuntimeProviderPreferredCredential | null {
+  // `as const satisfies` keeps per-entry exact types; widen to the catalog
+  // entry contract so optional `preferredCredential` is readable for every id.
+  const entry: RuntimeProviderCatalogEntry = RUNTIME_PROVIDER_CATALOG[provider];
+  return entry.preferredCredential ?? null;
+}
+
+/**
+ * Operator-facing prose for {@link RuntimeProviderPreferredCredential}.
+ * Returns null when the provider has no preferred First Tree placement
+ * beyond host-local {@link runtimeProviderLoginSteps}.
+ */
+export function runtimeProviderPreferredCredentialProse(provider: RuntimeProvider): string | null {
+  const preferred = runtimeProviderPreferredCredential(provider);
+  if (preferred?.kind !== "agent-runtime-env") return null;
+  const sensitive = preferred.markSensitive ? " and Mark as sensitive" : "";
+  return `set \`${preferred.envKey}\` on the agent's Runtime → Environment variables${sensitive}`;
 }
 
 /**

@@ -139,6 +139,7 @@ describe("characterization — provider-boundary guard covers SessionRuntime", (
       "claude-code-tui",
       "codex",
       "cursor",
+      "deepseek-harness",
       "grok",
       "kimi-code",
       "opencode",

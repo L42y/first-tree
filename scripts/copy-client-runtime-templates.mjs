@@ -42,3 +42,11 @@ await cp(sourceDir, targetDir, {
 await mkdir(runtimeAssetsDir, { recursive: true });
 await cp(canonicalPolicy, resolve(runtimeAssetsDir, "context-tree-policy.md"));
 await cp(canonicalWriteRouting, resolve(runtimeAssetsDir, "context-tree-write-routing.md"));
+
+const deepseekCordisSource = resolve(repoRoot, "packages/client/src/providers/deepseek-harness/cordis.yml");
+if (!existsSync(deepseekCordisSource) || !statSync(deepseekCordisSource).isFile()) {
+  throw new Error(`DeepSeek cordis template is missing: ${deepseekCordisSource}`);
+}
+// Stable runtime-asset location shared with agent-briefing discovery
+// (`./runtime-assets` / `../runtime-assets` from bundled chunks).
+await cp(deepseekCordisSource, resolve(runtimeAssetsDir, "deepseek-harness-cordis.yml"));

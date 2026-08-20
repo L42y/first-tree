@@ -6,6 +6,7 @@ import { createClaudeCodeHandler } from "./claude/index.js";
 import { createClaudeCodeTuiHandler } from "./claude/tui/index.js";
 import { createCodexHandler } from "./codex/index.js";
 import { createCursorHandler } from "./cursor/index.js";
+import { createDeepseekHandler } from "./deepseek-harness/index.js";
 import { createGrokHandler } from "./grok/index.js";
 import { createKimiCodeHandler } from "./kimi-code/index.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
@@ -42,6 +43,7 @@ export function createBuiltinHandlerRegistry(deps: BuiltinHandlerRegistryDeps = 
 
   return Object.freeze({
     amp: (config) => createAmpHandler(config),
+    "deepseek-harness": (config) => createDeepseekHandler(config),
     "claude-code": (config) => createClaudeCodeHandler({ ...config, claudeCodeExecutable: resolution.path }),
     "claude-code-tui": (config) => createClaudeCodeTuiHandler({ ...config, claudeCodeExecutable: resolution.path }),
     codex: (config) => createCodexHandler(config),

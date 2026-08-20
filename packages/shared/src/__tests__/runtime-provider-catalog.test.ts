@@ -3,6 +3,7 @@ import {
   AMP_INSTALL_COMMAND,
   asRuntimeProvider,
   capabilityEntrySchema,
+  DEEPSEEK_INSTALL_NPM_PACKAGE,
   DISABLED_RUNTIME_PROVIDERS,
   enabledOkRuntimeProviders,
   enabledRuntimeProviders,
@@ -29,6 +30,8 @@ import {
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
   runtimeProviderLoginSteps,
+  runtimeProviderPreferredCredential,
+  runtimeProviderPreferredCredentialProse,
   runtimeProviderSchema,
   runtimeProviderShowsHostLoginOnSetup,
 } from "../index.js";
@@ -68,7 +71,7 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(RUNTIME_PROVIDER_PREFERRED_ORDER).toEqual(["codex", "claude-code"]);
     expect(
       RUNTIME_PROVIDER_IDS.filter((provider) => RUNTIME_PROVIDER_CATALOG[provider].selectionPriority === null),
-    ).toEqual(["amp", "claude-code-tui", "cursor", "grok", "kimi-code", "opencode", "pi"]);
+    ).toEqual(["amp", "deepseek-harness", "claude-code-tui", "cursor", "grok", "kimi-code", "opencode", "pi"]);
     expect(PREFERRED_RUNTIME_PROVIDER).toBe("codex");
     expect(orderRuntimeProvidersByPreference(["pi", "opencode", "claude-code", "kimi-code", "codex"])).toEqual([
       "codex",
@@ -99,6 +102,11 @@ describe("runtime provider identity + catalog completeness", () => {
       expect(runtimeProviderLabel(id)).toBe(entry.label);
       expect(entry.loginSteps.length).toBeGreaterThan(0);
       expect(runtimeProviderLoginSteps(id)).toEqual(entry.loginSteps);
+      // loginSteps feed copy-pasteable terminal blocks — keep them executable,
+      // not natural-language UI guidance (that belongs on preferredCredential).
+      for (const step of entry.loginSteps) {
+        expect(step).not.toMatch(/Runtime\s*→|Mark as sensitive/i);
+      }
       const install = runtimeProviderInstallCommand(id);
       expect(install.length).toBeGreaterThan(0);
       if (entry.install.kind === "npm") {
@@ -123,6 +131,7 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderShowsHostLoginOnSetup("opencode")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("pi")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("amp")).toBe(true);
+    expect(runtimeProviderShowsHostLoginOnSetup("deepseek-harness")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("codex")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("claude-code")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("claude-code-tui")).toBe(false);
@@ -141,6 +150,7 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderInProductAuthTarget("opencode")).toBeNull();
     expect(runtimeProviderInProductAuthTarget("pi")).toBeNull();
     expect(runtimeProviderInProductAuthTarget("amp")).toBeNull();
+    expect(runtimeProviderInProductAuthTarget("deepseek-harness")).toBeNull();
   });
 
   it("leaves the published auth-error message uncapped on the wire", () => {
@@ -171,6 +181,15 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderInstallCommand("cursor")).toBe("curl https://cursor.com/install -fsS | bash");
     expect(runtimeProviderInstallCommand("grok")).toBe("curl -fsSL https://x.ai/cli/install.sh | bash");
     expect(runtimeProviderInstallCommand("amp")).toBe(AMP_INSTALL_COMMAND);
+    expect(runtimeProviderInstallCommand("deepseek-harness")).toBe(`npm install -g ${DEEPSEEK_INSTALL_NPM_PACKAGE}`);
+    expect(runtimeProviderLoginCommand("deepseek-harness")).toBe("export DEEPSEEK_API_KEY=<your DeepSeek API key>");
+    expect(runtimeProviderPreferredCredential("deepseek-harness")).toEqual({
+      kind: "agent-runtime-env",
+      envKey: "DEEPSEEK_API_KEY",
+      markSensitive: true,
+    });
+    expect(runtimeProviderPreferredCredentialProse("deepseek-harness")).toContain("Mark as sensitive");
+    expect(runtimeProviderPreferredCredentialProse("amp")).toBeNull();
     expect(runtimeProviderLoginCommand("amp")).toBe("amp login");
     expect(KIMI_NPM_PACKAGE).toBe("@moonshot-ai/kimi-code");
     expect(RUNTIME_PROVIDER_CATALOG["kimi-code"].install).toEqual({

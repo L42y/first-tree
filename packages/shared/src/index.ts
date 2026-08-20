@@ -159,9 +159,11 @@ export {
   DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD,
+  DEFAULT_DEEPSEEK_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD,
+  type DeepseekRuntimeConfigPayload,
   type DryRunAgentRuntimeConfig,
   defaultRuntimeConfigPayload,
   deriveRepoLocalPath,
@@ -1510,6 +1512,7 @@ export {
 export {
   AMP_INSTALL_COMMAND,
   CURSOR_INSTALL_COMMAND,
+  DEEPSEEK_INSTALL_NPM_PACKAGE,
   enabledOkRuntimeProviders,
   enabledRuntimeProviders,
   GROK_INSTALL_COMMAND,
@@ -1528,6 +1531,7 @@ export {
   type RuntimeProviderCatalogEntry,
   type RuntimeProviderInstall,
   type RuntimeProviderLoginSteps,
+  type RuntimeProviderPreferredCredential,
   runtimeProviderAuthOwnerLabel,
   runtimeProviderAuthRecovery,
   runtimeProviderChatAuthLoginPhrase,
@@ -1538,6 +1542,8 @@ export {
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
   runtimeProviderLoginSteps,
+  runtimeProviderPreferredCredential,
+  runtimeProviderPreferredCredentialProse,
   runtimeProviderShowsHostLoginOnSetup,
 } from "./schemas/runtime-provider-catalog.js";
 export {
