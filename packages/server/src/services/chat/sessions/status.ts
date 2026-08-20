@@ -22,7 +22,11 @@ import { agentPresence } from "../../../db/schema/agent-presence.js";
 import { agents } from "../../../db/schema/agents.js";
 import { chatMembership } from "../../../db/schema/chat-membership.js";
 import { clients } from "../../../db/schema/clients.js";
-import { isConsistentAgentRoute, metadataSupportsSessionReset } from "../../runtime/rpc/session-command.js";
+import {
+  isConsistentAgentRoute,
+  metadataSupportsSessionReset,
+  metadataSupportsTeamSkillInvocation,
+} from "../../runtime/rpc/session-command.js";
 
 /**
  * Single source of truth for per-(agent,chat) composite status.
@@ -508,6 +512,15 @@ export async function resolveAgentChatStatuses(
       .filter((r) => isConsistentAgentRoute(r) && metadataSupportsSessionReset(r.clientMetadata))
       .map((r) => r.agentId),
   );
+  // Team Skill invocation capability: same DB-authoritative route predicate
+  // as Reset above. Only a client that declared the one-sided
+  // `teamSkillInvocationV1` flag parses the server-owned marker fail-closed;
+  // the Web composer hides Team Skill menu entries for every other agent.
+  const teamSkillCapableAgents = new Set(
+    routeRows
+      .filter((r) => isConsistentAgentRoute(r) && metadataSupportsTeamSkillInvocation(r.clientMetadata))
+      .map((r) => r.agentId),
+  );
 
   // -- Activity (D): per-(agent,chat) live activity (+ turnText when asked).
   //    Pure description: 60s drop here means "5-min-old tool_call is not the
@@ -582,6 +595,10 @@ export async function resolveAgentChatStatuses(
           // prove the old provider mapping is gone and release the rows it
           // parks while the server finalizes.
           sessionResetSupported: resetCapableAgents.has(agentId),
+          // Live-connection capability gate for Team Skill slash commands:
+          // only a client that resolves the server-owned invocation marker
+          // fail-closed may be offered Team Skills in the Web composer.
+          teamSkillInvocationSupported: teamSkillCapableAgents.has(agentId),
         }),
       );
     }

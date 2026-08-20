@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   metadataHasSessionResetV1Capability,
   metadataSupportsSessionReset,
+  metadataSupportsTeamSkillInvocation,
 } from "../services/runtime/rpc/session-command.js";
 
 /**
@@ -30,5 +31,18 @@ describe("Reset capability versioning", () => {
     for (const absent of [null, undefined, {}, meta({}), meta({ wsSessionResetV1: false })]) {
       expect(metadataSupportsSessionReset(absent)).toBe(false);
     }
+  });
+
+  it("gates the Team Skill menu on the one-sided invocation-marker flag", () => {
+    // `teamSkillInvocationV1` is one-sided: the client declares it whenever
+    // its build parses the server-owned marker, with no server-welcome
+    // negotiation. Anything short of an explicit true hides the Web Team
+    // Skill menu for that agent (fail closed).
+    expect(metadataSupportsTeamSkillInvocation(meta({ teamSkillInvocationV1: true }))).toBe(true);
+    for (const absent of [null, undefined, {}, meta({}), meta({ teamSkillInvocationV1: false })]) {
+      expect(metadataSupportsTeamSkillInvocation(absent)).toBe(false);
+    }
+    // The Reset flag neither implies nor is implied by the marker flag.
+    expect(metadataSupportsTeamSkillInvocation(meta({ wsSessionResetV1: true }))).toBe(false);
   });
 });

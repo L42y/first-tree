@@ -23,6 +23,9 @@ import { createTestAgent, useTestApp } from "./helpers.js";
 describe("sendMessage skillPrecondition", () => {
   const getApp = useTestApp();
 
+  const RES_ID = crypto.randomUUID();
+  const SLUG = "review";
+
   async function setup(uid: string) {
     const app = getApp();
     const sender = await createTestAgent(app, { name: `sp-s-${uid}` });
@@ -52,13 +55,66 @@ describe("sendMessage skillPrecondition", () => {
       format: "text",
       content: "/review src/",
       metadata: { mentions: [peerA.uuid] },
-      skillPrecondition: { recipientAgentId: peerA.uuid, expectedConfigVersion: configVersion },
+      skillPrecondition: {
+        recipientAgentId: peerA.uuid,
+        expectedConfigVersion: configVersion,
+        resourceId: RES_ID,
+        slug: SLUG,
+      },
     });
     expect(result.message.id).toBeTruthy();
     expect(await messageCount(app, chat.id)).toBe(1);
     const [stored] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
-    // Transient guard: never persisted into message metadata.
+    // The transient precondition itself is never persisted…
     expect(stored?.metadata ?? {}).not.toHaveProperty("skillPrecondition");
+    // …but the server-owned invocation marker is: this is what lets the
+    // recipient's Client recognise the Team intent after a delayed delivery.
+    expect(stored?.metadata).toMatchObject({
+      teamSkillInvocation: { resourceId: RES_ID, slug: SLUG, configVersion },
+    });
+  });
+
+  it("strips a client-supplied invocation marker when no valid precondition accompanies it", async () => {
+    const { app, sender, peerA, chat } = await setup(crypto.randomUUID().slice(0, 6));
+    // A forged marker without a precondition must not survive the write
+    // path — otherwise any sender could make an arbitrary slash command
+    // look like server-validated Team intent.
+    const result = await sendMessage(app.db, chat.id, sender.agent.uuid, {
+      source: "web",
+      format: "text",
+      content: "/review src/",
+      metadata: {
+        mentions: [peerA.uuid],
+        teamSkillInvocation: { resourceId: RES_ID, slug: SLUG, configVersion: 1 },
+      },
+    });
+    expect(result.message.id).toBeTruthy();
+    const [stored] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
+    expect(stored?.metadata ?? {}).not.toHaveProperty("teamSkillInvocation");
+  });
+
+  it("overwrites a forged marker with the server-validated one when the precondition passes", async () => {
+    const { app, sender, peerA, chat, configVersion } = await setup(crypto.randomUUID().slice(0, 6));
+    const result = await sendMessage(app.db, chat.id, sender.agent.uuid, {
+      source: "web",
+      format: "text",
+      content: "/review src/",
+      metadata: {
+        mentions: [peerA.uuid],
+        teamSkillInvocation: { resourceId: crypto.randomUUID(), slug: "forged", configVersion: 999 },
+      },
+      skillPrecondition: {
+        recipientAgentId: peerA.uuid,
+        expectedConfigVersion: configVersion,
+        resourceId: RES_ID,
+        slug: SLUG,
+      },
+    });
+    expect(result.message.id).toBeTruthy();
+    const [stored] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
+    expect(stored?.metadata).toMatchObject({
+      teamSkillInvocation: { resourceId: RES_ID, slug: SLUG, configVersion },
+    });
   });
 
   it("rejects with a conflict and inserts nothing when the config version moved after selection", async () => {
@@ -75,7 +131,12 @@ describe("sendMessage skillPrecondition", () => {
         format: "text",
         content: "/review src/",
         metadata: { mentions: [peerA.uuid] },
-        skillPrecondition: { recipientAgentId: peerA.uuid, expectedConfigVersion: configVersion },
+        skillPrecondition: {
+          recipientAgentId: peerA.uuid,
+          expectedConfigVersion: configVersion,
+          resourceId: RES_ID,
+          slug: SLUG,
+        },
       }),
     ).rejects.toThrow(ConflictError);
     expect(await messageCount(app, chat.id)).toBe(0);
@@ -91,7 +152,12 @@ describe("sendMessage skillPrecondition", () => {
         format: "text",
         content: "/review src/",
         metadata: { mentions: [peerA.uuid, peerB.uuid] },
-        skillPrecondition: { recipientAgentId: peerA.uuid, expectedConfigVersion: configVersion },
+        skillPrecondition: {
+          recipientAgentId: peerA.uuid,
+          expectedConfigVersion: configVersion,
+          resourceId: RES_ID,
+          slug: SLUG,
+        },
       }),
     ).rejects.toThrow(ConflictError);
     // A different single recipient than the one the command was chosen for.
@@ -101,7 +167,12 @@ describe("sendMessage skillPrecondition", () => {
         format: "text",
         content: "/review src/",
         metadata: { mentions: [peerB.uuid] },
-        skillPrecondition: { recipientAgentId: peerA.uuid, expectedConfigVersion: configVersion },
+        skillPrecondition: {
+          recipientAgentId: peerA.uuid,
+          expectedConfigVersion: configVersion,
+          resourceId: RES_ID,
+          slug: SLUG,
+        },
       }),
     ).rejects.toThrow(ConflictError);
     expect(await messageCount(app, chat.id)).toBe(0);

@@ -26,6 +26,7 @@ import {
   requestResolutionSchema,
   type SendMessage,
   scanMentionTokens,
+  TEAM_SKILL_INVOCATION_METADATA_KEY,
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
 import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
@@ -757,6 +758,11 @@ export function preflightMessageSendIntent(input: {
         : {}),
     ...(addressedAgentIds.length > 0 ? { [ADDRESSED_AGENT_IDS_METADATA_KEY]: addressedAgentIds } : {}),
   };
+  // The Team Skill invocation marker is SERVER-OWNED: an inbound value is
+  // never honored. The message transaction re-stamps it only after the
+  // request-level skillPrecondition validates (recipient set + config
+  // version), so a forged marker cannot survive the write path.
+  delete metadataToStore[TEAM_SKILL_INVOCATION_METADATA_KEY];
 
   if (data.format === MESSAGE_FORMATS.REQUEST) {
     const targetId = mergedMentions[0];
@@ -1150,6 +1156,27 @@ async function sendMessageInner(
           version: 1,
           targetAgentId: orientationTargetAgentId,
         },
+      };
+    }
+
+    if (data.skillPrecondition) {
+      // The precondition held at insert time, so persist the SERVER-OWNED
+      // invocation marker with the message. The delivery-time configVersion
+      // stamp alone cannot distinguish "Team Skill chosen at v1, delivered
+      // after the config moved to v2" from "a hand-typed local command sent
+      // against v2" — this marker can, and the recipient's Client resolves
+      // the command fail-closed against it (never a same-named local Skill)
+      // no matter how long the inbox queue delayed delivery. The version
+      // equality proven above means the resource/slug pair the sender
+      // supplied is exactly what its fresh pre-send check saw; a fabricated
+      // slug still cannot execute anything — an unknown or unavailable
+      // registry entry settles as an inert notice on the Client. Stamped
+      // AFTER every branch that rebuilds metadataToStore from
+      // preparedMetadata (which has the inbound value stripped).
+      const { resourceId, slug, expectedConfigVersion } = data.skillPrecondition;
+      metadataToStore = {
+        ...metadataToStore,
+        [TEAM_SKILL_INVOCATION_METADATA_KEY]: { resourceId, slug, configVersion: expectedConfigVersion },
       };
     }
 

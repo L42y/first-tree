@@ -1196,6 +1196,11 @@ export {
   requestResolutionSchema,
   type SendMessage,
   sendMessageSchema,
+  TEAM_SKILL_INVOCATION_METADATA_KEY,
+  type TeamSkillInvocation,
+  teamSkillInvocationFromMetadata,
+  teamSkillInvocationSchema,
+  teamSkillSlugSchema,
 } from "./schemas/message.js";
 export {
   type ListNeedYouRequestsQuery,

@@ -427,6 +427,55 @@ export function isRuntimeNoticeMetadata(metadata: Record<string, unknown> | null
   return metadata?.[RUNTIME_NOTICE_METADATA_KEY] === true;
 }
 
+// -- Team Skill invocation marker (server-owned, persisted) --
+
+/**
+ * Server-owned marker stamped into a stored message's `metadata` when the
+ * send carried a valid `skillPrecondition`: proof that the leading slash
+ * command was chosen from the recipient agent's First Tree Team Skill menu,
+ * not typed as a local/runtime command. The marker is what lets the
+ * recipient's Client tell "Team Skill intent selected at config version N"
+ * apart from "a hand-typed local command" no matter how long the message
+ * sat in the inbox queue or how the config changed in between — the
+ * delivery-time `configVersion` stamp alone cannot carry that distinction.
+ *
+ * SERVER-OWNED: the message transaction writes this field only after the
+ * precondition validates, overwrites any client-supplied value, and strips
+ * it from sends without a valid precondition, so a forged marker never
+ * survives the write path. Old clients ignore unknown metadata keys; new
+ * clients fail closed on it (never resolving the command to a same-named
+ * local Skill).
+ */
+export const TEAM_SKILL_INVOCATION_METADATA_KEY = "teamSkillInvocation";
+
+/** Portable Team Skill base slug the user types after `/` (materializer rules). */
+export const teamSkillSlugSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9-]{0,119}$/, "Team Skill slug must be a portable lowercase slug");
+
+export const teamSkillInvocationSchema = z.object({
+  /** Team resource id the command was chosen from. */
+  resourceId: z.string().uuid(),
+  /** Cloud-declared base slug the user typed (pre-collision-suffix). */
+  slug: teamSkillSlugSchema,
+  /** The agent's `agent_configs.version` at selection time. */
+  configVersion: z.number().int().positive(),
+});
+export type TeamSkillInvocation = z.infer<typeof teamSkillInvocationSchema>;
+
+/**
+ * Parse the server-owned Team Skill invocation marker from message metadata.
+ * Absent or malformed → null (the message carries no proven Team intent).
+ */
+export function teamSkillInvocationFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): TeamSkillInvocation | null {
+  const raw = metadata?.[TEAM_SKILL_INVOCATION_METADATA_KEY];
+  if (raw === undefined || raw === null) return null;
+  const parsed = teamSkillInvocationSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
 export const sendMessageSchema = z.object({
   format: messageFormatSchema.default("text"),
   content: z.unknown(),
@@ -458,17 +507,23 @@ export const sendMessageSchema = z.object({
   /**
    * Transient, request-level precondition for a Team Skill slash command
    * chosen from the slash menu. The sender asserts the command was selected
-   * for exactly this recipient while the agent's runtime config was at this
-   * version. The message transaction re-validates both before inserting:
-   * a removed/renamed Team Skill (version bump) or a different routing set
-   * rejects the send with a conflict instead of letting the command fall
-   * through to a same-named LOCAL Skill. Request-level only — never
+   * for exactly this recipient, from this Team resource, while the agent's
+   * runtime config was at this version. The message transaction re-validates
+   * the recipient set and the config version before inserting: a removed or
+   * renamed Team Skill (version bump) or a different routing set rejects the
+   * send with a conflict instead of letting the command fall through to a
+   * same-named LOCAL Skill. On success the server persists a server-owned
+   * `teamSkillInvocation` metadata marker built from these fields, so the
+   * recipient's Client can still recognise the Team intent after a delayed
+   * delivery. Request-level only — the precondition itself is never
    * persisted into message metadata.
    */
   skillPrecondition: z
     .object({
       recipientAgentId: z.string().uuid(),
       expectedConfigVersion: z.number().int().positive(),
+      resourceId: z.string().uuid(),
+      slug: teamSkillSlugSchema,
     })
     .optional(),
 });
