@@ -1874,12 +1874,13 @@ export function ChatView({
   // `askError` surfaces a send failure IN the card (the composer is covered).
   const [askBusy, setAskBusy] = useState(false);
   const [askError, setAskError] = useState<string | null>(null);
-  const { pendingAttachments, addFiles, removeAttachment, clearAttachments } = usePendingAttachments({
-    onError: setUploadError,
-    // Dismiss a stale upload error (e.g. "file too large") the moment the
-    // user adds or removes an attachment — they're already fixing it.
-    onChange: () => setUploadError(null),
-  });
+  const { pendingAttachments, addFiles, removeAttachment, clearAttachments, restoreAttachments } =
+    usePendingAttachments({
+      onError: setUploadError,
+      // Dismiss a stale upload error (e.g. "file too large") the moment the
+      // user adds or removes an attachment — they're already fixing it.
+      onChange: () => setUploadError(null),
+    });
   const clearMentionTipTimers = useCallback(() => {
     if (mentionTipHoldTimer.current) clearTimeout(mentionTipHoldTimer.current);
     if (mentionTipExitTimer.current) clearTimeout(mentionTipExitTimer.current);
@@ -2634,6 +2635,10 @@ export function ChatView({
       // Optimistic rows render into the cache below; rollback restores both
       // the textarea draft and any not-yet-acked optimistic tempIds on error.
       const previousDraft = draft;
+      // Snapshot the staged files BEFORE clearing: clearAttachments revokes
+      // the image previews, so a failure rollback must re-stage from these
+      // seeds (fresh ids + fresh preview URLs), never reuse the old objects.
+      const previousAttachments = pendingAttachments.map(({ file, kind }) => ({ file, kind }));
       const sendChatId = chatId;
       const sendUserId = user?.id ?? null;
       setDraft("");
@@ -2799,6 +2804,12 @@ export function ChatView({
         // observation #1).
         if (previousDraft && !parkFailedDraftIfSwitched(sendUserId, sendChatId, chatIdRef.current, previousDraft)) {
           setDraft((current) => (current === "" ? previousDraft : current));
+        }
+        // Restore the staged files too — but only into the SAME chat the
+        // send left from. restoreAttachments is itself a no-op when the
+        // user already staged replacements during the in-flight window.
+        if (previousAttachments.length > 0 && chatIdRef.current === sendChatId) {
+          restoreAttachments(previousAttachments);
         }
       } finally {
         setUploading(false);

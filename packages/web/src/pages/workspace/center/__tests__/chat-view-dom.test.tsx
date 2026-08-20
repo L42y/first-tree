@@ -2470,6 +2470,49 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("restores the image and the caption when an old Server rejects a Team captioned-image send", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    // Rollback simulation again, this time on the file path: the upload
+    // succeeds, but the old Server parse-rejects the sentinel purpose.
+    chatMocks.sendFileMessageBatch.mockRejectedValue(new Error("Invalid enum value: team-skill-invocation-v1"));
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const file = new File(["abc"], "preview.png", { type: "image/png" });
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!fileInput) throw new Error("File input missing");
+    await changeFiles(fileInput, [file]);
+    // The Team command becomes the image caption.
+    await pickSlashCommand(container, "/code");
+    attachmentMocks.uploadAttachment.mockClear();
+    chatMocks.sendFileMessageBatch.mockClear();
+
+    await pressSend(container);
+    await waitForCondition(
+      () => chatMocks.sendFileMessageBatch.mock.calls.length > 0,
+      "Expected the attempted file message POST",
+    );
+    expect(attachmentMocks.uploadAttachment).toHaveBeenCalledTimes(1);
+    await waitForText(container, "Invalid enum value: team-skill-invocation-v1");
+
+    // The caption text AND the staged image both come back to the composer;
+    // no message was persisted.
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await waitForCondition(() => textarea.value === "/code-review ", "Expected the caption draft to be restored");
+    await waitForCondition(
+      () => container.querySelector('button[aria-label="Remove preview.png"]') !== null,
+      "Expected the image preview to be restored in the composer",
+    );
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
   it("lets a hand-typed runtime command send without any precondition or catalog fetch", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesEmpty());

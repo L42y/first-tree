@@ -381,9 +381,11 @@ export const requestResolutionSchema = z.object({
 export type RequestResolution = z.infer<typeof requestResolutionSchema>;
 
 /**
- * Optional intent tag set by the client when posting through
- * `POST /agent/chats/:id/messages`. Tells the server *why* this write is
- * happening so it can pick the right enforcement profile.
+ * Optional intent tag set by the client when posting a message. Tells the
+ * server *why* this write is happening so it can pick the right
+ * enforcement profile. `purpose` is consumed by the server during the
+ * write and is NEVER persisted — no value of it is written to message
+ * metadata or any durable store.
  *
  *   - `"agent-final-text"`: a recipientless, human-observable runtime message.
  *     It lands in chat history for human observers, does not wake other agents,
@@ -395,27 +397,21 @@ export type RequestResolution = z.infer<typeof requestResolutionSchema>;
  *     deliberate handler-emitted runtime notices when paired with
  *     `metadata.runtimeNotice=true`.
  *
+ *   - `TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE` (`"team-skill-invocation-v1"`):
+ *     the versioned protocol sentinel for a Team Skill slash invocation
+ *     send. A Web client that carries a `skillPrecondition` MUST also send
+ *     this purpose, and the server enforces the pair in BOTH directions
+ *     (precondition without sentinel and sentinel without precondition are
+ *     both rejected before any insert). Because the LEGACY server's
+ *     `messagePurposeSchema` accepts only `agent-final-text`, a new-Web →
+ *     old-Server send fails schema validation outright — an old server can
+ *     never silently strip an unknown top-level `skillPrecondition` and
+ *     persist the bare `/slug` as an unmarked local command. The sentinel
+ *     takes the ORDINARY routing profile: none of the `agent-final-text`
+ *     silent/recipientless privileges apply.
+ *
  * Default-`undefined` means a regular agent-initiated send (CLI `chat send`,
  * API, etc.) and goes through the normal enforcement profile.
- */
-/**
- * Send-time-only purpose tags. `purpose` is consumed by the server during
- * the write and NEVER persisted — including the Team Skill invocation
- * sentinel below.
- */
-/**
- * Versioned protocol sentinel for a Team Skill slash invocation send. A
- * Web client that carries a `skillPrecondition` MUST also send this
- * purpose, and the server enforces the pair in BOTH directions
- * (precondition without sentinel and sentinel without precondition are
- * both rejected before any insert). Because the LEGACY server's
- * `messagePurposeSchema` accepts only `agent-final-text`, a new-Web →
- * old-Server send fails schema validation outright — an old server can
- * never silently strip an unknown top-level `skillPrecondition` and
- * persist the bare `/slug` as an unmarked local command. The sentinel
- * takes the ORDINARY routing profile: none of the `agent-final-text`
- * silent/recipientless privileges apply, and nothing is written to
- * message metadata or any durable store.
  */
 export const TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE = "team-skill-invocation-v1";
 export const messagePurposeSchema = z.enum(["agent-final-text", TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE]);
