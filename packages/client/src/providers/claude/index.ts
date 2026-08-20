@@ -603,14 +603,19 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     if (message.format === "file") {
       // Preserve the specialized current-image prompt while routing it through
       // the shared formatter, which is responsible for the supported generic
-      // request images in precedingMessages. Clear current metadata because
-      // batch documents are appended explicitly below.
+      // request images in precedingMessages. Keep ONLY the routed-mention
+      // evidence from the original metadata so the shared Team Skill command
+      // registry can still gate a mention-prefixed caption slash command;
+      // other metadata stays cleared because batch documents are appended
+      // explicitly below.
+      const routingMetadata =
+        message.metadata && Array.isArray(message.metadata.mentions) ? { mentions: message.metadata.mentions } : null;
       const formatFileText = async (text: string): Promise<string> =>
         sessionCtx.formatInboundContent({
           ...message,
           format: "text",
           content: text,
-          metadata: null,
+          metadata: routingMetadata,
         });
 
       if (isImageBatchRefContent(message.content)) {

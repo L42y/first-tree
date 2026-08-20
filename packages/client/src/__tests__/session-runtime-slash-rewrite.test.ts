@@ -141,11 +141,18 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     await runtime.shutdown();
   });
 
-  it("fails closed before the provider when a configured command has no verified target", async () => {
+  it("turns a same-version explicitly-unavailable command into an inert notice the provider can settle", async () => {
     const { ctx, runtime } = await captureContext();
     ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
 
-    await expect(ctx.formatInboundContent(textMessage("/review src/"))).rejects.toThrow(/no verified installed target/);
+    // Deterministic terminal boundary: the provider receives a First Tree
+    // runtime notice with NO slash command token, and the turn can settle
+    // normally — no formatter retry, no recovery loop.
+    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
+    expect(formatted).toContain("currently unavailable");
+    expect(formatted).toContain("no verified installed target");
+    expect(formatted).not.toContain("/review");
+    expect(formatted).toContain("src/");
 
     await runtime.shutdown();
   });
@@ -165,6 +172,34 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     ctx.publishTeamSkillCommands(null, null);
     await expect(ctx.formatInboundContent(textMessage("/review"))).rejects.toThrow(/registry is not published/);
     expect(await ctx.formatInboundContent(textMessage("plain text"))).toContain("plain text");
+
+    await runtime.shutdown();
+  });
+
+  it("rewrites image-batch captions with the same registry and fence semantics", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    const fileMessage = (caption: string, configVersion = 1, mentions?: string[]): SessionMessage => ({
+      id: "m-file",
+      chatId: "chat-a",
+      senderId: "sender-1",
+      format: "file",
+      content: { caption, attachments: [{ imageId: "img-1", mimeType: "image/png", filename: "shot.png" }] },
+      metadata: mentions ? { mentions } : {},
+      configVersion,
+    });
+
+    // Bare caption command rewrites identically to text.
+    expect(await ctx.formatInboundContent(fileMessage("/review see attached"))).toContain(
+      "/review-first-tree see attached",
+    );
+    // Mention-prefixed caption rewrites only with routed mention metadata.
+    expect(await ctx.formatInboundContent(fileMessage("@nova /review", 1, ["agent-1"]))).toContain(
+      "@nova /review-first-tree",
+    );
+    expect(await ctx.formatInboundContent(fileMessage("@nova /review", 1))).toContain("@nova /review");
+    // The config-version fence applies to captions too.
+    await expect(ctx.formatInboundContent(fileMessage("/review", 2))).rejects.toThrow(/registry is not published/);
 
     await runtime.shutdown();
   });
@@ -303,18 +338,22 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.shutdown();
   });
 
-  it("does not restart the session for a same-version genuinely-unavailable Team command", async () => {
+  it("does not restart or retry-loop for a same-version genuinely-unavailable Team command", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
 
     await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
-    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/no verified installed target/);
-    cap.ctx.retryTurn(injected, "team_skill_command_unavailable");
+    // Same-version unavailable is an inert notice, not an error: no marker,
+    // no retry, no restart.
+    expect(await cap.ctx.formatInboundContent(injected)).toContain("currently unavailable");
+    cap.ctx.retryTurn(injected, "unrelated_later_retry");
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
+    // No marker, no restart — custody retry semantics stay as-is (recovery
+    // debt/redelivery is the ordinary retryTurn behavior for tracked work).
     expect(cap.handlerShutdowns()).toBe(0);
     expect(cap.startCount()).toBe(1);
 

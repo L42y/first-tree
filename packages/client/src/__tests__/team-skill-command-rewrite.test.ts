@@ -86,18 +86,26 @@ describe("rewriteTeamSkillCommand", () => {
     expect(rewriteTeamSkillCommand("/ship it", registry)).toBe("/ship it");
   });
 
-  it("throws before the provider when the command is configured but has no verified target", () => {
-    expect(() => rewriteTeamSkillCommand("/broken now", registry)).toThrow(ManagedSkillsUnsafeDiscoveryError);
-    expect(() => rewriteTeamSkillCommand("@nova /broken", registry, { allowMentionPrefix: true })).toThrow(
-      ManagedSkillsUnsafeDiscoveryError,
-    );
-    // A mention-looking prefix without the routed gate neither rewrites nor throws.
+  it("replaces an authoritatively unavailable command with an inert notice — no slash token survives", () => {
+    const notice = rewriteTeamSkillCommand("/broken now", registry);
+    expect(notice).toContain("currently unavailable");
+    expect(notice).toContain("no verified installed target");
+    expect(notice).not.toContain("/broken");
+    // The arguments remain as context after the notice.
+    expect(notice).toContain("now");
+
+    const mentioned = rewriteTeamSkillCommand("@nova /broken", registry, { allowMentionPrefix: true });
+    expect(mentioned.startsWith("@nova ")).toBe(true);
+    expect(mentioned).toContain("currently unavailable");
+    expect(mentioned).not.toContain("/broken");
+
+    // A mention-looking prefix without the routed gate is left untouched.
     expect(rewriteTeamSkillCommand("@nova /broken", registry)).toBe("@nova /broken");
   });
 
   it("resolves the registry case-insensitively so case variants cannot bypass a Team claim", () => {
     expect(rewriteTeamSkillCommand("/REVIEW src/", registry)).toBe("/review-first-tree src/");
-    expect(() => rewriteTeamSkillCommand("/BROKEN", registry)).toThrow(ManagedSkillsUnsafeDiscoveryError);
+    expect(rewriteTeamSkillCommand("/BROKEN", registry)).toContain("currently unavailable");
     // Unmapped commands keep their original casing and text.
     expect(rewriteTeamSkillCommand("/Ship it", registry)).toBe("/Ship it");
   });
@@ -136,5 +144,60 @@ describe("rewriteSessionMessageCommand", () => {
   it("never touches non-string payloads", () => {
     const message = { id: "m1", content: { kind: "image" } };
     expect(rewriteSessionMessageCommand(message, registry)).toBe(message);
+  });
+});
+
+describe("rewriteSessionMessageCommand — image batch captions", () => {
+  const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("broken", null)]);
+  const attachments = [{ imageId: "img-1", mimeType: "image/png", filename: "shot.png" }];
+  const batchMessage = (caption: string) => ({
+    id: "m1",
+    chatId: "chat-1",
+    metadata: { mentions: ["agent-1"] },
+    content: { caption, attachments },
+  });
+
+  it("rewrites a bare command caption and keeps attachments/metadata immutable", () => {
+    const message = batchMessage("/review src/");
+    const rewritten = rewriteSessionMessageCommand(message, registry);
+    expect(rewritten.content).toEqual({ caption: "/review-first-tree src/", attachments });
+    // The persisted/original message keeps the base literal.
+    expect(message.content.caption).toBe("/review src/");
+    expect(rewritten).not.toBe(message);
+    expect(rewritten.content).not.toBe(message.content);
+    expect(rewritten.metadata).toBe(message.metadata);
+  });
+
+  it("rewrites a mention-prefixed caption only with the routed-mention gate", () => {
+    const gated = rewriteSessionMessageCommand(batchMessage("@nova /review"), registry, { allowMentionPrefix: true });
+    expect((gated.content as { caption: string }).caption).toBe("@nova /review-first-tree");
+    const ungated = rewriteSessionMessageCommand(batchMessage("@nova /review"), registry);
+    expect(ungated).toBe(ungated); // unchanged
+    expect((ungated.content as { caption: string }).caption).toBe("@nova /review");
+  });
+
+  it("turns an unavailable caption command into the inert notice", () => {
+    const rewritten = rewriteSessionMessageCommand(batchMessage("/broken please"), registry);
+    const caption = (rewritten.content as { caption: string }).caption;
+    expect(caption).toContain("currently unavailable");
+    expect(caption).not.toContain("/broken");
+  });
+
+  it("still throws for a caption command while the registry is unpublished", () => {
+    expect(() => rewriteSessionMessageCommand(batchMessage("/review"), null)).toThrow(
+      ManagedSkillsUnsafeDiscoveryError,
+    );
+    // A caption without a strict command is unaffected by the null registry.
+    const plain = batchMessage("hello there");
+    expect(rewriteSessionMessageCommand(plain, null)).toBe(plain);
+  });
+
+  it("leaves single image refs, captionless batches, and unknown structures untouched", () => {
+    const single = { id: "m1", content: { imageId: "img-1", mimeType: "image/png", filename: "/review" } };
+    expect(rewriteSessionMessageCommand(single, registry)).toBe(single);
+    const captionless = { id: "m1", content: { attachments } };
+    expect(rewriteSessionMessageCommand(captionless, registry)).toBe(captionless);
+    const unknown = { id: "m1", content: { kind: "other", text: "/review" } };
+    expect(rewriteSessionMessageCommand(unknown, registry)).toBe(unknown);
   });
 });

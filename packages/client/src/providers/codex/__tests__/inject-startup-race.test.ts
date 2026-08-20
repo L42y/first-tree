@@ -1,11 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
+import { isImageBatchRefContent, parseProviderRetryEventMessage, type SessionEvent } from "@first-tree/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import {
+  buildTeamSkillCommandRegistry,
+  rewriteSessionMessageCommand,
+} from "../../../runtime/team-skill-command-rewrite.js";
 
 const state = vi.hoisted(() => ({
   chatContextPromise: null as Promise<ChatContext> | null,
@@ -1050,6 +1054,59 @@ describe("codex handler startup inject queue", () => {
     ).toBe(true);
     expect(completedCounts).toEqual([1]);
     expect(retryTurn).not.toHaveBeenCalled();
+
+    await handler.shutdown();
+  });
+
+  it("rewrites image-batch captions through the shared command rewrite for non-Claude structured payloads", async () => {
+    const registry = buildTeamSkillCommandRegistry([{ requestedSlug: "review", effectiveName: "review-first-tree" }]);
+    const handler = createCodexHandler({
+      runtimeProvider: "codex",
+      workspaceRoot,
+      agentName: "codex-race-test-agent",
+      codexHandlerEngine: "sdk",
+      codexRuntimeBinaryResolver: async () => ({
+        ok: true as const,
+        binary: "/tmp/fake-codex",
+        runtimeSource: "path" as const,
+        runtimePath: "/tmp/fake-codex",
+        version: "0.0.0-test",
+      }),
+    });
+    const ctx = makeContext(() => {}, {
+      formatInboundContent: async (message) => {
+        const rewritten = rewriteSessionMessageCommand(message, registry);
+        const content = rewritten.content;
+        if (typeof content === "string") return content;
+        if (isImageBatchRefContent(content)) return content.caption ?? "";
+        return JSON.stringify(content);
+      },
+    });
+
+    state.resolveChatContext?.({
+      chatId: "chat-startup-race",
+      title: "startup race",
+      topic: null,
+      description: null,
+      participants: [],
+    });
+    await handler.start(makeMessage("m1", "first"), ctx, deliveryTokenFromSessionContext(ctx));
+    await waitFor(() => state.runInputs.length === 1);
+
+    const imageMessage: SessionMessage = {
+      id: "m2",
+      chatId: "chat-startup-race",
+      senderId: "sender-1",
+      format: "file",
+      content: {
+        caption: "/review src/",
+        attachments: [{ imageId: "11111111-1111-4111-8111-111111111111", mimeType: "image/png", filename: "shot.png" }],
+      },
+      metadata: {},
+    };
+    handler.inject(imageMessage, deliveryTokenFromSessionContext(ctx));
+    await waitFor(() => state.runInputs.length === 2);
+    expect(String(state.runInputs[1])).toContain("/review-first-tree src/");
 
     await handler.shutdown();
   });
