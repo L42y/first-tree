@@ -782,6 +782,92 @@ describe("daemon start command", () => {
     expect(unregisterCodexCandidateChange).toHaveBeenCalledTimes(1);
   });
 
+  it("defers an in-flight Codex provenance write until interactive login releases pendingAuth", async () => {
+    const verifiedEntry = {
+      state: "ok" as const,
+      available: true,
+      runtimeSource: "path" as const,
+      runtimePath: "/Applications/ChatGPT.app/Contents/Resources/codex",
+      detectedAt: "2026-08-20T00:00:00.000Z",
+    };
+    let resolveProbe!: (entry: typeof verifiedEntry) => void;
+    const delayedProbe = new Promise<typeof verifiedEntry>((resolve) => {
+      resolveProbe = resolve;
+    });
+    clientMocks.probeCodexCapability.mockReturnValueOnce(delayedProbe);
+
+    let finishLogin!: () => void;
+    const loginPending = new Promise<void>((resolve) => {
+      finishLogin = resolve;
+    });
+    const pendingEntry = {
+      state: "ok" as const,
+      pendingAuth: {
+        method: "browser" as const,
+        expiresAt: "2026-08-20T00:05:00.000Z",
+      },
+    };
+    coreMocks.runRuntimeAuthLogin.mockImplementationOnce(
+      async (
+        _command: { provider: string; ref: string },
+        deps: { setProviderEntry: (provider: string, entry: unknown) => Promise<void> },
+      ) => {
+        await deps.setProviderEntry("codex", pendingEntry);
+        await loginPending;
+      },
+    );
+
+    let codexInteractive = false;
+    refresherInstance.isInteractive.mockImplementation((provider: string) => provider === "codex" && codexInteractive);
+    refresherInstance.beginInteractive.mockImplementation((provider: string) => {
+      if (provider === "codex") codexInteractive = true;
+    });
+    refresherInstance.endInteractive.mockImplementation((provider: string) => {
+      if (provider === "codex") codexInteractive = false;
+    });
+
+    let finishSkillUpload!: () => void;
+    const skillUploadPending = new Promise<void>((resolve) => {
+      finishSkillUpload = resolve;
+    });
+    coreMocks.uploadAgentSkills.mockImplementationOnce(async () => {
+      codexCandidateChangeListener?.();
+      await skillUploadPending;
+    });
+
+    const start = runStart(["--foreground"]);
+    await waitForAsyncWork(() => clientMocks.probeCodexCapability.mock.calls.length === 1);
+
+    const runtimeAuthStart = runtimeInstance.onRuntimeAuthStart.mock.calls[0]?.[0] as
+      | ((command: { provider: string; ref: string }) => void)
+      | undefined;
+    if (typeof runtimeAuthStart !== "function") throw new Error("runtime-auth callback was not registered");
+    runtimeAuthStart({ provider: "codex", ref: "pending-provenance" });
+    await waitForAsyncWork(() =>
+      refresherInstance.setProviderEntry.mock.calls.some(
+        ([provider, entry]) => provider === "codex" && entry === pendingEntry,
+      ),
+    );
+
+    // The launch-free provenance probe finishes after pendingAuth is visible.
+    // Its plain entry must not replace the interactive row.
+    resolveProbe(verifiedEntry);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(refresherInstance.setProviderEntry).not.toHaveBeenCalledWith("codex", verifiedEntry);
+
+    finishLogin();
+    await waitForAsyncWork(() => refresherInstance.setProviderEntry.mock.calls.length === 2);
+    expect(refresherInstance.endInteractive).toHaveBeenCalledWith("codex");
+    expect(refresherInstance.setProviderEntry.mock.calls).toEqual([
+      ["codex", pendingEntry],
+      ["codex", verifiedEntry],
+    ]);
+
+    finishSkillUpload();
+    await expect(start).rejects.toMatchObject({ exitCode: 1 });
+  });
+
   it("skips skill upload for stale local aliases that are not pinned to this client", async () => {
     mkdirSync(join(home, "config", "agents", "developer"), { recursive: true });
     writeFileSync(

@@ -396,20 +396,37 @@ export function registerDaemonStartCommand(daemon: Command): void {
         let codexCapabilityPublicationInFlight = false;
         let codexCapabilityPublicationPending = false;
         const publishCodexVerifiedSelection = (): void => {
-          if (!codexCapabilityPublicationStarted || codexCapabilityPublicationInFlight) {
+          // Runtime-auth owns the whole provider entry while browser login is
+          // interactive. A verified selection can be emitted by resolveLogin(),
+          // before the pending-auth marker is published, so coalesce it until
+          // the login's terminal reflection has released that ownership.
+          if (
+            !codexCapabilityPublicationStarted ||
+            codexCapabilityPublicationInFlight ||
+            capabilityRefresher.isInteractive("codex")
+          ) {
             codexCapabilityPublicationPending = true;
             return;
           }
           codexCapabilityPublicationInFlight = true;
           void probeCodexCapability()
-            .then((entry) => capabilityRefresher.setProviderEntry("codex", entry))
+            .then(async (entry) => {
+              // Interactive login may have started while the launch-free probe
+              // was in flight. Re-check at write time so its pendingAuth entry
+              // cannot be replaced by this plain provenance snapshot.
+              if (!codexCapabilityPublicationStarted || capabilityRefresher.isInteractive("codex")) {
+                codexCapabilityPublicationPending = true;
+                return;
+              }
+              await capabilityRefresher.setProviderEntry("codex", entry);
+            })
             .catch((err) => {
               const message = err instanceof Error ? err.message : String(err);
               writeStatus("⚠️", `codex capability provenance update skipped: ${message}`);
             })
             .finally(() => {
               codexCapabilityPublicationInFlight = false;
-              if (codexCapabilityPublicationPending) {
+              if (codexCapabilityPublicationPending && !capabilityRefresher.isInteractive("codex")) {
                 codexCapabilityPublicationPending = false;
                 publishCodexVerifiedSelection();
               }
@@ -441,7 +458,13 @@ export function registerDaemonStartCommand(daemon: Command): void {
             currentEntry: (provider) => capabilityRefresher.currentEntry(provider),
             setProviderEntry: (provider, entry) => capabilityRefresher.setProviderEntry(provider, entry),
             log: (symbol, msg) => writeStatus(symbol, msg),
-          }).finally(() => capabilityRefresher.endInteractive(command.provider));
+          }).finally(() => {
+            capabilityRefresher.endInteractive(command.provider);
+            if (command.provider === "codex" && codexCapabilityPublicationPending) {
+              codexCapabilityPublicationPending = false;
+              publishCodexVerifiedSelection();
+            }
+          });
         });
 
         // Host-local model catalog: web opens Model settings → server asks this
