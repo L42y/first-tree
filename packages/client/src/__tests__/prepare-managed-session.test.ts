@@ -636,11 +636,85 @@ describe("prepareManagedSession", () => {
 
     // BOTH current-config bases fail closed — the newer `review` must not
     // pass through as an "unknown local command", and the older `audit`
-    // does not ride the stale ledger either.
+    // does not ride the stale ledger either. The ledger is never consulted
+    // once a resolved runtime config exists.
+    expect(verifyManagedSkillsProjectionForAdmission).not.toHaveBeenCalled();
     expect(publishTeamSkillCommands).toHaveBeenCalledWith([
       { requestedSlug: "audit", effectiveName: null },
       { requestedSlug: "review", effectiveName: null },
     ]);
+  });
+
+  it("publishes unknown (null) when the current config's Team rows have no valid slug", async () => {
+    const prepareManagedSession = await loadPrepare();
+    reconcileManagedSkillsForConfig.mockImplementation(async () => ({
+      ok: false,
+      resourceConfigVersion: 0,
+      installed: [],
+      skipped: [],
+      removed: [],
+      teamSkills: [],
+      teamSkillCommands: null,
+      failures: [{ key: "workspace", reason: "clean top-level failure" }],
+      staleTeamSnapshot: false,
+    }));
+    const { verifyManagedSkillsProjectionForAdmission } = (await import("../runtime/managed-skills.js")) as unknown as {
+      verifyManagedSkillsProjectionForAdmission: ReturnType<typeof vi.fn>;
+    };
+    verifyManagedSkillsProjectionForAdmission.mockImplementation(async () => ({
+      resourceConfigVersion: 1,
+      teamSkills: [
+        {
+          key: "resource:audit",
+          name: "audit",
+          requestedSlug: "audit",
+          description: "d",
+          revision: "r1",
+          installedDigest: "sha256:abc",
+          target: "/tmp/audit",
+        },
+      ],
+    }));
+
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      // A Team Skill whose name yields no portable slug has no typable
+      // command — the registry must stay UNKNOWN, not verified-empty.
+      resourceSkills: [{ resourceId: "res-1", name: "!!!", description: "d", body: "b", metadata: {} }],
+    };
+    const runtimeConfig = {
+      agentId: "019d9a97-90b0-716b-8317-a8c0be8430d7",
+      version: 2,
+      payload,
+      updatedAt: new Date().toISOString(),
+      updatedBy: "test",
+    };
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING_BODY";
+    });
+    const ctx = sessionCtx();
+    const publishTeamSkillCommands = vi.fn();
+    ctx.publishTeamSkillCommands = publishTeamSkillCommands;
+    await prepareManagedSession({
+      sessionCtx: ctx,
+      workspaceRoot,
+      agentName: "prep-agent",
+      runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      runtimeConfig: runtimeConfig as never,
+      payload,
+      payloadResolved: true,
+      contextTree: { path: null, repoUrl: null, branch: null },
+    });
+
+    expect(verifyManagedSkillsProjectionForAdmission).not.toHaveBeenCalled();
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(null);
   });
 
   it("continues when chat context fetch fails and logs the failure", async () => {
