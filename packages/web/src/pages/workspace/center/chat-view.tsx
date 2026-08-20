@@ -2551,9 +2551,11 @@ export function ChatView({
     // LOCAL Skill on the recipient's machine. The server re-checks the
     // version inside the message transaction and persists a server-owned
     // `teamSkillInvocation` marker (this fresh check only gives the early,
-    // draft-preserving UX). A restored strict-slash draft without
-    // provenance must be re-picked from the menu — a bare literal is not
-    // proof of Team-or-local intent.
+    // draft-preserving UX). Hand-typed runtime/local commands are NOT
+    // checked here: only a server-owned marker represents Team intent, so
+    // an unmarked strict slash keeps its local/runtime semantics — and
+    // never pays a full Resources download (an old/unknown client whose
+    // menu gate is closed can still send local commands).
     let skillPrecondition: {
       recipientAgentId: string;
       expectedConfigVersion: number;
@@ -2584,43 +2586,27 @@ export function ChatView({
         return;
       }
 
-      const checkAgentId = provenanceMatches
-        ? provenance.agentId
-        : routedMentions.length === 1
-          ? routedMentions[0]
-          : null;
-      if (checkAgentId) {
+      if (provenanceMatches && provenance) {
         let freshResources: Awaited<ReturnType<typeof getAgentResources>>;
         try {
-          freshResources = await getAgentResources(checkAgentId);
+          freshResources = await getAgentResources(provenance.agentId);
         } catch {
           setUploadError("Could not verify the Team Skill command before sending — try again.");
           return;
         }
-        if (provenanceMatches && provenance) {
-          const rowStillLive = freshResources.effective.skills.some(
-            (row) => row.mode === "enabled" && row.resourceId === provenance.resourceId,
-          );
-          if (!rowStillLive || freshResources.version !== provenance.version) {
-            setUploadError("That Team Skill changed after it was chosen — re-open the / menu and pick it again.");
-            return;
-          }
-          skillPrecondition = {
-            recipientAgentId: provenance.agentId,
-            expectedConfigVersion: provenance.version,
-            resourceId: provenance.resourceId,
-            requestedSlug: provenance.name,
-          };
-        } else {
-          const matchesTeamRow = teamSkillRowsToSlashSkills(
-            freshResources.effective.skills,
-            freshResources.version,
-          ).some((skill) => skill.name.toLowerCase() === strictCommand.toLowerCase());
-          if (matchesTeamRow) {
-            setUploadError("Pick that Team Skill from the / menu again before sending it.");
-            return;
-          }
+        const rowStillLive = freshResources.effective.skills.some(
+          (row) => row.mode === "enabled" && row.resourceId === provenance.resourceId,
+        );
+        if (!rowStillLive || freshResources.version !== provenance.version) {
+          setUploadError("That Team Skill changed after it was chosen — re-open the / menu and pick it again.");
+          return;
         }
+        skillPrecondition = {
+          recipientAgentId: provenance.agentId,
+          expectedConfigVersion: provenance.version,
+          resourceId: provenance.resourceId,
+          requestedSlug: provenance.name,
+        };
       }
     }
 

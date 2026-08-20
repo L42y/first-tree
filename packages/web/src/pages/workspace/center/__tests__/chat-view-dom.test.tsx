@@ -2077,40 +2077,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("keeps the gate closed when the status query errors — a warm cached true never reopens it", async () => {
-    const { ChatView } = await import("../chat-view.js");
-    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
-    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
-    // No cached statuses and the fetch fails: the gate must read as
-    // unsupported, costing no catalog download and showing no Team rows.
-    agentStatusMocks.fetchChatAgentStatuses.mockRejectedValue(new Error("status offline"));
-    const direct = directChat();
-    const { container, root } = await renderDom(
-      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
-      (qc) => {
-        seedChat(qc, direct);
-        qc.removeQueries({ queryKey: ["chat-agent-status", "chat-1"] });
-      },
-    );
-
-    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
-    if (!textarea) throw new Error("Composer textarea missing");
-    await act(async () => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-      setter?.call(textarea, "/");
-      textarea.setSelectionRange(1, 1);
-      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
-    });
-    await flush();
-
-    await waitForText(container, "/review");
-    expect(container.textContent).not.toContain("/code-review");
-    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
-
-    await act(async () => root.unmount());
-  });
-
-  it("keeps the gate closed while the status query is pending, then opens it on a fresh supported status", async () => {
+  it("closes the gate while a warm cached true refetches, then reopens on a fresh true", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
     agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
@@ -2125,9 +2092,11 @@ describe("ChatView", () => {
     const { container, root, queryClient } = await renderDom(
       <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
       (qc) => {
+        // WARM cache: statuses already say supported === true. Marking the
+        // query stale forces the next observer mount into a refetch — the
+        // exact frame where a cached true must NOT keep the gate open.
         seedChat(qc, direct);
-        // No cached statuses: the gate's query must actually fetch.
-        qc.removeQueries({ queryKey: ["chat-agent-status", "chat-1"] });
+        qc.invalidateQueries({ queryKey: ["chat-agent-status", "chat-1"] });
       },
     );
 
@@ -2141,7 +2110,8 @@ describe("ChatView", () => {
     });
     await flush();
 
-    // Pending status: fail closed — system-only menu, no catalog fetch.
+    // Warm true + refetch pending: fail closed — the cached true does not
+    // authorize a catalog download or a Team row.
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("/code-review");
 
@@ -2165,8 +2135,90 @@ describe("ChatView", () => {
       () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
       "Expected the catalog fetch once a fresh supported status landed",
     );
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledTimes(1);
     await waitForText(container, "/code-review");
     void queryClient;
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the gate closed when a warm cached true refetch resolves false or errors", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const statusesWith = (supported: boolean) => [
+      {
+        agentId: "agent-1",
+        main: "ready",
+        reachable: true,
+        engagement: "active",
+        working: false,
+        needsYou: false,
+        errored: false,
+        teamSkillInvocationSupported: supported,
+        activity: null,
+      },
+    ];
+    const deferred = () => {
+      let resolve: (value: unknown) => void = () => {};
+      let reject: (error: Error) => void = () => {};
+      const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    let cycle = deferred();
+    agentStatusMocks.fetchChatAgentStatuses.mockImplementation(() => cycle.promise);
+    const direct = directChat();
+    const { container, root, queryClient } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => {
+        // WARM cache: supported === true, marked stale so the observer
+        // refetches on mount — the frame a cached true must not exploit.
+        seedChat(qc, direct);
+        qc.invalidateQueries({ queryKey: ["chat-agent-status", "chat-1"] });
+      },
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // Warm true + refetch pending: closed.
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("/code-review");
+
+    // Refetch resolves FALSE: stays closed.
+    await act(async () => {
+      cycle.resolve(statusesWith(false));
+    });
+    await flush();
+    expect(container.textContent).not.toContain("/code-review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    // Warm true again, and the refresh ERRORS: still closed — a warm true
+    // must never ride through a failed revalidation.
+    await act(async () => {
+      queryClient.setQueryData(["chat-agent-status", "chat-1"], statusesWith(true));
+      cycle = deferred();
+      queryClient.invalidateQueries({ queryKey: ["chat-agent-status", "chat-1"] });
+    });
+    await flush();
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+    await act(async () => {
+      cycle.reject(new Error("status offline"));
+    });
+    await flush();
+    await waitForText(container, "/review");
+    expect(container.textContent).not.toContain("/code-review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -2209,7 +2261,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("treats a case-variant Team command as the Team row and requires a menu re-pick", async () => {
+  it("sends a hand-typed slash as a local command with no fetch and no precondition, even when it matches a Team row", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
     const direct = directChat();
@@ -2218,16 +2270,71 @@ describe("ChatView", () => {
       (qc) => seedChat(qc, direct),
     );
 
-    // Hand-typed `/CODE-REVIEW` with no provenance: the Client's parser
-    // folds case, so the send check must fold too — a case variant is not
-    // a bypass into a same-named local Skill.
+    // Hand-typed strict slash (even one whose literal matches a Team row,
+    // in any case) carries no provenance — and only a server-owned marker
+    // represents Team intent. The send boundary must neither fetch the
+    // full catalog nor demand a menu re-pick.
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
     if (!textarea) throw new Error("Composer textarea missing");
     await setValue(textarea, "/CODE-REVIEW ");
     chatMocks.sendChatMessage.mockClear();
+    agentResourceMocks.getAgentResources.mockClear();
     await pressSend(container);
-    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
-    await waitForText(container, "Pick that Team Skill from the / menu again");
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+    const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+    expect(opts?.skillPrecondition).toBeUndefined();
+
+    await act(async () => root.unmount());
+  });
+
+  it("sends hand-typed local commands when the status gate is closed — zero catalog fetches", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "ship", description: "Ship it." }] });
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => {
+        seedChat(qc, direct);
+        // Old / unknown client: the Team menu gate is closed, but local
+        // commands must still send WITHOUT a Resources download.
+        qc.setQueryData(
+          ["chat-agent-status", "chat-1"],
+          [
+            {
+              agentId: "agent-1",
+              main: "ready",
+              reachable: true,
+              engagement: "active",
+              working: false,
+              needsYou: false,
+              errored: false,
+              teamSkillInvocationSupported: false,
+              activity: null,
+            },
+          ],
+        );
+      },
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    // A plain local command, then one whose literal matches the hidden
+    // Team row — both send as ordinary local commands.
+    for (const command of ["/ship ", "/code-review "]) {
+      await setValue(textarea, command);
+      chatMocks.sendChatMessage.mockClear();
+      agentResourceMocks.getAgentResources.mockClear();
+      await pressSend(container);
+      await waitForCondition(
+        () => chatMocks.sendChatMessage.mock.calls.length > 0,
+        `Expected ${command.trim()} to send as a local command`,
+      );
+      expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+      const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+      expect(opts?.skillPrecondition).toBeUndefined();
+    }
 
     await act(async () => root.unmount());
   });
@@ -2246,7 +2353,6 @@ describe("ChatView", () => {
     adoptedTemplates: [],
     bindings: [],
     availableTeamResources: [],
-    teamSkillInvocationSupported: true,
     effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
   });
   const resourcesEmpty = () => ({
@@ -2255,7 +2361,6 @@ describe("ChatView", () => {
     adoptedTemplates: [],
     bindings: [],
     availableTeamResources: [],
-    teamSkillInvocationSupported: true,
     effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
   });
 
@@ -2341,7 +2446,7 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("lets a hand-typed runtime command send without any precondition", async () => {
+  it("lets a hand-typed runtime command send without any precondition or catalog fetch", async () => {
     const { ChatView } = await import("../chat-view.js");
     agentResourceMocks.getAgentResources.mockResolvedValue(resourcesEmpty());
     agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
@@ -2361,8 +2466,10 @@ describe("ChatView", () => {
     });
     await flush();
     chatMocks.sendChatMessage.mockClear();
+    agentResourceMocks.getAgentResources.mockClear();
     await pressSend(container);
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
     const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
     expect(opts?.skillPrecondition).toBeUndefined();
 
