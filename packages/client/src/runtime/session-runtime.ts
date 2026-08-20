@@ -3313,6 +3313,16 @@ export class SessionRuntime {
           this.clearFenceRecoveryAttempt(chatId, message.id);
           return formatInboundContent(formatted, participants);
         }
+        // Unstamped (synthetic/legacy) strict slash command with NO
+        // registry: without a config stamp there is no provable recovery
+        // axis — a retry would fail the same way on this handler forever.
+        // Emit the inert notice directly; zero throw, zero retry.
+        if (stamp === undefined && registry === null) {
+          return formatInboundContent(
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
+            participants,
+          );
+        }
         try {
           const formatted = await formatInboundContent(
             rewriteSessionMessageCommand(message, fencedRegistry, mentionGate),

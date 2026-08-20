@@ -175,9 +175,12 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     expect(await ctx.formatInboundContent(textMessage("/review"))).not.toContain("review-first-tree");
 
     // Publishing UNKNOWN (e.g. failed hot-switch with unverifiable config)
-    // re-blocks strict slash commands instead of keeping the stale map.
+    // re-blocks strict slash commands — now as an inert notice rather
+    // than keeping the stale map.
     ctx.publishTeamSkillCommands(null, null);
-    await expect(ctx.formatInboundContent(textMessage("/review"))).rejects.toThrow(/registry is not published/);
+    const blocked = await ctx.formatInboundContent(textMessage("/review"));
+    expect(blocked).toContain("could not be verified");
+    expect(blocked).not.toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("plain text"))).toContain("plain text");
 
     await runtime.shutdown();
@@ -211,12 +214,15 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     await runtime.shutdown();
   });
 
-  it("blocks strict slash commands until the first registry publication, then lets unknown local commands pass", async () => {
+  it("gives an unstamped strict slash command an inert notice while the registry is null — zero throw, zero retry", async () => {
     const { ctx, runtime } = await captureContext();
-    // Unpublished: a strict slash command must NOT reach the provider —
-    // it could hit a same-named unmanaged Skill before exact Team
-    // identities are known. Ordinary text is never blocked.
-    await expect(ctx.formatInboundContent(textMessage("/review src/"))).rejects.toThrow(/registry is not published/);
+    // Unstamped + null registry: there is no provable recovery axis, so
+    // the command becomes an inert notice instead of an exception the
+    // provider would retry into the same failure. Ordinary text is never
+    // affected.
+    const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
+    expect(formatted).toContain("could not be verified");
+    expect(formatted).not.toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("hello there"))).toContain("hello there");
 
     // Verified-empty publication: unknown local commands pass through.
