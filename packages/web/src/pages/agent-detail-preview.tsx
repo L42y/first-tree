@@ -42,7 +42,6 @@ const RESOURCES: AgentResourcesOutput = {
   version: 7,
   templateIds: [],
   adoptedTemplates: [],
-  teamSkillInvocationSupported: true,
   effective: {
     version: 7,
     repos: [

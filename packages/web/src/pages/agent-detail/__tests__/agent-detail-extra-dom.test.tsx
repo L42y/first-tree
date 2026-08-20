@@ -197,7 +197,6 @@ function agentResources(overrides: Partial<AgentResourcesOutput> = {}): AgentRes
     version: overrides.version ?? 9,
     templateIds: overrides.templateIds ?? [],
     adoptedTemplates: [],
-    teamSkillInvocationSupported: true,
     effective: overrides.effective ?? {
       version: overrides.version ?? 9,
       repos: [],
