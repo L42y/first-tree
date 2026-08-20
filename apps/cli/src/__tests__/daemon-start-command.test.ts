@@ -782,7 +782,7 @@ describe("daemon start command", () => {
     expect(unregisterCodexCandidateChange).toHaveBeenCalledTimes(1);
   });
 
-  it("defers an in-flight Codex provenance write until interactive login releases pendingAuth", async () => {
+  it("defers in-flight Codex provenance and preserves a terminal auth failure", async () => {
     const verifiedEntry = {
       state: "ok" as const,
       available: true,
@@ -807,6 +807,14 @@ describe("daemon start command", () => {
         expiresAt: "2026-08-20T00:05:00.000Z",
       },
     };
+    const failedEntry = {
+      ...verifiedEntry,
+      lastAuthError: {
+        reason: "exit-nonzero" as const,
+        message: "account not authorized",
+        at: "2026-08-20T00:01:00.000Z",
+      },
+    };
     coreMocks.runRuntimeAuthLogin.mockImplementationOnce(
       async (
         _command: { provider: string; ref: string },
@@ -814,6 +822,7 @@ describe("daemon start command", () => {
       ) => {
         await deps.setProviderEntry("codex", pendingEntry);
         await loginPending;
+        await deps.setProviderEntry("codex", failedEntry);
       },
     );
 
@@ -824,6 +833,13 @@ describe("daemon start command", () => {
     });
     refresherInstance.endInteractive.mockImplementation((provider: string) => {
       if (provider === "codex") codexInteractive = false;
+    });
+    let currentCodexEntry: unknown;
+    refresherInstance.currentEntry.mockImplementation((provider: string) =>
+      provider === "codex" ? currentCodexEntry : undefined,
+    );
+    refresherInstance.setProviderEntry.mockImplementation(async (provider: string, entry: unknown) => {
+      if (provider === "codex") currentCodexEntry = entry;
     });
 
     let finishSkillUpload!: () => void;
@@ -857,12 +873,18 @@ describe("daemon start command", () => {
     expect(refresherInstance.setProviderEntry).not.toHaveBeenCalledWith("codex", verifiedEntry);
 
     finishLogin();
-    await waitForAsyncWork(() => refresherInstance.setProviderEntry.mock.calls.length === 2);
+    await waitForAsyncWork(() => refresherInstance.setProviderEntry.mock.calls.length === 3);
     expect(refresherInstance.endInteractive).toHaveBeenCalledWith("codex");
-    expect(refresherInstance.setProviderEntry.mock.calls).toEqual([
+    expect(refresherInstance.setProviderEntry.mock.calls.slice(0, 2)).toEqual([
       ["codex", pendingEntry],
-      ["codex", verifiedEntry],
+      ["codex", failedEntry],
     ]);
+    const publishedAfterFailure = refresherInstance.setProviderEntry.mock.calls[2]?.[1];
+    expect(publishedAfterFailure).toMatchObject({
+      runtimePath: verifiedEntry.runtimePath,
+      lastAuthError: failedEntry.lastAuthError,
+    });
+    expect(publishedAfterFailure).not.toHaveProperty("pendingAuth");
 
     finishSkillUpload();
     await expect(start).rejects.toMatchObject({ exitCode: 1 });

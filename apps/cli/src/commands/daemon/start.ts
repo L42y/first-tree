@@ -418,7 +418,14 @@ export function registerDaemonStartCommand(daemon: Command): void {
                 codexCapabilityPublicationPending = true;
                 return;
               }
-              await capabilityRefresher.setProviderEntry("codex", entry);
+              // A failed login has already published its terminal marker by
+              // the time interactive ownership is released. Provenance is an
+              // additive refresh, so retain that verdict while updating the
+              // verified runtime path instead of resetting the UI to a login
+              // that appears never attempted.
+              const current = capabilityRefresher.currentEntry("codex");
+              const published = current?.lastAuthError ? { ...entry, lastAuthError: current.lastAuthError } : entry;
+              await capabilityRefresher.setProviderEntry("codex", published);
             })
             .catch((err) => {
               const message = err instanceof Error ? err.message : String(err);
