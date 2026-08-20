@@ -147,14 +147,15 @@ const MENTIONED_COMMAND_RE = new RegExp(`^(\\s*(?:${MENTION_TOKEN}\\s*)*)/${COMM
 
 /**
  * The inert replacement for an authoritatively unavailable Team command.
- * Deliberately keeps NO slash command token: the provider must not see
- * anything it could parse as a command invocation.
+ * Carries the bare Skill name (never the `/name` literal) so the agent can
+ * tell the user exactly which Skill is down, while keeping NO slash
+ * command token the provider could parse as an invocation.
  */
-function buildUnavailableNotice(reason: string, argsTail: string): string {
+function buildUnavailableNotice(name: string, reason: string, argsTail: string): string {
   const lines = [
-    "[First Tree runtime] The user tried to invoke a configured Team Skill that is currently unavailable",
+    `[First Tree runtime] The user tried to invoke the configured Team Skill "${name}", which is currently unavailable`,
     `(${reason}). Do NOT invoke any slash command or a same-named local Skill on their behalf.`,
-    "Briefly explain to the user that this Team Skill is temporarily unavailable and its command cannot run right now.",
+    `Briefly explain to the user that the Team Skill "${name}" is temporarily unavailable and its command cannot run right now.`,
   ];
   const args = argsTail.trim();
   if (args.length > 0) lines.push(`The arguments they typed after the command were: ${args}`);
@@ -198,7 +199,7 @@ export function rewriteTeamSkillCommand(
   const target = registry.get((name ?? "").toLowerCase());
   if (!target) return content;
   if (target.kind === "unavailable") {
-    return `${prefix}${buildUnavailableNotice(target.reason, content.slice(matched.length))}`;
+    return `${prefix}${buildUnavailableNotice(name ?? "", target.reason, content.slice(matched.length))}`;
   }
   return `${prefix}/${target.effectiveName}${content.slice(matched.length)}`;
 }

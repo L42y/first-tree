@@ -568,7 +568,9 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     // image attachment prompt is preserved alongside it.
     expect(state.observedInputs[1]).toContain("/review-first-tree see this");
     expect(state.observedInputs[1]).not.toContain("/review see this");
-    expect(state.observedInputs[1]).toContain("shot.png");
+    // The image attachment prompt/filename is preserved EXACTLY once — the
+    // routed-mentions metadata we now keep must not duplicate the note.
+    expect(state.observedInputs[1]?.match(/shot\.png/g)).toHaveLength(1);
 
     await handler.shutdown();
   });

@@ -90,6 +90,8 @@ describe("rewriteTeamSkillCommand", () => {
     const notice = rewriteTeamSkillCommand("/broken now", registry);
     expect(notice).toContain("currently unavailable");
     expect(notice).toContain("no verified installed target");
+    // The bare Skill name (no slash) is included so the agent can name it.
+    expect(notice).toContain('"broken"');
     expect(notice).not.toContain("/broken");
     // The arguments remain as context after the notice.
     expect(notice).toContain("now");

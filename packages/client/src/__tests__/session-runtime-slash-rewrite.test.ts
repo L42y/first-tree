@@ -40,6 +40,7 @@ async function captureContext(): Promise<{
   startCount: () => number;
   resumeCount: () => number;
   handlerShutdowns: () => number;
+  ackEntry: ReturnType<typeof vi.fn<(entryId: number) => Promise<void>>>;
   currentCtx: () => SessionContext;
   startMessages: SessionMessage[];
   injectedMessages: SessionMessage[];
@@ -75,6 +76,7 @@ async function captureContext(): Promise<{
     }),
   };
   const recoverChat = vi.fn().mockResolvedValue(undefined);
+  const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
   const runtime = new SessionRuntime({
     session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
     concurrency: 5,
@@ -91,7 +93,7 @@ async function captureContext(): Promise<{
     },
     sdk: mockSdk(),
     log: silentLogger() as unknown as pino.Logger,
-    ackEntry: vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
+    ackEntry,
     recoverChat,
   });
   await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
@@ -109,6 +111,7 @@ async function captureContext(): Promise<{
     startMessages,
     injectedMessages,
     recoverChat,
+    ackEntry,
   };
 }
 
@@ -338,24 +341,47 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.shutdown();
   });
 
-  it("does not restart or retry-loop for a same-version genuinely-unavailable Team command", async () => {
+  it("settles a same-version unavailable command with one inert notice and one ACK — terminal custody evidence", async () => {
     const cap = await captureContext();
     cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
 
+    // Settle the opening turn first so the ledger prefix is terminal, as
+    // any healthy session would before the next message settles.
+    const startMessage = cap.startMessages[0];
+    if (!startMessage) throw new Error("expected a start message");
+    await cap.ctx.finishTurn(startMessage, { status: "success", terminal: true });
+
+    // A tracked inbox entry carries the unavailable Team command at the
+    // SAME config version the registry proves.
     await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
     const injected = cap.injectedMessages[0];
     if (!injected) throw new Error("expected the message to inject into the live session");
-    // Same-version unavailable is an inert notice, not an error: no marker,
-    // no retry, no restart.
-    expect(await cap.ctx.formatInboundContent(injected)).toContain("currently unavailable");
-    cap.ctx.retryTurn(injected, "unrelated_later_retry");
-    await new Promise((resolve) => setImmediate(resolve));
-    await new Promise((resolve) => setImmediate(resolve));
+    expect(injected.inboxEntryId).toBe(2);
+    expect(injected.configVersion).toBe(1);
 
-    // No marker, no restart — custody retry semantics stay as-is (recovery
-    // debt/redelivery is the ordinary retryTurn behavior for tracked work).
+    // The provider view is exactly one inert notice: it names the Skill
+    // without ever containing the `/review` command literal.
+    const formatted = await cap.ctx.formatInboundContent(injected);
+    expect(formatted).toContain("currently unavailable");
+    expect(formatted).toContain('"review"');
+    expect(formatted).not.toContain("/review");
+
+    // The handler settles the turn through the production completion path.
+    await cap.ctx.finishTurn(injected, { status: "success", terminal: true });
+    expect(cap.ackEntry).toHaveBeenCalledWith(2);
+    expect(cap.ackEntry).toHaveBeenCalledTimes(2);
+    expect(cap.ctx.hasPendingDelivery?.([injected])).toBe(false);
     expect(cap.handlerShutdowns()).toBe(0);
+    expect(cap.recoverChat).not.toHaveBeenCalled();
+
+    // Nothing loops: no recovery request, no handler churn, no redelivery
+    // machinery fires after the settle. (An explicit server redelivery of
+    // a committed entry may be reprocessed by the platform's at-least-once
+    // dedup window — pre-existing inbox semantics, independent of this
+    // notice path.)
+    expect(cap.recoverChat).not.toHaveBeenCalled();
     expect(cap.startCount()).toBe(1);
+    expect(cap.handlerShutdowns()).toBe(0);
 
     await cap.runtime.shutdown();
   });
