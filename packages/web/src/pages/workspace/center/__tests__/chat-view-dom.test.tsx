@@ -1817,6 +1817,111 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
+  it("shows only system commands when a slash is addressed to multiple recipients, and fetches nothing", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    saveDraft(chatDraftScope(null, "chat-1"), { text: "@nova @design " });
+    agentResourceMocks.getAgentResources.mockResolvedValue({
+      version: 1,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
+    });
+    const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />);
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await waitForCondition(
+      () => textarea.value === "@Nova @Design Critique ",
+      "Expected the restored draft to hydrate both mention tokens",
+    );
+    // Append the slash at the end (pure insertion keeps the tokens and
+    // moves the caret) so the slash trigger is active.
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "@Nova @Design Critique /");
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // The slash trigger is active, but the routed recipient is ambiguous:
+    // the menu must stay system-only and the heavy catalog must not load.
+    await waitForCondition(
+      () => container.querySelector('[role="listbox"][aria-label="Slash command suggestions"]') !== null,
+      "Expected the slash popover to open with system commands only",
+    );
+    expect(container.textContent).toContain("/clear");
+    expect(container.textContent).not.toContain("/code-review");
+    expect(container.textContent).not.toContain("/review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("revalidates Team Skills on every slash trigger and hides rows removed server-side", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    const resourcesWithCodeReview = {
+      version: 1,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
+    };
+    const resourcesEmpty = {
+      version: 2,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
+    };
+    agentResourceMocks.getAgentResources
+      .mockResolvedValueOnce(resourcesWithCodeReview)
+      .mockResolvedValueOnce(resourcesWithCodeReview)
+      .mockResolvedValue(resourcesEmpty);
+    const direct = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-1", name: "nova", displayName: "Nova" }),
+      ],
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    const typeDisplay = async (value: string) => {
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        setter?.call(textarea, value);
+        textarea.setSelectionRange(value.length, value.length);
+        textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: value, inputType: "insertText" }));
+      });
+      await flush();
+    };
+
+    // First trigger: v1 Team row appears.
+    await typeDisplay("/");
+    await waitForText(container, "/code-review");
+
+    // The server removes the row; the NEXT trigger revalidates instead of
+    // serving the 60s-stale row, so the removed Team Skill disappears.
+    await typeDisplay("x");
+    await typeDisplay("/");
+    await waitForCondition(
+      () => !container.textContent?.includes("/code-review"),
+      "Expected /code-review to disappear after revalidation",
+    );
+    expect(agentResourceMocks.getAgentResources.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    await act(async () => root.unmount());
+  });
+
   it("renders provider retry events as non-fatal timeline rows when severity is not error", async () => {
     const { ChatView } = await import("../chat-view.js");
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />, (queryClient) => {

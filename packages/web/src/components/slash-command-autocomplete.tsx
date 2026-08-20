@@ -257,18 +257,21 @@ export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashS
 }
 
 /**
- * Merge the daemon-reported runtime catalog with the Team Skills
- * projected from Cloud resources. Dedup is on the case-insensitive final
- * slash literal (`namespace:name`); an exact runtime-reported command
- * always wins so the menu never shadows what the local harness actually
- * installed. Output is sorted by label key so the menu is stable.
+ * Merge the Team Skills projected from Cloud resources with the
+ * daemon-reported runtime catalog. Dedup is on the case-insensitive final
+ * slash literal (`namespace:name`), and for a shared literal the TEAM row
+ * wins: the Client's command registry claims a Team Skill's base slug and
+ * case-folds the user's input to its materialized target, so the menu's
+ * winner must match the executor's winner. A runtime-only command and a
+ * genuinely distinct suffixed literal stay available. Output is sorted by
+ * label key so the menu is stable.
  */
 export function mergeSlashSkills(runtime: SlashSkillInfo[], team: SlashSkillInfo[]): SlashSkillInfo[] {
   const byKey = new Map<string, SlashSkillInfo>();
-  for (const skill of runtime) {
+  for (const skill of team) {
     byKey.set(commandLabelKey(skill).toLowerCase(), skill);
   }
-  for (const skill of team) {
+  for (const skill of runtime) {
     const key = commandLabelKey(skill).toLowerCase();
     if (!byKey.has(key)) byKey.set(key, skill);
   }

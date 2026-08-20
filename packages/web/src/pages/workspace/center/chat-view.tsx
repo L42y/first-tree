@@ -4443,6 +4443,14 @@ export function ChatView({
     uploading,
   ]);
 
+  // Agent Skills are offered only when exactly ONE agent is the routed
+  // recipient. A slash sent to multiple mentioned agents executes on
+  // every one of them (the Client's registry resolves the command per
+  // recipient), so a multi-recipient menu would invite each agent to
+  // route an unknown base to its own local Skill. `/clear` and other
+  // system commands stay available.
+  const slashUniqueRecipient = effectiveSendMentions.length <= 1;
+
   // Team Skills configured in First Tree reach the composer through the
   // same visible `effective.skills` view the Agent Detail page reads —
   // the daemon catalog alone only covers what the local runtime scanned
@@ -4450,37 +4458,54 @@ export function ChatView({
   // empty menu. This query is independent of the skills one above:
   // either request failing degrades to the other source, never to an
   // empty menu while one catalog is still reachable.
-  const { data: slashResourcesData } = useQuery({
+  const slashResourcesQuery = useQuery({
     queryKey: ["agent-resources", slashMentionContext?.agentId ?? null],
     queryFn: () => {
       const id = slashMentionContext?.agentId;
       if (!id) return Promise.resolve(null);
       return getAgentResources(id);
     },
-    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive,
-    staleTime: 60_000,
+    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
+    // A legal slash trigger always revalidates the recipient's Team Skill
+    // catalog: the previous 60s stale window let a removed or renamed
+    // Team row be sent and then resolved by the Client as a same-named
+    // LOCAL Skill. staleTime 0 marks cached data stale immediately...
+    staleTime: 0,
   });
+
+  // ...and every trigger activation forces an actual refetch. While the
+  // refresh is in flight, cached Team rows stay hidden so the menu never
+  // offers a row the server has since removed or renamed.
+  const slashResourcesRefetch = slashResourcesQuery.refetch;
+  useEffect(() => {
+    if (slashTriggerActive && slashUniqueRecipient && slashMentionContext?.agentId) {
+      void slashResourcesRefetch();
+    }
+  }, [slashTriggerActive, slashUniqueRecipient, slashMentionContext?.agentId, slashResourcesRefetch]);
 
   const slashMergedSkills = useMemo<SlashSkillInfo[]>(
     () =>
       mergeSlashSkills(
         slashSkillsData?.skills ?? [],
-        teamSkillRowsToSlashSkills(slashResourcesData?.effective.skills ?? []),
+        slashResourcesQuery.isFetching
+          ? []
+          : teamSkillRowsToSlashSkills(slashResourcesQuery.data?.effective.skills ?? []),
       ),
-    [slashSkillsData, slashResourcesData],
+    [slashSkillsData, slashResourcesQuery.isFetching, slashResourcesQuery.data],
   );
 
   const slash = useSlashCommand({
     value: mentionComposer.displayText,
     cursor,
     systemCommands: slashSystemCommands,
-    agentSkills: slashMentionContext
-      ? {
-          agentId: slashMentionContext.agentId,
-          agentDisplayName: slashMentionContext.displayName,
-          skills: slashMergedSkills,
-        }
-      : null,
+    agentSkills:
+      slashMentionContext && slashUniqueRecipient
+        ? {
+            agentId: slashMentionContext.agentId,
+            agentDisplayName: slashMentionContext.displayName,
+            skills: slashMergedSkills,
+          }
+        : null,
     mentionedAgent: slashMentionContext,
     // Committed mention tokens unlock the mention-prefixed slash mode
     // (`@Nova /code`) — the only slash path in group chats, where the

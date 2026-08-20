@@ -227,17 +227,20 @@ describe("mergeSlashSkills", () => {
   });
   const team = (name: string): SlashSkillInfo => ({ name, description: `team ${name}` });
 
-  it("keeps the exact runtime-reported command on a case-insensitive literal match", () => {
+  it("prefers the Team row on a case-insensitive literal match — the menu winner must match the executor", () => {
+    // The Client's command registry claims a Team Skill's base slug, so
+    // the same folded literal resolves to the Team Skill at execution
+    // time; the menu must not show the runtime row for it.
     const got = mergeSlashSkills([runtime("Ship")], [team("ship")]);
-    expect(got).toEqual([{ name: "Ship", description: "runtime Ship" }]);
+    expect(got).toEqual([{ name: "ship", description: "team ship" }]);
   });
 
-  it("dedupes namespaced literals case-insensitively, runtime first", () => {
+  it("dedupes namespaced literals case-insensitively, team first", () => {
     const got = mergeSlashSkills(
       [runtime("gsap", "HyperFrames")],
       [{ name: "gsap", namespace: "hyperframes", description: "team gsap" }],
     );
-    expect(got).toEqual([{ name: "gsap", namespace: "HyperFrames", description: "runtime gsap" }]);
+    expect(got).toEqual([{ name: "gsap", namespace: "hyperframes", description: "team gsap" }]);
   });
 
   it("keeps distinct commands from both sources, sorted by label key", () => {
