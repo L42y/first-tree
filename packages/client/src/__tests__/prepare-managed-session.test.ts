@@ -424,9 +424,10 @@ describe("prepareManagedSession", () => {
     // verified effective name) and lands before the briefing/build steps so
     // no provider turn can format user input with a stale registry.
     expect(publishTeamSkillCommands).toHaveBeenCalledTimes(1);
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith([
-      { requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" },
-    ]);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(
+      [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
+      3,
+    );
     expect(callOrder.indexOf("skills")).toBeLessThan(callOrder.indexOf("briefing"));
   });
 
@@ -491,9 +492,10 @@ describe("prepareManagedSession", () => {
       contextTree: { path: null, repoUrl: null, branch: null },
     });
 
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith([
-      { requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" },
-    ]);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(
+      [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
+      7,
+    );
   });
 
   it("marks configured Team commands unavailable when neither reconcile nor the ledger can prove identities", async () => {
@@ -560,7 +562,7 @@ describe("prepareManagedSession", () => {
       contextTree: { path: null, repoUrl: null, branch: null },
     });
 
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith([{ requestedSlug: "team-review", effectiveName: null }]);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith([{ requestedSlug: "team-review", effectiveName: null }], 3);
   });
 
   it("prefers the current config over a verified older ledger when reconcile has no authoritative registry", async () => {
@@ -639,10 +641,13 @@ describe("prepareManagedSession", () => {
     // does not ride the stale ledger either. The ledger is never consulted
     // once a resolved runtime config exists.
     expect(verifyManagedSkillsProjectionForAdmission).not.toHaveBeenCalled();
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith([
-      { requestedSlug: "audit", effectiveName: null },
-      { requestedSlug: "review", effectiveName: null },
-    ]);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(
+      [
+        { requestedSlug: "audit", effectiveName: null },
+        { requestedSlug: "review", effectiveName: null },
+      ],
+      2,
+    );
   });
 
   it("publishes unknown (null) when the current config's Team rows have no valid slug", async () => {
@@ -714,7 +719,83 @@ describe("prepareManagedSession", () => {
     });
 
     expect(verifyManagedSkillsProjectionForAdmission).not.toHaveBeenCalled();
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith(null);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(null, null);
+  });
+
+  it("uses the verified newer ledger for a stale snapshot instead of publishing the old config's aliases", async () => {
+    const prepareManagedSession = await loadPrepare();
+    // Cache fell back to the OLDER config v1 while the ledger is already
+    // v2 — reconcile reports the snapshot as stale and publishes nothing.
+    reconcileManagedSkillsForConfig.mockImplementation(async () => ({
+      ok: true,
+      resourceConfigVersion: 2,
+      installed: [],
+      skipped: [],
+      removed: [],
+      teamSkills: [],
+      teamSkillCommands: null,
+      failures: [],
+      staleTeamSnapshot: true,
+    }));
+    const { verifyManagedSkillsProjectionForAdmission } = (await import("../runtime/managed-skills.js")) as unknown as {
+      verifyManagedSkillsProjectionForAdmission: ReturnType<typeof vi.fn>;
+    };
+    verifyManagedSkillsProjectionForAdmission.mockImplementation(async () => ({
+      resourceConfigVersion: 2,
+      teamSkills: [
+        {
+          key: "resource:review",
+          name: "review-first-tree",
+          requestedSlug: "review",
+          description: "d",
+          revision: "r2",
+          installedDigest: "sha256:abc",
+          target: "/tmp/review-first-tree",
+        },
+      ],
+    }));
+
+    const payload = {
+      kind: "cursor" as const,
+      prompt: { append: "" },
+      model: "",
+      mcpServers: [],
+      env: [],
+      gitRepos: [],
+      resourceSkills: [{ resourceId: "res-1", name: "review", description: "d", body: "b", metadata: {} }],
+    };
+    const runtimeConfig = {
+      agentId: "019d9a97-90b0-716b-8317-a8c0be8430d7",
+      version: 1,
+      payload,
+      updatedAt: new Date().toISOString(),
+      updatedBy: "test",
+    };
+    buildAgentBriefing.mockImplementation(() => {
+      callOrder.push("briefing");
+      return "BRIEFING_BODY";
+    });
+    const ctx = sessionCtx();
+    const publishTeamSkillCommands = vi.fn();
+    ctx.publishTeamSkillCommands = publishTeamSkillCommands;
+    await prepareManagedSession({
+      sessionCtx: ctx,
+      workspaceRoot,
+      agentName: "prep-agent",
+      runtimeProvider: "cursor",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      runtimeConfig: runtimeConfig as never,
+      payload,
+      payloadResolved: true,
+      contextTree: { path: null, repoUrl: null, branch: null },
+    });
+
+    // The verified NEWER ledger identity wins; the stale config's partial
+    // alias set is never published.
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(
+      [{ requestedSlug: "review", effectiveName: "review-first-tree" }],
+      2,
+    );
   });
 
   it("continues when chat context fetch fails and logs the failure", async () => {

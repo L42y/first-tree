@@ -1054,6 +1054,79 @@ describe("codex handler startup inject queue", () => {
     await handler.shutdown();
   });
 
+  it("refreshes the managed projection before formatting injected input, so a fenced retry can heal", async () => {
+    const order: string[] = [];
+    const runtimeConfig = {
+      agentId: AGENT_ID,
+      version: 2,
+      payload: {
+        kind: "codex" as const,
+        prompt: { append: "" },
+        model: "",
+        mcpServers: [],
+        env: [],
+        gitRepos: [],
+        resourceSkills: [],
+      },
+      updatedAt: "",
+      updatedBy: "test",
+    };
+    const fake = new StartupFakeAppServerClient();
+    const handler = createCodexHandler({
+      runtimeProvider: "codex",
+      workspaceRoot,
+      agentName: "codex-race-test-agent",
+      codexHandlerEngine: "sdk",
+      codexRuntimeBinaryResolver: async () => ({
+        ok: true as const,
+        binary: "/tmp/fake-codex",
+        runtimeSource: "path" as const,
+        runtimePath: "/tmp/fake-codex",
+        version: "0.0.0-test",
+      }),
+      codexAppServerClientFactory: async () => fake,
+      agentConfigCache: {
+        get: () => {
+          order.push("refresh");
+          return runtimeConfig;
+        },
+        refreshIfNewer: async () => runtimeConfig,
+        refresh: async () => runtimeConfig,
+        updateUrls: () => {},
+        allReferencedUrls: () => new Set<string>(),
+        forget: () => {},
+      } as never,
+    });
+    const ctx = makeContext(() => {}, {
+      formatInboundContent: async (message) => {
+        order.push(`format:${message.id}`);
+        return String(message.content);
+      },
+    });
+
+    state.resolveChatContext?.({
+      chatId: "chat-startup-race",
+      title: "startup race",
+      topic: null,
+      description: null,
+      participants: [],
+    });
+    await handler.start(makeMessage("m1", "first"), ctx, deliveryTokenFromSessionContext(ctx));
+    await waitFor(() => state.runInputs.length === 1);
+
+    order.length = 0;
+    handler.inject(makeMessage("m2", "second"), deliveryTokenFromSessionContext(ctx));
+    await waitFor(() => order.includes("format:m2"));
+
+    // The refresh/reconcile path (config cache read) must run BEFORE the
+    // injected turn's formatting: only then can a version-fenced registry
+    // republish heal the retry instead of deadlocking on its own fence.
+    expect(order[0]).toBe("refresh");
+    expect(order.indexOf("refresh")).toBeLessThan(order.indexOf("format:m2"));
+
+    await handler.shutdown();
+  });
+
   it("retries queued injects when all inbound formatting fails before provider custody", async () => {
     const completedCounts: Array<number | undefined> = [];
     const retryTurn = vi.fn();

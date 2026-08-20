@@ -1464,6 +1464,16 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
     const messages = drained.map((entry) => entry.message);
     const token = drained[0]?.token;
     if (!token) return;
+    // Active-session hot-switch BEFORE formatting: the Team Skill command
+    // registry fence rejects a message stamped with a newer config version,
+    // and only this reconcile can publish the registry that lets the retry
+    // succeed — formatting first would deadlock the turn on its own fence.
+    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
+    if (refreshed?.changed && cwd) {
+      const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
+      pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
+      sessionCtx.log(`Active session briefing changed — prepending re-read notice (${threadId})`);
+    }
     let hadFormatFailure = false;
     for (const m of messages) {
       try {
@@ -1479,14 +1489,6 @@ export const createCodexSdkHandler: HandlerFactory = (config) => {
       // rather than ACKing a gap or delivering a partial fused prompt.
       for (const queued of drained) queued.token.retry(queued.message, "codex_queued_turn_format_failed");
       return;
-    }
-    // Active-session hot-switch: pick up a mid-session briefing change before
-    // this injected turn and surface the re-read notice.
-    const refreshed = await refreshBriefingForActiveTurn(sessionCtx);
-    if (refreshed?.changed && cwd) {
-      const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
-      pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
-      sessionCtx.log(`Active session briefing changed — prepending re-read notice (${threadId})`);
     }
     const payload = activePayload;
     const delivered = payload

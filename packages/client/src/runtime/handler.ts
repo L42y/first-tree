@@ -264,12 +264,16 @@ export type SessionContext = HandlerContext & {
    * verified ledger nor the runtime config can prove them. `null` makes
    * the shared inbound boundary fail closed on strict slash commands
    * instead of falling through to a possibly same-named unmanaged Skill.
+   * `provenVersion` is the resource-config version the publication proves;
+   * the boundary fences strict slash commands whose message carries a
+   * different server-stamped config version.
    *
    * Required: a missing publisher would silently disable this fail-closed
    * boundary. Test doubles should supply a no-op or a capturing stub.
    */
   publishTeamSkillCommands: (
     commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+    provenVersion: number | null,
   ) => void;
 
   /**
@@ -333,6 +337,16 @@ export type SessionMessage = {
    * `sent=` segment when absent.
    */
   createdAt?: string;
+  /**
+   * Server-stamped Agent runtime config version this message was sent
+   * against (see clientMessageSchema). The Team Skill command registry is
+   * fenced by the config version it proves: a strict slash command whose
+   * message version differs from the published registry's version fails
+   * closed instead of resolving against a stale registry. Optional because
+   * synthetic/legacy SessionMessage construction sites do not have it; the
+   * fence only engages when present.
+   */
+  configVersion?: number;
   /**
    * Group-chat history the recipient missed (mention_only + not @mentioned)
    * up to this triggering message. Sorted oldest-first. Server attaches and

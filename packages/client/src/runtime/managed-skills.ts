@@ -146,10 +146,11 @@ export type ReconcileManagedSkillsResult = Readonly<{
   /**
    * Complete Team Skill command registry from an authoritative snapshot:
    * every desired base slug with its verified effective name (or null).
-   * `null` means this result carries no publication (stale/unavailable
-   * snapshot or failed reconcile) and consumers must keep the previously
-   * published registry — an old map is only replaced by a new complete,
-   * verified projection.
+   * `null` means this result carries no proven publication
+   * (stale/unavailable snapshot or failed reconcile) — preparation then
+   * publishes its own fail-closed replacement (current-config unavailable
+   * fallback, verified ledger, or explicit unknown), so the session
+   * registry is always replaced deliberately, never silently kept.
    */
   teamSkillCommands: readonly ReconciledTeamSkillCommand[] | null;
   failures: readonly ManagedSkillFailure[];

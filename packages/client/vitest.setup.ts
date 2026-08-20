@@ -59,6 +59,7 @@ vi.mock("./src/runtime/managed-skills.js", async (importOriginal) => {
           skipped: [],
           removed: [],
           teamSkills: [],
+          teamSkillCommands: [],
           failures: [],
           staleTeamSnapshot: false,
         };

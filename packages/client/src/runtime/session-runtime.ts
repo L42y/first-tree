@@ -3051,17 +3051,22 @@ export class SessionRuntime {
       : sessionRoot;
 
     // Team Skill slash-command registry (base slug → ready/unavailable
-    // target), published by managed-session preparation after every settled
-    // projection. The reference is replaced atomically as a whole — a stale
-    // registry is never cleared by a non-authoritative reconcile. `null`
-    // means UNPUBLISHED (distinct from a verified-empty registry): the
-    // rewrite boundary blocks strict slash commands until preparation
-    // publishes, so a configured-but-colliding base can never fall through
-    // to a same-named unmanaged Skill before its exact identity is known.
+    // target) plus the resource-config version the registry proves,
+    // published by managed-session preparation after every projection
+    // attempt. The pair is replaced atomically as a whole — a stale
+    // registry is never cleared by a non-authoritative reconcile.
+    // `registry: null` means UNPUBLISHED/UNKNOWN (distinct from a
+    // verified-empty registry): the rewrite boundary blocks strict slash
+    // commands until preparation publishes. The version fence matters for
+    // active sessions: a message stamped with a newer config version must
+    // not resolve commands against a registry proven for an older one.
     // Applying it here — inside the SessionContext's formatInboundContent —
     // covers every provider's start/resume/inject path at one shared
     // boundary, because all of them render user text through this method.
-    let teamSkillCommands: TeamSkillCommandRegistry | null = null;
+    let teamSkillCommands: { registry: TeamSkillCommandRegistry | null; version: number | null } = {
+      registry: null,
+      version: null,
+    };
 
     const forwardResult = createResultSink({
       clearTrigger: () => {
@@ -3180,15 +3185,26 @@ export class SessionRuntime {
         this.projection.persistRegistry();
       },
       buildAgentEnv: (parentEnv) => buildAgentEnv(parentEnv, envCtx),
-      publishTeamSkillCommands: (commands) => {
-        // `null` = unknown/unpublished: strict slash commands fail closed
-        // until a proven registry lands. A list replaces the registry
-        // atomically as a whole.
-        teamSkillCommands = commands === null ? null : buildTeamSkillCommandRegistry(commands, log);
+      publishTeamSkillCommands: (commands, provenVersion) => {
+        // `null` commands = unknown/unpublished: strict slash commands fail
+        // closed until a proven registry lands. A list replaces the
+        // registry atomically as a whole, stamped with the config version
+        // the publication proves.
+        teamSkillCommands = {
+          registry: commands === null ? null : buildTeamSkillCommandRegistry(commands, log),
+          version: provenVersion,
+        };
       },
-      formatInboundContent: async (message) =>
-        formatInboundContent(
-          rewriteSessionMessageCommand(message, teamSkillCommands, {
+      formatInboundContent: async (message) => {
+        const { registry, version } = teamSkillCommands;
+        // Version fence: a strict slash command is only as trustworthy as
+        // the registry's proven config version. A message stamped with a
+        // different version resolves against UNKNOWN — never a stale
+        // registry. Synthetic messages without a stamp skip the fence.
+        const fencedRegistry =
+          message.configVersion !== undefined && version !== message.configVersion ? null : registry;
+        return formatInboundContent(
+          rewriteSessionMessageCommand(message, fencedRegistry, {
             // A canonical `@slug …` prefix only qualifies as a command
             // prefix when the message's routed metadata explicitly
             // mentions this agent — typed-but-unrouted look-alikes never
@@ -3196,7 +3212,8 @@ export class SessionRuntime {
             allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
           }),
           participants,
-        ),
+        );
+      },
       resolveSenderLabel: async (senderId) => resolveSenderLabel(senderId, await participants.get()),
       formatFromHeader: (message) => buildFromHeader(message, participants),
     };
@@ -3248,6 +3265,7 @@ export class SessionRuntime {
       metadata: msg.metadata,
       source: msg.source,
       createdAt: msg.createdAt,
+      configVersion: msg.configVersion,
       precedingMessages: msg.precedingMessages ?? [],
     };
   }

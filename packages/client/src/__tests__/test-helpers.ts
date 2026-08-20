@@ -33,6 +33,7 @@ export function mockCtxPlumbing(
   formatFromHeader: (msg: SessionMessage) => Promise<string>;
   publishTeamSkillCommands: (
     commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+    provenVersion: number | null,
   ) => void;
 } {
   return {

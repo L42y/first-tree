@@ -216,11 +216,14 @@ function commandLabelKey(skill: SlashSkillInfo): string {
  * Skill. A duplicate `resourceId` group is skipped for the same reason
  * (the materializer rejects it outright).
  *
- * A *local* on-disk collision can still make the materializer install
- * under a suffixed name this projection cannot predict — that window is
- * an accepted boundary: the daemon-reported runtime catalog always wins
- * the merge dedup below, so an actually-installed command is never
- * shadowed by a projected one.
+ * A local on-disk collision can make the materializer install a Team
+ * Skill under a suffixed name this projection cannot predict. That case
+ * is NOT left to the daemon catalog (which for Codex-class runtimes does
+ * not cover workspace Skills at all): the Client's inbound rewrite
+ * resolves the base literal against its verified per-session command
+ * registry, fenced by config version — see
+ * `runtime/team-skill-command-rewrite.ts`. The runtime-reported catalog
+ * still wins the merge dedup below for genuinely local commands.
  */
 export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashSkillInfo[] {
   const candidates: Array<{ resourceId: string; slug: string; description: string }> = [];

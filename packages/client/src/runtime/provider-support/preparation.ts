@@ -766,6 +766,7 @@ export async function projectManagedWorkspace(
           // Team Skill has a verified target by construction.
           sessionCtx.publishTeamSkillCommands(
             teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
+            projectionState.managed.resourceConfigVersion,
           );
           if (beforeBriefing) {
             const result = beforeBriefing({ workspace, sourceRepos, teamSkills });
@@ -802,16 +803,17 @@ export async function projectManagedWorkspace(
     const skillKind: ContextSourceKind = requestedKind === "local" ? "local" : "remote";
     const sourceRepos = suppressSourceRepos ? [] : declaredSourceRepos(workspace, payload);
 
-    const { teamSkills, teamSkillCommands, resourceConfigVersion } = await reconcileManagedSkillsForConfig(
-      workspace,
-      runtimeProvider,
-      providerSkillRoots,
-      runtimeConfig,
-      sessionCtx.log,
-      teamSkillBundleResolverFromSdk(sessionCtx.sdk),
-      skillKind,
-      bundledSkillsRoot,
-    );
+    const { teamSkills, teamSkillCommands, resourceConfigVersion, staleTeamSnapshot } =
+      await reconcileManagedSkillsForConfig(
+        workspace,
+        runtimeProvider,
+        providerSkillRoots,
+        runtimeConfig,
+        sessionCtx.log,
+        teamSkillBundleResolverFromSdk(sessionCtx.sdk),
+        skillKind,
+        bundledSkillsRoot,
+      );
 
     // Publish the complete command registry BEFORE any provider turn is
     // formatted from this context: a local collision may have installed a
@@ -823,18 +825,19 @@ export async function projectManagedWorkspace(
     // `null` from reconcile means no authoritative publication (stale or
     // unavailable snapshot, or a clean top-level failure), so exact
     // command identities are unproven. The CURRENT runtime config outranks
-    // the ledger: when it is known, every configured Team base fails
-    // closed — a verified older ledger may predate newly added Skills, and
-    // its coverage of the current desired set is unprovable because the
-    // reconciler advances the state version before installing. Zero Team
-    // rows stay unpublished rather than verified-empty: a not-yet-cleaned
-    // stale projection could still exist on disk. Only with no resolved
-    // config at all may the verified ledger serve as last-known-good
-    // command identity; without a ledger the registry publishes UNKNOWN
+    // the ledger when it is both known and current: every configured Team
+    // base fails closed — a verified older ledger may predate newly added
+    // Skills, and its coverage of the current desired set is unprovable
+    // because the reconciler advances the state version before installing.
+    // Zero Team rows stay unpublished rather than verified-empty: a
+    // not-yet-cleaned stale projection could still exist on disk. A stale
+    // snapshot (config older than the ledger) or an unresolved config both
+    // fall through to the verified ledger as last-known-good command
+    // identity; without a verifiable ledger the registry publishes UNKNOWN
     // and strict slash commands stay blocked.
     if (teamSkillCommands !== null) {
-      sessionCtx.publishTeamSkillCommands(teamSkillCommands);
-    } else if (runtimeConfig) {
+      sessionCtx.publishTeamSkillCommands(teamSkillCommands, resourceConfigVersion);
+    } else if (runtimeConfig && !staleTeamSnapshot) {
       const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
       for (const skill of runtimeConfig.payload.resourceSkills ?? []) {
         try {
@@ -847,9 +850,9 @@ export async function projectManagedWorkspace(
         sessionCtx.log(
           "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
         );
-        sessionCtx.publishTeamSkillCommands(fallback);
+        sessionCtx.publishTeamSkillCommands(fallback, runtimeConfig.version);
       } else {
-        sessionCtx.publishTeamSkillCommands(null);
+        sessionCtx.publishTeamSkillCommands(null, null);
       }
     } else {
       const verified = await verifyManagedSkillsProjectionForAdmission({
@@ -861,6 +864,7 @@ export async function projectManagedWorkspace(
         verified
           ? verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name }))
           : null,
+        verified ? verified.resourceConfigVersion : null,
       );
     }
 
