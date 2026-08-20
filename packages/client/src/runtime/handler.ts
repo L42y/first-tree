@@ -272,7 +272,7 @@ export type SessionContext = HandlerContext & {
    * boundary. Test doubles should supply a no-op or a capturing stub.
    */
   publishTeamSkillCommands: (
-    commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+    commands: readonly { requestedSlug: string; resourceId: string; effectiveName: string | null }[] | null,
     provenVersion: number | null,
   ) => void;
 

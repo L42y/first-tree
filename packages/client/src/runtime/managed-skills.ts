@@ -128,6 +128,13 @@ export type ReconciledTeamSkill = Readonly<{
  */
 export type ReconciledTeamSkillCommand = Readonly<{
   requestedSlug: string;
+  /**
+   * The exact Team resource this command identity belongs to. The inbound
+   * rewrite requires a marker's resourceId to match — a deleted-then-
+   * recreated resource reusing the same slug must NOT inherit the old
+   * invocation.
+   */
+  resourceId: string;
   effectiveName: string | null;
 }>;
 
@@ -1812,7 +1819,13 @@ function buildTeamSkillCommandEntries(
   const entries: ReconciledTeamSkillCommand[] = [];
   for (const skill of desired) {
     if (skill.kind !== "team" || !skill.requestedSlug) continue;
-    entries.push({ requestedSlug: skill.requestedSlug, effectiveName: effectiveByKey.get(skill.key) ?? null });
+    const resourceId = skill.key.startsWith("resource:") ? skill.key.slice("resource:".length) : null;
+    if (resourceId === null) continue;
+    entries.push({
+      requestedSlug: skill.requestedSlug,
+      resourceId,
+      effectiveName: effectiveByKey.get(skill.key) ?? null,
+    });
   }
   return entries;
 }

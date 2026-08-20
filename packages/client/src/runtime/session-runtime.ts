@@ -14,6 +14,7 @@ import {
   attachmentRefsFromMetadata,
   deriveRepoLocalPath,
   encodeProviderRetryEventMessage,
+  hasTeamSkillInvocationMarker,
   imageAttachmentRefsFromMetadata,
   isImageBatchRefContent,
   isImageRefContent,
@@ -3413,25 +3414,29 @@ export class SessionRuntime {
             participants,
           );
         }
-        // Server-owned Team Skill invocation marker: the message's leading
-        // command was chosen from this agent's Team Skill menu, so it must
-        // resolve against the registry fail-closed — NEVER fall through to
-        // a same-named local Skill when the registry no longer knows the
-        // slug (e.g. the config moved on while the message waited in the
-        // inbox queue). A marker whose text no longer starts with the
-        // marked command is treated as hand-edited and falls through to the
-        // ordinary path. The fenced-out cases (unpublished / mismatched
-        // registry) are already settled by the guards above.
-        if (fencedRegistry !== null) {
+        // Server-owned Team Skill invocation marker: the KEY being present
+        // always means server-validated Team intent — this command must
+        // resolve fail-closed against the registry and the exact validated
+        // identity (recipient, config version, slug AND resourceId), NEVER
+        // fall through to a same-named local Skill. A present-but-malformed
+        // marker, any identity mismatch, or a superseded config version all
+        // become inert notices; only a truly ABSENT key keeps the ordinary
+        // local/runtime semantics below. Text that no longer starts with
+        // the marked command is hand-edited and falls through. The
+        // fenced-out cases (unpublished / mismatched registry) are already
+        // settled by the guards above.
+        if (fencedRegistry !== null && hasTeamSkillInvocationMarker(message.metadata)) {
           const invocation = teamSkillInvocationFromMetadata(message.metadata);
-          if (invocation !== null) {
-            const marked = rewriteSessionMessageCommandForInvocation(message, fencedRegistry, invocation, mentionGate);
-            if (marked !== null) {
-              const formatted = await formatInboundContent(marked, participants);
-              this.clearFenceRecoveryAttempt(chatId, message.id);
-              this.clearPendingFenceFormatFailure(chatId, message.id);
-              return formatted;
-            }
+          const marked = rewriteSessionMessageCommandForInvocation(message, fencedRegistry, invocation, {
+            ...mentionGate,
+            currentAgentId: this.config.agentIdentity.agentId,
+            registryVersion: version as number,
+          });
+          if (marked !== null) {
+            const formatted = await formatInboundContent(marked, participants);
+            this.clearFenceRecoveryAttempt(chatId, message.id);
+            this.clearPendingFenceFormatFailure(chatId, message.id);
+            return formatted;
           }
         }
         try {

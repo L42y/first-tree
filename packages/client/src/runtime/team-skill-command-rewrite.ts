@@ -69,7 +69,7 @@ export function isTeamSkillCommandUnavailableError(error: unknown): error is Tea
  */
 
 export type TeamSkillCommandTarget =
-  | Readonly<{ kind: "ready"; effectiveName: string }>
+  | Readonly<{ kind: "ready"; effectiveName: string; resourceId: string }>
   | Readonly<{ kind: "unavailable"; reason: string }>;
 
 /** Base slash name → its resolved Team Skill command target. */
@@ -80,6 +80,8 @@ export const EMPTY_TEAM_SKILL_COMMAND_REGISTRY: TeamSkillCommandRegistry = new M
 export type TeamSkillCommandEntry = Readonly<{
   /** Cloud-declared base slug the user types. */
   requestedSlug: string;
+  /** The exact Team resource this identity belongs to (marker cross-check). */
+  resourceId: string;
   /** Final installed command name, or null when no verified target exists. */
   effectiveName: string | null;
 }>;
@@ -112,7 +114,7 @@ export function buildTeamSkillCommandRegistry(
       base,
       entry.effectiveName === null
         ? { kind: "unavailable", reason: "no verified installed target" }
-        : { kind: "ready", effectiveName: entry.effectiveName },
+        : { kind: "ready", effectiveName: entry.effectiveName, resourceId: entry.resourceId },
     );
   }
   for (const base of conflicts) {
@@ -314,36 +316,60 @@ function messageStrictCommandName(content: unknown, opts?: { allowMentionPrefix?
 /**
  * Resolve a session message against the SERVER-OWNED Team Skill invocation
  * marker persisted in its metadata. The marker is proof that the leading
- * command was chosen from this agent's Team Skill menu — so unlike an
- * unmarked strict command it may NEVER fall through to a same-named local
- * Skill, even when the config moved on after the send (delayed inbox
- * delivery) and the current registry no longer knows the slug:
+ * command was chosen from a specific agent's Team Skill menu — so unlike
+ * an unmarked strict command it may NEVER fall through to a same-named
+ * local Skill. The full validation chain (any failure → inert notice with
+ * no slash literal):
  *
- *   - registry has the slug ready → rewrite to the verified effective name;
- *   - registry has it unavailable → inert unavailable notice;
- *   - registry no longer knows it → inert notice ("removed or renamed"),
- *     built by delegating with a synthetic unavailable entry so the notice
- *     shape stays identical to the ordinary unavailable path;
- *   - the message text no longer starts with the marked command (hand-edited
- *     after selection, or no strict command at all) → returns null and the
- *     caller treats the message as ordinary text.
+ *   - marker absent from this call's input (`invocation === null` because
+ *     the key was present but malformed, or of an unknown marker version)
+ *     → unresolved notice;
+ *   - `recipientAgentId` differs from the current agent (misrouted copy)
+ *     → unresolved notice;
+ *   - `configVersion` differs from the published registry's proven version
+ *     (the config the command was chosen against has been superseded —
+ *     the delayed-delivery case) → stale-version notice;
+ *   - the registry has no READY row for `requestedSlug`, or the ready
+ *     row's `resourceId` differs (the resource was deleted and its slug
+ *     later reused by a NEW resource — the old invocation must not
+ *     execute the new resource) → "removed or renamed" notice;
+ *   - otherwise the exact validated row rewrites the command to its
+ *     verified effective name.
  *
- * Returns null when the marker does not apply; the caller then falls back
- * to the ordinary registry path. Everything clones immutably.
+ * Returns null when the marker does not apply to this message at all —
+ * the text has no strict command position, or no longer starts with the
+ * marked command (hand-edited after selection); the caller then falls
+ * back to the ordinary registry path. Everything clones immutably.
  */
 export function rewriteSessionMessageCommandForInvocation<T extends { content: unknown }>(
   message: T,
   registry: TeamSkillCommandRegistry,
-  invocation: TeamSkillInvocation,
-  opts?: { allowMentionPrefix?: boolean },
+  invocation: TeamSkillInvocation | null,
+  opts: { allowMentionPrefix?: boolean; currentAgentId: string; registryVersion: number },
 ): T | null {
   const name = messageStrictCommandName(message.content, opts);
-  if (name === null || name.toLowerCase() !== invocation.slug) return null;
-  const target = registry.get(invocation.slug);
-  if (target === undefined) {
+  if (name === null) return null;
+  if (invocation === null) {
+    // Key present but unparseable (or an unknown marker version): Team
+    // intent exists but is unverifiable — never a local fall-through.
+    return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, opts);
+  }
+  if (name.toLowerCase() !== invocation.requestedSlug.toLowerCase()) return null;
+  if (invocation.recipientAgentId !== opts.currentAgentId) {
+    return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, opts);
+  }
+  if (invocation.configVersion !== opts.registryVersion) {
+    return rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE, opts);
+  }
+  const target = registry.get(invocation.requestedSlug.toLowerCase());
+  if (target !== undefined && target.kind === "unavailable") {
+    // Configured but not installed: the ordinary unavailable notice.
+    return rewriteSessionMessageCommand(message, registry, opts);
+  }
+  if (target === undefined || target.resourceId !== invocation.resourceId) {
     const removed: TeamSkillCommandRegistry = new Map([
       [
-        invocation.slug,
+        invocation.requestedSlug.toLowerCase(),
         {
           kind: "unavailable",
           reason: "the Team Skill was removed or renamed after this command was sent",

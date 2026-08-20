@@ -1059,7 +1059,9 @@ describe("codex handler startup inject queue", () => {
   });
 
   it("rewrites image-batch captions through the shared command rewrite for non-Claude structured payloads", async () => {
-    const registry = buildTeamSkillCommandRegistry([{ requestedSlug: "review", effectiveName: "review-first-tree" }]);
+    const registry = buildTeamSkillCommandRegistry([
+      { requestedSlug: "review", resourceId: "res-review-1", effectiveName: "review-first-tree" },
+    ]);
     const handler = createCodexHandler({
       runtimeProvider: "codex",
       workspaceRoot,

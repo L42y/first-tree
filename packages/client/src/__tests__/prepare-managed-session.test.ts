@@ -184,7 +184,7 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
-        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill" }],
+        teamSkillCommands: [{ requestedSlug: "team-skill", resourceId: "skill", effectiveName: "team-skill" }],
         failures: [],
         staleTeamSnapshot: false,
       };
@@ -381,7 +381,9 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
-        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
+        teamSkillCommands: [
+          { requestedSlug: "team-skill", resourceId: "skill", effectiveName: "team-skill-first-tree" },
+        ],
         failures: [],
         staleTeamSnapshot: false,
       };
@@ -425,7 +427,7 @@ describe("prepareManagedSession", () => {
     // no provider turn can format user input with a stale registry.
     expect(publishTeamSkillCommands).toHaveBeenCalledTimes(1);
     expect(publishTeamSkillCommands).toHaveBeenCalledWith(
-      [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
+      [{ requestedSlug: "team-skill", resourceId: "skill", effectiveName: "team-skill-first-tree" }],
       3,
     );
     expect(callOrder.indexOf("skills")).toBeLessThan(callOrder.indexOf("briefing"));
@@ -493,7 +495,7 @@ describe("prepareManagedSession", () => {
     });
 
     expect(publishTeamSkillCommands).toHaveBeenCalledWith(
-      [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
+      [{ requestedSlug: "team-skill", resourceId: "skill", effectiveName: "team-skill-first-tree" }],
       7,
     );
   });
@@ -562,7 +564,10 @@ describe("prepareManagedSession", () => {
       contextTree: { path: null, repoUrl: null, branch: null },
     });
 
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith([{ requestedSlug: "team-review", effectiveName: null }], 3);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith(
+      [{ requestedSlug: "team-review", resourceId: "res-1", effectiveName: null }],
+      3,
+    );
   });
 
   it("prefers the current config over a verified older ledger when reconcile has no authoritative registry", async () => {
@@ -643,8 +648,8 @@ describe("prepareManagedSession", () => {
     expect(verifyManagedSkillsProjectionForAdmission).not.toHaveBeenCalled();
     expect(publishTeamSkillCommands).toHaveBeenCalledWith(
       [
-        { requestedSlug: "audit", effectiveName: null },
-        { requestedSlug: "review", effectiveName: null },
+        { requestedSlug: "audit", resourceId: "res-audit", effectiveName: null },
+        { requestedSlug: "review", resourceId: "res-review", effectiveName: null },
       ],
       2,
     );
@@ -793,7 +798,7 @@ describe("prepareManagedSession", () => {
     // The verified NEWER ledger identity wins; the stale config's partial
     // alias set is never published.
     expect(publishTeamSkillCommands).toHaveBeenCalledWith(
-      [{ requestedSlug: "review", effectiveName: "review-first-tree" }],
+      [{ requestedSlug: "review", resourceId: "review", effectiveName: "review-first-tree" }],
       2,
     );
   });
@@ -1106,7 +1111,7 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
-        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill" }],
+        teamSkillCommands: [{ requestedSlug: "team-skill", resourceId: "skill", effectiveName: "team-skill" }],
         failures: [],
         staleTeamSnapshot: false,
       };

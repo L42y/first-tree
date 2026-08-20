@@ -123,7 +123,8 @@ async function captureContext(): Promise<{
   };
 }
 
-const PUBLISHED = [{ requestedSlug: "review", effectiveName: "review-first-tree" }];
+const REVIEW_RESOURCE_ID = "res-review-1";
+const PUBLISHED = [{ requestedSlug: "review", resourceId: REVIEW_RESOURCE_ID, effectiveName: "review-first-tree" }];
 
 describe("SessionRuntime Team Skill slash rewrite wiring", () => {
   it("rewrites a published base command for every later formatted inbound message", async () => {
@@ -154,7 +155,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
   it("turns a same-version explicitly-unavailable command into an inert notice the provider can settle", async () => {
     const { ctx, runtime } = await captureContext();
-    ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
+    ctx.publishTeamSkillCommands([{ requestedSlug: "review", resourceId: REVIEW_RESOURCE_ID, effectiveName: null }], 1);
 
     // Deterministic terminal boundary: the provider receives a First Tree
     // runtime notice with NO slash command token, and the turn can settle
@@ -267,38 +268,105 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
   it("resolves a server-marked Team command fail-closed across a delayed delivery", async () => {
     const { ctx, runtime } = await captureContext();
-    const markedMessage = (content: string, slug: string, configVersion: number): SessionMessage => ({
+    const markedMessage = (
+      content: string,
+      overrides: { resourceId?: string; requestedSlug?: string; configVersion?: number; recipientAgentId?: string },
+      deliveryStamp?: number,
+    ): SessionMessage => ({
       id: "m-marked",
       chatId: "chat-a",
       senderId: "sender-1",
       format: "text",
       content,
       metadata: {
-        teamSkillInvocation: { resourceId: crypto.randomUUID(), slug, configVersion: 1 },
+        teamSkillInvocation: {
+          version: 1,
+          recipientAgentId: overrides.recipientAgentId ?? "agent-1",
+          resourceId: overrides.resourceId ?? REVIEW_RESOURCE_ID,
+          requestedSlug: overrides.requestedSlug ?? "review",
+          configVersion: overrides.configVersion ?? 1,
+        },
       },
-      configVersion,
+      configVersion: deliveryStamp,
     });
 
-    // Registry v2 still contains the Skill: the delayed command rewrites to
-    // the verified effective name even though it was chosen against v1.
-    ctx.publishTeamSkillCommands(PUBLISHED, 2);
-    expect(await ctx.formatInboundContent(markedMessage("/review src/", "review", 2))).toContain(
-      "/review-first-tree src/",
-    );
+    // The happy path: marker, current agent, registry version, slug AND
+    // resourceId all agree — the command rewrites to the exact verified
+    // effective name.
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    expect(await ctx.formatInboundContent(markedMessage("/review src/", {}))).toContain("/review-first-tree src/");
 
-    // Registry v2 no longer knows the slug (removed/renamed after the
-    // send): the marked command can NEVER fall through to a same-named
-    // local Skill — it settles as an inert notice instead.
-    ctx.publishTeamSkillCommands([], 2);
-    const removed = await ctx.formatInboundContent(markedMessage("/review src/", "review", 2));
-    expect(removed).toContain('"review"');
+    // Delayed delivery: chosen at v1, the config moved to v2 before the
+    // message was formatted. The delivery stamp matches the registry, but
+    // the MARKER version does not — the command settles as a terminal
+    // stale notice, never a same-named local Skill.
+    ctx.publishTeamSkillCommands(PUBLISHED, 2);
+    const stale = await ctx.formatInboundContent(markedMessage("/review src/", {}, 2));
+    expect(stale).toContain("superseded");
+    expect(stale).not.toContain("/review");
+
+    // Same-slug replacement: the registry's ready row belongs to a NEW
+    // resource reusing the slug — the old invocation must not execute it.
+    ctx.publishTeamSkillCommands(
+      [{ requestedSlug: "review", resourceId: "res-new-owner", effectiveName: "review" }],
+      1,
+    );
+    const replaced = await ctx.formatInboundContent(markedMessage("/review src/", {}));
+    expect(replaced).toContain("removed or renamed");
+    expect(replaced).not.toContain("/review");
+    expect(replaced).toContain("src/");
+
+    // Registry no longer knows the slug at all: same fail-closed notice.
+    ctx.publishTeamSkillCommands([], 1);
+    const removed = await ctx.formatInboundContent(markedMessage("/review src/", {}));
     expect(removed).toContain("removed or renamed");
     expect(removed).not.toContain("/review");
-    expect(removed).toContain("src/");
+
+    // A marker addressed to a DIFFERENT agent (misrouted copy) never runs here.
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    const misrouted = await ctx.formatInboundContent(markedMessage("/review src/", { recipientAgentId: "agent-2" }));
+    expect(misrouted).toContain("could not be verified");
+    expect(misrouted).not.toContain("/review");
 
     // Hand-edited text that no longer starts with the marked command is
     // treated as an ordinary (possibly local) command.
-    expect(await ctx.formatInboundContent(markedMessage("/ship src/", "review", 2))).toContain("/ship src/");
+    expect(await ctx.formatInboundContent(markedMessage("/ship src/", {}))).toContain("/ship src/");
+
+    await runtime.shutdown();
+  });
+
+  it("treats a present-but-malformed invocation marker as unverifiable Team intent — never a local command", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+    const malformedMessage = (marker: unknown): SessionMessage => ({
+      id: "m-malformed",
+      chatId: "chat-a",
+      senderId: "sender-1",
+      format: "text",
+      content: "/review src/",
+      metadata: { teamSkillInvocation: marker },
+      configVersion: 1,
+    });
+
+    for (const bad of [
+      "review",
+      {
+        version: 2,
+        recipientAgentId: "agent-1",
+        resourceId: REVIEW_RESOURCE_ID,
+        requestedSlug: "review",
+        configVersion: 1,
+      },
+      { version: 1, recipientAgentId: "agent-1", resourceId: REVIEW_RESOURCE_ID, requestedSlug: "review" },
+      { resourceId: REVIEW_RESOURCE_ID, slug: "review", configVersion: 1 },
+    ]) {
+      const formatted = await ctx.formatInboundContent(malformedMessage(bad));
+      expect(formatted).toContain("could not be verified");
+      expect(formatted).not.toContain("/review");
+    }
+
+    // Only a truly ABSENT key keeps the ordinary local/runtime semantics.
+    expect(await ctx.formatInboundContent(textMessage("/ship it", undefined, 1))).toContain("/ship it");
 
     await runtime.shutdown();
   });
@@ -600,7 +668,10 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
 
   it("settles a same-version unavailable command with one inert notice and one ACK — terminal custody evidence", async () => {
     const cap = await captureContext();
-    cap.ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }], 1);
+    cap.ctx.publishTeamSkillCommands(
+      [{ requestedSlug: "review", resourceId: REVIEW_RESOURCE_ID, effectiveName: null }],
+      1,
+    );
 
     // Settle the opening turn first so the ledger prefix is terminal, as
     // any healthy session would before the next message settles.

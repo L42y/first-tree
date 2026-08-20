@@ -765,7 +765,11 @@ export async function projectManagedWorkspace(
           // too: the verified projection is complete, so every retained
           // Team Skill has a verified target by construction.
           sessionCtx.publishTeamSkillCommands(
-            teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
+            teamSkills.map((skill) => ({
+              requestedSlug: skill.requestedSlug,
+              resourceId: skill.key.slice("resource:".length),
+              effectiveName: skill.name,
+            })),
             projectionState.managed.resourceConfigVersion,
           );
           if (beforeBriefing) {
@@ -838,10 +842,14 @@ export async function projectManagedWorkspace(
     if (teamSkillCommands !== null) {
       sessionCtx.publishTeamSkillCommands(teamSkillCommands, resourceConfigVersion);
     } else if (runtimeConfig && !staleTeamSnapshot) {
-      const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
+      const fallback: { requestedSlug: string; resourceId: string; effectiveName: string | null }[] = [];
       for (const skill of runtimeConfig.payload.resourceSkills ?? []) {
         try {
-          fallback.push({ requestedSlug: normalizeTeamSkillTargetSlug(skill.name), effectiveName: null });
+          fallback.push({
+            requestedSlug: normalizeTeamSkillTargetSlug(skill.name),
+            resourceId: skill.resourceId,
+            effectiveName: null,
+          });
         } catch {
           // A name with no portable slug never had a typable command.
         }
@@ -862,7 +870,11 @@ export async function projectManagedWorkspace(
       });
       sessionCtx.publishTeamSkillCommands(
         verified
-          ? verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name }))
+          ? verified.teamSkills.map((skill) => ({
+              requestedSlug: skill.requestedSlug,
+              resourceId: skill.key.slice("resource:".length),
+              effectiveName: skill.name,
+            }))
           : null,
         verified ? verified.resourceConfigVersion : null,
       );

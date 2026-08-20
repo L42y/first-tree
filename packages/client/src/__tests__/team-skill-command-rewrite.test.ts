@@ -8,13 +8,21 @@ import {
   rewriteTeamSkillCommand,
 } from "../runtime/team-skill-command-rewrite.js";
 
-const entry = (requestedSlug: string, effectiveName: string | null) => ({ requestedSlug, effectiveName });
+const entry = (requestedSlug: string, effectiveName: string | null, resourceId = `res-${requestedSlug}`) => ({
+  requestedSlug,
+  resourceId,
+  effectiveName,
+});
 
 describe("buildTeamSkillCommandRegistry", () => {
   it("records ready targets for every valid base — identity mappings included", () => {
     const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("audit", "audit")]);
-    expect(registry.get("review")).toEqual({ kind: "ready", effectiveName: "review-first-tree" });
-    expect(registry.get("audit")).toEqual({ kind: "ready", effectiveName: "audit" });
+    expect(registry.get("review")).toEqual({
+      kind: "ready",
+      effectiveName: "review-first-tree",
+      resourceId: "res-review",
+    });
+    expect(registry.get("audit")).toEqual({ kind: "ready", effectiveName: "audit", resourceId: "res-audit" });
   });
 
   it("records configured-but-unverified bases as unavailable", () => {
@@ -210,29 +218,62 @@ describe("rewriteSessionMessageCommand — image batch captions", () => {
 
 describe("rewriteSessionMessageCommandForInvocation — server-owned Team intent marker", () => {
   const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("broken", null)]);
-  const invocation = (slug: string) => ({ resourceId: crypto.randomUUID(), slug, configVersion: 1 });
+  const invocation = (slug: string, overrides: Record<string, unknown> = {}) => ({
+    version: 1 as const,
+    recipientAgentId: "agent-1",
+    resourceId: `res-${slug}`,
+    requestedSlug: slug,
+    configVersion: 1,
+    ...overrides,
+  });
+  const OPTS = { currentAgentId: "agent-1", registryVersion: 1 };
 
   it("rewrites a marked command to the verified effective name", () => {
     const message = { id: "m1", content: "/review src/" };
-    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS);
     expect(rewritten?.content).toBe("/review-first-tree src/");
     expect(message.content).toBe("/review src/");
   });
 
   it("matches the marked slug case-insensitively", () => {
     const message = { id: "m1", content: "/REVIEW src/" };
-    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS);
     expect(rewritten?.content).toBe("/review-first-tree src/");
   });
 
+  it("settles a version-superseded marker as the stale notice (delayed delivery)", () => {
+    // Chosen at v1, delivered after the config moved to v2: the registry
+    // proves v2, so the v1 marker can never be honored safely.
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), {
+      ...OPTS,
+      registryVersion: 2,
+    });
+    const text = rewritten?.content as string;
+    expect(text).toContain("superseded");
+    expect(text).not.toContain("/review");
+  });
+
+  it("rejects a same-slug replacement: a ready row owned by a NEW resource never serves the old invocation", () => {
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(
+      message,
+      registry,
+      invocation("review", { resourceId: "res-deleted-original" }),
+      OPTS,
+    );
+    const text = rewritten?.content as string;
+    expect(text).toContain("removed or renamed");
+    expect(text).not.toContain("/review");
+  });
+
   it("turns a marked command whose Skill left the config into an inert notice — never a local fall-through", () => {
-    // Delayed delivery: chosen at v1, the config moved to v2 without
-    // `review`, and the current (v2) registry no longer knows the slug.
     const message = { id: "m1", content: "/review src/" };
     const rewritten = rewriteSessionMessageCommandForInvocation(
       message,
       EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
       invocation("review"),
+      OPTS,
     );
     const text = rewritten?.content as string;
     expect(text).toContain('"review"');
@@ -241,9 +282,30 @@ describe("rewriteSessionMessageCommandForInvocation — server-owned Team intent
     expect(text).not.toMatch(/^\/[A-Za-z0-9]/);
   });
 
+  it("rejects a marker addressed to a different agent", () => {
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(
+      message,
+      registry,
+      invocation("review", { recipientAgentId: "agent-2" }),
+      OPTS,
+    );
+    const text = rewritten?.content as string;
+    expect(text).toContain("could not be verified");
+    expect(text).not.toContain("/review");
+  });
+
+  it("rejects a present-but-unparseable marker (malformed or unknown marker version)", () => {
+    const message = { id: "m1", content: "/review src/" };
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, null, OPTS);
+    const text = rewritten?.content as string;
+    expect(text).toContain("could not be verified");
+    expect(text).not.toContain("/review");
+  });
+
   it("keeps the explicit-unavailable notice for a marked command", () => {
     const message = { id: "m1", content: "/broken please" };
-    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("broken"));
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("broken"), OPTS);
     const text = rewritten?.content as string;
     expect(text).toContain("currently unavailable");
     expect(text).not.toContain("/broken");
@@ -251,23 +313,24 @@ describe("rewriteSessionMessageCommandForInvocation — server-owned Team intent
 
   it("returns null when the text no longer starts with the marked command (hand-edited after selection)", () => {
     const message = { id: "m1", content: "/ship src/" };
-    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"))).toBeNull();
+    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS)).toBeNull();
     const prose = { id: "m1", content: "hello /review" };
-    expect(rewriteSessionMessageCommandForInvocation(prose, registry, invocation("review"))).toBeNull();
+    expect(rewriteSessionMessageCommandForInvocation(prose, registry, invocation("review"), OPTS)).toBeNull();
   });
 
   it("applies to image captions and keeps attachments immutable", () => {
     const attachments = [{ imageId: "img-1", mimeType: "image/png", filename: "shot.png" }];
     const message = { id: "m1", content: { caption: "/review src/", attachments } };
-    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"));
+    const rewritten = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS);
     expect(rewritten?.content).toEqual({ caption: "/review-first-tree src/", attachments });
     expect(message.content.caption).toBe("/review src/");
   });
 
   it("honours the mention gate for mention-prefixed marked commands", () => {
     const message = { id: "m1", content: "@nova /review" };
-    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"))).toBeNull();
+    expect(rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), OPTS)).toBeNull();
     const gated = rewriteSessionMessageCommandForInvocation(message, registry, invocation("review"), {
+      ...OPTS,
       allowMentionPrefix: true,
     });
     expect(gated?.content).toBe("@nova /review-first-tree");

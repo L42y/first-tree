@@ -461,7 +461,9 @@ describe("managed Skill reconciler", () => {
 
     expect(result.ok, JSON.stringify(result.failures)).toBe(true);
     expect(result.teamSkills[0]?.name).toBe("review-first-tree");
-    expect(result.teamSkillCommands).toEqual([{ requestedSlug: "review", effectiveName: "review-first-tree" }]);
+    expect(result.teamSkillCommands).toEqual([
+      { requestedSlug: "review", resourceId: "resource-review", effectiveName: "review-first-tree" },
+    ]);
     expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user-owned review\n");
     expect(existsSync(target(workspace, "codex", "review-first-tree"))).toBe(true);
 
@@ -499,7 +501,9 @@ describe("managed Skill reconciler", () => {
     });
 
     expect(drifted.teamSkills).toEqual([]);
-    expect(drifted.teamSkillCommands).toEqual([{ requestedSlug: "review", effectiveName: null }]);
+    expect(drifted.teamSkillCommands).toEqual([
+      { requestedSlug: "review", resourceId: "resource-review", effectiveName: null },
+    ]);
   });
 
   it("installs complete root and wrapped Team ZIPs with nested, executable, and binary files", async () => {
