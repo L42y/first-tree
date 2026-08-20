@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CodexBinaryUnusableError,
   CodexBinaryVerifyTransientError,
+  createCodexAutomaticResolutionFailureTracker,
   createCodexClientWithBinaryFallback,
   type FindCodexExecutableDeps,
+  findCodexExecutableCandidates,
   findCodexExecutableOnPath,
   formatCodexBinaryMissingMessage,
   isCodexBinaryMissingError,
@@ -63,8 +66,9 @@ describe("codex binary resolution", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("falling back to codex"));
   });
 
-  it("does not fall back to a PATH codex executable that cannot start", () => {
-    expect(() =>
+  it("reports a deterministically broken automatic candidate as unusable", () => {
+    let thrown: unknown;
+    try {
       createCodexClientWithBinaryFallback(
         { env: { PATH: "/usr/local/bin" } },
         () => {
@@ -74,8 +78,120 @@ describe("codex binary resolution", () => {
           resolvePath: () => "/usr/local/bin/codex",
           verifyPath: () => ({ ok: false, transient: false, reason: "`codex --version` exited 1: broken shim" }),
         },
-      ),
-    ).toThrow(/Resolved codex failed validation: `codex --version` exited 1: broken shim/);
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(CodexBinaryUnusableError);
+    expect((thrown as Error).message).toContain("/usr/local/bin/codex");
+    expect((thrown as Error).message).toContain("broken shim");
+    expect((thrown as Error).message).toContain("npm install -g @openai/codex");
+  });
+
+  it("launch-verifies automatic candidates in priority order and reaches ChatGPT Desktop", () => {
+    tmp = mkdtempSync(join(tmpdir(), "ft-codex-ordered-fallback-"));
+    const daemonDir = join(tmp, "daemon-bin");
+    const wellKnownDir = join(tmp, "well-known-bin");
+    const loginDir = join(tmp, "login-bin");
+    const desktopDir = join(tmp, "ChatGPT.app", "Contents", "Resources");
+    for (const dir of [daemonDir, wellKnownDir, loginDir, desktopDir]) mkdirSync(dir, { recursive: true });
+    const candidates = [daemonDir, wellKnownDir, loginDir, desktopDir].map((dir) => join(dir, "codex"));
+    for (const candidate of candidates) {
+      writeFileSync(candidate, "#!/bin/sh\nexit 0\n");
+      chmodSync(candidate, 0o755);
+    }
+    const loginShellPathDirs = vi.fn(() => [loginDir]);
+    const desktopAppDirs = vi.fn(() => [desktopDir]);
+    const verifyPath = vi.fn((path: string) =>
+      path === candidates[3]
+        ? ({ ok: true as const, output: "codex 0.146.0-alpha.3" } as const)
+        : ({ ok: false as const, transient: false, reason: "candidate cannot launch" } as const),
+    );
+
+    const result = createCodexClientWithBinaryFallback(
+      { env: { PATH: daemonDir, HOME: tmp, FIRST_TREE_CHAT_ID: "chat-desktop-fallback" } },
+      (options) => {
+        if (!("codexPathOverride" in options) || typeof options.codexPathOverride !== "string") {
+          throw new Error("Unable to locate Codex CLI binaries for x86_64-apple-darwin");
+        }
+        return options;
+      },
+      {
+        resolveCandidates: (env) =>
+          findCodexExecutableCandidates(env, {
+            platform: "linux",
+            pathDelimiter: delimiter,
+            wellKnownDirs: () => [wellKnownDir],
+            loginShellPathDirs,
+            desktopAppDirs,
+          }),
+        verifyPath,
+      },
+    );
+
+    expect(result.codexPathOverride).toBe(candidates[3]);
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual(candidates);
+    expect(loginShellPathDirs).toHaveBeenCalledTimes(1);
+    expect(desktopAppDirs).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through a transient first-candidate smoke flake when a later Desktop candidate is healthy", () => {
+    const first = "/daemon/path/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const verifyPath = vi.fn((path: string) =>
+      path === first
+        ? ({ ok: false as const, transient: true, reason: "`codex --version` killed by SIGKILL" } as const)
+        : ({ ok: true as const, output: "codex 0.146.0-alpha.3" } as const),
+    );
+    const result = createCodexClientWithBinaryFallback(
+      { env: { FIRST_TREE_CHAT_ID: "chat-transient-fallback" } },
+      (options) => {
+        if (!("codexPathOverride" in options) || typeof options.codexPathOverride !== "string") {
+          throw new Error("Unable to locate Codex CLI binaries");
+        }
+        return options;
+      },
+      { resolveCandidates: () => [first, desktop], verifyPath },
+    );
+
+    expect(result.codexPathOverride).toBe(desktop);
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([first, desktop]);
+  });
+
+  it("bounds repeated identical all-candidate transient failures with an actionable terminal error", () => {
+    const tracker = createCodexAutomaticResolutionFailureTracker();
+    const first = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const attempt = () =>
+      createCodexClientWithBinaryFallback(
+        { env: { FIRST_TREE_CHAT_ID: "chat-bounded" } },
+        () => {
+          throw new Error("Unable to locate Codex CLI binaries");
+        },
+        {
+          resolveCandidates: () => [first, desktop],
+          verifyPath: (path) => ({
+            ok: false,
+            transient: true,
+            reason: path === first ? "`codex --version` killed by SIGKILL" : "`codex --version` timed out",
+          }),
+          failureTracker: tracker,
+        },
+      );
+
+    expect(attempt).toThrow(CodexBinaryVerifyTransientError);
+    expect(attempt).toThrow(CodexBinaryVerifyTransientError);
+    let terminal: unknown;
+    try {
+      attempt();
+    } catch (err) {
+      terminal = err;
+    }
+    expect(terminal).toBeInstanceOf(CodexBinaryUnusableError);
+    expect((terminal as Error).message).toContain("repeated 3 times");
+    expect((terminal as Error).message).toContain(first);
+    expect((terminal as Error).message).toContain(desktop);
+    expect((terminal as Error).message).toContain("Upgrade or replace");
   });
 
   it("treats a transient PATH-codex verify flake as retryable, NOT a missing binary", () => {
@@ -125,6 +241,20 @@ describe("codex binary resolution", () => {
         { resolvePath: () => "/usr/local/bin/codex" },
       ),
     ).toThrow("config exploded");
+  });
+
+  it("never replaces an explicit codexPathOverride with an automatic candidate", () => {
+    const resolveCandidates = vi.fn(() => ["/automatic/codex"]);
+    expect(() =>
+      createCodexClientWithBinaryFallback(
+        { codexPathOverride: "/configured/codex" },
+        () => {
+          throw new Error("Unable to locate Codex CLI binaries at configured override");
+        },
+        { resolveCandidates },
+      ),
+    ).toThrow("configured override");
+    expect(resolveCandidates).not.toHaveBeenCalled();
   });
 
   it("finds an executable codex on PATH", () => {

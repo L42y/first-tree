@@ -11,6 +11,7 @@
 
 export const PROVIDER_BINARY_FAILURE_REASON_CODES = {
   CODEX_VERIFY_TRANSIENT: "codex_verify_transient",
+  CODEX_BINARY_UNUSABLE: "codex_binary_unusable",
   CODEX_BINARY_MISSING: "codex_binary_missing",
   CURSOR_VERIFY_TRANSIENT: "cursor_verify_transient",
   CURSOR_BINARY_MISSING: "cursor_binary_missing",
@@ -24,8 +25,8 @@ export type ProviderBinaryFailureReasonCode =
   (typeof PROVIDER_BINARY_FAILURE_REASON_CODES)[keyof typeof PROVIDER_BINARY_FAILURE_REASON_CODES];
 
 export type ProviderBinaryFailureSignal = {
-  /** Present-but-flaky smoke check vs genuinely-missing / unresolved binary. */
-  outcome: "verify_transient" | "binary_missing";
+  /** Present-but-flaky, present-but-unusable, or genuinely missing/unresolved. */
+  outcome: "verify_transient" | "binary_unusable" | "binary_missing";
   reasonCode: ProviderBinaryFailureReasonCode;
   /** Fallback human summary when the thrown value carries no message. */
   defaultMessage: string;
@@ -177,6 +178,20 @@ function verifyTransientSignal(
   };
 }
 
+function codexUnusableSignal(err: unknown): ProviderBinaryFailureSignal | null {
+  if (
+    readErrorName(err) !== "CodexBinaryUnusableError" &&
+    !/codex runtime binary candidates are installed but unusable/i.test(codexErrorSearchText(err))
+  ) {
+    return null;
+  }
+  return {
+    outcome: "binary_unusable",
+    reasonCode: PROVIDER_BINARY_FAILURE_REASON_CODES.CODEX_BINARY_UNUSABLE,
+    defaultMessage: "Codex runtime binary candidates are unusable",
+  };
+}
+
 function missingSignal(
   match: (input: unknown) => boolean,
   reasonCode: ProviderBinaryFailureReasonCode,
@@ -191,15 +206,17 @@ function missingSignal(
  * Normalize a thrown value into a binary-failure signal, or `null` when the
  * error is unrelated.
  *
- * Order matches the historical `error-taxonomy` classifier exactly — per
- * provider interleaved as verify-transient then missing, walking Codex →
- * Cursor → Grok → Pi. "Verify beats missing" is only within the same provider;
+ * Order keeps the historical `error-taxonomy` classifier, with Codex's narrow
+ * unusable outcome inserted after verify-transient and before missing — then
+ * walks Cursor → Grok → Pi as verify-transient then missing. "Verify beats
+ * missing" is only within the same provider;
  * a later provider's verify name must not preempt an earlier provider's missing
  * match (cross-provider ambiguity keeps the earlier provider's outcome).
  */
 export function recognizeProviderBinaryFailure(err: unknown): ProviderBinaryFailureSignal | null {
   return (
     verifyTransientSignal(err, "CodexBinaryVerifyTransientError") ??
+    codexUnusableSignal(err) ??
     missingSignal(
       isCodexBinaryMissingError,
       PROVIDER_BINARY_FAILURE_REASON_CODES.CODEX_BINARY_MISSING,

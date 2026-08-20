@@ -9,6 +9,10 @@ import {
 } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
+import {
+  createCodexAutomaticResolutionFailureTracker,
+  createCodexClientWithBinaryFallback,
+} from "../providers/codex/binary.js";
 import type { ContextSource } from "../runtime/context-source.js";
 import type {
   AgentHandler,
@@ -119,6 +123,70 @@ describe("SessionRuntime: transient session retry", () => {
     expect(sm.totalCount).toBe(1);
 
     await sm.shutdown();
+  });
+
+  it("bounds identical Codex candidate launch failures and stops scheduling provider retries", async () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = createCodexAutomaticResolutionFailureTracker();
+      const candidate = "/Users/test/.npm-global/bin/codex";
+      const boundedHandler = (): AgentHandler => ({
+        start: vi.fn(async () => {
+          createCodexClientWithBinaryFallback(
+            { env: { FIRST_TREE_CHAT_ID: "chat-codex-bounded" } },
+            () => {
+              throw new Error("Unable to locate Codex CLI binaries");
+            },
+            {
+              resolveCandidates: () => [candidate],
+              verifyPath: () => ({
+                ok: false,
+                transient: true,
+                reason: "`codex --version` killed by SIGKILL",
+              }),
+              failureTracker: tracker,
+            },
+          );
+          throw new Error("unreachable");
+        }),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      });
+      const events: SessionEvent[] = [];
+      const sm = makeRuntime({
+        handlers: [boundedHandler(), boundedHandler(), boundedHandler()],
+        onSessionEvent: (_chatId, event) => events.push(event),
+      });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-codex-bounded" }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      const retryEvents = events
+        .filter((event): event is Extract<SessionEvent, { kind: "error" }> => event.kind === "error")
+        .map((event) => parseProviderRetryEventMessage(event.payload.message))
+        .filter((event) => event !== null);
+      expect(retryEvents.filter((event) => event.event === "provider_retry_scheduled")).toHaveLength(2);
+      expect(retryEvents).toContainEqual(
+        expect.objectContaining({
+          event: "provider_failure_terminal",
+          category: "capability",
+          reasonCode: "codex_binary_unusable",
+          scope: "session_start",
+        }),
+      );
+      expect(retryEvents.some((event) => event.event === "provider_retry_exhausted")).toBe(false);
+      expect(sm.totalCount).toBe(0);
+
+      const eventCount = events.length;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(events).toHaveLength(eventCount);
+      await sm.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("permanent error still removes the entry (legacy F2 path)", async () => {

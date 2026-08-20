@@ -26,14 +26,39 @@ export type CodexOptionsLike = {
 };
 
 export type CodexBinaryFallbackDeps = {
+  resolveCandidates?: (env?: Record<string, string>) => Iterable<string>;
+  /** Legacy single-candidate seam. Prefer resolveCandidates for new tests. */
   resolvePath?: (env?: Record<string, string>) => string | null;
   verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
+  failureTracker?: CodexAutomaticResolutionFailureTracker;
   log?: (message: string) => void;
 };
 
 export type CodexExecutableVerification =
   | { ok: true; output?: string }
   | { ok: false; reason: string; transient: boolean };
+
+export type CodexAutomaticCandidateFailure = {
+  path: string;
+  reason: string;
+  transient: boolean;
+};
+
+export type CodexVerifiedAutomaticCandidate =
+  | {
+      ok: true;
+      path: string;
+      verification: Extract<CodexExecutableVerification, { ok: true }>;
+      failures: readonly CodexAutomaticCandidateFailure[];
+    }
+  | { ok: false; failures: readonly CodexAutomaticCandidateFailure[] };
+
+export type CodexAutomaticResolutionFailureTracker = {
+  record(scope: string, fingerprint: string): number;
+  reset(scope: string): void;
+};
+
+export type CodexAutomaticFailureBoundary = "runtime" | "sdk";
 
 /**
  * `codex --version` smoke-check ceiling. A cold `codex` behind a version-manager
@@ -70,6 +95,26 @@ const DETERMINISTIC_CRASH_SIGNALS: ReadonlySet<NodeJS.Signals> = new Set([
   "SIGFPE",
 ]);
 
+/** Initial attempt plus two retries preserves cold-start recovery without an infinite schedule. */
+const CODEX_IDENTICAL_AUTOMATIC_FAILURE_LIMIT = 3;
+
+export function createCodexAutomaticResolutionFailureTracker(): CodexAutomaticResolutionFailureTracker {
+  const failuresByScope = new Map<string, { fingerprint: string; count: number }>();
+  return {
+    record(scope: string, fingerprint: string): number {
+      const previous = failuresByScope.get(scope);
+      const next = previous?.fingerprint === fingerprint ? previous.count + 1 : 1;
+      failuresByScope.set(scope, { fingerprint, count: next });
+      return next;
+    },
+    reset(scope: string): void {
+      failuresByScope.delete(scope);
+    },
+  };
+}
+
+const defaultAutomaticResolutionFailureTracker = createCodexAutomaticResolutionFailureTracker();
+
 const WINDOWS_CODEX_PLATFORM_PACKAGE_BY_ARCH: Readonly<Record<string, { triple: string; packageName: string }>> = {
   x64: { triple: "x86_64-pc-windows-msvc", packageName: "@openai/codex-win32-x64" },
   arm64: { triple: "aarch64-pc-windows-msvc", packageName: "@openai/codex-win32-arm64" },
@@ -94,6 +139,19 @@ export class CodexBinaryVerifyTransientError extends Error {
   }
 }
 
+/**
+ * Automatic candidates were present but deterministically unusable, or the
+ * exact same all-candidate transient result reached its narrow retry bound.
+ * The provider taxonomy maps this named error to a terminal capability reason
+ * instead of the generic unknown/transient retry path.
+ */
+export class CodexBinaryUnusableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexBinaryUnusableError";
+  }
+}
+
 import { isCodexBinaryMissingError } from "../../runtime/provider-support/index.js";
 
 /** Single-owner match rules live in provider-support; re-export for call sites. */
@@ -110,6 +168,70 @@ export function formatCodexBinaryMissingMessage(input: unknown): string {
   );
 }
 
+export function formatCodexBinaryUnusableMessage(
+  failures: readonly CodexAutomaticCandidateFailure[],
+  identicalAttempts?: number,
+): string {
+  const checked = failures.map((failure) => `\`${failure.path.replaceAll("`", "'")}\` (${failure.reason})`).join("; ");
+  const repeated = identicalAttempts
+    ? ` The same automatic-candidate launch result repeated ${identicalAttempts} times.`
+    : "";
+  return (
+    `Codex runtime binary candidates are installed but unusable. Checked: ${checked}.${repeated} ` +
+    `Upgrade or replace the failing Codex installation(s) (for example \`${runtimeProviderInstallCommand("codex")}\`), remove stale candidate paths if needed, then run \`${runtimeProviderLoginCommand("codex")}\` and retry.`
+  );
+}
+
+export function codexAutomaticCandidateFailureError(
+  failures: readonly CodexAutomaticCandidateFailure[],
+  env: Record<string, string | undefined>,
+  boundary: CodexAutomaticFailureBoundary,
+  failureTracker: CodexAutomaticResolutionFailureTracker = defaultAutomaticResolutionFailureTracker,
+): CodexBinaryVerifyTransientError | CodexBinaryUnusableError {
+  const failureScope = codexAutomaticFailureScope(env, boundary);
+  if (failures.some((failure) => failure.transient)) {
+    const identicalAttempts = failureTracker.record(failureScope, JSON.stringify(failures));
+    if (identicalAttempts < CODEX_IDENTICAL_AUTOMATIC_FAILURE_LIMIT) {
+      return new CodexBinaryVerifyTransientError(formatCandidateFailureDetails(failures));
+    }
+    return new CodexBinaryUnusableError(formatCodexBinaryUnusableMessage(failures, identicalAttempts));
+  }
+  return new CodexBinaryUnusableError(formatCodexBinaryUnusableMessage(failures));
+}
+
+export function resetCodexAutomaticCandidateFailures(
+  env: Record<string, string | undefined>,
+  boundary: CodexAutomaticFailureBoundary,
+  failureTracker: CodexAutomaticResolutionFailureTracker = defaultAutomaticResolutionFailureTracker,
+): void {
+  failureTracker.reset(codexAutomaticFailureScope(env, boundary));
+}
+
+function codexAutomaticFailureScope(
+  env: Record<string, string | undefined>,
+  boundary: CodexAutomaticFailureBoundary,
+): string {
+  return `${env.FIRST_TREE_CHAT_ID ?? "__process__"}:${boundary}`;
+}
+
+export function resolveVerifiedCodexAutomaticCandidate(
+  env: Record<string, string | undefined> = process.env,
+  deps: {
+    candidates?: Iterable<string>;
+    verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
+  } = {},
+): CodexVerifiedAutomaticCandidate {
+  const failures: CodexAutomaticCandidateFailure[] = [];
+  const candidates = deps.candidates ?? findCodexExecutableCandidates(env);
+  const verifyPath = deps.verifyPath ?? verifyCodexExecutable;
+  for (const path of candidates) {
+    const verification = verifyPath(path, env);
+    if (verification.ok) return { ok: true, path, verification, failures };
+    failures.push({ path, reason: verification.reason, transient: verification.transient });
+  }
+  return { ok: false, failures };
+}
+
 export function createCodexClientWithBinaryFallback<TOptions extends CodexOptionsLike, TClient>(
   options: TOptions,
   construct: (options: TOptions) => TClient,
@@ -120,36 +242,53 @@ export function createCodexClientWithBinaryFallback<TOptions extends CodexOption
   } catch (err) {
     if (!isCodexBinaryMissingError(err)) throw err;
 
-    const fallbackPath = (deps.resolvePath ?? findCodexExecutableOnPath)(options.env);
-    if (!fallbackPath) {
+    // An explicit SDK/config override is authoritative. Automatic discovery
+    // must never silently replace a path the caller deliberately selected.
+    if (options.codexPathOverride) throw err;
+
+    const candidateSource = deps.resolveCandidates
+      ? deps.resolveCandidates(options.env)
+      : deps.resolvePath
+        ? singleCandidate(deps.resolvePath(options.env))
+        : findCodexExecutableCandidates(options.env);
+    const resolved = resolveVerifiedCodexAutomaticCandidate(options.env, {
+      candidates: candidateSource,
+      verifyPath: deps.verifyPath,
+    });
+    if (!resolved.ok && resolved.failures.length === 0) {
+      resetCodexAutomaticCandidateFailures(options.env ?? process.env, "sdk", deps.failureTracker);
       throw new Error(formatCodexBinaryMissingMessage(err));
     }
-    const verification = (deps.verifyPath ?? verifyCodexExecutable)(fallbackPath, options.env);
-    if (!verification.ok) {
-      // The binary EXISTS (resolution found it at `fallbackPath`) — only the
-      // smoke check failed. A transient flake (timeout / machine pressure) must
-      // stay transient so the session bring-up is retried; only a genuine
-      // non-transient failure (broken / incompatible binary) is reported as
-      // missing, which classifies permanent and terminates the session.
-      if (verification.transient) {
-        throw new CodexBinaryVerifyTransientError(verification.reason);
-      }
-      throw new Error(
-        formatCodexBinaryMissingMessage(`${errorText(err)} Resolved codex failed validation: ${verification.reason}`),
+
+    if (!resolved.ok) {
+      throw codexAutomaticCandidateFailureError(
+        resolved.failures,
+        options.env ?? process.env,
+        "sdk",
+        deps.failureTracker,
       );
     }
 
+    resetCodexAutomaticCandidateFailures(options.env ?? process.env, "sdk", deps.failureTracker);
     deps.log?.(
-      `Codex SDK bundled binary missing; falling back to codex at ${fallbackPath}. ` +
+      `Codex SDK bundled binary missing; falling back to codex at ${resolved.path}. ` +
         `Original error: ${errorText(err)}`,
     );
     return {
-      client: construct({ ...options, codexPathOverride: fallbackPath }),
+      client: construct({ ...options, codexPathOverride: resolved.path }),
       runtimeSource: "path",
-      codexPathOverride: fallbackPath,
+      codexPathOverride: resolved.path,
       fallbackReason: errorText(err),
     };
   }
+}
+
+function singleCandidate(path: string | null): Iterable<string> {
+  return path ? [path] : [];
+}
+
+function formatCandidateFailureDetails(failures: readonly CodexAutomaticCandidateFailure[]): string {
+  return failures.map((failure) => `\`${failure.path.replaceAll("`", "'")}\`: ${failure.reason}`).join("; ");
 }
 
 export function verifyCodexExecutable(
@@ -215,6 +354,20 @@ export function findCodexExecutableOnPath(
   env: Record<string, string | undefined> = process.env,
   deps: FindCodexExecutableDeps = {},
 ): string | null {
+  for (const candidate of findCodexExecutableCandidates(env, deps)) return candidate;
+  return null;
+}
+
+/**
+ * Lazily enumerate automatic external candidates in runtime priority order.
+ * Laziness preserves the cheap-source short circuit: login-shell PATH and the
+ * desktop-app locations are consulted only when every earlier candidate is
+ * absent or fails launch verification.
+ */
+export function* findCodexExecutableCandidates(
+  env: Record<string, string | undefined> = process.env,
+  deps: FindCodexExecutableDeps = {},
+): Generator<string> {
   const platform = deps.platform ?? process.platform;
   const arch = deps.arch ?? process.arch;
   const pathDelimiter = deps.pathDelimiter ?? (platform === "win32" ? ";" : delimiter);
@@ -224,8 +377,9 @@ export function findCodexExecutableOnPath(
   const desktopAppDirs = deps.desktopAppDirs ?? (() => codexDesktopAppBinDirs(home));
   const names = codexExecutableNames(env, platform);
   const seen = new Set<string>();
+  const yielded = new Set<string>();
 
-  const search = (dirs: readonly string[]): string | null => {
+  function* search(dirs: readonly string[]): Generator<string> {
     for (const dir of dirs) {
       if (!dir) continue;
       const base = isAbsolute(dir) ? dir : resolve(dir);
@@ -234,11 +388,13 @@ export function findCodexExecutableOnPath(
       for (const name of names) {
         const candidate = join(base, name);
         const executable = resolveSpawnableCodexCandidate(candidate, { platform, arch });
-        if (executable) return executable;
+        if (executable && !yielded.has(executable)) {
+          yielded.add(executable);
+          yield executable;
+        }
       }
     }
-    return null;
-  };
+  }
 
   // Priority: daemon PATH → curated install dirs → login-shell PATH → macOS
   // desktop-app Resources. The login-shell probe may spawn a shell, so cheap
@@ -247,13 +403,10 @@ export function findCodexExecutableOnPath(
   // a custom export must keep its selected version and credential context.
   // Codex resolution is never on the daemon's pre-connect path.
   const pathValue = readPathValue(env, platform);
-  const fromDaemon = search(pathValue ? pathValue.split(pathDelimiter) : []);
-  if (fromDaemon) return fromDaemon;
-  const fromWellKnown = search(wellKnownDirs());
-  if (fromWellKnown) return fromWellKnown;
-  const fromLoginShell = search(loginShellPathDirs());
-  if (fromLoginShell) return fromLoginShell;
-  return search(desktopAppDirs());
+  yield* search(pathValue ? pathValue.split(pathDelimiter) : []);
+  yield* search(wellKnownDirs());
+  yield* search(loginShellPathDirs());
+  yield* search(desktopAppDirs());
 }
 
 function errorText(input: unknown): string {

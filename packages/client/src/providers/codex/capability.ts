@@ -6,9 +6,14 @@ import type { CapabilityEntry, CapabilityRuntimeSource } from "@first-tree/share
 import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
 import { verifyLaunchable } from "../capabilities/launch-probe.js";
 import {
+  type CodexAutomaticResolutionFailureTracker,
   type CodexExecutableVerification,
+  codexAutomaticCandidateFailureError,
+  findCodexExecutableCandidates,
   findCodexExecutableOnPath,
   formatCodexBinaryMissingMessage,
+  resetCodexAutomaticCandidateFailures,
+  resolveVerifiedCodexAutomaticCandidate,
   verifyCodexExecutable,
 } from "./binary.js";
 
@@ -155,8 +160,11 @@ export type CodexBinaryResolution =
 export type CodexRuntimeResolveDeps = {
   resolveBundled?: () => Promise<{ ok: true; binary: string } | { ok: false; error: string }>;
   verifyBundled?: (binary: string) => Promise<{ ok: true; version: string | null } | { ok: false; error: string }>;
+  findCandidates?: (env?: Record<string, string | undefined>) => Iterable<string>;
+  /** Legacy single-candidate seam. Prefer findCandidates for new tests. */
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
+  failureTracker?: CodexAutomaticResolutionFailureTracker;
 };
 
 /**
@@ -175,7 +183,6 @@ export async function resolveCodexRuntimeBinary(
 ): Promise<CodexBinaryResolution> {
   const resolveBundled = deps.resolveBundled ?? resolveBundledCodexBinary;
   const verifyBundled = deps.verifyBundled ?? ((binary: string) => verifyLaunchable("codex", binary));
-  const findOnPath = deps.findOnPath ?? findCodexExecutableOnPath;
   const verifyPath = deps.verifyPath ?? verifyCodexExecutable;
 
   const bundled = await resolveBundled();
@@ -187,6 +194,7 @@ export async function resolveCodexRuntimeBinary(
         error: `the SDK-bundled codex binary at ${bundled.binary} could not be launched (${verified.error})`,
       };
     }
+    resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
     return {
       ok: true,
       binary: bundled.binary,
@@ -196,35 +204,34 @@ export async function resolveCodexRuntimeBinary(
     };
   }
 
-  const pathBinary = findOnPath(env);
-  if (pathBinary) {
-    const verification = verifyPath(pathBinary, env);
-    if (verification.ok) {
-      const match = (verification.output ?? "").match(/\d+\.\d+(?:\.\d+)?/);
-      return {
-        ok: true,
-        binary: pathBinary,
-        runtimeSource: "path",
-        runtimePath: pathBinary,
-        version: match ? match[0] : null,
-      };
-    }
-    // A present binary that only flaked its smoke check (timeout / host
-    // pressure) is NOT missing — say so honestly instead of telling the
-    // operator to reinstall codex.
-    if (verification.transient) {
-      return {
-        ok: false,
-        error: `codex resolved at ${pathBinary} but \`codex --version\` did not complete (transient host condition): ${verification.reason}`,
-      };
-    }
+  const candidates = deps.findCandidates
+    ? deps.findCandidates(env)
+    : deps.findOnPath
+      ? singleCandidate(deps.findOnPath(env))
+      : findCodexExecutableCandidates(env);
+  const resolved = resolveVerifiedCodexAutomaticCandidate(env, { candidates, verifyPath });
+  if (resolved.ok) {
+    resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
+    const match = (resolved.verification.output ?? "").match(/\d+\.\d+(?:\.\d+)?/);
     return {
-      ok: false,
-      error: formatCodexBinaryMissingMessage(`resolved codex failed validation: ${verification.reason}`),
+      ok: true,
+      binary: resolved.path,
+      runtimeSource: "path",
+      runtimePath: resolved.path,
+      version: match ? match[0] : null,
     };
   }
+  if (resolved.failures.length > 0) {
+    const failure = codexAutomaticCandidateFailureError(resolved.failures, env, "runtime", deps.failureTracker);
+    return { ok: false, error: failure.message };
+  }
 
+  resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
   return { ok: false, error: formatCodexBinaryMissingMessage(bundled.error) };
+}
+
+function singleCandidate(path: string | null): Iterable<string> {
+  return path ? [path] : [];
 }
 
 /** Injectable seams — production callers pass nothing. */
