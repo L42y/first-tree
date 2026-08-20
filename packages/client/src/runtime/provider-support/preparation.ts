@@ -763,7 +763,7 @@ export async function projectManagedWorkspace(
           // Keep the slash-command registry current on this read-only path
           // too: the verified projection is complete, so every retained
           // Team Skill has a verified target by construction.
-          sessionCtx.publishTeamSkillCommands?.(
+          sessionCtx.publishTeamSkillCommands(
             teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
           );
           if (beforeBriefing) {
@@ -817,9 +817,11 @@ export async function projectManagedWorkspace(
     // Team Skill under a suffixed name, and a configured-but-uninstalled
     // base must fail closed. `null` means this result is not an
     // authoritative publication (stale snapshot / failed reconcile) — the
-    // previously published registry stays in force. Optional on the
-    // context so test doubles and legacy wiring can omit it.
-    if (teamSkillCommands !== null) sessionCtx.publishTeamSkillCommands?.(teamSkillCommands);
+    // previously published registry stays in force. The publisher is a
+    // required SessionContext capability — a missing one would let a
+    // configured-but-colliding base command fall through to a same-named
+    // unmanaged Skill.
+    if (teamSkillCommands !== null) sessionCtx.publishTeamSkillCommands(teamSkillCommands);
 
     if (beforeBriefing) {
       const result = beforeBriefing({ workspace, sourceRepos, teamSkills });

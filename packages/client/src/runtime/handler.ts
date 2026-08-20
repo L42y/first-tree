@@ -264,10 +264,12 @@ export type SessionContext = HandlerContext & {
    * preparation after every settled projection so the runtime's shared
    * inbound formatter can rewrite a user-typed `/base` to the
    * actually-installed command before any provider interprets it.
-   * Optional: test doubles and legacy wiring may omit it — no registry
-   * simply means no rewrite.
+   *
+   * Required: when Team commands exist, a missing publisher would let a
+   * configured-but-colliding base fall through to a same-named unmanaged
+   * Skill. Test doubles should supply a no-op or a capturing stub.
    */
-  publishTeamSkillCommands?: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
+  publishTeamSkillCommands: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
 
   /**
    * Resolve a senderId to its chat-local name (the `@<name>` mention token).

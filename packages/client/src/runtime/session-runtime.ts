@@ -3051,14 +3051,13 @@ export class SessionRuntime {
       ? documentBasePathFromRuntimeConfig(cachedPayload, sessionRoot, workspaceRoot)
       : sessionRoot;
 
-    // Team Skill slash-command registry (base slug → verified effective
-    // name, plus configured-but-unavailable bases), published by
-    // managed-session preparation after every settled projection. The
-    // reference is replaced atomically as a whole — a stale map is never
-    // cleared by a non-authoritative reconcile. Applying it here — inside
-    // the SessionContext's formatInboundContent — covers every provider's
-    // start/resume/inject path at one shared boundary, because all of them
-    // render user text through this method.
+    // Team Skill slash-command registry (base slug → ready/unavailable
+    // target), published by managed-session preparation after every settled
+    // projection. The reference is replaced atomically as a whole — a stale
+    // registry is never cleared by a non-authoritative reconcile. Applying
+    // it here — inside the SessionContext's formatInboundContent — covers
+    // every provider's start/resume/inject path at one shared boundary,
+    // because all of them render user text through this method.
     let teamSkillCommands: TeamSkillCommandRegistry = EMPTY_TEAM_SKILL_COMMAND_REGISTRY;
 
     const forwardResult = createResultSink({

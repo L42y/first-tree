@@ -10,17 +10,15 @@ import {
 const entry = (requestedSlug: string, effectiveName: string | null) => ({ requestedSlug, effectiveName });
 
 describe("buildTeamSkillCommandRegistry", () => {
-  it("maps only collision-suffixed installs; identity names need no rewrite", () => {
+  it("records ready targets for every valid base — identity mappings included", () => {
     const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("audit", "audit")]);
-    expect(registry.rewrite.get("review")).toBe("review-first-tree");
-    expect(registry.rewrite.has("audit")).toBe(false);
-    expect(registry.unavailable.size).toBe(0);
+    expect(registry.get("review")).toEqual({ kind: "ready", effectiveName: "review-first-tree" });
+    expect(registry.get("audit")).toEqual({ kind: "ready", effectiveName: "audit" });
   });
 
   it("records configured-but-unverified bases as unavailable", () => {
     const registry = buildTeamSkillCommandRegistry([entry("review", null)]);
-    expect(registry.unavailable.has("review")).toBe(true);
-    expect(registry.rewrite.has("review")).toBe(false);
+    expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "no verified installed target" });
   });
 
   it("fails closed on a duplicate base slug with different effective names", () => {
@@ -29,9 +27,13 @@ describe("buildTeamSkillCommandRegistry", () => {
       [entry("review", "review-first-tree"), entry("review", "review-first-tree-2")],
       log,
     );
-    expect(registry.rewrite.has("review")).toBe(false);
-    expect(registry.unavailable.has("review")).toBe(true);
+    expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "conflicting effective names" });
     expect(log).toHaveBeenCalledWith(expect.stringContaining("fails closed"));
+  });
+
+  it("fails closed when a ready base later reports unavailable (never row-order wins)", () => {
+    const registry = buildTeamSkillCommandRegistry([entry("review", "review-first-tree"), entry("review", null)]);
+    expect(registry.get("review")).toEqual({ kind: "unavailable", reason: "conflicting effective names" });
   });
 
   it("accepts the same effective name twice as idempotent, not a conflict", () => {
@@ -39,13 +41,12 @@ describe("buildTeamSkillCommandRegistry", () => {
       entry("review", "review-first-tree"),
       entry("review", "review-first-tree"),
     ]);
-    expect(registry.rewrite.get("review")).toBe("review-first-tree");
+    expect(registry.get("review")).toEqual({ kind: "ready", effectiveName: "review-first-tree" });
   });
 
   it("skips malformed base slugs", () => {
     const registry = buildTeamSkillCommandRegistry([entry("not a slug", "x-first-tree"), entry("", "y-first-tree")]);
-    expect(registry.rewrite.size).toBe(0);
-    expect(registry.unavailable.size).toBe(0);
+    expect(registry.size).toBe(0);
   });
 });
 

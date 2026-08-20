@@ -31,6 +31,7 @@ export function mockCtxPlumbing(
   formatInboundContent: (msg: SessionMessage) => Promise<string>;
   resolveSenderLabel: (senderId: string) => Promise<string>;
   formatFromHeader: (msg: SessionMessage) => Promise<string>;
+  publishTeamSkillCommands: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
 } {
   return {
     // Turn-completion hook — delivers nothing (final-text mirror retired).
@@ -46,6 +47,9 @@ export function mockCtxPlumbing(
     },
     resolveSenderLabel: async (senderId) => senderId,
     formatFromHeader: async (msg) => (msg.senderId ? `[From: ${msg.senderId}]` : ""),
+    // Default no-op registry sink; tests that assert the Team Skill command
+    // registry override with a capturing stub.
+    publishTeamSkillCommands: () => {},
   };
 }
 
