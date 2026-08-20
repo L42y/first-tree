@@ -615,3 +615,115 @@ describe("team-skill-invocation protocol pairing", () => {
     expect(rows).toHaveLength(0);
   });
 });
+
+/**
+ * HTTP production path: the web message route enforces the same protocol
+ * pair end to end — a paired Team send persists the canonical marker,
+ * either half alone is a 400 with zero insert.
+ */
+describe("POST /chats/:chatId/messages — protocol pair over HTTP", () => {
+  const getApp = useTestApp();
+
+  async function setupHttp(uid: string) {
+    const app = getApp();
+    const sender = await createTestAgent(app, { name: `http-s-${uid}` });
+    const { agent: peer } = await createTestAgent(app, { name: `http-p-${uid}` });
+    const chatRes = await sender.request("POST", "/api/v1/agent/chats", {
+      type: "group",
+      participantIds: [peer.uuid],
+    });
+    if (chatRes.statusCode !== 201) throw new Error(`chat create failed: ${chatRes.statusCode}`);
+    const chatId = chatRes.json().id as string;
+    const resourceId = uuidv7();
+    await app.db.insert(resources).values({
+      id: resourceId,
+      organizationId: sender.organizationId,
+      type: "skill",
+      scope: "team",
+      ownerAgentId: null,
+      name: "Code Review",
+      repoCanonicalKey: null,
+      defaultEnabled: null,
+      status: "active",
+      payload: { name: "Code Review", description: "d", body: "B", metadata: {} },
+      createdBy: sender.memberId,
+      updatedBy: sender.memberId,
+    });
+    await app.db.insert(agentResourceBindings).values({
+      id: uuidv7(),
+      organizationId: sender.organizationId,
+      agentId: peer.uuid,
+      type: "skill",
+      mode: "include",
+      resourceId,
+      replacesResourceId: null,
+      inlinePromptBody: null,
+      repoRef: null,
+      repoLocalPath: null,
+      order: 0,
+      createdBy: sender.memberId,
+      updatedBy: sender.memberId,
+    });
+    const [configRow] = await app.db
+      .select({ version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, peer.uuid));
+    if (!configRow) throw new Error("expected an agent_configs row for the test agent");
+    return { app, sender, peer, chatId, resourceId, configVersion: configRow.version };
+  }
+
+  it("persists the canonical marker for a fully paired Team send", async () => {
+    const { app, sender, peer, chatId, resourceId, configVersion } = await setupHttp(crypto.randomUUID().slice(0, 6));
+    const res = await sender.request("POST", `/api/v1/chats/${chatId}/messages`, {
+      format: "text",
+      content: "/code-review src/",
+      purpose: "team-skill-invocation-v1",
+      metadata: { mentions: [peer.uuid] },
+      skillPrecondition: {
+        recipientAgentId: peer.uuid,
+        expectedConfigVersion: configVersion,
+        resourceId,
+        requestedSlug: "code-review",
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const [stored] = await app.db
+      .select()
+      .from(messages)
+      .where(eq(messages.id, res.json().id as string));
+    expect(stored?.metadata?.teamSkillInvocation).toEqual({
+      version: 1,
+      recipientAgentId: peer.uuid,
+      resourceId,
+      requestedSlug: "code-review",
+      configVersion,
+    });
+    // The sentinel itself is send-time-only: never persisted.
+    expect(JSON.stringify(stored?.metadata ?? {})).not.toContain("team-skill-invocation-v1");
+  });
+
+  it("rejects either half alone with a 4xx and zero insert", async () => {
+    const { app, sender, peer, chatId, resourceId, configVersion } = await setupHttp(crypto.randomUUID().slice(0, 6));
+    const sentinelOnly = await sender.request("POST", `/api/v1/chats/${chatId}/messages`, {
+      format: "text",
+      content: "/code-review src/",
+      purpose: "team-skill-invocation-v1",
+      metadata: { mentions: [peer.uuid] },
+    });
+    expect(sentinelOnly.statusCode).toBeGreaterThanOrEqual(400);
+    const preconditionOnly = await sender.request("POST", `/api/v1/chats/${chatId}/messages`, {
+      format: "text",
+      content: "/code-review src/",
+      metadata: { mentions: [peer.uuid] },
+      skillPrecondition: {
+        recipientAgentId: peer.uuid,
+        expectedConfigVersion: configVersion,
+        resourceId,
+        requestedSlug: "code-review",
+      },
+    });
+    expect(preconditionOnly.statusCode).toBeGreaterThanOrEqual(400);
+    const rows = await app.db.select({ id: messages.id }).from(messages).where(eq(messages.chatId, chatId));
+    expect(rows).toHaveLength(0);
+  });
+});

@@ -1108,3 +1108,40 @@ describe("SessionRuntime marker scoping — unmarked messages keep byte-exact lo
     await cap.runtime.shutdown();
   });
 });
+
+describe("SessionRuntime marker scoping — production dispatch path", () => {
+  it("delivers a hand-typed tracked /review to the provider byte-exact even with a colliding Team registry", async () => {
+    const cap = await captureContext();
+    // A ready Team registry maps the SAME base slug to a suffixed Team
+    // target — the exact collision scenario. The tracked message carries
+    // NO invocation marker (hand-typed local intent).
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 1 }));
+    const injected = cap.injectedMessages[0];
+    if (!injected) throw new Error("expected the message to inject into the live session");
+    expect(injected.inboxEntryId).toBe(2);
+    // No marker on the wire, exactly like a hand-typed send.
+    expect(injected.metadata?.teamSkillInvocation).toBeUndefined();
+
+    // The handler's own context — the exact seam every provider's
+    // start/resume/inject formats through — preserves the local literal.
+    const providerView = await cap.ctx.formatInboundContent(injected);
+    expect(providerView).toContain("/review src/");
+    expect(providerView).not.toContain("review-first-tree");
+    expect(providerView).not.toContain("could not be verified");
+
+    // A retry against this message starts NO Team recovery: the generic
+    // inbox retry may re-consult recoverChat, but there is no handler
+    // teardown, no fresh handler, and the message still formats byte-exact
+    // afterwards (no fence attempt was ever recorded for it).
+    cap.ctx.retryTurn(injected, "some_transient_failure");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(cap.handlerShutdowns()).toBe(0);
+    expect(cap.startCount()).toBe(1);
+    expect(await cap.ctx.formatInboundContent(injected)).toContain("/review src/");
+
+    await cap.runtime.shutdown();
+  });
+});
