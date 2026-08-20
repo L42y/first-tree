@@ -1810,9 +1810,14 @@ describe("ChatView", () => {
     });
     await flush();
     await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message to send");
-    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith("chat-1", expect.stringContaining("@nova /code-review"), [
-      "agent-1",
-    ]);
+    expect(chatMocks.sendChatMessage).toHaveBeenCalledWith(
+      "chat-1",
+      expect.stringContaining("@nova /code-review"),
+      ["agent-1"],
+      expect.objectContaining({
+        skillPrecondition: { recipientAgentId: "agent-1", expectedConfigVersion: 1 },
+      }),
+    );
 
     await act(async () => root.unmount());
   });
@@ -1856,6 +1861,7 @@ describe("ChatView", () => {
     expect(container.textContent).not.toContain("/code-review");
     expect(container.textContent).not.toContain("/review");
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+    expect(agentMocks.getAgentSkills).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -1879,7 +1885,6 @@ describe("ChatView", () => {
       effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
     };
     agentResourceMocks.getAgentResources
-      .mockResolvedValueOnce(resourcesWithCodeReview)
       .mockResolvedValueOnce(resourcesWithCodeReview)
       .mockResolvedValue(resourcesEmpty);
     const direct = chatDetail({
@@ -1917,7 +1922,243 @@ describe("ChatView", () => {
       () => !container.textContent?.includes("/code-review"),
       "Expected /code-review to disappear after revalidation",
     );
-    expect(agentResourceMocks.getAgentResources.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Single fetch driver: exactly one catalog request per legal trigger.
+    expect(agentResourceMocks.getAgentResources).toHaveBeenCalledTimes(2);
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the menu system-only while the Team catalog validates, then merges, and degrades runtime-only on failure", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    let resolveResources!: (value: unknown) => void;
+    agentResourceMocks.getAgentResources.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveResources = resolve;
+        }),
+    );
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-1", name: "nova", displayName: "Nova" }),
+      ],
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // While validation is pending the menu is system-only: no runtime row,
+    // no Team row — no winner can be shown before the Team claim is known.
+    await waitForCondition(
+      () => container.querySelector('[role="listbox"][aria-label="Slash command suggestions"]') !== null,
+      "Expected the slash popover to open with system commands only",
+    );
+    expect(container.textContent).toContain("/clear");
+    expect(container.textContent).not.toContain("/review");
+    expect(container.textContent).not.toContain("/code-review");
+
+    // Validation resolves: the merged menu shows the Team winner.
+    resolveResources({
+      version: 1,
+      templateIds: [],
+      adoptedTemplates: [],
+      bindings: [],
+      availableTeamResources: [],
+      effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
+    });
+    await waitForText(container, "/code-review");
+    expect(container.textContent).toContain("/review");
+
+    await act(async () => root.unmount());
+  });
+
+  it("degrades to the runtime-only catalog when Team catalog validation fails", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockRejectedValue(new Error("resources offline"));
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-1", name: "nova", displayName: "Nova" }),
+      ],
+    });
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    await waitForText(container, "/review");
+    expect(container.textContent).not.toContain("/code-review");
+
+    await act(async () => root.unmount());
+  });
+
+  const directChat = () =>
+    chatDetail({
+      participants: [
+        participant({ agentId: "human-agent-self", type: "human", name: "gandy", displayName: "Gandy" }),
+        participant({ agentId: "agent-1", name: "nova", displayName: "Nova" }),
+      ],
+    });
+
+  const resourcesV1 = () => ({
+    version: 1,
+    templateIds: [],
+    adoptedTemplates: [],
+    bindings: [],
+    availableTeamResources: [],
+    effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
+  });
+  const resourcesEmpty = () => ({
+    version: 2,
+    templateIds: [],
+    adoptedTemplates: [],
+    bindings: [],
+    availableTeamResources: [],
+    effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
+  });
+
+  async function pickSlashCommand(container: HTMLElement, typed: string): Promise<void> {
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, typed);
+      textarea.setSelectionRange(typed.length, typed.length);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: typed, inputType: "insertText" }));
+    });
+    await flush();
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await flush();
+  }
+
+  async function pressSend(container: HTMLElement): Promise<void> {
+    const button = container.querySelector('button[aria-label="Send"]');
+    if (!button) throw new Error("Send button missing");
+    await act(async () => {
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await flush();
+  }
+
+  it("blocks sending a Team Skill command whose row changed after selection, keeping the draft", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // First catalog fetch (menu) serves v1; the send-time revalidation
+    // sees the row already removed (v2).
+    agentResourceMocks.getAgentResources.mockImplementation(() =>
+      Promise.resolve(agentResourceMocks.getAgentResources.mock.calls.length === 1 ? resourcesV1() : resourcesEmpty()),
+    );
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    await pickSlashCommand(container, "/code");
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    if (textarea.value !== "/code-review ")
+      throw new Error(`Expected the Team command in the draft, got "${textarea.value}"`);
+
+    // The admin deletes/renames the Team Skill before the send lands: the
+    // send must be blocked (no POST), the draft must survive, and the
+    // reason must be visible.
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("/code-review ");
+    await waitForText(container, "re-open the / menu");
+
+    await act(async () => root.unmount());
+  });
+
+  it("sends an unchanged Team Skill command with the transient version precondition", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    await pickSlashCommand(container, "/code");
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
+    const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+    expect(opts).toMatchObject({
+      skillPrecondition: { recipientAgentId: "agent-1", expectedConfigVersion: 1 },
+    });
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets a hand-typed runtime command send without any precondition", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesEmpty());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/review ");
+      textarea.setSelectionRange(8, 8);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/review ", inputType: "insertText" }));
+    });
+    await flush();
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
+    const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+    expect(opts?.skillPrecondition).toBeUndefined();
+
+    await act(async () => root.unmount());
+  });
+
+  it("requires a restored Team-command draft with no provenance to be re-picked from the menu", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    saveDraft(chatDraftScope(null, "chat-1"), { text: "/code-review " });
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    await waitForText(container, "Pick that Team Skill from the / menu again");
 
     await act(async () => root.unmount());
   });
@@ -3003,8 +3244,9 @@ describe("ChatView", () => {
         attachments: [{ imageId: "uploaded-image", mimeType: "image/png", filename: "preview.png", size: 3 }],
       },
       { mentions: ["agent-2"] },
-      // No live request in this chat → nothing to thread under.
-      undefined,
+      // No live request in this chat → nothing to thread under; no Team
+      // Skill provenance either, so the trailing opts bag is empty.
+      {},
     );
 
     await act(async () => root.unmount());

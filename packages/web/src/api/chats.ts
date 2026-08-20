@@ -103,7 +103,12 @@ export function sendChatMessage(
   chatId: string,
   content: string,
   mentions: string[],
-  opts?: { inReplyTo?: string; resolves?: RequestResolution; attachments?: AttachmentRef[] },
+  opts?: {
+    inReplyTo?: string;
+    resolves?: RequestResolution;
+    attachments?: AttachmentRef[];
+    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number };
+  },
 ): Promise<Message> {
   // `resolves` is the explicit lifecycle signal — present only when the human
   // submits a clean answer from the request card (it drives the server's
@@ -127,6 +132,7 @@ export function sendChatMessage(
   return api.post<Message>(`/chats/${encodeURIComponent(chatId)}/messages`, {
     format: "text",
     content,
+    ...(opts?.skillPrecondition ? { skillPrecondition: opts.skillPrecondition } : {}),
     ...(metadata ? { metadata } : {}),
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
   });
@@ -203,7 +209,11 @@ export function sendFileMessageBatch(
   chatId: string,
   content: SendFileMessageBatchBody,
   metadata?: SendFileMessageMetadata,
-  opts?: { inReplyTo?: string; resolves?: RequestResolution },
+  opts?: {
+    inReplyTo?: string;
+    resolves?: RequestResolution;
+    skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number };
+  },
 ): Promise<Message> {
   // Project explicit fields rather than spreading `metadata` whole so future
   // additions to SendFileMessageMetadata don't ride out on the `mentions`
@@ -233,6 +243,7 @@ export function sendFileMessageBatch(
     // captioned image answering a docked question threads under it just like
     // a text reply.
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
+    ...(opts?.skillPrecondition ? { skillPrecondition: opts.skillPrecondition } : {}),
   });
 }
 

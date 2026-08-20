@@ -44,6 +44,14 @@ export type SlashSkillInfo = {
   /** Optional plugin namespace; rendered as `<namespace>:<name>`. */
   namespace?: string;
   description: string;
+  /**
+   * Set only for skills projected from the Cloud Team catalog: the backing
+   * Team resource id and the resources response version the projection was
+   * built from. The composer uses it as in-memory selection provenance —
+   * the send path revalidates the same row/version before posting, and the
+   * server re-checks the config version inside the message transaction.
+   */
+  team?: { resourceId: string; version: number };
 };
 
 export type SlashSkillCommand = {
@@ -189,6 +197,21 @@ function commandLabelKey(skill: SlashSkillInfo): string {
   return skill.namespace ? `${skill.namespace}:${skill.name}` : skill.name;
 }
 
+const STRICT_COMMAND_RE =
+  /^(\s*(?:@[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?![A-Za-z0-9_/-])\s*)*)\/([A-Za-z0-9][A-Za-z0-9_-]{0,119})(?=\s|$)/;
+
+/**
+ * Extract the command name when `text` is a strict slash command (bare or
+ * following canonical `@name` mention tokens), or null otherwise. Mirrors
+ * the trigger semantics used by the composer and the Client registry:
+ * `/name` must be followed by whitespace or end of text, so paths and
+ * prose never match. Used by the send-time Team Skill precondition to
+ * recognize a menu-picked (or stale restored) command in the draft.
+ */
+export function strictCommandName(text: string): string | null {
+  return STRICT_COMMAND_RE.exec(text)?.[2] ?? null;
+}
+
 /**
  * Project the recipient agent's effective Team Skill rows (from
  * `GET /agents/:uuid/resources` → `effective.skills`) into slash-menu
@@ -222,10 +245,12 @@ function commandLabelKey(skill: SlashSkillInfo): string {
  * not cover workspace Skills at all): the Client's inbound rewrite
  * resolves the base literal against its verified per-session command
  * registry, fenced by config version — see
- * `runtime/team-skill-command-rewrite.ts`. The runtime-reported catalog
- * still wins the merge dedup below for genuinely local commands.
+ * `runtime/team-skill-command-rewrite.ts`. The Team row therefore also
+ * wins the merge dedup below for a shared literal, matching that
+ * execution rule; the runtime catalog only contributes commands no Team
+ * Skill claims.
  */
-export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashSkillInfo[] {
+export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[], resourcesVersion: number): SlashSkillInfo[] {
   const candidates: Array<{ resourceId: string; slug: string; description: string }> = [];
   for (const row of rows) {
     if (row.mode !== "enabled" || !row.resourceId) continue;
@@ -251,7 +276,11 @@ export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[]): SlashS
   for (const c of candidates) {
     if ((resourceIdCounts.get(c.resourceId) ?? 0) > 1) continue;
     if ((slugCounts.get(foldPortableTeamSkillPath(c.slug)) ?? 0) > 1) continue;
-    out.push({ name: c.slug, description: c.description });
+    out.push({
+      name: c.slug,
+      description: c.description,
+      team: { resourceId: c.resourceId, version: resourcesVersion },
+    });
   }
   return out;
 }

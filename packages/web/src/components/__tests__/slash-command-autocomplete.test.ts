@@ -174,48 +174,61 @@ function teamSkillRow(overrides: {
 
 describe("teamSkillRowsToSlashSkills", () => {
   it("projects an enabled Team Skill under its portable materializer slug", () => {
-    const got = teamSkillRowsToSlashSkills([teamSkillRow({})]);
-    expect(got).toEqual([{ name: "code-review", description: "Review a change end to end." }]);
+    const row = teamSkillRow({});
+    const got = teamSkillRowsToSlashSkills([row], 7);
+    expect(got).toEqual([
+      {
+        name: "code-review",
+        description: "Review a change end to end.",
+        team: { resourceId: row.resourceId, version: 7 },
+      },
+    ]);
   });
 
   it("drops the payload namespace — the runtime projection installs the plain slug", () => {
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({
-        payload: { name: "Code Review", namespace: "Tools", description: "d", body: "b" },
-      }),
-    ]);
-    expect(got).toEqual([{ name: "code-review", description: "d" }]);
+    const row = teamSkillRow({
+      payload: { name: "Code Review", namespace: "Tools", description: "d", body: "b" },
+    });
+    const got = teamSkillRowsToSlashSkills([row], 7);
+    expect(got).toEqual([{ name: "code-review", description: "d", team: { resourceId: row.resourceId, version: 7 } }]);
   });
 
   it("excludes disabled, replaced, and unavailable rows", () => {
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({ mode: "disabled" }),
-      teamSkillRow({ mode: "replaced" }),
-      teamSkillRow({ mode: "unavailable" }),
-    ]);
+    const got = teamSkillRowsToSlashSkills(
+      [teamSkillRow({ mode: "disabled" }), teamSkillRow({ mode: "replaced" }), teamSkillRow({ mode: "unavailable" })],
+      7,
+    );
     expect(got).toEqual([]);
   });
 
   it("skips malformed payloads without dropping the valid rows", () => {
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({ payload: null }),
-      teamSkillRow({ payload: { name: "No Body" } }),
-      teamSkillRow({ payload: { name: "", description: "d", body: "b" } }),
-      teamSkillRow({ payload: { name: "Good Skill", description: "d", body: "b" } }),
-    ]);
-    expect(got).toEqual([{ name: "good-skill", description: "d" }]);
+    const valid = teamSkillRow({ payload: { name: "Good Skill", description: "d", body: "b" } });
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ payload: null }),
+        teamSkillRow({ payload: { name: "No Body" } }),
+        teamSkillRow({ payload: { name: "", description: "d", body: "b" } }),
+        valid,
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "good-skill", description: "d", team: { resourceId: valid.resourceId, version: 7 } }]);
   });
 
   it("skips names that do not produce a portable, triggerable slug", () => {
     const payloadNamed = (name: string) => ({ name, description: "d", body: "b" });
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({ payload: payloadNamed("!!!") }),
-      teamSkillRow({ payload: payloadNamed("con") }),
-      teamSkillRow({ payload: payloadNamed("first-tree-qa") }),
-      teamSkillRow({ payload: payloadNamed("a/b") }),
-      teamSkillRow({ payload: payloadNamed("Ship It") }),
-    ]);
-    expect(got).toEqual([{ name: "ship-it", description: "d" }]);
+    const valid = teamSkillRow({ payload: payloadNamed("Ship It") });
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ payload: payloadNamed("!!!") }),
+        teamSkillRow({ payload: payloadNamed("con") }),
+        teamSkillRow({ payload: payloadNamed("first-tree-qa") }),
+        teamSkillRow({ payload: payloadNamed("a/b") }),
+        valid,
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "ship-it", description: "d", team: { resourceId: valid.resourceId, version: 7 } }]);
   });
 });
 
@@ -321,38 +334,53 @@ describe("teamSkillRowsToSlashSkills — fail-closed ambiguous targets", () => {
     // `foo_bar` and `foo-bar` both normalize to `foo-bar`; the
     // materializer's collision suffix depends on install history the Web
     // cannot see, so neither row may surface. Unrelated skills survive.
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
-      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
-      teamSkillRow({ resourceId: "res-c", payload: payloadNamed("Solo Skill", "solo") }),
-    ]);
-    expect(got).toEqual([{ name: "solo-skill", description: "solo" }]);
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+        teamSkillRow({ resourceId: "res-c", payload: payloadNamed("Solo Skill", "solo") }),
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "solo-skill", description: "solo", team: { resourceId: "res-c", version: 7 } }]);
   });
 
   it("skips the collision group regardless of API row order — never picks a winner", () => {
-    const forward = teamSkillRowsToSlashSkills([
-      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
-      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
-    ]);
-    const reversed = teamSkillRowsToSlashSkills([
-      teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
-      teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
-    ]);
+    const forward = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+      ],
+      7,
+    );
+    const reversed = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+      ],
+      7,
+    );
     expect(forward).toEqual([]);
     expect(reversed).toEqual([]);
   });
 
   it("rejects a duplicate resourceId group like the materializer does", () => {
-    const got = teamSkillRowsToSlashSkills([
-      teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Alpha", "a") }),
-      teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Beta", "b") }),
-      teamSkillRow({ resourceId: "res-ok", payload: payloadNamed("Gamma", "g") }),
-    ]);
-    expect(got).toEqual([{ name: "gamma", description: "g" }]);
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Alpha", "a") }),
+        teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Beta", "b") }),
+        teamSkillRow({ resourceId: "res-ok", payload: payloadNamed("Gamma", "g") }),
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "gamma", description: "g", team: { resourceId: "res-ok", version: 7 } }]);
   });
 
   it("skips rows without a resourceId — they never reach the materializer", () => {
-    const got = teamSkillRowsToSlashSkills([teamSkillRow({ resourceId: null, payload: payloadNamed("Ghost", "g") })]);
+    const got = teamSkillRowsToSlashSkills(
+      [teamSkillRow({ resourceId: null, payload: payloadNamed("Ghost", "g") })],
+      7,
+    );
     expect(got).toEqual([]);
   });
 });
