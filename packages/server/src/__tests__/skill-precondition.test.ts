@@ -2,14 +2,16 @@ import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { agentConfigs } from "../db/schema/agent-configs.js";
 import { agentResourceBindings } from "../db/schema/agent-resource-bindings.js";
+import { clients } from "../db/schema/clients.js";
 import { messages } from "../db/schema/messages.js";
 import { resources } from "../db/schema/resources.js";
 import { ConflictError } from "../errors.js";
 import { resolveCanonicalTeamSkillInvocation } from "../services/agents/resources/catalog.js";
 import { createChat } from "../services/chat/conversation.js";
+import { pollInbox } from "../services/chat/inbox.js";
 import { sendMessage } from "../services/chat/message.js";
 import { uuidv7 } from "../uuid.js";
-import { createTestAgent, useTestApp } from "./helpers.js";
+import { createTestAgent, seedHealthyAgentRuntime, useTestApp } from "./helpers.js";
 
 /**
  * `skillPrecondition` is a transient, request-level guard for Team Skill
@@ -42,7 +44,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
   async function setup(uid: string) {
     const app = getApp();
     const sender = await createTestAgent(app, { name: `sp-s-${uid}` });
-    const { agent: peerA } = await createTestAgent(app, { name: `sp-a-${uid}` });
+    const { agent: peerA, clientId: peerAClientId } = await createTestAgent(app, { name: `sp-a-${uid}` });
     const { agent: peerB } = await createTestAgent(app, { name: `sp-b-${uid}` });
     const chat = await createChat(app.db, sender.agent.uuid, {
       type: "group",
@@ -87,7 +89,7 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
     if (!configRow) throw new Error("expected an agent_configs row for the test agent");
     const validate = (precondition: { recipientAgentId: string; resourceId: string; requestedSlug: string }) =>
       resolveCanonicalTeamSkillInvocation(app.resourcesService, precondition);
-    return { app, sender, peerA, peerB, chat, resourceId, configVersion: configRow.version, validate };
+    return { app, sender, peerA, peerAClientId, peerB, chat, resourceId, configVersion: configRow.version, validate };
   }
 
   async function messageCount(app: ReturnType<ReturnType<typeof useTestApp>>, chatId: string) {
@@ -300,9 +302,11 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
     const ctx = await setup(crypto.randomUUID().slice(0, 6));
     const { app, sender, peerA, chat, resourceId, configVersion, validate } = ctx;
     // Once the message transaction holds the agent_configs row lock, a
-    // concurrent config update must BLOCK until after the commit — the
-    // validator hook runs under the lock, so firing the update here proves
-    // the ordering deterministically.
+    // concurrent config update must BLOCK until after the commit. The
+    // validator hook runs under the lock: it starts the UPDATE for real
+    // (an async IIFE, not a lazy QueryPromise) and then proves — on an
+    // independent connection, READ COMMITTED — that the UPDATE has not
+    // committed while the lock is held (the row still reads v1).
     let concurrentUpdate: Promise<unknown> | null = null;
     const result = await sendMessage(
       app.db,
@@ -317,12 +321,20 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
       },
       {
         validateTeamSkillInvocation: async (precondition) => {
-          // Fire-and-forget on a separate connection: this UPDATE can only
-          // complete after the message transaction commits.
-          concurrentUpdate = app.db
-            .update(agentConfigs)
-            .set({ version: configVersion + 1 })
+          concurrentUpdate = (async () => {
+            await app.db
+              .update(agentConfigs)
+              .set({ version: configVersion + 1 })
+              .where(eq(agentConfigs.agentId, peerA.uuid));
+          })();
+          // Deterministic serialization proof without any sleep: while
+          // this transaction holds the row lock, the concurrent UPDATE
+          // cannot have committed, so a fresh read still sees v1.
+          const [during] = await app.db
+            .select({ version: agentConfigs.version })
+            .from(agentConfigs)
             .where(eq(agentConfigs.agentId, peerA.uuid));
+          expect(during?.version).toBe(configVersion);
           return validate(precondition);
         },
       },
@@ -338,8 +350,9 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
       requestedSlug: SLUG,
       configVersion,
     });
-    // …and the config has since moved to v2, so the delivery-time stamp
-    // will diverge from the marker — the Client's terminal-notice path.
+    // …and the blocked UPDATE completed after the commit, so the
+    // delivery-time stamp will diverge from the marker — the Client's
+    // terminal-notice path.
     const [after] = await app.db
       .select({ version: agentConfigs.version })
       .from(agentConfigs)
@@ -418,5 +431,110 @@ describe("sendMessage skillPrecondition → server-owned teamSkillInvocation mar
     expect(result.message.id).toBeTruthy();
     const [stored] = await app.db.select().from(messages).where(eq(messages.chatId, chat.id));
     expect(stored?.metadata ?? {}).not.toHaveProperty("teamSkillInvocation");
+  });
+});
+
+/**
+ * Rollback safety for ALREADY-QUEUED marker messages, proven through the
+ * production claim path: a marker message persisted and fanned out while
+ * the client supports the marker, then the bound client downgrades before
+ * the claim — `pollInbox` must deliver the inert notice on the wire while
+ * the stored row keeps the original content and canonical marker.
+ */
+describe("queued marker message + client rollback before claim (production inbox path)", () => {
+  const getApp = useTestApp();
+
+  it("delivers an inert notice after a rollback, leaving the stored row untouched", async () => {
+    const app = getApp();
+    const uid = crypto.randomUUID().slice(0, 6);
+    const sender = await createTestAgent(app, { name: `rb-s-${uid}` });
+    const { agent: peer, clientId } = await createTestAgent(app, { name: `rb-p-${uid}` });
+    const chat = await createChat(app.db, sender.agent.uuid, { type: "group", participantIds: [peer.uuid] });
+    const resourceId = uuidv7();
+    await app.db.insert(resources).values({
+      id: resourceId,
+      organizationId: sender.organizationId,
+      type: "skill",
+      scope: "team",
+      ownerAgentId: null,
+      name: "Code Review",
+      repoCanonicalKey: null,
+      defaultEnabled: null,
+      status: "active",
+      payload: { name: "Code Review", description: "d", body: "B", metadata: {} },
+      createdBy: sender.memberId,
+      updatedBy: sender.memberId,
+    });
+    await app.db.insert(agentResourceBindings).values({
+      id: uuidv7(),
+      organizationId: sender.organizationId,
+      agentId: peer.uuid,
+      type: "skill",
+      mode: "include",
+      resourceId,
+      replacesResourceId: null,
+      inlinePromptBody: null,
+      repoRef: null,
+      repoLocalPath: null,
+      order: 0,
+      createdBy: sender.memberId,
+      updatedBy: sender.memberId,
+    });
+    const [configRow] = await app.db
+      .select({ version: agentConfigs.version })
+      .from(agentConfigs)
+      .where(eq(agentConfigs.agentId, peer.uuid));
+
+    // Connected client on a marker-reader build at enqueue time.
+    await seedHealthyAgentRuntime(app, { agentUuid: peer.uuid, clientId });
+    await app.db.update(clients).set({ sdkVersion: "0.5.22" }).where(eq(clients.id, clientId));
+
+    const sent = await sendMessage(
+      app.db,
+      chat.id,
+      sender.agent.uuid,
+      {
+        source: "web",
+        format: "text",
+        content: "/code-review src/",
+        metadata: { mentions: [peer.uuid] },
+        skillPrecondition: {
+          recipientAgentId: peer.uuid,
+          expectedConfigVersion: configRow!.version,
+          resourceId,
+          requestedSlug: "code-review",
+        },
+      },
+      {
+        validateTeamSkillInvocation: (precondition) =>
+          resolveCanonicalTeamSkillInvocation(app.resourcesService, precondition),
+      },
+    );
+
+    // Rollback BEFORE the claim: the bound client now runs a build without
+    // the marker reader.
+    await app.db.update(clients).set({ sdkVersion: "0.5.21" }).where(eq(clients.id, clientId));
+
+    const delivered = await pollInbox(app.db, peer.inboxId, 5);
+    const entry = delivered.find((e) => e.message.id === sent.message.id);
+    if (!entry) throw new Error("expected the marked message in the claimed batch");
+    const wireText = entry.message.content as string;
+    expect(wireText).toContain("too old to run it safely");
+    expect(wireText).not.toContain("/code-review");
+    expect(wireText.startsWith("/")).toBe(false);
+    // The marker itself still rides the wire payload (a NEW client that
+    // reconnects later resolves it); only the command content was swapped.
+    expect(entry.message.metadata?.teamSkillInvocation).toBeDefined();
+
+    // The stored row keeps the original content and the canonical marker.
+    const [stored] = await app.db.select().from(messages).where(eq(messages.id, sent.message.id));
+    expect(stored?.content).toBe("/code-review src/");
+    expect(stored?.metadata?.teamSkillInvocation).toEqual({
+      version: 1,
+      recipientAgentId: peer.uuid,
+      resourceId,
+      requestedSlug: "code-review",
+      configVersion: configRow!.version,
+    });
   });
 });

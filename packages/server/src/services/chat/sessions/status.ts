@@ -512,7 +512,7 @@ export async function resolveAgentChatStatuses(
   );
   // Team Skill invocation gate: same DB-authoritative route predicate as
   // Reset above, but the verdict comes from the connected client's
-  // `sdk_version` via the shared release helper  old, unknown-version,
+  // `sdk_version` via the shared release helper - old, unknown-version,
   // offline, or unbound clients never count, and nothing is persisted.
   const teamSkillCapableAgents = new Set(
     routeRows

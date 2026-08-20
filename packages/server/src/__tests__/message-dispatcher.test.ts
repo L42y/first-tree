@@ -374,3 +374,65 @@ describe("buildClientMessagePayload — teamSkillInvocation rollout gate", () =>
     expect(built[1]?.content).toBe("/ship");
   });
 });
+
+describe("buildClientMessagePayloadsForInbox — route query only when a marker is present", () => {
+  function countingDb(db: typeof app.db) {
+    let selects = 0;
+    const proxy = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "select") selects++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return { db: proxy as unknown as typeof app.db, count: () => selects };
+  }
+
+  it("skips the route/sdk query entirely for an all-unmarked batch (hot path)", async () => {
+    const agent = await createAgent(app.db, {
+      name: `hotpath-unmarked-${Date.now()}`,
+      type: "agent",
+      managerId: ctx.memberId,
+      clientId: ctx.clientId,
+    });
+    const { db, count } = countingDb(app.db);
+    await buildClientMessagePayloadsForInbox(db, agent.inboxId, [
+      { entryChatId: RAW.chatId, message: { ...RAW, id: "u-1", content: "hello" } },
+      {
+        entryChatId: RAW.chatId,
+        message: { ...RAW, id: "u-2", content: "/ship it", metadata: { mentions: ["sender-1"] } },
+      },
+    ]);
+    // Only the inbox-owner resolve + the config-version query — no
+    // agents/agent_presence/clients route join.
+    expect(count()).toBe(2);
+  });
+
+  it("pays exactly one route query when the batch contains a marker", async () => {
+    const agent = await createAgent(app.db, {
+      name: `hotpath-marked-${Date.now()}`,
+      type: "agent",
+      managerId: ctx.memberId,
+      clientId: ctx.clientId,
+    });
+    const markedMessage = {
+      ...RAW,
+      id: "m-1",
+      content: "/review",
+      metadata: {
+        teamSkillInvocation: {
+          version: 1,
+          recipientAgentId: "00000000-0000-0000-0000-000000000001",
+          resourceId: "00000000-0000-0000-0000-000000000002",
+          requestedSlug: "review",
+          configVersion: 1,
+        },
+      },
+    };
+    const { db, count } = countingDb(app.db);
+    await buildClientMessagePayloadsForInbox(db, agent.inboxId, [
+      { entryChatId: RAW.chatId, message: markedMessage },
+      { entryChatId: RAW.chatId, message: { ...RAW, id: "m-2", content: "plain" } },
+    ]);
+    expect(count()).toBe(3);
+  });
+});

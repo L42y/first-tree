@@ -202,11 +202,15 @@ export async function buildClientMessagePayloadsForInbox(
   const version = cfg?.version ?? 1;
 
   // Rollout gate (see buildClientMessagePayload): resolved ONCE for the
-  // whole batch since every item shares this inbox's agent — a
-  // marker-carrying message never reaches a client too old to resolve the
-  // marker fail-closed; its command content becomes an inert notice on the
-  // wire only.
-  const markerClientSupported = supportsTeamSkillInvocationClientVersion(await resolveRouteSdkVersion(db, agentId));
+  // whole batch since every item shares this inbox's agent — and ONLY
+  // when at least one item actually carries a marker, so the ordinary
+  // inbox hot path pays no extra route query. A marker-carrying message
+  // never reaches a client too old to resolve the marker fail-closed;
+  // its command content becomes an inert notice on the wire only.
+  const batchHasMarker = items.some(({ message: m }) => hasTeamSkillInvocationMarker(m.metadata));
+  const markerClientSupported = batchHasMarker
+    ? supportsTeamSkillInvocationClientVersion(await resolveRouteSdkVersion(db, agentId))
+    : true;
 
   return items.map(({ message: m, precedingMessages = [] }) => ({
     id: m.id,
