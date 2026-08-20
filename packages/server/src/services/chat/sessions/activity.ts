@@ -1,5 +1,5 @@
 import { RUNTIME_STALE_MS, type RuntimeState, type SessionState } from "@first-tree/shared";
-import { and, eq, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNotNull, ne, or, sql } from "drizzle-orm";
 import type { Database } from "../../../db/connection.js";
 import { agentChatSessions } from "../../../db/schema/agent-chat-sessions.js";
 import { agentPresence } from "../../../db/schema/agent-presence.js";
@@ -37,16 +37,18 @@ export async function upsertSessionState(
   options?: { touchPresenceLastSeen?: boolean },
 ) {
   const now = new Date();
-  let stateChanged = false;
+  const revokesRuntime = state !== "active";
+  let projectionChanged = false;
   await db.transaction(async (tx) => {
     // Short-circuit when the row is already at the target state: skip the
     // updatedAt refresh so steady-state messaging doesn't churn the row.
-    // Insertions and any state transition (evicted → active, active →
-    // suspended, etc.) still take the UPDATE branch.
+    // Insertions, lifecycle transitions (evicted → active, active →
+    // suspended, etc.), and one-time repair of a non-idle runtime retained by
+    // an already-inactive row still take the UPDATE branch.
     //
     // We use `.returning()` to detect whether INSERT/UPDATE actually fired —
     // PostgreSQL omits returning rows when the ON CONFLICT DO UPDATE's
-    // `setWhere` predicate is false (same-state no-op). Zero rows back ⇒
+    // `setWhere` predicate is false (same-state, already-revoked no-op). Zero rows back ⇒
     // skip the downstream presence refresh + NOTIFY. This keeps
     // `session:state` frames off the wire when an already-active session
     // receives a burst of steady-state messages (e.g. an agent emitting
@@ -59,19 +61,31 @@ export async function upsertSessionState(
     // side-effect here is safe.
     const rows = await tx
       .insert(agentChatSessions)
-      .values({ agentId, chatId, state, updatedAt: now })
+      .values(
+        revokesRuntime
+          ? { agentId, chatId, state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
+          : { agentId, chatId, state, updatedAt: now },
+      )
       .onConflictDoUpdate({
         target: [agentChatSessions.agentId, agentChatSessions.chatId],
-        set: { state, updatedAt: now },
-        setWhere: ne(agentChatSessions.state, state),
+        set: revokesRuntime
+          ? { state, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
+          : { state, updatedAt: now },
+        // An inactive row retaining a non-idle runtime is also a real
+        // projection change even when its lifecycle value is already equal.
+        // Repair it once, then keep duplicate inactive frames as no-ops.
+        setWhere: revokesRuntime
+          ? or(ne(agentChatSessions.state, state), ne(agentChatSessions.runtimeState, "idle"))
+          : ne(agentChatSessions.state, state),
       })
       .returning({ agentId: agentChatSessions.agentId });
 
     if (rows.length === 0) return;
-    stateChanged = true;
+    projectionChanged = true;
 
-    // runtimeState is owned by the client's `runtime:state` frame — do not
-    // write it here to avoid dual-write conflicts.
+    // Active runtime values are owned by `session:runtime`. Lifecycle
+    // inactivation is the revocation authority and atomically writes idle so
+    // a dropped/reordered client edge cannot leave working behind.
     const [counts] = await tx
       .select({
         active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
@@ -103,8 +117,11 @@ export async function upsertSessionState(
       });
   });
 
-  if (stateChanged && notifier) {
+  if (projectionChanged && notifier) {
     notifier.notifySessionStateChange(agentId, chatId, state, organizationId).catch(() => {});
+    if (revokesRuntime) {
+      notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
+    }
   }
 }
 

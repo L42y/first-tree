@@ -1067,14 +1067,12 @@ export class SlotSchedulerAuthority {
         // semantics), but its stop is unconfirmed — record the debt.
         this.deps.routeTeardown.registerPendingTeardown(candidate.key, candidate.session.handler);
       }
-      // LRU eviction is local memory-management, not operator intent — do
-      // NOT emit a wire state here. The chat now lives in `evictedMappings`
-      // and the next `agent:bound` (initial bind or reconnect) will pick it
-      // up via `getEvictedChatIds()` in `agent-slot.fullStateSync` and
-      // advertise it as `suspended`, so the server's `agent_chat_sessions.state`
-      // converges to "handler is gone" on the next sync without churn on
-      // every eviction.
+      // LRU eviction is local memory-management, not terminal operator intent,
+      // so the wire state is `suspended` rather than `evicted`. Report it now:
+      // waiting for a future bind leaves both lifecycle and runtime projections
+      // stale when the socket stays healthy and this chat remains quiet.
       this.deps.dropLiveSession(candidate.key);
+      this.deps.notifySessionState(candidate.key, "suspended");
       this.deps.inbox.prepareEvict(candidate.key, "session_evicted");
       this.deps.recomputeRuntimeState();
       this.deps.persistRegistry();

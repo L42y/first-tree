@@ -13,6 +13,7 @@ import {
 } from "@first-tree/shared";
 import { and, asc, desc, eq, inArray, lt, type SQL, sql } from "drizzle-orm";
 import type { Database } from "../../db/connection.js";
+import { agentChatSessions } from "../../db/schema/agent-chat-sessions.js";
 import { agents } from "../../db/schema/agents.js";
 import { chatMembership } from "../../db/schema/chat-membership.js";
 import { chatUserState } from "../../db/schema/chat-user-state.js";
@@ -906,6 +907,32 @@ export async function listActiveRuntimeChatIds(
      ORDER BY agent_membership.chat_id ASC
   `);
   return rows.map((row) => row.chat_id);
+}
+
+/**
+ * Runtime-revocation catch-up scope for one agent. Unlike the human-scoped
+ * workspace active set above, this reads the server session projection itself:
+ * an active session remains revocation-relevant even when the managing human
+ * is not a chat member or has archived/deleted the chat from their own view.
+ */
+export async function listActiveSessionChatIds(
+  db: Database,
+  agentId: string,
+  organizationId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ chatId: agentChatSessions.chatId })
+    .from(agentChatSessions)
+    .innerJoin(chats, eq(chats.id, agentChatSessions.chatId))
+    .where(
+      and(
+        eq(agentChatSessions.agentId, agentId),
+        eq(agentChatSessions.state, "active"),
+        eq(chats.organizationId, organizationId),
+      ),
+    )
+    .orderBy(asc(agentChatSessions.chatId));
+  return rows.map((row) => row.chatId);
 }
 
 async function resolveViewerMembershipKind(

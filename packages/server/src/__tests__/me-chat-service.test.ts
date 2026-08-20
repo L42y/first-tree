@@ -26,10 +26,12 @@
  * See first-tree-context:agent-hub/web-console.md for the contract under test.
  */
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
+import { chatMembership } from "../db/schema/chat-membership.js";
 import { users } from "../db/schema/users.js";
-import { listActiveRuntimeChatIds } from "../services/chat/conversation.js";
+import { listActiveRuntimeChatIds, listActiveSessionChatIds } from "../services/chat/conversation.js";
 import { recomputeChatWatchers } from "../services/chat/membership/participants.js";
 import { sendMessage } from "../services/chat/message.js";
 import {
@@ -997,6 +999,36 @@ describe("chat-first workspace service layer", () => {
     expect(ids).toContain(active.chatId);
     expect(ids).not.toContain(archived.chatId);
     expect(ids).not.toContain(deleted.chatId);
+  });
+
+  it("listActiveSessionChatIds returns active server sessions outside the manager's workspace scope", async () => {
+    const app = getApp();
+    const runtime = await createTestAgent(app, { name: "active-session-set" });
+    const outsider = await createTestAdmin(app, { username: `session-outsider-${crypto.randomUUID().slice(0, 6)}` });
+    const hidden = await createMeChat(app.db, outsider.humanAgentUuid, runtime.organizationId, {
+      participantIds: [runtime.agent.uuid],
+    });
+    await app.db
+      .delete(chatMembership)
+      .where(and(eq(chatMembership.chatId, hidden.chatId), eq(chatMembership.agentId, runtime.humanAgentUuid)));
+    await app.db.insert(agentChatSessions).values({
+      agentId: runtime.agent.uuid,
+      chatId: hidden.chatId,
+      state: "active",
+      runtimeState: "working",
+      runtimeStateAt: new Date(),
+    });
+
+    const visibleIds = await listActiveRuntimeChatIds(
+      app.db,
+      runtime.agent.uuid,
+      runtime.humanAgentUuid,
+      runtime.organizationId,
+    );
+    const sessionIds = await listActiveSessionChatIds(app.db, runtime.agent.uuid, runtime.organizationId);
+
+    expect(visibleIds).not.toContain(hidden.chatId);
+    expect(sessionIds).toContain(hidden.chatId);
   });
 
   it("listMeChats ?engagement=archived shows only archived rows", async () => {

@@ -1282,9 +1282,12 @@ export class SessionRuntime {
 
     const reportSuspendedSessions = opts.reportSuspendedSessions ?? true;
     if (reportSuspendedSessions) {
-      // Report active sessions as suspended before clearing.
+      // Withdraw runtime before lifecycle so the server's active-gated idle
+      // write lands in-order; the lifecycle write is the server-side fallback
+      // if the connection drops between the two frames.
       for (const [chatId, session] of this.projection.sessionsEntries()) {
         if (session.status === "active") {
+          this.projection.clearActiveRuntimeProjection(chatId);
           this.projection.notifySessionState(chatId, "suspended");
         }
       }
