@@ -2350,7 +2350,12 @@ export function ChatView({
       inReplyTo?: string;
       resolves?: RequestResolution;
       preserveDraft?: boolean;
-      skillPrecondition?: { recipientAgentId: string; expectedConfigVersion: number; resourceId: string; slug: string };
+      skillPrecondition?: {
+        recipientAgentId: string;
+        expectedConfigVersion: number;
+        resourceId: string;
+        requestedSlug: string;
+      };
     }) =>
       // `resolves` rides the blocking question's answer send (option
       // selections + free text merged) — see the `dockRequest` branch in
@@ -2553,7 +2558,7 @@ export function ChatView({
       recipientAgentId: string;
       expectedConfigVersion: number;
       resourceId: string;
-      slug: string;
+      requestedSlug: string;
     } | null = null;
     const strictCommand = strictCommandName(text);
     if (strictCommand) {
@@ -2604,7 +2609,7 @@ export function ChatView({
             recipientAgentId: provenance.agentId,
             expectedConfigVersion: provenance.version,
             resourceId: provenance.resourceId,
-            slug: provenance.name,
+            requestedSlug: provenance.name,
           };
         } else {
           const matchesTeamRow = teamSkillRowsToSlashSkills(
@@ -4544,6 +4549,29 @@ export function ChatView({
   // recipient), so a multi-recipient menu would invite each agent to
   // route an unknown base to its own local Skill. `/clear` and other
   // system commands stay available.
+  //
+  // Rollout gate for Team Skill menu entries, driven by the LIGHT
+  // per-agent status query (never the full resources payload — an old
+  // client must not cost a Skills/Prompts/body download just to learn it
+  // is unsupported). `teamSkillInvocationSupported` is projected from the
+  // recipient's route-consistent client `sdk_version`. The full resources
+  // query below only enables when the status is FRESH (resolved, not
+  // refetching, not errored) AND the field is exactly true: a warm cached
+  // true that is mid-refetch or a failed refresh closes the gate again.
+  const {
+    data: slashAgentStatuses,
+    isFetching: slashStatusesFetching,
+    isError: slashStatusesError,
+  } = useQuery({
+    queryKey: chatAgentStatusQueryKey(chatId),
+    queryFn: () => fetchChatAgentStatuses(chatId),
+    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
+  });
+  const teamSkillMenuSupported =
+    !slashStatusesFetching &&
+    !slashStatusesError &&
+    slashAgentStatuses?.find((s) => s.agentId === slashMentionContext?.agentId)?.teamSkillInvocationSupported === true;
+
   // Team Skills configured in First Tree reach the composer through the
   // same visible `effective.skills` view the Agent Detail page reads —
   // the daemon catalog alone only covers what the local runtime scanned
@@ -4558,7 +4586,8 @@ export function ChatView({
       if (!id) return Promise.resolve(null);
       return getAgentResources(id);
     },
-    enabled: Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient,
+    enabled:
+      Boolean(slashMentionContext?.agentId) && slashTriggerActive && slashUniqueRecipient && teamSkillMenuSupported,
     // A legal slash trigger always revalidates the recipient's Team Skill
     // catalog: the previous 60s stale window let a removed or renamed
     // Team row be sent and then resolved by the Client as a same-named
@@ -4567,16 +4596,6 @@ export function ChatView({
     // no explicit refetch driver is needed.
     staleTime: 0,
   });
-
-  // Rollout gate for Team Skill menu entries: the resources payload
-  // carries a read-only `teamSkillInvocationSupported` computed from the
-  // recipient's bound, route-consistent client `sdk_version`. Only a
-  // client that parses the server-owned invocation marker fail-closed may
-  // be offered Team Skills — an old, unknown-version, or offline client
-  // would hand the base literal to a same-named LOCAL Skill. The catalog
-  // fetch itself is allowed (it is how the gate is learned); the merge
-  // below drops Team rows unless the boolean is exactly true.
-  const teamSkillMenuSupported = slashResourcesQuery.data?.teamSkillInvocationSupported === true;
 
   // While the catalog is being (re)validated the menu stays SYSTEM-ONLY.
   // Showing runtime rows during the window would repeat the winner
@@ -4634,6 +4653,11 @@ export function ChatView({
     disabled: landingCampaignChatLocked || composerLockedNoRecipient || sendMut.isPending || uploading,
     onSelect: (update, picked) => {
       autoPrimedDraftRef.current = false;
+      // ANY explicit menu selection (Team, runtime, or system) discharges
+      // the restored-draft guard: the user has re-proven the command
+      // through the menu, even when the inserted literal is byte-identical
+      // to the restored draft text.
+      restoredSlashDraftRef.current = null;
       // In-memory Team Skill selection provenance for the send-time
       // precondition. Runtime/local picks carry none.
       slashTeamSelectionRef.current =

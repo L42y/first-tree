@@ -537,6 +537,7 @@ function createClient(): QueryClient {
         working: true,
         needsYou: false,
         errored: false,
+        teamSkillInvocationSupported: true,
         activity: {
           agentId: "agent-1",
           kind: "assistant_text",
@@ -554,6 +555,7 @@ function createClient(): QueryClient {
         working: false,
         needsYou: false,
         errored: false,
+        teamSkillInvocationSupported: true,
         activity: null,
       },
     ],
@@ -765,6 +767,10 @@ beforeEach(() => {
       working: true,
       needsYou: false,
       errored: false,
+      // Default: the recipient's client parses the server-owned Team Skill
+      // invocation marker, so the slash menu may offer Team Skills. Gate
+      // tests override this per case.
+      teamSkillInvocationSupported: true,
       activity: {
         agentId: "agent-1",
         kind: "assistant_text",
@@ -782,13 +788,13 @@ beforeEach(() => {
       working: false,
       needsYou: false,
       errored: false,
+      teamSkillInvocationSupported: true,
       activity: null,
     },
   ]);
   agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
   agentResourceMocks.getAgentResources.mockResolvedValue({
     effective: { version: 1, repos: [], prompts: [], skills: [], mcp: [], unavailable: [] },
-    teamSkillInvocationSupported: true,
   });
   agentMocks.listAgents.mockResolvedValue({ items: ORG_AGENTS, nextCursor: null });
   attachmentMocks.fetchAttachmentBase64.mockResolvedValue({ base64: "image-base64", mimeType: "image/png" });
@@ -1679,7 +1685,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: {
         version: 1,
         repos: [],
@@ -1748,7 +1753,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: {
         version: 1,
         repos: [],
@@ -1822,7 +1826,7 @@ describe("ChatView", () => {
           recipientAgentId: "agent-1",
           expectedConfigVersion: 1,
           resourceId: "res-1",
-          slug: "code-review",
+          requestedSlug: "code-review",
         },
       }),
     );
@@ -1839,7 +1843,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     });
     const { container, root } = await renderDom(<ChatView agentId="agent-1" chatId="chat-1" />);
@@ -1883,7 +1886,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     };
     const resourcesEmpty = {
@@ -1892,7 +1894,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: { version: 2, repos: [], prompts: [], mcp: [], unavailable: [], skills: [] },
     };
     agentResourceMocks.getAgentResources
@@ -1987,7 +1988,6 @@ describe("ChatView", () => {
       adoptedTemplates: [],
       bindings: [],
       availableTeamResources: [],
-      teamSkillInvocationSupported: true,
       effective: { version: 1, repos: [], prompts: [], mcp: [], unavailable: [], skills: [teamSkillResourceRow()] },
     });
     await waitForText(container, "/code-review");
@@ -2027,17 +2027,35 @@ describe("ChatView", () => {
     await act(async () => root.unmount());
   });
 
-  it("hides Team Skills when the recipient client is too old to parse the invocation marker", async () => {
+  it("hides Team Skills and never fetches the catalog when the recipient client is too old for the marker", async () => {
     const { ChatView } = await import("../chat-view.js");
-    // The Server reports the recipient's bound client as unsupported for
-    // the marker protocol (old / unknown sdk_version / offline): the menu
-    // must fail closed even though the catalog itself fetched fine.
-    agentResourceMocks.getAgentResources.mockResolvedValue({ ...resourcesV1(), teamSkillInvocationSupported: false });
+    // The light status query reports the recipient's bound client as
+    // unsupported (old / unknown sdk_version / offline): the menu must
+    // fail closed WITHOUT downloading the full resources payload.
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
     agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
     const direct = directChat();
     const { container, root } = await renderDom(
       <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
-      (qc) => seedChat(qc, direct),
+      (qc) => {
+        seedChat(qc, direct);
+        qc.setQueryData(
+          ["chat-agent-status", "chat-1"],
+          [
+            {
+              agentId: "agent-1",
+              main: "ready",
+              reachable: true,
+              engagement: "active",
+              working: false,
+              needsYou: false,
+              errored: false,
+              teamSkillInvocationSupported: false,
+              activity: null,
+            },
+          ],
+        );
+      },
     );
 
     const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
@@ -2050,9 +2068,72 @@ describe("ChatView", () => {
     });
     await flush();
 
-    // Runtime rows and system commands still show; Team rows stay hidden.
+    // Runtime rows and system commands still show; Team rows stay hidden
+    // and the heavy catalog is never fetched.
     await waitForText(container, "/review");
     expect(container.textContent).not.toContain("/code-review");
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("keeps the gate closed while the status query is pending, then opens it on a fresh supported status", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    let resolveStatuses: (value: unknown) => void = () => {};
+    agentStatusMocks.fetchChatAgentStatuses.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveStatuses = resolve;
+        }),
+    );
+    const direct = directChat();
+    const { container, root, queryClient } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => {
+        seedChat(qc, direct);
+        // No cached statuses: the gate's query must actually fetch.
+        qc.removeQueries({ queryKey: ["chat-agent-status", "chat-1"] });
+      },
+    );
+
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, "/");
+      textarea.setSelectionRange(1, 1);
+      textarea.dispatchEvent(new InputEvent("input", { bubbles: true, data: "/", inputType: "insertText" }));
+    });
+    await flush();
+
+    // Pending status: fail closed — system-only menu, no catalog fetch.
+    expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("/code-review");
+
+    await act(async () => {
+      resolveStatuses([
+        {
+          agentId: "agent-1",
+          main: "ready",
+          reachable: true,
+          engagement: "active",
+          working: false,
+          needsYou: false,
+          errored: false,
+          teamSkillInvocationSupported: true,
+          activity: null,
+        },
+      ]);
+    });
+    await flush();
+    await waitForCondition(
+      () => agentResourceMocks.getAgentResources.mock.calls.length > 0,
+      "Expected the catalog fetch once a fresh supported status landed",
+    );
+    await waitForText(container, "/code-review");
+    void queryClient;
 
     await act(async () => root.unmount());
   });
@@ -2220,7 +2301,7 @@ describe("ChatView", () => {
         recipientAgentId: "agent-1",
         expectedConfigVersion: 1,
         resourceId: "res-1",
-        slug: "code-review",
+        requestedSlug: "code-review",
       },
     });
 
@@ -2274,6 +2355,41 @@ describe("ChatView", () => {
     // proof at all, whether or not the Team row still exists.
     await waitForText(container, "restored from a saved draft");
     expect(agentResourceMocks.getAgentResources).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+  });
+
+  it("lets a restored runtime slash send after re-picking the same row from the menu", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    // Restored draft is a RUNTIME command, not a Team row: the guard still
+    // blocks the untouched restore, but an explicit menu re-pick — even of
+    // the byte-identical command — discharges it.
+    saveDraft(chatDraftScope(null, "chat-1"), { text: "/review " });
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    agentMocks.getAgentSkills.mockResolvedValue({ skills: [{ name: "review", description: "Review a patch." }] });
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+    await waitForText(container, "restored from a saved draft");
+
+    // Re-open the menu and pick the same runtime row.
+    await pickSlashCommand(container, "/review");
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    if (textarea.value !== "/review ")
+      throw new Error(`Expected the re-picked runtime command, got "${textarea.value}"`);
+
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the message POST");
+    const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+    // A runtime pick carries no Team precondition.
+    expect(opts?.skillPrecondition).toBeUndefined();
 
     await act(async () => root.unmount());
   });
