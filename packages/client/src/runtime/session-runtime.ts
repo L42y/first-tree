@@ -91,6 +91,7 @@ import {
   isTeamSkillCommandUnavailableError,
   rewriteSessionMessageCommand,
   rewriteSessionMessageCommandToNotice,
+  TEAM_SKILL_COMMAND_AMBIGUOUS_RECIPIENT_NOTICE,
   TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE,
   TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE,
   type TeamSkillCommandRegistry,
@@ -3322,10 +3323,18 @@ export class SessionRuntime {
         // `null` commands = unknown/unpublished: strict slash commands fail
         // closed until a proven registry lands. A list replaces the
         // registry atomically as a whole, stamped with the config version
-        // the publication proves — ON THIS HANDLER'S SNAPSHOT ONLY.
+        // the publication proves — ON THIS HANDLER'S SNAPSHOT ONLY. A null
+        // registry can never prove a version, so a caller passing one is
+        // coerced (and told): registry null + matching version would skip
+        // the mismatch park path and silently throw.
+        if (commands === null && provenVersion !== null) {
+          log(
+            "publishTeamSkillCommands called with null commands but a non-null version — forcing version to null (an empty registry proves nothing)",
+          );
+        }
         teamSkillCommands = {
           registry: commands === null ? null : buildTeamSkillCommandRegistry(commands, log),
-          version: provenVersion,
+          version: commands === null ? null : provenVersion,
         };
       },
       formatInboundContent: async (message) => {
@@ -3337,6 +3346,22 @@ export class SessionRuntime {
         const versionMismatched = stamp !== undefined && version !== stamp;
         const fencedRegistry = versionMismatched ? null : registry;
         const mentionGate = { allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId) };
+        // Multi-recipient ambiguity: a slash addressed to several routed
+        // agents would be resolved per-recipient — and an unknown base
+        // would fall through to each agent's local Skill. No agent may
+        // execute it; bare and mention-prefixed forms, text and image
+        // captions alike. Ordinary text passes through untouched.
+        const routedMentions = message.metadata?.mentions;
+        if (Array.isArray(routedMentions) && new Set(routedMentions).size > 1) {
+          const ambiguous = rewriteSessionMessageCommandToNotice(
+            message,
+            TEAM_SKILL_COMMAND_AMBIGUOUS_RECIPIENT_NOTICE,
+            mentionGate,
+          );
+          if (ambiguous !== message) {
+            return formatInboundContent(ambiguous, participants);
+          }
+        }
         if (stamp !== undefined && version !== null && stamp < version) {
           // STALE message: the config it was sent against has been
           // superseded. Recovery can never republish a historical

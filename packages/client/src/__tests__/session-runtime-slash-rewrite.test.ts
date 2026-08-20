@@ -747,8 +747,11 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     let freshCtx: SessionContext | undefined;
     let freshMessage: SessionMessage | undefined;
     const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
-    const handler: AgentHandler = {
-      start: vi.fn(async (msg, ctx, token) => {
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    // A NEW handler instance per fresh handler — production never reuses a
+    // retired handler object (the teardown registry keys on identity).
+    const makeStartHandler = (): AgentHandler => ({
+      start: vi.fn(async (msg, ctx) => {
         starts++;
         if (starts === 1) {
           // The first start proves v1; the fenced first message throws out
@@ -761,7 +764,6 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
         // redelivered message's format settles as the bounded notice.
         freshCtx = ctx;
         freshMessage = msg;
-        void token;
         ctx.publishTeamSkillCommands(null, null);
         return { sessionId: "session-2", route: { kind: "owned" as const, mode: "queued" as const } };
       }),
@@ -772,12 +774,11 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
       inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
       suspend: vi.fn().mockResolvedValue(undefined),
       shutdown: vi.fn().mockResolvedValue(undefined),
-    };
-    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    });
     const runtime = new SessionRuntime({
       session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       concurrency: 5,
-      handlerFactory: () => handler,
+      handlerFactory: () => makeStartHandler(),
       handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
       agentIdentity: {
         agentId: "agent-1",
@@ -806,10 +807,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await vi.waitFor(() => expect(starts).toBe(2));
 
     // The redelivered message reached the fresh start with the SAME
-    // identity, and its preparation published null: the bounded terminal
-    // notice (not a throw), no third handler, exactly one recovery. The
-    // notice+ACK completion itself rides the same production finishTurn
-    // machinery proven by the terminal-custody test above.
+    // identity, its preparation published null: bounded notice, then a
+    // PRODUCTION finishTurn completion — exactly one ACK, no third
+    // handler, exactly one recovery.
     if (!freshCtx || !freshMessage) throw new Error("expected the fresh handler to receive the redelivered message");
     expect(freshMessage.id).toBe("msg-1");
     expect(freshMessage.inboxEntryId).toBe(1);
@@ -817,6 +817,9 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     const notice = await freshCtx.formatInboundContent(freshMessage);
     expect(notice).toContain("could not be verified");
     expect(notice).not.toContain("/review");
+    await freshCtx.finishTurn(freshMessage, { status: "success", terminal: true });
+    await vi.waitFor(() => expect(ackEntry).toHaveBeenCalledWith(1));
+    expect(freshCtx.hasPendingDelivery?.([freshMessage])).toBe(false);
     expect(starts).toBe(2);
     expect(recoverChat).toHaveBeenCalledTimes(1);
 
@@ -837,5 +840,48 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     expect(cap.startCount()).toBe(1);
 
     await cap.runtime.shutdown();
+  });
+});
+
+describe("SessionRuntime multi-recipient ambiguity", () => {
+  it("turns any strict slash addressed to multiple routed agents into an ambiguous-recipient notice", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // Mention-prefixed multi-recipient: not run by ANY agent.
+    const multi = textMessage("@nova @design /review", ["agent-1", "agent-2"], 1);
+    const formatted = await ctx.formatInboundContent(multi);
+    expect(formatted).toContain("multiple agents");
+    expect(formatted).not.toContain("/review");
+    expect(formatted).not.toContain("review-first-tree");
+
+    // Bare slash with two routed recipients: same treatment.
+    const bare = await ctx.formatInboundContent(textMessage("/review", ["agent-1", "agent-2"], 1));
+    expect(bare).toContain("multiple agents");
+    expect(bare).not.toContain("/review");
+
+    // Ordinary text with two recipients is unaffected.
+    expect(
+      await ctx.formatInboundContent(textMessage("@nova @design hello team", ["agent-1", "agent-2"], 1)),
+    ).toContain("@nova @design hello team");
+
+    // A single routed recipient keeps the rewrite.
+    expect(await ctx.formatInboundContent(textMessage("@nova /review", ["agent-1"], 1))).toContain(
+      "/review-first-tree",
+    );
+
+    await runtime.shutdown();
+  });
+
+  it("coerces a null-commands publication with a non-null version to version null", async () => {
+    const { ctx, runtime } = await captureContext();
+    // A caller bug must not create "registry null + matching version",
+    // which would skip the mismatch park path and throw without recovery.
+    ctx.publishTeamSkillCommands(null, 5);
+    const formatted = await ctx.formatInboundContent(textMessage("/review src/", undefined, 5));
+    expect(formatted).toContain("could not be verified");
+    expect(formatted).not.toContain("/review");
+
+    await runtime.shutdown();
   });
 });

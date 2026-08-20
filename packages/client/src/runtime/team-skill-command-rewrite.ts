@@ -222,6 +222,18 @@ export const TEAM_SKILL_COMMAND_STALE_VERSION_NOTICE =
   "slash command or a same-named local Skill on their behalf. Briefly explain to the user that the " +
   "command is out of date and ask them to send it again if they still need it.";
 
+/**
+ * The inert replacement for a strict slash command sent to MULTIPLE routed
+ * recipient agents. Each recipient would resolve the command against its
+ * own registry — and an unknown base would fall through to that agent's
+ * local Skill — so no agent may execute it at all.
+ */
+export const TEAM_SKILL_COMMAND_AMBIGUOUS_RECIPIENT_NOTICE =
+  "[First Tree runtime] The user invoked a Team Skill command while addressing multiple agents, so it is " +
+  "not clear which agent should run it. Do NOT invoke any slash command or a same-named local Skill on " +
+  "their behalf. Briefly explain to the user that the command was not run and ask them to address a " +
+  "single agent explicitly.";
+
 export const TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE =
   "[First Tree runtime] The user tried to invoke a Team Skill command, but this agent's skill configuration " +
   "could not be verified right now. Do NOT invoke any slash command or a same-named local Skill on their " +
