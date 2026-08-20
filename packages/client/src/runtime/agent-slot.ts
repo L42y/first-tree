@@ -139,7 +139,10 @@ export class AgentSlot {
   private logger: pino.Logger;
   private agentConfigCache: AgentConfigCache | null = null;
   private sdk: FirstTreeHubSDK | null = null;
+  /** Managing human's visible/active chat set, used only for lifecycle reconcile. */
   private activeRuntimeChatIds: Set<string> | null = null;
+  /** Server-active session rows, used to revoke disappeared per-chat runtime. */
+  private activeSessionChatIds: Set<string> | null = null;
   private activeRuntimeChatIdsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private activeRuntimeChatIdsRefreshInFlight: Promise<void> | null = null;
   private activeRuntimeChatIdsRefreshGeneration = 0;
@@ -812,6 +815,7 @@ export class AgentSlot {
       this.agentConfigCache = null;
       this.sdk = null;
       this.activeRuntimeChatIds = null;
+      this.activeSessionChatIds = null;
       this.activeRuntimeChatIdsRefreshInFlight = null;
       this.inboxId = null;
     }
@@ -859,6 +863,7 @@ export class AgentSlot {
       this.agentConfigCache = null;
       this.sdk = null;
       this.activeRuntimeChatIds = null;
+      this.activeSessionChatIds = null;
       this.activeRuntimeChatIdsRefreshInFlight = null;
       this.inboxId = null;
       this.runtimeSessionTokenMutationError = null;
@@ -888,6 +893,7 @@ export class AgentSlot {
   private fullStateSync(): void {
     if (!this.sessionRuntime) return;
     const activeChatIds = this.activeRuntimeChatIds;
+    const activeSessionChatIds = this.activeSessionChatIds;
     // ORDERING IS LOAD-BEARING: `session:state` frames flush before any
     // `session:runtime` frame so the server's `setSessionRuntime` (gated
     // on `state='active'`) can't fail-close because the state write
@@ -925,14 +931,17 @@ export class AgentSlot {
       reportedRuntimeChatIds.add(chatId);
       this.clientConnection.reportSessionRuntime(this.config.agentId, chatId, runtimeState);
     }
-    // The server's active-chat set is the reconnect catch-up scope. An active
-    // server row omitted from the local runtime snapshot means the old local
-    // projection disappeared (for example after process restart or registry
-    // loss), so revoke it explicitly instead of waiting for stale recovery.
+    // The server's complete active-session set is the reconnect catch-up scope.
+    // It is deliberately separate from `activeChatIds`, which is filtered by
+    // the managing human's workspace visibility and remains lifecycle-only.
+    // An active server row omitted from the local runtime snapshot means the
+    // old local projection disappeared (for example after process restart or
+    // registry loss), so revoke it explicitly instead of waiting for stale
+    // recovery.
     // The server's active-row gate makes idle reports for chats without a
     // current session harmless and idempotent.
-    if (activeChatIds) {
-      for (const chatId of activeChatIds) {
+    if (activeSessionChatIds) {
+      for (const chatId of activeSessionChatIds) {
         if (!reportedRuntimeChatIds.has(chatId)) {
           this.clientConnection.reportSessionRuntime(this.config.agentId, chatId, "idle");
         }
@@ -1013,10 +1022,18 @@ export class AgentSlot {
 
     const refresh = sdk
       .listActiveRuntimeChatIds()
-      .then(({ chatIds }) => {
+      .then(({ chatIds, activeSessionChatIds }) => {
         if (this.sdk !== sdk || !this.isActiveRuntimeChatIdsRefreshLive(generation)) return;
         this.activeRuntimeChatIds = new Set(chatIds);
-        this.logger.info({ count: chatIds.length, reason }, "active runtime chat ids refreshed");
+        // Older servers return only `chatIds`; keep their visible-set repair
+        // behavior during a rolling deployment, then widen automatically once
+        // the complete active-session field is available.
+        const revocationChatIds = activeSessionChatIds ?? chatIds;
+        this.activeSessionChatIds = new Set(revocationChatIds);
+        this.logger.info(
+          { count: chatIds.length, activeSessionCount: revocationChatIds.length, reason },
+          "active runtime chat ids refreshed",
+        );
       })
       .catch((err) => {
         if (this.sdk !== sdk || !this.isActiveRuntimeChatIdsRefreshLive(generation)) return;
@@ -1057,6 +1074,7 @@ export class AgentSlot {
 
   private noteActiveRuntimeChat(chatId: string): void {
     this.activeRuntimeChatIds?.add(chatId);
+    this.activeSessionChatIds?.add(chatId);
   }
 }
 

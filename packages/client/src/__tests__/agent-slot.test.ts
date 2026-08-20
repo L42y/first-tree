@@ -143,6 +143,7 @@ function makeSdk(options?: {
   /** Throw `error` on the first `times` config fetches, then succeed — models a transient blip. */
   configErrorsThenSucceed?: { error: unknown; times: number };
   activeRuntimeChatIds?: string[];
+  activeSessionChatIds?: string[];
   activeRuntimeChatIdsError?: unknown;
   runtimeSessionToken?: string;
 }): FirstTreeHubSDK {
@@ -176,7 +177,11 @@ function makeSdk(options?: {
     runtimeSessionToken: options?.runtimeSessionToken,
     listActiveRuntimeChatIds: vi.fn(async () => {
       if (options?.activeRuntimeChatIdsError) throw options.activeRuntimeChatIdsError;
-      return { chatIds: options?.activeRuntimeChatIds ?? ["chat-1", "chat-2", "chat-evicted"] };
+      const chatIds = options?.activeRuntimeChatIds ?? ["chat-1", "chat-2", "chat-evicted"];
+      return {
+        chatIds,
+        activeSessionChatIds: options?.activeSessionChatIds ?? chatIds,
+      };
     }),
   };
   // AgentSlot only uses this SDK subset; the concrete SDK type has many HTTP methods irrelevant here.
@@ -379,6 +384,7 @@ async function makeSlot(options?: {
   configError?: unknown;
   configErrorsThenSucceed?: { error: unknown; times: number };
   activeRuntimeChatIds?: string[];
+  activeSessionChatIds?: string[];
   activeRuntimeChatIdsError?: unknown;
   runtimeSessionToken?: string;
   runtimeType?: string;
@@ -405,6 +411,7 @@ async function makeSlot(options?: {
     configError: options?.configError,
     configErrorsThenSucceed: options?.configErrorsThenSucceed,
     activeRuntimeChatIds: options?.activeRuntimeChatIds,
+    activeSessionChatIds: options?.activeSessionChatIds,
     activeRuntimeChatIdsError: options?.activeRuntimeChatIdsError,
     runtimeSessionToken: options?.runtimeSessionToken,
   });
@@ -1219,9 +1226,10 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
-  it("uses the active runtime chat set for full-state sync and revokes disappeared runtimes", async () => {
+  it("uses all active server sessions for runtime revocation but the human-scoped set for reconcile", async () => {
     const { slot, connection, sdk, state } = await makeSlot({
-      activeRuntimeChatIds: ["chat-1", "chat-disappeared"],
+      activeRuntimeChatIds: ["chat-1"],
+      activeSessionChatIds: ["chat-1", "chat-hidden-session"],
     });
 
     await slot.start();
@@ -1242,7 +1250,8 @@ describe("AgentSlot", () => {
     expect(connection.reportSessionState).not.toHaveBeenCalledWith("agent-1", "chat-evicted", "suspended");
     expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-1", "working");
     expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-2", "idle");
-    expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-disappeared", "idle");
+    expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-hidden-session", "idle");
+    expect(connection.reportSessionState).not.toHaveBeenCalledWith("agent-1", "chat-hidden-session", "suspended");
 
     const reconcile = Reflect.get(slot, "reconcileNow");
     if (typeof reconcile !== "function") throw new Error("private method missing");

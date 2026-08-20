@@ -131,13 +131,11 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
 
     const humanAgentId = await requireCallerHumanAgentId(app, user.userId, identity.organizationId);
 
-    const chatIds = await chatService.listActiveRuntimeChatIds(
-      app.db,
-      identity.uuid,
-      humanAgentId,
-      identity.organizationId,
-    );
-    return activeRuntimeChatIdsResponseSchema.parse({ chatIds });
+    const [chatIds, activeSessionChatIds] = await Promise.all([
+      chatService.listActiveRuntimeChatIds(app.db, identity.uuid, humanAgentId, identity.organizationId),
+      chatService.listActiveSessionChatIds(app.db, identity.uuid, identity.organizationId),
+    ]);
+    return activeRuntimeChatIdsResponseSchema.parse({ chatIds, activeSessionChatIds });
   });
 
   /**
