@@ -484,6 +484,7 @@ describe("queued marker message + client rollback before claim (production inbox
       .select({ version: agentConfigs.version })
       .from(agentConfigs)
       .where(eq(agentConfigs.agentId, peer.uuid));
+    if (!configRow) throw new Error("expected an agent_configs row for the test agent");
 
     // Connected client on a marker-reader build at enqueue time.
     await seedHealthyAgentRuntime(app, { agentUuid: peer.uuid, clientId });
@@ -500,7 +501,7 @@ describe("queued marker message + client rollback before claim (production inbox
         metadata: { mentions: [peer.uuid] },
         skillPrecondition: {
           recipientAgentId: peer.uuid,
-          expectedConfigVersion: configRow!.version,
+          expectedConfigVersion: configRow.version,
           resourceId,
           requestedSlug: "code-review",
         },
@@ -534,7 +535,7 @@ describe("queued marker message + client rollback before claim (production inbox
       recipientAgentId: peer.uuid,
       resourceId,
       requestedSlug: "code-review",
-      configVersion: configRow!.version,
+      configVersion: configRow.version,
     });
   });
 });
