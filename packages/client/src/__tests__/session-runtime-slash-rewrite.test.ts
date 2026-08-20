@@ -43,6 +43,7 @@ async function captureContext(): Promise<{
   ackEntry: ReturnType<typeof vi.fn<(entryId: number) => Promise<void>>>;
   currentCtx: () => SessionContext;
   startMessages: SessionMessage[];
+  resumeMessages: (SessionMessage | undefined)[];
   injectedMessages: SessionMessage[];
   recoverChat: ReturnType<typeof vi.fn>;
 }> {
@@ -51,6 +52,7 @@ async function captureContext(): Promise<{
   let teardowns = 0;
   let capturedCtx: SessionContext | undefined;
   const startMessages: SessionMessage[] = [];
+  const resumeMessages: (SessionMessage | undefined)[] = [];
   const injectedMessages: SessionMessage[] = [];
   const handler: AgentHandler = {
     start: vi.fn(async (msg, ctx) => {
@@ -59,8 +61,9 @@ async function captureContext(): Promise<{
       capturedCtx = ctx;
       return { sessionId: `session-${starts}`, route: { kind: "owned" as const, mode: "queued" as const } };
     }),
-    resume: vi.fn(async (_msg, _sessionId, ctx) => {
+    resume: vi.fn(async (msg, _sessionId, ctx) => {
       resumes++;
+      resumeMessages.push(msg);
       capturedCtx = ctx;
       return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
     }),
@@ -109,6 +112,7 @@ async function captureContext(): Promise<{
       return capturedCtx;
     },
     startMessages,
+    resumeMessages,
     injectedMessages,
     recoverChat,
     ackEntry,
@@ -288,10 +292,10 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
-    // The fresh context starts unpublished; publishing the v2 registry
-    // heals the very same message — no permanent retry loop.
+    // Production order: the fresh handler's preparation republishes BEFORE
+    // any turn is formatted. Publishing the v2 registry heals the very same
+    // message — no permanent retry loop.
     const freshCtx = cap.currentCtx();
-    await expect(freshCtx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
     freshCtx.publishTeamSkillCommands(PUBLISHED, 2);
     expect(await freshCtx.formatInboundContent(injected)).toContain("/review-first-tree src/");
 
@@ -328,16 +332,22 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // The fresh preparation ALSO proves nothing (second consecutive null):
-    // provably no progress, so the bounded terminal boundary fires.
+    // provably no progress, so the bounded terminal boundary fires. The
+    // message is the one the FRESH handler actually received on resume —
+    // same inboxEntryId, config stamp, and message id as the original.
     const freshCtx = cap.currentCtx();
     freshCtx.publishTeamSkillCommands(null, null);
-    const formatted = await freshCtx.formatInboundContent(injected);
+    const redelivered = cap.resumeMessages[cap.resumeMessages.length - 1] ?? injected;
+    expect(redelivered.id).toBe(injected.id);
+    expect(redelivered.inboxEntryId).toBe(injected.inboxEntryId);
+    expect(redelivered.configVersion).toBe(2);
+    const formatted = await freshCtx.formatInboundContent(redelivered);
     expect(formatted).toContain("could not be verified");
     expect(formatted).not.toContain("/review");
 
     // The turn settles through the production completion path; nothing
     // recovers again and no third handler ever starts.
-    await freshCtx.finishTurn(injected, { status: "success", terminal: true });
+    await freshCtx.finishTurn(redelivered, { status: "success", terminal: true });
     expect(cap.ackEntry).toHaveBeenCalledWith(2);
     expect(freshCtx.hasPendingDelivery?.([injected])).toBe(false);
     expect(cap.startCount() + cap.resumeCount()).toBe(2);
@@ -400,19 +410,61 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
 
     // The fresh preparation re-publishes the SAME v1 registry — provably
-    // no progress — so the redelivered message hits the terminal boundary.
+    // no progress — so the redelivered message (the one the fresh handler
+    // actually received) hits the terminal boundary.
     const freshCtx = cap.currentCtx();
     freshCtx.publishTeamSkillCommands(PUBLISHED, 1);
-    const formatted = await freshCtx.formatInboundContent(injected);
+    const redelivered = cap.resumeMessages[cap.resumeMessages.length - 1] ?? injected;
+    expect(redelivered.id).toBe(injected.id);
+    expect(redelivered.configVersion).toBe(2);
+    const formatted = await freshCtx.formatInboundContent(redelivered);
     expect(formatted).toContain("could not be verified");
     expect(formatted).not.toContain("/review");
 
-    await freshCtx.finishTurn(injected, { status: "success", terminal: true });
+    await freshCtx.finishTurn(redelivered, { status: "success", terminal: true });
     expect(cap.ackEntry).toHaveBeenCalledWith(2);
-    expect(freshCtx.hasPendingDelivery?.([injected])).toBe(false);
+    expect(freshCtx.hasPendingDelivery?.([redelivered])).toBe(false);
     expect(cap.startCount() + cap.resumeCount()).toBe(2);
     expect(cap.recoverChat).toHaveBeenCalledTimes(1);
 
+    await cap.runtime.shutdown();
+  });
+
+  it("keeps recovery chances independent per message: one message's recovery does not consume another's", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // Two distinct fenced messages on the same chat.
+    const first = textMessage("/review one", undefined, 2);
+    const second = textMessage("/review two", undefined, 3);
+
+    // The first message consumes its recovery (marker written at retry).
+    await expect(cap.ctx.formatInboundContent(first)).rejects.toThrow(/registry is not published/);
+    // A second, UNRELATED message must still get its own recoverable throw
+    // — the first message's attempt marker must not poison it.
+    await expect(cap.ctx.formatInboundContent(second)).rejects.toThrow(/registry is not published/);
+
+    await cap.runtime.shutdown();
+  });
+
+  it("keeps the old handler's registry snapshot isolated from a fresh handler's publication", async () => {
+    const cap = await captureContext();
+    const oldCtx = cap.ctx;
+    oldCtx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    // A fresh handler starts and publishes its own v2 registry.
+    const fresh = await captureContext();
+    fresh.ctx.publishTeamSkillCommands(PUBLISHED, 2);
+
+    // The OLD context still resolves against its OWN v1 snapshot: a v1
+    // message rewrites through it, and a v2 message fences against v1 —
+    // it must NOT observe the fresh handler's v2 publication.
+    expect(await oldCtx.formatInboundContent(textMessage("/review", undefined, 1))).toContain("/review-first-tree");
+    await expect(oldCtx.formatInboundContent(textMessage("/review", undefined, 2))).rejects.toThrow(
+      /registry is not published/,
+    );
+
+    await fresh.runtime.shutdown();
     await cap.runtime.shutdown();
   });
 

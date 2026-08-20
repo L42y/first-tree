@@ -505,36 +505,35 @@ export class SessionRuntime {
    * an unresolvable registry (two null publications in a row = provably no
    * progress, bounded terminal notice instead of an infinite recovery loop).
    */
-  private readonly teamSkillCommandStates = new Map<
-    string,
-    {
-      registry: TeamSkillCommandRegistry | null;
-      version: number | null;
-      consecutiveNullPublications: number;
-      fenceRecoveryAttempts: number;
-      publicationsSinceFenceRecovery: number;
-    }
-  >();
+  /**
+   * Runtime-level recovery-attempt markers for the config-version fence:
+   * the ONLY state shared across handler restarts, scoped per
+   * (chatId, messageId) — never a whole registry. A marker is written when
+   * a fenced message is retried into a fresh handler, and reclaimed when
+   * that exact message later formats successfully, settles (finishTurn),
+   * or hits the bounded terminal boundary. Two unrelated messages never
+   * consume each other's single recovery chance.
+   */
+  private readonly fenceRecoveryAttempts = new Map<string, Set<string>>();
 
-  private teamSkillCommandStateFor(chatId: string): {
-    registry: TeamSkillCommandRegistry | null;
-    version: number | null;
-    consecutiveNullPublications: number;
-    fenceRecoveryAttempts: number;
-    publicationsSinceFenceRecovery: number;
-  } {
-    let state = this.teamSkillCommandStates.get(chatId);
-    if (!state) {
-      state = {
-        registry: null,
-        version: null,
-        consecutiveNullPublications: 0,
-        fenceRecoveryAttempts: 0,
-        publicationsSinceFenceRecovery: 0,
-      };
-      this.teamSkillCommandStates.set(chatId, state);
+  private hasFenceRecoveryAttempt(chatId: string, messageId: string): boolean {
+    return this.fenceRecoveryAttempts.get(chatId)?.has(messageId) ?? false;
+  }
+
+  private recordFenceRecoveryAttempt(chatId: string, messageId: string): void {
+    let markers = this.fenceRecoveryAttempts.get(chatId);
+    if (!markers) {
+      markers = new Set();
+      this.fenceRecoveryAttempts.set(chatId, markers);
     }
-    return state;
+    markers.add(messageId);
+  }
+
+  private clearFenceRecoveryAttempt(chatId: string, messageId: string): void {
+    const markers = this.fenceRecoveryAttempts.get(chatId);
+    if (!markers) return;
+    markers.delete(messageId);
+    if (markers.size === 0) this.fenceRecoveryAttempts.delete(chatId);
   }
 
   constructor(config: SessionRuntimeConfig) {
@@ -3094,23 +3093,20 @@ export class SessionRuntime {
       : sessionRoot;
 
     // Team Skill slash-command registry (base slug → ready/unavailable
-    // target) plus the resource-config version the registry proves,
-    // published by managed-session preparation after every projection
-    // attempt. The pair is replaced atomically as a whole — a stale
-    // registry is never cleared by a non-authoritative reconcile.
+    // target) plus the resource-config version the registry proves. This
+    // pair is an ATOMIC PER-HANDLER SNAPSHOT: a publication replaces it on
+    // this context only, and a fresh handler can never mutate the registry
+    // an old (possibly still draining) handler resolves commands against.
     // `registry: null` means UNPUBLISHED/UNKNOWN (distinct from a
     // verified-empty registry): the rewrite boundary blocks strict slash
-    // commands until preparation publishes. The version fence matters for
-    // active sessions: a message stamped with a newer config version must
-    // not resolve commands against a registry proven for an older one.
-    // Applying it here — inside the SessionContext's formatInboundContent —
-    // covers every provider's start/resume/inject path at one shared
-    // boundary, because all of them render user text through this method.
-    // Per-chat registry state lives on the SessionRuntime (not the
-    // per-handler closure) so consecutive UNRESOLVED publications are
-    // observable across a fresh handler — that is what bounds the
-    // recovery loop when no preparation can ever prove an identity.
-    const teamSkillCommands = this.teamSkillCommandStateFor(chatId);
+    // commands until preparation publishes. Applying it here — inside the
+    // SessionContext's formatInboundContent — covers every provider's
+    // start/resume/inject path at one shared boundary, because all of them
+    // render user text through this method.
+    let teamSkillCommands: { registry: TeamSkillCommandRegistry | null; version: number | null } = {
+      registry: null,
+      version: null,
+    };
     // Message ids whose strict slash command failed the registry version
     // fence. When such a message is later retried, the session is failed
     // for recovery so a FRESH handler reconciles and republishes a registry
@@ -3118,7 +3114,9 @@ export class SessionRuntime {
     // — a format-first provider otherwise loops on its own fence forever.
     // Same-version genuinely-unavailable commands never land here, so they
     // never trigger a restart; the set is read-and-cleared per retry to
-    // avoid cross-message false positives.
+    // avoid cross-message false positives. The runtime-level per-message
+    // attempt markers (see fenceRecoveryAttempts) are what actually bound
+    // the loop across handlers.
     const registryVersionMismatchedMessageIds = new Set<string>();
 
     const forwardResult = createResultSink({
@@ -3204,6 +3202,9 @@ export class SessionRuntime {
         // SessionContext finish/retry stay behind the adoption fence. Already-issued
         // DeliveryTokens carry the settlement lease for drain notice+ACK.
         if (mutationValid && !mutationValid()) return Promise.resolve();
+        // Settled messages reclaim their fence recovery-attempt markers.
+        const batch = Array.isArray(messages) ? messages : [messages];
+        for (const message of batch) this.clearFenceRecoveryAttempt(chatId, message.id);
         return this.completeDeliveryTurn(chatId, messages, outcome, mutationValid);
       },
       retryTurn: (messages, reason) => {
@@ -3218,19 +3219,20 @@ export class SessionRuntime {
         // starts a fresh handler whose preparation reconciles the new
         // version first.
         const batch = Array.isArray(messages) ? messages : [messages];
-        let versionMismatched = false;
+        const mismatchedWithCustody: SessionMessage[] = [];
         for (const message of batch) {
           if (!registryVersionMismatchedMessageIds.delete(message.id)) continue;
           if (
             message.inboxEntryId !== undefined &&
             this.inboxDelivery.hasEntry({ chatId, entryId: message.inboxEntryId, messageId: message.id })
           ) {
-            versionMismatched = true;
+            mismatchedWithCustody.push(message);
           }
         }
-        if (versionMismatched) {
-          teamSkillCommands.fenceRecoveryAttempts += 1;
-          teamSkillCommands.publicationsSinceFenceRecovery = 0;
+        if (mismatchedWithCustody.length > 0) {
+          for (const message of mismatchedWithCustody) {
+            this.recordFenceRecoveryAttempt(chatId, message.id);
+          }
           this.failSessionForRecovery(chatId, "team_skill_registry_version_mismatch");
         }
         this.projection.projectSessionRuntime(chatId);
@@ -3266,38 +3268,14 @@ export class SessionRuntime {
         // `null` commands = unknown/unpublished: strict slash commands fail
         // closed until a proven registry lands. A list replaces the
         // registry atomically as a whole, stamped with the config version
-        // the publication proves. Consecutive null publications are
-        // counted across handlers: two in a row means provably no
-        // progress, which switches the fence from recovery to the bounded
-        // terminal notice.
-        teamSkillCommands.publicationsSinceFenceRecovery += 1;
-        if (commands === null) {
-          teamSkillCommands.registry = null;
-          teamSkillCommands.version = null;
-          teamSkillCommands.consecutiveNullPublications += 1;
-        } else {
-          // A version-ADVANCING publication is the only progress evidence
-          // that earns another recovery cycle for an ahead-of-registry
-          // message; a same/lower re-publication is provably no progress.
-          if (
-            provenVersion !== null &&
-            (teamSkillCommands.version === null || provenVersion > teamSkillCommands.version)
-          ) {
-            teamSkillCommands.fenceRecoveryAttempts = 0;
-          }
-          teamSkillCommands.registry = buildTeamSkillCommandRegistry(commands, log);
-          teamSkillCommands.version = provenVersion;
-          teamSkillCommands.consecutiveNullPublications = 0;
-        }
+        // the publication proves — ON THIS HANDLER'S SNAPSHOT ONLY.
+        teamSkillCommands = {
+          registry: commands === null ? null : buildTeamSkillCommandRegistry(commands, log),
+          version: provenVersion,
+        };
       },
       formatInboundContent: async (message) => {
-        const {
-          registry,
-          version,
-          consecutiveNullPublications,
-          fenceRecoveryAttempts,
-          publicationsSinceFenceRecovery,
-        } = teamSkillCommands;
+        const { registry, version } = teamSkillCommands;
         const stamp = message.configVersion;
         // Version fence, direction-aware. A strict slash command is only
         // as trustworthy as the registry's proven config version;
@@ -3320,40 +3298,30 @@ export class SessionRuntime {
             participants,
           );
         }
-        // Bounded terminal boundaries: preparation has either failed to
-        // prove ANY registry across a fresh handler too, or one fresh
-        // recovery already failed to reach this message's version — in
-        // both cases another cycle would produce the same outcome forever.
-        // Settle the turn with an inert notice instead of looping.
-        if (
-          versionMismatched &&
-          ((registry === null && consecutiveNullPublications >= 2) ||
-            // No-progress bound: a fresh recovery already happened AND a
-            // publication after it failed to advance to the message's
-            // version (advancing resets the attempt count, so reaching
-            // this branch with attempts intact proves stagnation).
-            (stamp !== undefined &&
-              version !== null &&
-              stamp > version &&
-              fenceRecoveryAttempts >= 1 &&
-              publicationsSinceFenceRecovery >= 1))
-        ) {
-          return formatInboundContent(
-            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
-            participants,
+        // Bounded terminal boundary: this exact message already consumed
+        // its one fresh-handler recovery (a runtime-level, per-message
+        // attempt marker survives the restart), and the fresh preparation
+        // — which always runs before this format in production — still did
+        // not make the message resolvable. Settle with an inert notice
+        // instead of looping recovery forever.
+        if (versionMismatched && this.hasFenceRecoveryAttempt(chatId, message.id)) {
+          const formatted = rewriteSessionMessageCommandToNotice(
+            message,
+            TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE,
+            mentionGate,
           );
+          this.clearFenceRecoveryAttempt(chatId, message.id);
+          return formatInboundContent(formatted, participants);
         }
         try {
-          return await formatInboundContent(
-            rewriteSessionMessageCommand(message, fencedRegistry, {
-              // A canonical `@slug …` prefix only qualifies as a command
-              // prefix when the message's routed metadata explicitly
-              // mentions this agent — typed-but-unrouted look-alikes never
-              // unlock the mention-prefixed rewrite.
-              allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
-            }),
+          const formatted = await formatInboundContent(
+            rewriteSessionMessageCommand(message, fencedRegistry, mentionGate),
             participants,
           );
+          // A successful format reclaims any attempt marker for this
+          // message (e.g. a fresh registry that finally covers it).
+          this.clearFenceRecoveryAttempt(chatId, message.id);
+          return formatted;
         } catch (error) {
           if (versionMismatched && isTeamSkillCommandUnavailableError(error)) {
             registryVersionMismatchedMessageIds.add(message.id);
