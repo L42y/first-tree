@@ -17,10 +17,10 @@ import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
 import {
-  buildTeamSkillCommandMap,
-  EMPTY_TEAM_SKILL_COMMAND_MAP,
+  buildTeamSkillCommandRegistry,
+  EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
   rewriteSessionMessageCommand,
-  type TeamSkillCommandMap,
+  type TeamSkillCommandRegistry,
 } from "../../../runtime/team-skill-command-rewrite.js";
 
 // Use the real managed reconciler instead of the default handler-test double
@@ -207,9 +207,9 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const plumbing = mockCtxPlumbing({ sendMessage }, "chat-materialize");
   // Mirror the production SessionContext wiring (session-runtime.ts): the
-  // reconciled Team Skill name map rewrites base slash commands before the
-  // provider ever sees the text.
-  let teamSkillCommands: TeamSkillCommandMap = EMPTY_TEAM_SKILL_COMMAND_MAP;
+  // reconciled Team Skill command registry rewrites base slash commands
+  // before the provider ever sees the text.
+  let teamSkillCommands: TeamSkillCommandRegistry = EMPTY_TEAM_SKILL_COMMAND_REGISTRY;
   return {
     agent: {
       agentId: AGENT_ID,
@@ -226,8 +226,8 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
     recordProviderActivity: () => {},
     emitEvent: () => {},
     ...plumbing,
-    publishTeamSkillCommands: (teamSkills) => {
-      teamSkillCommands = buildTeamSkillCommandMap(teamSkills);
+    publishTeamSkillCommands: (commands) => {
+      teamSkillCommands = buildTeamSkillCommandRegistry(commands);
     },
     formatInboundContent: (msg) => plumbing.formatInboundContent(rewriteSessionMessageCommand(msg, teamSkillCommands)),
     finishTurn: async () => {},

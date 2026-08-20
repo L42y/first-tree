@@ -87,10 +87,10 @@ import {
 import { type RuntimeSyncActiveSet, SessionProjectionAuthority } from "./session-projection-authority.js";
 import { type SlotDeliveryKind, SlotSchedulerAuthority } from "./slot-scheduler-authority.js";
 import {
-  buildTeamSkillCommandMap,
-  EMPTY_TEAM_SKILL_COMMAND_MAP,
+  buildTeamSkillCommandRegistry,
+  EMPTY_TEAM_SKILL_COMMAND_REGISTRY,
   rewriteSessionMessageCommand,
-  type TeamSkillCommandMap,
+  type TeamSkillCommandRegistry,
 } from "./team-skill-command-rewrite.js";
 
 type SessionEntry = {
@@ -404,6 +404,17 @@ type SessionRuntimeConfig = {
  * - Registry persistence for crash recovery
  */
 const MAX_EAGER_IMAGE_FETCHES_PER_DELIVERY = MAX_MESSAGE_ATTACHMENT_REFS;
+
+/**
+ * Whether the message's routed metadata explicitly mentions `agentId`.
+ * `metadata.mentions` is the server's routing truth — a typed-but-unrouted
+ * `@name` look-alike carries no entry and must not unlock the
+ * mention-prefixed slash rewrite.
+ */
+function messageMentionsAgent(message: SessionMessage, agentId: string): boolean {
+  const mentions = message.metadata?.mentions;
+  return Array.isArray(mentions) && mentions.includes(agentId);
+}
 
 /** Structured terminal provider-failure events that feed the durable runtime notice. */
 function isTerminalProviderFailureSessionEvent(event: SessionEvent): boolean {
@@ -3040,13 +3051,15 @@ export class SessionRuntime {
       ? documentBasePathFromRuntimeConfig(cachedPayload, sessionRoot, workspaceRoot)
       : sessionRoot;
 
-    // Team Skill slash-command rewrite map (base slug → effective on-disk
-    // command name), published by managed-session preparation after every
-    // skills reconcile. Applying it here — inside the SessionContext's
-    // formatInboundContent — covers every provider's start/resume/inject
-    // path at one shared boundary, because all of them render user text
-    // through this method.
-    let teamSkillCommands: TeamSkillCommandMap = EMPTY_TEAM_SKILL_COMMAND_MAP;
+    // Team Skill slash-command registry (base slug → verified effective
+    // name, plus configured-but-unavailable bases), published by
+    // managed-session preparation after every settled projection. The
+    // reference is replaced atomically as a whole — a stale map is never
+    // cleared by a non-authoritative reconcile. Applying it here — inside
+    // the SessionContext's formatInboundContent — covers every provider's
+    // start/resume/inject path at one shared boundary, because all of them
+    // render user text through this method.
+    let teamSkillCommands: TeamSkillCommandRegistry = EMPTY_TEAM_SKILL_COMMAND_REGISTRY;
 
     const forwardResult = createResultSink({
       clearTrigger: () => {
@@ -3165,11 +3178,20 @@ export class SessionRuntime {
         this.projection.persistRegistry();
       },
       buildAgentEnv: (parentEnv) => buildAgentEnv(parentEnv, envCtx),
-      publishTeamSkillCommands: (teamSkills) => {
-        teamSkillCommands = buildTeamSkillCommandMap(teamSkills, log);
+      publishTeamSkillCommands: (commands) => {
+        teamSkillCommands = buildTeamSkillCommandRegistry(commands, log);
       },
-      formatInboundContent: (message) =>
-        formatInboundContent(rewriteSessionMessageCommand(message, teamSkillCommands), participants),
+      formatInboundContent: async (message) =>
+        formatInboundContent(
+          rewriteSessionMessageCommand(message, teamSkillCommands, {
+            // A canonical `@slug …` prefix only qualifies as a command
+            // prefix when the message's routed metadata explicitly
+            // mentions this agent — typed-but-unrouted look-alikes never
+            // unlock the mention-prefixed rewrite.
+            allowMentionPrefix: messageMentionsAgent(message, this.config.agentIdentity.agentId),
+          }),
+          participants,
+        ),
       resolveSenderLabel: async (senderId) => resolveSenderLabel(senderId, await participants.get()),
       formatFromHeader: (message) => buildFromHeader(message, participants),
     };

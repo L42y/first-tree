@@ -257,14 +257,17 @@ export type SessionContext = HandlerContext & {
   formatInboundContent: (message: SessionMessage) => Promise<string>;
 
   /**
-   * Publish the reconciled Team Skill name map (base slug → final on-disk
-   * command name) for this session. Called by managed-session preparation
-   * after every skills reconcile so the runtime's shared inbound formatter
-   * can rewrite a user-typed `/base` to the actually-installed command
-   * before any provider interprets it. Optional: test doubles and legacy
-   * wiring may omit it — no map simply means no rewrite.
+   * Publish the session's Team Skill command registry input: every
+   * Cloud-configured base slug with its verified effective command name,
+   * or `effectiveName: null` when no verified target exists (the rewrite
+   * boundary fails closed for those). Called by managed-session
+   * preparation after every settled projection so the runtime's shared
+   * inbound formatter can rewrite a user-typed `/base` to the
+   * actually-installed command before any provider interprets it.
+   * Optional: test doubles and legacy wiring may omit it — no registry
+   * simply means no rewrite.
    */
-  publishTeamSkillCommands?: (teamSkills: readonly { key: string; name: string; requestedSlug: string }[]) => void;
+  publishTeamSkillCommands?: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
 
   /**
    * Resolve a senderId to its chat-local name (the `@<name>` mention token).

@@ -10,8 +10,8 @@ import { mockEntry } from "./test-helpers.js";
  * The SessionContext produced by SessionRuntime is the shared inbound
  * boundary every provider's start/resume/inject path funnels through.
  * These tests pin the Team Skill slash-rewrite wiring on that boundary:
- * publish a reconciled base→effective map, and every later
- * formatInboundContent call rewrites the user-typed base command.
+ * publish a reconciled command registry, and every later
+ * formatInboundContent call rewrites (or fails closed) accordingly.
  */
 
 function mockSdk(): FirstTreeHubSDK {
@@ -22,8 +22,15 @@ function mockSdk(): FirstTreeHubSDK {
   } as unknown as FirstTreeHubSDK;
 }
 
-function textMessage(content: string): SessionMessage {
-  return { id: "m1", chatId: "chat-a", senderId: "sender-1", format: "text", content, metadata: {} };
+function textMessage(content: string, mentions?: string[]): SessionMessage {
+  return {
+    id: "m1",
+    chatId: "chat-a",
+    senderId: "sender-1",
+    format: "text",
+    content,
+    metadata: mentions ? { mentions } : {},
+  };
 }
 
 async function captureContext(): Promise<{ ctx: SessionContext; runtime: SessionRuntime }> {
@@ -61,7 +68,7 @@ async function captureContext(): Promise<{ ctx: SessionContext; runtime: Session
   return { ctx: capturedCtx, runtime };
 }
 
-const PUBLISHED = [{ key: "resource:review", requestedSlug: "review", name: "review-first-tree" }];
+const PUBLISHED = [{ requestedSlug: "review", effectiveName: "review-first-tree" }];
 
 describe("SessionRuntime Team Skill slash rewrite wiring", () => {
   it("rewrites a published base command for every later formatted inbound message", async () => {
@@ -75,20 +82,44 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
     await runtime.shutdown();
   });
 
-  it("keeps canonical mention prefixes and leaves prose untouched", async () => {
+  it("rewrites a mention-prefixed command only when routed metadata mentions this agent", async () => {
     const { ctx, runtime } = await captureContext();
     ctx.publishTeamSkillCommands?.(PUBLISHED);
 
-    expect(await ctx.formatInboundContent(textMessage("@nova /review please"))).toContain(
-      "@nova /review-first-tree please",
-    );
-    expect(await ctx.formatInboundContent(textMessage("hello /review"))).toContain("hello /review");
-    expect(await ctx.formatInboundContent(textMessage("hello /review"))).not.toContain("review-first-tree");
+    const routed = await ctx.formatInboundContent(textMessage("@nova /review please", ["agent-1"]));
+    expect(routed).toContain("@nova /review-first-tree please");
+    // A typed-but-unrouted mention look-alike never unlocks the rewrite.
+    const unrouted = await ctx.formatInboundContent(textMessage("@nova /review please"));
+    expect(unrouted).toContain("@nova /review please");
+    expect(unrouted).not.toContain("review-first-tree");
+    expect(await ctx.formatInboundContent(textMessage("hello /review", ["agent-1"]))).toContain("hello /review");
 
     await runtime.shutdown();
   });
 
-  it("passes commands through untouched before any map is published", async () => {
+  it("fails closed before the provider when a configured command has no verified target", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands?.([{ requestedSlug: "review", effectiveName: null }]);
+
+    await expect(ctx.formatInboundContent(textMessage("/review src/"))).rejects.toThrow(/no verified installed target/);
+
+    await runtime.shutdown();
+  });
+
+  it("atomically replaces the registry on the next publication — stale aliases stop rewriting", async () => {
+    const { ctx, runtime } = await captureContext();
+    ctx.publishTeamSkillCommands?.(PUBLISHED);
+    expect(await ctx.formatInboundContent(textMessage("/review"))).toContain("/review-first-tree");
+
+    // A new complete projection without the skill clears its alias.
+    ctx.publishTeamSkillCommands?.([]);
+    expect(await ctx.formatInboundContent(textMessage("/review"))).toContain("/review");
+    expect(await ctx.formatInboundContent(textMessage("/review"))).not.toContain("review-first-tree");
+
+    await runtime.shutdown();
+  });
+
+  it("passes commands through untouched before any registry is published", async () => {
     const { ctx, runtime } = await captureContext();
     const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
     expect(formatted).toContain("/review src/");

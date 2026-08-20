@@ -118,6 +118,19 @@ export type ReconciledTeamSkill = Readonly<{
   installedDigest: `sha256:${string}`;
 }>;
 
+/**
+ * One Cloud-configured Team Skill's command identity after reconcile.
+ * `effectiveName` is null when no verified target exists for the base
+ * slug (install failed, quarantined, or dropped during publication
+ * verification) — the inbound rewrite must fail closed for such a
+ * command rather than pass it to a possibly identically-named unmanaged
+ * Skill.
+ */
+export type ReconciledTeamSkillCommand = Readonly<{
+  requestedSlug: string;
+  effectiveName: string | null;
+}>;
+
 export type ManagedSkillFailure = Readonly<{
   key: string;
   reason: string;
@@ -130,6 +143,15 @@ export type ReconcileManagedSkillsResult = Readonly<{
   skipped: readonly string[];
   removed: readonly string[];
   teamSkills: readonly ReconciledTeamSkill[];
+  /**
+   * Complete Team Skill command registry from an authoritative snapshot:
+   * every desired base slug with its verified effective name (or null).
+   * `null` means this result carries no publication (stale/unavailable
+   * snapshot or failed reconcile) and consumers must keep the previously
+   * published registry — an old map is only replaced by a new complete,
+   * verified projection.
+   */
+  teamSkillCommands: readonly ReconciledTeamSkillCommand[] | null;
   failures: readonly ManagedSkillFailure[];
   staleTeamSnapshot: boolean;
 }>;
@@ -382,6 +404,7 @@ type MutableReconcileResult = {
   skipped: string[];
   removed: string[];
   teamSkills: ReconciledTeamSkill[];
+  teamSkillCommands: ReconciledTeamSkillCommand[] | null;
   failures: ManagedSkillFailure[];
   staleTeamSnapshot: boolean;
 };
@@ -465,6 +488,7 @@ export async function reconcileManagedSkills(
       skipped: [],
       removed: [],
       teamSkills: [],
+      teamSkillCommands: null,
       failures: [],
       staleTeamSnapshot: false,
     };
@@ -667,6 +691,7 @@ export async function reconcileManagedSkills(
           successfulTargets,
           publication.verifiedTargets,
         );
+        mutable.teamSkillCommands = buildTeamSkillCommandEntries(desiredSkills, mutable.teamSkills);
       }
       return freezeResult(state.resourceConfigVersion, mutable);
     } catch (error) {
@@ -719,6 +744,7 @@ function freezeResult(resourceConfigVersion: number, result: MutableReconcileRes
     skipped: Object.freeze([...result.skipped]),
     removed: Object.freeze([...result.removed]),
     teamSkills: Object.freeze([...result.teamSkills]),
+    teamSkillCommands: result.teamSkillCommands === null ? null : Object.freeze([...result.teamSkillCommands]),
     failures: Object.freeze([...result.failures]),
     staleTeamSnapshot: result.staleTeamSnapshot,
   });
@@ -1767,6 +1793,27 @@ function buildReconciledTeamRows(
     });
   }
   return rows;
+}
+
+/**
+ * The complete command registry for an authoritative reconcile: every
+ * desired Team Skill's base slug paired with its verified effective name,
+ * or null when no verified target exists (failed install, quarantine, or
+ * publication invalidation). Desired rows without a usable base slug
+ * (validation failures carry an empty requestedSlug) never had a typable
+ * command and are omitted.
+ */
+function buildTeamSkillCommandEntries(
+  desired: readonly DesiredManagedSkill[],
+  teamSkills: readonly ReconciledTeamSkill[],
+): ReconciledTeamSkillCommand[] {
+  const effectiveByKey = new Map<string, string>(teamSkills.map((skill) => [skill.key, skill.name]));
+  const entries: ReconciledTeamSkillCommand[] = [];
+  for (const skill of desired) {
+    if (skill.kind !== "team" || !skill.requestedSlug) continue;
+    entries.push({ requestedSlug: skill.requestedSlug, effectiveName: effectiveByKey.get(skill.key) ?? null });
+  }
+  return entries;
 }
 
 async function writeInlineSkillTree(stagingPath: string, allocated: AllocatedManagedSkill): Promise<void> {

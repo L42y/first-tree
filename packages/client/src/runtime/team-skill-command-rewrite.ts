@@ -1,5 +1,8 @@
+import { ManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
+
 /**
- * Team Skill slash-command rewrite at the shared inbound boundary.
+ * Team Skill slash-command registry + rewrite at the shared inbound
+ * boundary.
  *
  * The Managed Skills materializer may install a Team Skill under a
  * collision-suffixed `effectiveName` (e.g. `review-first-tree`) when an
@@ -8,95 +11,133 @@
  * without a rewrite the provider would invoke the WRONG Skill — the local
  * one squatting on the base name.
  *
- * This module maps base slug → effectiveName (published by the reconciler
- * after each allocation) and rewrites the command token in user message
- * text before any provider interprets it. The Team-configured command
- * claims its base slug: once a Team Skill owns `review`, the local
- * unmanaged `/review` is no longer reachable via slash — an explicit
- * product trade-off, not an accident.
+ * The registry is published per session after every settled skills
+ * projection and holds the COMPLETE desired set, not just the successful
+ * mappings: a Cloud-configured base slug with no verified target is
+ * unavailable, and typing it fails closed (pre-provider) instead of
+ * falling through to a possibly identically-named unmanaged Skill.
+ * Successful mappings rewrite the command token; a Team Skill's base
+ * command takes precedence over a local unmanaged Skill of the same name
+ * (an explicit product trade-off).
  *
  * Only strict command positions rewrite, mirroring the Web composer's
  * slash-trigger semantics: a bare `/name` at the start of the message, or
- * one following a canonical mention prefix (`@name …` tokens + whitespace)
- * for already-routed group chats. Prose (`hello /review`), paths, and
- * mid-text slashes are never touched.
+ * — only when the caller proves the message's routed metadata mentions
+ * this agent — one following a canonical mention prefix (`@name …`
+ * tokens + whitespace). The command name must be followed by whitespace
+ * or end-of-text. Prose (`hello /review`), paths, `/review.extra`, and
+ * mention-prefixed text without routed mention metadata are never
+ * touched.
  *
- * Fail-closed: if two reconciled rows ever claim the same base slug with
- * different effective names, BOTH mappings are dropped (no winner-guessing)
- * and the conflict is logged. Cloud already marks normalized duplicate
- * groups `duplicate_skill_target_name` unavailable, so a conflict here
- * means inconsistent local state — passing the text through untouched is
- * the only non-guessing behavior left.
+ * Fail-closed: if two entries ever claim the same base slug with
+ * different effective names, BOTH mappings are dropped (no
+ * winner-guessing) and the base lands in `unavailable`. Cloud already
+ * marks normalized duplicate groups `duplicate_skill_target_name`
+ * unavailable, so a conflict here means inconsistent local state.
  */
 
-/** Base slash name → final on-disk command name for this agent's skills. */
-export type TeamSkillCommandMap = ReadonlyMap<string, string>;
+export type TeamSkillCommandRegistry = Readonly<{
+  /** Base slash name → final on-disk command name for verified installs. */
+  rewrite: ReadonlyMap<string, string>;
+  /** Base slash names that are Cloud-configured but have no verified target. */
+  unavailable: ReadonlySet<string>;
+}>;
 
-export const EMPTY_TEAM_SKILL_COMMAND_MAP: TeamSkillCommandMap = new Map();
+export const EMPTY_TEAM_SKILL_COMMAND_REGISTRY: TeamSkillCommandRegistry = {
+  rewrite: new Map(),
+  unavailable: new Set(),
+};
 
-type CommandMapSource = Readonly<{
+export type TeamSkillCommandEntry = Readonly<{
   /** Cloud-declared base slug the user types. */
   requestedSlug: string;
-  /** Final installed command name (may carry a collision suffix). */
-  name: string;
+  /** Final installed command name, or null when no verified target exists. */
+  effectiveName: string | null;
 }>;
 
 const SAFE_SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 /**
- * Build the rewrite map from reconciled Team Skills. Identity mappings
- * (no collision suffix) need no rewrite and are omitted. Rows with a
- * malformed base slug are skipped; a base slug claimed by two different
- * effective names is dropped entirely (fail closed) and reported via log.
+ * Build the session registry from a complete, authoritative command list.
+ * Identity mappings (no collision suffix) need no rewrite and are omitted
+ * from `rewrite`. Rows with a malformed base slug are skipped. A base slug
+ * claimed by two different effective names fails closed into
+ * `unavailable` and is reported via log.
  */
-export function buildTeamSkillCommandMap(
-  teamSkills: readonly CommandMapSource[],
+export function buildTeamSkillCommandRegistry(
+  entries: readonly TeamSkillCommandEntry[],
   log?: (message: string) => void,
-): TeamSkillCommandMap {
-  const byBase = new Map<string, string>();
+): TeamSkillCommandRegistry {
+  const rewrite = new Map<string, string>();
+  const unavailable = new Set<string>();
   const conflicts = new Set<string>();
-  for (const skill of teamSkills) {
-    const base = skill.requestedSlug;
-    if (!SAFE_SLUG.test(base) || base === skill.name) continue;
-    const existing = byBase.get(base);
-    if (existing !== undefined && existing !== skill.name) {
+  for (const entry of entries) {
+    const base = entry.requestedSlug;
+    if (!SAFE_SLUG.test(base)) continue;
+    if (entry.effectiveName === null) {
+      unavailable.add(base);
+      continue;
+    }
+    if (base === entry.effectiveName) continue;
+    const existing = rewrite.get(base);
+    if (existing !== undefined && existing !== entry.effectiveName) {
       conflicts.add(base);
       continue;
     }
-    byBase.set(base, skill.name);
+    rewrite.set(base, entry.effectiveName);
   }
   for (const base of conflicts) {
-    byBase.delete(base);
+    rewrite.delete(base);
+    unavailable.add(base);
     log?.(
-      `Team Skill command map conflict for /${base}: multiple effective names — leaving the command unrewritten (fail closed)`,
+      `Team Skill command registry conflict for /${base}: multiple effective names — the command now fails closed instead of guessing`,
     );
   }
-  return byBase;
+  return { rewrite, unavailable };
 }
 
 /** One canonical mention token (`@name`), matching the shared mention charset. */
 const MENTION_TOKEN = `@[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?![A-Za-z0-9_/-])`;
 
+/** Command name charset, then a hard boundary: whitespace or end of text. */
+const COMMAND_NAME = `([A-Za-z0-9][A-Za-z0-9_-]{0,119})(?=\\s|$)`;
+
+/** Bare mode: optional leading whitespace, then `/name`. */
+const BARE_COMMAND_RE = new RegExp(`^(\\s*)/${COMMAND_NAME}`);
+
 /**
- * Strict command position: optional leading whitespace, then any number of
- * canonical mention tokens separated by whitespace, then `/name`. The name
- * capture is greedy over the skill-name charset, so `/review-extra` never
- * partially matches a `review` entry.
+ * Mention-prefixed mode (routed group chats): whitespace and canonical
+ * mention tokens only, then `/name`. Used only when the caller has proven
+ * from routed message metadata that this agent is an explicit recipient.
  */
-const COMMAND_RE = new RegExp(String.raw`^(\s*(?:${MENTION_TOKEN}\s*)*)/([A-Za-z0-9][A-Za-z0-9_-]{0,119})`);
+const MENTIONED_COMMAND_RE = new RegExp(`^(\\s*(?:${MENTION_TOKEN}\\s*)*)/${COMMAND_NAME}`);
 
 /**
  * Rewrite the leading slash command of user message text when its name has
- * a known effective target. Returns the input unchanged (same reference)
- * when there is nothing to rewrite: unmapped names pass through so local
- * and runtime-reported commands keep working.
+ * a verified effective target. Returns the input unchanged (same
+ * reference) when there is nothing to rewrite; unmapped names pass through
+ * so local and runtime-reported commands keep working.
+ *
+ * Throws ManagedSkillsUnsafeDiscoveryError when the command is
+ * Cloud-configured but has no verified target: passing it through could
+ * invoke an identically-named unmanaged Skill, so the turn fails before
+ * any provider sees it.
  */
-export function rewriteTeamSkillCommand(content: string, map: TeamSkillCommandMap): string {
-  if (map.size === 0) return content;
-  const match = COMMAND_RE.exec(content);
+export function rewriteTeamSkillCommand(
+  content: string,
+  registry: TeamSkillCommandRegistry,
+  opts?: { allowMentionPrefix?: boolean },
+): string {
+  const match = (opts?.allowMentionPrefix ? MENTIONED_COMMAND_RE : BARE_COMMAND_RE).exec(content);
   if (!match) return content;
   const [matched, prefix, name] = match;
-  const effective = map.get(name ?? "");
+  const command = name ?? "";
+  if (registry.unavailable.has(command)) {
+    throw new ManagedSkillsUnsafeDiscoveryError(
+      `Team Skill command /${command} has no verified installed target — refusing to hand it to the provider`,
+    );
+  }
+  const effective = registry.rewrite.get(command);
   if (!effective) return content;
   return `${prefix}/${effective}${content.slice(matched.length)}`;
 }
@@ -106,8 +147,12 @@ export function rewriteTeamSkillCommand(content: string, map: TeamSkillCommandMa
  * content. Non-string payloads (file/image batches) are returned as-is;
  * their rendered text never starts with a user-typed slash command.
  */
-export function rewriteSessionMessageCommand<T extends { content: unknown }>(message: T, map: TeamSkillCommandMap): T {
-  if (map.size === 0 || typeof message.content !== "string") return message;
-  const rewritten = rewriteTeamSkillCommand(message.content, map);
+export function rewriteSessionMessageCommand<T extends { content: unknown }>(
+  message: T,
+  registry: TeamSkillCommandRegistry,
+  opts?: { allowMentionPrefix?: boolean },
+): T {
+  if (typeof message.content !== "string") return message;
+  const rewritten = rewriteTeamSkillCommand(message.content, registry, opts);
   return rewritten === message.content ? message : { ...message, content: rewritten };
 }

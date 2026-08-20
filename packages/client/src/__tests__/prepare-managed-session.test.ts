@@ -184,6 +184,7 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
+        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill" }],
         failures: [],
         staleTeamSnapshot: false,
       };
@@ -343,7 +344,7 @@ describe("prepareManagedSession", () => {
     expect(INIT_COMPLETE_SENTINEL_REL).toMatch(/init-complete/);
   });
 
-  it("publishes the reconciled Team Skill name map to the session context before briefing", async () => {
+  it("publishes the reconciled Team Skill command registry to the session context before briefing", async () => {
     const prepareManagedSession = await loadPrepare();
     const payload = {
       kind: "cursor" as const,
@@ -380,6 +381,7 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
+        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" }],
         failures: [],
         staleTeamSnapshot: false,
       };
@@ -402,7 +404,7 @@ describe("prepareManagedSession", () => {
     });
     const publishTeamSkillCommands = vi.fn();
     ctx.publishTeamSkillCommands = publishTeamSkillCommands;
-    const result = await prepareManagedSession({
+    await prepareManagedSession({
       sessionCtx: ctx,
       workspaceRoot,
       agentName: "prep-agent",
@@ -418,11 +420,13 @@ describe("prepareManagedSession", () => {
       },
     });
 
-    // The publish rides the same reconcile rows the briefing receives, and
-    // lands before the briefing/build steps so no provider turn can format
-    // user input with a stale map.
+    // The publish carries the complete command registry input (base slug →
+    // verified effective name) and lands before the briefing/build steps so
+    // no provider turn can format user input with a stale registry.
     expect(publishTeamSkillCommands).toHaveBeenCalledTimes(1);
-    expect(publishTeamSkillCommands).toHaveBeenCalledWith(result.teamSkills);
+    expect(publishTeamSkillCommands).toHaveBeenCalledWith([
+      { requestedSlug: "team-skill", effectiveName: "team-skill-first-tree" },
+    ]);
     expect(callOrder.indexOf("skills")).toBeLessThan(callOrder.indexOf("briefing"));
   });
 
@@ -734,6 +738,7 @@ describe("prepareManagedSession", () => {
             target: "/tmp/skill-target",
           },
         ],
+        teamSkillCommands: [{ requestedSlug: "team-skill", effectiveName: "team-skill" }],
         failures: [],
         staleTeamSnapshot: false,
       };
@@ -1006,6 +1011,7 @@ describe("projectManagedWorkspace", () => {
         skipped: [],
         removed: [],
         teamSkills: [],
+        teamSkillCommands: [],
         failures: [],
         staleTeamSnapshot: false,
       };

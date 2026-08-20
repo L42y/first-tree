@@ -182,6 +182,7 @@ describe("Pi lifecycle fence during managed-session preparation", () => {
           skipped: [],
           removed: [],
           teamSkills: [],
+          teamSkillCommands: [],
           failures: [],
           staleTeamSnapshot: false,
         };

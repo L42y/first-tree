@@ -111,6 +111,7 @@ function reconciledSkillsResult(resourceConfigVersion = 1) {
     skipped: [],
     removed: [],
     teamSkills: [],
+    teamSkillCommands: [],
     failures: [],
     staleTeamSnapshot: false,
   };

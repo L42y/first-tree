@@ -760,10 +760,12 @@ export async function projectManagedWorkspace(
           }
           const sourceRepos = suppressSourceRepos ? [] : declaredSourceRepos(workspace, payload);
           const teamSkills = projectionState.managed.teamSkills;
-          // Keep the slash-rewrite map current on this read-only path too:
-          // the verified projection still carries each Team Skill's
-          // requestedSlug → effectiveName pair.
-          sessionCtx.publishTeamSkillCommands?.(teamSkills);
+          // Keep the slash-command registry current on this read-only path
+          // too: the verified projection is complete, so every retained
+          // Team Skill has a verified target by construction.
+          sessionCtx.publishTeamSkillCommands?.(
+            teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
+          );
           if (beforeBriefing) {
             const result = beforeBriefing({ workspace, sourceRepos, teamSkills });
             if (result) await result;
@@ -799,7 +801,7 @@ export async function projectManagedWorkspace(
     const skillKind: ContextSourceKind = requestedKind === "local" ? "local" : "remote";
     const sourceRepos = suppressSourceRepos ? [] : declaredSourceRepos(workspace, payload);
 
-    const { teamSkills, resourceConfigVersion } = await reconcileManagedSkillsForConfig(
+    const { teamSkills, teamSkillCommands, resourceConfigVersion } = await reconcileManagedSkillsForConfig(
       workspace,
       runtimeProvider,
       providerSkillRoots,
@@ -810,12 +812,14 @@ export async function projectManagedWorkspace(
       bundledSkillsRoot,
     );
 
-    // Publish the base-slug → effective-name map BEFORE any provider turn
-    // is formatted from this context: a local collision may have installed
-    // a Team Skill under a suffixed name, and the shared inbound formatter
-    // rewrites the user-facing base command to the real target. Optional on
-    // the context so test doubles and legacy wiring can omit it.
-    sessionCtx.publishTeamSkillCommands?.(teamSkills);
+    // Publish the complete command registry BEFORE any provider turn is
+    // formatted from this context: a local collision may have installed a
+    // Team Skill under a suffixed name, and a configured-but-uninstalled
+    // base must fail closed. `null` means this result is not an
+    // authoritative publication (stale snapshot / failed reconcile) — the
+    // previously published registry stays in force. Optional on the
+    // context so test doubles and legacy wiring can omit it.
+    if (teamSkillCommands !== null) sessionCtx.publishTeamSkillCommands?.(teamSkillCommands);
 
     if (beforeBriefing) {
       const result = beforeBriefing({ workspace, sourceRepos, teamSkills });
