@@ -31,7 +31,9 @@ export function mockCtxPlumbing(
   formatInboundContent: (msg: SessionMessage) => Promise<string>;
   resolveSenderLabel: (senderId: string) => Promise<string>;
   formatFromHeader: (msg: SessionMessage) => Promise<string>;
-  publishTeamSkillCommands: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
+  publishTeamSkillCommands: (
+    commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+  ) => void;
 } {
   return {
     // Turn-completion hook — delivers nothing (final-text mirror retired).

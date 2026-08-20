@@ -3181,7 +3181,10 @@ export class SessionRuntime {
       },
       buildAgentEnv: (parentEnv) => buildAgentEnv(parentEnv, envCtx),
       publishTeamSkillCommands: (commands) => {
-        teamSkillCommands = buildTeamSkillCommandRegistry(commands, log);
+        // `null` = unknown/unpublished: strict slash commands fail closed
+        // until a proven registry lands. A list replaces the registry
+        // atomically as a whole.
+        teamSkillCommands = commands === null ? null : buildTeamSkillCommandRegistry(commands, log);
       },
       formatInboundContent: async (message) =>
         formatInboundContent(

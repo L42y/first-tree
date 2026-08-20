@@ -227,7 +227,7 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
     emitEvent: () => {},
     ...plumbing,
     publishTeamSkillCommands: (commands) => {
-      teamSkillCommands = buildTeamSkillCommandRegistry(commands);
+      teamSkillCommands = commands === null ? null : buildTeamSkillCommandRegistry(commands);
     },
     formatInboundContent: (msg) => plumbing.formatInboundContent(rewriteSessionMessageCommand(msg, teamSkillCommands)),
     finishTurn: async () => {},
@@ -557,7 +557,7 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
     // The formatter rejects pre-provider; inject keeps the turn recoverable
     // via retry instead of ACKing a success or delivering to the SDK.
     await waitFor(() => token.retry.mock.calls.length > 0);
-    expect(token.retry).toHaveBeenCalledWith(expect.objectContaining({ id: "m2" }), "claude_inject_format_failed");
+    expect(token.retry).toHaveBeenCalledWith(expect.objectContaining({ id: "m2" }), "team_skill_command_unavailable");
     expect(token.complete).not.toHaveBeenCalled();
     expect(state.observedInputs).toHaveLength(1);
 

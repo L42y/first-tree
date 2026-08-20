@@ -60,6 +60,7 @@ import {
   renderDocumentAttachmentsForLLM,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { isTeamSkillCommandUnavailableError } from "../../runtime/team-skill-command-rewrite.js";
 import { formatAuthHint, isClaudeAuthError } from "../handlers/auth-error-hint.js";
 import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
@@ -957,7 +958,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       sessionCtx.log(`toSDKUserMessage errored: ${err instanceof Error ? err.message : String(err)}`);
       // The SDK has not seen this input yet, so there is no durable terminal
       // evidence. Keep it recoverable instead of ACKing through `complete`.
-      token.retry(message, "claude_inject_format_failed");
+      // A Team Skill command refusal is a pre-provider fail-closed by
+      // definition — retry with its dedicated reason so the turn can
+      // succeed once a verified target lands.
+      token.retry(
+        message,
+        isTeamSkillCommandUnavailableError(err) ? "team_skill_command_unavailable" : "claude_inject_format_failed",
+      );
     }
   }
 

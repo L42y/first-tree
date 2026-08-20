@@ -1,6 +1,20 @@
 import { ManagedSkillsUnsafeDiscoveryError } from "./managed-skills.js";
 
 /**
+ * Pre-provider refusal for a strict slash command whose Team Skill identity
+ * is unavailable or not yet published. Extends
+ * ManagedSkillsUnsafeDiscoveryError so existing unsafe-discovery guards keep
+ * matching, while custody/settlement boundaries can recognize it explicitly
+ * as "provider never saw this input — safe to retry" via
+ * {@link isTeamSkillCommandUnavailableError}.
+ */
+export class TeamSkillCommandUnavailableError extends ManagedSkillsUnsafeDiscoveryError {}
+
+export function isTeamSkillCommandUnavailableError(error: unknown): error is TeamSkillCommandUnavailableError {
+  return error instanceof TeamSkillCommandUnavailableError;
+}
+
+/**
  * Team Skill slash-command registry + rewrite at the shared inbound
  * boundary.
  *
@@ -123,7 +137,7 @@ const MENTIONED_COMMAND_RE = new RegExp(`^(\\s*(?:${MENTION_TOKEN}\\s*)*)/${COMM
  * same-named local Skill on a case-insensitive filesystem. Unmapped
  * commands return the original text untouched, case included.
  *
- * Throws ManagedSkillsUnsafeDiscoveryError in two fail-closed cases: the
+ * Throws TeamSkillCommandUnavailableError in two fail-closed cases: the
  * command is Cloud-configured but unavailable (no verified target or a
  * conflicting mapping), or NO registry has been published yet (`null`) —
  * an unpublished registry must not let a strict slash command fall
@@ -139,14 +153,14 @@ export function rewriteTeamSkillCommand(
   if (!match) return content;
   const [matched, prefix, name] = match;
   if (registry === null) {
-    throw new ManagedSkillsUnsafeDiscoveryError(
+    throw new TeamSkillCommandUnavailableError(
       `Team Skill command registry is not published yet — refusing to hand /${name} to the provider`,
     );
   }
   const target = registry.get((name ?? "").toLowerCase());
   if (!target) return content;
   if (target.kind === "unavailable") {
-    throw new ManagedSkillsUnsafeDiscoveryError(
+    throw new TeamSkillCommandUnavailableError(
       `Team Skill command /${name} is unavailable (${target.reason}) — refusing to hand it to the provider`,
     );
   }

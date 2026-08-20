@@ -52,6 +52,7 @@ import {
   withContextTreeRepoHeadCommit,
   writeSessionBriefingFingerprint,
 } from "../../runtime/provider-support/index.js";
+import { isTeamSkillCommandUnavailableError } from "../../runtime/team-skill-command-rewrite.js";
 import { formatAuthHint, isPiAuthError } from "../handlers/auth-error-hint.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
 import {
@@ -2172,6 +2173,13 @@ export const createPiHandler: HandlerFactory = (config) => {
           } catch (error) {
             const messageText = error instanceof Error ? error.message : String(error);
             ctx?.log(`pi steer failed: ${messageText}`);
+            if (isTeamSkillCommandUnavailableError(error)) {
+              // Formatter-level fail-closed: the steer never reached the RPC
+              // layer, so this is provably before-write — retain custody and
+              // retry instead of consuming the message.
+              deliveryToken.retry(message, "team_skill_command_unavailable");
+              return;
+            }
             if (isPiRpcBeforeWriteError(error)) {
               // Proven before-write: safe to retry without duplicating a JSONL steer.
               deliveryToken.retry(message, "pi_steer_failed_before_write");

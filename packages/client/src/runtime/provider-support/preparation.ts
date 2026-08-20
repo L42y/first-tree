@@ -840,21 +840,27 @@ export async function projectManagedWorkspace(
         sessionCtx.publishTeamSkillCommands(
           verified.teamSkills.map((skill) => ({ requestedSlug: skill.requestedSlug, effectiveName: skill.name })),
         );
-      } else {
+      } else if (runtimeConfig) {
+        // The resolved runtime config is authoritative knowledge of which
+        // Team commands exist; with no proven install identities they all
+        // fail closed until a verified projection lands.
         const fallback: { requestedSlug: string; effectiveName: string | null }[] = [];
-        for (const skill of runtimeConfig?.payload.resourceSkills ?? []) {
+        for (const skill of runtimeConfig.payload.resourceSkills ?? []) {
           try {
             fallback.push({ requestedSlug: normalizeTeamSkillTargetSlug(skill.name), effectiveName: null });
           } catch {
             // A name with no portable slug never had a typable command.
           }
         }
-        if (fallback.length > 0) {
-          sessionCtx.log(
-            "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
-          );
-          sessionCtx.publishTeamSkillCommands(fallback);
-        }
+        sessionCtx.log(
+          "Team Skill reconcile produced no authoritative registry; marking configured Team commands unavailable until a verified projection lands",
+        );
+        sessionCtx.publishTeamSkillCommands(fallback);
+      } else {
+        // Config unresolved and ledger unverifiable: publish UNKNOWN so a
+        // failed hot-switch can never keep applying a stale registry to a
+        // new configuration.
+        sessionCtx.publishTeamSkillCommands(null);
       }
     }
 

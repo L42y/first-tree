@@ -257,19 +257,20 @@ export type SessionContext = HandlerContext & {
   formatInboundContent: (message: SessionMessage) => Promise<string>;
 
   /**
-   * Publish the session's Team Skill command registry input: every
-   * Cloud-configured base slug with its verified effective command name,
-   * or `effectiveName: null` when no verified target exists (the rewrite
-   * boundary fails closed for those). Called by managed-session
-   * preparation after every settled projection so the runtime's shared
-   * inbound formatter can rewrite a user-typed `/base` to the
-   * actually-installed command before any provider interprets it.
+   * Publish the session's Team Skill command registry input, or `null` to
+   * mark the registry UNKNOWN (unpublished): managed-session preparation
+   * publishes after every projection attempt — a complete entry list when
+   * exact identities are proven, `null` when neither reconcile nor the
+   * verified ledger nor the runtime config can prove them. `null` makes
+   * the shared inbound boundary fail closed on strict slash commands
+   * instead of falling through to a possibly same-named unmanaged Skill.
    *
-   * Required: when Team commands exist, a missing publisher would let a
-   * configured-but-colliding base fall through to a same-named unmanaged
-   * Skill. Test doubles should supply a no-op or a capturing stub.
+   * Required: a missing publisher would silently disable this fail-closed
+   * boundary. Test doubles should supply a no-op or a capturing stub.
    */
-  publishTeamSkillCommands: (commands: readonly { requestedSlug: string; effectiveName: string | null }[]) => void;
+  publishTeamSkillCommands: (
+    commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+  ) => void;
 
   /**
    * Resolve a senderId to its chat-local name (the `@<name>` mention token).

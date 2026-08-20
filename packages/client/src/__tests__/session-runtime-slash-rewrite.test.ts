@@ -73,7 +73,7 @@ const PUBLISHED = [{ requestedSlug: "review", effectiveName: "review-first-tree"
 describe("SessionRuntime Team Skill slash rewrite wiring", () => {
   it("rewrites a published base command for every later formatted inbound message", async () => {
     const { ctx, runtime } = await captureContext();
-    ctx.publishTeamSkillCommands?.(PUBLISHED);
+    ctx.publishTeamSkillCommands(PUBLISHED);
 
     const formatted = await ctx.formatInboundContent(textMessage("/review src/"));
     expect(formatted).toContain("/review-first-tree src/");
@@ -84,7 +84,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
   it("rewrites a mention-prefixed command only when routed metadata mentions this agent", async () => {
     const { ctx, runtime } = await captureContext();
-    ctx.publishTeamSkillCommands?.(PUBLISHED);
+    ctx.publishTeamSkillCommands(PUBLISHED);
 
     const routed = await ctx.formatInboundContent(textMessage("@nova /review please", ["agent-1"]));
     expect(routed).toContain("@nova /review-first-tree please");
@@ -99,7 +99,7 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
   it("fails closed before the provider when a configured command has no verified target", async () => {
     const { ctx, runtime } = await captureContext();
-    ctx.publishTeamSkillCommands?.([{ requestedSlug: "review", effectiveName: null }]);
+    ctx.publishTeamSkillCommands([{ requestedSlug: "review", effectiveName: null }]);
 
     await expect(ctx.formatInboundContent(textMessage("/review src/"))).rejects.toThrow(/no verified installed target/);
 
@@ -108,13 +108,19 @@ describe("SessionRuntime Team Skill slash rewrite wiring", () => {
 
   it("atomically replaces the registry on the next publication — stale aliases stop rewriting", async () => {
     const { ctx, runtime } = await captureContext();
-    ctx.publishTeamSkillCommands?.(PUBLISHED);
+    ctx.publishTeamSkillCommands(PUBLISHED);
     expect(await ctx.formatInboundContent(textMessage("/review"))).toContain("/review-first-tree");
 
     // A new complete projection without the skill clears its alias.
-    ctx.publishTeamSkillCommands?.([]);
+    ctx.publishTeamSkillCommands([]);
     expect(await ctx.formatInboundContent(textMessage("/review"))).toContain("/review");
     expect(await ctx.formatInboundContent(textMessage("/review"))).not.toContain("review-first-tree");
+
+    // Publishing UNKNOWN (e.g. failed hot-switch with unverifiable config)
+    // re-blocks strict slash commands instead of keeping the stale map.
+    ctx.publishTeamSkillCommands(null);
+    await expect(ctx.formatInboundContent(textMessage("/review"))).rejects.toThrow(/registry is not published/);
+    expect(await ctx.formatInboundContent(textMessage("plain text"))).toContain("plain text");
 
     await runtime.shutdown();
   });
