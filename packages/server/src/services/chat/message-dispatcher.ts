@@ -1,14 +1,21 @@
 import {
   type ClientMessage,
+  hasTeamSkillInvocationMarker,
+  isImageBatchRefContent,
   type Message,
   messageSourceSchema,
   type ParticipantMode,
   type PrecedingMessage,
+  supportsTeamSkillInvocationClientVersion,
+  TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE,
 } from "@first-tree/shared";
 import { eq } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { agentConfigs } from "../../db/schema/agent-configs.js";
+import { agentPresence } from "../../db/schema/agent-presence.js";
 import { agents } from "../../db/schema/agents.js";
+import { clients } from "../../db/schema/clients.js";
+import { isConsistentAgentRoute } from "../runtime/rpc/session-command.js";
 
 /**
  * Use a structurally-typed DB so both `Database` and `PgTransaction` from
@@ -72,6 +79,50 @@ export const WIRE_RECIPIENT_MODE: ParticipantMode = "mention_only";
  */
 export type ClientMessagePayloadSource = { kind: "inboxId"; inboxId: string } | { kind: "agentId"; agentId: string };
 
+/**
+ * Rollout gate at the DB-row→wire boundary: the connected client's
+ * `sdk_version` under the current route-consistent binding, or null when
+ * the route is inconsistent / unbound / offline. A marker-carrying message
+ * must never reach a client that cannot resolve the marker fail-closed —
+ * it would ignore the marker and run the base literal as a local Skill.
+ */
+async function resolveRouteSdkVersion(db: DbLike, agentId: string): Promise<string | null> {
+  const [route] = await db
+    .select({
+      agentClientId: agents.clientId,
+      agentStatus: agents.status,
+      presenceStatus: agentPresence.status,
+      presenceClientId: agentPresence.clientId,
+      presenceInstanceId: agentPresence.instanceId,
+      clientStatus: clients.status,
+      clientInstanceId: clients.instanceId,
+      clientSdkVersion: clients.sdkVersion,
+    })
+    .from(agents)
+    .innerJoin(agentPresence, eq(agentPresence.agentId, agents.uuid))
+    .innerJoin(clients, eq(clients.id, agentPresence.clientId))
+    .where(eq(agents.uuid, agentId))
+    .limit(1);
+  if (!route || !isConsistentAgentRoute(route)) return null;
+  return route.clientSdkVersion;
+}
+
+/**
+ * Wire-only replacement for a marker-carrying message whose current client
+ * is too old for the marker protocol: text content and image captions
+ * become the inert notice (no leading slash token), attachments and every
+ * other field pass through untouched. The stored DB row is never mutated —
+ * only this payload changes. Captionless batches and unknown structures
+ * carry no command position and pass through as-is.
+ */
+function contentForUnsupportedMarkerClient(content: unknown): unknown {
+  if (typeof content === "string") return TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE;
+  if (isImageBatchRefContent(content) && typeof content.caption === "string") {
+    return { ...content, caption: TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE };
+  }
+  return content;
+}
+
 export async function buildClientMessagePayload(
   db: DbLike,
   source: ClientMessagePayloadSource,
@@ -90,6 +141,19 @@ export async function buildClientMessagePayload(
   // throwing — the auth layer would reject the agent first.
   const version = cfg?.version ?? 1;
 
+  // Rollout gate: a message carrying the server-owned Team Skill
+  // invocation marker may only reach a client whose version parses the
+  // marker fail-closed. The send-time menu gate cannot cover messages
+  // already queued when the agent's client rolls back, so the wire
+  // boundary re-checks the CURRENT route and swaps the command content
+  // for an inert notice (DB row untouched, delivery + ACK proceed — the
+  // FIFO never parks behind a rollback).
+  const content = hasTeamSkillInvocationMarker(message.metadata)
+    ? supportsTeamSkillInvocationClientVersion(await resolveRouteSdkVersion(db, agentId))
+      ? message.content
+      : contentForUnsupportedMarkerClient(message.content)
+    : message.content;
+
   return {
     id: message.id,
     chatId: message.chatId,
@@ -97,7 +161,7 @@ export async function buildClientMessagePayload(
     senderKind: message.senderKind ?? "member",
     senderProvider: message.senderProvider ?? null,
     format: message.format,
-    content: message.content,
+    content: content as Message["content"],
     metadata: message.metadata,
     inReplyTo: message.inReplyTo,
     source: normaliseSource(message.source),
@@ -137,6 +201,13 @@ export async function buildClientMessagePayloadsForInbox(
     .limit(1);
   const version = cfg?.version ?? 1;
 
+  // Rollout gate (see buildClientMessagePayload): resolved ONCE for the
+  // whole batch since every item shares this inbox's agent — a
+  // marker-carrying message never reaches a client too old to resolve the
+  // marker fail-closed; its command content becomes an inert notice on the
+  // wire only.
+  const markerClientSupported = supportsTeamSkillInvocationClientVersion(await resolveRouteSdkVersion(db, agentId));
+
   return items.map(({ message: m, precedingMessages = [] }) => ({
     id: m.id,
     chatId: m.chatId,
@@ -144,7 +215,9 @@ export async function buildClientMessagePayloadsForInbox(
     senderKind: m.senderKind ?? "member",
     senderProvider: m.senderProvider ?? null,
     format: m.format,
-    content: m.content,
+    content: (hasTeamSkillInvocationMarker(m.metadata) && !markerClientSupported
+      ? contentForUnsupportedMarkerClient(m.content)
+      : m.content) as Message["content"],
     metadata: m.metadata,
     inReplyTo: m.inReplyTo,
     source: normaliseSource(m.source),

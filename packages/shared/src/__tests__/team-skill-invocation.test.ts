@@ -1,68 +1,76 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasTeamSkillInvocationMarker,
   sendMessageSchema,
+  TEAM_SKILL_INVOCATION_MARKER_VERSION,
   TEAM_SKILL_INVOCATION_METADATA_KEY,
   teamSkillInvocationFromMetadata,
-  teamSkillInvocationSchema,
 } from "../schemas/message.js";
 
 /**
- * The server-owned Team Skill invocation marker: persisted in
+ * The server-owned, versioned Team Skill invocation marker: persisted in
  * `messages.metadata` after a validated skillPrecondition, consumed
- * fail-closed by the recipient's Client. These tests pin the wire shape
- * and the parse boundary — a malformed marker must read as "no marker",
- * never as partial Team intent.
+ * fail-closed by the recipient's Client. These tests pin the wire contract
+ * and — critically — the distinction between a truly ABSENT key (ordinary
+ * local/runtime semantics) and a PRESENT-but-malformed one (unverifiable
+ * Team intent that must never fall through to a same-named local Skill).
  */
 describe("teamSkillInvocation marker", () => {
-  const marker = { resourceId: crypto.randomUUID(), slug: "review", configVersion: 3 };
+  const marker = {
+    version: TEAM_SKILL_INVOCATION_MARKER_VERSION,
+    recipientAgentId: "agent-1",
+    resourceId: "res-1",
+    requestedSlug: "code-review",
+    configVersion: 3,
+  };
 
-  it("round-trips a well-formed marker from message metadata", () => {
+  it("round-trips a well-formed versioned marker from message metadata", () => {
     expect(teamSkillInvocationFromMetadata({ [TEAM_SKILL_INVOCATION_METADATA_KEY]: marker })).toEqual(marker);
   });
 
-  it("reads absent, null, and malformed markers as no Team intent", () => {
+  it("distinguishes an absent key from present-but-malformed values", () => {
+    // Absent / null-container: NO Team intent — ordinary semantics.
+    expect(hasTeamSkillInvocationMarker(undefined)).toBe(false);
+    expect(hasTeamSkillInvocationMarker(null)).toBe(false);
+    expect(hasTeamSkillInvocationMarker({})).toBe(false);
     expect(teamSkillInvocationFromMetadata(undefined)).toBeNull();
-    expect(teamSkillInvocationFromMetadata(null)).toBeNull();
-    expect(teamSkillInvocationFromMetadata({})).toBeNull();
+
+    // Present in ANY of these forms: Team intent exists but is
+    // unverifiable — hasTeamSkillInvocationMarker stays true while the
+    // parse reads null.
     for (const bad of [
       { [TEAM_SKILL_INVOCATION_METADATA_KEY]: null },
-      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: "review" },
-      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, slug: "Not A Slug" } },
-      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, slug: "/review" } },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: "code-review" },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, version: 2 } },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, recipientAgentId: "" } },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, resourceId: "" } },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, requestedSlug: "" } },
       { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, configVersion: 0 } },
-      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { ...marker, resourceId: "not-a-uuid" } },
+      { [TEAM_SKILL_INVOCATION_METADATA_KEY]: { resourceId: "res-1", slug: "code-review", configVersion: 3 } },
     ]) {
+      expect(hasTeamSkillInvocationMarker(bad)).toBe(true);
       expect(teamSkillInvocationFromMetadata(bad)).toBeNull();
     }
   });
 
-  it("accepts slugs the materializer can produce and rejects untriggerable names", () => {
-    for (const ok of ["review", "code-review", "a", "x1", "1abc"]) {
-      expect(teamSkillInvocationSchema.safeParse({ ...marker, slug: ok }).success).toBe(true);
-    }
-    for (const bad of ["Code Review", "review ", "-review", "review_foo", "review/foo", ""]) {
-      expect(teamSkillInvocationSchema.safeParse({ ...marker, slug: bad }).success).toBe(false);
-    }
-  });
-
-  it("carries resourceId and slug on the request-level skillPrecondition", () => {
+  it("carries resourceId and requestedSlug on the request-level skillPrecondition", () => {
     const parsed = sendMessageSchema.safeParse({
       format: "text",
-      content: "/review src/",
+      content: "/code-review src/",
       source: "web",
       skillPrecondition: {
         recipientAgentId: crypto.randomUUID(),
         expectedConfigVersion: 1,
-        resourceId: marker.resourceId,
-        slug: "review",
+        resourceId: crypto.randomUUID(),
+        requestedSlug: "code-review",
       },
     });
     expect(parsed.success).toBe(true);
     // A precondition without the resource identity is rejected — the server
-    // could not persist a meaningful marker from it.
+    // could not validate a canonical marker from it.
     const incomplete = sendMessageSchema.safeParse({
       format: "text",
-      content: "/review src/",
+      content: "/code-review src/",
       source: "web",
       skillPrecondition: { recipientAgentId: crypto.randomUUID(), expectedConfigVersion: 1 },
     });

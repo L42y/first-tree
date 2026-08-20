@@ -26,6 +26,7 @@ import {
   requestResolutionSchema,
   type SendMessage,
   scanMentionTokens,
+  TEAM_SKILL_INVOCATION_MARKER_VERSION,
   TEAM_SKILL_INVOCATION_METADATA_KEY,
 } from "@first-tree/shared";
 import { getServerCliBinding } from "@first-tree/shared/channel";
@@ -511,6 +512,24 @@ export type SendMessageOptions = {
    * content.
    */
   normalizeMentionsInContent?: boolean;
+  /**
+   * Trusted validation seam for a Team Skill slash `skillPrecondition`.
+   * The precondition itself is untrusted request data; only a caller that
+   * injects this seam (the web message route, backed by the resources
+   * service) can have the server persist the server-owned
+   * `metadata.teamSkillInvocation` marker. The seam resolves the
+   * recipient's CURRENT effective resources inside the message transaction
+   * (after the config row lock) and returns the CANONICAL invocation
+   * identity — validated resourceId + the slug derived from the effective
+   * row's own payload — or null when the asserted resource/slug is not an
+   * enabled, unambiguous Team Skill. A send carrying a precondition without
+   * this seam is rejected: untrusted fields must never mint a marker.
+   */
+  validateTeamSkillInvocation?: (precondition: {
+    recipientAgentId: string;
+    resourceId: string;
+    requestedSlug: string;
+  }) => Promise<{ resourceId: string; requestedSlug: string } | null>;
   /**
    * Agent IDs that this message is **addressed to** by construction — used
    * for trusted system-routed messages whose recipient is fixed at write time.
@@ -1024,8 +1043,19 @@ async function sendMessageInner(
     // are not atomic, so the version must be proven here, not trusted. A
     // removed or renamed Team Skill bumps the config version and turns this
     // into a conflict instead of falling through to a same-named LOCAL Skill.
+    //
+    // Atomicity: the agent_configs row is taken FOR UPDATE, so a concurrent
+    // configuration update (whose own transaction always bumps that row's
+    // version) serializes against this send. Either it committed first —
+    // then the version below differs and this send conflicts — or it blocks
+    // on the lock until after this commit, in which case this message's
+    // marker carries the older version and the delivery-time stamp will
+    // diverge, settling as a terminal notice on the Client. There is no
+    // interleaving that commits a message validated against v1 as a
+    // marker-less v2 message.
+    let canonicalSkillInvocation: { resourceId: string; requestedSlug: string } | null = null;
     if (data.skillPrecondition) {
-      const { recipientAgentId, expectedConfigVersion } = data.skillPrecondition;
+      const { recipientAgentId, expectedConfigVersion, resourceId, requestedSlug } = data.skillPrecondition;
       if (routedRecipientIds.size !== 1 || !routedRecipientIds.has(recipientAgentId)) {
         throw new ConflictError(
           "Skill command precondition failed: the message is not addressed to exactly the agent the command was chosen for. Re-open the slash menu and pick the command again.",
@@ -1035,10 +1065,32 @@ async function sendMessageInner(
         .select({ version: agentConfigs.version })
         .from(agentConfigs)
         .where(eq(agentConfigs.agentId, recipientAgentId))
+        .for("update")
         .limit(1);
       if (!configRow || configRow.version !== expectedConfigVersion) {
         throw new ConflictError(
           "Skill command precondition failed: the recipient agent's configuration changed after the command was chosen. Re-open the slash menu and pick the command again.",
+        );
+      }
+      // Untrusted request fields can never mint the marker on their own:
+      // the canonical identity must come from the trusted seam reading the
+      // CURRENT effective resources. The seam reads committed state on its
+      // own connection — exactly the state at the locked version, since a
+      // concurrent update is still blocked on the row lock above and its
+      // writes are not yet visible.
+      if (!options.validateTeamSkillInvocation) {
+        throw new ConflictError(
+          "Skill command precondition failed: this send path cannot validate Team Skill commands.",
+        );
+      }
+      canonicalSkillInvocation = await options.validateTeamSkillInvocation({
+        recipientAgentId,
+        resourceId,
+        requestedSlug,
+      });
+      if (!canonicalSkillInvocation) {
+        throw new ConflictError(
+          "Skill command precondition failed: the Team Skill is no longer an enabled, unambiguous command for the recipient. Re-open the slash menu and pick the command again.",
         );
       }
     }
@@ -1159,24 +1211,28 @@ async function sendMessageInner(
       };
     }
 
-    if (data.skillPrecondition) {
+    if (canonicalSkillInvocation && data.skillPrecondition) {
       // The precondition held at insert time, so persist the SERVER-OWNED
-      // invocation marker with the message. The delivery-time configVersion
-      // stamp alone cannot distinguish "Team Skill chosen at v1, delivered
-      // after the config moved to v2" from "a hand-typed local command sent
-      // against v2" — this marker can, and the recipient's Client resolves
-      // the command fail-closed against it (never a same-named local Skill)
-      // no matter how long the inbox queue delayed delivery. The version
-      // equality proven above means the resource/slug pair the sender
-      // supplied is exactly what its fresh pre-send check saw; a fabricated
-      // slug still cannot execute anything — an unknown or unavailable
-      // registry entry settles as an inert notice on the Client. Stamped
-      // AFTER every branch that rebuilds metadataToStore from
-      // preparedMetadata (which has the inbound value stripped).
-      const { resourceId, slug, expectedConfigVersion } = data.skillPrecondition;
+      // invocation marker with the message — built from the CANONICAL
+      // identity the trusted seam validated (never the request's untrusted
+      // fields). The delivery-time configVersion stamp alone cannot
+      // distinguish "Team Skill chosen at v1, delivered after the config
+      // moved to v2" from "a hand-typed local command sent against v2" —
+      // this marker can, and the recipient's Client resolves the command
+      // fail-closed against it (never a same-named local Skill) no matter
+      // how long the inbox queue delayed delivery. Stamped AFTER every
+      // branch that rebuilds metadataToStore from preparedMetadata (which
+      // has the inbound value stripped).
+      const { recipientAgentId, expectedConfigVersion } = data.skillPrecondition;
       metadataToStore = {
         ...metadataToStore,
-        [TEAM_SKILL_INVOCATION_METADATA_KEY]: { resourceId, slug, configVersion: expectedConfigVersion },
+        [TEAM_SKILL_INVOCATION_METADATA_KEY]: {
+          version: TEAM_SKILL_INVOCATION_MARKER_VERSION,
+          recipientAgentId,
+          resourceId: canonicalSkillInvocation.resourceId,
+          requestedSlug: canonicalSkillInvocation.requestedSlug,
+          configVersion: expectedConfigVersion,
+        },
       };
     }
 

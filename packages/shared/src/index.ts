@@ -1170,6 +1170,7 @@ export {
   feishuResourceUnavailableReasonSchema,
   firstChatOrientationContinuationMessageMetadataSchema,
   firstChatOrientationMessageMetadataSchema,
+  hasTeamSkillInvocationMarker,
   isAgentFinalTextMetadata,
   isRuntimeNoticeMetadata,
   MESSAGE_FORMATS,
@@ -1201,11 +1202,12 @@ export {
   requestResolutionSchema,
   type SendMessage,
   sendMessageSchema,
+  TEAM_SKILL_INVOCATION_MARKER_VERSION,
   TEAM_SKILL_INVOCATION_METADATA_KEY,
+  TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE,
   type TeamSkillInvocation,
   teamSkillInvocationFromMetadata,
   teamSkillInvocationSchema,
-  teamSkillSlugSchema,
 } from "./schemas/message.js";
 export {
   type ListNeedYouRequestsQuery,

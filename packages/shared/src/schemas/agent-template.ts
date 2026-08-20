@@ -662,16 +662,6 @@ export const agentResourcesOutputSchema = z
     effective: effectiveAgentResourcesSchema,
     bindings: z.array(agentResourceBindingInputSchema),
     availableTeamResources: z.array(resourceRowSchema),
-    /**
-     * Read-only rollout gate for Team Skill slash commands: the agent's
-     * currently bound, route-consistent connected client runs a version
-     * that parses the server-owned `teamSkillInvocation` message marker
-     * fail-closed (see `supportsTeamSkillInvocationClientVersion`).
-     * Computed from `clients.sdk_version` — no new persisted state. The
-     * Web composer offers Team Skill menu entries only when this is true;
-     * old, unknown-version, offline, or unbound clients read as false.
-     */
-    teamSkillInvocationSupported: z.boolean(),
   })
   .strict()
   .superRefine((output, ctx) => {
