@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -23,6 +23,7 @@ import type { ClaudeExecutableResolution } from "../providers/claude/executable.
 import {
   type CodexExecutableVerification,
   createCodexAutomaticResolutionFailureTracker,
+  createCodexVerifiedAutomaticCandidateTracker,
 } from "../providers/codex/binary.js";
 import {
   probeCodexCapability,
@@ -422,24 +423,35 @@ describe("probeCodexCapability (install-only)", () => {
   });
 
   it("`ok` (runtimeSource path) when the bundle is missing but a system codex is on PATH", async () => {
-    const entry = await probeCodexCapability({
-      resolveBundled: bundledMissing,
-      findOnPath: () => "/usr/local/bin/codex",
-      verifyPath: () => ({ ok: true, output: "codex 0.146.0" }),
-      env: {},
-    });
-    expect(entry).toMatchObject({
-      state: "ok",
-      available: true,
-      runtimeSource: "path",
-      runtimePath: "/usr/local/bin/codex",
-    });
+    const root = mkdtempSync(join(tmpdir(), "ft-codex-install-only-"));
+    try {
+      const candidate = join(root, "codex");
+      const launchMarker = `${candidate}.launched`;
+      writeFileSync(candidate, '#!/bin/sh\ntouch "$0.launched"\n');
+      chmodSync(candidate, 0o755);
+
+      const entry = await probeCodexCapability({
+        resolveBundled: bundledMissing,
+        findOnPath: () => candidate,
+        env: {},
+      });
+      expect(entry).toMatchObject({
+        state: "ok",
+        available: true,
+        runtimeSource: "path",
+      });
+      expect(entry).not.toHaveProperty("runtimePath");
+      expect(existsSync(launchMarker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  it("reports the same healthy later Desktop candidate selected by execution and login", async () => {
+  it("never launch-verifies during probing and later reports the runtime-verified Desktop candidate", async () => {
     const staleGlobal = "/Users/test/.npm-global/bin/codex";
     const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
     const candidates = () => [staleGlobal, desktop];
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
     const verifyPath = vi.fn(
       (path: string): CodexExecutableVerification =>
         path === staleGlobal
@@ -447,25 +459,40 @@ describe("probeCodexCapability (install-only)", () => {
           : { ok: true, output: "codex 0.146.0" },
     );
 
-    const entry = await probeCodexCapability({
+    const beforeRuntime = await probeCodexCapability({
       resolveBundled: bundledMissing,
       findCandidates: candidates,
-      verifyPath,
+      verifiedCandidateTracker,
       env: {},
     });
+    expect(beforeRuntime).toMatchObject({ state: "ok", available: true, runtimeSource: "path" });
+    expect(beforeRuntime).not.toHaveProperty("runtimePath");
+    expect(verifyPath).not.toHaveBeenCalled();
+
     const runtime = await resolveCodexRuntimeBinary(
       {},
-      { resolveBundled: bundledMissing, findCandidates: candidates, verifyPath },
+      {
+        resolveBundled: bundledMissing,
+        findCandidates: candidates,
+        verifyPath,
+        verifiedCandidateTracker,
+      },
     );
+    const afterRuntime = await probeCodexCapability({
+      resolveBundled: bundledMissing,
+      findCandidates: candidates,
+      verifiedCandidateTracker,
+      env: {},
+    });
 
-    expect(entry).toMatchObject({
+    expect(afterRuntime).toMatchObject({
       state: "ok",
       available: true,
       runtimeSource: "path",
       runtimePath: desktop,
     });
     expect(runtime).toMatchObject({ ok: true, binary: desktop, runtimePath: desktop });
-    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([staleGlobal, desktop, staleGlobal, desktop]);
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([staleGlobal, desktop]);
   });
 
   it("`missing` when neither the bundle nor a PATH codex resolves, with the binary-missing message", async () => {

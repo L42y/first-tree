@@ -31,6 +31,7 @@ export type CodexBinaryFallbackDeps = {
   resolvePath?: (env?: Record<string, string>) => string | null;
   verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
   failureTracker?: CodexAutomaticResolutionFailureTracker;
+  verifiedCandidateTracker?: CodexVerifiedAutomaticCandidateTracker;
   log?: (message: string) => void;
 };
 
@@ -58,7 +59,13 @@ export type CodexAutomaticResolutionFailureTracker = {
   reset(scope: string): void;
 };
 
-export type CodexAutomaticFailureBoundary = "probe" | "runtime" | "sdk";
+export type CodexVerifiedAutomaticCandidateTracker = {
+  get(): string | null;
+  record(path: string): void;
+  reset(): void;
+};
+
+export type CodexAutomaticFailureBoundary = "runtime" | "sdk";
 
 /**
  * `codex --version` smoke-check ceiling. A cold `codex` behind a version-manager
@@ -114,6 +121,21 @@ export function createCodexAutomaticResolutionFailureTracker(): CodexAutomaticRe
 }
 
 const defaultAutomaticResolutionFailureTracker = createCodexAutomaticResolutionFailureTracker();
+
+export function createCodexVerifiedAutomaticCandidateTracker(): CodexVerifiedAutomaticCandidateTracker {
+  let path: string | null = null;
+  return {
+    get: () => path,
+    record(nextPath: string): void {
+      path = nextPath;
+    },
+    reset(): void {
+      path = null;
+    },
+  };
+}
+
+export const codexVerifiedAutomaticCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
 
 const WINDOWS_CODEX_PLATFORM_PACKAGE_BY_ARCH: Readonly<Record<string, { triple: string; packageName: string }>> = {
   x64: { triple: "x86_64-pc-windows-msvc", packageName: "@openai/codex-win32-x64" },
@@ -242,8 +264,11 @@ export function createCodexClientWithBinaryFallback<TOptions extends CodexOption
   construct: (options: TOptions) => TClient,
   deps: CodexBinaryFallbackDeps = {},
 ): CodexBinaryFallbackResult<TClient> {
+  const verifiedCandidateTracker = deps.verifiedCandidateTracker ?? codexVerifiedAutomaticCandidateTracker;
   try {
-    return { client: construct(options), runtimeSource: "bundled" };
+    const client = construct(options);
+    verifiedCandidateTracker.reset();
+    return { client, runtimeSource: "bundled" };
   } catch (err) {
     if (!isCodexBinaryMissingError(err)) throw err;
 
@@ -262,16 +287,19 @@ export function createCodexClientWithBinaryFallback<TOptions extends CodexOption
     });
     if (!resolved.ok && resolved.failures.length === 0) {
       resetCodexAutomaticCandidateFailures(options.env ?? process.env, "sdk", deps.failureTracker);
+      verifiedCandidateTracker.reset();
       throw new Error(formatCodexBinaryMissingMessage(err));
     }
 
     if (!resolved.ok) {
-      throw codexAutomaticCandidateFailureError(
+      const failure = codexAutomaticCandidateFailureError(
         resolved.failures,
         options.env ?? process.env,
         "sdk",
         deps.failureTracker,
       );
+      if (failure instanceof CodexBinaryUnusableError) verifiedCandidateTracker.reset();
+      throw failure;
     }
 
     resetCodexAutomaticCandidateFailures(options.env ?? process.env, "sdk", deps.failureTracker);
@@ -279,8 +307,10 @@ export function createCodexClientWithBinaryFallback<TOptions extends CodexOption
       `Codex SDK bundled binary missing; falling back to codex at ${resolved.path}. ` +
         `Original error: ${errorText(err)}`,
     );
+    const client = construct({ ...options, codexPathOverride: resolved.path });
+    verifiedCandidateTracker.record(resolved.path);
     return {
-      client: construct({ ...options, codexPathOverride: resolved.path }),
+      client,
       runtimeSource: "path",
       codexPathOverride: resolved.path,
       fallbackReason: errorText(err),

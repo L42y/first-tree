@@ -7,6 +7,7 @@ import {
   CodexBinaryVerifyTransientError,
   createCodexAutomaticResolutionFailureTracker,
   createCodexClientWithBinaryFallback,
+  createCodexVerifiedAutomaticCandidateTracker,
   type FindCodexExecutableDeps,
   findCodexExecutableCandidates,
   findCodexExecutableOnPath,
@@ -107,6 +108,7 @@ describe("codex binary resolution", () => {
         ? ({ ok: true as const, output: "codex 0.146.0-alpha.3" } as const)
         : ({ ok: false as const, transient: false, reason: "candidate cannot launch" } as const),
     );
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
 
     const result = createCodexClientWithBinaryFallback(
       { env: { PATH: daemonDir, HOME: tmp, FIRST_TREE_CHAT_ID: "chat-desktop-fallback" } },
@@ -126,10 +128,12 @@ describe("codex binary resolution", () => {
             desktopAppDirs,
           }),
         verifyPath,
+        verifiedCandidateTracker,
       },
     );
 
     expect(result.codexPathOverride).toBe(candidates[3]);
+    expect(verifiedCandidateTracker.get()).toBe(candidates[3]);
     expect(verifyPath.mock.calls.map(([path]) => path)).toEqual(candidates);
     expect(loginShellPathDirs).toHaveBeenCalledTimes(1);
     expect(desktopAppDirs).toHaveBeenCalledTimes(1);

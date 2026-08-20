@@ -8,8 +8,9 @@ import { verifyLaunchable } from "../capabilities/launch-probe.js";
 import {
   type CodexAutomaticResolutionFailureTracker,
   type CodexExecutableVerification,
+  type CodexVerifiedAutomaticCandidateTracker,
   codexAutomaticCandidateFailureError,
-  createCodexAutomaticResolutionFailureTracker,
+  codexVerifiedAutomaticCandidateTracker,
   findCodexExecutableCandidates,
   formatCodexBinaryMissingMessage,
   resetCodexAutomaticCandidateFailures,
@@ -165,6 +166,7 @@ export type CodexRuntimeResolveDeps = {
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
   failureTracker?: CodexAutomaticResolutionFailureTracker;
+  verifiedCandidateTracker?: CodexVerifiedAutomaticCandidateTracker;
 };
 
 /**
@@ -172,10 +174,9 @@ export type CodexRuntimeResolveDeps = {
  * contract as the handler (`createCodexClientWithBinaryFallback`): SDK-bundled
  * vendor binary first (launch-verified), else a validated external `codex`
  * resolved from PATH / known install locations. This is a RUNTIME/handler + login helper — it DOES launch-verify the
- * binary it is about to spawn. The capability probe shares the external
- * automatic-candidate launch-verification path so its reported artifact stays
- * consistent, but retains its separate existence-only bundled probe and does
- * not check login, provider reachability, or a real session.
+ * binary it is about to spawn. It records a successful automatic selection so
+ * the separate install-only capability probe can report that last verified
+ * artifact without launching provider binaries itself.
  */
 export async function resolveCodexRuntimeBinary(
   env: NodeJS.ProcessEnv = process.env,
@@ -184,17 +185,20 @@ export async function resolveCodexRuntimeBinary(
   const resolveBundled = deps.resolveBundled ?? resolveBundledCodexBinary;
   const verifyBundled = deps.verifyBundled ?? ((binary: string) => verifyLaunchable("codex", binary));
   const verifyPath = deps.verifyPath ?? verifyCodexExecutable;
+  const verifiedCandidateTracker = deps.verifiedCandidateTracker ?? codexVerifiedAutomaticCandidateTracker;
 
   const bundled = await resolveBundled();
   if (bundled.ok) {
     const verified = await verifyBundled(bundled.binary);
     if (!verified.ok) {
+      verifiedCandidateTracker.reset();
       return {
         ok: false,
         error: `the SDK-bundled codex binary at ${bundled.binary} could not be launched (${verified.error})`,
       };
     }
     resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
+    verifiedCandidateTracker.reset();
     return {
       ok: true,
       binary: bundled.binary,
@@ -212,6 +216,7 @@ export async function resolveCodexRuntimeBinary(
   const resolved = resolveVerifiedCodexAutomaticCandidate(env, { candidates, verifyPath });
   if (resolved.ok) {
     resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
+    verifiedCandidateTracker.record(resolved.path);
     const match = (resolved.verification.output ?? "").match(/\d+\.\d+(?:\.\d+)?/);
     return {
       ok: true,
@@ -223,10 +228,12 @@ export async function resolveCodexRuntimeBinary(
   }
   if (resolved.failures.length > 0) {
     const failure = codexAutomaticCandidateFailureError(resolved.failures, env, "runtime", deps.failureTracker);
+    if (failure.name === "CodexBinaryUnusableError") verifiedCandidateTracker.reset();
     return { ok: false, error: failure.message, cause: failure };
   }
 
   resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
+  verifiedCandidateTracker.reset();
   return { ok: false, error: formatCodexBinaryMissingMessage(bundled.error) };
 }
 
@@ -238,9 +245,9 @@ function singleCandidate(path: string | null): Iterable<string> {
 export type CodexProbeDeps = {
   resolveBundled?: () => Promise<{ ok: true; binary: string } | { ok: false; error: string }>;
   findCandidates?: (env?: Record<string, string | undefined>) => Iterable<string>;
-  verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
   /** Legacy single-candidate seam. Prefer findCandidates for new tests. */
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;
+  verifiedCandidateTracker?: CodexVerifiedAutomaticCandidateTracker;
   env?: NodeJS.ProcessEnv;
 };
 
@@ -249,11 +256,11 @@ export type CodexProbeDeps = {
  *
  * Installed when the binary the runtime would spawn exists — the SDK-bundled
  * vendor binary (per the SDK's own `resolveNativePackage` layout check), or a
- * external `codex` from PATH / known install locations. External automatic
- * candidates are launch-verified only to select the exact artifact whose path
- * is reported and later executed; the probe still does not check login,
- * provider reachability, or a real session. Reports `runtimeSource` /
- * `runtimePath` so diagnostics show the same artifact the runtime selects.
+ * external `codex` from PATH / known install locations. The probe never
+ * launch-verifies external candidates. `runtimePath` is reported only when a
+ * still-discoverable path was previously selected and verified by the runtime;
+ * otherwise the installed external capability intentionally omits it rather
+ * than claiming that the first existence-only candidate is the executed one.
  * Authentication and reachability are no longer probed; a logged-out or
  * unreachable codex is discovered at session run time and surfaced as an
  * in-chat credential failure.
@@ -261,34 +268,27 @@ export type CodexProbeDeps = {
 export async function probeCodexCapability(deps: CodexProbeDeps = {}): Promise<CapabilityEntry> {
   const env = deps.env ?? process.env;
   const resolveBundled = deps.resolveBundled ?? resolveBundledCodexBinary;
+  const verifiedCandidateTracker = deps.verifiedCandidateTracker ?? codexVerifiedAutomaticCandidateTracker;
 
   return runDetect(async (): Promise<DetectOutcome> => {
     const bundled = await resolveBundled();
     if (bundled.ok) {
       return { installed: true, runtimeSource: "bundled", runtimePath: null };
     }
-    const candidates = deps.findCandidates
-      ? deps.findCandidates(env)
-      : deps.findOnPath
-        ? singleCandidate(deps.findOnPath(env))
-        : findCodexExecutableCandidates(env);
-    const resolved = resolveVerifiedCodexAutomaticCandidate(env, {
-      candidates,
-      verifyPath: deps.verifyPath,
-    });
-    if (resolved.ok) {
-      return { installed: true, runtimeSource: "path", runtimePath: resolved.path };
-    }
-    if (resolved.failures.length > 0) {
-      // Capability polling must never consume the session-start retry budget.
-      // A fresh local tracker preserves a one-off transient verdict while the
-      // non-ok capability entry remains eligible for the normal re-probe loop.
-      throw codexAutomaticCandidateFailureError(
-        resolved.failures,
-        env,
-        "probe",
-        createCodexAutomaticResolutionFailureTracker(),
-      );
+    const candidates = [
+      ...(deps.findCandidates
+        ? deps.findCandidates(env)
+        : deps.findOnPath
+          ? singleCandidate(deps.findOnPath(env))
+          : findCodexExecutableCandidates(env)),
+    ];
+    if (candidates.length > 0) {
+      const verifiedPath = verifiedCandidateTracker.get();
+      if (verifiedPath && candidates.includes(verifiedPath)) {
+        return { installed: true, runtimeSource: "path", runtimePath: verifiedPath };
+      }
+      if (verifiedPath) verifiedCandidateTracker.reset();
+      return { installed: true, runtimeSource: "path" };
     }
     return { installed: false, error: formatCodexBinaryMissingMessage(bundled.error) };
   });
