@@ -595,7 +595,13 @@ export class SessionRuntime {
         await postProviderFailureRuntimeNotice(this.config.sdk, chatId, payload);
       },
       onWorkChanged: (chatId) => this.projection.projectSessionRuntime(chatId),
-      onDeliveriesCommitted: (chatId, messageIds) => this.resetReplay.reconcileReplayFences(chatId, messageIds),
+      onDeliveriesCommitted: (chatId, messageIds) => {
+        this.resetReplay.reconcileReplayFences(chatId, messageIds);
+        // Fence recovery-attempt markers are reclaimed only once inbox
+        // custody is proven settled by ACK commit — never earlier, so an
+        // ACK failure / redelivery cannot mint a second recovery chance.
+        for (const messageId of messageIds) this.clearFenceRecoveryAttempt(chatId, messageId);
+      },
       log: config.log,
     });
     this.slotScheduler = new SlotSchedulerAuthority({
@@ -3202,9 +3208,8 @@ export class SessionRuntime {
         // SessionContext finish/retry stay behind the adoption fence. Already-issued
         // DeliveryTokens carry the settlement lease for drain notice+ACK.
         if (mutationValid && !mutationValid()) return Promise.resolve();
-        // Settled messages reclaim their fence recovery-attempt markers.
-        const batch = Array.isArray(messages) ? messages : [messages];
-        for (const message of batch) this.clearFenceRecoveryAttempt(chatId, message.id);
+        // Markers are reclaimed only at ACK commit (onDeliveriesCommitted),
+        // never here — an ACK failure must not mint a second recovery.
         return this.completeDeliveryTurn(chatId, messages, outcome, mutationValid);
       },
       retryTurn: (messages, reason) => {
@@ -3305,19 +3310,33 @@ export class SessionRuntime {
         // not make the message resolvable. Settle with an inert notice
         // instead of looping recovery forever.
         if (versionMismatched && this.hasFenceRecoveryAttempt(chatId, message.id)) {
-          const formatted = rewriteSessionMessageCommandToNotice(
-            message,
-            TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE,
-            mentionGate,
+          // The marker stays until the ACK commit proves settlement — an
+          // ACK failure or redelivery must not mint a second recovery.
+          return formatInboundContent(
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
+            participants,
           );
-          this.clearFenceRecoveryAttempt(chatId, message.id);
-          return formatInboundContent(formatted, participants);
         }
         // Unstamped (synthetic/legacy) strict slash command with NO
         // registry: without a config stamp there is no provable recovery
         // axis — a retry would fail the same way on this handler forever.
         // Emit the inert notice directly; zero throw, zero retry.
         if (stamp === undefined && registry === null) {
+          return formatInboundContent(
+            rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
+            participants,
+          );
+        }
+        // Stamped but unresolvable right now (unknown registry or version
+        // mismatch) with NO pending inbox custody: a fresh-handler
+        // recovery has no delivery axis either, so settle with the inert
+        // notice instead of a recoverable error the provider would retry
+        // into the same failure.
+        if (
+          (registry === null || versionMismatched) &&
+          (message.inboxEntryId === undefined ||
+            !this.inboxDelivery.hasEntry({ chatId, entryId: message.inboxEntryId, messageId: message.id }))
+        ) {
           return formatInboundContent(
             rewriteSessionMessageCommandToNotice(message, TEAM_SKILL_COMMAND_UNRESOLVED_NOTICE, mentionGate),
             participants,
