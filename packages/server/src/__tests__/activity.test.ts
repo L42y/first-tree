@@ -221,6 +221,7 @@ describe("upsertSessionState — touchPresenceLastSeen option", () => {
   it("DOES NOTIFY when state actually transitions", async () => {
     const { app, admin, agent, chat } = await setup();
     await upsertSessionState(app.db, agent.uuid, chat.id, "active", admin.organizationId);
+    await setSessionRuntime(app.db, agent.uuid, chat.id, "working", admin.organizationId);
 
     const notifier = {
       subscribe: vi.fn(),
@@ -267,6 +268,41 @@ describe("upsertSessionState — touchPresenceLastSeen option", () => {
       "suspended",
       admin.organizationId,
     );
+    expect(notifier.notifySessionRuntime).toHaveBeenCalledTimes(1);
+    expect(notifier.notifySessionRuntime).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
+
+    const [row] = await app.db
+      .select({ runtimeState: agentChatSessions.runtimeState, runtimeStateAt: agentChatSessions.runtimeStateAt })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
+    expect(row?.runtimeState).toBe("idle");
+    expect(row?.runtimeStateAt).toBeInstanceOf(Date);
+  });
+
+  it("repairs and notifies a same-state inactive row that retained working", async () => {
+    const { app, admin, agent, chat } = await setup();
+    await upsertSessionState(app.db, agent.uuid, chat.id, "suspended", admin.organizationId);
+    await app.db
+      .update(agentChatSessions)
+      .set({ runtimeState: "working", runtimeStateAt: new Date() })
+      .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
+    const notifier = makeNotifier();
+
+    await upsertSessionState(app.db, agent.uuid, chat.id, "suspended", admin.organizationId, notifier);
+
+    const [row] = await app.db
+      .select({ runtimeState: agentChatSessions.runtimeState })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
+    expect(row?.runtimeState).toBe("idle");
+    expect(notifier.notifySessionStateChange).toHaveBeenCalledTimes(1);
+    expect(notifier.notifySessionRuntime).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
+
+    vi.mocked(notifier.notifySessionStateChange).mockClear();
+    vi.mocked(notifier.notifySessionRuntime).mockClear();
+    await upsertSessionState(app.db, agent.uuid, chat.id, "suspended", admin.organizationId, notifier);
+    expect(notifier.notifySessionStateChange).not.toHaveBeenCalled();
+    expect(notifier.notifySessionRuntime).not.toHaveBeenCalled();
   });
 });
 
@@ -365,8 +401,32 @@ describe("setSessionRuntime — per-(agent,chat) D-axis writer", () => {
 
     const row = await readRuntime(app, agent.uuid, chat.id);
     expect(row?.runtimeState).toBe("idle"); // untouched
-    expect(row?.runtimeStateAt).toBeNull();
+    expect(row?.runtimeStateAt).toBeInstanceOf(Date);
     expect(notifier.notifySessionRuntime).not.toHaveBeenCalled();
+  });
+
+  it("suspend racing an idle report always converges to suspended idle", async () => {
+    const { app, admin, agent, chat } = await setupActive();
+    await setSessionRuntime(app.db, agent.uuid, chat.id, "working", admin.organizationId);
+    const notifier = makeNotifier();
+
+    await Promise.all([
+      setSessionRuntime(app.db, agent.uuid, chat.id, "idle", admin.organizationId, notifier),
+      upsertSessionState(app.db, agent.uuid, chat.id, "suspended", admin.organizationId, notifier),
+    ]);
+
+    const [row] = await app.db
+      .select({ state: agentChatSessions.state, runtimeState: agentChatSessions.runtimeState })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agent.uuid), eq(agentChatSessions.chatId, chat.id)));
+    expect(row).toMatchObject({ state: "suspended", runtimeState: "idle" });
+    expect(notifier.notifySessionStateChange).toHaveBeenCalledWith(
+      agent.uuid,
+      chat.id,
+      "suspended",
+      admin.organizationId,
+    );
+    expect(notifier.notifySessionRuntime).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
   });
 
   it("missing session row: no write, no notify, no throw", async () => {

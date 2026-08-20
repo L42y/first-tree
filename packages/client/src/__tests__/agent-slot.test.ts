@@ -1219,8 +1219,10 @@ describe("AgentSlot", () => {
     await slot.stop();
   });
 
-  it("uses the active runtime chat set for full-state sync and optimistic-adds delivered chats", async () => {
-    const { slot, connection, sdk, state } = await makeSlot({ activeRuntimeChatIds: ["chat-1"] });
+  it("uses the active runtime chat set for full-state sync and revokes disappeared runtimes", async () => {
+    const { slot, connection, sdk, state } = await makeSlot({
+      activeRuntimeChatIds: ["chat-1", "chat-disappeared"],
+    });
 
     await slot.start();
     const session = state.sessions[0];
@@ -1240,6 +1242,7 @@ describe("AgentSlot", () => {
     expect(connection.reportSessionState).not.toHaveBeenCalledWith("agent-1", "chat-evicted", "suspended");
     expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-1", "working");
     expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-2", "idle");
+    expect(connection.reportSessionRuntime).toHaveBeenCalledWith("agent-1", "chat-disappeared", "idle");
 
     const reconcile = Reflect.get(slot, "reconcileNow");
     if (typeof reconcile !== "function") throw new Error("private method missing");

@@ -919,8 +919,24 @@ export class AgentSlot {
     // stay filtered to the user's active working set, while runtime rows are
     // cheap idempotent repairs for any chat the local SessionRuntime still
     // holds.
-    for (const { chatId, runtimeState } of this.sessionRuntime.getSessionRuntimeStates(null)) {
+    const runtimeStates = this.sessionRuntime.getSessionRuntimeStates(null);
+    const reportedRuntimeChatIds = new Set<string>();
+    for (const { chatId, runtimeState } of runtimeStates) {
+      reportedRuntimeChatIds.add(chatId);
       this.clientConnection.reportSessionRuntime(this.config.agentId, chatId, runtimeState);
+    }
+    // The server's active-chat set is the reconnect catch-up scope. An active
+    // server row omitted from the local runtime snapshot means the old local
+    // projection disappeared (for example after process restart or registry
+    // loss), so revoke it explicitly instead of waiting for stale recovery.
+    // The server's active-row gate makes idle reports for chats without a
+    // current session harmless and idempotent.
+    if (activeChatIds) {
+      for (const chatId of activeChatIds) {
+        if (!reportedRuntimeChatIds.has(chatId)) {
+          this.clientConnection.reportSessionRuntime(this.config.agentId, chatId, "idle");
+        }
+      }
     }
     // Explicit "idle" clears any stale `working`/`blocked` on the server:
     // any in-flight work owned by the previous process died with its SDK

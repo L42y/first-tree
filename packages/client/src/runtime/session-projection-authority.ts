@@ -177,7 +177,7 @@ export class SessionProjectionAuthority<
   forgetChat(chatId: string): void {
     this.sessions.delete(chatId);
     this.evictedMappings.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
+    this.withdrawSessionRuntime(chatId);
     this.lastReportedStates.delete(chatId);
     this.currentTrigger.delete(chatId);
   }
@@ -188,7 +188,7 @@ export class SessionProjectionAuthority<
    */
   dropLiveSession(chatId: string): void {
     this.sessions.delete(chatId);
-    this.sessionRuntimeStates.delete(chatId);
+    this.withdrawSessionRuntime(chatId);
     this.currentTrigger.delete(chatId);
   }
 
@@ -200,14 +200,14 @@ export class SessionProjectionAuthority<
   dropLiveSessionIfCurrent(chatId: string, entry: TSession): boolean {
     if (this.sessions.get(chatId) !== entry) return false;
     this.sessions.delete(chatId);
+    this.withdrawSessionRuntime(chatId);
     this.currentTrigger.delete(chatId);
     return true;
   }
 
   /** Session is no longer active for runtime projection (suspend / retry window). */
   clearActiveRuntimeProjection(chatId: string): void {
-    this.sessionRuntimeStates.delete(chatId);
-    this.recomputeRuntimeState();
+    this.withdrawSessionRuntime(chatId);
   }
 
   getSessionRuntimeState(chatId: string): RuntimeState | undefined {
@@ -237,6 +237,9 @@ export class SessionProjectionAuthority<
 
   /** Clear live session + evicted maps (shutdown / destructive registry flush). */
   clearLiveMapsOnShutdown(): void {
+    for (const chatId of [...this.sessionRuntimeStates.keys()]) {
+      this.withdrawSessionRuntime(chatId);
+    }
     this.sessions.clear();
     this.evictedMappings.clear();
   }
@@ -366,7 +369,7 @@ export class SessionProjectionAuthority<
     const session = this.sessions.get(chatId);
     const state = this.projectedRuntimeState(chatId, session ?? null);
     if (!state) {
-      if (this.sessionRuntimeStates.delete(chatId)) this.recomputeRuntimeState();
+      this.withdrawSessionRuntime(chatId);
       return;
     }
     const previous = this.sessionRuntimeStates.get(chatId);
@@ -384,6 +387,20 @@ export class SessionProjectionAuthority<
     if (session.status === "errored") return "error";
     if (session.status !== "active") return null;
     return this.deps.hasProcessingOwnedWork(chatId) ? "working" : "idle";
+  }
+
+  /**
+   * Removal is a projection transition, not a silent bookkeeping detail.
+   * Emit an explicit idle before forgetting the local value so a working
+   * edge cannot remain authoritative on the server until freshness expiry.
+   * Repeated removals are idempotent because an absent map entry emits
+   * nothing; removing a recorded idle still emits once so deletion itself is
+   * observable even without an ordinary value change.
+   */
+  private withdrawSessionRuntime(chatId: string): void {
+    if (!this.sessionRuntimeStates.delete(chatId)) return;
+    this.deps.onSessionRuntimeChange()?.(chatId, "idle");
+    this.recomputeRuntimeState();
   }
 
   /**
