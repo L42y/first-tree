@@ -425,6 +425,7 @@ describe("probeCodexCapability (install-only)", () => {
     const entry = await probeCodexCapability({
       resolveBundled: bundledMissing,
       findOnPath: () => "/usr/local/bin/codex",
+      verifyPath: () => ({ ok: true, output: "codex 0.146.0" }),
       env: {},
     });
     expect(entry).toMatchObject({
@@ -433,6 +434,38 @@ describe("probeCodexCapability (install-only)", () => {
       runtimeSource: "path",
       runtimePath: "/usr/local/bin/codex",
     });
+  });
+
+  it("reports the same healthy later Desktop candidate selected by execution and login", async () => {
+    const staleGlobal = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const candidates = () => [staleGlobal, desktop];
+    const verifyPath = vi.fn(
+      (path: string): CodexExecutableVerification =>
+        path === staleGlobal
+          ? { ok: false, transient: false, reason: "`codex --version` killed by SIGILL" }
+          : { ok: true, output: "codex 0.146.0" },
+    );
+
+    const entry = await probeCodexCapability({
+      resolveBundled: bundledMissing,
+      findCandidates: candidates,
+      verifyPath,
+      env: {},
+    });
+    const runtime = await resolveCodexRuntimeBinary(
+      {},
+      { resolveBundled: bundledMissing, findCandidates: candidates, verifyPath },
+    );
+
+    expect(entry).toMatchObject({
+      state: "ok",
+      available: true,
+      runtimeSource: "path",
+      runtimePath: desktop,
+    });
+    expect(runtime).toMatchObject({ ok: true, binary: desktop, runtimePath: desktop });
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([staleGlobal, desktop, staleGlobal, desktop]);
   });
 
   it("`missing` when neither the bundle nor a PATH codex resolves, with the binary-missing message", async () => {
@@ -753,6 +786,8 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     if (!res.ok) {
       expect(res.error).not.toContain("Codex runtime binary is missing");
       expect(res.error).toContain("transient host condition");
+      expect(res.cause).toBeInstanceOf(Error);
+      expect(res.cause?.name).toBe("CodexBinaryVerifyTransientError");
     }
   });
 
@@ -782,6 +817,7 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     if (!third.ok) {
       expect(third.error).toContain(pathBinary);
       expect(third.error).toContain("Upgrade or replace");
+      expect(third.cause?.name).toBe("CodexBinaryUnusableError");
     }
   });
 

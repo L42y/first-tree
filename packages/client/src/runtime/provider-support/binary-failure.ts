@@ -213,7 +213,7 @@ function missingSignal(
  * a later provider's verify name must not preempt an earlier provider's missing
  * match (cross-provider ambiguity keeps the earlier provider's outcome).
  */
-export function recognizeProviderBinaryFailure(err: unknown): ProviderBinaryFailureSignal | null {
+function recognizeDirectProviderBinaryFailure(err: unknown): ProviderBinaryFailureSignal | null {
   return (
     verifyTransientSignal(err, "CodexBinaryVerifyTransientError") ??
     codexUnusableSignal(err) ??
@@ -245,4 +245,22 @@ export function recognizeProviderBinaryFailure(err: unknown): ProviderBinaryFail
       err,
     )
   );
+}
+
+function readErrorCause(err: unknown): unknown {
+  if (!err || typeof err !== "object") return undefined;
+  return (err as { cause?: unknown }).cause;
+}
+
+export function recognizeProviderBinaryFailure(err: unknown): ProviderBinaryFailureSignal | null {
+  const seen = new Set<unknown>();
+  let current: unknown = err;
+  for (let depth = 0; current !== undefined && current !== null && depth < 8; depth += 1) {
+    if ((typeof current === "object" || typeof current === "function") && seen.has(current)) return null;
+    if (typeof current === "object" || typeof current === "function") seen.add(current);
+    const direct = recognizeDirectProviderBinaryFailure(current);
+    if (direct) return direct;
+    current = readErrorCause(current);
+  }
+  return null;
 }

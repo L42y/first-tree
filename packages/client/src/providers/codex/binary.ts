@@ -58,7 +58,7 @@ export type CodexAutomaticResolutionFailureTracker = {
   reset(scope: string): void;
 };
 
-export type CodexAutomaticFailureBoundary = "runtime" | "sdk";
+export type CodexAutomaticFailureBoundary = "probe" | "runtime" | "sdk";
 
 /**
  * `codex --version` smoke-check ceiling. A cold `codex` behind a version-manager
@@ -194,8 +194,13 @@ export function codexAutomaticCandidateFailureError(
     if (identicalAttempts < CODEX_IDENTICAL_AUTOMATIC_FAILURE_LIMIT) {
       return new CodexBinaryVerifyTransientError(formatCandidateFailureDetails(failures));
     }
+    // A terminal result ends this retry sequence. A later explicit user retry
+    // for the same chat must receive a fresh initial attempt plus two retries,
+    // and completed chat scopes must not remain in the process-global map.
+    failureTracker.reset(failureScope);
     return new CodexBinaryUnusableError(formatCodexBinaryUnusableMessage(failures, identicalAttempts));
   }
+  failureTracker.reset(failureScope);
   return new CodexBinaryUnusableError(formatCodexBinaryUnusableMessage(failures));
 }
 

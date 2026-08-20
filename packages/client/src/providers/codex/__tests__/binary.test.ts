@@ -192,6 +192,12 @@ describe("codex binary resolution", () => {
     expect((terminal as Error).message).toContain(first);
     expect((terminal as Error).message).toContain(desktop);
     expect((terminal as Error).message).toContain("Upgrade or replace");
+
+    // The terminal settlement closes that sequence. A later user-initiated
+    // retry for the same chat gets a fresh initial attempt plus two retries.
+    expect(attempt).toThrow(CodexBinaryVerifyTransientError);
+    expect(attempt).toThrow(CodexBinaryVerifyTransientError);
+    expect(attempt).toThrow(CodexBinaryUnusableError);
   });
 
   it("treats a transient PATH-codex verify flake as retryable, NOT a missing binary", () => {

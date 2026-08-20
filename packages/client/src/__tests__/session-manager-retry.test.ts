@@ -9,7 +9,9 @@ import {
 } from "@first-tree/shared";
 import { describe, expect, it, vi } from "vitest";
 import { type FirstTreeHubSDK, SdkError } from "../cloud/sdk.js";
+import { CodexAppServerStartupError } from "../providers/codex/app-server/index.js";
 import {
+  CodexBinaryVerifyTransientError,
   createCodexAutomaticResolutionFailureTracker,
   createCodexClientWithBinaryFallback,
 } from "../providers/codex/binary.js";
@@ -183,6 +185,55 @@ describe("SessionRuntime: transient session retry", () => {
       const eventCount = events.length;
       await vi.advanceTimersByTimeAsync(120_000);
       expect(events).toHaveLength(eventCount);
+      await sm.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps non-identical forced app-server binary smoke failures on the Codex transient schedule", async () => {
+    vi.useFakeTimers();
+    try {
+      const transientAppServerHandler = (detail: string): AgentHandler => ({
+        start: vi
+          .fn()
+          .mockRejectedValue(
+            new CodexAppServerStartupError("resolve-binary", new CodexBinaryVerifyTransientError(detail)),
+          ),
+        resume: vi.fn(),
+        inject: vi.fn(),
+        suspend: vi.fn().mockResolvedValue(undefined),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      });
+      const events: SessionEvent[] = [];
+      const sm = makeRuntime({
+        handlers: [
+          transientAppServerHandler("candidate A timed out"),
+          transientAppServerHandler("candidate A was killed by SIGKILL"),
+          transientAppServerHandler("candidate B timed out"),
+          transientAppServerHandler("candidate B was killed by SIGTERM"),
+        ],
+        onSessionEvent: (_chatId, event) => events.push(event),
+      });
+
+      await sm.dispatch(mockEntry({ id: 1, chatId: "chat-app-server-varying-transient" }));
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+
+      const retryEvents = events
+        .filter((event): event is Extract<SessionEvent, { kind: "error" }> => event.kind === "error")
+        .map((event) => parseProviderRetryEventMessage(event.payload.message))
+        .filter((event) => event !== null);
+      const scheduled = retryEvents.filter((event) => event.event === "provider_retry_scheduled");
+      expect(scheduled).toHaveLength(4);
+      expect(scheduled.every((event) => event.category === "transient_transport")).toBe(true);
+      expect(scheduled.every((event) => event.reasonCode === "codex_verify_transient")).toBe(true);
+      expect(scheduled.at(-1)).toMatchObject({ attempt: 4, retryMode: "background" });
+      expect(retryEvents.some((event) => event.event === "provider_retry_exhausted")).toBe(false);
+      expect(retryEvents.some((event) => event.event === "provider_failure_terminal")).toBe(false);
+      expect(sm.totalCount).toBe(1);
+
       await sm.shutdown();
     } finally {
       vi.useRealTimers();

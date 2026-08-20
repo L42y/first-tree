@@ -9,8 +9,8 @@ import {
   type CodexAutomaticResolutionFailureTracker,
   type CodexExecutableVerification,
   codexAutomaticCandidateFailureError,
+  createCodexAutomaticResolutionFailureTracker,
   findCodexExecutableCandidates,
-  findCodexExecutableOnPath,
   formatCodexBinaryMissingMessage,
   resetCodexAutomaticCandidateFailures,
   resolveVerifiedCodexAutomaticCandidate,
@@ -154,7 +154,7 @@ export type CodexBinaryResolution =
       runtimePath: string | null;
       version: string | null;
     }
-  | { ok: false; error: string };
+  | { ok: false; error: string; cause?: Error };
 
 /** Injectable seams for `resolveCodexRuntimeBinary` (tests only). */
 export type CodexRuntimeResolveDeps = {
@@ -172,10 +172,10 @@ export type CodexRuntimeResolveDeps = {
  * contract as the handler (`createCodexClientWithBinaryFallback`): SDK-bundled
  * vendor binary first (launch-verified), else a validated external `codex`
  * resolved from PATH / known install locations. This is a RUNTIME/handler + login helper — it DOES launch-verify the
- * binary it is about to spawn. The capability probe does NOT use it (see
- * `probeCodexCapability`, which is install-only / existence-only); they share
- * the same `resolveBundledCodexBinary` + `findCodexExecutableOnPath`
- * primitives, so the probe's verdict is a strict subset of this resolution.
+ * binary it is about to spawn. The capability probe shares the external
+ * automatic-candidate launch-verification path so its reported artifact stays
+ * consistent, but retains its separate existence-only bundled probe and does
+ * not check login, provider reachability, or a real session.
  */
 export async function resolveCodexRuntimeBinary(
   env: NodeJS.ProcessEnv = process.env,
@@ -223,7 +223,7 @@ export async function resolveCodexRuntimeBinary(
   }
   if (resolved.failures.length > 0) {
     const failure = codexAutomaticCandidateFailureError(resolved.failures, env, "runtime", deps.failureTracker);
-    return { ok: false, error: failure.message };
+    return { ok: false, error: failure.message, cause: failure };
   }
 
   resetCodexAutomaticCandidateFailures(env, "runtime", deps.failureTracker);
@@ -237,6 +237,9 @@ function singleCandidate(path: string | null): Iterable<string> {
 /** Injectable seams — production callers pass nothing. */
 export type CodexProbeDeps = {
   resolveBundled?: () => Promise<{ ok: true; binary: string } | { ok: false; error: string }>;
+  findCandidates?: (env?: Record<string, string | undefined>) => Iterable<string>;
+  verifyPath?: (path: string, env?: Record<string, string | undefined>) => CodexExecutableVerification;
+  /** Legacy single-candidate seam. Prefer findCandidates for new tests. */
   findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   env?: NodeJS.ProcessEnv;
 };
@@ -244,11 +247,13 @@ export type CodexProbeDeps = {
 /**
  * Install-only probe for the `codex` runtime.
  *
- * Installed when the binary the runtime would spawn EXISTS — the SDK-bundled
+ * Installed when the binary the runtime would spawn exists — the SDK-bundled
  * vendor binary (per the SDK's own `resolveNativePackage` layout check), or a
- * external `codex` from PATH / known install locations — without launching it (`--version`), checking
- * `codex login status`, or running `codex doctor`. Reports `runtimeSource` /
- * `runtimePath` so diagnostics still show which artifact backs the runtime.
+ * external `codex` from PATH / known install locations. External automatic
+ * candidates are launch-verified only to select the exact artifact whose path
+ * is reported and later executed; the probe still does not check login,
+ * provider reachability, or a real session. Reports `runtimeSource` /
+ * `runtimePath` so diagnostics show the same artifact the runtime selects.
  * Authentication and reachability are no longer probed; a logged-out or
  * unreachable codex is discovered at session run time and surfaced as an
  * in-chat credential failure.
@@ -256,16 +261,34 @@ export type CodexProbeDeps = {
 export async function probeCodexCapability(deps: CodexProbeDeps = {}): Promise<CapabilityEntry> {
   const env = deps.env ?? process.env;
   const resolveBundled = deps.resolveBundled ?? resolveBundledCodexBinary;
-  const findOnPath = deps.findOnPath ?? findCodexExecutableOnPath;
 
   return runDetect(async (): Promise<DetectOutcome> => {
     const bundled = await resolveBundled();
     if (bundled.ok) {
       return { installed: true, runtimeSource: "bundled", runtimePath: null };
     }
-    const pathBinary = findOnPath(env);
-    if (pathBinary) {
-      return { installed: true, runtimeSource: "path", runtimePath: pathBinary };
+    const candidates = deps.findCandidates
+      ? deps.findCandidates(env)
+      : deps.findOnPath
+        ? singleCandidate(deps.findOnPath(env))
+        : findCodexExecutableCandidates(env);
+    const resolved = resolveVerifiedCodexAutomaticCandidate(env, {
+      candidates,
+      verifyPath: deps.verifyPath,
+    });
+    if (resolved.ok) {
+      return { installed: true, runtimeSource: "path", runtimePath: resolved.path };
+    }
+    if (resolved.failures.length > 0) {
+      // Capability polling must never consume the session-start retry budget.
+      // A fresh local tracker preserves a one-off transient verdict while the
+      // non-ok capability entry remains eligible for the normal re-probe loop.
+      throw codexAutomaticCandidateFailureError(
+        resolved.failures,
+        env,
+        "probe",
+        createCodexAutomaticResolutionFailureTracker(),
+      );
     }
     return { installed: false, error: formatCodexBinaryMissingMessage(bundled.error) };
   });
