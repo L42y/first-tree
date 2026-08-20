@@ -1,7 +1,7 @@
 import type pino from "pino";
 import { describe, expect, it, vi } from "vitest";
 import type { FirstTreeHubSDK } from "../cloud/sdk.js";
-import type { AgentHandler, SessionContext, SessionMessage } from "../runtime/handler.js";
+import type { AgentHandler, DeliveryToken, SessionContext, SessionMessage } from "../runtime/handler.js";
 import { SessionRuntime } from "../runtime/session-runtime.js";
 import { silentLogger } from "./_logger-helpers.js";
 import { mockEntry } from "./test-helpers.js";
@@ -45,6 +45,7 @@ async function captureContext(): Promise<{
   startMessages: SessionMessage[];
   resumeMessages: (SessionMessage | undefined)[];
   injectedMessages: SessionMessage[];
+  injectedTokens: DeliveryToken[];
   recoverChat: ReturnType<typeof vi.fn>;
 }> {
   let starts = 0;
@@ -54,6 +55,7 @@ async function captureContext(): Promise<{
   const startMessages: SessionMessage[] = [];
   const resumeMessages: (SessionMessage | undefined)[] = [];
   const injectedMessages: SessionMessage[] = [];
+  const injectedTokens: DeliveryToken[] = [];
   const handler: AgentHandler = {
     start: vi.fn(async (msg, ctx) => {
       starts++;
@@ -67,8 +69,9 @@ async function captureContext(): Promise<{
       capturedCtx = ctx;
       return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
     }),
-    inject: vi.fn((msg) => {
+    inject: vi.fn((msg, token) => {
       injectedMessages.push(msg);
+      injectedTokens.push(token);
       return { kind: "owned", mode: "queued" } as const;
     }),
     suspend: vi.fn(async () => {
@@ -114,6 +117,7 @@ async function captureContext(): Promise<{
     startMessages,
     resumeMessages,
     injectedMessages,
+    injectedTokens,
     recoverChat,
     ackEntry,
   };
@@ -649,6 +653,174 @@ describe("SessionRuntime registry version-mismatch recovery", () => {
     expect(markerSeam.hasFenceRecoveryAttempt("chat-a", redelivered.id)).toBe(false);
 
     await cap.runtime.shutdown();
+  });
+
+  it("drives the fence recovery through the provider's REAL DeliveryToken.retry", async () => {
+    const cap = await captureContext();
+    cap.ctx.publishTeamSkillCommands(PUBLISHED, 1);
+
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    const injected = cap.injectedMessages[0];
+    const token = cap.injectedTokens[0];
+    if (!injected || !token) throw new Error("expected the injected message and its production DeliveryToken");
+    await expect(cap.ctx.formatInboundContent(injected)).rejects.toThrow(/registry is not published/);
+
+    // The provider retries through the REAL DeliveryToken — the unified
+    // consumption point — not SessionContext.retryTurn.
+    token.retry(injected, "team_skill_command_unavailable");
+    await vi.waitFor(() => expect(cap.handlerShutdowns()).toBe(1));
+    await vi.waitFor(() => expect(cap.recoverChat).toHaveBeenCalledWith("chat-a"));
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await cap.runtime.dispatch(mockEntry({ id: 2, chatId: "chat-a", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(cap.startCount() + cap.resumeCount()).toBe(2));
+
+    const freshCtx = cap.currentCtx();
+    freshCtx.publishTeamSkillCommands(PUBLISHED, 2);
+    const redelivered = cap.resumeMessages[cap.resumeMessages.length - 1];
+    if (!redelivered) throw new Error("expected the fresh handler to receive a redelivered message");
+    expect(await freshCtx.formatInboundContent(redelivered)).toContain("/review-first-tree src/");
+
+    await cap.runtime.shutdown();
+  });
+
+  it("bounds a fenced FIRST message: handler.start throw consumes through the runtime failure path — no generic backoff", async () => {
+    let starts = 0;
+    let latestCtx: SessionContext | undefined;
+    const handler: AgentHandler = {
+      start: vi.fn(async (msg, ctx) => {
+        starts++;
+        latestCtx = ctx;
+        // First start proves v1; the fresh start after recovery proves v2.
+        ctx.publishTeamSkillCommands(PUBLISHED, starts === 1 ? 1 : 2);
+        await ctx.formatInboundContent(msg);
+        return { sessionId: `session-${starts}`, route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      resume: vi.fn(async () => ({
+        sessionId: "session-1",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      })),
+      inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
+      suspend: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const runtime = new SessionRuntime({
+      session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
+      concurrency: 5,
+      handlerFactory: () => handler,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: mockSdk(),
+      log: silentLogger() as unknown as pino.Logger,
+      ackEntry: vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined),
+      recoverChat,
+    });
+
+    // The very first tracked message IS the fenced strict slash.
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-b"));
+    // Redelivery after recovery starts a FRESH handler (second start).
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-b", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(starts).toBe(2));
+
+    // The fresh start published v2 and formatted successfully.
+    if (!latestCtx) throw new Error("expected a fresh context");
+    await runtime.shutdown();
+  });
+
+  it("bounds a fenced FIRST message with an unresolved fresh preparation: notice and ACK, no third handler", async () => {
+    let starts = 0;
+    let freshCtx: SessionContext | undefined;
+    let freshMessage: SessionMessage | undefined;
+    const ackEntry = vi.fn<(entryId: number) => Promise<void>>().mockResolvedValue(undefined);
+    const handler: AgentHandler = {
+      start: vi.fn(async (msg, ctx, token) => {
+        starts++;
+        if (starts === 1) {
+          // The first start proves v1; the fenced first message throws out
+          // of handler.start into the runtime failure path.
+          ctx.publishTeamSkillCommands(PUBLISHED, 1);
+          await ctx.formatInboundContent(msg);
+          return { sessionId: "session-1", route: { kind: "owned" as const, mode: "queued" as const } };
+        }
+        // The fresh start STILL cannot prove any registry (null); the
+        // redelivered message's format settles as the bounded notice.
+        freshCtx = ctx;
+        freshMessage = msg;
+        void token;
+        ctx.publishTeamSkillCommands(null, null);
+        return { sessionId: "session-2", route: { kind: "owned" as const, mode: "queued" as const } };
+      }),
+      resume: vi.fn(async () => ({
+        sessionId: "session-2",
+        route: { kind: "owned" as const, mode: "queued" as const },
+      })),
+      inject: vi.fn().mockReturnValue({ kind: "owned", mode: "queued" }),
+      suspend: vi.fn().mockResolvedValue(undefined),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    };
+    const recoverChat = vi.fn().mockResolvedValue(undefined);
+    const runtime = new SessionRuntime({
+      session: { idle_timeout: 300, max_sessions: 10, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
+      concurrency: 5,
+      handlerFactory: () => handler,
+      handlerConfig: { workspaceRoot: "/tmp/test", runtimeProvider: "codex" },
+      agentIdentity: {
+        agentId: "agent-1",
+        inboxId: "inbox-agent-1",
+        displayName: "Agent",
+        type: "agent",
+        visibility: "organization",
+        delegateMention: null,
+        metadata: {},
+      },
+      sdk: mockSdk(),
+      log: silentLogger() as unknown as pino.Logger,
+      ackEntry,
+      recoverChat,
+    });
+
+    // The very first tracked message IS the fenced strict slash: start
+    // throws, the runtime consumes the pending failure through the
+    // bounded recovery (never the generic indefinite backoff).
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(recoverChat).toHaveBeenCalledWith("chat-c"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runtime.dispatch(mockEntry({ id: 1, chatId: "chat-c", content: "/review src/", configVersion: 2 }));
+    await vi.waitFor(() => expect(starts).toBe(2));
+
+    // The redelivered message reached the fresh start with the SAME
+    // identity, and its preparation published null: the bounded terminal
+    // notice (not a throw), no third handler, exactly one recovery. The
+    // notice+ACK completion itself rides the same production finishTurn
+    // machinery proven by the terminal-custody test above.
+    if (!freshCtx || !freshMessage) throw new Error("expected the fresh handler to receive the redelivered message");
+    expect(freshMessage.id).toBe("msg-1");
+    expect(freshMessage.inboxEntryId).toBe(1);
+    expect(freshMessage.configVersion).toBe(2);
+    const notice = await freshCtx.formatInboundContent(freshMessage);
+    expect(notice).toContain("could not be verified");
+    expect(notice).not.toContain("/review");
+    expect(starts).toBe(2);
+    expect(recoverChat).toHaveBeenCalledTimes(1);
+
+    await runtime.shutdown();
   });
 
   it("does not restart the session when a retried message never hit the fence", async () => {
