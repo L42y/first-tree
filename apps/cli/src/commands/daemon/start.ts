@@ -11,6 +11,8 @@ import {
   discoverProviderModels,
   flushClientSentry,
   initClientSentry,
+  onCodexVerifiedAutomaticCandidateChange,
+  probeCodexCapability,
 } from "@first-tree/client";
 import {
   agentConfigSchema,
@@ -126,6 +128,8 @@ export function registerDaemonStartCommand(daemon: Command): void {
 
       let unregisterRuntimeMarker: (() => void) | null = null;
       let releaseRuntimeOwnership: (() => void) | null = null;
+      let unregisterCodexCandidateChange: (() => void) | null = null;
+      let codexCapabilityPublicationStarted = false;
       try {
         // Service-mode delegation. We split four cases so the user gets a
         // single coherent command:
@@ -375,8 +379,8 @@ export function registerDaemonStartCommand(daemon: Command): void {
         // Runtime-capability refresh as a single probing model. The refresher
         // owns startup, WS-reconnect, and bounded background probes. Startup is
         // deliberately post-registration and fire-and-forget: capability rows
-        // still come from launch-verified full probes, but slow provider smokes
-        // must not delay `Connecting...`, WS registration, or agent bind.
+        // come from install-only probes, and publication latency must not delay
+        // `Connecting...`, WS registration, or agent bind.
         const capabilityRefresher = new CapabilityRefresher({
           upload: async (capabilities) => {
             const accessToken = await ensureFreshAccessToken();
@@ -389,6 +393,53 @@ export function registerDaemonStartCommand(daemon: Command): void {
           },
           log: (symbol, msg) => writeStatus(symbol, msg),
         });
+        let codexCapabilityPublicationInFlight = false;
+        let codexCapabilityPublicationPending = false;
+        const publishCodexVerifiedSelection = (): void => {
+          // Runtime-auth owns the whole provider entry while browser login is
+          // interactive. A verified selection can be emitted by resolveLogin(),
+          // before the pending-auth marker is published, so coalesce it until
+          // the login's terminal reflection has released that ownership.
+          if (
+            !codexCapabilityPublicationStarted ||
+            codexCapabilityPublicationInFlight ||
+            capabilityRefresher.isInteractive("codex")
+          ) {
+            codexCapabilityPublicationPending = true;
+            return;
+          }
+          codexCapabilityPublicationInFlight = true;
+          void probeCodexCapability()
+            .then(async (entry) => {
+              // Interactive login may have started while the launch-free probe
+              // was in flight. Re-check at write time so its pendingAuth entry
+              // cannot be replaced by this plain provenance snapshot.
+              if (!codexCapabilityPublicationStarted || capabilityRefresher.isInteractive("codex")) {
+                codexCapabilityPublicationPending = true;
+                return;
+              }
+              // A failed login has already published its terminal marker by
+              // the time interactive ownership is released. Provenance is an
+              // additive refresh, so retain that verdict while updating the
+              // verified runtime path instead of resetting the UI to a login
+              // that appears never attempted.
+              const current = capabilityRefresher.currentEntry("codex");
+              const published = current?.lastAuthError ? { ...entry, lastAuthError: current.lastAuthError } : entry;
+              await capabilityRefresher.setProviderEntry("codex", published);
+            })
+            .catch((err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              writeStatus("⚠️", `codex capability provenance update skipped: ${message}`);
+            })
+            .finally(() => {
+              codexCapabilityPublicationInFlight = false;
+              if (codexCapabilityPublicationPending && !capabilityRefresher.isInteractive("codex")) {
+                codexCapabilityPublicationPending = false;
+                publishCodexVerifiedSelection();
+              }
+            });
+        };
+        unregisterCodexCandidateChange = onCodexVerifiedAutomaticCandidateChange(publishCodexVerifiedSelection);
         runtime.onReconnect(() => capabilityRefresher.onReconnect());
 
         // In-product runtime-auth: the server pushes `runtime-auth:start` when a
@@ -414,7 +465,13 @@ export function registerDaemonStartCommand(daemon: Command): void {
             currentEntry: (provider) => capabilityRefresher.currentEntry(provider),
             setProviderEntry: (provider, entry) => capabilityRefresher.setProviderEntry(provider, entry),
             log: (symbol, msg) => writeStatus(symbol, msg),
-          }).finally(() => capabilityRefresher.endInteractive(command.provider));
+          }).finally(() => {
+            capabilityRefresher.endInteractive(command.provider);
+            if (command.provider === "codex" && codexCapabilityPublicationPending) {
+              codexCapabilityPublicationPending = false;
+              publishCodexVerifiedSelection();
+            }
+          });
         });
 
         // Host-local model catalog: web opens Model settings → server asks this
@@ -447,6 +504,11 @@ export function registerDaemonStartCommand(daemon: Command): void {
         // transient failure logs and moves on; agents still bind, and the poll
         // (or a later restart) retries.
         void capabilityRefresher.start();
+        codexCapabilityPublicationStarted = true;
+        if (codexCapabilityPublicationPending) {
+          codexCapabilityPublicationPending = false;
+          publishCodexVerifiedSelection();
+        }
 
         // Post-register slash-command skill upload. Phase 1B scope is
         // user-global Claude Code skills — every claude-code agent on this
@@ -511,6 +573,9 @@ export function registerDaemonStartCommand(daemon: Command): void {
         // Graceful shutdown
         const shutdown = async () => {
           writeLine("\n  Shutting down...\n");
+          codexCapabilityPublicationStarted = false;
+          unregisterCodexCandidateChange?.();
+          unregisterCodexCandidateChange = null;
           capabilityRefresher.stop();
           runtime.unwatchAgentsDir();
           await runtime.stop(resolveClientRuntimeStopReason());
@@ -581,6 +646,8 @@ export function registerDaemonStartCommand(daemon: Command): void {
         }
         writeErrorAndExit(`Error: ${msg}`);
       } finally {
+        codexCapabilityPublicationStarted = false;
+        unregisterCodexCandidateChange?.();
         unregisterRuntimeMarker?.();
         releaseRuntimeOwnership?.();
         // Reset singleton so other commands can reinit

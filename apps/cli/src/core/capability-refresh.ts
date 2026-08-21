@@ -45,7 +45,7 @@ export type CapabilityRefresherDeps = {
   /** Status logger (symbol + message), e.g. `print.status`. */
   log: (symbol: string, message: string) => void;
   /** Optional initial snapshot from a caller-owned probe. Daemon startup normally
-   * omits this so full launch probes run only after WS registration. */
+   * omits this so the full install-only probe runs after WS registration. */
   initial?: ClientCapabilities | null;
   /** Override the backoff base (test seam). */
   baseMs?: number;
@@ -64,7 +64,7 @@ export type CapabilityRefresherDeps = {
  * probing model, so the refresh triggers never overlap or fight:
  *
  *   1. Startup (`start`) — if no caller supplied an initial snapshot, immediately
- *      launch a full probe in the background after the Client has registered.
+ *      run a full probe in the background after the Client has registered.
  *   2. WS reconnect (`onReconnect`) — TTL-aware full-or-revalidate via
  *      {@link reprobeOnReconnect}, preserving the existing reconnect behavior.
  *   3. A bounded, backoff-scheduled background poll (`start`) that fires *while
@@ -76,7 +76,7 @@ export type CapabilityRefresherDeps = {
  *      itself once every built-in provider is `ok`.
  *
  * Both triggers share one in-flight guard, so a reconnect re-probe and a poll
- * can never launch providers concurrently, and uploads are deduped against the
+ * can never overlap, and uploads are deduped against the
  * last snapshot actually sent.
  */
 export class CapabilityRefresher {

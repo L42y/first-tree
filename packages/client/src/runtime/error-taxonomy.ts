@@ -271,10 +271,10 @@ export function classify(err: unknown, context?: { source?: ErrorSource }): Clas
       message: shape.message ?? "Claude Code CLI requires re-authentication (run /login)",
     };
   }
-  // Provider binary missing / verify-transient: consume the normalized signal
+  // Provider binary missing / unusable / verify-transient: consume the normalized signal
   // from provider-support. That seam owns the match rules, reason codes, and
-  // the historical interleaved order (Codex→Cursor→Grok→Pi, verify-then-missing
-  // within each provider) so this generic taxonomy never imports concrete
+  // the historical interleaved order (Codex→Cursor→Grok→Pi, with Codex's
+  // unusable outcome between verify and missing) so this generic taxonomy never imports concrete
   // *-binary modules. Cross-provider ambiguity keeps the earlier provider.
   const binaryFailure = recognizeProviderBinaryFailure(err);
   if (binaryFailure) {
