@@ -37,6 +37,7 @@
     "react-native-safe-area-context": "~5.9.0",
     "react-native-screens": "~4.27.0",
     "react-native-web": "~0.21.2",
+    "react-native-webview": "13.16.1",
     "tamagui": "^2.7.7"
   },
   "devDependencies": {

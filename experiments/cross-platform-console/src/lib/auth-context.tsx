@@ -9,7 +9,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { fetchMe, login as loginApi, type MeResponse } from "./auth-api";
+import { fetchMe, type MeResponse } from "./auth-api";
 import {
   clearStoredTokens,
   getApiSelectedOrganizationId,
@@ -36,7 +36,6 @@ type AuthContextValue = {
   teamDisplayName: string | null;
   switchingOrg: OrgBrief | null;
   setSwitchingOrg: (org: OrgBrief | null) => void;
-  login: (username: string, password: string) => Promise<void>;
   adoptTokens: (tokens: { accessToken: string; refreshToken: string }) => Promise<void>;
   selectOrganization: (organizationId: string) => Promise<void>;
   refreshMe: () => Promise<void>;
@@ -158,14 +157,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [refreshMe],
   );
 
-  const login = useCallback(
-    async (username: string, password: string) => {
-      const response = await loginApi(username, password);
-      await adoptTokens(response);
-    },
-    [adoptTokens],
-  );
-
   const selectOrganization = useCallback(
     async (organizationId: string) => {
       const membership = me?.memberships?.find((m) => m.organizationId === organizationId);
@@ -206,13 +197,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       teamDisplayName: membership?.organizationName ?? null,
       switchingOrg,
       setSwitchingOrg,
-      login,
       adoptTokens,
       selectOrganization,
       refreshMe,
       logout,
     };
-  }, [tokens, me, meLoaded, switchingOrg, login, adoptTokens, selectOrganization, refreshMe, logout]);
+  }, [tokens, me, meLoaded, switchingOrg, adoptTokens, selectOrganization, refreshMe, logout]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

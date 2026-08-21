@@ -1,39 +1,75 @@
-import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
-import { router } from "expo-router";
-
+import type { AuthProviderAvailability } from "~/lib/auth-api";
+import { DEFAULT_PROVIDER_AVAILABILITY, fetchBootstrapConfig } from "~/lib/auth-api";
+import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
+import { CALLBACK_ERROR_COPY } from "~/lib/oauth";
+import { OAuthSheet } from "~/components/oauth-sheet";
 import { useAuth } from "~/lib/auth-context";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
+/**
+ * Sign-in entry. First Tree deployments authenticate exclusively through
+ * OAuth (Google / GitHub / SSO) — the same surfaces as the web console's
+ * login page (packages/web/src/pages/login.tsx). There is no password
+ * form: the legacy username/password endpoint was retired on the server.
+ *
+ * Provider availability comes from the public bootstrap endpoint
+ * (`GET /api/v1/bootstrap/config`), exactly like the web login page, so a
+ * self-hosted deployment never renders a broken OAuth choice.
+ */
 export default function LoginScreen() {
-  const { login, isAuthenticated } = useAuth();
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { adoptTokens } = useAuth();
+  const [providers, setProviders] = useState<AuthProviderAvailability>(DEFAULT_PROVIDER_AVAILABILITY);
+  const [providersSettled, setProvidersSettled] = useState(false);
+  const [activeProvider, setActiveProvider] = useState<SignInProvider | null>(null);
+  const [sheetError, setSheetError] = useState<string | null>(null);
+  const [adopting, setAdopting] = useState(false);
+  const handledRef = useRef(false);
 
-  if (isAuthenticated) {
-    router.replace("/");
-    return null;
-  }
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchBootstrapConfig(controller.signal)
+      .then((config) => {
+        setProviders(config.authProviders ?? DEFAULT_PROVIDER_AVAILABILITY);
+        setProvidersSettled(true);
+      })
+      .catch(() => {
+        // Fail closed like the web console: unknown availability renders no
+        // buttons rather than a broken OAuth choice.
+        setProviders(DEFAULT_PROVIDER_AVAILABILITY);
+        setProvidersSettled(true);
+      });
+    return () => controller.abort();
+  }, []);
 
-  const handleLogin = async () => {
-    setError(null);
-    setLoading(true);
+  const availableProviders = useMemo(
+    () =>
+      (["google", "github", "oidc"] as SignInProvider[]).filter((p) => providers[p]),
+    [providers],
+  );
+
+  const closeSheet = () => {
+    setActiveProvider(null);
+    setSheetError(null);
+    handledRef.current = false;
+  };
+
+  const handleCompletion = async (completion: OAuthCompletion) => {
+    if (handledRef.current) return;
+    handledRef.current = true;
+    if (completion.kind === "error") {
+      setSheetError(CALLBACK_ERROR_COPY[completion.code] ?? "Sign-in did not complete. Please try again.");
+      return;
+    }
+    setAdopting(true);
     try {
-      await login(username, password);
-      router.replace("/");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Login failed";
-      setError(message);
+      await adoptTokens({ accessToken: completion.accessToken, refreshToken: completion.refreshToken });
+      closeSheet();
+    } catch {
+      handledRef.current = false;
+      setSheetError("Sign-in completed, but First Tree couldn't open your workspace. Please try again.");
     } finally {
-      setLoading(false);
+      setAdopting(false);
     }
   };
 
@@ -43,43 +79,60 @@ export default function LoginScreen() {
         <Text style={styles.title}>First Tree</Text>
         <Text style={styles.subtitle}>Sign in to your workspace</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="Username"
-          value={username}
-          onChangeText={setUsername}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Password"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
+        {!providersSettled ? (
+          <ActivityIndicator style={styles.loading} />
+        ) : availableProviders.length === 0 ? (
+          <Text style={styles.hint}>No sign-in providers are configured. Contact your administrator.</Text>
+        ) : (
+          availableProviders.map((provider) => (
+            <Pressable
+              key={provider}
+              onPress={() => {
+                setSheetError(null);
+                handledRef.current = false;
+                setActiveProvider(provider);
+              }}
+              style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
+            >
+              <Text style={styles.buttonText}>{PROVIDER_LABELS[provider]}</Text>
+            </Pressable>
+          ))
+        )}
 
-        {error && <Text style={styles.error}>{error}</Text>}
-
-        <Pressable
-          onPress={handleLogin}
-          disabled={loading || !username || !password}
-          style={({ pressed }) => [
-            styles.button,
-            pressed && styles.buttonPressed,
-            (loading || !username || !password) && styles.buttonDisabled,
-          ]}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={styles.buttonText}>Sign in</Text>
-          )}
-        </Pressable>
+        <Text style={styles.hint}>
+          Sign-in uses your Google or GitHub identity. You authorize a repo later, only when an agent needs to work in
+          it.
+        </Text>
       </View>
+
+      {sheetError ? (
+        <View style={styles.errorWrap}>
+          <Text style={styles.sheetError}>{sheetError}</Text>
+          <Pressable
+            style={[styles.button, styles.retryButton]}
+            onPress={() => {
+              setSheetError(null);
+              handledRef.current = false;
+              setActiveProvider(activeProvider);
+            }}
+          >
+            <Text style={styles.buttonText}>Try again</Text>
+          </Pressable>
+        </View>
+      ) : adopting ? (
+        <ActivityIndicator style={styles.loading} />
+      ) : (
+        <OAuthSheet provider={activeProvider} onClose={closeSheet} onComplete={handleCompletion} />
+      )}
     </View>
   );
 }
+
+const PROVIDER_LABELS: Record<SignInProvider, string> = {
+  google: "Continue with Google",
+  github: "Continue with GitHub",
+  oidc: "Continue with SSO",
+};
 
 const styles = StyleSheet.create({
   container: {
@@ -103,17 +156,14 @@ const styles = StyleSheet.create({
     opacity: 0.7,
     marginBottom: 8,
   },
-  input: {
-    height: 48,
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: "rgba(128,128,128,0.3)",
-  },
-  error: {
-    color: "#EF4444",
+  hint: {
     textAlign: "center",
+    opacity: 0.6,
+    fontSize: 13,
+    marginTop: 8,
+  },
+  loading: {
+    marginTop: 16,
   },
   button: {
     height: 48,
@@ -125,12 +175,24 @@ const styles = StyleSheet.create({
   buttonPressed: {
     opacity: 0.8,
   },
-  buttonDisabled: {
-    opacity: 0.5,
-  },
   buttonText: {
     color: "#fff",
     fontWeight: "bold",
     fontSize: 16,
+  },
+  errorWrap: {
+    position: "absolute",
+    bottom: 48,
+    left: 24,
+    right: 24,
+    gap: 16,
+  },
+  sheetError: {
+    textAlign: "center",
+    fontSize: 15,
+    color: "#374151",
+  },
+  retryButton: {
+    marginTop: 8,
   },
 });
