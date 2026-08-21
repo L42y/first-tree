@@ -16,6 +16,12 @@ config.watchFolders = [
 // Make sure Metro looks in the project's node_modules for dependencies.
 config.resolver.nodeModulesPaths = [path.resolve(projectRoot, "node_modules")];
 
+// react-native-markdown-display -> markdown-it requires Node's built-in
+// `punycode`, which doesn't exist in RN. Map it to the userland package.
+config.resolver.extraNodeModules = {
+  punycode: path.resolve(projectRoot, "node_modules/punycode"),
+};
+
 // Required for pnpm-style symlinks and packages that use the modern
 // "exports" field (like @first-tree/shared).
 config.resolver.unstable_enableSymlinks = true;
