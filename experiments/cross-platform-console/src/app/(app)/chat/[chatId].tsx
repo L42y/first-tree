@@ -16,6 +16,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractMentions } from "@first-tree/shared";
 import type { ChatDetail, Message } from "@first-tree/shared";
 
+import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
+
 import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
