@@ -1,6 +1,7 @@
 const config = {
   name: "First Tree",
-  slug: "first-tree-cross-platform-console",
+  slug: "first-tree",
+  owner: "resumed",
   version: "0.1.0",
   orientation: "default",
   icon: "./assets/icon.png",
