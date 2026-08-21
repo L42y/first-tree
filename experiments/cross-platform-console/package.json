@@ -17,7 +17,9 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.12",
+    "@first-tree/shared": "workspace:*",
     "@react-native-async-storage/async-storage": "1.23.1",
+    "@tanstack/react-query": "^5.95.0",
     "@tamagui/config": "^2.7.7",
     "@tamagui/core": "^2.7.7",
     "@tamagui/font-inter": "^2.7.7",

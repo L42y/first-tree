@@ -1,11 +1,14 @@
 import { useEffect } from "react";
 import { useColorScheme } from "react-native";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
 import { Stack, usePathname } from "expo-router";
 import * as SystemUI from "expo-system-ui";
 import { StatusBar } from "expo-status-bar";
 import { TamaguiProvider, Theme } from "tamagui";
 
+import { AuthProvider } from "~/lib/auth-context";
+import { queryClient } from "~/lib/query-client";
 import { config } from "~/tamagui.config";
 
 export default function RootLayout() {
@@ -19,7 +22,6 @@ export default function RootLayout() {
   });
 
   useEffect(() => {
-    // Keep the native system UI chrome aligned with the active theme.
     SystemUI.setBackgroundColorAsync(
       themeName === "dark" ? "#07151F" : "#E6F4FE",
     ).catch(() => {
@@ -34,13 +36,18 @@ export default function RootLayout() {
   }, [pathname]);
 
   return (
-    <TamaguiProvider config={config} defaultTheme={themeName}>
-      <Theme name={themeName}>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="index" />
-        </Stack>
-        <StatusBar style={themeName === "dark" ? "light" : "dark"} />
-      </Theme>
-    </TamaguiProvider>
+    <QueryClientProvider client={queryClient}>
+      <TamaguiProvider config={config} defaultTheme={themeName}>
+        <Theme name={themeName}>
+          <AuthProvider>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="login" />
+              <Stack.Screen name="(app)" />
+            </Stack>
+            <StatusBar style={themeName === "dark" ? "light" : "dark"} />
+          </AuthProvider>
+        </Theme>
+      </TamaguiProvider>
+    </QueryClientProvider>
   );
 }
