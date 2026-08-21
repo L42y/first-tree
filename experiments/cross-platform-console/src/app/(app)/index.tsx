@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  FlatList,
   RefreshControl,
   StyleSheet,
   Text,
   View,
 } from "react-native";
+import { LegendList } from "@legendapp/list/react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Pressable } from "react-native";
 
@@ -118,10 +118,12 @@ export default function ChatListScreen() {
         </View>
       )}
 
-      <FlatList
+      <LegendList
         data={rows}
-        keyExtractor={(item) => item.chatId}
-        renderItem={({ item }) => <ChatListItem chat={item} selfAgentId={selfAgentId} />}
+        keyExtractor={(item: MeChatRow) => item.chatId}
+        renderItem={({ item }: { item: MeChatRow }) => <ChatListItem chat={item} selfAgentId={selfAgentId} />}
+        estimatedItemSize={76}
+        recycleItems
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

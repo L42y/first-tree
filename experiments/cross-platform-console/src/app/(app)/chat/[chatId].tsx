@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Keyboard,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -31,6 +33,22 @@ export default function ChatDetailScreen() {
   const listRef = useRef<FlatList<Message>>(null);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  // Deterministic keyboard avoidance: lift the composer by the exact
+  // keyboard height. Framework avoidance (KeyboardAvoidingView /
+  // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
+  // behind the keyboard on iOS.
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    const showSub = Keyboard.addListener("keyboardDidShow", (e) =>
+      setKeyboardHeight(e.endCoordinates.height),
+    );
+    const hideSub = Keyboard.addListener("keyboardDidHide", () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const chatQuery = useQuery<ChatDetail>({
     queryKey: ["chats", chatId],
@@ -150,7 +168,6 @@ export default function ChatDetailScreen() {
         ref={listRef}
         data={messages}
         keyExtractor={(item) => item.id}
-        automaticallyAdjustKeyboardInsets
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
         renderItem={({ item }) => (
@@ -165,7 +182,7 @@ export default function ChatDetailScreen() {
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
       />
 
-      <View style={styles.composer}>
+      <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
         <TextInput
           style={styles.input}
           value={message}
