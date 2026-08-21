@@ -57,6 +57,11 @@ The scaffold starts self-contained. As the experiment matures, extract only the 
 
 Avoid a big-bang rewrite of the existing web console.
 
+## UI conventions
+
+- The app is **dark-locked** (`userInterfaceStyle: "dark"` in `app.config.ts`) and every surface styles from the shared tokens in `src/lib/theme.ts` — never from the OS default.
+- Every screen/component must set explicit `backgroundColor` and text `color` values (from those tokens). Raw React Native styles without colors inherit the platform light appearance and are a bug, not a style choice.
+
 ## Notes
 
 - `app.config.ts` reads `POSTHOG_PROJECT_TOKEN` and `POSTHOG_HOST` from the environment at build time; they are not committed.

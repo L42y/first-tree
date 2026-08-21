@@ -5,16 +5,14 @@ const config = {
   version: "0.1.0",
   orientation: "default",
   icon: "./assets/icon.png",
-  userInterfaceStyle: "automatic",
+  // Dark-locked: the app never follows the OS appearance. Every screen
+  // must still style from ~/lib/theme tokens — this only guarantees the
+  // system chrome and root window are dark when one is missed.
+  userInterfaceStyle: "dark",
   splash: {
     image: "./assets/splash-icon.png",
     resizeMode: "contain",
-    backgroundColor: "#E6F4FE",
-    dark: {
-      image: "./assets/splash-icon.png",
-      resizeMode: "contain",
-      backgroundColor: "#07151F",
-    },
+    backgroundColor: "#07151F",
   },
   assetBundlePatterns: ["**/*"],
   ios: {
