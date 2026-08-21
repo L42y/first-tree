@@ -1839,6 +1839,14 @@ export function ChatView({
   useLayoutEffect(() => {
     chatIdRef.current = chatId;
   }, [chatId]);
+  // Always-current draft text, for async failure callbacks that must decide
+  // whether the user typed something new during the in-flight window (a
+  // stale closure would misjudge the rollback guards). Same commit
+  // discipline as `chatIdRef` above.
+  const draftRef = useRef(draft);
+  useLayoutEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
   // Always-current committed search params, for async callbacks that must
   // not act on the snapshot captured when their operation STARTED (e.g. the
   // need-you queue advance: a manual chat switch mid-send deletes `nq`, and
@@ -2357,6 +2365,7 @@ export function ChatView({
         resourceId: string;
         requestedSlug: string;
       };
+      retryProvenance?: { agentId: string; resourceId: string; name: string; version: number } | null;
     }) =>
       // `resolves` rides the blocking question's answer send (option
       // selections + free text merged) — see the `dockRequest` branch in
@@ -2368,14 +2377,20 @@ export function ChatView({
     // and clear the draft so the input feels responsive even when the POST
     // round-trip + follow-up GET take 1–2s. The ctx returned here is threaded
     // to onError / onSuccess so we can reconcile with the server row.
-    onMutate: async ({ content, mentions, inReplyTo, resolves, preserveDraft }) => {
+    onMutate: async ({ content, mentions, inReplyTo, resolves, preserveDraft, retryProvenance }) => {
       await queryClient.cancelQueries({ queryKey: messagesQueryKey });
       const previousDraft = draft;
       if (!preserveDraft) setDraft("");
       const optimistic = buildOptimisticTextMessage(content, { mentions, inReplyTo, resolves });
-      if (!optimistic) return { tempId: null, previousDraft, sendChatId: chatId, sendUserId: user?.id ?? null };
+      const ctx = {
+        previousDraft,
+        sendChatId: chatId,
+        sendUserId: user?.id ?? null,
+        retryProvenance: retryProvenance ?? null,
+      };
+      if (!optimistic) return { tempId: null, ...ctx };
       insertOwnOptimisticMessage(optimistic);
-      return { tempId: optimistic.id, previousDraft, sendChatId: chatId, sendUserId: user?.id ?? null };
+      return { tempId: optimistic.id, ...ctx };
     },
     onSuccess: (saved, _content, ctx) => {
       if (ctx?.tempId) replaceOptimisticMessage(ctx.tempId, saved);
@@ -2441,6 +2456,20 @@ export function ChatView({
         !parkFailedDraftIfSwitched(ctx.sendUserId, ctx.sendChatId, chatIdRef.current, ctx.previousDraft)
       ) {
         setDraft((current) => (current === "" ? ctx.previousDraft : current));
+      }
+      // Restore the transient Team provenance this send actually used —
+      // the optimistic clear dropped it via the invalidation effect, and
+      // without it the unchanged retry would degrade to a bare local slash.
+      // Same guards as the draft rollback: only into the chat the send left
+      // from, only while the composer is still empty (no replacement text),
+      // and never over a newer menu selection made during the window.
+      if (
+        ctx?.retryProvenance &&
+        chatIdRef.current === ctx.sendChatId &&
+        draftRef.current === "" &&
+        slashTeamSelectionRef.current === null
+      ) {
+        slashTeamSelectionRef.current = ctx.retryProvenance;
       }
     },
     // Resync against the server in the background so any fan-out side-effects
@@ -2563,6 +2592,12 @@ export function ChatView({
       resourceId: string;
       requestedSlug: string;
     } | null = null;
+    // Failure custody for the retry: the transient Team provenance this
+    // send actually used. The optimistic clear empties the draft, which the
+    // invalidation effect reads as "user edited away" and drops the ref —
+    // so the rollback must restore it (under the same guards as the draft)
+    // or the unchanged retry would degrade to a bare local slash.
+    let retryProvenance: { agentId: string; resourceId: string; name: string; version: number } | null = null;
     const strictCommand = strictCommandName(text);
     if (strictCommand) {
       const provenance = slashTeamSelectionRef.current;
@@ -2588,6 +2623,7 @@ export function ChatView({
       }
 
       if (provenanceMatches && provenance) {
+        retryProvenance = { ...provenance };
         let freshResources: Awaited<ReturnType<typeof getAgentResources>>;
         try {
           freshResources = await getAgentResources(provenance.agentId);
@@ -2811,6 +2847,19 @@ export function ChatView({
         if (previousAttachments.length > 0 && chatIdRef.current === sendChatId) {
           restoreAttachments(previousAttachments);
         }
+        // Restore the transient Team provenance alongside the caption —
+        // without it the unchanged retry would degrade to a bare local
+        // slash. Same guards as the draft/attachment rollback: same chat,
+        // empty composer (no replacement text), and never over a newer
+        // menu selection made during the window.
+        if (
+          retryProvenance &&
+          chatIdRef.current === sendChatId &&
+          draftRef.current === "" &&
+          slashTeamSelectionRef.current === null
+        ) {
+          slashTeamSelectionRef.current = retryProvenance;
+        }
       } finally {
         setUploading(false);
       }
@@ -2822,6 +2871,7 @@ export function ChatView({
       mentions: routedMentions,
       inReplyTo: threadedRequestId,
       skillPrecondition: skillPrecondition ?? undefined,
+      retryProvenance,
     });
   };
 

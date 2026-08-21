@@ -2467,6 +2467,57 @@ describe("ChatView", () => {
     if (!textarea) throw new Error("Composer textarea missing");
     await waitForCondition(() => textarea.value === "/code-review ", "Expected the draft to be restored");
 
+    // Immediate unchanged retry: the restored provenance drives the full
+    // revalidation and pairs the exact precondition + sentinel AGAIN —
+    // never a bare local slash that the old Server would accept.
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length === 2, "Expected the retry POST");
+    const [, , , retryOpts] = chatMocks.sendChatMessage.mock.calls[1] ?? [];
+    expect(retryOpts).toMatchObject({
+      skillPrecondition: {
+        recipientAgentId: "agent-1",
+        expectedConfigVersion: 1,
+        resourceId: "res-1",
+        requestedSlug: "code-review",
+      },
+    });
+    await waitForCondition(
+      () => textarea.value === "/code-review ",
+      "Expected the draft to survive the second rejection",
+    );
+
+    await act(async () => root.unmount());
+  });
+
+  it("does not let a failed Team send leave intent behind: clearing and hand-typing the same literal sends as local", async () => {
+    const { ChatView } = await import("../chat-view.js");
+    agentResourceMocks.getAgentResources.mockResolvedValue(resourcesV1());
+    chatMocks.sendChatMessage.mockRejectedValueOnce(new Error("Invalid enum value: team-skill-invocation-v1"));
+    const direct = directChat();
+    const { container, root } = await renderDom(
+      <ChatView agentId="agent-1" chatId="chat-1" initialChatDetail={direct} />,
+      (qc) => seedChat(qc, direct),
+    );
+
+    await pickSlashCommand(container, "/code");
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the attempted POST");
+    await waitForText(container, "Invalid enum value: team-skill-invocation-v1");
+
+    // The user discards the restored Team draft and hand-types the same
+    // literal: clearing first kills the restored provenance (the
+    // invalidation effect sees the command disappear), so the retyped
+    // command is an ordinary local one — no sentinel, no precondition.
+    const textarea = container.querySelector<HTMLTextAreaElement>("textarea");
+    if (!textarea) throw new Error("Composer textarea missing");
+    await setValue(textarea, "");
+    await setValue(textarea, "/code-review ");
+    chatMocks.sendChatMessage.mockClear();
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendChatMessage.mock.calls.length > 0, "Expected the local send");
+    const [, , , opts] = chatMocks.sendChatMessage.mock.calls[0] ?? [];
+    expect(opts?.skillPrecondition).toBeUndefined();
+
     await act(async () => root.unmount());
   });
 
@@ -2509,6 +2560,30 @@ describe("ChatView", () => {
       "Expected the image preview to be restored in the composer",
     );
     expect(chatMocks.sendChatMessage).not.toHaveBeenCalled();
+
+    // Immediate unchanged retry: uploads again, posts again WITH the exact
+    // pair — never a bare caption the old Server would accept — and the
+    // second rejection restores caption and image once more.
+    await pressSend(container);
+    await waitForCondition(() => chatMocks.sendFileMessageBatch.mock.calls.length === 2, "Expected the retry POST");
+    expect(attachmentMocks.uploadAttachment).toHaveBeenCalledTimes(2);
+    const [, , , retryOpts] = chatMocks.sendFileMessageBatch.mock.calls[1] ?? [];
+    expect(retryOpts).toMatchObject({
+      skillPrecondition: {
+        recipientAgentId: "agent-1",
+        expectedConfigVersion: 1,
+        resourceId: "res-1",
+        requestedSlug: "code-review",
+      },
+    });
+    await waitForCondition(
+      () => textarea.value === "/code-review ",
+      "Expected the caption to survive the second rejection",
+    );
+    await waitForCondition(
+      () => container.querySelector('button[aria-label="Remove preview.png"]') !== null,
+      "Expected the image preview to be restored again after the second rejection",
+    );
 
     await act(async () => root.unmount());
   });
