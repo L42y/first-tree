@@ -14,6 +14,7 @@ import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { listMeChats } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
+import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
 
@@ -71,13 +72,13 @@ export default function ChatListScreen() {
           onPress={() => setFilter("all")}
           style={[styles.filter, filter === "all" && styles.filterActive]}
         >
-          <Text style={filter === "all" ? styles.filterActiveText : undefined}>All</Text>
+          <Text style={[styles.filterText, filter === "all" && styles.filterActiveText]}>All</Text>
         </Pressable>
         <Pressable
           onPress={() => setFilter("unread")}
           style={[styles.filter, filter === "unread" && styles.filterActive]}
         >
-          <Text style={filter === "unread" ? styles.filterActiveText : undefined}>Unread</Text>
+          <Text style={[styles.filterText, filter === "unread" && styles.filterActiveText]}>Unread</Text>
         </Pressable>
       </View>
 
@@ -102,7 +103,13 @@ export default function ChatListScreen() {
         data={data ?? []}
         keyExtractor={(item) => item.chatId}
         renderItem={({ item }) => <ChatListItem chat={item} />}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.textMuted}
+          />
+        }
         ListEmptyComponent={
           !isLoading ? (
             <Text style={styles.empty}>
@@ -118,6 +125,7 @@ export default function ChatListScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.bg,
   },
   header: {
     flexDirection: "row",
@@ -127,24 +135,26 @@ const styles = StyleSheet.create({
     paddingTop: 48,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(128,128,128,0.2)",
+    borderBottomColor: colors.border,
   },
   title: {
     fontSize: 24,
     fontWeight: "bold",
+    color: colors.text,
   },
   subtitle: {
-    opacity: 0.6,
+    color: colors.textSecondary,
     fontSize: 12,
   },
   logoutButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "rgba(128,128,128,0.15)",
+    backgroundColor: colors.surface,
   },
   logoutText: {
     fontSize: 13,
+    color: colors.text,
   },
   filters: {
     flexDirection: "row",
@@ -156,13 +166,16 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     alignItems: "center",
     borderRadius: 8,
-    backgroundColor: "rgba(128,128,128,0.1)",
+    backgroundColor: colors.surface,
   },
   filterActive: {
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.accent,
+  },
+  filterText: {
+    color: colors.text,
   },
   filterActiveText: {
-    color: "#fff",
+    color: colors.accentText,
     fontWeight: "bold",
   },
   center: {
@@ -176,17 +189,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   errorText: {
-    color: "#EF4444",
+    color: colors.danger,
     textAlign: "center",
   },
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.accent,
   },
   retryText: {
-    color: "#fff",
+    color: colors.accentText,
   },
   empty: {
     textAlign: "center",

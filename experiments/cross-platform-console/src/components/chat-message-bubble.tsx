@@ -1,6 +1,7 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import type { Message } from "@first-tree/shared";
+import { colors } from "~/lib/theme";
 
 type ChatMessageBubbleProps = {
   message: Message;
@@ -49,23 +50,24 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   meBubble: {
-    backgroundColor: "rgba(59,130,246,0.2)",
+    backgroundColor: "rgba(59,130,246,0.28)",
   },
   otherBubble: {
-    backgroundColor: "rgba(128,128,128,0.15)",
+    backgroundColor: colors.surfaceStrong,
   },
   senderName: {
     fontSize: 12,
     fontWeight: "bold",
-    opacity: 0.6,
+    color: colors.textMuted,
     marginBottom: 4,
   },
   body: {
     fontSize: 15,
+    color: colors.text,
   },
   time: {
     fontSize: 11,
-    opacity: 0.5,
+    color: colors.textMuted,
     textAlign: "right",
     marginTop: 4,
   },

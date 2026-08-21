@@ -4,6 +4,7 @@ import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
 import { CALLBACK_ERROR_COPY } from "~/lib/oauth";
 import { OAuthSheet } from "~/components/oauth-sheet";
 import { useAuth } from "~/lib/auth-context";
+import { colors } from "~/lib/theme";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -140,6 +141,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     padding: 16,
+    backgroundColor: colors.bg,
   },
   card: {
     width: "100%",
@@ -150,15 +152,16 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: "bold",
     textAlign: "center",
+    color: colors.text,
   },
   subtitle: {
     textAlign: "center",
-    opacity: 0.7,
+    color: colors.textSecondary,
     marginBottom: 8,
   },
   hint: {
     textAlign: "center",
-    opacity: 0.6,
+    color: colors.textMuted,
     fontSize: 13,
     marginTop: 8,
   },
@@ -168,7 +171,7 @@ const styles = StyleSheet.create({
   button: {
     height: 48,
     borderRadius: 8,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -176,7 +179,7 @@ const styles = StyleSheet.create({
     opacity: 0.8,
   },
   buttonText: {
-    color: "#fff",
+    color: colors.accentText,
     fontWeight: "bold",
     fontSize: 16,
   },
@@ -190,7 +193,7 @@ const styles = StyleSheet.create({
   sheetError: {
     textAlign: "center",
     fontSize: 15,
-    color: "#374151",
+    color: colors.text,
   },
   retryButton: {
     marginTop: 8,

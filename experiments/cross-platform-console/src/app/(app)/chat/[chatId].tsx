@@ -19,6 +19,7 @@ import type { ChatDetail, Message } from "@first-tree/shared";
 import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
+import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
 
 const PAGE_SIZE = 50;
@@ -162,6 +163,7 @@ export default function ChatDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: colors.bg,
   },
   header: {
     flexDirection: "row",
@@ -171,16 +173,17 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
     gap: 8,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(128,128,128,0.2)",
+    borderBottomColor: colors.border,
   },
   backButton: {
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "rgba(128,128,128,0.15)",
+    backgroundColor: colors.surface,
   },
   backText: {
     fontSize: 14,
+    color: colors.text,
   },
   headerText: {
     flex: 1,
@@ -188,9 +191,10 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 18,
     fontWeight: "bold",
+    color: colors.text,
   },
   headerSubtitle: {
-    opacity: 0.6,
+    color: colors.textSecondary,
     fontSize: 12,
   },
   center: {
@@ -207,17 +211,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   errorText: {
-    color: "#EF4444",
+    color: colors.danger,
     textAlign: "center",
   },
   retryButton: {
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.accent,
   },
   retryText: {
-    color: "#fff",
+    color: colors.accentText,
   },
   composer: {
     flexDirection: "row",
@@ -225,7 +229,7 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: "rgba(128,128,128,0.2)",
+    borderTopColor: colors.border,
   },
   input: {
     flex: 1,
@@ -235,19 +239,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 16,
-    backgroundColor: "rgba(128,128,128,0.15)",
+    backgroundColor: colors.surface,
   },
   sendButton: {
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 20,
-    backgroundColor: "#3B82F6",
+    backgroundColor: colors.accent,
   },
   sendButtonDisabled: {
     opacity: 0.5,
   },
   sendText: {
-    color: "#fff",
+    color: colors.accentText,
     fontWeight: "bold",
   },
 });

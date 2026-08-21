@@ -1,6 +1,7 @@
 import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
 import { parseCompletionUrl } from "~/lib/oauth";
 import { oauthStartUrl } from "~/lib/oauth";
+import { colors } from "~/lib/theme";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { WebView } from "react-native-webview";
 import type { WebViewNavigation } from "react-native-webview";
@@ -124,7 +125,7 @@ export function OAuthSheet(props: {
 const styles = StyleSheet.create({
   sheet: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: colors.bg,
   },
   sheetHeader: {
     paddingTop: 48,
@@ -134,7 +135,7 @@ const styles = StyleSheet.create({
   },
   sheetClose: {
     fontSize: 16,
-    color: "#3B82F6",
+    color: colors.accent,
   },
   webView: {
     flex: 1,

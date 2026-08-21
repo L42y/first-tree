@@ -2,6 +2,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 
 import type { MeChatRow } from "@first-tree/shared";
+import { colors } from "~/lib/theme";
 
 type ChatListItemProps = {
   chat: MeChatRow;
@@ -49,7 +50,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "rgba(128,128,128,0.2)",
+    borderBottomColor: colors.border,
   },
   pressed: {
     opacity: 0.6,
@@ -65,6 +66,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 16,
     flex: 1,
+    color: colors.text,
   },
   titleUnread: {
     fontWeight: "bold",
@@ -73,22 +75,22 @@ const styles = StyleSheet.create({
     minWidth: 20,
     height: 20,
     borderRadius: 10,
-    backgroundColor: "#EF4444",
+    backgroundColor: colors.danger,
     alignItems: "center",
     justifyContent: "center",
     marginLeft: 8,
     paddingHorizontal: 6,
   },
   badgeText: {
-    color: "#fff",
+    color: colors.accentText,
     fontSize: 12,
     fontWeight: "bold",
   },
   preview: {
-    opacity: 0.7,
+    color: colors.textSecondary,
   },
   participants: {
     fontSize: 12,
-    opacity: 0.5,
+    color: colors.textMuted,
   },
 });
