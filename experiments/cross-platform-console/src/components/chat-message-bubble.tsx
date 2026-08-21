@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from "react-native";
 
 import type { Message } from "@first-tree/shared";
 import { Avatar, type AvatarKind } from "~/components/avatar";
-import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import { MarkdownText } from "~/components/markdown-text";
 import { colors } from "~/lib/theme";
 
 export type BubbleAvatar = {
@@ -48,11 +48,7 @@ export function ChatMessageBubble({ message, isMe, senderName, avatar }: ChatMes
             {senderName}
           </Text>
         )}
-        <EnrichedMarkdownText
-          markdown={content}
-          containerStyle={styles.body}
-          markdownStyle={{ paragraph: { color: colors.text } }}
-        />
+        <MarkdownText value={content} />
         <Text style={styles.time}>{time}</Text>
       </View>
     </View>
@@ -92,10 +88,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     color: colors.textMuted,
     marginBottom: 4,
-  },
-  body: {
-    fontSize: 15,
-    color: colors.text,
   },
   time: {
     fontSize: 11,

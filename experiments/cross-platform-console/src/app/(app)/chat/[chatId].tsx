@@ -16,6 +16,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { extractMentions } from "@first-tree/shared";
 import type { ChatDetail, Message } from "@first-tree/shared";
 
+import Constants from "expo-constants";
 import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
 
 import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
@@ -26,6 +27,9 @@ import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
 
 const PAGE_SIZE = 50;
+// Expo Go cannot host the enriched input's native views — fall back to a
+// plain TextInput there; dev client / standalone get live markdown.
+const IS_EXPO_GO = Constants.appOwnership === "expo";
 
 export default function ChatDetailScreen() {
   const { chatId } = useLocalSearchParams<{ chatId: string }>();

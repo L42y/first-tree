@@ -66,6 +66,27 @@ export default function ChatListScreen() {
     });
   }, [data]);
 
+  type ListItem =
+    | { kind: "header"; id: string; label: string }
+    | { kind: "chat"; id: string; row: MeChatRow };
+
+  // Pinned chats first under their own section label; everything else
+  // follows under "all".
+  const listItems = useMemo<ListItem[]>(() => {
+    const pinned = rows.filter((r) => r.pinnedAt !== null && r.pinnedAt !== undefined);
+    const rest = rows.filter((r) => !pinned.includes(r));
+    const items: ListItem[] = [];
+    if (pinned.length > 0) {
+      items.push({ kind: "header", id: "header-pinned", label: "Pinned" });
+      for (const row of pinned) items.push({ kind: "chat", id: row.chatId, row });
+    }
+    if (rest.length > 0) {
+      if (pinned.length > 0) items.push({ kind: "header", id: "header-all", label: "All" });
+      for (const row of rest) items.push({ kind: "chat", id: row.chatId, row });
+    }
+    return items;
+  }, [rows]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await refetch();
@@ -119,11 +140,16 @@ export default function ChatListScreen() {
       )}
 
       <LegendList
-        data={rows}
-        keyExtractor={(item: MeChatRow) => item.chatId}
-        renderItem={({ item }: { item: MeChatRow }) => <ChatListItem chat={item} selfAgentId={selfAgentId} />}
+        data={listItems}
+        keyExtractor={(item: ListItem) => item.id}
+        renderItem={({ item }: { item: ListItem }) =>
+          item.kind === "header" ? (
+            <Text style={styles.sectionHeader}>{item.label}</Text>
+          ) : (
+            <ChatListItem chat={item.row} selfAgentId={selfAgentId} />
+          )
+        }
         estimatedItemSize={76}
-        recycleItems
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -132,7 +158,7 @@ export default function ChatListScreen() {
           />
         }
         ListEmptyComponent={
-          !isLoading && rows.length === 0 ? (
+          !isLoading && listItems.length === 0 ? (
             <Text style={styles.empty}>
               {user?.displayName ? `No chats for ${user.displayName} yet.` : "No chats yet."}
             </Text>
@@ -144,6 +170,16 @@ export default function ChatListScreen() {
 }
 
 const styles = StyleSheet.create({
+  sectionHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 4,
+    fontSize: 12,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: colors.textMuted,
+  },
   container: {
     flex: 1,
     backgroundColor: colors.bg,

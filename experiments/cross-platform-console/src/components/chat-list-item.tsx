@@ -12,6 +12,7 @@ type ChatListItemProps = {
 };
 
 export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
+  const pinned = chat.pinnedAt !== null && chat.pinnedAt !== undefined;
   const router = useRouter();
   const preview = chat.description ?? chat.lastMessagePreview ?? "No messages yet";
   const hasUnread = chat.unreadMentionCount > 0;
@@ -38,6 +39,11 @@ export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
       />
       <View style={styles.content}>
         <View style={styles.header}>
+          {pinned && (
+            <View style={styles.pinBadge}>
+              <Text style={styles.pinGlyph}>📌</Text>
+            </View>
+          )}
           <Text
             style={[styles.title, hasUnread && styles.titleUnread]}
             numberOfLines={1}
@@ -84,6 +90,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    gap: 6,
+  },
+  pinBadge: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.surfaceStrong,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  pinGlyph: {
+    fontSize: 10,
   },
   title: {
     fontSize: 16,
