@@ -33,17 +33,24 @@ export default function ChatListScreen() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["me", "chats", "list", filter],
     queryFn: async ({ signal }) => {
-      const rows: MeChatRow[] = [];
+      const collected: MeChatRow[] = [];
+      const seen = new Set<string>();
       let cursor: string | null = null;
       do {
         const page = await listMeChats(
           { limit: PAGE_SIZE, cursor: cursor ?? undefined, filter },
           { signal },
         );
-        rows.push(...flattenChats(page));
+        for (const row of flattenChats(page)) {
+          // A chat can surface in two pages (e.g. pinned on one, listed on
+          // the next) — dedupe so FlatList keys stay unique.
+          if (seen.has(row.chatId)) continue;
+          seen.add(row.chatId);
+          collected.push(row);
+        }
         cursor = page.nextCursor;
       } while (cursor);
-      return rows;
+      return collected;
     },
   });
 
