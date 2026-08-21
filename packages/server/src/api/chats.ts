@@ -26,6 +26,7 @@ import { BadRequestError, ForbiddenError, NotFoundError } from "../errors.js";
 import { createTimingCollector } from "../observability/timing.js";
 import { assertAllAgentsVisibleInOrg, requireChatAccess } from "../scope/require-resource.js";
 import { resolveAvatarImageUrl } from "../services/agents/identity.js";
+import { resolveCanonicalTeamSkillInvocation } from "../services/agents/resources/catalog.js";
 import { ensureParticipant, leaveChat, removeParticipant, updateChatMetadata } from "../services/chat/conversation.js";
 import {
   encodeMessageHistoryCursor,
@@ -651,7 +652,18 @@ export async function chatRoutes(app: FastifyInstance): Promise<void> {
     // the recipient. Either way, `metadata.mentions` is expected to be non-empty
     // here; the server no longer parses content. See `services/chat/message.ts`
     // Routing contract.
-    const result = await sendMessage(app.db, request.params.chatId, scope.humanAgentId, { ...body, source: "web" });
+    const result = await sendMessage(
+      app.db,
+      request.params.chatId,
+      scope.humanAgentId,
+      { ...body, source: "web" },
+      {
+        // Trusted seam: only through this resources-backed validator can a
+        // web send have the server persist the Team Skill invocation marker.
+        validateTeamSkillInvocation: (precondition) =>
+          resolveCanonicalTeamSkillInvocation(app.resourcesService, precondition),
+      },
+    );
 
     notifyRecipients(app.notifier, result.recipients, result.message.id);
 

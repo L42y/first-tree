@@ -1,12 +1,15 @@
-import type { SkillDescriptor } from "@first-tree/shared";
+import type { EffectiveResourceRow, SkillDescriptor } from "@first-tree/shared";
 import { describe, expect, it } from "vitest";
 import {
   buildSlashInsert,
   detectSlashTrigger,
+  mergeSlashSkills,
   rankSlashCommands,
   resolveMentionContext,
   type SlashCommandItem,
+  type SlashSkillInfo,
   type SlashSystemCommand,
+  teamSkillRowsToSlashSkills,
 } from "../slash-command-autocomplete.js";
 
 function sysCmd(name: string, description = ""): SlashSystemCommand {
@@ -137,5 +140,247 @@ describe("buildSlashInsert", () => {
   it("emits the namespaced literal for plugin skills", () => {
     const insert = buildSlashInsert("/hy", { triggerIndex: 0, query: "hy" }, 3, skillItem("gsap", "hyperframes"));
     expect(insert.text).toBe("/hyperframes:gsap ");
+  });
+});
+
+let teamRowSeq = 0;
+function teamSkillRow(overrides: {
+  mode?: EffectiveResourceRow["mode"];
+  resourceId?: string | null;
+  payload?: unknown;
+}): EffectiveResourceRow {
+  return {
+    id: "row-1",
+    bindingId: null,
+    resourceId: overrides.resourceId === undefined ? `res-${++teamRowSeq}` : overrides.resourceId,
+    replacesResourceId: null,
+    type: "skill",
+    name: "Team Skill",
+    scope: "team",
+    source: "team_recommended",
+    mode: overrides.mode ?? "enabled",
+    defaultEnabled: "recommended",
+    payload:
+      overrides.payload !== undefined
+        ? overrides.payload
+        : { name: "Code Review", description: "Review a change end to end.", body: "skill body" },
+    repo: null,
+    promptBody: null,
+    unavailableReason: null,
+    originTemplateId: null,
+    order: 0,
+  };
+}
+
+describe("teamSkillRowsToSlashSkills", () => {
+  it("projects an enabled Team Skill under its portable materializer slug", () => {
+    const row = teamSkillRow({});
+    const got = teamSkillRowsToSlashSkills([row], 7);
+    expect(got).toEqual([
+      {
+        name: "code-review",
+        description: "Review a change end to end.",
+        team: { resourceId: row.resourceId, version: 7 },
+      },
+    ]);
+  });
+
+  it("drops the payload namespace — the runtime projection installs the plain slug", () => {
+    const row = teamSkillRow({
+      payload: { name: "Code Review", namespace: "Tools", description: "d", body: "b" },
+    });
+    const got = teamSkillRowsToSlashSkills([row], 7);
+    expect(got).toEqual([{ name: "code-review", description: "d", team: { resourceId: row.resourceId, version: 7 } }]);
+  });
+
+  it("excludes disabled, replaced, and unavailable rows", () => {
+    const got = teamSkillRowsToSlashSkills(
+      [teamSkillRow({ mode: "disabled" }), teamSkillRow({ mode: "replaced" }), teamSkillRow({ mode: "unavailable" })],
+      7,
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("skips malformed payloads without dropping the valid rows", () => {
+    const valid = teamSkillRow({ payload: { name: "Good Skill", description: "d", body: "b" } });
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ payload: null }),
+        teamSkillRow({ payload: { name: "No Body" } }),
+        teamSkillRow({ payload: { name: "", description: "d", body: "b" } }),
+        valid,
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "good-skill", description: "d", team: { resourceId: valid.resourceId, version: 7 } }]);
+  });
+
+  it("skips names that do not produce a portable, triggerable slug", () => {
+    const payloadNamed = (name: string) => ({ name, description: "d", body: "b" });
+    const valid = teamSkillRow({ payload: payloadNamed("Ship It") });
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ payload: payloadNamed("!!!") }),
+        teamSkillRow({ payload: payloadNamed("con") }),
+        teamSkillRow({ payload: payloadNamed("first-tree-qa") }),
+        teamSkillRow({ payload: payloadNamed("a/b") }),
+        valid,
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "ship-it", description: "d", team: { resourceId: valid.resourceId, version: 7 } }]);
+  });
+});
+
+describe("mergeSlashSkills", () => {
+  const runtime = (name: string, namespace?: string): SlashSkillInfo => ({
+    name,
+    description: `runtime ${name}`,
+    ...(namespace ? { namespace } : {}),
+  });
+  const team = (name: string): SlashSkillInfo => ({ name, description: `team ${name}` });
+
+  it("prefers the Team row on a case-insensitive literal match — the menu winner must match the executor", () => {
+    // The Client's command registry claims a Team Skill's base slug, so
+    // the same folded literal resolves to the Team Skill at execution
+    // time; the menu must not show the runtime row for it.
+    const got = mergeSlashSkills([runtime("Ship")], [team("ship")]);
+    expect(got).toEqual([{ name: "ship", description: "team ship" }]);
+  });
+
+  it("dedupes namespaced literals case-insensitively, team first", () => {
+    const got = mergeSlashSkills(
+      [runtime("gsap", "HyperFrames")],
+      [{ name: "gsap", namespace: "hyperframes", description: "team gsap" }],
+    );
+    expect(got).toEqual([{ name: "gsap", namespace: "hyperframes", description: "team gsap" }]);
+  });
+
+  it("keeps distinct commands from both sources, sorted by label key", () => {
+    const got = mergeSlashSkills([runtime("ship")], [team("code-review"), team("audit")]);
+    expect(got.map((s) => s.name)).toEqual(["audit", "code-review", "ship"]);
+  });
+
+  it("degrades to whichever source is still available when the other is empty", () => {
+    expect(mergeSlashSkills([], [team("audit")])).toEqual([{ name: "audit", description: "team audit" }]);
+    expect(mergeSlashSkills([runtime("ship")], [])).toEqual([{ name: "ship", description: "runtime ship" }]);
+    expect(mergeSlashSkills([], [])).toEqual([]);
+  });
+});
+
+describe("detectSlashTrigger — mention-prefixed composer mode", () => {
+  it("triggers after a committed mention token + whitespace (`@Nova /re`)", () => {
+    const got = detectSlashTrigger("@Nova /re", 9, [{ start: 0, end: 5 }]);
+    expect(got).toEqual({ triggerIndex: 6, query: "re" });
+  });
+
+  it("handles display names containing spaces via the token span, not text parsing", () => {
+    const got = detectSlashTrigger("@Design Critique /re", 20, [{ start: 0, end: 16 }]);
+    expect(got).toEqual({ triggerIndex: 17, query: "re" });
+  });
+
+  it("accepts several committed tokens before the slash", () => {
+    const got = detectSlashTrigger("@Nova @Design Critique /re", 26, [
+      { start: 0, end: 5 },
+      { start: 6, end: 22 },
+    ]);
+    expect(got).toEqual({ triggerIndex: 23, query: "re" });
+  });
+
+  it("accepts a slash flush against the token end", () => {
+    const got = detectSlashTrigger("@Nova/re", 8, [{ start: 0, end: 5 }]);
+    expect(got).toEqual({ triggerIndex: 5, query: "re" });
+  });
+
+  it("rejects plain prose between the mention and the slash", () => {
+    expect(detectSlashTrigger("@Nova hi /re", 12, [{ start: 0, end: 5 }])).toBeNull();
+  });
+
+  it("rejects a literally-typed `@name` that was never committed as a token", () => {
+    expect(detectSlashTrigger("@nova /re", 9)).toBeNull();
+  });
+
+  it("rejects a slash inside a token span", () => {
+    expect(detectSlashTrigger("@Nov/re", 7, [{ start: 0, end: 5 }])).toBeNull();
+  });
+
+  it("rejects prose before the mention token", () => {
+    expect(detectSlashTrigger("hi @Nova /re", 12, [{ start: 3, end: 8 }])).toBeNull();
+  });
+
+  it("bare mode still wins when the slash is the first non-whitespace char", () => {
+    expect(detectSlashTrigger("/re", 3, [{ start: 5, end: 10 }])).toEqual({ triggerIndex: 0, query: "re" });
+  });
+});
+
+describe("buildSlashInsert — mention-prefixed drafts", () => {
+  it("keeps the mention prefix when a system command clears the draft", () => {
+    const insert = buildSlashInsert("@Nova /cle", { triggerIndex: 6, query: "cle" }, 10, sysCmd("clear"));
+    expect(insert).toEqual({ text: "@Nova ", cursor: 6, kind: "system" });
+  });
+
+  it("inserts the skill literal after the mention prefix", () => {
+    const insert = buildSlashInsert("@Nova /re", { triggerIndex: 6, query: "re" }, 9, skillItem("review"));
+    expect(insert.text).toBe("@Nova /review ");
+    expect(insert.cursor).toBe("@Nova /review ".length);
+    expect(insert.kind).toBe("skill");
+  });
+});
+
+describe("teamSkillRowsToSlashSkills — fail-closed ambiguous targets", () => {
+  const payloadNamed = (name: string, description: string) => ({ name, description, body: "b" });
+
+  it("skips a normalized-slug collision group entirely and keeps the other skills", () => {
+    // `foo_bar` and `foo-bar` both normalize to `foo-bar`; the
+    // materializer's collision suffix depends on install history the Web
+    // cannot see, so neither row may surface. Unrelated skills survive.
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+        teamSkillRow({ resourceId: "res-c", payload: payloadNamed("Solo Skill", "solo") }),
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "solo-skill", description: "solo", team: { resourceId: "res-c", version: 7 } }]);
+  });
+
+  it("skips the collision group regardless of API row order — never picks a winner", () => {
+    const forward = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+      ],
+      7,
+    );
+    const reversed = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-b", payload: payloadNamed("foo-bar", "second") }),
+        teamSkillRow({ resourceId: "res-a", payload: payloadNamed("foo_bar", "first") }),
+      ],
+      7,
+    );
+    expect(forward).toEqual([]);
+    expect(reversed).toEqual([]);
+  });
+
+  it("rejects a duplicate resourceId group like the materializer does", () => {
+    const got = teamSkillRowsToSlashSkills(
+      [
+        teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Alpha", "a") }),
+        teamSkillRow({ resourceId: "res-dup", payload: payloadNamed("Beta", "b") }),
+        teamSkillRow({ resourceId: "res-ok", payload: payloadNamed("Gamma", "g") }),
+      ],
+      7,
+    );
+    expect(got).toEqual([{ name: "gamma", description: "g", team: { resourceId: "res-ok", version: 7 } }]);
+  });
+
+  it("skips rows without a resourceId — they never reach the materializer", () => {
+    const got = teamSkillRowsToSlashSkills(
+      [teamSkillRow({ resourceId: null, payload: payloadNamed("Ghost", "g") })],
+      7,
+    );
+    expect(got).toEqual([]);
   });
 });

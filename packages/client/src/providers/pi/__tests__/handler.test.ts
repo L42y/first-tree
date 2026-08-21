@@ -12,6 +12,7 @@ import type { DeliveryToken, SessionContext, SessionMessage } from "../../../run
 import { noopDeliveryToken } from "../../../runtime/handler.js";
 import type { ProviderProcessSpec, ProviderProcessSupervisor } from "../../../runtime/provider-process-supervisor.js";
 import { readSessionBriefingFingerprint } from "../../../runtime/session-briefing-fingerprint.js";
+import { TeamSkillCommandUnavailableError } from "../../../runtime/team-skill-command-rewrite.js";
 import {
   createPiHandler,
   freshStartPiSessionId,
@@ -1315,6 +1316,47 @@ describe("Pi handler", () => {
     await startPromise;
     expect(readCount(promptCountFile)).toBe(1);
     expect(readCount(steerCountFile)).toBe(1);
+  });
+
+  it("retries a steered Team Skill command refused pre-provider instead of consuming it", async () => {
+    process.env.FT_PI_TEST_MODE = "streaming";
+    const specs: ProviderProcessSpec[] = [];
+    const handler = createPiHandler({
+      workspaceRoot,
+      agentName: "pi-test-agent",
+      runtimeProvider: "pi",
+      agentConfigCache: cache(runtimeConfig()),
+      piBinaryResolver: () => ({ ok: true, binary: "/host/pi" }),
+      providerProcessSupervisor: createSyntheticSupervisor(specs),
+    });
+    const events: SessionEvent[] = [];
+    const sessionCtx = makeContext(events);
+    // The shared formatter refuses the unavailable Team command before the
+    // provider — the steer must stay recoverable, never consumed.
+    const baseFormat = sessionCtx.formatInboundContent;
+    sessionCtx.formatInboundContent = async (msg) => {
+      if (typeof msg.content === "string" && msg.content.startsWith("/review")) {
+        throw new TeamSkillCommandUnavailableError(
+          "Team Skill command /review is unavailable (no verified installed target)",
+        );
+      }
+      return baseFormat(msg);
+    };
+    const startToken = makeToken();
+    const steerToken = makeToken();
+    const startPromise = handler.start(message("m1", "first"), sessionCtx, startToken);
+    await vi.waitFor(() => expect(startToken.processingStarted).toHaveBeenCalled());
+    await vi.waitFor(() => expect(events.some((event) => event.kind === "assistant_text")).toBe(true));
+
+    const steerReceipt = handler.inject(message("m2", "/review src/"), steerToken);
+    expect(steerReceipt).toEqual({ kind: "owned", mode: "processing" });
+
+    await vi.waitFor(() => expect(steerToken.retried).toContain("team_skill_command_unavailable"));
+    expect(steerToken.completed).toEqual([]);
+    expect(readCount(steerCountFile)).toBe(0);
+
+    await handler.shutdown();
+    await startPromise;
   });
 
   it("queues inject after agent_settled instead of late steer during turn finalization", async () => {

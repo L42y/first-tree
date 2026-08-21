@@ -16,6 +16,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCtxPlumbing } from "../../../__tests__/test-helpers.js";
 import type { ChatContext } from "../../../runtime/chat-context.js";
 import type { SessionContext, SessionMessage } from "../../../runtime/handler.js";
+import {
+  buildTeamSkillCommandRegistry,
+  rewriteSessionMessageCommand,
+  type TeamSkillCommandRegistry,
+} from "../../../runtime/team-skill-command-rewrite.js";
 
 // Use the real managed reconciler instead of the default handler-test double
 // installed by vitest.setup.ts.
@@ -185,12 +190,26 @@ const SCAN_SKILL: RuntimeResourceSkill = {
   metadata: {},
 };
 
+const REVIEW_SKILL: RuntimeResourceSkill = {
+  resourceId: "res-review-1",
+  name: "review",
+  description: "Team review skill",
+  body: "TEAM REVIEW BODY",
+  metadata: {},
+};
+
 function makeMessage(id: string, content: string): SessionMessage {
   return { id, chatId: "chat-materialize", senderId: "sender-1", format: "text", content, metadata: {} };
 }
 
 function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void = () => {}): SessionContext {
   const sendMessage = vi.fn().mockResolvedValue(undefined);
+  const plumbing = mockCtxPlumbing({ sendMessage }, "chat-materialize");
+  // Mirror the production SessionContext wiring (session-runtime.ts): the
+  // reconciled Team Skill command registry rewrites base slash commands
+  // before the provider ever sees the text. `null` until the first
+  // publication — strict slash commands are blocked before that.
+  let teamSkillCommands: TeamSkillCommandRegistry | null = null;
   return {
     agent: {
       agentId: AGENT_ID,
@@ -206,7 +225,17 @@ function makeContext(fetchAttachment = vi.fn(), log: (message: string) => void =
     log,
     recordProviderActivity: () => {},
     emitEvent: () => {},
-    ...mockCtxPlumbing({ sendMessage }, "chat-materialize"),
+    ...plumbing,
+    publishTeamSkillCommands: (commands) => {
+      teamSkillCommands = commands === null ? null : buildTeamSkillCommandRegistry(commands);
+    },
+    formatInboundContent: (msg) =>
+      plumbing.formatInboundContent(
+        rewriteSessionMessageCommand(msg, teamSkillCommands, {
+          // Mirror the production routed-mention gate (session-runtime.ts).
+          allowMentionPrefix: Array.isArray(msg.metadata?.mentions) && msg.metadata.mentions.includes(AGENT_ID),
+        }),
+      ),
     finishTurn: async () => {},
   };
 }
@@ -436,5 +465,212 @@ describe("claude-code inject-time managed Skill reconciliation", () => {
       chmodSync(discoveryRoot, 0o700);
       await handler.shutdown();
     }
+  });
+
+  it("rewrites a base slash command to the suffixed install when an unmanaged local Skill occupies the base name", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    // An unmanaged local Skill squats on the base name; the server then
+    // binds the Team Skill and the injected turn drives the reconcile.
+    const localDir = join(workspaceRoot, ".claude", "skills", "review");
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(join(localDir, "SKILL.md"), "---\nname: review\ndescription: local\n---\n\nLOCAL REVIEW BODY\n");
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+    handler.inject(makeMessage("m2", "/review src/"), noopDeliveryToken());
+
+    await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review-first-tree", "SKILL.md")));
+    await waitFor(() => state.observedInputs.length === 2);
+
+    // The provider received the rewritten command — never the squatted
+    // local `/review`.
+    expect(readFileSync(join(workspaceRoot, ".claude", "skills", "review-first-tree", "SKILL.md"), "utf-8")).toContain(
+      "TEAM REVIEW BODY",
+    );
+    expect(state.observedInputs[1]).toContain("/review-first-tree src/");
+    expect(state.observedInputs[1]).not.toContain("/review src/");
+
+    await handler.shutdown();
+  });
+
+  it("leaves the command untouched when the Team Skill installs under its base name", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+    handler.inject(makeMessage("m2", "/review src/"), noopDeliveryToken());
+
+    await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review", "SKILL.md")));
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(state.observedInputs[1]).toContain("/review src/");
+
+    await handler.shutdown();
+  });
+
+  it("rewrites a bare image-caption slash command to the suffixed install", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    const localDir = join(workspaceRoot, ".claude", "skills", "review");
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(join(localDir, "SKILL.md"), "---\nname: review\ndescription: local\n---\n\nLOCAL REVIEW BODY\n");
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+
+    const imageMessage: SessionMessage = {
+      id: "m2",
+      chatId: "chat-materialize",
+      senderId: "sender-1",
+      format: "file",
+      content: {
+        caption: "/review see this",
+        attachments: [{ imageId: "11111111-1111-4111-8111-111111111111", mimeType: "image/png", filename: "shot.png" }],
+      },
+      metadata: {},
+    };
+    handler.inject(imageMessage, noopDeliveryToken());
+
+    await waitFor(() => existsSync(join(workspaceRoot, ".claude", "skills", "review-first-tree", "SKILL.md")));
+    await waitFor(() => state.observedInputs.length === 2);
+    // The caption command was rewritten before the provider saw it; the
+    // image attachment prompt is preserved alongside it.
+    expect(state.observedInputs[1]).toContain("/review-first-tree see this");
+    expect(state.observedInputs[1]).not.toContain("/review see this");
+    // The image attachment prompt/filename is preserved EXACTLY once — the
+    // routed-mentions metadata we now keep must not duplicate the note.
+    expect(state.observedInputs[1]?.match(/shot\.png/g)).toHaveLength(1);
+
+    await handler.shutdown();
+  });
+
+  it("rewrites a mention-prefixed image-caption slash command only with routed metadata", async () => {
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext();
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    const localDir = join(workspaceRoot, ".claude", "skills", "review");
+    mkdirSync(localDir, { recursive: true });
+    writeFileSync(join(localDir, "SKILL.md"), "---\nname: review\ndescription: local\n---\n\nLOCAL REVIEW BODY\n");
+    cachedConfig = makeConfig(2, [REVIEW_SKILL]);
+
+    const routed: SessionMessage = {
+      id: "m2",
+      chatId: "chat-materialize",
+      senderId: "sender-1",
+      format: "file",
+      content: {
+        caption: "@nova /review",
+        attachments: [{ imageId: "11111111-1111-4111-8111-111111111111", mimeType: "image/png", filename: "shot.png" }],
+      },
+      metadata: { mentions: [AGENT_ID] },
+    };
+    handler.inject(routed, noopDeliveryToken());
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(state.observedInputs[1]).toContain("@nova /review-first-tree");
+
+    // Without routed mention metadata the same caption is NOT rewritten.
+    state.observedInputs.length = 0;
+    const unrouted: SessionMessage = {
+      id: "m3",
+      chatId: "chat-materialize",
+      senderId: "sender-1",
+      format: "file",
+      content: {
+        caption: "@nova /review",
+        attachments: [{ imageId: "22222222-2222-4222-8222-222222222222", mimeType: "image/png", filename: "shot.png" }],
+      },
+      metadata: {},
+    };
+    handler.inject(unrouted, noopDeliveryToken());
+    await waitFor(() => state.observedInputs.length === 1);
+    expect(state.observedInputs[0]).toContain("@nova /review");
+    expect(state.observedInputs[0]).not.toContain("review-first-tree");
+
+    await handler.shutdown();
+  });
+
+  it("settles a same-version unavailable Team command with one inert provider notice — no retry, no command token", async () => {
+    const bundleSkill: RuntimeResourceSkill = {
+      ...REVIEW_SKILL,
+      bundle: {
+        attachmentId: "33333333-3333-4333-8333-333333333333",
+        format: "zip",
+        sizeBytes: 100,
+      },
+    };
+    // The bundle can never be fetched, so `/review` never gets an exact
+    // installed identity; the registry marks it explicitly unavailable.
+    const fetchAttachment = vi.fn().mockRejectedValue(new Error("attachment unavailable"));
+    cachedConfig = makeConfig(1, []);
+    const handler = createClaudeCodeHandler({
+      runtimeProvider: "claude-code",
+      workspaceRoot,
+      agentName: "test-agent",
+      agentConfigCache,
+    });
+    const ctx = makeContext(fetchAttachment);
+
+    const startPromise = handler.start(makeMessage("m1", "first"), ctx, noopDeliveryToken());
+    resolveChatContext();
+    await startPromise;
+    await waitFor(() => state.observedInputs.length === 1);
+
+    cachedConfig = makeConfig(2, [bundleSkill]);
+    const noop = noopDeliveryToken();
+    const token = { ...noop, retry: vi.fn(), complete: vi.fn(noop.complete) };
+    handler.inject(makeMessage("m2", "/review src/"), token);
+
+    // Deterministic terminal boundary: the provider receives exactly one
+    // inert First Tree notice — no `/review` command token, no formatter
+    // retry, no recovery loop.
+    await waitFor(() => state.observedInputs.length === 2);
+    expect(state.observedInputs[1]).toContain("currently unavailable");
+    expect(state.observedInputs[1]).not.toContain("/review src/");
+    expect(state.observedInputs[1]).not.toContain("/review ");
+    expect(token.retry).not.toHaveBeenCalled();
+
+    await handler.shutdown();
   });
 });

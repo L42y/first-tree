@@ -1,5 +1,11 @@
-import type { SkillDescriptor } from "@first-tree/shared";
+import {
+  type EffectiveResourceRow,
+  foldPortableTeamSkillPath,
+  normalizeTeamSkillTargetSlug,
+  skillResourcePayloadSchema,
+} from "@first-tree/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ComposerMentionToken } from "./mention-composer-model.js";
 
 /**
  * `/`-triggered slash-command popover, mirrored on the `@mention`
@@ -26,9 +32,31 @@ export type SlashSystemCommand = {
   description: string;
 };
 
+/**
+ * Minimal display descriptor for a skill row in the slash popover. The
+ * daemon-reported `SkillDescriptor` satisfies it structurally, and Team
+ * Skills projected from Cloud resources map onto it directly — no new
+ * persisted `source` enum is needed just to render the menu.
+ */
+export type SlashSkillInfo = {
+  /** Skill name without leading slash — the triggerable command. */
+  name: string;
+  /** Optional plugin namespace; rendered as `<namespace>:<name>`. */
+  namespace?: string;
+  description: string;
+  /**
+   * Set only for skills projected from the Cloud Team catalog: the backing
+   * Team resource id and the resources response version the projection was
+   * built from. The composer uses it as in-memory selection provenance —
+   * the send path revalidates the same row/version before posting, and the
+   * server re-checks the config version inside the message transaction.
+   */
+  team?: { resourceId: string; version: number };
+};
+
 export type SlashSkillCommand = {
   kind: "skill";
-  skill: SkillDescriptor;
+  skill: SlashSkillInfo;
   /** Agent UUID this skill belongs to — needed by callers that want to
    *  show "from @<agent>" affordances; we drop it on insert because the
    *  caller already has the mention text in the draft. */
@@ -47,30 +75,69 @@ type ActiveTrigger = {
 };
 
 /**
- * Locate the active `/<query>` trigger. The `/` opens a slash command
- * iff it is the first char of the textarea (after optional leading
- * whitespace) — composer-wide rather than mid-word — and the query
- * accumulated since contains only command-name chars
- * (`[A-Za-z0-9_:-]`, mirroring the SkillDescriptor name + namespace
- * charset). Anything else (space, newline, punctuation) closes it.
+ * Locate the active `/<query>` trigger. The `/` opens a slash command in
+ * exactly two composer modes:
  *
- * The "first-char only" rule is intentional. Slash commands are a
- * composer mode, not a mid-message escape — Slack and Discord use the
- * same convention. It also avoids the false positives a mid-line `/`
- * would catch (URLs, paths, dates).
+ *   1. Bare mode — the `/` is the first non-whitespace char of the
+ *      textarea, and the query accumulated since contains only
+ *      command-name chars (`[A-Za-z0-9_:-]`, mirroring the skill name +
+ *      namespace charset).
+ *   2. Mention-prefixed mode — the `/` follows a prefix consisting ONLY
+ *      of whitespace and committed mention tokens (e.g. `@Nova /code`).
+ *      Group chats must address the recipient before a command makes
+ *      sense, so this is the only slash path there. The check walks the
+ *      actual token spans — never a `@slug` text regex — so display
+ *      names with spaces work and a literally-typed `@name` look-alike
+ *      does NOT qualify.
+ *
+ * Anything else (plain prose before the slash, URLs, paths, dates)
+ * closes the trigger. The "no mid-word slash" rule is intentional:
+ * slash commands are a composer mode, not a mid-message escape — Slack
+ * and Discord use the same convention.
  */
-export function detectSlashTrigger(text: string, cursor: number): ActiveTrigger | null {
+export function detectSlashTrigger(
+  text: string,
+  cursor: number,
+  mentionTokens: ReadonlyArray<Pick<ComposerMentionToken, "start" | "end">> = [],
+): ActiveTrigger | null {
   if (cursor <= 0 || cursor > text.length) return null;
 
-  // The slash must be at the very start of the line — that is, after a
-  // run of any whitespace from position 0.
+  // Mode 1: the slash is the first non-whitespace char of the buffer.
   const head = text.slice(0, cursor);
-  const m = head.match(/^\s*\/([A-Za-z0-9_:-]*)$/);
-  if (!m) return null;
+  const bare = head.match(/^\s*\/([A-Za-z0-9_:-]*)$/);
+  if (bare) {
+    const triggerIndex = head.indexOf("/");
+    if (triggerIndex < 0) return null;
+    return { triggerIndex, query: (bare[1] ?? "").toLowerCase() };
+  }
 
-  const triggerIndex = head.indexOf("/");
-  if (triggerIndex < 0) return null;
-  return { triggerIndex, query: (m[1] ?? "").toLowerCase() };
+  // Mode 2: mention-prefixed. Without committed tokens there is no
+  // legitimate prefix, so plain text like `hi /path` stays closed.
+  if (mentionTokens.length === 0) return null;
+  const prefixed = head.match(/^([\s\S]*?)\/([A-Za-z0-9_:-]*)$/);
+  if (!prefixed) return null;
+  const triggerIndex = (prefixed[1] ?? "").length;
+  const query = (prefixed[2] ?? "").toLowerCase();
+
+  // Walk the prefix: every char must be whitespace or inside a token
+  // span that starts exactly here and ends at/before the slash.
+  const sorted = [...mentionTokens].sort((a, b) => a.start - b.start);
+  let tokenIndex = 0;
+  let pos = 0;
+  while (pos < triggerIndex) {
+    if (/\s/.test(text[pos] ?? "")) {
+      pos++;
+      continue;
+    }
+    const token = tokenIndex < sorted.length ? sorted[tokenIndex] : undefined;
+    if (token && token.start === pos && token.end <= triggerIndex) {
+      pos = token.end;
+      tokenIndex++;
+      continue;
+    }
+    return null;
+  }
+  return { triggerIndex, query };
 }
 
 /**
@@ -126,8 +193,118 @@ function scoreItem(item: SlashCommandItem, query: string): number {
 }
 
 /** Stable, namespace-aware label key used for matching + sorting. */
-function commandLabelKey(skill: SkillDescriptor): string {
+function commandLabelKey(skill: SlashSkillInfo): string {
   return skill.namespace ? `${skill.namespace}:${skill.name}` : skill.name;
+}
+
+const STRICT_COMMAND_RE =
+  /^(\s*(?:@[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?![A-Za-z0-9_/-])\s*)*)\/([A-Za-z0-9][A-Za-z0-9_-]{0,119})(?=\s|$)/;
+
+/**
+ * Extract the command name when `text` is a strict slash command (bare or
+ * following canonical `@name` mention tokens), or null otherwise. Mirrors
+ * the trigger semantics used by the composer and the Client registry:
+ * `/name` must be followed by whitespace or end of text, so paths and
+ * prose never match. Used by the send-time Team Skill precondition to
+ * recognize a menu-picked (or stale restored) command in the draft.
+ */
+export function strictCommandName(text: string): string | null {
+  return STRICT_COMMAND_RE.exec(text)?.[2] ?? null;
+}
+
+/**
+ * Project the recipient agent's effective Team Skill rows (from
+ * `GET /agents/:uuid/resources` → `effective.skills`) into slash-menu
+ * descriptors.
+ *
+ * Membership mirrors the runtime projection (`runtimeSkills()`): only
+ * `mode === "enabled"` rows with a `resourceId` qualify, payloads must
+ * pass the shared Skill Resource schema, and the slash name is derived
+ * with the materializer's portable slug rule
+ * (`normalizeTeamSkillTargetSlug`) so the menu never advertises a
+ * command the runtime could not install. Bad rows are skipped
+ * individually — one malformed Team Skill never blanks the rest of the
+ * menu. The payload `namespace` is dropped on purpose: the runtime
+ * projection does not carry it, so the materialized command is the
+ * plain target name.
+ *
+ * Fail-closed on ambiguous targets: the Server already marks a group of
+ * enabled Skills whose names normalize to the same target as
+ * `unavailable` (`duplicate_skill_target_name`), because the
+ * materializer's collision resolution depends on local install history
+ * no off-machine consumer can see. If a stale or malformed response
+ * still carries such a group as enabled, skip the WHOLE group here too
+ * — never pick a winner by API row order and never synthesize a
+ * collision suffix, since either could send the user to the wrong
+ * Skill. A duplicate `resourceId` group is skipped for the same reason
+ * (the materializer rejects it outright).
+ *
+ * A local on-disk collision can make the materializer install a Team
+ * Skill under a suffixed name this projection cannot predict. That case
+ * is NOT left to the daemon catalog (which for Codex-class runtimes does
+ * not cover workspace Skills at all): the Client's inbound rewrite
+ * resolves the base literal against its verified per-session command
+ * registry, fenced by config version — see
+ * `runtime/team-skill-command-rewrite.ts`. The Team row therefore also
+ * wins the merge dedup below for a shared literal, matching that
+ * execution rule; the runtime catalog only contributes commands no Team
+ * Skill claims.
+ */
+export function teamSkillRowsToSlashSkills(rows: EffectiveResourceRow[], resourcesVersion: number): SlashSkillInfo[] {
+  const candidates: Array<{ resourceId: string; slug: string; description: string }> = [];
+  for (const row of rows) {
+    if (row.mode !== "enabled" || !row.resourceId) continue;
+    const parsed = skillResourcePayloadSchema.safeParse(row.payload);
+    if (!parsed.success) continue;
+    let slug: string;
+    try {
+      slug = normalizeTeamSkillTargetSlug(parsed.data.name);
+    } catch {
+      continue;
+    }
+    candidates.push({ resourceId: row.resourceId, slug, description: parsed.data.description });
+  }
+
+  const resourceIdCounts = new Map<string, number>();
+  const slugCounts = new Map<string, number>();
+  for (const c of candidates) {
+    resourceIdCounts.set(c.resourceId, (resourceIdCounts.get(c.resourceId) ?? 0) + 1);
+    const folded = foldPortableTeamSkillPath(c.slug);
+    slugCounts.set(folded, (slugCounts.get(folded) ?? 0) + 1);
+  }
+  const out: SlashSkillInfo[] = [];
+  for (const c of candidates) {
+    if ((resourceIdCounts.get(c.resourceId) ?? 0) > 1) continue;
+    if ((slugCounts.get(foldPortableTeamSkillPath(c.slug)) ?? 0) > 1) continue;
+    out.push({
+      name: c.slug,
+      description: c.description,
+      team: { resourceId: c.resourceId, version: resourcesVersion },
+    });
+  }
+  return out;
+}
+
+/**
+ * Merge the Team Skills projected from Cloud resources with the
+ * daemon-reported runtime catalog. Dedup is on the case-insensitive final
+ * slash literal (`namespace:name`), and for a shared literal the TEAM row
+ * wins: the Client's command registry claims a Team Skill's base slug and
+ * case-folds the user's input to its materialized target, so the menu's
+ * winner must match the executor's winner. A runtime-only command and a
+ * genuinely distinct suffixed literal stay available. Output is sorted by
+ * label key so the menu is stable.
+ */
+export function mergeSlashSkills(runtime: SlashSkillInfo[], team: SlashSkillInfo[]): SlashSkillInfo[] {
+  const byKey = new Map<string, SlashSkillInfo>();
+  for (const skill of team) {
+    byKey.set(commandLabelKey(skill).toLowerCase(), skill);
+  }
+  for (const skill of runtime) {
+    const key = commandLabelKey(skill).toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, skill);
+  }
+  return [...byKey.values()].sort((a, b) => commandLabelKey(a).localeCompare(commandLabelKey(b)));
 }
 
 export function rankSlashCommands(items: SlashCommandItem[], query: string): SlashCommandItem[] {
@@ -173,10 +350,11 @@ export function buildSlashInsert(
   const after = source.slice(cursor);
 
   if (item.kind === "system") {
-    // System commands are intercepted by the host — clearing the
-    // textarea on insert avoids the user accidentally sending the
-    // literal `/help` to the recipient when the action fires.
-    return { text: "", cursor: 0, kind: "system" };
+    // System commands are intercepted by the host — replace only the
+    // `/<query>` run so a committed mention prefix (`@Nova /clear`)
+    // survives: clearing the whole textarea would wipe the recipient
+    // token along with the draft.
+    return { text: before, cursor: before.length, kind: "system" };
   }
 
   const literal = `/${commandLabelKey(item.skill)}`;
@@ -195,6 +373,7 @@ export function useSlashCommand({
   systemCommands,
   agentSkills,
   mentionedAgent,
+  mentionTokens,
   onSelect,
   disabled,
 }: {
@@ -204,13 +383,17 @@ export function useSlashCommand({
   /** Skills for the currently @-mentioned agent. Pass `null` when no
    *  agent is in scope (e.g. group chat without a recipient picked); the
    *  popover then shows only system commands. */
-  agentSkills: { agentId: string; agentDisplayName: string; skills: SkillDescriptor[] } | null;
+  agentSkills: { agentId: string; agentDisplayName: string; skills: SlashSkillInfo[] } | null;
   /** Used only for keyed memoisation — the agent ref the popover should
    *  re-rank when the @mention target flips. Pass `null` for "no
    *  mention". Identical to `agentSkills.agentId` when skills are
    *  loaded; supplied separately so a loading state still resets the
    *  highlight on switch. */
   mentionedAgent: { agentId: string; displayName: string } | null;
+  /** Committed mention tokens over `value` (display space). Enables the
+   *  mention-prefixed slash mode (`@Nova /code`); omit/empty to keep the
+   *  bare-first-char rule only. */
+  mentionTokens?: ReadonlyArray<Pick<ComposerMentionToken, "start" | "end">>;
   onSelect: (update: SlashInsert, picked: SlashCommandItem) => void;
   disabled?: boolean;
 }): {
@@ -227,8 +410,8 @@ export function useSlashCommand({
 
   const trigger = useMemo(() => {
     if (disabled) return null;
-    return detectSlashTrigger(value, cursor);
-  }, [value, cursor, disabled]);
+    return detectSlashTrigger(value, cursor, mentionTokens ?? []);
+  }, [value, cursor, disabled, mentionTokens]);
 
   const items = useMemo<SlashCommandItem[]>(() => {
     const out: SlashCommandItem[] = [...systemCommands];
@@ -359,11 +542,10 @@ export function SlashCommandPopover({
         const description = item.kind === "system" ? item.description : item.skill.description;
 
         return (
-          // `label` is unique within a single popover render because we
-          // dedupe by `<kind>:<name(:namespace)>` upstream — slash command
-          // names cannot collide across the system/skill split (system
-          // names are a hand-curated allowlist) and within skills the
-          // server already enforces uniqueness per agent.
+          // `label` is unique within a single popover render: system
+          // names are a hand-curated allowlist that cannot collide with
+          // skills, and the skill list is deduped upstream by the
+          // case-insensitive slash literal in `mergeSlashSkills`.
           <div key={`${item.kind}-${label}`}>
             {headerEl}
             <button

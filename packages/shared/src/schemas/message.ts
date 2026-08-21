@@ -381,9 +381,11 @@ export const requestResolutionSchema = z.object({
 export type RequestResolution = z.infer<typeof requestResolutionSchema>;
 
 /**
- * Optional intent tag set by the client when posting through
- * `POST /agent/chats/:id/messages`. Tells the server *why* this write is
- * happening so it can pick the right enforcement profile.
+ * Optional intent tag set by the client when posting a message. Tells the
+ * server *why* this write is happening so it can pick the right
+ * enforcement profile. `purpose` is consumed by the server during the
+ * write and is NEVER persisted — no value of it is written to message
+ * metadata or any durable store.
  *
  *   - `"agent-final-text"`: a recipientless, human-observable runtime message.
  *     It lands in chat history for human observers, does not wake other agents,
@@ -395,10 +397,24 @@ export type RequestResolution = z.infer<typeof requestResolutionSchema>;
  *     deliberate handler-emitted runtime notices when paired with
  *     `metadata.runtimeNotice=true`.
  *
+ *   - `TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE` (`"team-skill-invocation-v1"`):
+ *     the versioned protocol sentinel for a Team Skill slash invocation
+ *     send. A Web client that carries a `skillPrecondition` MUST also send
+ *     this purpose, and the server enforces the pair in BOTH directions
+ *     (precondition without sentinel and sentinel without precondition are
+ *     both rejected before any insert). Because the LEGACY server's
+ *     `messagePurposeSchema` accepts only `agent-final-text`, a new-Web →
+ *     old-Server send fails schema validation outright — an old server can
+ *     never silently strip an unknown top-level `skillPrecondition` and
+ *     persist the bare `/slug` as an unmarked local command. The sentinel
+ *     takes the ORDINARY routing profile: none of the `agent-final-text`
+ *     silent/recipientless privileges apply.
+ *
  * Default-`undefined` means a regular agent-initiated send (CLI `chat send`,
  * API, etc.) and goes through the normal enforcement profile.
  */
-export const messagePurposeSchema = z.enum(["agent-final-text"]);
+export const TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE = "team-skill-invocation-v1";
+export const messagePurposeSchema = z.enum(["agent-final-text", TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE]);
 export type MessagePurpose = z.infer<typeof messagePurposeSchema>;
 
 /**
@@ -425,6 +441,91 @@ export function isAgentFinalTextMetadata(metadata: Record<string, unknown> | nul
 /** True when a stored message was emitted by the runtime as an operator notice. */
 export function isRuntimeNoticeMetadata(metadata: Record<string, unknown> | null | undefined): boolean {
   return metadata?.[RUNTIME_NOTICE_METADATA_KEY] === true;
+}
+
+// -- Team Skill invocation marker (server-owned, persisted) --
+
+/**
+ * Server-owned marker stamped into a stored message's `metadata` when the
+ * send carried a valid `skillPrecondition`: proof that the leading slash
+ * command was chosen from the recipient agent's First Tree Team Skill menu,
+ * not typed as a local/runtime command. The marker is what lets the
+ * recipient's Client tell "Team Skill intent selected at config version N"
+ * apart from "a hand-typed local command" no matter how long the message
+ * sat in the inbox queue or how the config changed in between — the
+ * delivery-time `configVersion` stamp alone cannot carry that distinction.
+ *
+ * SERVER-OWNED and CANONICAL: the message transaction writes this field
+ * only after the precondition validates, builds it from the validated
+ * EFFECTIVE resource row (never from the request's untrusted fields),
+ * overwrites any client-supplied value, and strips it from sends without a
+ * valid precondition, so a forged marker never survives the write path.
+ *
+ * Presence semantics for consumers: the KEY being present always means
+ * "server-validated Team intent" — a present-but-malformed or mismatched
+ * marker is NOT equivalent to an absent one. Only a truly absent key lets
+ * a strict slash command fall through to local/runtime Skills; anything
+ * else must fail closed (see the Client's rewrite boundary).
+ */
+export const TEAM_SKILL_INVOCATION_METADATA_KEY = "teamSkillInvocation";
+
+export const TEAM_SKILL_INVOCATION_MARKER_VERSION = 1;
+
+/**
+ * Versioned invocation marker. `requestedSlug` is the canonical
+ * `normalizeTeamSkillTargetSlug` output — the schema deliberately does NOT
+ * re-invent slug charset/length/reserved-name rules; the materializer's
+ * normalizer is the single identity rule, applied by the server at stamp
+ * time and by the client at resolve time.
+ */
+export const teamSkillInvocationSchema = z.object({
+  /** Marker contract version. Unknown versions read as malformed. */
+  version: z.literal(TEAM_SKILL_INVOCATION_MARKER_VERSION),
+  /** The single agent the command was addressed to. */
+  recipientAgentId: z.string().min(1),
+  /** Team resource id the command was chosen from. */
+  resourceId: z.string().min(1),
+  /** Canonical base slug the user typed (pre-collision-suffix). */
+  requestedSlug: z.string().min(1),
+  /** The agent's `agent_configs.version` at selection time. */
+  configVersion: z.number().int().positive(),
+});
+export type TeamSkillInvocation = z.infer<typeof teamSkillInvocationSchema>;
+
+/** True when the metadata carries the marker KEY at all — even a malformed value. */
+export function hasTeamSkillInvocationMarker(metadata: Record<string, unknown> | null | undefined): boolean {
+  return metadata != null && TEAM_SKILL_INVOCATION_METADATA_KEY in metadata;
+}
+
+/**
+ * Wire-only inert replacement for a marker-carrying message delivered to a
+ * client whose `sdk_version` does not support the invocation marker. An old
+ * client would ignore the marker and hand the base literal to a same-named
+ * local Skill, so the server's DB-row→wire boundary replaces the command
+ * content (text or image caption) with this notice instead — the stored
+ * message, attachments, and metadata are never touched, and the turn still
+ * settles normally (no parked FIFO behind a rollback). The text keeps NO
+ * leading slash token, so it can never parse as a command itself.
+ */
+export const TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE =
+  "[First Tree] The user invoked a configured Team Skill command, but the currently connected agent client " +
+  "is too old to run it safely, so the command was not run. Do NOT invoke any slash command or a same-named " +
+  "local Skill on their behalf. Briefly explain to the user that the command could not run on the current " +
+  "client and ask them to send it again once the agent's client is up to date.";
+
+/**
+ * Parse the server-owned Team Skill invocation marker from message metadata.
+ * Absent or malformed → null; callers that must distinguish "no Team
+ * intent" from "unverifiable Team intent" check
+ * {@link hasTeamSkillInvocationMarker} first.
+ */
+export function teamSkillInvocationFromMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): TeamSkillInvocation | null {
+  const raw = metadata?.[TEAM_SKILL_INVOCATION_METADATA_KEY];
+  if (raw === undefined || raw === null) return null;
+  const parsed = teamSkillInvocationSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 export const sendMessageSchema = z.object({
@@ -455,6 +556,28 @@ export const sendMessageSchema = z.object({
    * prefer this over relying on `@<name>` extraction from `content`.
    */
   receiverNames: z.array(z.string().min(1)).optional(),
+  /**
+   * Transient, request-level precondition for a Team Skill slash command
+   * chosen from the slash menu. The sender asserts the command was selected
+   * for exactly this recipient, from this Team resource, while the agent's
+   * runtime config was at this version. The message transaction re-validates
+   * the recipient set and the config version before inserting: a removed or
+   * renamed Team Skill (version bump) or a different routing set rejects the
+   * send with a conflict instead of letting the command fall through to a
+   * same-named LOCAL Skill. On success the server persists a server-owned
+   * `teamSkillInvocation` metadata marker built from these fields, so the
+   * recipient's Client can still recognise the Team intent after a delayed
+   * delivery. Request-level only — the precondition itself is never
+   * persisted into message metadata.
+   */
+  skillPrecondition: z
+    .object({
+      recipientAgentId: z.string().uuid(),
+      expectedConfigVersion: z.number().int().positive(),
+      resourceId: z.string().uuid(),
+      requestedSlug: z.string().min(1),
+    })
+    .optional(),
 });
 export type SendMessage = z.infer<typeof sendMessageSchema>;
 

@@ -160,6 +160,17 @@ export const agentChatStatusSchema = z
      * agents; Web shows Reset only when this is `=== true`.
      */
     sessionResetSupported: z.boolean().optional(),
+    /**
+     * The agent's live, route-consistent client connection runs a version
+     * that parses the server-owned `teamSkillInvocation` message metadata
+     * marker fail-closed (`supportsTeamSkillInvocationClientVersion` over
+     * `clients.sdk_version`). Absent/false for old, unknown-version,
+     * offline, or unbound clients; the Web composer offers Team Skill menu
+     * entries only when this is `=== true`, so a client that would hand
+     * the base literal to a same-named local Skill never sees the entry
+     * point. Derived from existing rows — no new persisted state.
+     */
+    teamSkillInvocationSupported: z.boolean().optional(),
   })
   .superRefine((val, ctx) => {
     const expected = deriveMainStatus(val);
@@ -180,6 +191,7 @@ export type AgentChatStatusInput = DeriveMainStatusInput & {
   activity?: LiveActivity | null;
   statusReason?: AgentStatusReason;
   sessionResetSupported?: boolean;
+  teamSkillInvocationSupported?: boolean;
 };
 
 /**
@@ -198,5 +210,8 @@ export function buildAgentChatStatus(input: AgentChatStatusInput): AgentChatStat
     activity: input.activity ?? null,
     ...(input.statusReason ? { statusReason: input.statusReason } : {}),
     ...(input.sessionResetSupported !== undefined ? { sessionResetSupported: input.sessionResetSupported } : {}),
+    ...(input.teamSkillInvocationSupported !== undefined
+      ? { teamSkillInvocationSupported: input.teamSkillInvocationSupported }
+      : {}),
   };
 }

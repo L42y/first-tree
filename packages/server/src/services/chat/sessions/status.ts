@@ -13,6 +13,7 @@ import {
   type RuntimeState,
   statusReasonFromProviderRetryEvent,
   stripShellCommandDisplayWrapper,
+  supportsTeamSkillInvocationClientVersion,
   type ToolCallEventPayload,
 } from "@first-tree/shared";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
@@ -499,6 +500,7 @@ export async function resolveAgentChatStatuses(
             clientStatus: clients.status,
             clientInstanceId: clients.instanceId,
             clientMetadata: clients.metadata,
+            clientSdkVersion: clients.sdkVersion,
           })
           .from(agents)
           .innerJoin(agentPresence, eq(agentPresence.agentId, agents.uuid))
@@ -508,6 +510,15 @@ export async function resolveAgentChatStatuses(
   const resetCapableAgents = new Set(
     routeRows
       .filter((r) => isConsistentAgentRoute(r) && metadataSupportsSessionReset(r.clientMetadata))
+      .map((r) => r.agentId),
+  );
+  // Team Skill invocation gate: same DB-authoritative route predicate as
+  // Reset above, but the verdict comes from the connected client's
+  // `sdk_version` via the shared release helper - old, unknown-version,
+  // offline, or unbound clients never count, and nothing is persisted.
+  const teamSkillCapableAgents = new Set(
+    routeRows
+      .filter((r) => isConsistentAgentRoute(r) && supportsTeamSkillInvocationClientVersion(r.clientSdkVersion))
       .map((r) => r.agentId),
   );
 
@@ -584,6 +595,10 @@ export async function resolveAgentChatStatuses(
           // prove the old provider mapping is gone and release the rows it
           // parks while the server finalizes.
           sessionResetSupported: resetCapableAgents.has(agentId),
+          // Live-connection rollout gate for Team Skill slash commands:
+          // only a client whose version parses the server-owned invocation
+          // marker fail-closed may be offered Team Skills in the composer.
+          teamSkillInvocationSupported: teamSkillCapableAgents.has(agentId),
         }),
       );
     }

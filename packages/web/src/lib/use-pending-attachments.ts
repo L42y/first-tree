@@ -24,6 +24,12 @@ export type UsePendingAttachments = {
   removeAttachment: (id: string) => void;
   /** Revoke any staged previews and empty the list (call after a send). */
   clearAttachments: () => void;
+  /**
+   * Re-stage previously-cleared files after a failed send — fresh ids and
+   * fresh preview URLs (the originals were revoked on clear). No-op when
+   * the user already staged replacements in the meantime.
+   */
+  restoreAttachments: (attachments: readonly PendingAttachmentSeed[]) => void;
 };
 
 const MAX_MB = MAX_ATTACHMENT_BYTES / 1024 / 1024;
@@ -157,5 +163,26 @@ export function usePendingAttachments(
     });
   }, []);
 
-  return { pendingAttachments, addFiles, removeAttachment, clearAttachments };
+  const restoreAttachments = useCallback((attachments: readonly PendingAttachmentSeed[]) => {
+    if (attachments.length === 0) return;
+    // Re-stage after a failed send with FRESH ids and fresh preview URLs —
+    // the originals were revoked by clearAttachments, so reusing them would
+    // dangle. A no-op when the user already staged replacements during the
+    // in-flight window (reads the latest state inside the setter).
+    // Deliberately does NOT fire onChange: this is a programmatic failure
+    // rollback, not a user edit — the send error must stay visible.
+    setPendingAttachments((current) => {
+      if (current.length > 0) return current;
+      return attachments.map(({ file, kind }) => ({
+        id: crypto.randomUUID(),
+        file,
+        kind,
+        ...(kind === "image" && typeof URL.createObjectURL === "function"
+          ? { previewUrl: URL.createObjectURL(file) }
+          : {}),
+      }));
+    });
+  }, []);
+
+  return { pendingAttachments, addFiles, removeAttachment, clearAttachments, restoreAttachments };
 }

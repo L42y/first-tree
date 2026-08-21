@@ -1,9 +1,11 @@
+import { eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { clients } from "../db/schema/clients.js";
 import { createAgent, getAgent } from "../services/agents/identity.js";
 import { addParticipant, createChat } from "../services/chat/conversation.js";
 import { buildClientMessagePayload, buildClientMessagePayloadsForInbox } from "../services/chat/message-dispatcher.js";
-import { createAdminContext, createTestApp } from "./helpers.js";
+import { createAdminContext, createTestApp, seedHealthyAgentRuntime } from "./helpers.js";
 
 let app: FastifyInstance;
 let ctx: { memberId: string; clientId: string; humanAgentUuid: string };
@@ -250,5 +252,187 @@ describe("buildClientMessagePayload — recipientMode (v2 constant)", () => {
     if (!first || !second) throw new Error("expected two payloads");
     expect(first.recipientMode).toBe("mention_only");
     expect(second.recipientMode).toBe("mention_only");
+  });
+});
+
+/**
+ * Rollout gate at the DB-row→wire boundary: a message carrying the
+ * server-owned `teamSkillInvocation` marker may only reach a client whose
+ * `sdk_version` resolves the marker fail-closed. The send-time menu gate
+ * cannot cover messages already queued when the agent's client rolls
+ * back, so the dispatcher re-checks the CURRENT route and swaps the
+ * command content for an inert notice (text or image caption) — the
+ * stored row, attachments, and metadata are never touched, and delivery
+ * still settles normally instead of parking the FIFO behind a rollback.
+ */
+describe("buildClientMessagePayload — teamSkillInvocation rollout gate", () => {
+  const MARKER = {
+    version: 1,
+    recipientAgentId: "00000000-0000-0000-0000-000000000001",
+    resourceId: "00000000-0000-0000-0000-000000000002",
+    requestedSlug: "review",
+    configVersion: 1,
+  };
+  const marked = (content: unknown) => ({
+    ...RAW,
+    content,
+    metadata: { mentions: ["sender-1"], teamSkillInvocation: MARKER },
+  });
+
+  async function setupAgent(suffix: string) {
+    return createAgent(app.db, {
+      name: `gate-${suffix}-${Date.now()}`,
+      type: "agent",
+      managerId: ctx.memberId,
+      clientId: ctx.clientId,
+    });
+  }
+
+  async function connectWithVersion(agentUuid: string, sdkVersion: string | null) {
+    await seedHealthyAgentRuntime(app, { agentUuid, clientId: ctx.clientId });
+    await app.db.update(clients).set({ sdkVersion }).where(eq(clients.id, ctx.clientId));
+  }
+
+  it("passes the command through untouched while the connected client supports the marker", async () => {
+    const agent = await setupAgent("ok");
+    await connectWithVersion(agent.uuid, "0.5.22");
+    const built = await buildClientMessagePayload(
+      app.db,
+      { kind: "agentId", agentId: agent.uuid },
+      marked("/review src/"),
+    );
+    expect(built.content).toBe("/review src/");
+    expect(built.metadata?.teamSkillInvocation).toEqual(MARKER);
+  });
+
+  it("replaces the command with an inert notice after the client rolls back — DB row untouched", async () => {
+    const agent = await setupAgent("rollback");
+    await connectWithVersion(agent.uuid, "0.5.22");
+    // Rollback: the bound client now runs a build without the marker reader.
+    await connectWithVersion(agent.uuid, "0.5.21");
+    const row = marked("/review src/");
+    const built = await buildClientMessagePayload(app.db, { kind: "agentId", agentId: agent.uuid }, row);
+    const text = built.content as string;
+    expect(text).toContain("too old to run it safely");
+    expect(text).not.toContain("/review");
+    expect(text.startsWith("/")).toBe(false);
+    // The stored row object is never mutated.
+    expect(row.content).toBe("/review src/");
+    expect(built.metadata?.teamSkillInvocation).toEqual(MARKER);
+  });
+
+  it("fails closed for an unknown / unbound / offline client route", async () => {
+    const agent = await setupAgent("unbound");
+    // No live route-consistent presence at all.
+    const built = await buildClientMessagePayload(app.db, { kind: "agentId", agentId: agent.uuid }, marked("/review"));
+    expect(built.content).toContain("too old to run it safely");
+    expect(built.content).not.toContain("/review");
+    // Unknown version strings fail closed too.
+    await connectWithVersion(agent.uuid, "garbage");
+    const garbage = await buildClientMessagePayload(
+      app.db,
+      { kind: "agentId", agentId: agent.uuid },
+      marked("/review"),
+    );
+    expect(garbage.content).toContain("too old to run it safely");
+  });
+
+  it("replaces an image caption while preserving the attachment refs", async () => {
+    const agent = await setupAgent("caption");
+    await connectWithVersion(agent.uuid, "0.5.21");
+    const batch = {
+      caption: "/review src/",
+      attachments: [{ imageId: "img-1", mimeType: "image/png", filename: "shot.png", size: 3 }],
+    };
+    const built = await buildClientMessagePayload(app.db, { kind: "agentId", agentId: agent.uuid }, marked(batch));
+    const content = built.content as { caption: string; attachments: unknown[] };
+    expect(content.caption).toContain("too old to run it safely");
+    expect(content.caption).not.toContain("/review");
+    expect(content.attachments).toEqual(batch.attachments);
+  });
+
+  it("leaves unmarked local commands untouched for the same old client", async () => {
+    const agent = await setupAgent("local");
+    await connectWithVersion(agent.uuid, "0.5.21");
+    const built = await buildClientMessagePayload(
+      app.db,
+      { kind: "agentId", agentId: agent.uuid },
+      { ...RAW, content: "/ship it", metadata: { mentions: ["sender-1"] } },
+    );
+    expect(built.content).toBe("/ship it");
+  });
+
+  it("applies the gate per item in the batch variant", async () => {
+    const agent = await setupAgent("batch");
+    await connectWithVersion(agent.uuid, "0.5.21");
+    const built = await buildClientMessagePayloadsForInbox(app.db, agent.inboxId, [
+      { entryChatId: RAW.chatId, message: { ...marked("/review"), id: "m-1" } },
+      { entryChatId: RAW.chatId, message: { ...RAW, id: "m-2", content: "/ship" } },
+    ]);
+    expect(built[0]?.content).toContain("too old to run it safely");
+    expect(built[0]?.content).not.toContain("/review");
+    expect(built[1]?.content).toBe("/ship");
+  });
+});
+
+describe("buildClientMessagePayloadsForInbox — route query only when a marker is present", () => {
+  function countingDb(db: typeof app.db) {
+    let selects = 0;
+    const proxy = new Proxy(db, {
+      get(target, prop, receiver) {
+        if (prop === "select") selects++;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    return { db: proxy as unknown as typeof app.db, count: () => selects };
+  }
+
+  it("skips the route/sdk query entirely for an all-unmarked batch (hot path)", async () => {
+    const agent = await createAgent(app.db, {
+      name: `hotpath-unmarked-${Date.now()}`,
+      type: "agent",
+      managerId: ctx.memberId,
+      clientId: ctx.clientId,
+    });
+    const { db, count } = countingDb(app.db);
+    await buildClientMessagePayloadsForInbox(db, agent.inboxId, [
+      { entryChatId: RAW.chatId, message: { ...RAW, id: "u-1", content: "hello" } },
+      {
+        entryChatId: RAW.chatId,
+        message: { ...RAW, id: "u-2", content: "/ship it", metadata: { mentions: ["sender-1"] } },
+      },
+    ]);
+    // Only the inbox-owner resolve + the config-version query — no
+    // agents/agent_presence/clients route join.
+    expect(count()).toBe(2);
+  });
+
+  it("pays exactly one route query when the batch contains a marker", async () => {
+    const agent = await createAgent(app.db, {
+      name: `hotpath-marked-${Date.now()}`,
+      type: "agent",
+      managerId: ctx.memberId,
+      clientId: ctx.clientId,
+    });
+    const markedMessage = {
+      ...RAW,
+      id: "m-1",
+      content: "/review",
+      metadata: {
+        teamSkillInvocation: {
+          version: 1,
+          recipientAgentId: "00000000-0000-0000-0000-000000000001",
+          resourceId: "00000000-0000-0000-0000-000000000002",
+          requestedSlug: "review",
+          configVersion: 1,
+        },
+      },
+    };
+    const { db, count } = countingDb(app.db);
+    await buildClientMessagePayloadsForInbox(db, agent.inboxId, [
+      { entryChatId: RAW.chatId, message: markedMessage },
+      { entryChatId: RAW.chatId, message: { ...RAW, id: "m-2", content: "plain" } },
+    ]);
+    expect(count()).toBe(3);
   });
 });

@@ -1077,6 +1077,54 @@ describe("Resources Phase 1", () => {
     expect(resolved.payload.resourceSkills[0]?.bundle?.sizeBytes).toBeGreaterThan(0);
   });
 
+  it("marks normalized skill target name collisions unavailable as a group and excludes them from runtime config", async () => {
+    const app = getApp();
+    const owner = await createOrgUser(app, "admin");
+    const agent = await createRuntimeAgent(app, owner);
+    // `foo_bar` and `foo-bar` both normalize to the target `foo-bar`.
+    const collidingA = await createTeamSkill(app, owner, "recommended", {
+      name: "foo_bar",
+      description: "First spelling.",
+      body: "# A",
+      metadata: {},
+    });
+    const collidingB = await createTeamSkill(app, owner, "recommended", {
+      name: "foo-bar",
+      description: "Second spelling.",
+      body: "# B",
+      metadata: {},
+    });
+    const solo = await createTeamSkill(app, owner, "recommended", {
+      name: "solo-skill",
+      description: "Unambiguous.",
+      body: "# S",
+      metadata: {},
+    });
+
+    const effective = await app.resourcesService.resolveEffectiveResources(agent.uuid);
+
+    for (const skill of [collidingA, collidingB]) {
+      expect(effective.skills).toContainEqual(
+        expect.objectContaining({
+          resourceId: skill.id,
+          mode: "unavailable",
+          unavailableReason: "duplicate_skill_target_name",
+        }),
+      );
+    }
+    expect(effective.unavailable).toEqual(
+      expect.arrayContaining([
+        { type: "skill", id: collidingA.id, reason: "duplicate_skill_target_name" },
+        { type: "skill", id: collidingB.id, reason: "duplicate_skill_target_name" },
+      ]),
+    );
+    expect(effective.skills).toContainEqual(expect.objectContaining({ resourceId: solo.id, mode: "enabled" }));
+
+    const baseConfig = await app.configService.get(agent.uuid);
+    const resolved = await app.resourcesService.resolveRuntimeConfig(baseConfig);
+    expect((resolved.payload.resourceSkills ?? []).map((s) => s.resourceId)).toEqual([solo.id]);
+  });
+
   it("fails closed instead of projecting inline fields when a bundle belongs to another organization", async () => {
     const app = getApp();
     const owner = await createOrgUser(app, "admin");

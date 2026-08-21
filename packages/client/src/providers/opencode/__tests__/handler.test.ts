@@ -111,6 +111,7 @@ function reconciledSkillsResult(resourceConfigVersion = 1) {
     skipped: [],
     removed: [],
     teamSkills: [],
+    teamSkillCommands: [],
     failures: [],
     staleTeamSnapshot: false,
   };
@@ -313,6 +314,7 @@ function context(
     formatInboundContent: async (entry) => `[From: human]\n${String(entry.content)}`,
     resolveSenderLabel: async () => "human",
     formatFromHeader: async () => "[From: human]",
+    publishTeamSkillCommands: () => {},
   };
 }
 

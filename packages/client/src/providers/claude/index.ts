@@ -15,10 +15,12 @@ import type {
 import {
   DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD,
   encodeProviderRetryEventMessage,
+  hasTeamSkillInvocationMarker,
   isImageBatchRefContent,
   isImageRefContent,
   runtimeProviderSchema,
   SUPPORTED_IMAGE_MIMES as SHARED_SUPPORTED_IMAGE_MIMES,
+  TEAM_SKILL_INVOCATION_METADATA_KEY,
 } from "@first-tree/shared";
 import type {
   AgentHandler,
@@ -27,7 +29,11 @@ import type {
   SessionContext,
   SessionMessage,
 } from "../../runtime/contracts.js";
-import { noopDeliveryToken, requireDeliveryToken } from "../../runtime/contracts.js";
+import {
+  isTeamSkillCommandUnavailableError,
+  noopDeliveryToken,
+  requireDeliveryToken,
+} from "../../runtime/contracts.js";
 import type {
   AgentConfigCache,
   ChatContext,
@@ -602,14 +608,35 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     if (message.format === "file") {
       // Preserve the specialized current-image prompt while routing it through
       // the shared formatter, which is responsible for the supported generic
-      // request images in precedingMessages. Clear current metadata because
-      // batch documents are appended explicitly below.
+      // request images in precedingMessages. Keep ONLY the routed-mention
+      // evidence and the server-owned Team Skill invocation marker from the
+      // original metadata so the shared command boundary can still gate a
+      // mention-prefixed caption slash command and prove Team intent for a
+      // captioned command; other metadata stays cleared because batch
+      // documents are appended explicitly below.
+      const routingMetadata = message.metadata
+        ? (() => {
+            const preserved = {
+              ...(Array.isArray(message.metadata.mentions) ? { mentions: message.metadata.mentions } : {}),
+              ...(hasTeamSkillInvocationMarker(message.metadata)
+                ? { [TEAM_SKILL_INVOCATION_METADATA_KEY]: message.metadata[TEAM_SKILL_INVOCATION_METADATA_KEY] }
+                : {}),
+            };
+            return Object.keys(preserved).length > 0 ? preserved : null;
+          })()
+        : null;
       const formatFileText = async (text: string): Promise<string> =>
         sessionCtx.formatInboundContent({
           ...message,
           format: "text",
           content: text,
-          metadata: null,
+          // Preserve ONLY the two metadata facts the shared Team Skill
+          // boundary needs: routed mentions (authorize `@agent /command`)
+          // and the server-owned invocation marker (prove Team intent for a
+          // captioned command). Every other key stays cleared because batch
+          // documents are appended explicitly below — carrying full metadata
+          // would duplicate the attachment notes.
+          metadata: routingMetadata,
         });
 
       if (isImageBatchRefContent(message.content)) {
@@ -957,7 +984,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
       sessionCtx.log(`toSDKUserMessage errored: ${err instanceof Error ? err.message : String(err)}`);
       // The SDK has not seen this input yet, so there is no durable terminal
       // evidence. Keep it recoverable instead of ACKing through `complete`.
-      token.retry(message, "claude_inject_format_failed");
+      // A Team Skill command refusal is a pre-provider fail-closed by
+      // definition — retry with its dedicated reason so the turn can
+      // succeed once a verified target lands.
+      token.retry(
+        message,
+        isTeamSkillCommandUnavailableError(err) ? "team_skill_command_unavailable" : "claude_inject_format_failed",
+      );
     }
   }
 

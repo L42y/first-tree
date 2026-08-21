@@ -1777,6 +1777,31 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
   async function startTurnFromPendingInputs(sessionCtx: SessionContext): Promise<void> {
     if (pendingInputs.length === 0 || turnStartInProgress) return;
     const batch = pendingInputs.slice();
+    const token = batch[0]?.token;
+    if (!token) return;
+    // Active-session hot-switch BEFORE formatting: the Team Skill command
+    // registry fence rejects a message stamped with a newer config version,
+    // and only this reconcile can publish the registry that lets a retried
+    // turn succeed — formatting first would deadlock the turn on its own
+    // fence.
+    let refreshed: { fingerprint: string; changed: boolean } | null;
+    try {
+      refreshed = await refreshBriefingForActiveTurn(sessionCtx);
+    } catch (error) {
+      if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
+      // Settle the batch exactly once: release it from the pending queue
+      // BEFORE handing custody to recovery, so the same input cannot be
+      // processed twice.
+      removePendingPrefix(batch);
+      retryBatch(batch, "codex_managed_skills_unsafe");
+      sessionCtx.log(`blocked provider turn: ${error.message}`);
+      return;
+    }
+    if (refreshed?.changed && cwd) {
+      const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
+      pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
+      sessionCtx.log(`Active session briefing changed — prepending re-read notice (${threadId})`);
+    }
     let text: string;
     try {
       text = await formatBatchInput(batch, sessionCtx, "post-turn");
@@ -1787,24 +1812,6 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
       return;
     }
     removePendingPrefix(batch);
-    const token = batch[0]?.token;
-    if (!token) return;
-    // Active-session hot-switch: pick up a mid-session briefing change before
-    // this injected turn and surface the re-read notice.
-    let refreshed: { fingerprint: string; changed: boolean } | null;
-    try {
-      refreshed = await refreshBriefingForActiveTurn(sessionCtx);
-    } catch (error) {
-      if (!isManagedSkillsUnsafeDiscoveryError(error)) throw error;
-      retryBatch(batch, "codex_managed_skills_unsafe");
-      sessionCtx.log(`blocked provider turn: ${error.message}`);
-      return;
-    }
-    if (refreshed?.changed && cwd) {
-      const notice = buildBriefingUpdateNotice(join(cwd, "AGENTS.md"));
-      pendingChatContextPrompt = pendingChatContextPrompt ? `${notice}\n\n${pendingChatContextPrompt}` : notice;
-      sessionCtx.log(`Active session briefing changed — prepending re-read notice (${threadId})`);
-    }
     void runTurnFromText(
       text,
       batch.map((entry) => entry.message),

@@ -1481,6 +1481,7 @@ describe("runtime provider architecture guard", () => {
       "LoginOutcome",
       "ReplayFenceEntry",
       "ReplayFenceWriter",
+      "isTeamSkillCommandUnavailableError",
     ] as const;
     const forbiddenOwners = ["runtime/handler.js", "runtime/runtime-login.js", "runtime/replay-fence.js"] as const;
 

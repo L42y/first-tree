@@ -342,6 +342,9 @@ describe("managed Skill reconciler", () => {
     });
     expect(unavailable.ok).toBe(true);
     expect(unavailable.teamSkills).toEqual([]);
+    // A non-authoritative snapshot carries no registry publication — the
+    // previously published command map stays in force.
+    expect(unavailable.teamSkillCommands).toBeNull();
     expect(existsSync(target(workspace, "codex", "review"))).toBe(true);
 
     const stale = await reconcileManagedSkills({
@@ -464,6 +467,9 @@ describe("managed Skill reconciler", () => {
 
     expect(result.ok, JSON.stringify(result.failures)).toBe(true);
     expect(result.teamSkills[0]?.name).toBe("review-first-tree");
+    expect(result.teamSkillCommands).toEqual([
+      { requestedSlug: "review", resourceId: "resource-review", effectiveName: "review-first-tree" },
+    ]);
     expect(readFileSync(join(userTarget, "SKILL.md"), "utf-8")).toBe("user-owned review\n");
     expect(existsSync(target(workspace, "codex", "review-first-tree"))).toBe(true);
 
@@ -475,6 +481,35 @@ describe("managed Skill reconciler", () => {
       bundledSkillsRoot,
     });
     expect(retry.teamSkills[0]?.name).toBe("review-first-tree");
+  });
+
+  it("reports a configured-but-unverified Team Skill command with a null effective name", async () => {
+    await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+    });
+    const installed = target(workspace, "codex", "review");
+
+    // Tampering before the publication gate invalidates the install: the
+    // base command stays configured but has no verified target.
+    const drifted = await reconcileManagedSkills({
+      workspace,
+      provider: "codex",
+      providerSkillRoots: TEST_PROVIDER_SKILL_ROOTS,
+      teamSnapshot: authoritativeTeamSkillSnapshot(1, [teamSkill()]),
+      bundledSkillsRoot,
+      testBeforeTeamRows: () => {
+        writeFileSync(join(installed, "SKILL.md"), "tampered after main loop\n");
+      },
+    });
+
+    expect(drifted.teamSkills).toEqual([]);
+    expect(drifted.teamSkillCommands).toEqual([
+      { requestedSlug: "review", resourceId: "resource-review", effectiveName: null },
+    ]);
   });
 
   it("installs complete root and wrapped Team ZIPs with nested, executable, and binary files", async () => {

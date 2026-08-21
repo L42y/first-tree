@@ -22,7 +22,12 @@ export {
   resolveGitLabRepositoryWebIdentity,
   sameContextTreeRepository,
 } from "./canonical-git-repo-url.js";
-export { MIN_RUNTIME_SWITCH_CLIENT_VERSION, supportsRuntimeSwitchClientVersion } from "./client-release.js";
+export {
+  MIN_RUNTIME_SWITCH_CLIENT_VERSION,
+  MIN_TEAM_SKILL_INVOCATION_CLIENT_VERSION,
+  supportsRuntimeSwitchClientVersion,
+  supportsTeamSkillInvocationClientVersion,
+} from "./client-release.js";
 export {
   buildLoginCommand,
   buildPortableBootstrapCommand,
@@ -1167,6 +1172,7 @@ export {
   feishuResourceUnavailableReasonSchema,
   firstChatOrientationContinuationMessageMetadataSchema,
   firstChatOrientationMessageMetadataSchema,
+  hasTeamSkillInvocationMarker,
   isAgentFinalTextMetadata,
   isRuntimeNoticeMetadata,
   MESSAGE_FORMATS,
@@ -1198,6 +1204,13 @@ export {
   requestResolutionSchema,
   type SendMessage,
   sendMessageSchema,
+  TEAM_SKILL_INVOCATION_MARKER_VERSION,
+  TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE,
+  TEAM_SKILL_INVOCATION_METADATA_KEY,
+  TEAM_SKILL_INVOCATION_UNSUPPORTED_CLIENT_NOTICE,
+  type TeamSkillInvocation,
+  teamSkillInvocationFromMetadata,
+  teamSkillInvocationSchema,
 } from "./schemas/message.js";
 export {
   type ListNeedYouRequestsQuery,

@@ -544,3 +544,49 @@ describe("api wrapper paths", () => {
     });
   });
 });
+
+describe("Team Skill invocation protocol pair on the wire", () => {
+  const precondition = {
+    recipientAgentId: "agent-1",
+    expectedConfigVersion: 1,
+    resourceId: "res-1",
+    requestedSlug: "code-review",
+  };
+
+  beforeEach(() => {
+    apiMock.post.mockReset();
+    apiMock.post.mockResolvedValue({ id: "m-1" });
+  });
+
+  async function chatsModule() {
+    return import("../chats.js");
+  }
+
+  it("sendChatMessage pairs the sentinel purpose with the precondition, and sends neither for ordinary sends", async () => {
+    const chats = await chatsModule();
+    await chats.sendChatMessage("chat-1", "/code-review src/", ["agent-1"], { skillPrecondition: precondition });
+    const [, body] = apiMock.post.mock.calls[0] ?? [];
+    expect(body).toMatchObject({ purpose: "team-skill-invocation-v1", skillPrecondition: precondition });
+
+    apiMock.post.mockClear();
+    await chats.sendChatMessage("chat-1", "/review", ["agent-1"]);
+    const [, plainBody] = apiMock.post.mock.calls[0] ?? [];
+    expect(plainBody).not.toHaveProperty("purpose");
+    expect(plainBody).not.toHaveProperty("skillPrecondition");
+  });
+
+  it("sendFileMessageBatch pairs the sentinel purpose with the precondition", async () => {
+    const chats = await chatsModule();
+    await chats.sendFileMessageBatch(
+      "chat-1",
+      {
+        caption: "/code-review src/",
+        attachments: [{ imageId: "img-1", mimeType: "image/png", filename: "a.png", size: 1 }],
+      },
+      { mentions: ["agent-1"] },
+      { skillPrecondition: precondition },
+    );
+    const [, body] = apiMock.post.mock.calls[0] ?? [];
+    expect(body).toMatchObject({ purpose: "team-skill-invocation-v1", skillPrecondition: precondition });
+  });
+});

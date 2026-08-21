@@ -10,6 +10,7 @@ import type {
   RequestResolution,
   RequestThreadResponse,
 } from "@first-tree/shared";
+import { TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE } from "@first-tree/shared";
 import { api, withOrg } from "./client.js";
 
 type PaginatedChats = {
@@ -103,7 +104,17 @@ export function sendChatMessage(
   chatId: string,
   content: string,
   mentions: string[],
-  opts?: { inReplyTo?: string; resolves?: RequestResolution; attachments?: AttachmentRef[] },
+  opts?: {
+    inReplyTo?: string;
+    resolves?: RequestResolution;
+    attachments?: AttachmentRef[];
+    skillPrecondition?: {
+      recipientAgentId: string;
+      expectedConfigVersion: number;
+      resourceId: string;
+      requestedSlug: string;
+    };
+  },
 ): Promise<Message> {
   // `resolves` is the explicit lifecycle signal — present only when the human
   // submits a clean answer from the request card (it drives the server's
@@ -127,6 +138,13 @@ export function sendChatMessage(
   return api.post<Message>(`/chats/${encodeURIComponent(chatId)}/messages`, {
     format: "text",
     content,
+    // Protocol pair (server-enforced both directions): a Team Skill
+    // invocation always carries the versioned purpose sentinel with its
+    // precondition, so a rolled-back old Server parse-rejects the send
+    // instead of stripping an unknown field and persisting a bare slash.
+    ...(opts?.skillPrecondition
+      ? { skillPrecondition: opts.skillPrecondition, purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE }
+      : {}),
     ...(metadata ? { metadata } : {}),
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
   });
@@ -203,7 +221,16 @@ export function sendFileMessageBatch(
   chatId: string,
   content: SendFileMessageBatchBody,
   metadata?: SendFileMessageMetadata,
-  opts?: { inReplyTo?: string; resolves?: RequestResolution },
+  opts?: {
+    inReplyTo?: string;
+    resolves?: RequestResolution;
+    skillPrecondition?: {
+      recipientAgentId: string;
+      expectedConfigVersion: number;
+      resourceId: string;
+      requestedSlug: string;
+    };
+  },
 ): Promise<Message> {
   // Project explicit fields rather than spreading `metadata` whole so future
   // additions to SendFileMessageMetadata don't ride out on the `mentions`
@@ -233,6 +260,10 @@ export function sendFileMessageBatch(
     // captioned image answering a docked question threads under it just like
     // a text reply.
     ...(opts?.inReplyTo ? { inReplyTo: opts.inReplyTo } : {}),
+    // Same Team Skill invocation protocol pair as sendChatMessage.
+    ...(opts?.skillPrecondition
+      ? { skillPrecondition: opts.skillPrecondition, purpose: TEAM_SKILL_INVOCATION_MESSAGE_PURPOSE }
+      : {}),
   });
 }
 

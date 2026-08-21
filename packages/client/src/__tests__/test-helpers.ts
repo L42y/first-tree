@@ -31,6 +31,10 @@ export function mockCtxPlumbing(
   formatInboundContent: (msg: SessionMessage) => Promise<string>;
   resolveSenderLabel: (senderId: string) => Promise<string>;
   formatFromHeader: (msg: SessionMessage) => Promise<string>;
+  publishTeamSkillCommands: (
+    commands: readonly { requestedSlug: string; effectiveName: string | null }[] | null,
+    provenVersion: number | null,
+  ) => void;
 } {
   return {
     // Turn-completion hook — delivers nothing (final-text mirror retired).
@@ -46,6 +50,9 @@ export function mockCtxPlumbing(
     },
     resolveSenderLabel: async (senderId) => senderId,
     formatFromHeader: async (msg) => (msg.senderId ? `[From: ${msg.senderId}]` : ""),
+    // Default no-op registry sink; tests that assert the Team Skill command
+    // registry override with a capturing stub.
+    publishTeamSkillCommands: () => {},
   };
 }
 
@@ -62,6 +69,8 @@ export function mockEntry(
     precedingMessages?: PrecedingMessage[];
     /** Override the derived `message.id`. */
     messageId?: string;
+    /** Override the stamped `configVersion` (default 1). */
+    configVersion?: number;
   } = {},
 ): InboxEntryWithMessage {
   const chatId = opts.chatId ?? "chat-1";
@@ -88,7 +97,7 @@ export function mockEntry(
       inReplyTo: opts.inReplyTo ?? null,
       source: null,
       createdAt: new Date().toISOString(),
-      configVersion: 1,
+      configVersion: opts.configVersion ?? 1,
       recipientMode: opts.recipientMode ?? "full",
       precedingMessages: opts.precedingMessages ?? [],
     },
