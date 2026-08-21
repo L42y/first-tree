@@ -19,6 +19,7 @@ import type { ChatDetail, Message } from "@first-tree/shared";
 import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
+import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
 
@@ -27,7 +28,7 @@ const PAGE_SIZE = 50;
 export default function ChatDetailScreen() {
   const { chatId } = useLocalSearchParams<{ chatId: string }>();
   const router = useRouter();
-  const { user, memberId } = useAuth();
+  const { user, memberId, agentId: selfAgentId } = useAuth();
   const queryClient = useQueryClient();
   const listRef = useRef<FlatList<Message>>(null);
   const [message, setMessage] = useState("");
@@ -47,12 +48,29 @@ export default function ChatDetailScreen() {
     void markMeChatRead(chatId);
   }, [chatId]);
 
-  const participantNames = useCallback(
-    (senderId: string) => {
-      const participant = chatQuery.data?.participants.find((p) => p.agentId === senderId);
-      return participant?.displayName ?? senderId.slice(0, 8);
-    },
+  const findParticipant = useCallback(
+    (senderId: string) => chatQuery.data?.participants.find((p) => p.agentId === senderId),
     [chatQuery.data],
+  );
+
+  const participantNames = useCallback(
+    (senderId: string) => findParticipant(senderId)?.displayName ?? senderId.slice(0, 8),
+    [findParticipant],
+  );
+
+  const toBubbleAvatar = useCallback(
+    (senderId: string) => {
+      const p = findParticipant(senderId);
+      if (!p) return undefined;
+      return {
+        name: p.displayName,
+        seed: p.agentId,
+        colorToken: p.avatarColorToken ?? null,
+        imageUrl: p.avatarImageUrl ?? null,
+        kind: p.type === "human" ? ("human" as const) : ("agent" as const),
+      };
+    },
+    [findParticipant],
   );
 
   const handleSend = useCallback(async () => {
@@ -97,6 +115,14 @@ export default function ChatDetailScreen() {
         <Pressable onPress={() => router.back()} style={styles.backButton}>
           <Text style={styles.backText}>Back</Text>
         </Pressable>
+        <Avatar
+          name={chat?.participants.find((p) => p.agentId !== selfAgentId)?.displayName ?? chat?.title ?? chatId}
+          seed={chat?.participants.find((p) => p.agentId !== selfAgentId)?.agentId ?? chatId}
+          colorToken={chat?.participants.find((p) => p.agentId !== selfAgentId)?.avatarColorToken ?? null}
+          imageUrl={chat?.participants.find((p) => p.agentId !== selfAgentId)?.avatarImageUrl ?? null}
+          kind={chat?.participants.find((p) => p.agentId !== selfAgentId)?.type === "human" ? "human" : "agent"}
+          size={32}
+        />
         <View style={styles.headerText}>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {chat?.title ?? chatId.slice(0, 8)}
@@ -135,6 +161,7 @@ export default function ChatDetailScreen() {
             message={item}
             isMe={item.senderId === memberId || item.senderId === user?.id}
             senderName={participantNames(item.senderId)}
+            avatar={toBubbleAvatar(item.senderId)}
           />
         )}
         contentContainerStyle={styles.messages}

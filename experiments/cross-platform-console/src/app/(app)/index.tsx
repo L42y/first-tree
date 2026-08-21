@@ -26,7 +26,7 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
 }
 
 export default function ChatListScreen() {
-  const { logout, teamDisplayName, user } = useAuth();
+  const { logout, teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [refreshing, setRefreshing] = useState(false);
 
@@ -121,7 +121,7 @@ export default function ChatListScreen() {
       <FlatList
         data={rows}
         keyExtractor={(item) => item.chatId}
-        renderItem={({ item }) => <ChatListItem chat={item} />}
+        renderItem={({ item }) => <ChatListItem chat={item} selfAgentId={selfAgentId} />}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}

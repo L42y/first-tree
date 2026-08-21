@@ -31,8 +31,8 @@ type AuthContextValue = {
   currentMembership: MeMembership | null;
   organizationId: string | null;
   memberId: string | null;
-  role: string | null;
   agentId: string | null;
+  role: string | null;
   teamDisplayName: string | null;
   switchingOrg: OrgBrief | null;
   setSwitchingOrg: (org: OrgBrief | null) => void;
@@ -192,8 +192,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       currentMembership: membership,
       organizationId: membership?.organizationId ?? null,
       memberId: membership?.id ?? null,
-      role: membership?.role ?? null,
       agentId: membership?.agentId ?? null,
+      role: membership?.role ?? null,
       teamDisplayName: membership?.organizationName ?? null,
       switchingOrg,
       setSwitchingOrg,

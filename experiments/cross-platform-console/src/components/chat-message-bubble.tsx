@@ -1,15 +1,26 @@
 import { StyleSheet, Text, View } from "react-native";
 
 import type { Message } from "@first-tree/shared";
+import { Avatar, type AvatarKind } from "~/components/avatar";
 import { colors } from "~/lib/theme";
+
+export type BubbleAvatar = {
+  name: string;
+  seed: string;
+  colorToken: string | null;
+  imageUrl: string | null;
+  kind: AvatarKind;
+};
 
 type ChatMessageBubbleProps = {
   message: Message;
   isMe: boolean;
   senderName: string;
+  /** Sender identity for the leading avatar on incoming messages. */
+  avatar?: BubbleAvatar;
 };
 
-export function ChatMessageBubble({ message, isMe, senderName }: ChatMessageBubbleProps) {
+export function ChatMessageBubble({ message, isMe, senderName, avatar }: ChatMessageBubbleProps) {
   const content = typeof message.content === "string" ? message.content : "";
   const time = new Date(message.createdAt).toLocaleTimeString([], {
     hour: "2-digit",
@@ -18,6 +29,18 @@ export function ChatMessageBubble({ message, isMe, senderName }: ChatMessageBubb
 
   return (
     <View style={[styles.row, isMe ? styles.meRow : styles.otherRow]}>
+      {!isMe && (
+        <View style={styles.avatarSlot}>
+          <Avatar
+            name={avatar?.name ?? senderName}
+            seed={avatar?.seed ?? senderName}
+            colorToken={avatar?.colorToken ?? null}
+            imageUrl={avatar?.imageUrl ?? null}
+            kind={avatar?.kind ?? "agent"}
+            size={28}
+          />
+        </View>
+      )}
       <View style={[styles.bubble, isMe ? styles.meBubble : styles.otherBubble]}>
         {!isMe && (
           <Text style={styles.senderName} numberOfLines={1}>
@@ -42,6 +65,10 @@ const styles = StyleSheet.create({
   },
   otherRow: {
     justifyContent: "flex-start",
+  },
+  avatarSlot: {
+    alignSelf: "flex-end",
+    marginRight: 6,
   },
   bubble: {
     minWidth: 80,
