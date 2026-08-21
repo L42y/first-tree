@@ -1,0 +1,51 @@
+const config = {
+  name: "First Tree",
+  slug: "first-tree-cross-platform-console",
+  version: "0.1.0",
+  orientation: "default",
+  icon: "./assets/icon.png",
+  userInterfaceStyle: "automatic",
+  splash: {
+    image: "./assets/splash-icon.png",
+    resizeMode: "contain",
+    backgroundColor: "#E6F4FE",
+    dark: {
+      image: "./assets/splash-icon.png",
+      resizeMode: "contain",
+      backgroundColor: "#07151F",
+    },
+  },
+  assetBundlePatterns: ["**/*"],
+  ios: {
+    supportsTablet: true,
+    bundleIdentifier: "ai.firsttree.console",
+    requireFullScreen: true,
+    infoPlist: {
+      UIViewControllerBasedStatusBarAppearance: true,
+    },
+  },
+  android: {
+    adaptiveIcon: {
+      foregroundImage: "./assets/android-icon-foreground.png",
+      backgroundImage: "./assets/android-icon-background.png",
+      monochromeImage: "./assets/android-icon-monochrome.png",
+    },
+    package: "ai.firsttree.console",
+  },
+  web: {
+    bundler: "metro",
+    output: "static",
+    favicon: "./assets/favicon.png",
+  },
+  plugins: ["expo-router"],
+  experiments: {
+    typedRoutes: true,
+  },
+  extra: {
+    // Populated from environment at build time; never commit secrets.
+    posthogProjectToken: process.env.POSTHOG_PROJECT_TOKEN,
+    posthogHost: process.env.POSTHOG_HOST,
+  },
+};
+
+export default config;

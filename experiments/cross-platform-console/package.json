@@ -1,0 +1,45 @@
+{
+  "name": "@first-tree/cross-platform-console",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "dev": "expo start",
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:web": "expo export --platform web",
+    "typecheck": "tsc --noEmit",
+    "test": "echo \"No tests yet\" && exit 0",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.12",
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@tamagui/config": "^2.7.7",
+    "@tamagui/core": "^2.7.7",
+    "@tamagui/font-inter": "^2.7.7",
+    "@tamagui/themes": "^2.7.7",
+    "expo": "~57.0.15",
+    "expo-constants": "~57.0.0",
+    "expo-font": "~57.0.1",
+    "expo-linking": "~57.0.0",
+    "expo-router": "~57.0.15",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.9.0",
+    "react-native-screens": "~4.27.0",
+    "react-native-web": "~0.21.2",
+    "tamagui": "^2.7.7"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.2.18",
+    "typescript": "~5.8.0"
+  }
+}
