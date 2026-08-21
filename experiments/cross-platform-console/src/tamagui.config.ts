@@ -7,7 +7,7 @@ export const config = createTamagui({
     ...defaultConfig.settings,
     // Expo is client-only; skip the SSR double-render.
     disableSSR: true,
-    // Respect the user's system color scheme by default.
+    // Dark-first like first-tree.ai; the root layout pins the dark theme.
     shouldAddPrefersColorThemes: true,
   },
 });

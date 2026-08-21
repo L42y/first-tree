@@ -8,9 +8,57 @@ import type { WebViewNavigation } from "react-native-webview";
 /**
  * Native OAuth sheet: an in-app browser (react-native-webview) running the
  * exact flow the web console runs — server-signed state, provider consent,
- * fragment redirect. The WebView intercepts the completion navigation so
- * the token-bearing URL is never rendered.
+ * fragment redirect.
+ *
+ * Completion detection is layered, because engines differ in whether
+ * navigation callbacks expose URL fragments:
+ *
+ *  1. `onShouldStartLoadWithRequest` / `onNavigationStateChange` parse the
+ *     navigation URL when the fragment is visible there.
+ *  2. A document-start user script (injected BEFORE any page JS) samples
+ *     `location.href` synchronously — this is the reliable path on iOS,
+ *     because the completion page is a React SPA whose first effect calls
+ *     `history.replaceState` and wipes the fragment within milliseconds.
+ *  3. The same script keeps polling briefly in case injection timing slips.
+ *
+ * The token-bearing URL is never rendered as a page.
  */
+
+/**
+ * Runs at document start AND document end. Reports the completion URL via
+ * postMessage as soon as the location matches a server callback landing
+ * path. Only reports once a hash is present (the fragment IS part of the
+ * navigation URL at document start), with a bounded retry loop for late
+ * injections.
+ */
+const BRIDGE_JS = `
+(function() {
+  var RE = /^\\/auth\\/(github\\/|google\\/)?complete$/;
+  var attempts = 0;
+  var timer = null;
+  function report() {
+    try {
+      if (!RE.test(window.location.pathname)) return;
+      var hash = window.location.hash || '';
+      if (!hash) return;
+      window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
+        JSON.stringify({ type: 'oauth-complete', href: window.location.href })
+      );
+      stop();
+    } catch (e) {}
+  }
+  function stop() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }
+  report();
+  timer = setInterval(function() {
+    attempts += 1;
+    if (attempts > 40) { stop(); return; }
+    report();
+  }, 100);
+})();
+`;
+
 export function OAuthSheet(props: {
   provider: SignInProvider | null;
   onClose: () => void;
@@ -24,7 +72,8 @@ export function OAuthSheet(props: {
     if (completion) onComplete(completion);
   };
 
-  // First gate: never even load the token-bearing URL.
+  // First gate: never even load the token-bearing URL when the engine
+  // exposes the fragment here.
   const onShouldStartLoadWithRequest = (request: { url: string }) => {
     const completion = parseCompletionUrl(request.url);
     if (completion) {
@@ -33,25 +82,6 @@ export function OAuthSheet(props: {
     }
     return true;
   };
-
-  // Backup gate: some engines strip the fragment from navigation events,
-  // so ask the document for its real location once it lands.
-  const injectedJavaScript = `
-    (function() {
-      function report() {
-        try {
-          if (/^\\/auth\\/(github\\/|google\\/)?complete$/.test(window.location.pathname)) {
-            window.ReactNativeWebView && window.ReactNativeWebView.postMessage(
-              JSON.stringify({ type: 'oauth-complete', href: window.location.href })
-            );
-          }
-        } catch (e) {}
-      }
-      report();
-      setTimeout(report, 250);
-      true;
-    })();
-  `;
 
   const onMessage = (event: { nativeEvent: { data: string } }) => {
     try {
@@ -79,7 +109,8 @@ export function OAuthSheet(props: {
             source={{ uri: startUrl }}
             onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
             onNavigationStateChange={onNavigationStateChange}
-            injectedJavaScript={injectedJavaScript}
+            injectedJavaScriptBeforeContentLoaded={BRIDGE_JS}
+            injectedJavaScript={BRIDGE_JS}
             onMessage={onMessage}
             javaScriptEnabled
             style={styles.webView}
