@@ -473,7 +473,12 @@ export function copyAllSkillPayloads(options = {}) {
   }
   if (clean) rmSync(targetSkillsRoot, { recursive: true, force: true });
   cpSync(sourceSkillsRoot, targetSkillsRoot, { recursive: true });
-  const publicCount = directoryNames(sourceSkillsRoot).length;
+  // Hidden dot-directories (e.g. `.experimental`) are copied verbatim like
+  // any other source content, but they are not PUBLIC Skills, so they must
+  // not inflate the public count. Filter only here at the count site —
+  // `directoryNames` itself stays unfiltered because the private variant
+  // registry's exact-name assertions rely on its complete listing.
+  const publicCount = directoryNames(sourceSkillsRoot).filter((name) => !name.startsWith(".")).length;
   const variantCount = copyPrivateSkillVariants({ target });
   return { publicCount, variantCount };
 }

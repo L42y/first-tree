@@ -59,8 +59,12 @@ export function withFirstChatOrientationChatState(
  */
 
 /**
- * Source of truth for which github entity types the workspace UI knows
- * how to render. Drives `MeChatRow.entityType` (per-row sub-type, drives
+ * Source of truth for which GitHub entity types webhook cards, legacy rows,
+ * and the workspace UI know how to render. `commit` remains here for the
+ * `commit_comment` webhook surface and stored-row compatibility; the manual
+ * follow parser accepts only PRs, Issues, and Discussions.
+ *
+ * Drives `MeChatRow.entityType` (per-row sub-type, drives
  * the leading icon) and the `Github*Schema` discriminator below. The
  * `ChatSource` enum below does NOT branch on these — Phase C collapsed
  * the conversation-list origin filter to a single `github` value, and

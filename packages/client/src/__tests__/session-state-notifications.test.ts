@@ -152,17 +152,15 @@ describe("SessionRuntime: state notifications", () => {
     await sm.shutdown();
   });
 
-  it("does NOT emit a state notification when a session is LRU-evicted", async () => {
-    // LRU eviction is local-only: emitting any wire state on eviction would
-    // either accumulate stale rows in agent_chat_sessions (for `suspended`)
-    // or conflict with the server-authoritative `evicted` terminal. The row
-    // stays as last reported; local `evictedMappings` handles resume.
+  it("withdraws runtime and reports suspended when a session is LRU-evicted", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
+    const runtimeChanges: Array<{ chatId: string; state: RuntimeState }> = [];
     const capturing = createCapturingFactory();
     const sm = createSessionRuntime({
       session: { idle_timeout: 300, max_sessions: 2, working_grace_seconds: 3600, reconcile_interval_seconds: 300 },
       handlerFactory: capturing.factory,
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
+      onSessionRuntimeChange: (chatId, state) => runtimeChanges.push({ chatId, state }),
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
@@ -172,8 +170,48 @@ describe("SessionRuntime: state notifications", () => {
     await sm.dispatch(mockEntry({ id: 3, chatId: "chat-c" }));
 
     const chatAChanges = stateChanges.filter((c) => c.chatId === "chat-a");
-    // Only the initial `active` for chat-a should appear — no wire event on LRU.
-    expect(chatAChanges).toEqual([{ chatId: "chat-a", state: "active" }]);
+    expect(chatAChanges).toEqual([
+      { chatId: "chat-a", state: "active" },
+      { chatId: "chat-a", state: "suspended" },
+    ]);
+    // The prior projection was already idle. Removing it must still produce
+    // an observable, idempotent idle revocation instead of silently deleting
+    // the local map entry.
+    expect(runtimeChanges.filter((c) => c.chatId === "chat-a").at(-1)).toEqual({
+      chatId: "chat-a",
+      state: "idle",
+    });
+
+    await sm.shutdown();
+  });
+
+  it("emits idle before suspended when preemption removes a working projection", async () => {
+    const emissions: Array<{ chatId: string; kind: "state" | "runtime"; value: string }> = [];
+    const handlers = [
+      createMockHandler({
+        async start(message, _ctx, token) {
+          token.processingStarted(message);
+          return { sessionId: "session-chat-a", route: { kind: "owned" as const, mode: "queued" as const } };
+        },
+      }),
+      createMockHandler(),
+    ];
+    const sm = createSessionRuntime({
+      concurrency: 1,
+      handlerFactory: () => handlers.shift() ?? createMockHandler(),
+      onStateChange: (chatId, state) => emissions.push({ chatId, kind: "state", value: state }),
+      onSessionRuntimeChange: (chatId, state) => emissions.push({ chatId, kind: "runtime", value: state }),
+    });
+
+    await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
+    expect(emissions).toContainEqual({ chatId: "chat-a", kind: "runtime", value: "working" });
+
+    await sm.dispatch(mockEntry({ id: 2, chatId: "chat-b" }));
+
+    expect(emissions.filter((event) => event.chatId === "chat-a").slice(-2)).toEqual([
+      { chatId: "chat-a", kind: "runtime", value: "idle" },
+      { chatId: "chat-a", kind: "state", value: "suspended" },
+    ]);
 
     await sm.shutdown();
   });
@@ -375,23 +413,26 @@ describe("SessionRuntime: getEvictedChatIds()", () => {
 });
 
 describe("SessionRuntime: shutdown state reporting", () => {
-  it("reports active sessions as 'suspended' on shutdown", async () => {
-    const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
+  it("withdraws runtime before reporting active sessions as suspended on shutdown", async () => {
+    const emissions: Array<{ chatId: string; kind: "state" | "runtime"; value: string }> = [];
     const sm = createSessionRuntime({
-      onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
+      onStateChange: (chatId, state) => emissions.push({ chatId, kind: "state", value: state }),
+      onSessionRuntimeChange: (chatId, state) => emissions.push({ chatId, kind: "runtime", value: state }),
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
     await sm.dispatch(mockEntry({ id: 2, chatId: "chat-b" }));
 
-    // Clear state changes from start phase
-    stateChanges.length = 0;
+    emissions.length = 0;
 
     await sm.shutdown();
 
-    // Both active sessions should be reported as suspended
-    expect(stateChanges).toContainEqual({ chatId: "chat-a", state: "suspended" });
-    expect(stateChanges).toContainEqual({ chatId: "chat-b", state: "suspended" });
+    for (const chatId of ["chat-a", "chat-b"]) {
+      expect(emissions.filter((event) => event.chatId === chatId).slice(0, 2)).toEqual([
+        { chatId, kind: "runtime", value: "idle" },
+        { chatId, kind: "state", value: "suspended" },
+      ]);
+    }
   });
 
   it("does not report already-suspended sessions on shutdown", async () => {
@@ -420,20 +461,24 @@ describe("SessionRuntime: shutdown state reporting", () => {
 });
 
 describe("SessionRuntime: terminate + reconcile", () => {
-  it("handleCommand('session:terminate') deletes local state and does NOT emit any state notification", async () => {
+  it("handleCommand('session:terminate') withdraws runtime without inventing a client-owned terminal state", async () => {
     const stateChanges: Array<{ chatId: string; state: SessionState }> = [];
+    const runtimeChanges: Array<{ chatId: string; state: RuntimeState }> = [];
     const sm = createSessionRuntime({
       onStateChange: (chatId, state) => stateChanges.push({ chatId, state }),
+      onSessionRuntimeChange: (chatId, state) => runtimeChanges.push({ chatId, state }),
     });
 
     await sm.dispatch(mockEntry({ id: 1, chatId: "chat-a" }));
     stateChanges.length = 0;
+    runtimeChanges.length = 0;
 
     await sm.handleCommand("chat-a", "session:terminate");
     // Direct SessionRuntime callers simulate server-confirmed Reset finalization.
     sm.releaseParkedResetFenceRecovery("chat-a");
 
     expect(stateChanges).toHaveLength(0); // server is authoritative
+    expect(runtimeChanges).toEqual([{ chatId: "chat-a", state: "idle" }]);
     expect(sm.getSessionStates()).toEqual([]);
     expect(sm.getHeldChatIds()).toEqual([]);
 

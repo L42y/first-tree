@@ -413,7 +413,7 @@ export async function finalizeTerminatedSession(
 
   await db.transaction(async (tx) => {
     const [existing] = await tx
-      .select({ state: agentChatSessions.state })
+      .select({ state: agentChatSessions.state, runtimeState: agentChatSessions.runtimeState })
       .from(agentChatSessions)
       .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
       .for("update");
@@ -440,6 +440,12 @@ export async function finalizeTerminatedSession(
     }
 
     if (current === "evicted") {
+      if (existing.runtimeState !== "idle") {
+        await tx
+          .update(agentChatSessions)
+          .set({ runtimeState: "idle", runtimeStateAt: now, updatedAt: now })
+          .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
+      }
       await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
       return;
     }
@@ -447,7 +453,7 @@ export async function finalizeTerminatedSession(
 
     await tx
       .update(agentChatSessions)
-      .set({ state: "evicted", updatedAt: now })
+      .set({ state: "evicted", runtimeState: "idle", runtimeStateAt: now, updatedAt: now })
       .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
 
     await sessionEventService.clearEvents(tx as unknown as Database, agentId, chatId);
@@ -483,6 +489,7 @@ export async function finalizeTerminatedSession(
   // cache; the state itself changing is not the point.
   if (finalState === "evicted" && notifier) {
     notifier.notifySessionStateChange(agentId, chatId, "evicted", organizationId).catch(() => {});
+    notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
   }
 
   return { state: finalState, transitioned };
@@ -550,6 +557,7 @@ export async function archiveAllSessionsForAgent(
   if (notifier) {
     for (const row of rows) {
       notifier.notifySessionStateChange(agentId, row.chatId, "evicted", organizationId).catch(() => {});
+      notifier.notifySessionRuntime(agentId, row.chatId, "idle", organizationId).catch(() => {});
     }
   }
 
@@ -568,10 +576,11 @@ async function transitionSessionState(
   const now = new Date();
   let finalState: SessionState | null = null;
   let transitioned = false;
+  let projectionChanged = false;
 
   await db.transaction(async (tx) => {
     const [existing] = await tx
-      .select({ state: agentChatSessions.state })
+      .select({ state: agentChatSessions.state, runtimeState: agentChatSessions.runtimeState })
       .from(agentChatSessions)
       .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
       .for("update");
@@ -580,40 +589,51 @@ async function transitionSessionState(
     const current = existing.state as SessionState;
     finalState = current;
 
-    if (!from.includes(current)) return;
+    const canTransition = from.includes(current);
+    const resolvedState = canTransition ? target : current;
+    const mustRevokeRuntime = resolvedState !== "active" && existing.runtimeState !== "idle";
+    if (!canTransition && !mustRevokeRuntime) return;
 
     await tx
       .update(agentChatSessions)
-      .set({ state: target, updatedAt: now })
+      .set(
+        canTransition
+          ? { state: target, runtimeState: "idle", runtimeStateAt: now, updatedAt: now }
+          : { runtimeState: "idle", runtimeStateAt: now, updatedAt: now },
+      )
       .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
 
-    const [counts] = await tx
-      .select({
-        active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
-        total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
-      })
-      .from(agentChatSessions)
-      .where(eq(agentChatSessions.agentId, agentId));
+    if (canTransition) {
+      const [counts] = await tx
+        .select({
+          active: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} = 'active')::int`,
+          total: sql<number>`count(*) FILTER (WHERE ${agentChatSessions.state} != 'evicted')::int`,
+        })
+        .from(agentChatSessions)
+        .where(eq(agentChatSessions.agentId, agentId));
 
-    await tx
-      .update(agentPresence)
-      .set({
-        activeSessions: counts?.active ?? 0,
-        totalSessions: counts?.total ?? 0,
-        lastSeenAt: now,
-      })
-      .where(eq(agentPresence.agentId, agentId));
+      await tx
+        .update(agentPresence)
+        .set({
+          activeSessions: counts?.active ?? 0,
+          totalSessions: counts?.total ?? 0,
+          lastSeenAt: now,
+        })
+        .where(eq(agentPresence.agentId, agentId));
+    }
 
-    finalState = target;
-    transitioned = true;
+    finalState = resolvedState;
+    transitioned = canTransition;
+    projectionChanged = true;
   });
 
   if (finalState === null) {
     throw new NotFoundError(`Session (${agentId}, ${chatId}) not found`);
   }
 
-  if (transitioned && notifier) {
-    notifier.notifySessionStateChange(agentId, chatId, target, organizationId).catch(() => {});
+  if (projectionChanged && notifier) {
+    notifier.notifySessionStateChange(agentId, chatId, finalState, organizationId).catch(() => {});
+    notifier.notifySessionRuntime(agentId, chatId, "idle", organizationId).catch(() => {});
   }
 
   return { state: finalState, transitioned };

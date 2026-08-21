@@ -131,13 +131,11 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
 
     const humanAgentId = await requireCallerHumanAgentId(app, user.userId, identity.organizationId);
 
-    const chatIds = await chatService.listActiveRuntimeChatIds(
-      app.db,
-      identity.uuid,
-      humanAgentId,
-      identity.organizationId,
-    );
-    return activeRuntimeChatIdsResponseSchema.parse({ chatIds });
+    const [chatIds, activeSessionChatIds] = await Promise.all([
+      chatService.listActiveRuntimeChatIds(app.db, identity.uuid, humanAgentId, identity.organizationId),
+      chatService.listActiveSessionChatIds(app.db, identity.uuid, identity.organizationId),
+    ]);
+    return activeRuntimeChatIdsResponseSchema.parse({ chatIds, activeSessionChatIds });
   });
 
   /**
@@ -329,7 +327,7 @@ export async function agentChatRoutes(app: FastifyInstance): Promise<void> {
       await chatService.assertParticipant(app.db, request.params.chatId, identity.uuid);
       const entity = request.query.entity;
       if (!entity) {
-        throw new BadRequestError("Pass ?entity=<GitHub URL | owner/repo#N | owner/repo@sha> to unfollow.");
+        throw new BadRequestError("Pass ?entity=<GitHub PR/Issue/Discussion URL | owner/repo#N> to unfollow.");
       }
       return removeEntityFollow(app.db, { chatId: request.params.chatId, entity });
     },

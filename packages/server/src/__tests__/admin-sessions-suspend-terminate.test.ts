@@ -43,6 +43,24 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     return row?.state ?? null;
   }
 
+  async function setRuntimeState(app: FastifyInstance, agentId: string, chatId: string, runtimeState: string) {
+    const { and, eq } = await import("drizzle-orm");
+    await app.db
+      .update(agentChatSessions)
+      .set({ runtimeState, runtimeStateAt: new Date() })
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
+  }
+
+  async function readRuntimeState(app: FastifyInstance, agentId: string, chatId: string): Promise<string | null> {
+    const { and, eq } = await import("drizzle-orm");
+    const [row] = await app.db
+      .select({ runtimeState: agentChatSessions.runtimeState })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    return row?.runtimeState ?? null;
+  }
+
   it("Suspend on an active row transitions to suspended and returns 200 { transitioned: true }", async () => {
     const app = getApp();
     const admin = await createAdminContext(app, { username: `suspend-a-${crypto.randomUUID().slice(0, 6)}` });
@@ -55,6 +73,8 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     });
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, "active");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
+    const runtimeNotify = vi.spyOn(app.notifier, "notifySessionRuntime");
 
     const res = await app.inject({
       method: "POST",
@@ -66,6 +86,9 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect(body).toMatchObject({ agentId: agent.uuid, chatId: chat.id, state: "suspended", transitioned: true });
 
     expect(await readState(app, agent.uuid, chat.id)).toBe("suspended");
+    expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
+    expect(runtimeNotify).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
+    runtimeNotify.mockRestore();
   });
 
   it("Suspend on an already-suspended row is a no-op 200 { transitioned: false }", async () => {
@@ -80,6 +103,8 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     });
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, "suspended");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
+    const runtimeNotify = vi.spyOn(app.notifier, "notifySessionRuntime");
 
     const res = await app.inject({
       method: "POST",
@@ -88,6 +113,9 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ state: "suspended", transitioned: false });
+    expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
+    expect(runtimeNotify).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
+    runtimeNotify.mockRestore();
   });
 
   it("Suspend reports delivered: true and sends session:suspend when the client is connected", async () => {
@@ -160,6 +188,7 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     });
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, "suspended");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
 
     const ws = { readyState: 1, send: vi.fn(), close: vi.fn() };
     setClientConnection(admin.clientId, ws as unknown as WebSocket);
@@ -192,6 +221,7 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     });
     const chat = await createChat(app.db, admin.humanAgentUuid, { type: "group", participantIds: [agent.uuid] });
     await seedSession(app, agent.uuid, chat.id, "suspended");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
     await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
       kind: "error",
       payload: { source: "sdk", message: "pre-terminate event" },
@@ -206,6 +236,7 @@ describe("Admin sessions — Suspend / Terminate (server-authoritative)", () => 
     expect(res.json()).toMatchObject({ state: "evicted", transitioned: true });
 
     expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+    expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
 
     // clearEvents is awaited before the success response, so by the time the
     // client can react (and refetch) the live trace is already gone.
@@ -696,6 +727,24 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     return row?.state ?? null;
   }
 
+  async function setRuntimeState(app: FastifyInstance, agentId: string, chatId: string, runtimeState: string) {
+    const { and, eq } = await import("drizzle-orm");
+    await app.db
+      .update(agentChatSessions)
+      .set({ runtimeState, runtimeStateAt: new Date() })
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)));
+  }
+
+  async function readRuntimeState(app: FastifyInstance, agentId: string, chatId: string): Promise<string | null> {
+    const { and, eq } = await import("drizzle-orm");
+    const [row] = await app.db
+      .select({ runtimeState: agentChatSessions.runtimeState })
+      .from(agentChatSessions)
+      .where(and(eq(agentChatSessions.agentId, agentId), eq(agentChatSessions.chatId, chatId)))
+      .limit(1);
+    return row?.runtimeState ?? null;
+  }
+
   const LOCAL_INSTANCE = "test-instance";
   const REMOTE_INSTANCE = "remote-instance";
 
@@ -868,6 +917,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
 
   it("holds the request until the ack, then atomically evicts and clears events", async () => {
     const { app, admin, agent, chat, ws } = await setup("suspended");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
     await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
       kind: "error",
       payload: { source: "sdk", message: "pre-reset event" },
@@ -887,6 +937,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ state: "evicted", transitioned: true, delivered: true, applied: true });
       expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+      expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
       // Cleanup committed with the transition — no polling.
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
     } finally {
@@ -925,11 +976,13 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
     // waitForApply path must NOT fast-path success: it re-sends a ref'd
     // terminate, waits for a real ack, and only then reports evicted.
     const { app, admin, agent, chat, ws } = await setup("evicted");
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
     await sessionEventService.appendEvent(app.db, agent.uuid, chat.id, {
       kind: "error",
       payload: { source: "sdk", message: "leftover trace" },
     });
     const notifySpy = vi.spyOn(app.notifier, "notifySessionStateChange");
+    const runtimeNotifySpy = vi.spyOn(app.notifier, "notifySessionRuntime");
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());
@@ -939,6 +992,7 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       const res = await pending;
       expect(res.statusCode).toBe(200);
       expect(res.json()).toMatchObject({ state: "evicted", transitioned: false, applied: true });
+      expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
       // The idempotent finalize re-cleared the leftover trace.
       expect((await sessionEventService.listEvents(app.db, agent.uuid, chat.id, { limit: 10 })).items).toEqual([]);
       // …and still broadcast the eviction so every other open viewer drops
@@ -946,8 +1000,10 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
       await vi.waitFor(() =>
         expect(notifySpy).toHaveBeenCalledWith(agent.uuid, chat.id, "evicted", admin.organizationId),
       );
+      expect(runtimeNotifySpy).toHaveBeenCalledWith(agent.uuid, chat.id, "idle", admin.organizationId);
     } finally {
       notifySpy.mockRestore();
+      runtimeNotifySpy.mockRestore();
       cleanup(admin, ws);
     }
   });
@@ -955,8 +1011,10 @@ describe("Terminate with apply-ack (?waitForApply=true) — the Web Reset path",
   it("an evicted row produced by archiveAllSessionsForAgent also requires a fresh ack", async () => {
     const { app, admin, agent, chat, ws } = await setup("suspended");
     // Runtime-switch style eviction: no apply-ack was ever involved.
+    await setRuntimeState(app, agent.uuid, chat.id, "working");
     await sessionService.archiveAllSessionsForAgent(app.db, agent.uuid, admin.organizationId, app.notifier);
     expect(await readState(app, agent.uuid, chat.id)).toBe("evicted");
+    expect(await readRuntimeState(app, agent.uuid, chat.id)).toBe("idle");
     try {
       const pending = terminateReq(app, admin, agent.uuid, chat.id);
       await vi.waitFor(() => expect(ws.send).toHaveBeenCalled());

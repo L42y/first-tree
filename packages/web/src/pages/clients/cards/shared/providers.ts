@@ -14,6 +14,7 @@ import {
   runtimeProviderInteractiveLoginCue,
   runtimeProviderLabel,
   runtimeProviderLoginCommand,
+  runtimeProviderPreferredCredentialProse,
   runtimeProviderShowsHostLoginOnSetup,
 } from "@first-tree/shared";
 
@@ -74,6 +75,12 @@ export function buildInstallCommand(provider: RuntimeProvider, os?: string | nul
     return runtimeProviderComputerSetupCommand(provider, [
       tmuxCmd ?? "# install tmux (>= 3.0) with your OS package manager",
     ]);
+  }
+  if (provider === "deepseek-harness") {
+    // loginSteps stays the copy-pasteable host export; preferredCredential
+    // prose is a comment so the command block remains executable.
+    const preferred = runtimeProviderPreferredCredentialProse(provider);
+    return runtimeProviderComputerSetupCommand(provider, preferred ? [`# preferred: ${preferred}`] : []);
   }
   return runtimeProviderComputerSetupCommand(provider);
 }
@@ -177,6 +184,15 @@ export function providerInstallHint(
     }
     case "amp":
       return `Run \`${AMP_INSTALL_COMMAND}\` on this ${device} (official Amp installer), then complete provider-owned setup with \`${loginCmd}\`.`;
+    case "deepseek-harness": {
+      const preferred =
+        runtimeProviderPreferredCredentialProse(provider) ??
+        `set \`DEEPSEEK_API_KEY\` on the agent's Runtime → Environment variables and Mark as sensitive`;
+      return (
+        `Install the bundled DeepSeek Harness packages with \`${installCmd}\` on this ${device}, ` +
+        `then ${preferred} (or export it in the host shell that runs First Tree).`
+      );
+    }
     case "cursor":
       return `Run \`${CURSOR_INSTALL_COMMAND}\` on this ${device} (official Cursor installer).`;
     case "grok":

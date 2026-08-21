@@ -9,6 +9,7 @@ import {
   DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CODEX_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_CURSOR_RUNTIME_CONFIG_PAYLOAD,
+  DEFAULT_DEEPSEEK_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_GROK_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_KIMI_CODE_RUNTIME_CONFIG_PAYLOAD,
   DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD,
@@ -159,6 +160,10 @@ describe("agent runtime config — codex defaults", () => {
     });
     expect(defaultRuntimeConfigPayload("amp")).toMatchObject({
       kind: "amp",
+      model: "",
+    });
+    expect(defaultRuntimeConfigPayload("deepseek-harness")).toMatchObject({
+      kind: "deepseek-harness",
       model: "",
     });
   });
@@ -321,6 +326,7 @@ describe("agent runtime config — amp variant", () => {
   it("defaults to host-local mode selection with no reasoning-effort field", () => {
     expect(DEFAULT_AMP_RUNTIME_CONFIG_PAYLOAD).toMatchObject({ kind: "amp", model: "" });
     expect("reasoningEffort" in DEFAULT_AMP_RUNTIME_CONFIG_PAYLOAD).toBe(false);
+    expect(DEFAULT_DEEPSEEK_RUNTIME_CONFIG_PAYLOAD).toMatchObject({ kind: "deepseek-harness", model: "" });
     expect(defaultRuntimeConfigPayload("amp")).toMatchObject({ kind: "amp", model: "" });
   });
 

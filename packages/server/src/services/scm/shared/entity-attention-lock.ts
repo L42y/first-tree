@@ -7,10 +7,8 @@ export type ScmEntityAttentionLock = {
   entityKey: string;
 };
 
-/** Commit refs may be abbreviated by unfollow, so serialize them per repo. */
 export function githubEntityAttentionLockKey(entityKey: string): string {
-  const commitSeparator = entityKey.lastIndexOf("@");
-  return commitSeparator > 0 ? `${entityKey.slice(0, commitSeparator)}@commit` : entityKey;
+  return entityKey;
 }
 
 export function gitlabPathEntityAttentionLockKey(

@@ -882,6 +882,28 @@ describe("verified copies", () => {
     });
   });
 
+  it("copies hidden dot-directories verbatim but never counts them as public skills", () => {
+    const parent = tempDir("first-tree-skill-target-hidden-");
+
+    withTrustedSkillsTarget({ trustedParentDir: parent }, (capability) => {
+      const result = copyAllSkillPayloads({ target: capability, clean: true });
+      const sourceNames = readdirSync(capability.sourceSkillsRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name);
+      const hidden = sourceNames.filter((name) => name.startsWith("."));
+      // The count is exactly the non-hidden source directories, whatever the
+      // repo currently carries — no hidden directory may inflate it.
+      expect(result.publicCount).toBe(sourceNames.length - hidden.length);
+      // Hidden directories still ride the verbatim copy (e.g. `.experimental`)
+      // — excluded from the count, never from the payload.
+      for (const name of hidden) {
+        expect(existsSync(join(capability.targetSkillsRoot, name)), `hidden directory ${name} must be copied`).toBe(
+          true,
+        );
+      }
+    });
+  });
+
   it("supports resetSkillsTarget plus a variants-only copy", () => {
     const parent = tempDir("first-tree-skill-target-variants-");
 

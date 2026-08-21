@@ -56,12 +56,7 @@ describe("service branch contracts", () => {
       number: 42,
       explicitType: "pull_request",
     });
-    expect(parseEntityReference("acme/repo@ABCDEF123456")).toEqual({
-      kind: "commit",
-      owner: "acme",
-      repo: "repo",
-      sha: "abcdef123456",
-    });
+    expect(parseEntityReference("acme/repo@ABCDEF123456")).toBeNull();
     expect(parseEntityReference("not an entity")).toBeNull();
 
     expect(githubEntityKeyCandidates("discussion", "acme/repo#discussion-7")).toEqual([

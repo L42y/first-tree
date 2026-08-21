@@ -125,10 +125,15 @@ Subscribe the GitHub App to:
 - `issue_comment`
 - `pull_request`
 - `pull_request_review`
-- `push`
+- `pull_request_review_comment`
+- `discussion`
+- `discussion_comment`
+- `commit_comment`
 - `installation`
 - `installation_repositories`
-- `member`
+
+`push` and `member` may remain subscribed for future use, but the current
+normalizer intentionally produces no fanout for them.
 
 The server also accepts GitHub's `ping` event on the same webhook endpoint.
 

@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
+import { agentChatSessions } from "../db/schema/agent-chat-sessions.js";
 import { chatMembership } from "../db/schema/chat-membership.js";
 import { chatUserState } from "../db/schema/chat-user-state.js";
 import { chats } from "../db/schema/chats.js";
@@ -35,7 +36,7 @@ describe("Agent Chats API", () => {
     expect(getRes.json().id).toBe(chat.id);
   });
 
-  it("lists active runtime chat ids for the current human scope", async () => {
+  it("lists the human runtime set separately from every active server session", async () => {
     const app = getApp();
     const runtime = await createTestAgent(app, { name: "active-runtime-route" });
     const active = await createMeChat(app.db, runtime.humanAgentUuid, runtime.organizationId, {
@@ -47,16 +48,36 @@ describe("Agent Chats API", () => {
     const deleted = await createMeChat(app.db, runtime.humanAgentUuid, runtime.organizationId, {
       participantIds: [runtime.agent.uuid],
     });
+    const outsider = await createTestAdmin(app, { username: `runtime-outsider-${crypto.randomUUID().slice(0, 6)}` });
+    const hidden = await createMeChat(app.db, outsider.humanAgentUuid, runtime.organizationId, {
+      participantIds: [runtime.agent.uuid],
+    });
+    await app.db
+      .delete(chatMembership)
+      .where(and(eq(chatMembership.chatId, hidden.chatId), eq(chatMembership.agentId, runtime.humanAgentUuid)));
     await setChatEngagement(app.db, archived.chatId, runtime.humanAgentUuid, "archived");
     await setChatEngagement(app.db, deleted.chatId, runtime.humanAgentUuid, "deleted");
+    await app.db.insert(agentChatSessions).values(
+      [active.chatId, archived.chatId, deleted.chatId, hidden.chatId].map((chatId) => ({
+        agentId: runtime.agent.uuid,
+        chatId,
+        state: "active",
+        runtimeState: "working",
+        runtimeStateAt: new Date(),
+      })),
+    );
 
     const res = await runtime.request("GET", "/api/v1/agent/chats/active-runtime-ids");
 
     expect(res.statusCode).toBe(200);
-    const body = res.json<{ chatIds: string[] }>();
+    const body = res.json<{ chatIds: string[]; activeSessionChatIds: string[] }>();
     expect(body.chatIds).toContain(active.chatId);
     expect(body.chatIds).not.toContain(archived.chatId);
     expect(body.chatIds).not.toContain(deleted.chatId);
+    expect(body.chatIds).not.toContain(hidden.chatId);
+    expect(body.activeSessionChatIds).toEqual(
+      expect.arrayContaining([active.chatId, archived.chatId, deleted.chatId, hidden.chatId]),
+    );
   });
 
   it("creates a task chat with an initial message, woken recipients, and silent context participants", async () => {
