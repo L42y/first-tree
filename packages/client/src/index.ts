@@ -63,6 +63,7 @@ export {
   resolveClaudeLoginInvocation,
   runClaudeBrowserLogin,
 } from "./providers/claude/login.js";
+export { onCodexVerifiedAutomaticCandidateChange } from "./providers/codex/binary.js";
 export {
   type CodexBinaryResolution,
   probeCodexCapability,

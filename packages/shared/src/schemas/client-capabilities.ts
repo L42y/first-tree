@@ -68,7 +68,13 @@ export const capabilityEntrySchema = z.object({
   sdkVersion: z.string().nullable().optional(),
   /** Which artifact backs the runtime (bundled binary vs external-path fallback). */
   runtimeSource: capabilityRuntimeSourceSchema.optional(),
-  /** Absolute path of the resolved binary, when `runtimeSource: "path"`. */
+  /**
+   * Absolute path of the runtime-verified external binary, when known. An
+   * install-only probe may report `runtimeSource: "path"` without this field
+   * before the runtime has selected a candidate, or after that selection was
+   * invalidated; probes must not present an existence-only candidate as if it
+   * had already been launch-verified.
+   */
   runtimePath: z.string().nullable().optional(),
   /**
    * Human-readable failure reason for a non-`ok` state — for `missing`, which

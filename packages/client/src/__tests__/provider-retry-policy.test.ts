@@ -232,6 +232,34 @@ describe("classifyProviderFailure", () => {
     ).toMatchObject({ action: "retry" });
   });
 
+  it("a bounded all-candidate Codex launch failure stops as a user-actionable capability error", () => {
+    const err = new Error(
+      "Codex runtime binary candidates are installed but unusable. Checked: `/Users/test/.npm-global/bin/codex` (`codex --version` killed by SIGKILL). Upgrade or replace the failing Codex installation.",
+    );
+    err.name = "CodexBinaryUnusableError";
+    const classification = classifyProviderFailure(err, {
+      provider: "codex",
+      scope: "session_start",
+      source: "session",
+    });
+    expect(classification).toMatchObject({
+      category: "capability",
+      reasonCode: "codex_binary_unusable",
+    });
+    expect(
+      decideProviderRetry({
+        classification,
+        scope: "session_start",
+        attempt: 3,
+        replaySafety: "pre_provider",
+      }),
+    ).toMatchObject({
+      action: "stop",
+      reasonCode: "codex_binary_unusable",
+      terminalKind: "needs_operator",
+    });
+  });
+
   it("classifies Grok Build logged-out phrasings as credential, grok-gated", () => {
     for (const message of [
       "Error: not logged in. Run `grok login` to authenticate.",

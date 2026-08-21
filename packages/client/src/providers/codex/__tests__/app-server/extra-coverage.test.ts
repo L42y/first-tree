@@ -11,6 +11,7 @@ import type { AgentConfigCache } from "../../../../runtime/agent-config-cache.js
 import { setCliBinding } from "../../../../runtime/cli-binding.js";
 import type { DeliveryToken, SessionContext, SessionMessage } from "../../../../runtime/handler.js";
 import { noopDeliveryToken } from "../../../../runtime/handler.js";
+import { classifyProviderFailure } from "../../../../runtime/provider-retry-policy.js";
 import {
   CodexAppServerClient,
   type CodexAppServerClientOptions,
@@ -25,6 +26,7 @@ import {
   createWorkspaceOnlySpawnProcess,
   landingCodexDenyPaths,
 } from "../../app-server/workspace-sandbox.js";
+import { CodexBinaryVerifyTransientError } from "../../binary.js";
 
 vi.mock("../../../../runtime/bootstrap.js", () => ({
   FIRST_TREE_RUNTIME_DIR: ".first-tree-workspace",
@@ -578,14 +580,31 @@ describe("codex app-server handler extra branches", () => {
       message: expect.stringContaining("resolver exploded"),
     });
 
+    const transientCause = new CodexBinaryVerifyTransientError("candidate A timed out");
     const resolveFailure = makeHandler(new FakeAppServerClient(), {
-      codexRuntimeBinaryResolver: async () => ({ ok: false, error: "missing codex binary" }),
+      codexRuntimeBinaryResolver: async () => ({
+        ok: false,
+        error: transientCause.message,
+        cause: transientCause,
+      }),
     });
-    await expect(
-      resolveFailure.start(makeMessage("m1", "first"), makeContext(), noopDeliveryToken()),
-    ).rejects.toMatchObject({
+    const resolveFailureError = await resolveFailure
+      .start(makeMessage("m1", "first"), makeContext(), noopDeliveryToken())
+      .catch((err) => err);
+    expect(resolveFailureError).toMatchObject({
       stage: "resolve-binary",
-      message: expect.stringContaining("missing codex binary"),
+      message: expect.stringContaining("candidate A timed out"),
+      cause: transientCause,
+    });
+    expect(
+      classifyProviderFailure(resolveFailureError, {
+        provider: "codex",
+        scope: "session_start",
+        source: "session",
+      }),
+    ).toMatchObject({
+      category: "transient_transport",
+      reasonCode: "codex_verify_transient",
     });
 
     const initializeFailure = makeHandler(new FakeAppServerClient(), {

@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,7 +20,11 @@ import {
 } from "../providers/claude/capability.js";
 import { probeClaudeCodeTuiCapability } from "../providers/claude/capability-tui.js";
 import type { ClaudeExecutableResolution } from "../providers/claude/executable.js";
-import type { CodexExecutableVerification } from "../providers/codex/binary.js";
+import {
+  type CodexExecutableVerification,
+  createCodexAutomaticResolutionFailureTracker,
+  createCodexVerifiedAutomaticCandidateTracker,
+} from "../providers/codex/binary.js";
 import {
   probeCodexCapability,
   resolveBundledBinaryInPackageRoot,
@@ -419,17 +423,76 @@ describe("probeCodexCapability (install-only)", () => {
   });
 
   it("`ok` (runtimeSource path) when the bundle is missing but a system codex is on PATH", async () => {
-    const entry = await probeCodexCapability({
+    const root = mkdtempSync(join(tmpdir(), "ft-codex-install-only-"));
+    try {
+      const candidate = join(root, "codex");
+      const launchMarker = `${candidate}.launched`;
+      writeFileSync(candidate, '#!/bin/sh\ntouch "$0.launched"\n');
+      chmodSync(candidate, 0o755);
+
+      const entry = await probeCodexCapability({
+        resolveBundled: bundledMissing,
+        findOnPath: () => candidate,
+        env: {},
+      });
+      expect(entry).toMatchObject({
+        state: "ok",
+        available: true,
+        runtimeSource: "path",
+      });
+      expect(entry).not.toHaveProperty("runtimePath");
+      expect(existsSync(launchMarker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("never launch-verifies during probing and later reports the runtime-verified Desktop candidate", async () => {
+    const staleGlobal = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const candidates = () => [staleGlobal, desktop];
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
+    const verifyPath = vi.fn(
+      (path: string): CodexExecutableVerification =>
+        path === staleGlobal
+          ? { ok: false, transient: false, reason: "`codex --version` killed by SIGILL" }
+          : { ok: true, output: "codex 0.146.0" },
+    );
+
+    const beforeRuntime = await probeCodexCapability({
       resolveBundled: bundledMissing,
-      findOnPath: () => "/usr/local/bin/codex",
+      findCandidates: candidates,
+      verifiedCandidateTracker,
       env: {},
     });
-    expect(entry).toMatchObject({
+    expect(beforeRuntime).toMatchObject({ state: "ok", available: true, runtimeSource: "path" });
+    expect(beforeRuntime).not.toHaveProperty("runtimePath");
+    expect(verifyPath).not.toHaveBeenCalled();
+
+    const runtime = await resolveCodexRuntimeBinary(
+      {},
+      {
+        resolveBundled: bundledMissing,
+        findCandidates: candidates,
+        verifyPath,
+        verifiedCandidateTracker,
+      },
+    );
+    const afterRuntime = await probeCodexCapability({
+      resolveBundled: bundledMissing,
+      findCandidates: candidates,
+      verifiedCandidateTracker,
+      env: {},
+    });
+
+    expect(afterRuntime).toMatchObject({
       state: "ok",
       available: true,
       runtimeSource: "path",
-      runtimePath: "/usr/local/bin/codex",
+      runtimePath: desktop,
     });
+    expect(runtime).toMatchObject({ ok: true, binary: desktop, runtimePath: desktop });
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([staleGlobal, desktop]);
   });
 
   it("`missing` when neither the bundle nor a PATH codex resolves, with the binary-missing message", async () => {
@@ -659,6 +722,47 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     });
   });
 
+  it("bundle NOT found → skips a broken PATH candidate and resolves the healthy Desktop path for login", async () => {
+    const pathBinary = "/Users/test/.npm-global/bin/codex";
+    const desktopBinary = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const verifyPath = vi.fn(
+      (path: string): CodexExecutableVerification =>
+        path === pathBinary
+          ? { ok: false, transient: false, reason: "`codex --version` exited 1: revoked" }
+          : { ok: true, output: "codex 0.146.0-alpha.3" },
+    );
+    const res = await resolveCodexRuntimeBinary(
+      {},
+      { resolveBundled: notFound, findCandidates: () => [pathBinary, desktopBinary], verifyPath },
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      runtimeSource: "path",
+      binary: desktopBinary,
+      runtimePath: desktopBinary,
+      version: "0.146.0",
+    });
+    expect(verifyPath.mock.calls.map(([path]) => path)).toEqual([pathBinary, desktopBinary]);
+  });
+
+  it("bundle NOT found → a transient first-candidate flake still falls through to a healthy later path", async () => {
+    const first = "/daemon/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const res = await resolveCodexRuntimeBinary(
+      {},
+      {
+        resolveBundled: notFound,
+        findCandidates: () => [first, desktop],
+        verifyPath: (path) =>
+          path === first
+            ? { ok: false, transient: true, reason: "`codex --version` timed out" }
+            : { ok: true, output: "codex 0.146.0" },
+      },
+    );
+    expect(res).toMatchObject({ ok: true, binary: desktop, runtimePath: desktop });
+  });
+
   it("keeps a validated PATH codex available when its version output has no semantic version", async () => {
     const verifyPath = (): CodexExecutableVerification => ({ ok: true, output: "codex dev build" });
     const res = await resolveCodexRuntimeBinary(
@@ -674,7 +778,7 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     });
   });
 
-  it("bundle NOT found + PATH codex non-transient validation failure → binary-missing", async () => {
+  it("bundle NOT found + PATH codex non-transient validation failure → path-bearing unusable error", async () => {
     const verifyPath = (): CodexExecutableVerification => ({
       ok: false,
       transient: false,
@@ -685,7 +789,12 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
       { resolveBundled: notFound, findOnPath: () => "/usr/local/bin/codex", verifyPath },
     );
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toContain("Codex runtime binary is missing");
+    if (!res.ok) {
+      expect(res.error).toContain("binary candidates are installed but unusable");
+      expect(res.error).toContain("/usr/local/bin/codex");
+      expect(res.error).toContain("Upgrade or replace");
+      expect(res.error).not.toContain("binary is missing");
+    }
   });
 
   it("bundle NOT found + PATH codex TRANSIENT validation flake → NOT binary-missing", async () => {
@@ -704,6 +813,70 @@ describe("resolveCodexRuntimeBinary (handler-contract parity)", () => {
     if (!res.ok) {
       expect(res.error).not.toContain("Codex runtime binary is missing");
       expect(res.error).toContain("transient host condition");
+      expect(res.cause).toBeInstanceOf(Error);
+      expect(res.cause?.name).toBe("CodexBinaryVerifyTransientError");
+    }
+  });
+
+  it("clears a rejected verified path even when a later candidate keeps the aggregate result transient", async () => {
+    const staleGlobal = "/Users/test/.npm-global/bin/codex";
+    const desktop = "/Applications/ChatGPT.app/Contents/Resources/codex";
+    const verifiedCandidateTracker = createCodexVerifiedAutomaticCandidateTracker();
+    verifiedCandidateTracker.record(staleGlobal);
+    const candidates = () => [staleGlobal, desktop];
+
+    const resolution = await resolveCodexRuntimeBinary(
+      { FIRST_TREE_CHAT_ID: "chat-runtime-mixed-rejection" },
+      {
+        resolveBundled: notFound,
+        findCandidates: candidates,
+        verifyPath: (path) =>
+          path === staleGlobal
+            ? { ok: false, transient: false, reason: "revoked binary" }
+            : { ok: false, transient: true, reason: "Desktop cold-start timeout" },
+        verifiedCandidateTracker,
+      },
+    );
+    const capability = await probeCodexCapability({
+      resolveBundled: notFound,
+      findCandidates: candidates,
+      verifiedCandidateTracker,
+      env: {},
+    });
+
+    expect(resolution).toMatchObject({ ok: false, cause: { name: "CodexBinaryVerifyTransientError" } });
+    expect(verifiedCandidateTracker.get()).toBeNull();
+    expect(capability).toMatchObject({ state: "ok", available: true, runtimeSource: "path" });
+    expect(capability).not.toHaveProperty("runtimePath");
+  });
+
+  it("bounds repeated identical runtime-resolver failures for forced app-server startup", async () => {
+    const tracker = createCodexAutomaticResolutionFailureTracker();
+    const pathBinary = "/Users/test/.npm-global/bin/codex";
+    const deps = {
+      resolveBundled: notFound,
+      findCandidates: () => [pathBinary],
+      verifyPath: (): CodexExecutableVerification => ({
+        ok: false,
+        transient: true,
+        reason: "`codex --version` killed by SIGKILL",
+      }),
+      failureTracker: tracker,
+    };
+
+    const first = await resolveCodexRuntimeBinary({ FIRST_TREE_CHAT_ID: "chat-app-server-bounded" }, deps);
+    const second = await resolveCodexRuntimeBinary({ FIRST_TREE_CHAT_ID: "chat-app-server-bounded" }, deps);
+    const third = await resolveCodexRuntimeBinary({ FIRST_TREE_CHAT_ID: "chat-app-server-bounded" }, deps);
+    expect(first).toMatchObject({ ok: false, error: expect.stringContaining("transient host condition") });
+    expect(second).toMatchObject({ ok: false, error: expect.stringContaining("transient host condition") });
+    expect(third).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("same automatic-candidate launch result repeated 3 times"),
+    });
+    if (!third.ok) {
+      expect(third.error).toContain(pathBinary);
+      expect(third.error).toContain("Upgrade or replace");
+      expect(third.cause?.name).toBe("CodexBinaryUnusableError");
     }
   });
 

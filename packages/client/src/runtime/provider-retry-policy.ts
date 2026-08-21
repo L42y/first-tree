@@ -588,7 +588,11 @@ function credentialReason(base: Classification): string {
 }
 
 function isCapability(text: string, base: Classification): boolean {
-  return base.reasonCode.includes("binary_missing") || /binary missing|executable missing|unable to locate/.test(text);
+  return (
+    base.reasonCode.includes("binary_missing") ||
+    base.reasonCode.includes("binary_unusable") ||
+    /binary missing|binary candidates are installed but unusable|executable missing|unable to locate/.test(text)
+  );
 }
 
 function isPiProtocolError(name: string | undefined, text: string): boolean {

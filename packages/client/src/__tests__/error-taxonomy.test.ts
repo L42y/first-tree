@@ -167,6 +167,26 @@ describe("error-taxonomy.classify", () => {
       expect(c.strategy.kind).toBe("exponentialBackoff");
     });
 
+    it("a bounded all-candidate Codex launch failure is permanent and distinct from missing", () => {
+      const err = new Error(
+        "Codex runtime binary candidates are installed but unusable. Checked: `/Users/test/.npm-global/bin/codex`.",
+      );
+      err.name = "CodexBinaryUnusableError";
+      const c = classify(err, { source: "session" });
+      expect(c.kind).toBe(ERROR_KINDS.PERMANENT);
+      expect(c.reasonCode).toBe("codex_binary_unusable");
+      expect(c.strategy.kind).toBe("none");
+
+      const wrapped = classify(new Error(`codex app-server startup failed at resolve-binary: ${err.message}`), {
+        source: "session",
+      });
+      expect(wrapped).toMatchObject({
+        kind: ERROR_KINDS.PERMANENT,
+        reasonCode: "codex_binary_unusable",
+        strategy: { kind: "none" },
+      });
+    });
+
     it("same-provider verify-transient still wins over that provider's missing patterns", () => {
       // Cursor verify name + Cursor missing text: verify is checked first for
       // Cursor, so the busy-host flake stays transient (not permanent missing).

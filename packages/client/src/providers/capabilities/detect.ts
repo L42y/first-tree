@@ -37,7 +37,7 @@ export type DetectOutcome =
       version?: string | null;
       /** Which artifact backs the runtime (bundled binary vs external path). */
       runtimeSource?: CapabilityRuntimeSource;
-      /** Absolute path of the resolved binary, when `runtimeSource: "path"`. */
+      /** Last runtime-verified external path, when one is known and still discoverable. */
       runtimePath?: string | null;
     }
   | { installed: false; error: string };

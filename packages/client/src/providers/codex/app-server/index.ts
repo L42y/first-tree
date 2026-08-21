@@ -176,7 +176,9 @@ export class CodexAppServerStartupError extends Error {
   readonly stage: string;
 
   constructor(stage: string, cause: unknown) {
-    super(`codex app-server startup failed at ${stage}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    super(`codex app-server startup failed at ${stage}: ${cause instanceof Error ? cause.message : String(cause)}`, {
+      cause,
+    });
     this.name = "CodexAppServerStartupError";
     this.stage = stage;
   }
@@ -472,7 +474,7 @@ export const createCodexAppServerHandler: HandlerFactory = (config: HandlerConfi
     } catch (err) {
       throw new CodexAppServerStartupError("resolve-binary", err);
     }
-    if (!resolution.ok) throw new CodexAppServerStartupError("resolve-binary", resolution.error);
+    if (!resolution.ok) throw new CodexAppServerStartupError("resolve-binary", resolution.cause ?? resolution.error);
     try {
       const appServerArgs =
         workspaceOnly && workspaceOnlyCodexHome && workspaceOnlyHostHome
