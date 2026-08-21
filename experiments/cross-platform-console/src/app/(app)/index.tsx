@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -54,6 +54,18 @@ export default function ChatListScreen() {
     },
   });
 
+  // Render-time guard: a cached array fetched before the page-level
+  // dedupe may still contain repeated chat ids — never hand duplicates to
+  // FlatList.
+  const rows = useMemo(() => {
+    const seen = new Set<string>();
+    return (data ?? []).filter((row) => {
+      if (seen.has(row.chatId)) return false;
+      seen.add(row.chatId);
+      return true;
+    });
+  }, [data]);
+
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
     await refetch();
@@ -107,7 +119,7 @@ export default function ChatListScreen() {
       )}
 
       <FlatList
-        data={data ?? []}
+        data={rows}
         keyExtractor={(item) => item.chatId}
         renderItem={({ item }) => <ChatListItem chat={item} />}
         refreshControl={
@@ -118,7 +130,7 @@ export default function ChatListScreen() {
           />
         }
         ListEmptyComponent={
-          !isLoading ? (
+          !isLoading && rows.length === 0 ? (
             <Text style={styles.empty}>
               {user?.displayName ? `No chats for ${user.displayName} yet.` : "No chats yet."}
             </Text>
