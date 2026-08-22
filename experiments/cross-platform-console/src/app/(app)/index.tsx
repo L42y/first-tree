@@ -4,6 +4,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   StyleSheet,
+  TextInput,
   Text,
   View,
 } from "react-native";
@@ -35,6 +36,7 @@ export default function ChatListScreen() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -63,13 +65,24 @@ export default function ChatListScreen() {
 
   // Chats with an open ask for you outrank everything (own section),
   // then pinned chats, then the rest.
+  // Client-side filter over title/preview/participants — instant, no server
+  // round-trip.
+  const visibleRows = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((row) =>
+      [row.title, row.description ?? "", row.lastMessagePreview ?? "", ...row.participants.map((p) => p.displayName)]
+        .some((field) => field.toLowerCase().includes(needle)),
+    );
+  }, [rows, search]);
+
   const listItems = useMemo<ListItem[]>(() => {
-    const needsYou = rows.filter((r) => r.openRequestCount > 0);
+    const needsYou = visibleRows.filter((r) => r.openRequestCount > 0);
     const needsYouIds = new Set(needsYou.map((r) => r.chatId));
-    const pinned = rows.filter(
+    const pinned = visibleRows.filter(
       (r) => !needsYouIds.has(r.chatId) && r.pinnedAt !== null && r.pinnedAt !== undefined,
     );
-    const rest = rows.filter((r) => !needsYouIds.has(r.chatId) && !pinned.includes(r));
+    const rest = visibleRows.filter((r) => !needsYouIds.has(r.chatId) && !pinned.includes(r));
     const items: ListItem[] = [];
     if (needsYou.length > 0) {
       items.push({ kind: "header", id: "header-needs-you", label: "Needs your answer" });
@@ -84,7 +97,7 @@ export default function ChatListScreen() {
       for (const row of rest) items.push({ kind: "chat", id: row.chatId, row });
     }
     return items;
-  }, [rows]);
+  }, [visibleRows]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -117,6 +130,18 @@ export default function ChatListScreen() {
           <Text style={[styles.filterText, filter === "unread" && styles.filterActiveText]}>Unread</Text>
         </Pressable>
       </View>
+
+      {(rows.length > 0 || search.length > 0) && (
+        <TextInput
+          style={styles.search}
+          placeholder="Search chats…"
+          placeholderTextColor={colors.textMuted}
+          value={search}
+          onChangeText={setSearch}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+      )}
 
       {isLoading && !data && (
         <View style={styles.center}>
@@ -201,6 +226,18 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  search: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    minHeight: 38,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    color: colors.text,
+    paddingHorizontal: 12,
+    fontSize: 14,
   },
   twoPane: {
     flexDirection: "row",
