@@ -21,6 +21,8 @@ const config = {
     requireFullScreen: true,
     infoPlist: {
       UIViewControllerBasedStatusBarAppearance: true,
+      // Standard HTTPS/OS crypto only — export-exempt (answered via EAS prompt).
+      ITSAppUsesNonExemptEncryption: false,
     },
   },
   android: {
