@@ -6,25 +6,19 @@ const workspaceRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
 
-// Watch the workspace package sources so Metro can follow pnpm symlinks
-// (e.g. node_modules/@first-tree/shared -> packages/shared).
+// SDK 57's expo metro-config already enables symlinks and package exports
+// (stable), so no resolver flags here — expo doctor flags them as drift.
+// Only extend what the defaults miss:
 config.watchFolders = [
-  projectRoot,
+  ...(config.watchFolders ?? []),
+  // Follow pnpm workspace symlinks (e.g. @first-tree/shared -> packages/shared).
   path.resolve(workspaceRoot, "packages/shared"),
 ];
-
-// Make sure Metro looks in the project's node_modules for dependencies.
-config.resolver.nodeModulesPaths = [path.resolve(projectRoot, "node_modules")];
 
 // react-native-markdown-display -> markdown-it requires Node's built-in
 // `punycode`, which doesn't exist in RN. Map it to the userland package.
 config.resolver.extraNodeModules = {
   punycode: path.resolve(projectRoot, "node_modules/punycode"),
 };
-
-// Required for pnpm-style symlinks and packages that use the modern
-// "exports" field (like @first-tree/shared).
-config.resolver.unstable_enableSymlinks = true;
-config.resolver.unstable_enablePackageExports = true;
 
 module.exports = config;
