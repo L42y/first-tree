@@ -188,8 +188,19 @@ export default function ChatDetailScreen() {
         keyExtractor={(item) => item.id}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
-        renderItem={({ item }) =>
-          item.format === "request" ? (
+        renderItem={({ item }) => {
+          if (__DEV__) {
+            console.log(
+              "[msg]",
+              item.id.slice(0, 8),
+              "fmt=" + item.format,
+              "sender=" + item.senderId.slice(0, 8),
+              "contentType=" + typeof item.content,
+              "preview=" + JSON.stringify(item.content).slice(0, 80),
+              "meta=" + JSON.stringify(item.metadata ?? {}).slice(0, 120),
+            );
+          }
+          return item.format === "request" ? (
             <RequestCard
               chatId={chatId}
               message={item}
@@ -203,8 +214,8 @@ export default function ChatDetailScreen() {
               senderName={participantNames(item.senderId)}
               avatar={toBubbleAvatar(item.senderId)}
             />
-          )
-        }
+          );
+        }}
         contentContainerStyle={styles.messages}
         onContentSizeChange={() => {
           if (!pendingScrollRef.current) return;
