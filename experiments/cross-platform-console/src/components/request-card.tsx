@@ -34,8 +34,6 @@ export function RequestCard({
 }) {
   const parsed = parseAskRequest(message);
   const resolution = findResolutionMessage(messages, message.id) ?? null;
-  const [selected, setSelected] = useState<number[]>([]);
-  const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,27 +47,17 @@ export function RequestCard({
   }
 
   const isTarget = selfAgentId !== null && parsed.targetAgentId === selfAgentId;
-  const options = parsed.request.options ?? [];
-  const multiSelect = parsed.request.multiSelect === true;
 
   const submit = async (kind: "answered" | "closed", content: string) => {
     setError(null);
     setSubmitting(true);
     try {
       await resolveAskRequest(chatId, message, kind, content);
-      setDraft("");
-      setSelected([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to send");
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const submitSelected = () => {
-    if (selected.length === 0) return;
-    const labels = selected.map((i) => options[i]?.label).filter(Boolean).join(", ");
-    void submit("answered", labels);
   };
 
   return (
@@ -78,102 +66,15 @@ export function RequestCard({
         <Text style={styles.kicker}>{resolution ? "Question · answered" : isTarget ? "Asked you" : "Question"}</Text>
         <MarkdownText value={typeof message.content === "string" ? message.content : ""} />
 
-        {!resolution && options.length > 0 && (
-          <View style={styles.options}>
-            {options.map((option, index) => {
-              const isSelected = selected.includes(index);
-              return (
-                <Pressable
-                  key={`${index}-${option.label}`}
-                  disabled={!isTarget || submitting}
-                  onPress={() =>
-                    setSelected((prev) =>
-                      multiSelect
-                        ? prev.includes(index)
-                          ? prev.filter((i) => i !== index)
-                          : [...prev, index]
-                        : [index],
-                    )
-                  }
-                  style={({ pressed }) => [
-                    styles.option,
-                    isSelected && styles.optionSelected,
-                    (!isTarget || submitting) && styles.disabled,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
-                    {multiSelect && `${isSelected ? "☑" : "☐"} `}{option.label}
-                  </Text>
-                  {option.description ? (
-                    <Text style={styles.optionDescription}>{option.description}</Text>
-                  ) : null}
-                </Pressable>
-              );
-            })}
-          </View>
-        )}
 
         {!resolution && error && <Text style={styles.error}>{error}</Text>}
 
         {isTarget && !resolution ? (
-          <View style={styles.actions}>
-            {options.length > 0 && (
-              <Pressable
-                onPress={submitSelected}
-                disabled={submitting || selected.length === 0}
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.primaryButton,
-                  (submitting || selected.length === 0) && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-              >
-                {submitting ? (
-                  <ActivityIndicator size="small" color={colors.accentText} />
-                ) : (
-                  <Text style={styles.primaryButtonText}>Submit</Text>
-                )}
-              </Pressable>
-            )}
-            <TextInput
-              style={styles.input}
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Or write an answer…"
-              placeholderTextColor={colors.textMuted}
-              multiline
-            />
-            <View style={styles.row}>
-              <Pressable
-                onPress={() => draft.trim() && void submit("answered", draft.trim())}
-                disabled={submitting || !draft.trim()}
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.primaryButton,
-                  styles.flex1,
-                  (submitting || !draft.trim()) && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.primaryButtonText}>Answer</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => void submit("closed", "")}
-                disabled={submitting}
-                style={({ pressed }) => [
-                  styles.button,
-                  styles.secondaryButton,
-                  styles.flex1,
-                  submitting && styles.disabled,
-                  pressed && styles.pressed,
-                ]}
-              >
-                <Text style={styles.secondaryButtonText}>Skip</Text>
-              </Pressable>
-            </View>
-          </View>
+          <Text style={styles.waitingNote}>Open question — answer with the dock above or the composer below.</Text>
         ) : null}
+
+        {!isTarget && !resolution ? null : null}
+
 
         {resolution ? (
           <Text style={styles.resolutionNote}>

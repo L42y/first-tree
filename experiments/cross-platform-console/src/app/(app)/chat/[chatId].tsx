@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -23,6 +23,8 @@ import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/li
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
+import { RequestDock } from "~/components/request-dock";
+import { parseAskRequest, resolveAskRequest } from "~/lib/ask";
 import { MessageCard } from "~/components/message-card";
 import { MarkdownText } from "~/components/markdown-text";
 import { Avatar } from "~/components/avatar";
@@ -108,6 +110,29 @@ export default function ChatDetailScreen() {
     [findParticipant],
   );
 
+  const chat = chatQuery.data;
+  const messages = messagesQuery.data?.items ?? [];
+
+  // The viewer's own open ask (if any): targeted at selfAgentId and not yet
+  // resolved by any later message. Docked above the list; the composer
+  // doubles as its free-text answer path.
+  const openAsk = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.format !== "request") continue;
+      const parsed = parseAskRequest(msg);
+      if (!parsed) continue;
+      const resolved = messages.some((m) => {
+        const resolves = m.metadata?.resolves as { request?: unknown } | undefined;
+        return typeof resolves?.request === "string" && resolves.request === msg.id;
+      });
+      if (!resolved && parsed.targetAgentId === selfAgentId) {
+        return { message: msg, parsed };
+      }
+    }
+    return null;
+  }, [messages, selfAgentId]);
+
   const handleSend = useCallback(async () => {
     if (!message.trim() || !memberId) return;
     const text = message.trim();
@@ -115,6 +140,15 @@ export default function ChatDetailScreen() {
     setSending(true);
 
     try {
+      if (openAsk) {
+        // While an open ask is pending, Send answers it (the reply carries
+        // metadata.resolves per the server contract).
+        await resolveAskRequest(chatId, openAsk.message, "answered", text);
+        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+        listRef.current?.scrollToEnd({ animated: true });
+        return;
+      }
+
       const mentions = extractMentions(
         text,
         chatQuery.data?.participants.map((p) => ({ agentId: p.agentId, name: p.displayName })) ?? [],
@@ -133,10 +167,21 @@ export default function ChatDetailScreen() {
     } finally {
       setSending(false);
     }
-  }, [message, memberId, chatId, chatQuery.data, queryClient]);
+  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk]);
 
-  const chat = chatQuery.data;
-  const messages = messagesQuery.data?.items ?? [];
+  const submitAnswer = useCallback(
+    async (question: Message, answer: string) => {
+      try {
+        await resolveAskRequest(chatId, question, answer ? "answered" : "closed", answer);
+        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+      } catch {
+        // Resolution failures surface via the next poll refetch.
+      }
+    },
+    [chatId, queryClient],
+  );
+
+
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
 
@@ -181,6 +226,19 @@ export default function ChatDetailScreen() {
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
+      )}
+
+      {openAsk && (
+        <RequestDock
+          question={openAsk.message}
+          parsed={openAsk.parsed}
+          onSubmit={(answer) => {
+            void submitAnswer(openAsk.message, answer);
+          }}
+          onSkip={() => {
+            void submitAnswer(openAsk.message, "");
+          }}
+        />
       )}
 
       <FlatList
