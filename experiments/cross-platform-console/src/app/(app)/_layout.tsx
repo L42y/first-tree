@@ -60,6 +60,10 @@ export default function AppLayout() {
           name="chat/[chatId]"
           options={{ href: null, tabBarButton: () => null }}
         />
+        <Tabs.Screen
+          name="agent/[uuid]"
+          options={{ href: null, tabBarButton: () => null }}
+        />
       </Tabs>
     </View>
   );

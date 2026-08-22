@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import { useWindowDimensions } from "react-native";
+import { Pressable, useWindowDimensions } from "react-native";
+import { useRouter } from "expo-router";
 
 import type { ManagedAgent } from "~/lib/team-api";
 import { listManagedAgents } from "~/lib/team-api";
@@ -13,6 +14,7 @@ import { colors } from "~/lib/theme";
  * (same source as the web console's Team roster).
  */
 export default function TeamScreen() {
+  const router = useRouter();
   const { width } = useWindowDimensions();
   const numColumns = width >= 1024 ? 2 : 1;
 
@@ -63,7 +65,11 @@ export default function TeamScreen() {
             <View>
               <Text style={styles.sectionHeader}>{item.organizationId}</Text>
               {item.agents.map((agent) => (
-                <View key={agent.uuid} style={styles.row}>
+                <Pressable
+                  key={agent.uuid}
+                  onPress={() => router.push(`/agent/${agent.uuid}`)}
+                  style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+                >
                   <Avatar
                     name={agent.displayName}
                     seed={agent.uuid}
@@ -79,7 +85,7 @@ export default function TeamScreen() {
                       {agent.runtimeProvider ?? agent.type} · {agent.status}
                     </Text>
                   </View>
-                </View>
+                </Pressable>
               ))}
             </View>
           )}
@@ -138,6 +144,10 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+  },
+  rowPressed: {
+    opacity: 0.7,
+    backgroundColor: colors.surface,
   },
   rowMain: {
     flex: 1,
