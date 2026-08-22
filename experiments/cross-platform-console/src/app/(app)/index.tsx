@@ -32,6 +32,9 @@ export default function ChatListScreen() {
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["me", "chats", "list", filter],
+    // Polling refetches produce fresh array identities; without this the
+    // list visibly jumps every interval.
+    placeholderData: (prev) => prev,
     queryFn: async ({ signal }) => {
       const collected: MeChatRow[] = [];
       const seen = new Set<string>();

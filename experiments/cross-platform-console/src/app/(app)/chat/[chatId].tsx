@@ -39,6 +39,10 @@ export default function ChatDetailScreen() {
   const { user, memberId, agentId: selfAgentId } = useAuth();
   const queryClient = useQueryClient();
   const listRef = useRef<FlatList<Message>>(null);
+  // Set when messages first arrive (or after sending) so the next
+  // onContentSizeChange scrolls to the latest message exactly once,
+  // instead of fighting the user's scroll position forever.
+  const pendingScrollRef = useRef(false);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   // Deterministic keyboard avoidance: lift the composer by the exact
@@ -70,7 +74,13 @@ export default function ChatDetailScreen() {
 
   useEffect(() => {
     void markMeChatRead(chatId);
+    pendingScrollRef.current = true;
   }, [chatId]);
+
+  const messageCount = messagesQuery.data?.items.length ?? 0;
+  useEffect(() => {
+    if (messageCount > 0) pendingScrollRef.current = true;
+  }, [messageCount]);
 
   const findParticipant = useCallback(
     (senderId: string) => chatQuery.data?.participants.find((p) => p.agentId === senderId),
@@ -196,7 +206,11 @@ export default function ChatDetailScreen() {
           )
         }
         contentContainerStyle={styles.messages}
-        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
+        onContentSizeChange={() => {
+          if (!pendingScrollRef.current) return;
+          pendingScrollRef.current = false;
+          requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+        }}
       />
 
       <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
