@@ -53,6 +53,10 @@ export default function AppLayout() {
           options={{ title: "Team" }}
         />
         <Tabs.Screen
+          name="context"
+          options={{ title: "Context" }}
+        />
+        <Tabs.Screen
           name="settings"
           options={{ title: "Settings" }}
         />
