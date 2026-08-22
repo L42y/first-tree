@@ -26,7 +26,7 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
 }
 
 export default function ChatListScreen() {
-  const { logout, teamDisplayName, user, agentId: selfAgentId } = useAuth();
+  const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [refreshing, setRefreshing] = useState(false);
 
@@ -113,9 +113,6 @@ export default function ChatListScreen() {
             <Text style={styles.subtitle}>{teamDisplayName}</Text>
           )}
         </View>
-        <Pressable onPress={() => void logout()} style={styles.logoutButton}>
-          <Text style={styles.logoutText}>Log out</Text>
-        </Pressable>
       </View>
 
       <View style={styles.filters}>
@@ -213,16 +210,6 @@ const styles = StyleSheet.create({
   subtitle: {
     color: colors.textSecondary,
     fontSize: 12,
-  },
-  logoutButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: colors.surface,
-  },
-  logoutText: {
-    fontSize: 13,
-    color: colors.text,
   },
   filters: {
     flexDirection: "row",
