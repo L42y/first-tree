@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
   RefreshControl,
@@ -11,9 +12,11 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Pressable } from "react-native";
 
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
+import { useRouter } from "expo-router";
 import { listMeChats } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
+import { ChatDetailContent } from "~/components/chat-detail";
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
@@ -26,6 +29,10 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
 }
 
 export default function ChatListScreen() {
+  const router = useRouter();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 1024;
+  const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [refreshing, setRefreshing] = useState(false);
@@ -104,8 +111,8 @@ export default function ChatListScreen() {
     setRefreshing(false);
   }, [refetch]);
 
-  return (
-    <View style={styles.container}>
+  const listPane = (
+    <View style={[styles.container, isWide && styles.listPane]}>
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Chats</Text>
@@ -154,7 +161,11 @@ export default function ChatListScreen() {
           item.kind === "header" ? (
             <Text style={styles.sectionHeader}>{item.label}</Text>
           ) : (
-            <ChatListItem chat={item.row} selfAgentId={selfAgentId} />
+            <ChatListItem
+              chat={item.row}
+              selfAgentId={selfAgentId}
+              onPressChat={isWide ? setSelectedChatId : undefined}
+            />
           )
         }
         estimatedItemSize={76}
@@ -175,6 +186,24 @@ export default function ChatListScreen() {
       />
     </View>
   );
+
+  if (isWide) {
+    return (
+      <View style={[styles.twoPane, styles.container]}>
+        {listPane}
+        <View style={styles.detailPane}>
+          {selectedChatId ? (
+            <ChatDetailContent chatId={selectedChatId} showBack={false} />
+          ) : (
+            <View style={styles.emptyPane}>
+              <Text style={styles.emptyPaneText}>Select a conversation</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
+  }
+  return listPane;
 }
 
 const styles = StyleSheet.create({
@@ -191,6 +220,27 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  twoPane: {
+    flexDirection: "row",
+  },
+  listPane: {
+    maxWidth: 400,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: colors.border,
+  },
+  detailPane: {
+    flex: 1,
+    backgroundColor: colors.bg,
+  },
+  emptyPane: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyPaneText: {
+    color: colors.textMuted,
+    fontSize: 15,
   },
   header: {
     flexDirection: "row",

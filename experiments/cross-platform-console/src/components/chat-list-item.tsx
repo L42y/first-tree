@@ -9,9 +9,11 @@ type ChatListItemProps = {
   chat: MeChatRow;
   /** Caller's own agent id — used to pick the peer for the avatar. */
   selfAgentId: string | null;
+  /** Wide-screen selection mode: handle tap instead of router.push. */
+  onPressChat?: (chatId: string) => void;
 };
 
-export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
+export function ChatListItem({ chat, selfAgentId, onPressChat }: ChatListItemProps) {
   const pinned = chat.pinnedAt !== null && chat.pinnedAt !== undefined;
   const hasOpenAsk = chat.openRequestCount > 0;
   const router = useRouter();
@@ -27,7 +29,9 @@ export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
 
   return (
     <Pressable
-      onPress={() => router.push(`/chat/${chat.chatId}`)}
+      onPress={() =>
+        onPressChat ? onPressChat(chat.chatId) : router.push(`/chat/${chat.chatId}`)
+      }
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <Avatar
