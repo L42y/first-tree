@@ -13,7 +13,7 @@ import { Pressable } from "react-native";
 
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { useRouter } from "expo-router";
-import { listMeChats } from "~/lib/chats-api";
+import { fetchChatRows } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
@@ -42,26 +42,7 @@ export default function ChatListScreen() {
     // Polling refetches produce fresh array identities; without this the
     // list visibly jumps every interval.
     placeholderData: keepPreviousData,
-    queryFn: async ({ signal }) => {
-      const collected: MeChatRow[] = [];
-      const seen = new Set<string>();
-      let cursor: string | null = null;
-      do {
-        const page = await listMeChats(
-          { limit: PAGE_SIZE, cursor: cursor ?? undefined, filter },
-          { signal },
-        );
-        for (const row of flattenChats(page)) {
-          // A chat can surface in two pages (e.g. pinned on one, listed on
-          // the next) — dedupe so FlatList keys stay unique.
-          if (seen.has(row.chatId)) continue;
-          seen.add(row.chatId);
-          collected.push(row);
-        }
-        cursor = page.nextCursor;
-      } while (cursor);
-      return collected;
-    },
+    queryFn: ({ signal }) => fetchChatRows(filter, signal),
   });
 
   // Render-time guard: a cached array fetched before the page-level

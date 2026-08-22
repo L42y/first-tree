@@ -2,6 +2,7 @@ import type {
   ChatDetail,
   ListMeChatsQuery,
   ListMeChatsResponse,
+  MeChatRow,
   Message,
   SendMessage,
 } from "@first-tree/shared";
@@ -74,4 +75,32 @@ export async function sendChatMessage(
 
 export async function markMeChatRead(chatId: string): Promise<void> {
   await api.post(`/chats/${encodeURIComponent(chatId)}/read`);
+}
+
+/**
+ * Full paginated + deduped chat rows for a filter — shared by the Chats
+ * screen and the tab-bar unread badge so both see identical data.
+ */
+export async function fetchChatRows(
+  filter: "all" | "unread",
+  signal?: AbortSignal,
+): Promise<MeChatRow[]> {
+  const collected: MeChatRow[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await listMeChats(
+      { limit: 50, cursor: cursor ?? undefined, filter },
+      { signal },
+    );
+    const pinnedIds = new Set(page.priorityRows.pinned.map((row) => row.chatId));
+    const ordered = [...page.priorityRows.pinned, ...page.rows.filter((row) => !pinnedIds.has(row.chatId))];
+    for (const row of ordered) {
+      if (seen.has(row.chatId)) continue;
+      seen.add(row.chatId);
+      collected.push(row);
+    }
+    cursor = page.nextCursor;
+  } while (cursor);
+  return collected;
 }

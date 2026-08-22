@@ -2,8 +2,10 @@ import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { Redirect, Tabs } from "expo-router";
 import { useTheme } from "tamagui";
 import { useWindowDimensions } from "react-native";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { useAuth } from "~/lib/auth-context";
+import { fetchChatRows } from "~/lib/chats-api";
 import { colors } from "~/lib/theme";
 
 /**
@@ -15,6 +17,21 @@ export default function AppLayout() {
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
+
+  // Attention badge source for the Chats tab — hooks stay unconditional;
+  // fetching is gated on the session instead.
+  const chatsQuery = useQuery({
+    queryKey: ["me", "chats", "list", "all"],
+    queryFn: ({ signal }) => fetchChatRows("all", signal),
+    placeholderData: keepPreviousData,
+    refetchInterval: 30_000,
+    enabled: meLoaded && isAuthenticated,
+  });
+  const attentionCount =
+    (chatsQuery.data ?? []).reduce(
+      (total, row) => total + row.unreadMentionCount + (row.openRequestCount > 0 ? 1 : 0),
+      0,
+    ) || undefined;
 
   if (!meLoaded) {
     return (
@@ -46,7 +63,7 @@ export default function AppLayout() {
       >
         <Tabs.Screen
           name="index"
-          options={{ title: "Chats" }}
+          options={{ title: "Chats", tabBarBadge: attentionCount }}
         />
         <Tabs.Screen
           name="team"
