@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,7 +28,7 @@ export default function ContextScreen() {
   const [window, setWindow] = useState<ContextTreeWindow>("7d");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch, isRefetching } = useQuery({
     queryKey: ["context-tree", "snapshot", window],
     queryFn: ({ signal }) => getContextTreeSnapshot(window, signal),
     refetchInterval: 60_000,
@@ -65,7 +66,12 @@ export default function ContextScreen() {
           <Text style={styles.emptyText}>No context changes in the last {window}.</Text>
         </View>
       ) : (
-        <ScrollView contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}>
+        <ScrollView
+          contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}
+          refreshControl={
+            <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
+          }
+        >
           {updates.map((update) => {
             const expanded = expandedId === update.id;
             return (

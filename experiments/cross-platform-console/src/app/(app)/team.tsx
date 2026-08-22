@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Pressable, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
@@ -18,7 +18,7 @@ export default function TeamScreen() {
   const { width } = useWindowDimensions();
   const numColumns = width >= 1024 ? 2 : 1;
 
-  const { data, isLoading, error, refetch } = useQuery({
+  const { data, isLoading, error, refetch, isRefetching } = useQuery({
     queryKey: ["me", "managed-agents"],
     queryFn: ({ signal }) => listManagedAgents(signal),
   });
@@ -60,6 +60,9 @@ export default function TeamScreen() {
         <FlatList
           data={grouped}
           keyExtractor={(g) => g.organizationId}
+          refreshControl={
+            <RefreshControl refreshing={isRefetching} onRefresh={() => void refetch()} tintColor={colors.textMuted} />
+          }
           contentContainerStyle={[styles.listContent, numColumns > 1 && styles.widePadding]}
           renderItem={({ item }) => (
             <View>
