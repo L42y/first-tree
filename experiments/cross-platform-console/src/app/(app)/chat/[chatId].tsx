@@ -23,6 +23,7 @@ import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/li
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
+import { MarkdownText } from "~/components/markdown-text";
 import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
@@ -218,6 +219,15 @@ export default function ChatDetailScreen() {
 }
 
 const styles = StyleSheet.create({
+  preview: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
   container: {
     flex: 1,
     backgroundColor: colors.bg,

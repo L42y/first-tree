@@ -18,19 +18,27 @@ import { colors } from "~/lib/theme";
 const IS_EXPO_GO = Constants.appOwnership === "expo";
 
 const jsTheme = {
-  body: { color: colors.text },
-  strong: { color: colors.text },
-  em: { color: colors.text },
+  // Every rule gets an explicit light-on-dark color — the library defaults
+  // are black-on-white and several rules do not inherit from `body`.
+  body: { color: colors.text, fontSize: 15 },
+  paragraph: { color: colors.text, fontSize: 15, marginTop: 0, marginBottom: 0 },
+  strong: { color: colors.text, fontWeight: "700" as const },
+  em: { color: colors.text, fontStyle: "italic" as const },
+  del: { color: colors.textMuted },
   heading1: { color: colors.text, fontSize: 20, fontWeight: "700" as const },
   heading2: { color: colors.text, fontSize: 18, fontWeight: "700" as const },
   heading3: { color: colors.text, fontSize: 16, fontWeight: "700" as const },
-  heading4: { color: colors.text },
-  heading5: { color: colors.text },
-  heading6: { color: colors.textMuted },
-  hr: { backgroundColor: colors.border },
-  bullet_list_icon: { color: colors.textMuted },
-  ordered_list_icon: { color: colors.textMuted },
+  heading4: { color: colors.text, fontWeight: "700" as const },
+  heading5: { color: colors.text, fontWeight: "700" as const },
+  heading6: { color: colors.textSecondary, fontWeight: "700" as const },
+  hr: { backgroundColor: colors.border, color: colors.border },
   link: { color: colors.accent, textDecorationLine: "underline" as const },
+  blockquote: {
+    backgroundColor: colors.surface,
+    borderColor: colors.accent,
+    color: colors.textSecondary,
+  },
+  quote: { color: colors.textSecondary },
   code_inline: {
     color: colors.text,
     backgroundColor: colors.surface,
@@ -42,12 +50,19 @@ const jsTheme = {
     borderColor: colors.border,
     fontFamily: "Menlo",
   },
-  blockquote: {
-    color: colors.textSecondary,
-    backgroundColor: colors.surface,
-    borderLeftColor: colors.accent,
-  },
-  quote: { color: colors.textSecondary },
+  bullet_list: { color: colors.text },
+  ordered_list: { color: colors.text },
+  list_item: { color: colors.text },
+  bullet_list_icon: { color: colors.textMuted },
+  ordered_list_icon: { color: colors.textMuted },
+  checkbox: { color: colors.text },
+  checkbox_icon: { color: colors.textMuted },
+  table: { borderColor: colors.border },
+  thead: { color: colors.text, backgroundColor: colors.surfaceStrong },
+  tbody: { color: colors.text },
+  th: { color: colors.text },
+  tr: { color: colors.text, borderColor: colors.border },
+  td: { color: colors.text },
 };
 
 export function MarkdownText({ value }: { value: string }) {
