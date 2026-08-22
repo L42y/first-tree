@@ -11,9 +11,11 @@ type ChatListItemProps = {
   selfAgentId: string | null;
   /** Wide-screen selection mode: handle tap instead of router.push. */
   onPressChat?: (chatId: string) => void;
+  /** Long-press handler (archive/unarchive menu). */
+  onLongPressChat?: (chat: MeChatRow) => void;
 };
 
-export function ChatListItem({ chat, selfAgentId, onPressChat }: ChatListItemProps) {
+export function ChatListItem({ chat, selfAgentId, onPressChat, onLongPressChat }: ChatListItemProps) {
   const pinned = chat.pinnedAt !== null && chat.pinnedAt !== undefined;
   const hasOpenAsk = chat.openRequestCount > 0;
   const router = useRouter();
@@ -32,6 +34,7 @@ export function ChatListItem({ chat, selfAgentId, onPressChat }: ChatListItemPro
       onPress={() =>
         onPressChat ? onPressChat(chat.chatId) : router.push(`/chat/${chat.chatId}`)
       }
+      onLongPress={() => onLongPressChat?.(chat)}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <Avatar

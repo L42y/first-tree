@@ -84,13 +84,14 @@ export async function markMeChatRead(chatId: string): Promise<void> {
 export async function fetchChatRows(
   filter: "all" | "unread",
   signal?: AbortSignal,
+  engagement: "active" | "archived" = "active",
 ): Promise<MeChatRow[]> {
   const collected: MeChatRow[] = [];
   const seen = new Set<string>();
   let cursor: string | null = null;
   do {
     const page = await listMeChats(
-      { limit: 50, cursor: cursor ?? undefined, filter },
+      { limit: 50, cursor: cursor ?? undefined, filter, engagement },
       { signal },
     );
     const pinnedIds = new Set(page.priorityRows.pinned.map((row) => row.chatId));
@@ -125,4 +126,12 @@ export async function createTaskChat(
       source: "web",
     },
   });
+}
+
+/** Archive or restore a chat (`POST /chats/:id/engagement`). */
+export async function setChatEngagement(
+  chatId: string,
+  status: "active" | "archived" | "deleted",
+): Promise<void> {
+  await api.post(`/chats/${encodeURIComponent(chatId)}/engagement`, { status });
 }

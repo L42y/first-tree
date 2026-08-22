@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
+  Alert,
   RefreshControl,
   StyleSheet,
   TextInput,
@@ -9,12 +10,12 @@ import {
   View,
 } from "react-native";
 import { LegendList } from "@legendapp/list/react-native";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pressable } from "react-native";
 
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { useRouter } from "expo-router";
-import { fetchChatRows } from "~/lib/chats-api";
+import { fetchChatRows, setChatEngagement } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
@@ -31,20 +32,22 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
 
 export default function ChatListScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [view, setView] = useState<"active" | "archived">("active");
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["me", "chats", "list", filter],
+    queryKey: ["me", "chats", "list", filter, view],
     // Polling refetches produce fresh array identities; without this the
     // list visibly jumps every interval.
     placeholderData: keepPreviousData,
-    queryFn: ({ signal }) => fetchChatRows(filter, signal),
+    queryFn: ({ signal }) => fetchChatRows(filter, signal, view),
   });
 
   // Render-time guard: a cached array fetched before the page-level
@@ -98,6 +101,28 @@ export default function ChatListScreen() {
     }
     return items;
   }, [visibleRows]);
+
+  const archiveRow = useCallback(
+    (row: MeChatRow) => {
+      const archived = row.engagementStatus === "archived";
+      Alert.alert(
+        row.title,
+        archived ? "Move back to your chats?" : "Archive this chat?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: archived ? "Unarchive" : "Archive",
+            onPress: () => {
+              void setChatEngagement(row.chatId, archived ? "active" : "archived").then(() =>
+                queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
+              );
+            },
+          },
+        ],
+      );
+    },
+    [queryClient],
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -171,6 +196,7 @@ export default function ChatListScreen() {
               chat={item.row}
               selfAgentId={selfAgentId}
               onPressChat={isWide ? setSelectedChatId : undefined}
+              onLongPressChat={archiveRow}
             />
           )
         }
