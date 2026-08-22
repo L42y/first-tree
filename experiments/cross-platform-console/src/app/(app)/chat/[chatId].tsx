@@ -23,6 +23,7 @@ import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/li
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
+import { MessageCard } from "~/components/message-card";
 import { MarkdownText } from "~/components/markdown-text";
 import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
@@ -207,6 +208,8 @@ export default function ChatDetailScreen() {
               messages={messages}
               selfAgentId={selfAgentId}
             />
+          ) : item.format === "card" ? (
+            <MessageCard message={item} />
           ) : (
             <ChatMessageBubble
               message={item}
@@ -331,6 +334,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 16,
+    color: colors.text,
     backgroundColor: colors.surface,
   },
   sendButton: {
