@@ -36,3 +36,19 @@ export type MeOrganizationsResponse = MyOrganization[];
 export async function listMyOrganizations(signal?: AbortSignal): Promise<MeOrganizationsResponse> {
   return api.get<MeOrganizationsResponse>("/me/organizations", { signal });
 }
+
+export type MyClient = {
+  id: string;
+  status: string;
+  authState: string;
+  sdkVersion: string | null;
+  hostname: string;
+  os: string | null;
+  agentCount: number;
+  lastSeenAt: string;
+};
+
+/** Connected computers (`GET /me/clients`) — Settings roster source. */
+export async function listMyClients(signal?: AbortSignal): Promise<MyClient[]> {
+  return api.get<MyClient[]>("/me/clients", { signal });
+}

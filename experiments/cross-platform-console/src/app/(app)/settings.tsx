@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useAuth } from "~/lib/auth-context";
-import { listMyOrganizations } from "~/lib/team-api";
+import { listMyClients, listMyOrganizations } from "~/lib/team-api";
 import { Avatar } from "~/components/avatar";
 import { API_BASE_URL } from "~/lib/env";
 import { colors } from "~/lib/theme";
@@ -28,6 +28,11 @@ export default function SettingsScreen() {
   const orgsQuery = useQuery({
     queryKey: ["me", "organizations"],
     queryFn: ({ signal }) => listMyOrganizations(signal),
+  });
+
+  const clientsQuery = useQuery({
+    queryKey: ["me", "clients"],
+    queryFn: ({ signal }) => listMyClients(signal),
   });
 
   return (
@@ -77,6 +82,25 @@ export default function SettingsScreen() {
           })}
           {!orgsQuery.isLoading && (orgsQuery.data?.length ?? 0) === 0 && (
             <Text style={styles.workspaceMeta}>No workspaces found.</Text>
+          )}
+        </View>
+
+        <Text style={styles.sectionHeader}>Computers</Text>
+        <View style={[styles.card, styles.workspaceCard]}>
+          {clientsQuery.isLoading && <ActivityIndicator color={colors.textMuted} />}
+          {(clientsQuery.data ?? []).map((client) => (
+            <View key={client.id} style={styles.orgRow}>
+              <Text style={styles.orgName}>{client.hostname}</Text>
+              <Text style={styles.orgMeta}>
+                {client.status}
+                {client.os ? ` · ${client.os}` : ""}
+                {client.sdkVersion ? ` · v${client.sdkVersion}` : ""}
+                {` · ${client.agentCount} agent${client.agentCount === 1 ? "" : "s"}`}
+              </Text>
+            </View>
+          ))}
+          {!clientsQuery.isLoading && (clientsQuery.data?.length ?? 0) === 0 && (
+            <Text style={styles.workspaceMeta}>No connected computers.</Text>
           )}
         </View>
 
