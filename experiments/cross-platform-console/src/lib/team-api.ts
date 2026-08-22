@@ -1,4 +1,3 @@
-import type { MeMembership } from "@first-tree/shared";
 import { api } from "./api";
 
 /**
@@ -24,7 +23,14 @@ export async function listManagedAgents(signal?: AbortSignal): Promise<ManagedAg
   return api.get<ManagedAgent[]>("/me/managed-agents", { signal });
 }
 
-export type MeOrganizationsResponse = MeMembership[];
+export type MyOrganization = {
+  id: string;
+  name: string;
+  displayName: string;
+  role: string;
+};
+
+export type MeOrganizationsResponse = MyOrganization[];
 
 /** Workspace switcher source (`GET /me/organizations`). */
 export async function listMyOrganizations(signal?: AbortSignal): Promise<MeOrganizationsResponse> {

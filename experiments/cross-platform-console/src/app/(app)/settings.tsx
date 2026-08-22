@@ -1,6 +1,8 @@
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 
+import { useQueryClient } from "@tanstack/react-query";
+
 import { useAuth } from "~/lib/auth-context";
 import { listMyOrganizations } from "~/lib/team-api";
 import { Avatar } from "~/components/avatar";
@@ -12,7 +14,16 @@ import { colors } from "~/lib/theme";
  * lives here (moved out of the chat list header).
  */
 export default function SettingsScreen() {
-  const { user, teamDisplayName, organizationId, logout } = useAuth();
+  const { user, teamDisplayName, organizationId, selectOrganization, logout } = useAuth();
+  const queryClient = useQueryClient();
+
+  const switchOrg = async (id: string) => {
+    if (id === organizationId) return;
+    await selectOrganization(id);
+    // Cached queries are org-scoped in spirit — drop them so every surface
+    // refetches against the newly active workspace.
+    queryClient.clear();
+  };
 
   const orgsQuery = useQuery({
     queryKey: ["me", "organizations"],
@@ -42,14 +53,31 @@ export default function SettingsScreen() {
         </View>
 
         <Text style={styles.sectionHeader}>Workspace</Text>
-        <View style={styles.card}>
-          <Text style={styles.workspaceName}>{teamDisplayName ?? "—"}</Text>
-          {orgsQuery.data && orgsQuery.data.length > 1 && (
-            <Text style={styles.workspaceMeta}>
-              Member of {orgsQuery.data.length} workspaces (switching lands soon)
-            </Text>
-          )}
+        <View style={[styles.card, styles.workspaceCard]}>
           {orgsQuery.isLoading && <ActivityIndicator color={colors.textMuted} />}
+          {(orgsQuery.data ?? []).map((org) => {
+            const active = org.id === organizationId;
+            return (
+              <Pressable
+                key={org.id}
+                disabled={active}
+                onPress={() => void switchOrg(org.id)}
+                style={({ pressed }) => [
+                  styles.orgRow,
+                  active && styles.orgRowActive,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={[styles.orgName, active && styles.orgNameActive]}>
+                  {org.displayName || org.name}
+                </Text>
+                <Text style={styles.orgMeta}>{active ? "Active" : org.role}</Text>
+              </Pressable>
+            );
+          })}
+          {!orgsQuery.isLoading && (orgsQuery.data?.length ?? 0) === 0 && (
+            <Text style={styles.workspaceMeta}>No workspaces found.</Text>
+          )}
         </View>
 
         <Text style={styles.sectionHeader}>About</Text>
@@ -126,10 +154,32 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 13,
   },
-  workspaceName: {
-    fontSize: 16,
+  workspaceCard: {
+    gap: 0,
+    padding: 0,
+    overflow: "hidden",
+  },
+  orgRow: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  orgRowActive: {
+    backgroundColor: "rgba(59,130,246,0.12)",
+  },
+  orgName: {
+    fontSize: 15,
     fontWeight: "600",
     color: colors.text,
+  },
+  orgNameActive: {
+    color: colors.accent,
+  },
+  orgMeta: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 2,
   },
   workspaceMeta: {
     color: colors.textMuted,
