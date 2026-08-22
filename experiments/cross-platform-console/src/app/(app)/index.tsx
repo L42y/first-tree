@@ -20,6 +20,7 @@ import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
+import { QuickActions } from "~/components/quick-actions";
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
@@ -37,6 +38,7 @@ export default function ChatListScreen() {
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
+  const [quickOpen, setQuickOpen] = useState(false);
   const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [view, setView] = useState<"active" | "archived">("active");
@@ -150,6 +152,9 @@ export default function ChatListScreen() {
   const listPane = (
     <View style={[styles.container, isWide && styles.listPane]}>
       <View style={styles.header}>
+        <Pressable onPress={() => setQuickOpen(true)} hitSlop={8} style={styles.quickButton}>
+          <Text style={styles.quickButtonText}>Quick</Text>
+        </Pressable>
         <View>
           <Text style={styles.title}>Chats</Text>
           {teamDisplayName && (
@@ -233,6 +238,8 @@ export default function ChatListScreen() {
           ) : null
         }
       />
+
+      <QuickActions visible={quickOpen} onClose={() => setQuickOpen(false)} />
     </View>
   );
 
@@ -281,6 +288,18 @@ const styles = StyleSheet.create({
     color: colors.text,
     paddingHorizontal: 12,
     fontSize: 14,
+  },
+  quickButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+    marginRight: 10,
+  },
+  quickButtonText: {
+    color: colors.accentText,
+    fontWeight: "700",
+    fontSize: 12,
   },
   twoPane: {
     flexDirection: "row",
