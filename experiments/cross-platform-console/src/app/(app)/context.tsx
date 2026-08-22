@@ -2,8 +2,10 @@ import { useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -20,6 +22,8 @@ const WINDOWS: ContextTreeWindow[] = ["1d", "7d", "30d"];
  * Context page). Tap an entry to expand its summary.
  */
 export default function ContextScreen() {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 1024;
   const [window, setWindow] = useState<ContextTreeWindow>("7d");
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -57,11 +61,11 @@ export default function ContextScreen() {
           <Text style={styles.errorText}>{error instanceof Error ? error.message : "Failed to load context"}</Text>
         </View>
       ) : updates.length === 0 ? (
-        <View style={styles.center}>
+        <View style={[styles.center, isWide && styles.wideCenter]}>
           <Text style={styles.emptyText}>No context changes in the last {window}.</Text>
         </View>
       ) : (
-        <View style={styles.list}>
+        <ScrollView contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}>
           {updates.map((update) => {
             const expanded = expandedId === update.id;
             return (
@@ -88,13 +92,24 @@ export default function ContextScreen() {
               </Pressable>
             );
           })}
-        </View>
+        </ScrollView>
       )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  wideCenter: {
+    maxWidth: 900,
+    width: "100%",
+    alignSelf: "center",
+  },
+  wideList: {
+    maxWidth: 900,
+    width: "100%",
+    alignSelf: "center",
+    paddingHorizontal: 16,
+  },
   container: {
     flex: 1,
     backgroundColor: colors.bg,
