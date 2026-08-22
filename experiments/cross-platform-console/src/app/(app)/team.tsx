@@ -67,7 +67,13 @@ export default function TeamScreen() {
               {item.agents.map((agent) => (
                 <Pressable
                   key={agent.uuid}
-                  onPress={() => router.push(`/agent/${agent.uuid}`)}
+                  onPress={() =>
+                    router.push({
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      pathname: `/agent/${agent.uuid}` as any,
+                      params: { provider: agent.runtimeProvider ?? "" },
+                    })
+                  }
                   style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
                 >
                   <Avatar
