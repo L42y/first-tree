@@ -5,6 +5,9 @@ const config = {
   version: "0.1.0",
   orientation: "default",
   icon: "./assets/icon.png",
+  // Deep-link scheme — prerequisite for OAuth link/unlink round-trips on
+  // device builds and silences the router's Linking warning.
+  scheme: "first-tree",
   // Dark-locked: the app never follows the OS appearance. Every screen
   // must still style from ~/lib/theme tokens — this only guarantees the
   // system chrome and root window are dark when one is missed.
