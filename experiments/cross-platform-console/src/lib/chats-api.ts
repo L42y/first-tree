@@ -128,6 +128,11 @@ export async function createTaskChat(
   });
 }
 
+/** Rename a chat (`PATCH /chats/:id`, same body as web). */
+export async function renameChat(chatId: string, topic: string): Promise<void> {
+  await api.patch(`/chats/${encodeURIComponent(chatId)}`, { topic });
+}
+
 /** Archive or restore a chat (`POST /chats/:id/engagement`). */
 export async function setChatEngagement(
   chatId: string,

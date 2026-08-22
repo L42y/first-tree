@@ -3,6 +3,7 @@ import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   RefreshControl,
   StyleSheet,
   TextInput,
@@ -15,7 +16,7 @@ import { Pressable } from "react-native";
 
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { useRouter } from "expo-router";
-import { fetchChatRows, setChatEngagement } from "~/lib/chats-api";
+import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
@@ -102,26 +103,42 @@ export default function ChatListScreen() {
     return items;
   }, [visibleRows]);
 
+  const renameRow = useCallback(
+    (row: MeChatRow) => {
+      if (Platform.OS !== "ios") return; // Alert.prompt is iOS-only in this experiment
+      Alert.prompt("Rename chat", undefined, (text) => {
+        const topic = text?.trim();
+        if (!topic) return;
+        void renameChat(row.chatId, topic).then(() =>
+          queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
+        );
+      }, undefined, row.title);
+    },
+    [queryClient],
+  );
+
   const archiveRow = useCallback(
     (row: MeChatRow) => {
       const archived = row.engagementStatus === "archived";
-      Alert.alert(
-        row.title,
-        archived ? "Move back to your chats?" : "Archive this chat?",
-        [
-          { text: "Cancel", style: "cancel" },
-          {
-            text: archived ? "Unarchive" : "Archive",
-            onPress: () => {
-              void setChatEngagement(row.chatId, archived ? "active" : "archived").then(() =>
-                queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
-              );
-            },
-          },
-        ],
+      void setChatEngagement(row.chatId, archived ? "active" : "archived").then(() =>
+        queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] }),
       );
     },
     [queryClient],
+  );
+
+  const rowActions = useCallback(
+    (row: MeChatRow) => {
+      Alert.alert(row.title, undefined, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Rename", onPress: () => renameRow(row) },
+        {
+          text: row.engagementStatus === "archived" ? "Unarchive" : "Archive",
+          onPress: () => archiveRow(row),
+        },
+      ]);
+    },
+    [renameRow, archiveRow],
   );
 
   const onRefresh = useCallback(async () => {
@@ -196,7 +213,7 @@ export default function ChatListScreen() {
               chat={item.row}
               selfAgentId={selfAgentId}
               onPressChat={isWide ? setSelectedChatId : undefined}
-              onLongPressChat={archiveRow}
+              onLongPressChat={rowActions}
             />
           )
         }
