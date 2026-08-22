@@ -5,6 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useAuth } from "~/lib/auth-context";
 import { listMyClients, listMyOrganizations } from "~/lib/team-api";
+import { getMyAuthProviders, listGitHubRepos } from "~/lib/integrations-api";
 import { Avatar } from "~/components/avatar";
 import { API_BASE_URL } from "~/lib/env";
 import { colors } from "~/lib/theme";
@@ -33,6 +34,16 @@ export default function SettingsScreen() {
   const clientsQuery = useQuery({
     queryKey: ["me", "clients"],
     queryFn: ({ signal }) => listMyClients(signal),
+  });
+
+  const authProvidersQuery = useQuery({
+    queryKey: ["me", "auth-providers"],
+    queryFn: ({ signal }) => getMyAuthProviders(signal),
+  });
+
+  const githubReposQuery = useQuery({
+    queryKey: ["me", "github-repos"],
+    queryFn: ({ signal }) => listGitHubRepos(signal),
   });
 
   return (
@@ -102,6 +113,34 @@ export default function SettingsScreen() {
           {!clientsQuery.isLoading && (clientsQuery.data?.length ?? 0) === 0 && (
             <Text style={styles.workspaceMeta}>No connected computers.</Text>
           )}
+        </View>
+
+        <Text style={styles.sectionHeader}>Integrations</Text>
+        <View style={[styles.card, styles.workspaceCard]}>
+          {(authProvidersQuery.data?.providers ?? []).map((provider) => (
+            <View key={provider.provider} style={styles.orgRow}>
+              <Text style={styles.orgName}>
+                {provider.provider === "google" ? "Google" : "GitHub"} sign-in
+              </Text>
+              <Text style={styles.orgMeta}>
+                {(provider.connected ?? false)
+                  ? `Connected${provider.email ? ` · ${provider.email}` : ""}`
+                  : "Not connected"}
+              </Text>
+            </View>
+          ))}
+          {!authProvidersQuery.isLoading &&
+            (authProvidersQuery.data?.providers?.length ?? 0) === 0 && (
+              <Text style={styles.workspaceMeta}>Loading sign-in identities…</Text>
+            )}
+          <View style={[styles.orgRow, styles.orgRowLast]}>
+            <Text style={styles.orgName}>GitHub repositories</Text>
+            <Text style={styles.orgMeta}>
+              {githubReposQuery.isLoading
+                ? "…"
+                : `${githubReposQuery.data?.items?.length ?? 0} accessible via the App`}
+            </Text>
+          </View>
         </View>
 
         <Text style={styles.sectionHeader}>About</Text>
@@ -188,6 +227,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+  },
+  orgRowLast: {
+    borderBottomWidth: 0,
   },
   orgRowActive: {
     backgroundColor: "rgba(59,130,246,0.12)",
