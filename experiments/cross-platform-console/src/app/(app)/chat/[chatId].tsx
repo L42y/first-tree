@@ -22,6 +22,7 @@ import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
 import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
+import { RequestCard } from "~/components/request-card";
 import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
@@ -176,14 +177,23 @@ export default function ChatDetailScreen() {
         keyExtractor={(item) => item.id}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="interactive"
-        renderItem={({ item }) => (
-          <ChatMessageBubble
-            message={item}
-            isMe={item.senderId === memberId || item.senderId === user?.id}
-            senderName={participantNames(item.senderId)}
-            avatar={toBubbleAvatar(item.senderId)}
-          />
-        )}
+        renderItem={({ item }) =>
+          item.format === "request" ? (
+            <RequestCard
+              chatId={chatId}
+              message={item}
+              messages={messages}
+              selfAgentId={selfAgentId}
+            />
+          ) : (
+            <ChatMessageBubble
+              message={item}
+              isMe={item.senderId === memberId || item.senderId === user?.id}
+              senderName={participantNames(item.senderId)}
+              avatar={toBubbleAvatar(item.senderId)}
+            />
+          )
+        }
         contentContainerStyle={styles.messages}
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
       />
