@@ -138,7 +138,7 @@ export default function SettingsScreen() {
             <Text style={styles.orgMeta}>
               {githubReposQuery.isLoading
                 ? "…"
-                : `${githubReposQuery.data?.items?.length ?? 0} accessible via the App`}
+                : `${githubReposQuery.data?.repos?.length ?? 0} accessible via the App`}
             </Text>
           </View>
         </View>

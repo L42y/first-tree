@@ -15,9 +15,12 @@ export async function getMyAuthProviders(signal?: AbortSignal): Promise<AuthProv
   return api.get<AuthProvidersResponse>("/me/auth-providers", { signal });
 }
 
+export type GitHubRepo = {
+  fullName: string;
+  private: boolean;
+};
+
 /** Repos the GitHub App can access (`GET /me/github/repos`). */
-export async function listGitHubRepos(
-  signal?: AbortSignal,
-): Promise<{ items: Array<{ fullName?: string; name?: string }> }> {
-  return api.get<{ items: Array<{ fullName?: string; name?: string }> }>("/me/github/repos", { signal });
+export async function listGitHubRepos(signal?: AbortSignal): Promise<{ repos: GitHubRepo[] }> {
+  return api.get<{ repos: GitHubRepo[] }>("/me/github/repos", { signal });
 }
