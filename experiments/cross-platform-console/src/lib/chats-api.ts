@@ -104,3 +104,25 @@ export async function fetchChatRows(
   } while (cursor);
   return collected;
 }
+
+/**
+ * Start a task chat with an agent — mirrors the web console's
+ * `createMeTaskChat` body (POST {withOrg}/chats).
+ */
+export async function createTaskChat(
+  recipientAgentId: string,
+  message: string,
+): Promise<{ chatId: string }> {
+  return api.post<{ chatId: string }>(withOrg("/chats"), {
+    mode: "task",
+    initialRecipientAgentIds: [recipientAgentId],
+    initialRecipientNames: [],
+    contextParticipantAgentIds: [],
+    contextParticipantNames: [],
+    initialMessage: {
+      format: "text",
+      content: message,
+      source: "web",
+    },
+  });
+}

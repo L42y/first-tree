@@ -4,6 +4,7 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  TextInput,
   Text,
   View,
 } from "react-native";
@@ -17,6 +18,8 @@ import { agentSchema } from "@first-tree/shared";
 import { Avatar } from "~/components/avatar";
 import { api, withOrg } from "~/lib/api";
 import { listMyClients } from "~/lib/team-api";
+import { createTaskChat } from "~/lib/chats-api";
+import { router } from "expo-router";
 import { colors } from "~/lib/theme";
 
 /**
@@ -28,6 +31,8 @@ export default function AgentDetailScreen() {
   const { uuid, provider } = useLocalSearchParams<{ uuid: string; provider?: string }>();
   const queryClient = useQueryClient();
   const [acting, setActing] = useState(false);
+  const [chatDraft, setChatDraft] = useState("");
+  const [startingChat, setStartingChat] = useState(false);
 
   const { data, isLoading, error } = useQuery<Agent>({
     queryKey: ["agent", uuid],
@@ -131,6 +136,42 @@ export default function AgentDetailScreen() {
 
       {!isHuman && (
         <>
+          <Text style={styles.sectionHeader}>Start chat</Text>
+          <View style={styles.card}>
+            <TextInput
+              style={styles.chatInput}
+              placeholder={`Message ${data.displayName}…`}
+              placeholderTextColor={colors.textMuted}
+              value={chatDraft}
+              onChangeText={setChatDraft}
+              multiline
+            />
+            <Pressable
+              disabled={startingChat || !chatDraft.trim()}
+              onPress={async () => {
+                setStartingChat(true);
+                try {
+                  const created = await createTaskChat(data.uuid, chatDraft.trim());
+                  setChatDraft("");
+                  router.replace(`/chat/${created.chatId}`);
+                } finally {
+                  setStartingChat(false);
+                }
+              }}
+              style={({ pressed }) => [
+                styles.startButton,
+                (startingChat || !chatDraft.trim()) && styles.disabled,
+                pressed && styles.pressed,
+              ]}
+            >
+              {startingChat ? (
+                <ActivityIndicator size="small" color={colors.accentText} />
+              ) : (
+                <Text style={styles.startButtonText}>Start chat</Text>
+              )}
+            </Pressable>
+          </View>
+
           <Text style={styles.sectionHeader}>Actions</Text>
           <View style={styles.card}>
             <Pressable
@@ -266,6 +307,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 20,
     paddingBottom: 8,
+  },
+  chatInput: {
+    minHeight: 44,
+    maxHeight: 120,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    color: colors.text,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+  },
+  startButton: {
+    marginTop: 8,
+    borderRadius: 10,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    paddingVertical: 11,
+  },
+  startButtonText: {
+    color: colors.accentText,
+    fontWeight: "700",
+  },
+  disabled: {
+    opacity: 0.45,
   },
   actionButton: {
     paddingVertical: 12,
