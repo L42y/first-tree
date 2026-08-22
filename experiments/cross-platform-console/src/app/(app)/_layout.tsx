@@ -57,6 +57,14 @@ export default function AppLayout() {
           options={{ title: "Context" }}
         />
         <Tabs.Screen
+          name="docs"
+          options={{ title: "Docs" }}
+        />
+        <Tabs.Screen
+          name="agent/[uuid]"
+          options={{ href: null, tabBarButton: () => null }}
+        />
+        <Tabs.Screen
           name="settings"
           options={{ title: "Settings" }}
         />
