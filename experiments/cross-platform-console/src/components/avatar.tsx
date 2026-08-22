@@ -48,11 +48,6 @@ export function resolveAvatarHueIndex(colorToken: string | null | undefined, see
 
 export type AvatarKind = "human" | "agent";
 
-const KIND_GLYPHS: Record<AvatarKind, string> = {
-  human: "👤",
-  agent: "🤖",
-};
-
 function initialsFor(name: string): string {
   const trimmed = name.trim();
   if (trimmed.length === 0) return "?";
@@ -88,23 +83,31 @@ export function Avatar({
   showKindGlyph?: boolean;
 }) {
   const hue = HUES[resolveAvatarHueIndex(colorToken, seed)];
-  const glyphSize = Math.max(10, Math.round(size * 0.38));
 
+  // Clean shape language instead of emoji badges:
+  //   human → thin light ring around the avatar
+  //   agent → small accent dot bottom-right
+  const isHuman = kind === "human";
   return (
     <View style={[styles.wrap, { width: size, height: size }]}>
-      {imageUrl ? (
-        <Image source={{ uri: imageUrl }} style={[styles.image, { width: size, height: size }]} />
-      ) : (
-        <View style={[styles.disc, { width: size, height: size, backgroundColor: hue }]}>
-          <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>
-            {initialsFor(name)}
-          </Text>
-        </View>
-      )}
-      {showKindGlyph && (
-        <View style={[styles.glyphBadge, { width: glyphSize + 6, height: glyphSize + 6 }]}>
-          <Text style={{ fontSize: glyphSize }}>{KIND_GLYPHS[kind]}</Text>
-        </View>
+      <View
+        style={[
+          isHuman ? styles.humanRing : null,
+          { width: size, height: size, borderRadius: 9999 },
+        ]}
+      >
+        {imageUrl ? (
+          <Image source={{ uri: imageUrl }} style={[styles.image, { width: size, height: size }]} />
+        ) : (
+          <View style={[styles.disc, { width: size, height: size, backgroundColor: hue }]}>
+            <Text style={[styles.initials, { fontSize: Math.round(size * 0.36) }]}>
+              {initialsFor(name)}
+            </Text>
+          </View>
+        )}
+      </View>
+      {showKindGlyph && !isHuman && (
+        <View style={[styles.agentDot, { width: Math.max(8, size * 0.22), height: Math.max(8, size * 0.22) }]} />
       )}
     </View>
   );
@@ -127,15 +130,18 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: "#FFFFFF",
   },
-  glyphBadge: {
+  humanRing: {
+    borderWidth: 2,
+    borderColor: "rgba(232,241,245,0.85)",
+    overflow: "hidden",
+  },
+  agentDot: {
     position: "absolute",
-    right: -3,
-    bottom: -3,
+    right: -2,
+    bottom: -2,
     borderRadius: 9999,
-    backgroundColor: "#07151F",
-    borderWidth: 1.5,
-    borderColor: "rgba(255,255,255,0.25)",
-    alignItems: "center",
-    justifyContent: "center",
+    backgroundColor: "#00A6E7",
+    borderWidth: 2,
+    borderColor: "#07151F",
   },
 });

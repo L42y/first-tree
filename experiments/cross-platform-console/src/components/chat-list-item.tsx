@@ -13,6 +13,7 @@ type ChatListItemProps = {
 
 export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
   const pinned = chat.pinnedAt !== null && chat.pinnedAt !== undefined;
+  const hasOpenAsk = chat.openRequestCount > 0;
   const router = useRouter();
   const preview = chat.description ?? chat.lastMessagePreview ?? "No messages yet";
   const hasUnread = chat.unreadMentionCount > 0;
@@ -50,7 +51,12 @@ export function ChatListItem({ chat, selfAgentId }: ChatListItemProps) {
           >
             {chat.title}
           </Text>
-          {hasUnread && (
+          {hasOpenAsk && (
+            <View style={[styles.badge, styles.askBadge]}>
+              <Text style={styles.badgeText}>?</Text>
+            </View>
+          )}
+          {!hasOpenAsk && hasUnread && (
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{chat.unreadMentionCount}</Text>
             </View>
@@ -120,6 +126,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginLeft: 8,
     paddingHorizontal: 6,
+  },
+  askBadge: {
+    paddingHorizontal: 7,
   },
   badgeText: {
     color: colors.accentText,

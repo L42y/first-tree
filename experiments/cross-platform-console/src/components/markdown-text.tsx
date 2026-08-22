@@ -15,6 +15,51 @@ import { colors } from "~/lib/theme";
  *    render formatted there.
  */
 
+/** Complete dark theme for the native renderer (every element type). */
+const nativeTheme = {
+  paragraph: { color: colors.text, fontSize: 15, marginTop: 0, marginBottom: 8 },
+  h1: { color: colors.text, fontSize: 20 },
+  h2: { color: colors.text, fontSize: 18 },
+  h3: { color: colors.text, fontSize: 16 },
+  h4: { color: colors.text },
+  h5: { color: colors.text },
+  h6: { color: colors.textSecondary },
+  strong: { color: colors.text },
+  em: { color: colors.text },
+  strikethrough: { color: colors.textMuted },
+  link: { color: colors.accent, underline: true },
+  blockquote: {
+    color: colors.textSecondary,
+    backgroundColor: colors.surface,
+    borderColor: colors.accent,
+    borderWidth: 2,
+  },
+  list: {
+    color: colors.text,
+    fontSize: 15,
+    markerColor: colors.textMuted,
+    markerMinWidth: 16,
+    gapWidth: 8,
+    marginLeft: 18,
+    itemSpacing: 4,
+  },
+  codeBlock: {
+    color: colors.text,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+  },
+  code: { color: colors.text, backgroundColor: colors.surface },
+  thematicBreak: { color: colors.border },
+  table: {
+    color: colors.text,
+    borderColor: colors.border,
+    headerBackgroundColor: colors.surfaceStrong,
+    headerTextColor: colors.text,
+    rowEvenBackgroundColor: "rgba(255,255,255,0.03)",
+    rowOddBackgroundColor: "transparent",
+  },
+};
+
 const IS_EXPO_GO = Constants.appOwnership === "expo";
 
 const jsTheme = {
@@ -57,7 +102,14 @@ const jsTheme = {
   ordered_list_icon: { color: colors.textMuted },
   checkbox: { color: colors.text },
   checkbox_icon: { color: colors.textMuted },
-  table: { borderColor: colors.border },
+  table: {
+    color: colors.text,
+    borderColor: colors.border,
+    headerBackgroundColor: colors.surfaceStrong,
+    headerTextColor: colors.text,
+    rowEvenBackgroundColor: "rgba(255,255,255,0.03)",
+    rowOddBackgroundColor: "transparent",
+  },
   thead: { color: colors.text, backgroundColor: colors.surfaceStrong },
   tbody: { color: colors.text },
   th: { color: colors.text },
@@ -75,10 +127,7 @@ export function MarkdownText({ value }: { value: string }) {
   }
   return (
     <View>
-      <EnrichedMarkdownText
-        markdown={value}
-        markdownStyle={{ paragraph: { color: colors.text } }}
-      />
+      <EnrichedMarkdownText markdown={value} markdownStyle={nativeTheme} />
     </View>
   );
 }

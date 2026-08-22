@@ -7,7 +7,7 @@ import {
   View,
 } from "react-native";
 import { LegendList } from "@legendapp/list/react-native";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Pressable } from "react-native";
 
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
@@ -34,7 +34,7 @@ export default function ChatListScreen() {
     queryKey: ["me", "chats", "list", filter],
     // Polling refetches produce fresh array identities; without this the
     // list visibly jumps every interval.
-    placeholderData: (prev) => prev,
+    placeholderData: keepPreviousData,
     queryFn: async ({ signal }) => {
       const collected: MeChatRow[] = [];
       const seen = new Set<string>();
@@ -73,18 +73,26 @@ export default function ChatListScreen() {
     | { kind: "header"; id: string; label: string }
     | { kind: "chat"; id: string; row: MeChatRow };
 
-  // Pinned chats first under their own section label; everything else
-  // follows under "all".
+  // Chats with an open ask for you outrank everything (own section),
+  // then pinned chats, then the rest.
   const listItems = useMemo<ListItem[]>(() => {
-    const pinned = rows.filter((r) => r.pinnedAt !== null && r.pinnedAt !== undefined);
-    const rest = rows.filter((r) => !pinned.includes(r));
+    const needsYou = rows.filter((r) => r.openRequestCount > 0);
+    const needsYouIds = new Set(needsYou.map((r) => r.chatId));
+    const pinned = rows.filter(
+      (r) => !needsYouIds.has(r.chatId) && r.pinnedAt !== null && r.pinnedAt !== undefined,
+    );
+    const rest = rows.filter((r) => !needsYouIds.has(r.chatId) && !pinned.includes(r));
     const items: ListItem[] = [];
+    if (needsYou.length > 0) {
+      items.push({ kind: "header", id: "header-needs-you", label: "Needs your answer" });
+      for (const row of needsYou) items.push({ kind: "chat", id: row.chatId, row });
+    }
     if (pinned.length > 0) {
       items.push({ kind: "header", id: "header-pinned", label: "Pinned" });
       for (const row of pinned) items.push({ kind: "chat", id: row.chatId, row });
     }
     if (rest.length > 0) {
-      if (pinned.length > 0) items.push({ kind: "header", id: "header-all", label: "All" });
+      items.push({ kind: "header", id: "header-all", label: "All" });
       for (const row of rest) items.push({ kind: "chat", id: row.chatId, row });
     }
     return items;
