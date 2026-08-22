@@ -15,12 +15,28 @@ import { API_BASE_URL } from "./env";
 
 export type SignInProvider = "google" | "github" | "oidc";
 
-export const COMPLETE_PATH_RE = /^\/auth\/(github\/|google\/)?complete$/;
+export const COMPLETE_PATH_RE = /^\/auth\/(github\/|google\/)?complete\/?(\?.*)?$/;
 
 export type OAuthCompletion =
   | { kind: "success"; accessToken: string; refreshToken: string }
   | { kind: "error"; code: string };
 
+/** True when the URL is a server callback landing page (any hash state). */
+export function isCompletionPath(url: string): boolean {
+  try {
+    return COMPLETE_PATH_RE.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parse definitive completion data from the URL fragment. Returns null when
+ * the URL has no fragment yet — engines frequently report redirect targets
+ * without their fragment in navigation callbacks, and treating that as an
+ * error both blocks the page load (preventing document-start capture) and
+ * fabricates failures.
+ */
 export function parseCompletionUrl(url: string): OAuthCompletion | null {
   let parsed: URL;
   try {
@@ -29,13 +45,15 @@ export function parseCompletionUrl(url: string): OAuthCompletion | null {
     return null;
   }
   if (!COMPLETE_PATH_RE.test(parsed.pathname)) return null;
-  const params = new URLSearchParams(parsed.hash.replace(/^#/, ""));
+  const hash = parsed.hash.replace(/^#/, "");
+  if (!hash) return null;
+  const params = new URLSearchParams(hash);
   const errorCode = params.get("error");
   if (errorCode) return { kind: "error", code: errorCode };
   const accessToken = params.get("access");
   const refreshToken = params.get("refresh");
   if (accessToken && refreshToken) return { kind: "success", accessToken, refreshToken };
-  return { kind: "error", code: "missing_tokens" };
+  return null;
 }
 
 /** Friendly copy for callback error codes — subset of the web console's map. */

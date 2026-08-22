@@ -1,5 +1,5 @@
 import type { OAuthCompletion, SignInProvider } from "~/lib/oauth";
-import { parseCompletionUrl } from "~/lib/oauth";
+import { isCompletionPath, parseCompletionUrl } from "~/lib/oauth";
 import { oauthStartUrl } from "~/lib/oauth";
 import { colors } from "~/lib/theme";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
@@ -11,30 +11,21 @@ import type { WebViewNavigation } from "react-native-webview";
  * exact flow the web console runs — server-signed state, provider consent,
  * fragment redirect.
  *
- * Completion detection is layered, because engines differ in whether
- * navigation callbacks expose URL fragments:
- *
- *  1. `onShouldStartLoadWithRequest` / `onNavigationStateChange` parse the
- *     navigation URL when the fragment is visible there.
- *  2. A document-start user script (injected BEFORE any page JS) samples
- *     `location.href` synchronously — this is the reliable path on iOS,
- *     because the completion page is a React SPA whose first effect calls
- *     `history.replaceState` and wipes the fragment within milliseconds.
+ * Completion detection is layered:
+ *  1. Navigation gates parse the URL when its fragment is visible there.
+ *     IMPORTANT: a completion-path URL WITHOUT a hash is NOT treated as a
+ *     result — iOS reports redirect targets without their fragment, and
+ *     blocking that navigation would prevent the document-start bridge
+ *     below from ever reading it. We allow the load instead.
+ *  2. A document-start user script samples `location.href` before any page
+ *     JS runs (the completion SPA wipes the fragment via history.replaceState
+ *     within milliseconds) and posts it over the WebView message bridge.
  *  3. The same script keeps polling briefly in case injection timing slips.
- *
- * The token-bearing URL is never rendered as a page.
  */
 
-/**
- * Runs at document start AND document end. Reports the completion URL via
- * postMessage as soon as the location matches a server callback landing
- * path. Only reports once a hash is present (the fragment IS part of the
- * navigation URL at document start), with a bounded retry loop for late
- * injections.
- */
 const BRIDGE_JS = `
 (function() {
-  var RE = /^\\/auth\\/(github\\/|google\\/)?complete$/;
+  var RE = /^\\/auth\\/(github\\/|google\\/)?complete\\/?(\\?.*)?$/;
   var attempts = 0;
   var timer = null;
   function report() {
@@ -69,13 +60,16 @@ export function OAuthSheet(props: {
   const startUrl = provider ? oauthStartUrl(provider) : null;
 
   const onNavigationStateChange = (nav: WebViewNavigation) => {
+    if (__DEV__) console.log("[oauth] nav:", nav.url);
     const completion = parseCompletionUrl(nav.url);
     if (completion) onComplete(completion);
   };
 
-  // First gate: never even load the token-bearing URL when the engine
-  // exposes the fragment here.
+  // Only block the load when the fragment data is actually present.
   const onShouldStartLoadWithRequest = (request: { url: string }) => {
+    if (__DEV__ && isCompletionPath(request.url)) {
+      console.log("[oauth] shouldLoad (completion path):", request.url);
+    }
     const completion = parseCompletionUrl(request.url);
     if (completion) {
       onComplete(completion);
@@ -87,6 +81,7 @@ export function OAuthSheet(props: {
   const onMessage = (event: { nativeEvent: { data: string } }) => {
     try {
       const message = JSON.parse(event.nativeEvent.data) as { type?: string; href?: string };
+      if (__DEV__) console.log("[oauth] bridge message:", event.nativeEvent.data);
       if (message.type === "oauth-complete" && message.href) {
         const completion = parseCompletionUrl(message.href);
         if (completion) onComplete(completion);
@@ -125,7 +120,7 @@ export function OAuthSheet(props: {
 const styles = StyleSheet.create({
   sheet: {
     flex: 1,
-    backgroundColor: colors.bg,
+    backgroundColor: "#fff",
   },
   sheetHeader: {
     paddingTop: 48,
