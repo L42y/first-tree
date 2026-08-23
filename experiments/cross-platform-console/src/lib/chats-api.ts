@@ -48,6 +48,7 @@ export type PaginatedMessages = {
 export async function listChatMessages(
   chatId: string,
   params?: { limit?: number; cursor?: string },
+  signal?: AbortSignal,
 ): Promise<PaginatedMessages> {
   const qs = new URLSearchParams();
   if (params?.limit) qs.set("limit", String(params.limit));
@@ -55,6 +56,7 @@ export async function listChatMessages(
   const query = qs.toString();
   return api.get<PaginatedMessages>(
     `/chats/${encodeURIComponent(chatId)}/messages${query ? `?${query}` : ""}`,
+    { signal },
   );
 }
 

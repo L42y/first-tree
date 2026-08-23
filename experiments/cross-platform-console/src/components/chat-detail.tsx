@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { extractMentions } from "@first-tree/shared";
 import type { ChatDetail, Message } from "@first-tree/shared";
@@ -77,9 +77,14 @@ export function ChatDetailContent({
     queryFn: () => getChat(chatId),
   });
 
-  const messagesQuery = useQuery<PaginatedMessages>({
+  // Newest-first pages from the server; flattened oldest→newest for display.
+  // "Load older" fetches previous pages via the cursor.
+  const messagesQuery = useInfiniteQuery({
     queryKey: ["chats", chatId, "messages"],
-    queryFn: () => listChatMessages(chatId, { limit: PAGE_SIZE }),
+    queryFn: ({ pageParam, signal }) =>
+      listChatMessages(chatId, { limit: PAGE_SIZE, cursor: pageParam }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 
   useEffect(() => {
@@ -87,7 +92,10 @@ export function ChatDetailContent({
     pendingScrollRef.current = true;
   }, [chatId]);
 
-  const messageCount = messagesQuery.data?.items.length ?? 0;
+  const messageCount = (messagesQuery.data?.pages ?? []).reduce(
+    (total, page) => total + page.items.length,
+    0,
+  );
   useEffect(() => {
     if (messageCount > 0) pendingScrollRef.current = true;
   }, [messageCount]);
@@ -118,7 +126,14 @@ export function ChatDetailContent({
   );
 
   const chat = chatQuery.data;
-  const messages = messagesQuery.data?.items ?? [];
+  const messages = useMemo(
+    () =>
+      (messagesQuery.data?.pages ?? [])
+        .flatMap((page) => page.items)
+        .slice()
+        .reverse(),
+    [messagesQuery.data],
+  );
 
   // The viewer's own open ask (if any): targeted at selfAgentId and not yet
   // resolved by any later message. Docked above the list; the composer
@@ -262,6 +277,12 @@ export function ChatDetailContent({
             />
           );
         }}
+        onStartReached={() => {
+          if (messagesQuery.hasPreviousPage && !messagesQuery.isFetchingPreviousPage) {
+            void messagesQuery.fetchPreviousPage();
+          }
+        }}
+        onEndReachedThreshold={0.5}
         contentContainerStyle={styles.messages}
         onContentSizeChange={() => {
           if (!pendingScrollRef.current) return;
