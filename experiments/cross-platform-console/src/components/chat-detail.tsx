@@ -162,13 +162,15 @@ export function ChatDetailContent({
         "msgs=" + messages.length,
       );
     }
-    if (openRequestsQuery.isSuccess) {
+    if (openRequestsQuery.isSuccess && serverOpen.length > 0) {
       const first = serverOpen[0];
-      if (!first) return null;
       const parsed = parseAskRequest(first);
-      if (__DEV__) console.log("[ask] server first parsed:", parsed ? "yes" : "no");
-      return parsed ? { message: first, parsed } : null;
+      if (parsed) return { message: first, parsed };
     }
+    // Fallback + union: the server scopes open-requests by the caller's
+    // CURRENT human agent — an ask created under a different membership can
+    // return empty there while still being open in this chat. Scan the
+    // loaded timeline for unresolved request-format messages.
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.format !== "request") continue;
