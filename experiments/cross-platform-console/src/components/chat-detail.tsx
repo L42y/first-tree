@@ -59,6 +59,7 @@ export function ChatDetailContent({
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
   // behind the keyboard on iOS.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [askCollapsed, setAskCollapsed] = useState(false);
   useEffect(() => {
     if (Platform.OS !== "ios") return;
     const showSub = Keyboard.addListener("keyboardDidShow", (e) =>
@@ -146,7 +147,7 @@ export function ChatDetailContent({
     setSending(true);
 
     try {
-      if (openAsk) {
+      if (openAsk && askCollapsed) {
         // While an open ask is pending, Send answers it (the reply carries
         // metadata.resolves per the server contract).
         await resolveAskRequest(chatId, openAsk.message, "answered", text);
@@ -236,19 +237,6 @@ export function ChatDetailContent({
         </View>
       )}
 
-      {openAsk && (
-        <RequestDock
-          question={openAsk.message}
-          parsed={openAsk.parsed}
-          onSubmit={(answer) => {
-            void submitAnswer(openAsk.message, answer);
-          }}
-          onSkip={() => {
-            void submitAnswer(openAsk.message, "");
-          }}
-        />
-      )}
-
       <FlatList
         ref={listRef}
         data={messages}
@@ -282,6 +270,42 @@ export function ChatDetailContent({
         }}
       />
 
+      {openAsk && !askCollapsed && (
+        <RequestDock
+          question={openAsk.message}
+          parsed={openAsk.parsed}
+          collapsed={false}
+          onToggleCollapsed={() => setAskCollapsed(true)}
+          onSubmit={(answer) => {
+            void submitAnswer(openAsk.message, answer);
+            setAskCollapsed(true);
+          }}
+          onSkip={() => {
+            void submitAnswer(openAsk.message, "");
+            setAskCollapsed(true);
+          }}
+          onAskAgent={(text) => {
+            void (async () => {
+              const asker = openAsk.message.senderId;
+              const askerName = participantNames(asker);
+              await sendChatMessage(chatId, `@${askerName} ${text}`, [asker]);
+              await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+            })();
+          }}
+        />
+      )}
+
+      {openAsk && askCollapsed && (
+        <Pressable
+          onPress={() => setAskCollapsed(false)}
+          style={({ pressed }) => [styles.collapsedBar, pressed && styles.collapsedBarPressed]}
+        >
+          <Text style={styles.collapsedKicker}>Open question</Text>
+          <Text style={styles.collapsedHint}>Tap to answer</Text>
+        </Pressable>
+      )}
+
+      {(!openAsk || askCollapsed) && (
       <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
         <TextInput
           style={styles.input}
@@ -297,6 +321,7 @@ export function ChatDetailContent({
           </View>
         </Pressable>
       </View>
+      )}
     </View>
   );
 }
@@ -372,6 +397,30 @@ const styles = StyleSheet.create({
   },
   retryText: {
     color: colors.accentText,
+  },
+  collapsedBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: colors.surfaceStrong,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  collapsedBarPressed: {
+    opacity: 0.75,
+  },
+  collapsedKicker: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: colors.accent,
+  },
+  collapsedHint: {
+    color: colors.textSecondary,
+    fontSize: 12,
   },
   composer: {
     flexDirection: "row",
