@@ -154,10 +154,19 @@ export function ChatDetailContent({
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
+    if (__DEV__) {
+      console.log(
+        "[ask]",
+        "status=" + (openRequestsQuery.isSuccess ? "ok" : openRequestsQuery.isError ? "err" : "loading"),
+        "serverOpen=" + serverOpen.length,
+        "msgs=" + messages.length,
+      );
+    }
     if (openRequestsQuery.isSuccess) {
       const first = serverOpen[0];
       if (!first) return null;
       const parsed = parseAskRequest(first);
+      if (__DEV__) console.log("[ask] server first parsed:", parsed ? "yes" : "no");
       return parsed ? { message: first, parsed } : null;
     }
     for (let i = messages.length - 1; i >= 0; i--) {
