@@ -82,6 +82,10 @@ export default function AppLayout() {
           options={{ href: null, tabBarButton: () => null }}
         />
         <Tabs.Screen
+          name="attention"
+          options={{ href: null, tabBarButton: () => null }}
+        />
+        <Tabs.Screen
           name="repos"
           options={{ href: null, tabBarButton: () => null }}
         />
@@ -95,6 +99,10 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="agent/[uuid]"
+          options={{ href: null, tabBarButton: () => null }}
+        />
+        <Tabs.Screen
+          name="attention"
           options={{ href: null, tabBarButton: () => null }}
         />
         <Tabs.Screen

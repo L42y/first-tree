@@ -25,6 +25,7 @@ export function QuickActions({
   };
 
   const items: Array<{ label: string; action: () => void; destructive?: boolean }> = [
+    { label: "Needs you (asks + unread)", action: () => go("/attention") },
     { label: "Start chat with an agent…", action: () => go("/team") },
     { label: "Archived chats", action: () => go("/") },
     { label: "Repositories", action: () => go("/repos") },
