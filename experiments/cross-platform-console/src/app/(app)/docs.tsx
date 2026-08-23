@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useQuery } from "@tanstack/react-query";
@@ -22,6 +23,8 @@ const STATUS_FILTERS: Array<DocStatus | "all"> = ["all", "draft", "in_review", "
  * to read its latest version as markdown.
  */
 export default function DocsScreen() {
+  const { width } = useWindowDimensions();
+  const isWide = width >= 1024;
   const [statusFilter, setStatusFilter] = useState<DocStatus | "all">("all");
   const [openSlug, setOpenSlug] = useState<string | null>(null);
 
@@ -82,7 +85,7 @@ export default function DocsScreen() {
       ) : (listQuery.data?.items.length ?? 0) === 0 ? (
         <Text style={styles.emptyText}>No documents.</Text>
       ) : (
-        <View style={styles.list}>
+        <ScrollView contentContainerStyle={isWide ? [styles.list, styles.wideList] : styles.list}>
           {(listQuery.data?.items ?? []).map((doc) => (
             <Pressable
               key={doc.id}
@@ -100,7 +103,7 @@ export default function DocsScreen() {
               </Text>
             </Pressable>
           ))}
-        </View>
+        </ScrollView>
       )}
     </View>
   );
@@ -153,6 +156,12 @@ const styles = StyleSheet.create({
   },
   list: {
     paddingBottom: 24,
+  },
+  wideList: {
+    maxWidth: 900,
+    width: "100%",
+    alignSelf: "center",
+    paddingHorizontal: 16,
   },
   card: {
     marginHorizontal: 16,
