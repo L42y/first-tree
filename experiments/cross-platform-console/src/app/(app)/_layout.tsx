@@ -79,19 +79,19 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="agent/new"
-          options={{ href: null, tabBarButton: () => null }}
+          options={{ href: null }}
         />
         <Tabs.Screen
           name="agent/[uuid]"
-          options={{ href: null, tabBarButton: () => null }}
+          options={{ href: null }}
         />
         <Tabs.Screen
           name="attention"
-          options={{ href: null, tabBarButton: () => null }}
+          options={{ href: null }}
         />
         <Tabs.Screen
           name="repos"
-          options={{ href: null, tabBarButton: () => null }}
+          options={{ href: null }}
         />
         <Tabs.Screen
           name="settings"
@@ -99,7 +99,7 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="chat/[chatId]"
-          options={{ href: null, tabBarButton: () => null }}
+          options={{ href: null }}
         />
       </Tabs>
     </View>
