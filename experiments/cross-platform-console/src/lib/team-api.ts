@@ -65,3 +65,13 @@ export type CreateAgentInput = {
 export async function createAgent(input: CreateAgentInput): Promise<ManagedAgent> {
   return api.post<ManagedAgent>(withOrg("/agents"), input);
 }
+
+export type UpdateAgentInput = {
+  displayName?: string;
+  visibility?: "private" | "organization";
+};
+
+/** Update an agent (`PATCH /agents/:uuid`, same fields as web console). */
+export async function updateAgent(uuid: string, input: UpdateAgentInput): Promise<ManagedAgent> {
+  return api.patch<ManagedAgent>(withOrg(`/agents/${encodeURIComponent(uuid)}`), input);
+}

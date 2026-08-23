@@ -17,7 +17,7 @@ import { agentSchema } from "@first-tree/shared";
 
 import { Avatar } from "~/components/avatar";
 import { api, withOrg } from "~/lib/api";
-import { listMyClients } from "~/lib/team-api";
+import { listMyClients, updateAgent } from "~/lib/team-api";
 import { createTaskChat } from "~/lib/chats-api";
 import { router } from "expo-router";
 import { colors } from "~/lib/theme";
@@ -33,6 +33,9 @@ export default function AgentDetailScreen() {
   const [acting, setActing] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [startingChat, setStartingChat] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState<string | null>(null);
+  const [editVisibility, setEditVisibility] = useState<"private" | "organization" | null>(null);
 
   const { data, isLoading, error } = useQuery<Agent>({
     queryKey: ["agent", uuid],
@@ -54,6 +57,27 @@ export default function AgentDetailScreen() {
       await api.post(withOrg(`/agents/${encodeURIComponent(uuid)}${path}`), body ?? {});
       await queryClient.invalidateQueries({ queryKey: ["agent", uuid] });
       await queryClient.invalidateQueries({ queryKey: ["me", "managed-agents"] });
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!data) return;
+    const body: Record<string, unknown> = {};
+    const name = editName?.trim();
+    if (name && name !== data.displayName) body.displayName = name;
+    if (editVisibility && editVisibility !== data.visibility) body.visibility = editVisibility;
+    if (Object.keys(body).length === 0) {
+      setEditing(false);
+      return;
+    }
+    setActing(true);
+    try {
+      await updateAgent(uuid, body);
+      await queryClient.invalidateQueries({ queryKey: ["agent", uuid] });
+      await queryClient.invalidateQueries({ queryKey: ["me", "managed-agents"] });
+      setEditing(false);
     } finally {
       setActing(false);
     }
@@ -121,8 +145,71 @@ export default function AgentDetailScreen() {
           <Text style={styles.displayName}>{data.displayName}</Text>
           <Text style={styles.handle}>{data.name ? `@${data.name}` : ""}</Text>
         </View>
+        {!isHuman && (
+          <Pressable
+            disabled={acting}
+            onPress={() => {
+              setEditName(data.displayName);
+              setEditVisibility(data.visibility === "private" ? "private" : "organization");
+              setEditing((v) => !v);
+            }}
+            hitSlop={8}
+            style={({ pressed }) => [styles.editButton, pressed && styles.pressed, acting && styles.disabled]}
+          >
+            <Text style={styles.editButtonText}>{editing ? "Cancel" : "Edit"}</Text>
+          </Pressable>
+        )}
       </View>
 
+      {editing ? (
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Display name</Text>
+          <TextInput
+            style={styles.input}
+            value={editName ?? ""}
+            onChangeText={setEditName}
+            placeholder="Display name"
+            placeholderTextColor={colors.textMuted}
+          />
+          <Text style={[styles.fieldLabel, styles.fieldLabelSpaced]}>Visibility</Text>
+          <View style={styles.segmentRow}>
+            {(["organization", "private"] as const).map((option) => (
+              <Pressable
+                key={option}
+                onPress={() => setEditVisibility(option)}
+                style={[
+                  styles.segment,
+                  (editVisibility ?? data.visibility) === option && styles.segmentActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.segmentText,
+                    (editVisibility ?? data.visibility) === option && styles.segmentTextActive,
+                  ]}
+                >
+                  {option === "organization" ? "Workspace" : "Private"}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+          <Pressable
+            disabled={acting}
+            onPress={() => void saveEdit()}
+            style={({ pressed }) => [
+              styles.saveButton,
+              acting && styles.disabled,
+              pressed && styles.pressed,
+            ]}
+          >
+            {acting ? (
+              <ActivityIndicator size="small" color={colors.accentText} />
+            ) : (
+              <Text style={styles.saveText}>Save changes</Text>
+            )}
+          </Pressable>
+        </View>
+      ) : (
       <View style={styles.card}>
         {facts.map(([label, value]) =>
           value ? (
@@ -133,6 +220,7 @@ export default function AgentDetailScreen() {
           ) : null,
         )}
       </View>
+      )}
 
       {!isHuman && (
         <>
@@ -298,6 +386,79 @@ const styles = StyleSheet.create({
     maxWidth: "60%",
     textAlign: "right",
   },
+  editButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: colors.surfaceStrong,
+  },
+  editButtonText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  fieldLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: colors.textMuted,
+    marginBottom: 6,
+  },
+  fieldLabelSpaced: {
+    marginTop: 12,
+  },
+  input: {
+    minHeight: 42,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    color: colors.text,
+    paddingHorizontal: 12,
+    fontSize: 15,
+  },
+  segmentRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  segment: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    paddingVertical: 9,
+  },
+  segmentActive: {
+    borderColor: colors.accent,
+    backgroundColor: "rgba(59,130,246,0.15)",
+  },
+  segmentText: {
+    color: colors.textSecondary,
+    fontWeight: "600",
+    fontSize: 13,
+  },
+  segmentTextActive: {
+    color: colors.accentText,
+  },
+  saveButton: {
+    marginTop: 14,
+    borderRadius: 10,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    paddingVertical: 11,
+  },
+  saveText: {
+    color: colors.accentText,
+    fontWeight: "700",
+  },
+  disabled: {
+    opacity: 0.45,
+  },
+  pressed: {
+    opacity: 0.75,
+  },
   sectionHeader: {
     fontSize: 11,
     fontWeight: "700",
@@ -330,9 +491,6 @@ const styles = StyleSheet.create({
   startButtonText: {
     color: colors.accentText,
     fontWeight: "700",
-  },
-  disabled: {
-    opacity: 0.45,
   },
   actionButton: {
     paddingVertical: 12,
@@ -372,8 +530,5 @@ const styles = StyleSheet.create({
   actingSpinner: {
     marginTop: 16,
     alignSelf: "center",
-  },
-  pressed: {
-    opacity: 0.75,
   },
 });
