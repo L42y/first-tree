@@ -43,6 +43,35 @@ export function findResolutionMessage(
   return null;
 }
 
+/**
+ * Server-authoritative open asks for THIS viewer — window-independent and
+ * scoped server-side to the caller's human agent. This is the source of
+ * truth for whether a dock should render (client-side mention matching
+ * missed asks that fell outside the loaded message page).
+ */
+export async function fetchOpenRequests(
+  chatId: string,
+  signal?: AbortSignal,
+): Promise<Message[]> {
+  const res = await api.get<Message[]>(
+    `/chats/${encodeURIComponent(chatId)}/open-requests`,
+    { signal },
+  );
+  return Array.isArray(res) ? res : [];
+}
+
+/** Ask the original agent for clarification WITHOUT resolving the ask. */
+export async function askAgentForClarification(
+  chatId: string,
+  requestId: string,
+  content: string,
+): Promise<void> {
+  await api.post(
+    `/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/ask-agent`,
+    { content },
+  );
+}
+
 export async function resolveAskRequest(
   chatId: string,
   question: Message,

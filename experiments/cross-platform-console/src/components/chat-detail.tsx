@@ -24,7 +24,12 @@ import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
 import { RequestDock } from "~/components/request-dock";
-import { parseAskRequest, resolveAskRequest } from "~/lib/ask";
+import {
+  askAgentForClarification,
+  fetchOpenRequests,
+  parseAskRequest,
+  resolveAskRequest,
+} from "~/lib/ask";
 import { MessageCard } from "~/components/message-card";
 import { MarkdownText } from "~/components/markdown-text";
 import { Avatar } from "~/components/avatar";
@@ -138,7 +143,23 @@ export function ChatDetailContent({
   // The viewer's own open ask (if any): targeted at selfAgentId and not yet
   // resolved by any later message. Docked above the list; the composer
   // doubles as its free-text answer path.
+  // Server-authoritative: open asks scoped to THIS viewer, independent of
+  // the loaded message window (an ask outside the latest-50 page used to
+  // vanish). Falls back to a timeline-scan only if the endpoint errors.
+  const openRequestsQuery = useQuery({
+    queryKey: ["chats", chatId, "open-requests"],
+    queryFn: ({ signal }) => fetchOpenRequests(chatId, signal),
+    refetchInterval: 30_000,
+  });
+
   const openAsk = useMemo(() => {
+    const serverOpen = openRequestsQuery.data ?? [];
+    if (openRequestsQuery.isSuccess) {
+      const first = serverOpen[0];
+      if (!first) return null;
+      const parsed = parseAskRequest(first);
+      return parsed ? { message: first, parsed } : null;
+    }
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.format !== "request") continue;
@@ -148,12 +169,10 @@ export function ChatDetailContent({
         const resolves = m.metadata?.resolves as { request?: unknown } | undefined;
         return typeof resolves?.request === "string" && resolves.request === msg.id;
       });
-      if (!resolved && parsed.targetAgentId === selfAgentId) {
-        return { message: msg, parsed };
-      }
+      if (!resolved) return { message: msg, parsed };
     }
     return null;
-  }, [messages, selfAgentId]);
+  }, [openRequestsQuery.data, openRequestsQuery.isSuccess, messages]);
 
   const handleSend = useCallback(async () => {
     if (!message.trim() || !memberId) return;
@@ -299,18 +318,19 @@ export function ChatDetailContent({
           onToggleCollapsed={() => setAskCollapsed(true)}
           onSubmit={(answer) => {
             void submitAnswer(openAsk.message, answer);
+            void queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
             setAskCollapsed(true);
           }}
           onSkip={() => {
             void submitAnswer(openAsk.message, "");
+            void queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
             setAskCollapsed(true);
           }}
           onAskAgent={(text) => {
             void (async () => {
-              const asker = openAsk.message.senderId;
-              const askerName = participantNames(asker);
-              await sendChatMessage(chatId, `@${askerName} ${text}`, [asker]);
+              await askAgentForClarification(chatId, openAsk.message.id, text);
               await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+              await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
             })();
           }}
         />
