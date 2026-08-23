@@ -6,6 +6,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 
 import { useAuth } from "~/lib/auth-context";
 import { fetchChatRows } from "~/lib/chats-api";
+import { useOrgRealtime } from "~/lib/realtime";
 import { colors } from "~/lib/theme";
 
 /**
@@ -14,6 +15,7 @@ import { colors } from "~/lib/theme";
  */
 export default function AppLayout() {
   const { isAuthenticated, meLoaded } = useAuth();
+  useOrgRealtime(meLoaded && isAuthenticated);
   const theme = useTheme();
   const { width } = useWindowDimensions();
   const isWide = width >= 1024;
