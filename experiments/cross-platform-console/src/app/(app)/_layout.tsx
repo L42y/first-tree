@@ -78,6 +78,10 @@ export default function AppLayout() {
           options={{ title: "Docs" }}
         />
         <Tabs.Screen
+          name="agent/new"
+          options={{ href: null, tabBarButton: () => null }}
+        />
+        <Tabs.Screen
           name="agent/[uuid]"
           options={{ href: null, tabBarButton: () => null }}
         />
@@ -95,6 +99,10 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="chat/[chatId]"
+          options={{ href: null, tabBarButton: () => null }}
+        />
+        <Tabs.Screen
+          name="agent/new"
           options={{ href: null, tabBarButton: () => null }}
         />
         <Tabs.Screen

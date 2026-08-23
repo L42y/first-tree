@@ -40,8 +40,16 @@ export default function TeamScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Team</Text>
-        <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Team</Text>
+          <Text style={styles.subtitle}>{(data ?? []).length} agents you manage</Text>
+        </View>
+        <Pressable
+          onPress={() => router.push("/agent/new")}
+          style={({ pressed }) => [styles.addButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.addButtonText}>+ New</Text>
+        </Pressable>
       </View>
 
       {isLoading && (
@@ -125,6 +133,20 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
     marginTop: 2,
+  },
+  pressed: {
+    opacity: 0.75,
+  },
+  addButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+  },
+  addButtonText: {
+    color: colors.accentText,
+    fontWeight: "700",
+    fontSize: 13,
   },
   widePadding: {
     paddingHorizontal: 24,

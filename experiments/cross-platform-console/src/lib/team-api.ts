@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, withOrg } from "./api";
 
 /**
  * Team surface — mirrors the web console's cross-org agent list
@@ -51,4 +51,17 @@ export type MyClient = {
 /** Connected computers (`GET /me/clients`) — Settings roster source. */
 export async function listMyClients(signal?: AbortSignal): Promise<MyClient[]> {
   return api.get<MyClient[]>("/me/clients", { signal });
+}
+
+export type CreateAgentInput = {
+  name?: string;
+  displayName?: string;
+  type: "human" | "agent";
+  visibility?: "private" | "organization";
+  runtimeProvider?: string;
+};
+
+/** Create an agent (`POST {withOrg}/agents`, same body as web console). */
+export async function createAgent(input: CreateAgentInput): Promise<ManagedAgent> {
+  return api.post<ManagedAgent>(withOrg("/agents"), input);
 }
