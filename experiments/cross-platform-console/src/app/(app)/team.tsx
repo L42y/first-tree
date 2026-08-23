@@ -1,10 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { Pressable, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 
 import type { ManagedAgent } from "~/lib/team-api";
+import { AgentDetailContent } from "~/components/agent-detail";
 import { listManagedAgents } from "~/lib/team-api";
 import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
@@ -16,6 +17,8 @@ import { colors } from "~/lib/theme";
 export default function TeamScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
+  const isWide = width >= 1024;
+  const [selected, setSelected] = useState<{ uuid: string; provider?: string } | null>(null);
   const numColumns = width >= 1024 ? 2 : 1;
 
   const { data, isLoading, error, refetch, isRefetching } = useQuery({
@@ -37,8 +40,8 @@ export default function TeamScreen() {
     }));
   }, [data]);
 
-  return (
-    <View style={styles.container}>
+  const listPane = (
+    <View style={[styles.container, styles.teamPane]}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Team</Text>
@@ -110,12 +113,52 @@ export default function TeamScreen() {
       )}
     </View>
   );
+
+  if (isWide) {
+    return (
+      <View style={styles.twoPane}>
+        {listPane}
+        <View style={styles.detailPane}>
+          {selected ? (
+            <AgentDetailContent uuid={selected.uuid} provider={selected.provider} showBack={false} />
+          ) : (
+            <View style={styles.emptyPane}>
+              <Text style={styles.emptyPaneText}>Select an agent</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
+  }
+  return listPane;
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.bg,
+  },
+  teamPane: {
+    maxWidth: 440,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderRightColor: colors.border,
+  },
+  twoPane: {
+    flex: 1,
+    flexDirection: "row",
+    backgroundColor: colors.bg,
+  },
+  detailPane: {
+    flex: 1,
+  },
+  emptyPane: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyPaneText: {
+    color: colors.textMuted,
+    fontSize: 15,
   },
   header: {
     paddingHorizontal: 16,
