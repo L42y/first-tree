@@ -65,6 +65,8 @@ export function ChatDetailContent({
   // behind the keyboard on iOS.
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [askCollapsed, setAskCollapsed] = useState(false);
+  const [askMode, setAskMode] = useState<"submit" | "clarify">("submit");
+  const [askSelected, setAskSelected] = useState<number[]>([]);
   useEffect(() => {
     if (Platform.OS !== "ios") return;
     const showSub = Keyboard.addListener("keyboardDidShow", (e) =>
@@ -212,10 +214,28 @@ export function ChatDetailContent({
     setSending(true);
 
     try {
-      if (openAsk && askCollapsed) {
-        // While an open ask is pending, Send answers it (the reply carries
-        // metadata.resolves per the server contract).
-        await resolveAskRequest(chatId, openAsk.message, "answered", text);
+      if (openAsk && askMode === "submit") {
+        // While an open ask is pending, Send SUBMITS the answer (the reply
+        // carries metadata.resolves per the server contract). Selected
+        // option labels ride ahead of any typed note.
+        const labels = askSelected
+          .map((i) => openAsk.parsed.request.options?.[i]?.label)
+          .filter(Boolean)
+          .join(", ");
+        const composed = [labels, text].filter(Boolean).join(" — ");
+        await resolveAskRequest(chatId, openAsk.message, "answered", composed);
+        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+        await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
+        setAskSelected([]);
+        listRef.current?.scrollToEnd({ animated: true });
+        return;
+      }
+      if (openAsk && askMode === "clarify") {
+        // "Ask agent": a normal clarification message in the thread — the
+        // ask stays open (no metadata.resolves).
+        const asker = openAsk.message.senderId;
+        const askerName = participantNames(asker);
+        await sendChatMessage(chatId, `@${askerName} ${text}`, [asker]);
         await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
         listRef.current?.scrollToEnd({ animated: true });
         return;
@@ -239,7 +259,7 @@ export function ChatDetailContent({
     } finally {
       setSending(false);
     }
-  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk]);
+  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk, askMode, askSelected]);
 
   const submitAnswer = useCallback(
     async (question: Message, answer: string) => {
@@ -348,23 +368,25 @@ export function ChatDetailContent({
           parsed={openAsk.parsed}
           collapsed={false}
           onToggleCollapsed={() => setAskCollapsed(true)}
-          onSubmit={(answer) => {
-            void submitAnswer(openAsk.message, answer);
-            void queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
-            setAskCollapsed(true);
-          }}
           onSkip={() => {
             void submitAnswer(openAsk.message, "");
             void queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
             setAskCollapsed(true);
           }}
-          onAskAgent={(text) => {
-            void (async () => {
-              await askAgentForClarification(chatId, openAsk.message.id, text);
-              await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
-              await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "open-requests"] });
-            })();
-          }}
+          selected={askSelected}
+          onToggleOption={(index) =>
+            setAskSelected((prev) =>
+              openAsk.parsed.request.multiSelect === true
+                ? prev.includes(index)
+                  ? prev.filter((i) => i !== index)
+                  : [...prev, index]
+                : prev.includes(index)
+                  ? prev
+                  : [index],
+            )
+          }
+          askMode={askMode}
+          onToggleAskMode={() => setAskMode((m) => (m === "submit" ? "clarify" : "submit"))}
         />
         </View>
       )}
@@ -379,23 +401,21 @@ export function ChatDetailContent({
         </Pressable>
       )}
 
-      {(!openAsk || askCollapsed) && (
       <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
         <TextInput
           style={styles.input}
           value={message}
           onChangeText={setMessage}
-          placeholder="Message…"
+          placeholder={openAsk ? (askMode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask… (Send = Submit)") : "Message…"}
           multiline
           maxLength={4000}
         />
         <Pressable onPress={handleSend} disabled={sending || !message.trim()}>
           <View style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}>
-            <Text style={styles.sendText}>Send</Text>
+            <Text style={styles.sendText}>{openAsk ? (askMode === "clarify" ? "Ask" : "Submit") : "Send"}</Text>
           </View>
         </Pressable>
       </View>
-      )}
     </View>
   );
 }

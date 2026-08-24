@@ -3,6 +3,7 @@ import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -114,7 +115,7 @@ export default function ChatListScreen() {
   const renameRow = useCallback(
     (row: MeChatRow) => {
       if (Platform.OS !== "ios") return; // Alert.prompt is iOS-only in this experiment
-      Alert.prompt("Rename chat", undefined, (text) => {
+      Alert.prompt("Rename chat", undefined, (text: string) => {
         const topic = text?.trim();
         if (!topic) return;
         void renameChat(row.chatId, topic).then(() =>

@@ -1,13 +1,4 @@
-import { useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import type { Message } from "@first-tree/shared";
 import { MarkdownText } from "~/components/markdown-text";
@@ -15,82 +6,65 @@ import type { ParsedRequest } from "~/lib/ask";
 import { colors } from "~/lib/theme";
 
 /**
- * Docked answer surface for the viewer's own open ask — bottom-docked,
- * directly above the composer, modeled on the web console's AskTakeover:
- *
- *   - question body (markdown, scrollable so long asks never push the
- *     controls away) + option cards (radio/checkbox semantics)
- *   - ONE shared free-text input inside the dock (the composer's role
- *     while the dock is expanded)
- *   - pinned footer: Ask agent · Skip · Submit — Submit and Skip resolve
- *     the question; Ask agent posts a clarification @mention without
- *     resolving it
- *   - "Show earlier chat" collapses the dock into a slim pending bar so
- *     the conversation is readable; tap to re-expand
+ * Docked ask card — bottom-docked above the composer, modeled on the web
+ * console's AskTakeover, but per mobile feedback the dock carries NO input
+ * and NO footer buttons: the always-in-place composer is shared (Send =
+ * Submit while the ask is open; an "Ask agent" mode toggle posts the note
+ * as a clarification without resolving). Skip lives in the card header.
  */
 export function RequestDock({
   question,
   parsed,
   collapsed,
   onToggleCollapsed,
-  onSubmit,
   onSkip,
-  onAskAgent,
+  selected,
+  onToggleOption,
+  askMode,
+  onToggleAskMode,
 }: {
   question: Message;
   parsed: ParsedRequest;
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  onSubmit: (answer: string) => void;
   onSkip: () => void;
-  onAskAgent: (text: string) => void;
+  selected: number[];
+  onToggleOption: (index: number) => void;
+  askMode: "submit" | "clarify";
+  onToggleAskMode: () => void;
 }) {
   const options = parsed.request.options ?? [];
   const multiSelect = parsed.request.multiSelect === true;
-  const [selected, setSelected] = useState<number[]>([]);
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
 
   if (collapsed) {
     return (
       <Pressable onPress={onToggleCollapsed} style={({ pressed }) => [styles.collapsedBar, pressed && styles.pressed]}>
         <Text style={styles.collapsedKicker}>Open question</Text>
-        <Text style={styles.collapsedText} numberOfLines={1}>
-          Tap to answer
-        </Text>
+        <Text style={styles.collapsedText}>Tap to answer</Text>
       </Pressable>
     );
   }
 
-  const act = (fn: () => void) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      fn();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const composedAnswer = () => {
-    const labels = selected.map((i) => options[i]?.label).filter(Boolean).join(", ");
-    const note = text.trim();
-    return [labels, note].filter(Boolean).join(" — ");
-  };
-
-  const canSubmit = selected.length > 0 || text.trim().length > 0;
-
   return (
     <View style={styles.dock}>
-      <ScrollView style={styles.scroll} nestedScrollEnabled bounces={false}>
-        <View style={styles.kickerRow}>
-          <Text style={styles.kicker}>Asked you</Text>
-          <Pressable onPress={onToggleCollapsed} hitSlop={8}>
-            <Text style={styles.showEarlier}>Show earlier chat</Text>
+      <View style={styles.kickerRow}>
+        <Text style={styles.kicker}>Asked you</Text>
+        <View style={styles.headerActions}>
+          <Pressable onPress={onToggleAskMode} hitSlop={6}>
+            <Text style={[styles.headerAction, askMode === "clarify" && styles.headerActionActive]}>
+              {askMode === "clarify" ? "Asking agent" : "Ask agent"}
+            </Text>
+          </Pressable>
+          <Pressable onPress={onSkip} hitSlop={6}>
+            <Text style={[styles.headerAction, styles.skipAction]}>Skip</Text>
+          </Pressable>
+          <Pressable onPress={onToggleCollapsed} hitSlop={6}>
+            <Text style={styles.headerAction}>Show earlier chat</Text>
           </Pressable>
         </View>
+      </View>
+      <ScrollView style={styles.scroll} nestedScrollEnabled bounces={false}>
         <MarkdownText value={typeof question.content === "string" ? question.content : ""} />
-
         {options.length > 0 && (
           <View style={styles.options}>
             {options.map((option, index) => {
@@ -98,16 +72,7 @@ export function RequestDock({
               return (
                 <Pressable
                   key={`${index}-${option.label}`}
-                  disabled={busy}
-                  onPress={() =>
-                    setSelected((prev) =>
-                      multiSelect
-                        ? prev.includes(index)
-                          ? prev.filter((i) => i !== index)
-                          : [...prev, index]
-                        : [index],
-                    )
-                  }
+                  onPress={() => onToggleOption(index)}
                   style={[styles.option, isSelected && styles.optionSelected]}
                 >
                   <Text style={styles.optionLabel}>
@@ -123,78 +88,19 @@ export function RequestDock({
           </View>
         )}
       </ScrollView>
-
-      <TextInput
-        style={styles.input}
-        value={text}
-        onChangeText={setText}
-        placeholder={options.length > 0 ? "Other — add a note…" : "Your answer…"}
-        placeholderTextColor={colors.textMuted}
-        multiline
-      />
-
-      <View style={styles.footer}>
-        <Pressable
-          disabled={busy || !text.trim()}
-          onPress={() => {
-            const t = text.trim();
-            setText("");
-            onAskAgent(t);
-          }}
-          style={({ pressed }) => [
-            styles.footerButton,
-            (busy || !text.trim()) && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          <Text style={styles.footerButtonText}>Ask agent</Text>
-        </Pressable>
-        <Pressable
-          disabled={busy}
-          onPress={() => act(onSkip)}
-          style={({ pressed }) => [styles.footerButton, styles.secondaryButton, busy && styles.disabled, pressed && styles.pressed]}
-        >
-          <Text style={styles.secondaryButtonText}>Skip</Text>
-        </Pressable>
-        <Pressable
-          disabled={busy || !canSubmit}
-          onPress={() => {
-            const answer = composedAnswer();
-            setText("");
-            setSelected([]);
-            act(() => onSubmit(answer));
-          }}
-          style={({ pressed }) => [
-            styles.footerButton,
-            styles.primaryButton,
-            styles.flex1,
-            (busy || !canSubmit) && styles.disabled,
-            pressed && styles.pressed,
-          ]}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color={colors.accentText} />
-          ) : (
-            <Text style={styles.primaryButtonText}>Submit</Text>
-          )}
-        </Pressable>
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   dock: {
-    maxHeight: 300,
+    maxHeight: 260,
     backgroundColor: colors.surfaceStrong,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     paddingHorizontal: 12,
     paddingTop: 8,
-    gap: 8,
-  },
-  scroll: {
-    flexGrow: 0,
+    gap: 6,
   },
   kickerRow: {
     flexDirection: "row",
@@ -208,14 +114,30 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
     color: colors.textMuted,
   },
-  showEarlier: {
+  headerActions: {
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+  },
+  headerAction: {
     fontSize: 12,
     color: colors.accent,
     fontWeight: "600",
   },
+  headerActionActive: {
+    color: colors.text,
+    fontWeight: "700",
+  },
+  skipAction: {
+    color: colors.textMuted,
+  },
+  scroll: {
+    flexGrow: 0,
+  },
   options: {
     marginTop: 8,
     gap: 6,
+    paddingBottom: 4,
   },
   option: {
     borderRadius: 10,
@@ -238,51 +160,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     fontSize: 12,
     marginTop: 2,
-  },
-  input: {
-    minHeight: 40,
-    maxHeight: 96,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.bg,
-    color: colors.text,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-  },
-  footer: {
-    flexDirection: "row",
-    gap: 8,
-    paddingBottom: 2,
-  },
-  footerButton: {
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-  },
-  flex1: {
-    flex: 1,
-  },
-  primaryButton: {
-    backgroundColor: colors.accent,
-  },
-  primaryButtonText: {
-    color: colors.accentText,
-    fontWeight: "700",
-  },
-  secondaryButton: {
-    backgroundColor: colors.surface,
-  },
-  secondaryButtonText: {
-    color: colors.textSecondary,
-    fontWeight: "600",
-  },
-  footerButtonText: {
-    color: colors.textSecondary,
-    fontWeight: "600",
   },
   collapsedBar: {
     flexDirection: "row",
@@ -307,8 +184,5 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.75,
-  },
-  disabled: {
-    opacity: 0.45,
   },
 });
