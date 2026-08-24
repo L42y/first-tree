@@ -161,6 +161,22 @@ export function ChatDetailContent({
         "serverOpen=" + serverOpen.length,
         "msgs=" + messages.length,
       );
+      for (const m of messages) {
+        if (m.format !== "request") continue;
+        const resolves = messages.some((mm) => {
+          const r = mm.metadata?.resolves as { request?: unknown } | undefined;
+          return typeof r?.request === "string" && r.request === m.id;
+        });
+        console.log(
+          "[ask] timeline-request",
+          m.id.slice(0, 8),
+          "resolved=" + resolves,
+          "meta=" + JSON.stringify(m.metadata ?? {}).slice(0, 160),
+        );
+      }
+      if (serverOpen.length > 0) {
+        console.log("[ask] serverOpen raw:", JSON.stringify(serverOpen).slice(0, 200));
+      }
     }
     if (openRequestsQuery.isSuccess && serverOpen.length > 0) {
       const first = serverOpen[0];
