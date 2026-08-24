@@ -419,6 +419,13 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
   let inputController: InputController<PendingSdkInput> | null = null;
   let providerRetryBackoffAbort: AbortController | null = null;
   let consumerDone: Promise<void> | null = null;
+  /**
+   * A terminal credential result retires the current SDK query because Claude
+   * caches authentication state in its native process. Keep the logical
+   * Session and claudeSessionId, then lazily create one fresh resume query
+   * when the next delivered message arrives.
+   */
+  let credentialResumeRequired = false;
   let retryCount = 0;
   let ctx: SessionContext | null = null;
   /** Snapshot of the runtime config the *current* sub-process was launched with. */
@@ -994,11 +1001,90 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     }
   }
 
+  async function spawnCredentialRecoveryQuery(sessionCtx: SessionContext, sessionId: string): Promise<void> {
+    await assertQuerySpawnCurrent(sessionCtx);
+    if (ctx !== sessionCtx || claudeSessionId !== sessionId || !credentialResumeRequired || inputController) {
+      return;
+    }
+
+    // A config event may land while the credential-failed query is retired.
+    // Project every newer non-model payload before the only recovery spawn so
+    // buildQuery cannot record that version as applied while CLAUDE.md still
+    // carries the old briefing. Keep this local projection baseline separate
+    // from appliedPayload: only spawnQuery may advance the applied snapshot,
+    // after the projection and SDK constructor both succeed.
+    let projectedPayload = appliedPayload;
+    while (true) {
+      const cached = agentConfigCache?.get(sessionCtx.agent.agentId);
+      const onlyModelChangedSinceProjection =
+        cached !== undefined &&
+        projectedPayload !== null &&
+        JSON.stringify({ ...projectedPayload, model: "" }) === JSON.stringify({ ...cached.payload, model: "" }) &&
+        projectedPayload.model !== cached.payload.model;
+      const needsBriefingProjection =
+        cached !== undefined && cached.version > appliedConfigVersion && !onlyModelChangedSinceProjection;
+
+      if (needsBriefingProjection) {
+        if (!cwd) throw new Error("credential recovery has no managed workspace to project");
+        sessionCtx.log(
+          `[configHotSwitch] path=credential-recovery fromVersion=${appliedConfigVersion} toVersion=${cached.version}`,
+        );
+        const legacyProjection = cwd !== workspaceRoot;
+        const projected = await projectManagedWorkspace({
+          sessionCtx,
+          workspace: cwd,
+          sourceAuthorityRoot: legacyProjection ? workspaceRoot : cwd,
+          agentName,
+          runtimeProvider,
+          providerSkillRoots: PROVIDER_SKILL_ROOTS,
+          runtimeConfig: cached,
+          payload: cached.payload,
+          payloadResolved: true,
+          existingPayload: projectedPayload ?? undefined,
+          contextTree: {
+            kind: contextTree.kind,
+            path: contextTree.path,
+            repoUrl: contextTree.repoUrl,
+            branch: contextTree.branch,
+          },
+          reresolveSource: true,
+          markInitComplete: false,
+          writeIdentityAndManifest: !legacyProjection,
+          suppressSourceRepos: legacyProjection,
+        });
+        currentBriefingFingerprint = computeBriefingFingerprint(projected.briefing);
+        projectedPayload = cached.payload;
+
+        if (ctx !== sessionCtx || claudeSessionId !== sessionId || !credentialResumeRequired || inputController) {
+          return;
+        }
+        const latest = agentConfigCache?.get(sessionCtx.agent.agentId);
+        if (!latest) throw new Error("credential recovery runtime config disappeared during projection");
+        if (latest.version !== cached.version) continue;
+      }
+
+      sessionCtx.log(`Credential recovery: resuming session in a fresh Claude query (${sessionId})`);
+      spawnQuery(sessionId, sessionCtx, sessionId, buildEnv(sessionCtx));
+      return;
+    }
+  }
+
   function scheduleInjectedMessagesDrain(sessionCtx: SessionContext, sessionId: string): void {
-    if (!inputController || injectDrainInProgress) return;
+    if (injectDrainInProgress || (!inputController && !credentialResumeRequired)) return;
     void (async () => {
       injectDrainInProgress = true;
       try {
+        if (!inputController && credentialResumeRequired) {
+          try {
+            await spawnCredentialRecoveryQuery(sessionCtx, sessionId);
+          } catch (err) {
+            sessionCtx.log(`Credential recovery resume failed: ${err instanceof Error ? err.message : String(err)}`);
+            credentialResumeRequired = false;
+            retryBufferedMessages("claude_credential_resume_failed_recovery");
+            failFatalSessionForRecovery(sessionCtx, "claude_credential_resume_failed");
+            return;
+          }
+        }
         while (
           queuedInjectedMessages.length > 0 &&
           inputController &&
@@ -1019,14 +1105,19 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
         }
       } finally {
         injectDrainInProgress = false;
-        if (queuedInjectedMessages.length > 0 && inputController && ctx && claudeSessionId) {
+        if (
+          queuedInjectedMessages.length > 0 &&
+          (inputController || credentialResumeRequired) &&
+          ctx &&
+          claudeSessionId
+        ) {
           scheduleInjectedMessagesDrain(ctx, claudeSessionId);
         }
       }
     })();
   }
 
-  function retryBufferedMessages(reason: string): void {
+  function retryBufferedMessages(reason: string, preserveFifo = false): void {
     inputRecoveryReason = reason;
     unclosedSdkInputs.length = 0;
     const pending = pendingAckMessages.splice(0);
@@ -1037,8 +1128,22 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
           pendingItem.message === drainingInjectedMessage?.message &&
           pendingItem.token === drainingInjectedMessage.token,
       );
-    if (drainingInjectedMessage && !drainingIsPending) retryInjectedItem(drainingInjectedMessage, reason);
     const queued = queuedInjectedMessages.splice(0);
+    if (preserveFifo) {
+      // pending inputs reached the controller before the currently formatting
+      // item, which in turn precedes the untouched handler queue. Credential
+      // settlement must return that exact unentered tail order to runtime
+      // recovery after removing the consumed prefix.
+      for (const item of pending) {
+        item.token.retry(item.message, reason);
+      }
+      if (drainingInjectedMessage && !drainingIsPending) retryInjectedItem(drainingInjectedMessage, reason);
+      for (const item of queued) {
+        retryInjectedItem(item, reason);
+      }
+      return;
+    }
+    if (drainingInjectedMessage && !drainingIsPending) retryInjectedItem(drainingInjectedMessage, reason);
     for (const item of queued) {
       retryInjectedItem(item, reason);
     }
@@ -1185,6 +1290,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
     inputController = nextInputController;
     currentQuery = nextQuery;
     activeProviderEnv = childEnv;
+    credentialResumeRequired = false;
   }
 
   /**
@@ -1457,8 +1563,31 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
                   }
                   sessionCtx.emitEvent({ kind: "turn_end", payload: { status: "error" } });
                   retryCount = 0;
+                  const retireCredentialGeneration =
+                    settlement.classification.category === "credential" &&
+                    settlement.decision.action === "stop" &&
+                    settlement.decision.terminalKind === "needs_operator";
+                  if (retireCredentialGeneration) {
+                    // Prevent messages delivered while the durable runtime
+                    // notice / exact-prefix ACK is in flight from reaching
+                    // the stale native process. The logical Session and
+                    // claudeSessionId remain intact for lazy exact resume.
+                    retireProviderTransport();
+                  }
                   await ackTurnClose("error", consumedReasonForProviderSettlement(settlement), providerEnteredPrefix);
                   resetTurnReplaySafety();
+                  if (retireCredentialGeneration) {
+                    // The consumed prefix is now settled and removed from the
+                    // replay buffer. Return only the unentered tail to the
+                    // existing ordered recovery path, then wait for a newly
+                    // delivered message before creating a fresh query.
+                    retryBufferedMessages("claude_credential_terminal_tail_recovery", true);
+                    credentialResumeRequired = true;
+                    if (queuedInjectedMessages.length > 0 && claudeSessionId) {
+                      scheduleInjectedMessagesDrain(sessionCtx, claudeSessionId);
+                    }
+                    return;
+                  }
                   continue;
                 }
               }
@@ -2025,6 +2154,7 @@ export const createClaudeCodeHandler: HandlerFactory = (config) => {
 
     async suspend(reason?: string) {
       ctx?.log("Suspending session");
+      credentialResumeRequired = false;
       retireProviderTransport();
 
       // Wait for consumer loop to finish
