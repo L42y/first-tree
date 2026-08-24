@@ -277,7 +277,11 @@ export default function ChatListScreen() {
         {listPane}
         <View style={styles.detailPane}>
           {selectedChatId ? (
-            <ChatDetailContent chatId={selectedChatId} showBack={false} />
+            <ChatDetailContent
+              chatId={selectedChatId}
+              showBack={false}
+              expectAsk={(rows.find((r) => r.chatId === selectedChatId)?.openRequestCount ?? 0) > 0}
+            />
           ) : (
             <View style={styles.emptyPane}>
               <Text style={styles.emptyPaneText}>Select a conversation</Text>

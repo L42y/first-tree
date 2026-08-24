@@ -44,10 +44,13 @@ const IS_EXPO_GO = Constants.appOwnership === "expo";
 export function ChatDetailContent({
   chatId,
   showBack = true,
+  expectAsk = false,
 }: {
   chatId: string;
-  /** Hide the back affordance when embedded in a two-pane wide layout. */
+  /** Hidden when embedded in a two-pane layout. */
   showBack?: boolean;
+  /** The list row flagged openRequestCount>0 — keep paging history until the ask is found. */
+  expectAsk?: boolean;
 }) {
   const router = useRouter();
   const { user, memberId, agentId: selfAgentId } = useAuth();
@@ -157,6 +160,24 @@ export function ChatDetailContent({
     queryFn: ({ signal }) => fetchOpenRequests(chatId, signal),
     refetchInterval: 30_000,
   });
+
+  // The server's /open-requests can return 0 when the ask's stored target
+  // points at a stale membership agent. The list row still knows the truth
+  // (openRequestCount>0) — keep paging older history until the ask message
+  // is inside the loaded window.
+  const askInWindow = messages.some(
+    (m) => m.format === "request" && parseAskRequest(m) !== null,
+  );
+  useEffect(() => {
+    if (
+      expectAsk &&
+      !askInWindow &&
+      messagesQuery.hasPreviousPage &&
+      !messagesQuery.isFetchingPreviousPage
+    ) {
+      void messagesQuery.fetchPreviousPage();
+    }
+  }, [expectAsk, askInWindow, messagesQuery]);
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
