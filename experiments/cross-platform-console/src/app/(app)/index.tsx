@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWindowDimensions } from "react-native";
 import {
   ActivityIndicator,
@@ -32,7 +32,13 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
   return [...data.priorityRows.pinned, ...others];
 }
 
+// Session-scope scroll memory per (view, filter) — survives tab switches
+// and refetches; resets on app restart (server stores read/pin, not viewport).
+const scrollOffsetMap: Record<string, number> = {};
+
 export default function ChatListScreen() {
+  const listRef = useRef<FlatList<never> | null>(null);
+  const restorePendingRef = useRef(true);
   const router = useRouter();
   const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
@@ -118,6 +124,10 @@ export default function ChatListScreen() {
     },
     [queryClient],
   );
+
+  useEffect(() => {
+    restorePendingRef.current = true;
+  }, [filter, view]);
 
   const archiveRow = useCallback(
     (row: MeChatRow) => {
@@ -208,7 +218,24 @@ export default function ChatListScreen() {
       )}
 
       <LegendList
+        ref={listRef as never}
         data={listItems}
+        onScroll={(e: { nativeEvent: { contentOffset: { y: number } } }) => {
+          scrollOffsetMap[`${view}:${filter}`] = e.nativeEvent.contentOffset.y;
+        }}
+        onContentSizeChange={() => {
+          if (!restorePendingRef.current) return;
+          restorePendingRef.current = false;
+          const saved = scrollOffsetMap[`${view}:${filter}`];
+          if (saved && saved > 4) {
+            requestAnimationFrame(() =>
+              (listRef.current as unknown as { scrollToOffset: (o: { offset: number; animated: boolean }) => void })?.scrollToOffset({
+                offset: saved,
+                animated: false,
+              }),
+            );
+          }
+        }}
         keyExtractor={(item: ListItem) => item.id}
         renderItem={({ item }: { item: ListItem }) =>
           item.kind === "header" ? (

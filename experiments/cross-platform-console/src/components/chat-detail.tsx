@@ -342,6 +342,7 @@ export function ChatDetailContent({
       />
 
       {openAsk && !askCollapsed && (
+        <View style={[styles.dockWrap, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
         <RequestDock
           question={openAsk.message}
           parsed={openAsk.parsed}
@@ -365,6 +366,7 @@ export function ChatDetailContent({
             })();
           }}
         />
+        </View>
       )}
 
       {openAsk && askCollapsed && (
@@ -469,6 +471,9 @@ const styles = StyleSheet.create({
   },
   retryText: {
     color: colors.accentText,
+  },
+  dockWrap: {
+    // RequestDock carries its own paddings; wrapper only hosts the lift.
   },
   collapsedBar: {
     flexDirection: "row",
