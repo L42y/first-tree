@@ -93,9 +93,13 @@ export function ChatDetailContent({
   });
 
   useEffect(() => {
-    void markMeChatRead(chatId);
+    void markMeChatRead(chatId).then(() => {
+      // Read state is server-side; refresh the list badges immediately
+      // instead of waiting for the next poll.
+      void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
+    });
     pendingScrollRef.current = true;
-  }, [chatId]);
+  }, [chatId, queryClient]);
 
   const messageCount = (messagesQuery.data?.pages ?? []).reduce(
     (total, page) => total + page.items.length,
