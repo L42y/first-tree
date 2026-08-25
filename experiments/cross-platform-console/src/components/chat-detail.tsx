@@ -469,6 +469,13 @@ export function ChatDetailContent({
           placeholder={openAsk ? (askMode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask… (Send = Submit)") : "Message…"}
           multiline
           maxLength={4000}
+          // While an ask is open the keyboard's own key is the submit action,
+          // so answering never depends on a control the keyboard can cover.
+          // Ordinary composing keeps the newline behaviour a multiline field
+          // is expected to have.
+          returnKeyType={openAsk ? (askMode === "clarify" ? "send" : "done") : "default"}
+          submitBehavior={openAsk ? "submit" : "newline"}
+          onSubmitEditing={openAsk ? () => void handleSend() : undefined}
         />
         <Pressable onPress={handleSend} disabled={sending || !message.trim()}>
           <View style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}>
