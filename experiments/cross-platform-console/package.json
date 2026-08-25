@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.12",
+    "@expo/vector-icons": "^15.1.1",
     "@first-tree/shared": "workspace:*",
     "@legendapp/list": "^3.3.8",
     "@react-native-async-storage/async-storage": "2.2.0",

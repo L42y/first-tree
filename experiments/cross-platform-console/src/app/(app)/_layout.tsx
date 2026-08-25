@@ -1,5 +1,7 @@
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import type { ColorValue } from "react-native";
 import { Redirect, Tabs } from "expo-router";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { useTheme } from "tamagui";
 import { useWindowDimensions } from "react-native";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -8,6 +10,16 @@ import { useAuth } from "~/lib/auth-context";
 import { fetchChatRows } from "~/lib/chats-api";
 import { useOrgRealtime } from "~/lib/realtime";
 import { colors } from "~/lib/theme";
+
+/**
+ * Tab icon factory — outline when idle, solid when focused, the platform-native
+ * idiom on the phone tab bar and the wide-screen sidebar rail alike.
+ */
+const tabIcon =
+  (outline: keyof typeof Ionicons.glyphMap, solid: keyof typeof Ionicons.glyphMap) =>
+  ({ color, size, focused }: { color: ColorValue; size: number; focused: boolean }) => (
+    <Ionicons name={focused ? solid : outline} size={size} color={color} />
+  );
 
 /**
  * Adaptive shell: bottom tab bar on phones, left sidebar rail on
@@ -65,19 +77,23 @@ export default function AppLayout() {
       >
         <Tabs.Screen
           name="index"
-          options={{ title: "Chats", tabBarBadge: attentionCount }}
+          options={{
+            title: "Chats",
+            tabBarBadge: attentionCount,
+            tabBarIcon: tabIcon("chatbubbles-outline", "chatbubbles"),
+          }}
         />
         <Tabs.Screen
           name="team"
-          options={{ title: "Team" }}
+          options={{ title: "Team", tabBarIcon: tabIcon("people-outline", "people") }}
         />
         <Tabs.Screen
           name="context"
-          options={{ title: "Context" }}
+          options={{ title: "Context", tabBarIcon: tabIcon("git-branch-outline", "git-branch") }}
         />
         <Tabs.Screen
           name="docs"
-          options={{ title: "Docs" }}
+          options={{ title: "Docs", tabBarIcon: tabIcon("document-text-outline", "document-text") }}
         />
         <Tabs.Screen
           name="agent/new"
@@ -97,7 +113,7 @@ export default function AppLayout() {
         />
         <Tabs.Screen
           name="settings"
-          options={{ title: "Settings" }}
+          options={{ title: "Settings", tabBarIcon: tabIcon("settings-outline", "settings") }}
         />
         <Tabs.Screen
           name="chat/[chatId]"
