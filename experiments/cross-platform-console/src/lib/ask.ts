@@ -78,11 +78,34 @@ export async function fetchOpenRequests(
   chatId: string,
   signal?: AbortSignal,
 ): Promise<Message[]> {
-  const res = await api.get<Message[]>(
+  // The route answers `{ items }`, and the transport hands back the parsed body
+  // verbatim. Testing the body itself for an array therefore never matched, so
+  // this returned empty for every chat regardless of what the server said and
+  // the dock was left relying on whatever happened to be in the message window.
+  const res = await api.get<{ items?: Message[] } | Message[]>(
     `/chats/${encodeURIComponent(chatId)}/open-requests`,
     { signal },
   );
-  return Array.isArray(res) ? res : [];
+  if (Array.isArray(res)) return res;
+  return Array.isArray(res?.items) ? res.items : [];
+}
+
+/**
+ * The request's durable thread: the ask, its replies, every Ask agent
+ * clarification and the agent answers under them. Addressed by id and
+ * independent of the loaded message window, so a clarification that scrolled
+ * out of the latest page still renders.
+ */
+export async function fetchRequestThread(
+  chatId: string,
+  requestId: string,
+  signal?: AbortSignal,
+): Promise<Message[]> {
+  const res = await api.get<{ items?: Message[] }>(
+    `/chats/${encodeURIComponent(chatId)}/requests/${encodeURIComponent(requestId)}/thread`,
+    { signal },
+  );
+  return Array.isArray(res?.items) ? res.items : [];
 }
 
 /** Ask the original agent for clarification WITHOUT resolving the ask. */
