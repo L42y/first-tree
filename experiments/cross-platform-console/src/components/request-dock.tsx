@@ -22,6 +22,8 @@ export function RequestDock({
   onToggleOption,
   askMode,
   onToggleAskMode,
+  thread = [],
+  selfAgentId = null,
 }: {
   question: Message;
   parsed: ParsedRequest;
@@ -32,6 +34,14 @@ export function RequestDock({
   onToggleOption: (index: number) => void;
   askMode: "submit" | "clarify";
   onToggleAskMode: () => void;
+  /**
+   * The question's durable thread, oldest first and excluding the question
+   * itself: clarifications raised here and the agent's answers to them. It is
+   * fetched by request id, so it stays intact once those messages fall out of
+   * the latest page of the chat.
+   */
+  thread?: Message[];
+  selfAgentId?: string | null;
 }) {
   const options = parsed.request.options ?? [];
   const multiSelect = parsed.request.multiSelect === true;
@@ -87,6 +97,18 @@ export function RequestDock({
             })}
           </View>
         )}
+        {thread.length > 0 && (
+          <View style={styles.thread}>
+            {thread.map((entry) => (
+              <View key={entry.id} style={styles.threadEntry}>
+                <Text style={styles.threadAuthor}>
+                  {entry.senderId === selfAgentId ? "You asked" : "Agent replied"}
+                </Text>
+                <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
+              </View>
+            ))}
+          </View>
+        )}
       </ScrollView>
     </View>
   );
@@ -138,6 +160,24 @@ const styles = StyleSheet.create({
     marginTop: 8,
     gap: 6,
     paddingBottom: 4,
+  },
+  thread: {
+    marginTop: 10,
+    gap: 8,
+    paddingTop: 8,
+    paddingBottom: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  threadEntry: {
+    gap: 2,
+  },
+  threadAuthor: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.4,
   },
   option: {
     borderRadius: 10,

@@ -19,13 +19,7 @@ import type { ChatDetail, Message } from "@first-tree/shared";
 import Constants from "expo-constants";
 import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
 
-import {
-  fetchChatRows,
-  getChat,
-  listChatMessages,
-  markMeChatRead,
-  sendChatMessage,
-} from "~/lib/chats-api";
+import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
@@ -33,6 +27,7 @@ import { RequestDock } from "~/components/request-dock";
 import {
   askAgentForClarification,
   fetchOpenRequests,
+  fetchRequestThread,
   parseAskRequest,
   resolveAskRequest,
 } from "~/lib/ask";
@@ -43,8 +38,6 @@ import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
 
 const PAGE_SIZE = 50;
-/** Ten pages back covers any realistic ask depth without scanning a whole chat. */
-const ASK_WALK_MAX_PAGES = 10;
 // Expo Go cannot host the enriched input's native views — fall back to a
 // plain TextInput there; dev client / standalone get live markdown.
 const IS_EXPO_GO = Constants.appOwnership === "expo";
@@ -52,17 +45,10 @@ const IS_EXPO_GO = Constants.appOwnership === "expo";
 export function ChatDetailContent({
   chatId,
   showBack = true,
-  expectAsk = false,
 }: {
   chatId: string;
   /** Hidden when embedded in a two-pane layout. */
   showBack?: boolean;
-  /**
-   * Optional hint from a caller that already has the list row in hand. Only
-   * an override: when omitted the component derives the same signal itself,
-   * so a call site that forgets it does not silently lose the ask.
-   */
-  expectAsk?: boolean;
 }) {
   const router = useRouter();
   const { user, memberId, agentId: selfAgentId } = useAuth();
@@ -170,35 +156,14 @@ export function ChatDetailContent({
     [messagesQuery.data],
   );
 
-  // The viewer's own open ask (if any): targeted at selfAgentId and not yet
-  // resolved by any later message. Docked above the list; the composer
-  // doubles as its free-text answer path.
-  // Server-authoritative: open asks scoped to THIS viewer, independent of
-  // the loaded message window (an ask outside the latest-50 page used to
-  // vanish). Falls back to a timeline-scan only if the endpoint errors.
+  // The viewer's own open ask, if any. Scoped server-side to this viewer and
+  // independent of the loaded message window, so it is the whole answer to
+  // "is there an ask here" — the dock renders from this and nothing else.
   const openRequestsQuery = useQuery({
     queryKey: ["chats", chatId, "open-requests"],
     queryFn: ({ signal }) => fetchOpenRequests(chatId, signal),
     refetchInterval: 30_000,
   });
-
-  // The server's /open-requests can return 0 when the ask's stored target
-  // points at a stale membership agent. The list row still knows the truth
-  // (openRequestCount>0) — keep paging older history until the ask message
-  // is inside the loaded window.
-  // The phone route renders this component straight from `/chat/[chatId]`
-  // and has no list row to pass down, so relying on the prop alone meant the
-  // history walk never ran on a phone — the exact case where the ask goes
-  // missing. Derive the row count here from the query the shell already
-  // keeps warm (same key, so this is a cache read, not an extra request).
-  const chatRowsQuery = useQuery({
-    queryKey: ["me", "chats", "list", "all"],
-    queryFn: ({ signal }) => fetchChatRows("all", signal),
-    staleTime: 30_000,
-  });
-  const rowOpenRequests =
-    (chatRowsQuery.data ?? []).find((row) => row.chatId === chatId)?.openRequestCount ?? 0;
-  const shouldExpectAsk = expectAsk || rowOpenRequests > 0;
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
@@ -223,57 +188,32 @@ export function ChatDetailContent({
         "firstUnresolved=" + (unresolved[0]?.slice(0, 8) ?? "none"),
       );
     }
-    if (openRequestsQuery.isSuccess && serverOpen.length > 0) {
-      const first = serverOpen[0];
-      const parsed = parseAskRequest(first);
-      if (parsed) return { message: first, parsed };
-    }
-    // Fallback: /open-requests is a live query scoped to the caller's own
-    // human-agent id, so it legitimately returns nothing for an ask targeted
-    // at a different id. Scan the loaded timeline for an unresolved request
-    // as a second source. Note the row count that gates the history walk is a
-    // stored counter and can outlive the ask it counted, so an empty result
-    // here is a normal outcome rather than proof of a bug.
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.format !== "request") continue;
-      const parsed = parseAskRequest(msg);
-      if (!parsed) continue;
-      const resolved = messages.some((m) => {
-        const resolves = m.metadata?.resolves as { request?: unknown } | undefined;
-        return typeof resolves?.request === "string" && resolves.request === msg.id;
-      });
-      if (!resolved) return { message: msg, parsed };
-    }
-    return null;
-  }, [openRequestsQuery.data, openRequestsQuery.isSuccess, messages]);
+    // Single source. /open-requests is scoped server-side to this viewer and
+    // is independent of the loaded page, so there is nothing the message window
+    // can add: reconstructing an ask from it produced false negatives when the
+    // ask had scrolled away and false positives from a stale counter, and hid
+    // the fact that this query was returning nothing at all.
+    const first = serverOpen[0];
+    if (!first) return null;
+    const parsed = parseAskRequest(first);
+    return parsed ? { message: first, parsed } : null;
+  }, [openRequestsQuery.data, openRequestsQuery.isSuccess, openRequestsQuery.isError, messages]);
 
-  // Walk older history while the row says an ask is open but none is yet
-  // renderable. Keying the stop on `openAsk` rather than "any request-format
-  // message is loaded" matters: an already-resolved ask sitting in the recent
-  // window would otherwise halt the walk and strand the real one out of view.
-  //
-  // Bounded, because the trigger is not trustworthy: openRequestCount is a
-  // stored counter on chat_user_state while /open-requests is a live query, and
-  // the counter can be left incremented for an ask the live query already
-  // considers resolved. On such a chat an unbounded walk would page through the
-  // entire history on every open and still find nothing.
-  const askWalkPagesRef = useRef(0);
-  useEffect(() => {
-    askWalkPagesRef.current = 0;
-  }, [chatId]);
-  useEffect(() => {
-    if (
-      shouldExpectAsk &&
-      openAsk === null &&
-      askWalkPagesRef.current < ASK_WALK_MAX_PAGES &&
-      messagesQuery.hasPreviousPage &&
-      !messagesQuery.isFetchingPreviousPage
-    ) {
-      askWalkPagesRef.current += 1;
-      void messagesQuery.fetchPreviousPage();
-    }
-  }, [shouldExpectAsk, openAsk, messagesQuery, chatId]);
+  // The ask's own thread, addressed by id: clarifications and the agent's
+  // answers stay attached to the question even once they leave the latest page.
+  const askThreadQuery = useQuery({
+    queryKey: ["chats", chatId, "request-thread", openAsk?.message.id],
+    queryFn: ({ signal }) => fetchRequestThread(chatId, openAsk?.message.id ?? "", signal),
+    enabled: openAsk !== null,
+    refetchInterval: 30_000,
+  });
+
+  // Everything under the question, oldest first — the request itself is
+  // rendered by the dock, not repeated inside it.
+  const askThread = useMemo(
+    () => (askThreadQuery.data ?? []).filter((m: Message) => m.id !== openAsk?.message.id),
+    [askThreadQuery.data, openAsk],
+  );
 
   const handleSend = useCallback(async () => {
     if (!message.trim() || !memberId) return;
@@ -302,12 +242,16 @@ export function ChatDetailContent({
         return;
       }
       if (openAsk && askMode === "clarify") {
-        // "Ask agent": a normal clarification message in the thread — the
-        // ask stays open (no metadata.resolves).
-        const asker = openAsk.message.senderId;
-        const askerName = participantNames(asker);
-        await sendChatMessage(chatId, `@${askerName} ${text}`, [asker]);
+        // "Ask agent" goes through the dedicated route rather than a plain
+        // mention: that is what threads the clarification under the request and
+        // stamps the trusted marker the server requires to include it in the
+        // request thread. A mention message is not attached to the question, so
+        // it would never appear alongside it. The ask stays open either way.
+        await askAgentForClarification(chatId, openAsk.message.id, text);
         await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
+        await queryClient.invalidateQueries({
+          queryKey: ["chats", chatId, "request-thread", openAsk.message.id],
+        });
         listRef.current?.scrollToEnd({ animated: true });
         return;
       }
@@ -442,6 +386,8 @@ export function ChatDetailContent({
         <RequestDock
           question={openAsk.message}
           parsed={openAsk.parsed}
+          thread={askThread}
+          selfAgentId={selfAgentId}
           collapsed={false}
           onToggleCollapsed={() => setAskCollapsed(true)}
           onSkip={() => {

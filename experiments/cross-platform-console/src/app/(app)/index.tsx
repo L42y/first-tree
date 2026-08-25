@@ -342,7 +342,6 @@ export default function ChatListScreen() {
             <ChatDetailContent
               chatId={selectedChatId}
               showBack={false}
-              expectAsk={(rows.find((r) => r.chatId === selectedChatId)?.openRequestCount ?? 0) > 0}
             />
           ) : (
             <View style={styles.emptyPane}>
