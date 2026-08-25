@@ -175,10 +175,6 @@ export function ChatDetailContent({
   // points at a stale membership agent. The list row still knows the truth
   // (openRequestCount>0) — keep paging older history until the ask message
   // is inside the loaded window.
-  const askInWindow = messages.some(
-    (m) => m.format === "request" && parseAskRequest(m) !== null,
-  );
-
   // The phone route renders this component straight from `/chat/[chatId]`
   // and has no list row to pass down, so relying on the prop alone meant the
   // history walk never ran on a phone — the exact case where the ask goes
@@ -192,17 +188,6 @@ export function ChatDetailContent({
   const rowOpenRequests =
     (chatRowsQuery.data ?? []).find((row) => row.chatId === chatId)?.openRequestCount ?? 0;
   const shouldExpectAsk = expectAsk || rowOpenRequests > 0;
-
-  useEffect(() => {
-    if (
-      shouldExpectAsk &&
-      !askInWindow &&
-      messagesQuery.hasPreviousPage &&
-      !messagesQuery.isFetchingPreviousPage
-    ) {
-      void messagesQuery.fetchPreviousPage();
-    }
-  }, [shouldExpectAsk, askInWindow, messagesQuery]);
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
@@ -252,6 +237,21 @@ export function ChatDetailContent({
     }
     return null;
   }, [openRequestsQuery.data, openRequestsQuery.isSuccess, messages]);
+
+  // Walk older history while the row says an ask is open but none is yet
+  // renderable. Keying the stop on `openAsk` rather than "any request-format
+  // message is loaded" matters: an already-resolved ask sitting in the recent
+  // window would otherwise halt the walk and strand the real one out of view.
+  useEffect(() => {
+    if (
+      shouldExpectAsk &&
+      openAsk === null &&
+      messagesQuery.hasPreviousPage &&
+      !messagesQuery.isFetchingPreviousPage
+    ) {
+      void messagesQuery.fetchPreviousPage();
+    }
+  }, [shouldExpectAsk, openAsk, messagesQuery]);
 
   const handleSend = useCallback(async () => {
     if (!message.trim() || !memberId) return;
