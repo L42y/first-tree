@@ -18,6 +18,7 @@ import { Pressable } from "react-native";
 import type { ListMeChatsResponse, MeChatRow } from "@first-tree/shared";
 import { useRouter } from "expo-router";
 import { fetchChatRows, renameChat, setChatEngagement } from "~/lib/chats-api";
+import { getItem, setItem } from "~/lib/storage";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
@@ -33,9 +34,42 @@ function flattenChats(data?: ListMeChatsResponse): MeChatRow[] {
   return [...data.priorityRows.pinned, ...others];
 }
 
-// Session-scope scroll memory per (view, filter) — survives tab switches
-// and refetches; resets on app restart (server stores read/pin, not viewport).
+// Scroll memory per (view, filter). Held in memory for the fast path and
+// mirrored to storage so the position also survives an app restart — the
+// server tracks read and pin state, never the viewport.
+const SCROLL_OFFSETS_KEY = "chat-list:scroll-offsets";
 const scrollOffsetMap: Record<string, number> = {};
+
+let scrollOffsetsHydrated = false;
+let scrollHydration: Promise<void> | null = null;
+
+function hydrateScrollOffsets(): Promise<void> {
+  if (scrollOffsetsHydrated) return Promise.resolve();
+  if (!scrollHydration) {
+    scrollHydration = getItem<Record<string, unknown>>(SCROLL_OFFSETS_KEY)
+      .then((stored) => {
+        for (const [key, value] of Object.entries(stored ?? {})) {
+          if (typeof value === "number" && Number.isFinite(value)) {
+            scrollOffsetMap[key] = value;
+          }
+        }
+      })
+      .finally(() => {
+        scrollOffsetsHydrated = true;
+      });
+  }
+  return scrollHydration;
+}
+
+// onScroll fires per frame; coalesce writes so storage isn't thrashed.
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+function persistScrollOffsets(): void {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    void setItem(SCROLL_OFFSETS_KEY, scrollOffsetMap).catch(() => undefined);
+  }, 500);
+}
 
 export default function ChatListScreen() {
   const listRef = useRef<FlatList<never> | null>(null);
@@ -51,6 +85,45 @@ export default function ChatListScreen() {
   const [view, setView] = useState<"active" | "archived">("active");
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [scrollReady, setScrollReady] = useState(scrollOffsetsHydrated);
+
+  // Restoring before the stored offsets land would scroll to a stale (or
+  // absent) position, so the first restore waits on hydration.
+  useEffect(() => {
+    let active = true;
+    void hydrateScrollOffsets().then(() => {
+      if (active) setScrollReady(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Each (view, filter) pair keeps its own position, so switching tabs must
+  // re-arm the restore for the newly selected key.
+  useEffect(() => {
+    restorePendingRef.current = true;
+  }, [view, filter]);
+
+  const restoreScrollIfPending = useCallback(() => {
+    if (!scrollReady || !restorePendingRef.current) return;
+    restorePendingRef.current = false;
+    const saved = scrollOffsetMap[`${view}:${filter}`];
+    if (!saved || saved <= 4) return;
+    requestAnimationFrame(() =>
+      (
+        listRef.current as unknown as {
+          scrollToOffset: (o: { offset: number; animated: boolean }) => void;
+        }
+      )?.scrollToOffset({ offset: saved, animated: false }),
+    );
+  }, [scrollReady, view, filter]);
+
+  // Hydration usually resolves after the list has already sized itself, so
+  // onContentSizeChange alone would never fire again to restore the offset.
+  useEffect(() => {
+    restoreScrollIfPending();
+  }, [restoreScrollIfPending]);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["me", "chats", "list", filter, view],
@@ -223,20 +296,9 @@ export default function ChatListScreen() {
         data={listItems}
         onScroll={(e: { nativeEvent: { contentOffset: { y: number } } }) => {
           scrollOffsetMap[`${view}:${filter}`] = e.nativeEvent.contentOffset.y;
+          persistScrollOffsets();
         }}
-        onContentSizeChange={() => {
-          if (!restorePendingRef.current) return;
-          restorePendingRef.current = false;
-          const saved = scrollOffsetMap[`${view}:${filter}`];
-          if (saved && saved > 4) {
-            requestAnimationFrame(() =>
-              (listRef.current as unknown as { scrollToOffset: (o: { offset: number; animated: boolean }) => void })?.scrollToOffset({
-                offset: saved,
-                animated: false,
-              }),
-            );
-          }
-        }}
+        onContentSizeChange={restoreScrollIfPending}
         keyExtractor={(item: ListItem) => item.id}
         renderItem={({ item }: { item: ListItem }) =>
           item.kind === "header" ? (
