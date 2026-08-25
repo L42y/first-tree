@@ -19,7 +19,13 @@ import type { ChatDetail, Message } from "@first-tree/shared";
 import Constants from "expo-constants";
 import { EnrichedMarkdownTextInput } from "react-native-enriched-markdown";
 
-import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
+import {
+  fetchChatRows,
+  getChat,
+  listChatMessages,
+  markMeChatRead,
+  sendChatMessage,
+} from "~/lib/chats-api";
 import { useAuth } from "~/lib/auth-context";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
 import { RequestCard } from "~/components/request-card";
@@ -49,7 +55,11 @@ export function ChatDetailContent({
   chatId: string;
   /** Hidden when embedded in a two-pane layout. */
   showBack?: boolean;
-  /** The list row flagged openRequestCount>0 — keep paging history until the ask is found. */
+  /**
+   * Optional hint from a caller that already has the list row in hand. Only
+   * an override: when omitted the component derives the same signal itself,
+   * so a call site that forgets it does not silently lose the ask.
+   */
   expectAsk?: boolean;
 }) {
   const router = useRouter();
@@ -168,16 +178,31 @@ export function ChatDetailContent({
   const askInWindow = messages.some(
     (m) => m.format === "request" && parseAskRequest(m) !== null,
   );
+
+  // The phone route renders this component straight from `/chat/[chatId]`
+  // and has no list row to pass down, so relying on the prop alone meant the
+  // history walk never ran on a phone — the exact case where the ask goes
+  // missing. Derive the row count here from the query the shell already
+  // keeps warm (same key, so this is a cache read, not an extra request).
+  const chatRowsQuery = useQuery({
+    queryKey: ["me", "chats", "list", "all"],
+    queryFn: ({ signal }) => fetchChatRows("all", signal),
+    staleTime: 30_000,
+  });
+  const rowOpenRequests =
+    (chatRowsQuery.data ?? []).find((row) => row.chatId === chatId)?.openRequestCount ?? 0;
+  const shouldExpectAsk = expectAsk || rowOpenRequests > 0;
+
   useEffect(() => {
     if (
-      expectAsk &&
+      shouldExpectAsk &&
       !askInWindow &&
       messagesQuery.hasPreviousPage &&
       !messagesQuery.isFetchingPreviousPage
     ) {
       void messagesQuery.fetchPreviousPage();
     }
-  }, [expectAsk, askInWindow, messagesQuery]);
+  }, [shouldExpectAsk, askInWindow, messagesQuery]);
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
