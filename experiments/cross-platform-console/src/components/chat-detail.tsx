@@ -126,6 +126,15 @@ export function ChatDetailContent({
     if (messageCount > 0) pendingScrollRef.current = true;
   }, [messageCount]);
 
+  // Markdown bubbles measure asynchronously, so content height keeps growing
+  // after the first onContentSizeChange. Scrolling to the end a single time
+  // therefore lands partway inside the newest message when that message is
+  // long. Follow the bottom until the reader takes over by dragging.
+  const userScrolledRef = useRef(false);
+  useEffect(() => {
+    userScrolledRef.current = false;
+  }, [chatId]);
+
   const findParticipant = useCallback(
     (senderId: string) => chatQuery.data?.participants.find((p) => p.agentId === senderId),
     [chatQuery.data],
@@ -271,6 +280,9 @@ export function ChatDetailContent({
     const text = message.trim();
     setMessage("");
     setSending(true);
+    // Sending re-attaches the view to the bottom even if the reader had
+    // scrolled up to look back through the thread.
+    userScrolledRef.current = false;
 
     try {
       if (openAsk && askMode === "submit") {
@@ -413,9 +425,14 @@ export function ChatDetailContent({
         }}
         onEndReachedThreshold={0.5}
         contentContainerStyle={styles.messages}
-        onContentSizeChange={() => {
-          if (!pendingScrollRef.current) return;
+        onScrollBeginDrag={() => {
+          // The reader taking over ends the follow-the-bottom behaviour until
+          // they send something or reopen the chat.
+          userScrolledRef.current = true;
           pendingScrollRef.current = false;
+        }}
+        onContentSizeChange={() => {
+          if (!pendingScrollRef.current || userScrolledRef.current) return;
           requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
         }}
       />
