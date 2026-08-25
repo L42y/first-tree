@@ -193,39 +193,38 @@ export function ChatDetailContent({
 
   const openAsk = useMemo(() => {
     const serverOpen = openRequestsQuery.data ?? [];
+    // One aggregate line per evaluation. The previous per-message logging also
+    // ran a nested scan for each request, which is quadratic over the loaded
+    // window — and the window now grows to ASK_WALK_MAX_PAGES * PAGE_SIZE.
     if (__DEV__) {
+      const requestIds = messages.filter((m) => m.format === "request").map((m) => m.id);
+      const resolvedIds = new Set(
+        messages
+          .map((m) => (m.metadata?.resolves as { request?: unknown } | undefined)?.request)
+          .filter((id): id is string => typeof id === "string"),
+      );
+      const unresolved = requestIds.filter((id) => !resolvedIds.has(id));
       console.log(
         "[ask]",
         "status=" + (openRequestsQuery.isSuccess ? "ok" : openRequestsQuery.isError ? "err" : "loading"),
         "serverOpen=" + serverOpen.length,
         "msgs=" + messages.length,
+        "requests=" + requestIds.length,
+        "unresolved=" + unresolved.length,
+        "firstUnresolved=" + (unresolved[0]?.slice(0, 8) ?? "none"),
       );
-      for (const m of messages) {
-        if (m.format !== "request") continue;
-        const resolves = messages.some((mm) => {
-          const r = mm.metadata?.resolves as { request?: unknown } | undefined;
-          return typeof r?.request === "string" && r.request === m.id;
-        });
-        console.log(
-          "[ask] timeline-request",
-          m.id.slice(0, 8),
-          "resolved=" + resolves,
-          "meta=" + JSON.stringify(m.metadata ?? {}).slice(0, 160),
-        );
-      }
-      if (serverOpen.length > 0) {
-        console.log("[ask] serverOpen raw:", JSON.stringify(serverOpen).slice(0, 200));
-      }
     }
     if (openRequestsQuery.isSuccess && serverOpen.length > 0) {
       const first = serverOpen[0];
       const parsed = parseAskRequest(first);
       if (parsed) return { message: first, parsed };
     }
-    // Fallback + union: the server scopes open-requests by the caller's
-    // CURRENT human agent — an ask created under a different membership can
-    // return empty there while still being open in this chat. Scan the
-    // loaded timeline for unresolved request-format messages.
+    // Fallback: /open-requests is a live query scoped to the caller's own
+    // human-agent id, so it legitimately returns nothing for an ask targeted
+    // at a different id. Scan the loaded timeline for an unresolved request
+    // as a second source. Note the row count that gates the history walk is a
+    // stored counter and can outlive the ask it counted, so an empty result
+    // here is a normal outcome rather than proof of a bug.
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.format !== "request") continue;
