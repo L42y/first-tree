@@ -20,14 +20,39 @@ export type ParsedRequest = {
   targetAgentId: string | null;
 };
 
+/**
+ * The answer affordance is optional decoration; the question itself is the
+ * message body. A payload that fails the schema — more than four options, a
+ * label over five words, a missing description — must therefore degrade to a
+ * free-text ask rather than yield `null`, because a `null` here silently
+ * renders no dock at all and strands a question the user is required to
+ * answer. Over-long option lists are salvaged to the first four rather than
+ * dropped outright.
+ */
+function parseAskPayload(raw: unknown): AskRequest {
+  const strict = askRequestSchema.safeParse(raw ?? {});
+  if (strict.success) return strict.data;
+
+  const options = (raw as { options?: unknown })?.options;
+  if (Array.isArray(options) && options.length > 4) {
+    const trimmed = askRequestSchema.safeParse({
+      ...(raw as object),
+      options: options.slice(0, 4),
+    });
+    if (trimmed.success) return trimmed.data;
+  }
+  return { multiSelect: false };
+}
+
 export function parseAskRequest(message: Message): ParsedRequest | null {
   if (message.format !== "request") return null;
-  const parsed = askRequestSchema.safeParse(message.metadata?.request ?? {});
-  if (!parsed.success) return null;
   const mentions = Array.isArray(message.metadata?.mentions)
     ? (message.metadata?.mentions as unknown[]).filter((m): m is string => typeof m === "string")
     : [];
-  return { request: parsed.data, targetAgentId: mentions[0] ?? null };
+  return {
+    request: parseAskPayload(message.metadata?.request),
+    targetAgentId: mentions[0] ?? null,
+  };
 }
 
 export function findResolutionMessage(
