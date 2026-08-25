@@ -43,6 +43,8 @@ import { colors } from "~/lib/theme";
 import type { PaginatedMessages } from "~/lib/chats-api";
 
 const PAGE_SIZE = 50;
+/** Ten pages back covers any realistic ask depth without scanning a whole chat. */
+const ASK_WALK_MAX_PAGES = 10;
 // Expo Go cannot host the enriched input's native views — fall back to a
 // plain TextInput there; dev client / standalone get live markdown.
 const IS_EXPO_GO = Constants.appOwnership === "expo";
@@ -242,16 +244,28 @@ export function ChatDetailContent({
   // renderable. Keying the stop on `openAsk` rather than "any request-format
   // message is loaded" matters: an already-resolved ask sitting in the recent
   // window would otherwise halt the walk and strand the real one out of view.
+  //
+  // Bounded, because the trigger is not trustworthy: openRequestCount is a
+  // stored counter on chat_user_state while /open-requests is a live query, and
+  // the counter can be left incremented for an ask the live query already
+  // considers resolved. On such a chat an unbounded walk would page through the
+  // entire history on every open and still find nothing.
+  const askWalkPagesRef = useRef(0);
+  useEffect(() => {
+    askWalkPagesRef.current = 0;
+  }, [chatId]);
   useEffect(() => {
     if (
       shouldExpectAsk &&
       openAsk === null &&
+      askWalkPagesRef.current < ASK_WALK_MAX_PAGES &&
       messagesQuery.hasPreviousPage &&
       !messagesQuery.isFetchingPreviousPage
     ) {
+      askWalkPagesRef.current += 1;
       void messagesQuery.fetchPreviousPage();
     }
-  }, [shouldExpectAsk, openAsk, messagesQuery]);
+  }, [shouldExpectAsk, openAsk, messagesQuery, chatId]);
 
   const handleSend = useCallback(async () => {
     if (!message.trim() || !memberId) return;
