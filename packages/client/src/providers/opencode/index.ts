@@ -57,7 +57,7 @@ import {
 } from "./binary.js";
 import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
 import { acquireOpenCodePrivateConfigLease, type OpenCodePrivateConfigLease } from "./private-config.js";
-import { describeOpenCodeTurnAbortFailure, resolveOpenCodeTurnAbortCause } from "./turn-abort.js";
+import { describeOpenCodeTurnAbortFailure, resolveOpenCodeTurnAbortCause, classificationErrorForOpenCodeTurnAbort } from "./turn-abort.js";
 
 export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
 
@@ -830,6 +830,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
 
   async function settleFailure(input: {
     failure: string;
+    classificationError?: string;
     spawnError?: Error;
     state: Pick<TurnState, "sawProviderActivity" | "sawUnsafeTool" | "text">;
     sessionCtx: SessionContext;
@@ -837,6 +838,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     token: DeliveryToken;
     turnGeneration: number;
   }): Promise<boolean> {
+    if (generation !== input.turnGeneration) {
+      return false;
+    }
     const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.state.sawUnsafeTool
       ? "unsafe"
@@ -845,6 +849,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         : input.state.sawProviderActivity
           ? "pre_visible"
           : "pre_provider";
+    const classificationError = input.classificationError ?? input.failure;
     const displayMessage = isOpenCodeAuthError(input.failure)
       ? formatAuthHint("opencode", input.failure)
       : input.failure;
@@ -856,9 +861,16 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     });
     attempt.recordSignal({
       kind: input.spawnError ? "local_error" : "provider_error",
-      error: input.spawnError ?? input.failure,
-      messagePreview: displayMessage,
+      error: input.spawnError ?? new Error(classificationError),
+      messagePreview: classificationError,
     });
+    if (displayMessage !== classificationError) {
+      attempt.recordSignal({
+        kind: "diagnostic",
+        error: new Error(displayMessage),
+        messagePreview: displayMessage,
+      });
+    }
     const attemptNumber = nextProviderAttempt(
       attemptKey,
       () => input.sessionCtx.hasPendingDelivery?.(input.messages) ?? true,
@@ -1025,6 +1037,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       }
 
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
+        if (generation !== turnGeneration) {
+          return false;
+        }
         const timedOut = turnTimedOutGeneration === turnGeneration;
         if (timedOut) turnTimedOutGeneration = null;
         const abortCause = resolveOpenCodeTurnAbortCause({
@@ -1039,9 +1054,11 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
           turnTimeoutMs,
           state,
         });
+        const classificationError = classificationErrorForOpenCodeTurnAbort(abortCause);
         return settleFailure({
           failure,
-          spawnError: new Error(failure),
+          classificationError,
+          spawnError: new Error(classificationError),
           state,
           sessionCtx,
           messages,
