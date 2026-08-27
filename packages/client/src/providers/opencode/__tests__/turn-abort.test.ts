@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ProviderAttempt } from "../../../runtime/provider-attempt.js";
 import {
-  classificationErrorForOpenCodeTurnAbort,
   describeOpenCodeTurnAbortFailure,
-  OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE,
+  dispositionForOpenCodeTurnAbort,
+  inferOpenCodeTurnAbortRecord,
+  OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE,
   resolveOpenCodeTurnAbortCause,
+  settlementPolicyForOpenCodeTurnAbort,
 } from "../turn-abort.js";
 
 describe("resolveOpenCodeTurnAbortCause", () => {
@@ -45,6 +47,28 @@ describe("resolveOpenCodeTurnAbortCause", () => {
   });
 });
 
+describe("dispositionForOpenCodeTurnAbort", () => {
+  it("keeps superseded turns silent", () => {
+    expect(dispositionForOpenCodeTurnAbort("superseded")).toBe("silent");
+  });
+
+  it("settles lifecycle and timeout aborts", () => {
+    expect(dispositionForOpenCodeTurnAbort("lifecycle")).toBe("settle");
+    expect(dispositionForOpenCodeTurnAbort("timeout")).toBe("settle");
+    expect(dispositionForOpenCodeTurnAbort("session_inactive")).toBe("settle");
+  });
+});
+
+describe("settlementPolicyForOpenCodeTurnAbort", () => {
+  it("uses the stable timeout classifier only for timeout", () => {
+    expect(settlementPolicyForOpenCodeTurnAbort("timeout").classificationError).toBe(
+      OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE,
+    );
+    expect(settlementPolicyForOpenCodeTurnAbort("session_inactive").classificationError).toContain("inactive");
+    expect(settlementPolicyForOpenCodeTurnAbort("lifecycle").classificationError).toContain("lifecycle");
+  });
+});
+
 describe("describeOpenCodeTurnAbortFailure", () => {
   it("names timeout duration and missing terminal events", () => {
     expect(
@@ -76,8 +100,16 @@ describe("describeOpenCodeTurnAbortFailure", () => {
       turnTimeoutMs: 60_000,
       state: { terminalReasons: [], sawProviderActivity: true, text: ["partial"] },
     });
-    const classificationError = classificationErrorForOpenCodeTurnAbort("superseded");
-    expect(classificationError).toBe(OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE);
+    const record = inferOpenCodeTurnAbortRecord({
+      turnGeneration: 1,
+      currentGeneration: 2,
+      sessionActive: true,
+      timedOut: false,
+      abortSignal: AbortSignal.abort(),
+    });
+    expect(record.disposition).toBe("silent");
+    const classificationError = settlementPolicyForOpenCodeTurnAbort("timeout").classificationError;
+    expect(classificationError).toBe(OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE);
     expect(classificationError).toContain("timed out");
     expect(displayMessage).toContain("superseded");
 
