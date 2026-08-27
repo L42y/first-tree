@@ -57,6 +57,7 @@ import {
 } from "./binary.js";
 import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
 import { acquireOpenCodePrivateConfigLease, type OpenCodePrivateConfigLease } from "./private-config.js";
+import { describeOpenCodeTurnAbortFailure, resolveOpenCodeTurnAbortCause } from "./turn-abort.js";
 
 export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
 
@@ -336,6 +337,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let initialTurnPreparing = false;
   let currentAbort: AbortController | null = null;
   let currentTurnPromise: Promise<void> | null = null;
+  let turnTimedOutGeneration: number | null = null;
   let versionReady = false;
   let generation = 0;
   let drainScheduled = false;
@@ -927,8 +929,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       return false;
     }
     const turnGeneration = ++generation;
+    const previousAbort = currentAbort;
     const abort = new AbortController();
     currentAbort = abort;
+    previousAbort?.abort();
     let observedState: TurnState | null = null;
     const promise = (async () => {
       const { payload } = await refreshProjection(sessionCtx);
@@ -978,7 +982,10 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       };
       observedState = state;
       token.processingStarted(messages);
-      const timeout = setTimeout(() => abort.abort(), turnTimeoutMs);
+      const timeout = setTimeout(() => {
+        turnTimedOutGeneration = turnGeneration;
+        abort.abort();
+      }, turnTimeoutMs);
       timeout.unref?.();
       let outcome: ProcessOutcome;
       try {
@@ -1018,9 +1025,23 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       }
 
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
+        const timedOut = turnTimedOutGeneration === turnGeneration;
+        if (timedOut) turnTimedOutGeneration = null;
+        const abortCause = resolveOpenCodeTurnAbortCause({
+          turnGeneration,
+          currentGeneration: generation,
+          sessionActive,
+          timedOut,
+          abortSignal: abort.signal,
+        });
+        const failure = describeOpenCodeTurnAbortFailure({
+          cause: abortCause,
+          turnTimeoutMs,
+          state,
+        });
         return settleFailure({
-          failure: "OpenCode turn aborted or timed out before a safe terminal event",
-          spawnError: new Error("OpenCode turn aborted or timed out"),
+          failure,
+          spawnError: new Error(failure),
           state,
           sessionCtx,
           messages,
