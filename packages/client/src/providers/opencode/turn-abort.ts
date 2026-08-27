@@ -1,7 +1,14 @@
 export type OpenCodeTurnAbortCause = "timeout" | "superseded" | "session_inactive" | "lifecycle";
 
-/** Stable classifier input — must stay aligned with shared transient-transport matching. */
-export const OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE =
+export type OpenCodeTurnAbortDisposition = "silent" | "settle";
+
+export type OpenCodeTurnAbortRecord = {
+  cause: OpenCodeTurnAbortCause;
+  disposition: OpenCodeTurnAbortDisposition;
+};
+
+/** Stable classifier input for timeout retries — must match shared transient-transport matching. */
+export const OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE =
   "OpenCode turn aborted or timed out before a safe terminal event";
 
 export type OpenCodeTurnAbortState = {
@@ -9,6 +16,14 @@ export type OpenCodeTurnAbortState = {
   sawProviderActivity: boolean;
   text: readonly string[];
 };
+
+export type OpenCodeTurnAbortSettlementPolicy = {
+  classificationError: string;
+};
+
+export function dispositionForOpenCodeTurnAbort(cause: OpenCodeTurnAbortCause): OpenCodeTurnAbortDisposition {
+  return cause === "superseded" ? "silent" : "settle";
+}
 
 export function resolveOpenCodeTurnAbortCause(input: {
   turnGeneration: number;
@@ -22,6 +37,17 @@ export function resolveOpenCodeTurnAbortCause(input: {
   if (input.currentGeneration !== input.turnGeneration) return "superseded";
   if (input.abortSignal.aborted) return "lifecycle";
   return "lifecycle";
+}
+
+export function inferOpenCodeTurnAbortRecord(input: {
+  turnGeneration: number;
+  currentGeneration: number;
+  sessionActive: boolean;
+  timedOut: boolean;
+  abortSignal: AbortSignal;
+}): OpenCodeTurnAbortRecord {
+  const cause = resolveOpenCodeTurnAbortCause(input);
+  return { cause, disposition: dispositionForOpenCodeTurnAbort(cause) };
 }
 
 export function describeOpenCodeTurnAbortFailure(input: {
@@ -56,6 +82,19 @@ export function describeOpenCodeTurnAbortFailure(input: {
   return `${lead}. ${hints.join("; ")}.`;
 }
 
-export function classificationErrorForOpenCodeTurnAbort(_cause: OpenCodeTurnAbortCause): string {
-  return OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE;
+export function settlementPolicyForOpenCodeTurnAbort(cause: OpenCodeTurnAbortCause): OpenCodeTurnAbortSettlementPolicy {
+  switch (cause) {
+    case "timeout":
+      return { classificationError: OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE };
+    case "superseded":
+      return { classificationError: OPENCODE_TURN_ABORT_TIMEOUT_CLASSIFICATION_MESSAGE };
+    case "session_inactive":
+      return {
+        classificationError: "OpenCode session became inactive before a safe terminal event",
+      };
+    case "lifecycle":
+      return {
+        classificationError: "OpenCode turn aborted by runtime lifecycle before a safe terminal event",
+      };
+  }
 }

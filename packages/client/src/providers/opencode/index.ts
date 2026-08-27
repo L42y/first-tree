@@ -57,7 +57,12 @@ import {
 } from "./binary.js";
 import { type OpenCodeStreamEvent, OpenCodeStreamParser, type OpenCodeUsage } from "./parser.js";
 import { acquireOpenCodePrivateConfigLease, type OpenCodePrivateConfigLease } from "./private-config.js";
-import { describeOpenCodeTurnAbortFailure, resolveOpenCodeTurnAbortCause, classificationErrorForOpenCodeTurnAbort } from "./turn-abort.js";
+import {
+  describeOpenCodeTurnAbortFailure,
+  inferOpenCodeTurnAbortRecord,
+  type OpenCodeTurnAbortRecord,
+  settlementPolicyForOpenCodeTurnAbort,
+} from "./turn-abort.js";
 
 export const OPENCODE_PENDING_SESSION_PREFIX = "opencode-pending-";
 
@@ -267,10 +272,24 @@ type ProviderTurnFailureWindow = {
 };
 
 const providerTurnFailureAttempts = new Map<string, ProviderTurnFailureWindow>();
+const turnAbortRecords = new Map<number, OpenCodeTurnAbortRecord>();
+
+function markTurnAborted(turnGeneration: number, record: OpenCodeTurnAbortRecord): void {
+  if (!turnAbortRecords.has(turnGeneration)) {
+    turnAbortRecords.set(turnGeneration, record);
+  }
+}
+
+function takeTurnAbortRecord(turnGeneration: number): OpenCodeTurnAbortRecord | null {
+  const record = turnAbortRecords.get(turnGeneration) ?? null;
+  turnAbortRecords.delete(turnGeneration);
+  return record;
+}
 
 export function clearOpenCodeDbGateCacheForTests(): void {
   dbGatePromises.clear();
   providerTurnFailureAttempts.clear();
+  turnAbortRecords.clear();
 }
 
 export function openCodeProviderAttemptWindowSizeForTests(): number {
@@ -337,7 +356,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   let initialTurnPreparing = false;
   let currentAbort: AbortController | null = null;
   let currentTurnPromise: Promise<void> | null = null;
-  let turnTimedOutGeneration: number | null = null;
   let versionReady = false;
   let generation = 0;
   let drainScheduled = false;
@@ -838,9 +856,6 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     token: DeliveryToken;
     turnGeneration: number;
   }): Promise<boolean> {
-    if (generation !== input.turnGeneration) {
-      return false;
-    }
     const attemptKey = deliveryAttemptKey(input.sessionCtx, input.messages);
     const replaySafety = input.state.sawUnsafeTool
       ? "unsafe"
@@ -942,9 +957,12 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     }
     const turnGeneration = ++generation;
     const previousAbort = currentAbort;
+    if (previousAbort) {
+      markTurnAborted(generation - 1, { cause: "superseded", disposition: "silent" });
+      previousAbort.abort();
+    }
     const abort = new AbortController();
     currentAbort = abort;
-    previousAbort?.abort();
     let observedState: TurnState | null = null;
     const promise = (async () => {
       const { payload } = await refreshProjection(sessionCtx);
@@ -995,7 +1013,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       observedState = state;
       token.processingStarted(messages);
       const timeout = setTimeout(() => {
-        turnTimedOutGeneration = turnGeneration;
+        markTurnAborted(turnGeneration, { cause: "timeout", disposition: "settle" });
         abort.abort();
       }, turnTimeoutMs);
       timeout.unref?.();
@@ -1037,24 +1055,24 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       }
 
       if (abort.signal.aborted || generation !== turnGeneration || !sessionActive) {
-        if (generation !== turnGeneration) {
+        const record =
+          takeTurnAbortRecord(turnGeneration) ??
+          inferOpenCodeTurnAbortRecord({
+            turnGeneration,
+            currentGeneration: generation,
+            sessionActive,
+            timedOut: false,
+            abortSignal: abort.signal,
+          });
+        if (record.disposition === "silent") {
           return false;
         }
-        const timedOut = turnTimedOutGeneration === turnGeneration;
-        if (timedOut) turnTimedOutGeneration = null;
-        const abortCause = resolveOpenCodeTurnAbortCause({
-          turnGeneration,
-          currentGeneration: generation,
-          sessionActive,
-          timedOut,
-          abortSignal: abort.signal,
-        });
         const failure = describeOpenCodeTurnAbortFailure({
-          cause: abortCause,
+          cause: record.cause,
           turnTimeoutMs,
           state,
         });
-        const classificationError = classificationErrorForOpenCodeTurnAbort(abortCause);
+        const { classificationError } = settlementPolicyForOpenCodeTurnAbort(record.cause);
         return settleFailure({
           failure,
           classificationError,
@@ -1469,6 +1487,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       const recoveryReason = reason ?? "opencode_suspend_before_terminal";
       sessionActive = false;
       drainCancellationReason = recoveryReason;
+      if (currentAbort) {
+        markTurnAborted(generation, { cause: "lifecycle", disposition: "settle" });
+      }
       generation++;
       currentAbort?.abort();
       unsafeDiscoveryWaitAbort?.abort();
@@ -1486,6 +1507,9 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       const recoveryReason = reason ?? "opencode_shutdown_before_terminal";
       sessionActive = false;
       drainCancellationReason = recoveryReason;
+      if (currentAbort) {
+        markTurnAborted(generation, { cause: "lifecycle", disposition: "settle" });
+      }
       generation++;
       currentAbort?.abort();
       unsafeDiscoveryWaitAbort?.abort();
