@@ -1,5 +1,9 @@
 export type OpenCodeTurnAbortCause = "timeout" | "superseded" | "session_inactive" | "lifecycle";
 
+/** Stable classifier input — must stay aligned with shared transient-transport matching. */
+export const OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE =
+  "OpenCode turn aborted or timed out before a safe terminal event";
+
 export type OpenCodeTurnAbortState = {
   terminalReasons: readonly string[];
   sawProviderActivity: boolean;
@@ -50,4 +54,8 @@ export function describeOpenCodeTurnAbortFailure(input: {
   }
 
   return `${lead}. ${hints.join("; ")}.`;
+}
+
+export function classificationErrorForOpenCodeTurnAbort(_cause: OpenCodeTurnAbortCause): string {
+  return OPENCODE_TURN_ABORT_CLASSIFICATION_MESSAGE;
 }
