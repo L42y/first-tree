@@ -1764,7 +1764,7 @@ describe("OpenCode V1 handler", () => {
     });
     // Owner must finish well before the shared deadline; the stale child holds past it.
     await vi.waitFor(() => expect(secondToken.complete).toHaveBeenCalled(), { timeout: turnTimeoutMs });
-    await first;
+    await Promise.all([first, second]);
     expect(firstToken.complete).not.toHaveBeenCalled();
     expect(firstToken.retry).not.toHaveBeenCalled();
     expect(secondToken.retry).not.toHaveBeenCalled();
