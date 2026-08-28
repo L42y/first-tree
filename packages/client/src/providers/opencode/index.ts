@@ -272,24 +272,10 @@ type ProviderTurnFailureWindow = {
 };
 
 const providerTurnFailureAttempts = new Map<string, ProviderTurnFailureWindow>();
-const turnAbortRecords = new Map<number, OpenCodeTurnAbortRecord>();
-
-function markTurnAborted(turnGeneration: number, record: OpenCodeTurnAbortRecord): void {
-  if (!turnAbortRecords.has(turnGeneration)) {
-    turnAbortRecords.set(turnGeneration, record);
-  }
-}
-
-function takeTurnAbortRecord(turnGeneration: number): OpenCodeTurnAbortRecord | null {
-  const record = turnAbortRecords.get(turnGeneration) ?? null;
-  turnAbortRecords.delete(turnGeneration);
-  return record;
-}
 
 export function clearOpenCodeDbGateCacheForTests(): void {
   dbGatePromises.clear();
   providerTurnFailureAttempts.clear();
-  turnAbortRecords.clear();
 }
 
 export function openCodeProviderAttemptWindowSizeForTests(): number {
@@ -371,6 +357,19 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
   const handlerGenerationId = randomUUID().replaceAll("-", "");
   let privateConfigLease: OpenCodePrivateConfigLease | null = null;
   const queue: QueuedDelivery[] = [];
+  const turnAbortRecords = new Map<number, OpenCodeTurnAbortRecord>();
+
+  function markTurnAborted(turnGeneration: number, record: OpenCodeTurnAbortRecord): void {
+    if (!turnAbortRecords.has(turnGeneration)) {
+      turnAbortRecords.set(turnGeneration, record);
+    }
+  }
+
+  function takeTurnAbortRecord(turnGeneration: number): OpenCodeTurnAbortRecord | null {
+    const record = turnAbortRecords.get(turnGeneration) ?? null;
+    turnAbortRecords.delete(turnGeneration);
+    return record;
+  }
 
   function deliveryAttemptKey(sessionCtx: SessionContext, messages: readonly SessionMessage[]): string {
     const deliveryHead = messages[0];
@@ -1205,6 +1204,7 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
         turnGeneration,
       });
     } finally {
+      turnAbortRecords.delete(turnGeneration);
       if (generation === turnGeneration) {
         currentAbort = null;
         currentTurnPromise = null;
