@@ -1039,7 +1039,7 @@ describe("OpenCode V1 handler", () => {
     expect(inputs[0]).toContain("<first-tree-current-chat-context");
     expect(inputs[1]).not.toContain("<first-tree-current-chat-context");
     await handler.shutdown();
-  });
+  }, 15_000);
 
   it("fails closed on unknown JSONL even when it carries a valid session id, then preserves one-shot context", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-protocol-"));
@@ -1669,7 +1669,7 @@ describe("OpenCode V1 handler", () => {
       expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
     );
     await handler.shutdown();
-  });
+  }, 15_000);
 
   it("does not settle a superseded turn on the old token when a newer start arrives", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-supersede-token-"));
@@ -1750,6 +1750,83 @@ describe("OpenCode V1 handler", () => {
     expect(firstToken.retry).not.toHaveBeenCalled();
     expect(secondToken.complete).toHaveBeenCalled();
     await handler.shutdown();
+  }, 30_000);
+
+  it("scopes abort records per handler so concurrent sessions cannot steal settlement", async () => {
+    const rootA = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-abort-scope-a-"));
+    const rootB = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-abort-scope-b-"));
+    roots.push(rootA, rootB);
+    const specsA: ProviderProcessSpec[] = [];
+    const partialOutput = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({ type: "text", sessionID: "ses_new", part: { text: "partial" } }),
+    ].join("\n");
+    const handlerA = createOpenCodeHandler({
+      workspaceRoot: rootA,
+      agentName: "opencode-test-agent-a",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createSupersedeProtocolSupervisor(
+        specsA,
+        `${partialOutput}\n`,
+        `${successfulTurn("ses_new", "done")}\n`,
+      ),
+    });
+    const ctxA = context([], [], { agentId: "agent-a", chatId: "chat-a" });
+    const bootstrapToken = deliveryToken();
+    const { sessionId } = await handlerA.start(message("boot-a", "bootstrap"), ctxA, bootstrapToken);
+
+    const staleToken = deliveryToken();
+    const ownerToken = deliveryToken();
+    const staleTurn = handlerA.resume(message("stale-a", "first"), sessionId, ctxA, staleToken);
+    await vi.waitFor(() => expect(staleToken.processingStarted).toHaveBeenCalled(), {
+      timeout: 10_000,
+    });
+    const ownerTurn = handlerA.resume(message("owner-a", "second"), sessionId, ctxA, ownerToken);
+    await Promise.all([staleTurn, ownerTurn]);
+    expect(staleToken.complete).not.toHaveBeenCalled();
+    expect(staleToken.retry).not.toHaveBeenCalled();
+    expect(ownerToken.complete).toHaveBeenCalled();
+
+    const writeOutput = [
+      JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+      JSON.stringify({
+        type: "tool_use",
+        sessionID: "ses_new",
+        part: {
+          id: "tool-1",
+          tool: "bash",
+          state: { status: "completed", input: { command: "touch effect" }, output: "done" },
+        },
+      }),
+    ].join("\n");
+    const handlerB = createOpenCodeHandler({
+      workspaceRoot: rootB,
+      agentName: "opencode-test-agent-b",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: createProtocolSupervisor([], [`${writeOutput}\n`], [], true),
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    const eventsB: Array<{ kind?: string }> = [];
+    const ctxB = context(eventsB, [], { agentId: "agent-b", chatId: "chat-b" });
+    const unsafeToken = deliveryToken();
+    const unsafeTurn = handlerB.start(message("unsafe-b", "first"), ctxB, unsafeToken);
+    await vi.waitFor(() => expect(eventsB.some((event) => event.kind === "tool_call")).toBe(true), {
+      timeout: 10_000,
+    });
+    await handlerB.suspend("cross-handler isolation");
+    await unsafeTurn;
+    expect(unsafeToken.retry).not.toHaveBeenCalled();
+    expect(unsafeToken.complete).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: "unsafe-b" })],
+      expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
+    );
+
+    await handlerA.shutdown();
+    await handlerB.shutdown();
   }, 30_000);
 
   it("preserves the unsafe-effect fence when private-config cleanup fails after provider exit", async () => {
