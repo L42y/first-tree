@@ -178,8 +178,16 @@ process.stdin.resume();
 process.stdin.on("end", () => {
   const encoded = process.env.FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64 ?? "";
   process.stdout.write(Buffer.from(encoded, "base64").toString("utf8"));
+  if (process.env.FIRST_TREE_TEST_PROVIDER_TRAP_SIGTERM === "1") {
+    process.on("SIGTERM", () => {});
+  }
   if (process.env.FIRST_TREE_TEST_PROVIDER_HOLD_OPEN === "1") {
-    setInterval(() => {}, 1000);
+    const holdMs = Number(process.env.FIRST_TREE_TEST_PROVIDER_HOLD_MS ?? "0");
+    if (holdMs > 0) {
+      setTimeout(() => process.exit(0), holdMs);
+    } else {
+      setInterval(() => {}, 1000);
+    }
   }
 });
 `;
@@ -219,50 +227,32 @@ function createSyntheticSupervisor(
   };
 }
 
+type ProtocolTurnSpec = {
+  output: string;
+  holdOpen?: boolean;
+  holdMs?: number;
+  trapSigterm?: boolean;
+};
+
 function createProtocolSupervisor(
   specs: ProviderProcessSpec[],
   turnOutputs: string[],
   capturedInputs: string[] = [],
   holdOpen = false,
 ): ProviderProcessSupervisor {
-  let turn = 0;
-  return {
-    spawn(spec) {
-      specs.push(spec);
-      const output =
-        spec.args[0] === "--version"
-          ? "1.18.9\n"
-          : spec.args[0] === "db"
-            ? '[{"ready":1}]\n'
-            : (turnOutputs[turn++] ?? "");
-      const isRun = spec.args[0] === "run";
-      const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
-        ...spec.options,
-        env: {
-          ...spec.options.env,
-          FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(output, "utf8").toString("base64"),
-          FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: holdOpen && isRun ? "1" : "0",
-        },
-        detached: holdOpen && isRun,
-      });
-      if (isRun && child.stdin) {
-        const write = child.stdin.write.bind(child.stdin);
-        child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
-          capturedInputs.push(String(chunk));
-          return Reflect.apply(write, child.stdin, [chunk, ...args]);
-        }) as typeof child.stdin.write;
-      }
-      return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
-    },
-  };
+  return createProtocolTurnSupervisor(
+    specs,
+    turnOutputs.map((output) => ({ output, holdOpen })),
+    capturedInputs,
+  );
 }
 
-function createSupersedeProtocolSupervisor(
+function createProtocolTurnSupervisor(
   specs: ProviderProcessSpec[],
-  partialOutput: string,
-  successOutput: string,
+  turns: ProtocolTurnSpec[],
+  capturedInputs: string[] = [],
 ): ProviderProcessSupervisor {
-  let run = 0;
+  let turn = 0;
   return {
     spawn(spec) {
       specs.push(spec);
@@ -288,26 +278,47 @@ function createSupersedeProtocolSupervisor(
         });
         return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
       }
-      const output = run === 0 ? successOutput : run === 1 ? partialOutput : successOutput;
-      const holdPartial = run === 1;
-      run += 1;
+      const turnSpec = turns[turn++] ?? { output: "" };
+      const holdOpen = Boolean(turnSpec.holdOpen);
       const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
         ...spec.options,
         env: {
           ...spec.options.env,
-          FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(output, "utf8").toString("base64"),
-          FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: holdPartial ? "1" : "0",
+          FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(turnSpec.output, "utf8").toString("base64"),
+          FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: holdOpen ? "1" : "0",
+          FIRST_TREE_TEST_PROVIDER_TRAP_SIGTERM: turnSpec.trapSigterm ? "1" : "0",
+          FIRST_TREE_TEST_PROVIDER_HOLD_MS: String(turnSpec.holdMs ?? 0),
         },
-        detached: holdPartial,
+        detached: holdOpen,
       });
       if (child.stdin) {
         const write = child.stdin.write.bind(child.stdin);
-        child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) =>
-          Reflect.apply(write, child.stdin, [chunk, ...args])) as typeof child.stdin.write;
+        child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+          capturedInputs.push(String(chunk));
+          return Reflect.apply(write, child.stdin, [chunk, ...args]);
+        }) as typeof child.stdin.write;
       }
       return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
     },
   };
+}
+
+function createSupersedeProtocolSupervisor(
+  specs: ProviderProcessSpec[],
+  partialOutput: string,
+  successOutput: string,
+  options: { trapPartialSigterm?: boolean; partialHoldMs?: number } = {},
+): ProviderProcessSupervisor {
+  return createProtocolTurnSupervisor(specs, [
+    { output: successOutput },
+    {
+      output: partialOutput,
+      holdOpen: true,
+      trapSigterm: options.trapPartialSigterm,
+      holdMs: options.partialHoldMs,
+    },
+    { output: successOutput },
+  ]);
 }
 
 function context(
@@ -1720,6 +1731,7 @@ describe("OpenCode V1 handler", () => {
       JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
       JSON.stringify({ type: "text", sessionID: "ses_new", part: { text: "partial" } }),
     ].join("\n");
+    const turnTimeoutMs = 2_500;
     const handler = createOpenCodeHandler({
       workspaceRoot: root,
       agentName: "opencode-test-agent",
@@ -1730,8 +1742,11 @@ describe("OpenCode V1 handler", () => {
         specs,
         `${partialOutput}\n`,
         `${successfulTurn("ses_new", "done")}\n`,
+        // Trap SIGTERM and stay alive past the turn deadline so the timer callback
+        // really attempts to overwrite the first-writer-wins superseded record.
+        { trapPartialSigterm: true, partialHoldMs: turnTimeoutMs + 800 },
       ),
-      opencodeTurnTimeoutMs: 400,
+      opencodeTurnTimeoutMs: turnTimeoutMs,
     });
     const sessionCtx = context([], []);
     const bootstrapToken = deliveryToken();
@@ -1744,11 +1759,15 @@ describe("OpenCode V1 handler", () => {
       timeout: 10_000,
     });
     const second = handler.resume(message("m-race-owner", "second"), sessionId, sessionCtx, secondToken);
-    await Promise.all([first, second]);
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await vi.waitFor(() => expect(secondToken.processingStarted).toHaveBeenCalled(), {
+      timeout: 10_000,
+    });
+    // Owner must finish well before the shared deadline; the stale child holds past it.
+    await vi.waitFor(() => expect(secondToken.complete).toHaveBeenCalled(), { timeout: turnTimeoutMs });
+    await first;
     expect(firstToken.complete).not.toHaveBeenCalled();
     expect(firstToken.retry).not.toHaveBeenCalled();
-    expect(secondToken.complete).toHaveBeenCalled();
+    expect(secondToken.retry).not.toHaveBeenCalled();
     await handler.shutdown();
   }, 30_000);
 
@@ -1771,23 +1790,25 @@ describe("OpenCode V1 handler", () => {
         specsA,
         `${partialOutput}\n`,
         `${successfulTurn("ses_new", "done")}\n`,
+        // Keep the superseded generation draining while handler B aborts the same
+        // numeric generation — the process-global ledger race only appears then.
+        { trapPartialSigterm: true, partialHoldMs: 2_000 },
       ),
     });
     const ctxA = context([], [], { agentId: "agent-a", chatId: "chat-a" });
     const bootstrapToken = deliveryToken();
-    const { sessionId } = await handlerA.start(message("boot-a", "bootstrap"), ctxA, bootstrapToken);
+    const { sessionId: sessionIdA } = await handlerA.start(message("boot-a", "bootstrap"), ctxA, bootstrapToken);
 
     const staleToken = deliveryToken();
     const ownerToken = deliveryToken();
-    const staleTurn = handlerA.resume(message("stale-a", "first"), sessionId, ctxA, staleToken);
+    const staleTurn = handlerA.resume(message("stale-a", "first"), sessionIdA, ctxA, staleToken);
     await vi.waitFor(() => expect(staleToken.processingStarted).toHaveBeenCalled(), {
       timeout: 10_000,
     });
-    const ownerTurn = handlerA.resume(message("owner-a", "second"), sessionId, ctxA, ownerToken);
-    await Promise.all([staleTurn, ownerTurn]);
-    expect(staleToken.complete).not.toHaveBeenCalled();
-    expect(staleToken.retry).not.toHaveBeenCalled();
-    expect(ownerToken.complete).toHaveBeenCalled();
+    const ownerTurn = handlerA.resume(message("owner-a", "second"), sessionIdA, ctxA, ownerToken);
+    await vi.waitFor(() => expect(ownerToken.processingStarted).toHaveBeenCalled(), {
+      timeout: 10_000,
+    });
 
     const writeOutput = [
       JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
@@ -1801,19 +1822,29 @@ describe("OpenCode V1 handler", () => {
         },
       }),
     ].join("\n");
+    const specsB: ProviderProcessSpec[] = [];
     const handlerB = createOpenCodeHandler({
       workspaceRoot: rootB,
       agentName: "opencode-test-agent-b",
       runtimeProvider: "opencode",
       agentConfigCache: cache(runtimeConfig()),
       opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
-      providerProcessSupervisor: createProtocolSupervisor([], [`${writeOutput}\n`], [], true),
+      // Bootstrap consumes generation 1; the unsafe turn reaches generation 2 —
+      // the same numeric key A's superseded record still occupies while draining.
+      providerProcessSupervisor: createProtocolTurnSupervisor(specsB, [
+        { output: `${successfulTurn("ses_new", "boot-b")}\n` },
+        { output: `${writeOutput}\n`, holdOpen: true },
+      ]),
       opencodeTurnTimeoutMs: 5_000,
     });
     const eventsB: Array<{ kind?: string }> = [];
     const ctxB = context(eventsB, [], { agentId: "agent-b", chatId: "chat-b" });
+    const bootBToken = deliveryToken();
+    const { sessionId: sessionIdB } = await handlerB.start(message("boot-b", "bootstrap"), ctxB, bootBToken);
+    expect(bootBToken.complete).toHaveBeenCalled();
+
     const unsafeToken = deliveryToken();
-    const unsafeTurn = handlerB.start(message("unsafe-b", "first"), ctxB, unsafeToken);
+    const unsafeTurn = handlerB.resume(message("unsafe-b", "first"), sessionIdB, ctxB, unsafeToken);
     await vi.waitFor(() => expect(eventsB.some((event) => event.kind === "tool_call")).toBe(true), {
       timeout: 10_000,
     });
@@ -1824,6 +1855,11 @@ describe("OpenCode V1 handler", () => {
       [expect.objectContaining({ id: "unsafe-b" })],
       expect.objectContaining({ status: "error", completion: "consumed", reason: "unsafe_replay" }),
     );
+
+    await Promise.all([staleTurn, ownerTurn]);
+    expect(staleToken.complete).not.toHaveBeenCalled();
+    expect(staleToken.retry).not.toHaveBeenCalled();
+    expect(ownerToken.complete).toHaveBeenCalled();
 
     await handlerA.shutdown();
     await handlerB.shutdown();
