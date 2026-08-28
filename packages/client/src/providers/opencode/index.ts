@@ -493,6 +493,17 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
     label: string;
   }): Promise<ProcessOutcome> {
     return new Promise((resolveOutcome) => {
+      const abortedBeforeSpawn = input.abortSignal.aborted || generation !== input.turnGeneration || !sessionActive;
+      if (abortedBeforeSpawn) {
+        resolveOutcome({
+          exitCode: null,
+          signal: "SIGTERM",
+          stdoutTail: "",
+          stderrTail: "",
+        });
+        return;
+      }
+
       let supervised: ReturnType<ProviderProcessSupervisor["spawn"]>;
       try {
         supervised = processSupervisor.spawn({
@@ -605,6 +616,16 @@ export const createOpenCodeHandler: HandlerFactory = (config) => {
       child.stdin?.on("error", () => {
         // EPIPE is classified from close + stderr.
       });
+      // Abort that won during spawn (before this listener) does not replay — close that race.
+      if (input.abortSignal.aborted || generation !== input.turnGeneration || !sessionActive) {
+        terminate();
+        try {
+          child.stdin?.end();
+        } catch {
+          // stdin may already be closed.
+        }
+        return;
+      }
       if (input.prompt !== undefined) child.stdin?.write(input.prompt);
       child.stdin?.end();
     });

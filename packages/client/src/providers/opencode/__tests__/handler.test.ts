@@ -1865,6 +1865,116 @@ describe("OpenCode V1 handler", () => {
     await handlerB.shutdown();
   }, 30_000);
 
+  it("does not admit a stale OpenCode prompt when aborted before the runProcess abort listener", async () => {
+    const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-admit-race-"));
+    roots.push(root);
+    const specs: ProviderProcessSpec[] = [];
+    const prompts: string[] = [];
+    let staleChildPid: number | undefined;
+    let handler: ReturnType<typeof createOpenCodeHandler>;
+    let abortedDuringSpawn = false;
+
+    const supervisor: ProviderProcessSupervisor = {
+      spawn(spec) {
+        specs.push(spec);
+        if (spec.args[0] === "--version") {
+          const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
+            ...spec.options,
+            env: {
+              ...spec.options.env,
+              FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from("1.18.9\n", "utf8").toString("base64"),
+              FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: "0",
+            },
+          });
+          return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+        }
+        if (spec.args[0] === "db") {
+          const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
+            ...spec.options,
+            env: {
+              ...spec.options.env,
+              FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from('[{"ready":1}]\n', "utf8").toString("base64"),
+              FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: "0",
+            },
+          });
+          return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+        }
+
+        const runIndex = specs.filter((entry) => entry.args[0] === "run").length - 1;
+        if (runIndex === 0) {
+          const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
+            ...spec.options,
+            env: {
+              ...spec.options.env,
+              FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(`${successfulTurn()}\n`, "utf8").toString("base64"),
+              FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: "0",
+            },
+          });
+          return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+        }
+
+        const partialOutput = [
+          JSON.stringify({ type: "step_start", sessionID: "ses_new", part: { sessionID: "ses_new" } }),
+          JSON.stringify({ type: "text", sessionID: "ses_new", part: { text: "partial" } }),
+        ].join("\n");
+        const child = spawn(process.execPath, ["-e", PROTOCOL_PROVIDER_SCRIPT], {
+          ...spec.options,
+          env: {
+            ...spec.options.env,
+            FIRST_TREE_TEST_PROVIDER_OUTPUT_BASE64: Buffer.from(`${partialOutput}\n`, "utf8").toString("base64"),
+            FIRST_TREE_TEST_PROVIDER_HOLD_OPEN: "1",
+          },
+          detached: true,
+        });
+        staleChildPid = child.pid;
+        if (child.stdin) {
+          const write = child.stdin.write.bind(child.stdin);
+          child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+            prompts.push(String(chunk));
+            return Reflect.apply(write, child.stdin, [chunk, ...args]);
+          }) as typeof child.stdin.write;
+        }
+        // Abort while still inside spawn — before runProcess registers its abort listener.
+        // AbortSignal does not replay, so without the post-listener re-check the stale prompt
+        // would still be written and the child would keep running.
+        abortedDuringSpawn = true;
+        void handler.suspend("abort-before-listener");
+        return { child, exited: new Promise<void>((resolve) => child.once("exit", () => resolve())) };
+      },
+    };
+
+    handler = createOpenCodeHandler({
+      workspaceRoot: root,
+      agentName: "opencode-test-agent",
+      runtimeProvider: "opencode",
+      agentConfigCache: cache(runtimeConfig()),
+      opencodeBinaryResolver: () => ({ ok: true, binary: "/host/opencode" }),
+      providerProcessSupervisor: supervisor,
+      opencodeTurnTimeoutMs: 5_000,
+    });
+    const sessionCtx = context([], []);
+    const bootstrapToken = deliveryToken();
+    const { sessionId } = await handler.start(message("m-boot", "bootstrap"), sessionCtx, bootstrapToken);
+
+    const staleToken = deliveryToken();
+    await handler.resume(message("m-stale", "first"), sessionId, sessionCtx, staleToken);
+    expect(abortedDuringSpawn).toBe(true);
+    expect(prompts).toEqual([]);
+    expect(staleToken.complete).not.toHaveBeenCalled();
+    if (staleChildPid !== undefined) {
+      const pid = staleChildPid;
+      await vi.waitFor(() => {
+        try {
+          process.kill(pid, 0);
+          throw new Error("stale child still alive");
+        } catch (error) {
+          expect((error as NodeJS.ErrnoException).code).toBe("ESRCH");
+        }
+      });
+    }
+    await handler.shutdown();
+  }, 30_000);
+
   it("preserves the unsafe-effect fence when private-config cleanup fails after provider exit", async () => {
     const root = mkdtempSync(join(realpathSync(tmpdir()), "ft-opencode-cleanup-effect-"));
     roots.push(root);
