@@ -48,8 +48,12 @@ describe("OpenCode JSONL parser", () => {
     expect(parseOpenCodeStreamLine(JSON.stringify({ type: "future", sessionID: "ses_1" }))).toContainEqual(
       expect.objectContaining({ kind: "unknown" }),
     );
-    expect(parseOpenCodeStreamLine(JSON.stringify({ type: "text", sessionID: "ses_1", part: {} }))).toContainEqual(
-      expect.objectContaining({ kind: "unknown" }),
-    );
+  });
+
+  it("skips empty text events (stored by tool-only steps and re-emitted on resume)", () => {
+    const events = parseOpenCodeStreamLine(JSON.stringify({ type: "text", sessionID: "ses_1", part: {} }));
+    expect(events).toContainEqual({ kind: "session", sessionId: "ses_1" });
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: "unknown" }));
+    expect(events).not.toContainEqual(expect.objectContaining({ kind: "text" }));
   });
 });

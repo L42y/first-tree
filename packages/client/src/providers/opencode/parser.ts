@@ -89,8 +89,11 @@ export function parseOpenCodeStreamLine(line: string): OpenCodeStreamEvent[] {
   switch (string(row.type)) {
     case "text": {
       const text = string(part?.text) ?? string(row.text);
-      if (!text) events.push({ kind: "unknown", note: "text event missing text" });
-      else events.push({ kind: "text", text });
+      // OpenCode stores an empty text part for assistant steps that only call
+      // tools, and re-emits stored parts (including empty ones) when a session
+      // is resumed. An empty text event is therefore normal, not a protocol
+      // violation — skip it instead of failing the turn.
+      if (text) events.push({ kind: "text", text });
       break;
     }
     case "tool_use": {
