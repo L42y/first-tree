@@ -407,16 +407,16 @@ Day-to-day messaging.
 ```
 first-tree chat
 ├── create [message]                               # create a separate task chat and write its first message
-│     --to <name>                                  #   initial recipient to mention + wake; repeatable
+│     --to <name>                                  #   initial recipient to mention + wake; only an agent recipient starts working (a human is notified but the chat stays idle); repeatable
 │     --with <name>                                #   context participant; added silently, not woken by the first message
 │     --topic <text> / --description <text>        #   initial chat self-description
 │     --request                                    #   first message is a tracked ask; the body IS the ask, decision-self-sufficient (why + recap + question + recommendation); exactly one --to human
 │     --options <json> / --multi-select            #   (with --request) 2–4 options {label,description,preview?}; allow multi-pick
-├── send <name> [message]                            # wake a participant — agent or human (a send to a human is informational only; a question the next step depends on goes through `chat ask`)
+├── send <name> [message]                            # notify a participant — agent or human; an agent recipient is woken (a send to a human is informational only and never carries a question — a decision the next step depends on goes through `chat ask`, a smaller call is settled and reported)
 │     # body: [message] arg, or stdin (omit [message]), or -F <path>; prefer stdin/-F for rich bodies (shell-safe)
 │     -F, --message-file <path>                      #   read only the body from <path> (`-` = stdin); this does not attach <path>
 │     --reply-to <messageId>                         #   thread a reply under a message (pure threading)
-├── ask <name> [message]                             # ask a HUMAN a tracked question; the body IS the ask, decision-self-sufficient (why it exists + recent-context recap + question + recommendation)
+├── ask <name> [message]                             # ask a HUMAN a tracked question the next step depends on (it blocks them until resolved and cannot be withdrawn); the body IS the ask, decision-self-sufficient (why it exists + recent-context recap + question + recommendation)
 │     # body: [message] arg, or stdin (omit [message]), or -F <path>; prefer stdin/-F for rich bodies (shell-safe)
 │     -F, --message-file <path>                      #   read the body from <path> (`-` = stdin); content never hits the shell
 │     --options <json>                               #   2–4 answer options {label (1–5 words), description, preview?}; omit for free-text
@@ -441,6 +441,13 @@ first-tree chat
 # --to recipients are mentioned and woken; --with participants are added for
 # context but receive only silent initial history. This is not an empty-chat or
 # same-task handoff tool.
+#
+# Only an agent recipient starts working. A chat whose only --to is a human
+# stays idle until they reply; `--to <your own agent name>` wakes YOU in the
+# new chat (the server rewrites the opening message's sender to your manager,
+# so write the body as a self-contained task brief). Never pair a self-address
+# with `--to <your own manager>`: they become the sender, and a sender is
+# filtered out of its own fan-out, so they get no notification at all.
 first-tree chat create "Please review the rollout plan." --to code-agent --with reviewer-agent \
   --topic "rollout review" \
   --description "reviewing rollout plan; waiting on code-agent"
@@ -462,10 +469,12 @@ Ship the destructive migration now? I would ship — the column has had no reads
 for 30 days.
 EOF
 
-# Inline — `chat send` wakes a participant (agent or human). A plain send to a
-# human is informational only — readable, then safely ignorable; any question
-# the next step depends on goes through `chat ask` (a send never carries a
-# blocking question). The recipient must be a participant of FIRST_TREE_CHAT_ID.
+# Inline — `chat send` notifies a participant (an agent recipient is woken). A
+# plain send to a human is informational only — readable, then safely ignorable
+# — and never carries a question. A decision the next step depends on goes
+# through `chat ask`; a smaller call the agent can settle from the task, the
+# code, or a reasonable default is settled and reported with the assumption
+# stated. The recipient must be a participant of FIRST_TREE_CHAT_ID.
 first-tree chat send code-agent "ship the PR"
 
 # Stdin (multiline, markdown, special chars)
@@ -522,7 +531,10 @@ echo 'Latest run: ![chart](reports/latency.png)' | first-tree chat send code-age
 echo 'Full report: reports/latest-run.md' | first-tree chat send code-agent -f markdown
 
 # Ask a human a tracked question (red-dot + blocks the chat for them until they
-# answer). `chat ask` targets a single human; the message body IS the ask and
+# answer). A question the next step depends on belongs here — an open question
+# blocks the target until they resolve it and no agent can withdraw it, so it is
+# spent on real forks, not on confirmations. `chat ask` targets a single human;
+# the message body IS the ask and
 # must be decision-self-sufficient for a reader who remembers nothing of the
 # chat: why the question exists + a recap of the recent interactions + the
 # single question and your recommendation, written for a reader holding none

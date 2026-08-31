@@ -242,8 +242,8 @@ describe("retired tree subcommand drift guard", () => {
     }
   });
 
-  it("buildAgentBriefing CLI Overview lists only registered tree subcommands — no retired commands", () => {
-    // Reuse a tiny stub of `BuildAgentBriefingOptions`. The CLI Overview
+  it("buildAgentBriefing command surface lists only registered tree subcommands — no retired commands", () => {
+    // Reuse a tiny stub of `BuildAgentBriefingOptions`. The command surface
     // section doesn't depend on identity / payload / sourceRepos / tree
     // path, so a minimal stub renders the same output.
     const briefing = buildAgentBriefing({
@@ -264,10 +264,12 @@ describe("retired tree subcommand drift guard", () => {
 
     const overviewStart = briefing.indexOf("## CLI Overview");
     expect(overviewStart, "CLI Overview section must be present").toBeGreaterThanOrEqual(0);
-    // CLI Overview ends at the next top-level heading; scope the check to
+    // CLI Overview ends at the next section heading; scope the check to
     // just that section so unrelated documentation prose in later
-    // sections doesn't false-positive.
-    const overviewEnd = briefing.indexOf("\n# ", overviewStart);
+    // sections doesn't false-positive. Renaming that next heading widens the
+    // slice to the rest of the briefing rather than narrowing it — noisy, not
+    // silent, so the drift guard still fails closed.
+    const overviewEnd = briefing.indexOf("\n## Agent Identity & Config", overviewStart);
     const overview = briefing.slice(overviewStart, overviewEnd === -1 ? undefined : overviewEnd);
 
     expect(overview).toContain("tree verify");
