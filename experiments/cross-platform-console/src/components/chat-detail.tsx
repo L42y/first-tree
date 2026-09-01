@@ -334,7 +334,7 @@ export function ChatDetailContent({
       {!openAsk && (
         <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
           <LiveMarkdownInput
-            style={styles.input}
+            style={styles.inputContainer}
             value={message}
             onChangeText={setMessage}
             placeholder="Message…"
@@ -461,15 +461,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
   },
-  input: {
+  inputContainer: {
     flex: 1,
     minHeight: 40,
     maxHeight: 120,
     borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    fontSize: 16,
-    color: colors.text,
     backgroundColor: colors.surface,
   },
   sendButton: {

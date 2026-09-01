@@ -220,7 +220,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
         {error && <Text style={styles.errorText}>{error}</Text>}
 
         <LiveMarkdownInput
-          style={styles.input}
+          style={styles.inputContainer}
           value={answer}
           onChangeText={setAnswer}
           placeholder={mode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask…"}
@@ -364,16 +364,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     textTransform: "uppercase",
   },
-  input: {
+  inputContainer: {
     minHeight: 46,
     maxHeight: 120,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.bg,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    fontSize: 16,
   },
   footer: {
     flexDirection: "row",
