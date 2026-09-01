@@ -12,11 +12,8 @@ type LiveMarkdownInputProps = Omit<MarkdownTextInputProps, "markdownStyle" | "pa
   style?: StyleProp<TextStyle>;
   /** Lines kept visible even after the controlled value becomes empty. */
   minLines?: number;
-  /** Upper bound while the composer is in its ordinary (collapsed) state. */
+  /** Upper bound while the composer is in its ordinary state. */
   maxLines?: number;
-  /** Upper bound while the user has explicitly expanded the composer. */
-  expandedLines?: number;
-  expanded?: boolean;
 };
 
 const LINE_HEIGHT = 21;
@@ -65,26 +62,17 @@ const markdownStyle: MarkdownStyle = {
  * the editable text by its UI-thread parser; this wrapper only applies the
  * console theme and shared editor styles.
  */
-export function LiveMarkdownInput({
-  style,
-  minLines = 3,
-  maxLines = 5,
-  expandedLines = 12,
-  expanded = false,
-  ...inputProps
-}: LiveMarkdownInputProps) {
-  const maximumLines = expanded ? expandedLines : maxLines;
-
+export function LiveMarkdownInput({ style, minLines = 1, maxLines = 3, ...inputProps }: LiveMarkdownInputProps) {
   return (
     <MarkdownTextInput
       {...inputProps}
-      numberOfLines={inputProps.numberOfLines ?? maximumLines}
+      numberOfLines={inputProps.numberOfLines ?? maxLines}
       style={[
         styles.input,
         style,
         {
           minHeight: minLines * LINE_HEIGHT + VERTICAL_PADDING,
-          maxHeight: maximumLines * LINE_HEIGHT + VERTICAL_PADDING,
+          maxHeight: maxLines * LINE_HEIGHT + VERTICAL_PADDING,
         },
       ]}
       parser={parseExpensiMark}

@@ -34,7 +34,6 @@ export function ChatDetailContent({
   const pendingScrollRef = useRef(false);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
-  const [composerExpanded, setComposerExpanded] = useState(false);
   // Deterministic keyboard avoidance: lift the composer by the exact
   // keyboard height. Framework avoidance (KeyboardAvoidingView /
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
@@ -197,10 +196,9 @@ export function ChatDetailContent({
   }, [askModalVisible, openAskId, openAskModal]);
 
   const handleSend = useCallback(async () => {
-    if (!message.trim() || !memberId || openAsk) return;
+    if (sending || !message.trim() || !memberId || openAsk) return;
     const text = message.trim();
     setMessage("");
-    setComposerExpanded(false);
     setSending(true);
     // Sending re-attaches the view to the bottom even if the reader had
     // scrolled up to look back through the thread.
@@ -225,7 +223,7 @@ export function ChatDetailContent({
     } finally {
       setSending(false);
     }
-  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk]);
+  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk, sending]);
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
 
@@ -339,25 +337,13 @@ export function ChatDetailContent({
             style={styles.inputContainer}
             value={message}
             onChangeText={setMessage}
-            expanded={composerExpanded}
             placeholder="Message…"
             multiline
             maxLength={4000}
-            returnKeyType="default"
-            submitBehavior="newline"
+            returnKeyType="send"
+            submitBehavior="submit"
+            onSubmitEditing={() => void handleSend()}
           />
-          <Pressable
-            accessibilityLabel={composerExpanded ? "Collapse input" : "Expand input"}
-            onPress={() => setComposerExpanded((expanded) => !expanded)}
-            style={styles.expandButton}
-          >
-            <Text style={styles.expandText}>{composerExpanded ? "⌃" : "⌄"}</Text>
-          </Pressable>
-          <Pressable onPress={handleSend} disabled={sending || !message.trim()}>
-            <View style={[styles.sendButton, (!message.trim() || sending) && styles.sendButtonDisabled]}>
-              <Text style={styles.sendText}>Send</Text>
-            </View>
-          </Pressable>
         </View>
       )}
     </View>
@@ -466,7 +452,9 @@ const styles = StyleSheet.create({
   composer: {
     flexDirection: "row",
     alignItems: "flex-end",
-    padding: 12,
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 6,
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
@@ -475,31 +463,5 @@ const styles = StyleSheet.create({
     flex: 1,
     borderRadius: 20,
     backgroundColor: colors.surface,
-  },
-  expandButton: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-  },
-  expandText: {
-    color: colors.textSecondary,
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  sendButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    backgroundColor: colors.accent,
-  },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-  sendText: {
-    color: colors.accentText,
-    fontWeight: "bold",
   },
 });

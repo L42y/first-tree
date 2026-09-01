@@ -272,7 +272,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           placeholderTextColor={colors.textMuted}
           multiline
           maxLength={4000}
-          returnKeyType={mode === "clarify" ? "send" : "done"}
+          returnKeyType="send"
           submitBehavior="submit"
           onSubmitEditing={() => void (mode === "clarify" ? askAgent() : submit())}
         />
