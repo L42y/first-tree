@@ -21,6 +21,7 @@ import {
   parseAskRequest,
   resolveAskRequest,
 } from "~/lib/ask";
+import { buildAskPresentation } from "~/lib/ask-presentation";
 import { useAuth } from "~/lib/auth-context";
 import { colors } from "~/lib/theme";
 
@@ -34,6 +35,8 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
   const [submitting, setSubmitting] = useState(false);
   const [advancing, setAdvancing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showContext, setShowContext] = useState(false);
+  const [showThread, setShowThread] = useState(false);
 
   const openRequestsQuery = useQuery({
     queryKey: ["chats", chatId, "open-requests"],
@@ -46,6 +49,10 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
     [openRequestsQuery.data, requestId],
   );
   const parsed = question ? parseAskRequest(question) : null;
+  const presentation = useMemo(
+    () => buildAskPresentation(typeof question?.content === "string" ? question.content : ""),
+    [question?.content],
+  );
 
   const threadQuery = useQuery({
     queryKey: ["chats", chatId, "request-thread", requestId],
@@ -161,11 +168,11 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
       <View style={styles.content}>
         <View style={styles.header}>
           <View style={styles.headerText}>
-            <Text style={styles.kicker}>Asked you</Text>
-            <Text style={styles.subtitle}>Open question</Text>
+            <Text style={styles.kicker}>Decision needed</Text>
+            <Text style={styles.subtitle}>Answer below</Text>
           </View>
           <Pressable onPress={() => router.back()} hitSlop={8}>
-            <Text style={styles.headerAction}>Show earlier chat</Text>
+            <Text style={styles.headerAction}>Close</Text>
           </Pressable>
         </View>
 
@@ -175,7 +182,30 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           keyboardShouldPersistTaps="handled"
           bounces={false}
         >
-          <MarkdownText value={typeof question?.content === "string" ? question.content : ""} />
+          <View style={styles.decisionCard}>
+            <MarkdownText value={presentation.decision} />
+            {presentation.recommendation ? (
+              <View style={styles.recommendation}>
+                <Text style={styles.sectionLabel}>Recommended</Text>
+                <MarkdownText value={presentation.recommendation} />
+              </View>
+            ) : null}
+          </View>
+
+          {presentation.hasMore && (
+            <Pressable
+              onPress={() => setShowContext((visible) => !visible)}
+              style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}
+            >
+              <Text style={styles.disclosureText}>{showContext ? "Hide background" : "Show background"}</Text>
+            </Pressable>
+          )}
+          {showContext && (
+            <View style={styles.context}>
+              <Text style={styles.sectionLabel}>Background</Text>
+              <MarkdownText value={typeof question?.content === "string" ? question.content : ""} />
+            </View>
+          )}
           {options.length > 0 && (
             <View style={styles.options}>
               {options.map((option, index) => {
@@ -205,14 +235,23 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           )}
           {thread.length > 0 && (
             <View style={styles.thread}>
-              {thread.map((entry) => (
-                <View key={entry.id} style={styles.threadEntry}>
-                  <Text style={styles.threadAuthor}>
-                    {entry.senderId === selfAgentId ? "You asked" : "Agent replied"}
-                  </Text>
-                  <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
-                </View>
-              ))}
+              <Pressable
+                onPress={() => setShowThread((visible) => !visible)}
+                style={({ pressed }) => [styles.disclosure, pressed && styles.pressed]}
+              >
+                <Text style={styles.disclosureText}>
+                  {showThread ? "Hide conversation" : `Show conversation (${thread.length})`}
+                </Text>
+              </Pressable>
+              {showThread &&
+                thread.map((entry) => (
+                  <View key={entry.id} style={styles.threadEntry}>
+                    <Text style={styles.threadAuthor}>
+                      {entry.senderId === selfAgentId ? "You asked" : "Agent replied"}
+                    </Text>
+                    <MarkdownText value={typeof entry.content === "string" ? entry.content : ""} />
+                  </View>
+                ))}
             </View>
           )}
         </ScrollView>
@@ -223,7 +262,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           style={styles.inputContainer}
           value={answer}
           onChangeText={setAnswer}
-          placeholder={mode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask…"}
+          placeholder={mode === "clarify" ? "Ask the agent for clarification…" : "Type your answer…"}
           placeholderTextColor={colors.textMuted}
           multiline
           maxLength={4000}
@@ -238,7 +277,7 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
             disabled={submitting || advancing}
             style={({ pressed }) => [styles.modeButton, pressed && styles.pressed]}
           >
-            <Text style={styles.modeText}>{mode === "clarify" ? "Answer instead" : "Ask agent"}</Text>
+            <Text style={styles.modeText}>{mode === "clarify" ? "Answer instead" : "Need details?"}</Text>
           </Pressable>
           {mode === "submit" && (
             <Pressable
@@ -320,6 +359,46 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: 4,
   },
+  decisionCard: {
+    gap: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    backgroundColor: colors.surfaceStrong,
+    padding: 14,
+  },
+  recommendation: {
+    gap: 4,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: 10,
+  },
+  sectionLabel: {
+    color: colors.textMuted,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  disclosure: {
+    alignSelf: "flex-start",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  disclosureText: {
+    color: colors.accent,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  context: {
+    gap: 8,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    padding: 12,
+  },
   options: {
     gap: 8,
     marginTop: 4,
@@ -347,11 +426,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   thread: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
     gap: 8,
     marginTop: 12,
-    paddingTop: 10,
   },
   threadEntry: {
     gap: 2,
@@ -364,7 +440,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   inputContainer: {
-    minHeight: 46,
+    minHeight: 44,
     maxHeight: 120,
     borderRadius: 14,
     borderWidth: 1,
