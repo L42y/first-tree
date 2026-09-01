@@ -203,6 +203,8 @@ export function providerInstallHint(
       return `Run \`${installCmd}\` on this ${device}, then complete provider-owned setup with \`${loginCmd}\`.`;
     case "pi":
       return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
+    case "zcode":
+      return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
     case "codex":
       // In-product browser-OAuth — computer row stays install-only.
       return `Run \`${installCmd}\` on this ${device}.`;

@@ -122,6 +122,7 @@ export const MODEL_OPTIONS_BY_PROVIDER: Record<RuntimeProvider, ModelOption[]> =
   "kimi-code": [],
   opencode: [],
   pi: [],
+  zcode: [],
 };
 
 export const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
@@ -139,6 +140,8 @@ export const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
   opencode:
     "Enter an exact OpenCode provider/model id. It is passed through verbatim on the next turn; unset inherits the host-local OpenCode configuration.",
   pi: "Enter an exact Pi provider/model or provider/model:<thinking> id. It is passed through verbatim on the next turn. Leave empty to keep an existing Pi session's persisted model; a brand-new session uses Pi's local default.",
+  zcode:
+    "Enter an exact Z.AI model id. It is passed to the next ZCode turn; unset uses the host-local ZCode configuration.",
 };
 
 /** Extra note when discovery is unsupported / offline / timed out (`null` from the API helper). */

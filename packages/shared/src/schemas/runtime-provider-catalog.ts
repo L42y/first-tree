@@ -24,6 +24,12 @@ export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
 export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
 /**
+ * Exact ZCode wrapper/runtime pin. The npm wrapper vendors the desktop ZCode
+ * runtime, so floating `latest` would let an upstream CLI contract change break
+ * managed agents without a First Tree compatibility gate.
+ */
+export const ZCODE_NPM_PACKAGE = "zcode-app-cli@3.10.2-18";
+/**
  * Remediation package list when a Client/CLI install is missing the bundled
  * DeepSeek Harness closure. The portable First Tree CLI is expected to ship
  * these already via `bundleDependencies`; this string is for broken/local installs.
@@ -223,6 +229,16 @@ export const RUNTIME_PROVIDER_CATALOG = {
     loginSteps: ["pi", "/login"],
     authRecovery: { kind: "host" },
     authOwnerLabel: "Pi",
+  },
+  zcode: {
+    id: "zcode",
+    label: "ZCode",
+    displayOrder: 85,
+    selectionPriority: null,
+    install: { kind: "npm", package: ZCODE_NPM_PACKAGE, args: [] },
+    loginSteps: ["zcode login --oauth"],
+    authRecovery: { kind: "host" },
+    authOwnerLabel: "Z.AI",
   },
 } as const satisfies Record<RuntimeProvider, RuntimeProviderCatalogEntry>;
 

@@ -348,6 +348,18 @@ const piRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   // Non-empty values are forwarded as one `--model` argv entry.
 });
 
+const zcodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
+  kind: z.literal("zcode"),
+  // ZCode model identifiers are provider-native. Empty delegates to the
+  // desktop runtime's configured model; non-empty values are passed as one
+  // argv entry and fail visibly if ZCode rejects them.
+  model: z.string().default(""),
+  // Intentionally excludes the desktop `yolo` mode: First Tree requires the
+  // runtime's explicit build/edit/plan approval contract, never an unchecked
+  // all-permissions mode.
+  mode: z.enum(["build", "edit", "plan"]).default("build"),
+});
+
 const grokRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   kind: z.literal("grok"),
   // Maps to the Grok Build CLI `--effort <low|medium|high>` flag. The empty
@@ -374,6 +386,7 @@ const taggedPayloadUnion = z.discriminatedUnion("kind", [
   kimiCodeRuntimeConfigPayloadShape,
   opencodeRuntimeConfigPayloadShape,
   piRuntimeConfigPayloadShape,
+  zcodeRuntimeConfigPayloadShape,
 ]);
 type TaggedPayload = z.infer<typeof taggedPayloadUnion>;
 
@@ -463,6 +476,7 @@ export type KimiCodeRuntimeConfigPayload = Extract<AgentRuntimeConfigPayload, { 
 export type OpenCodeRuntimeConfigPayload = Extract<AgentRuntimeConfigPayload, { kind: "opencode" }>;
 export type PiRuntimeConfigPayload = Extract<AgentRuntimeConfigPayload, { kind: "pi" }>;
 export type GrokRuntimeConfigPayload = Extract<AgentRuntimeConfigPayload, { kind: "grok" }>;
+export type ZcodeRuntimeConfigPayload = Extract<AgentRuntimeConfigPayload, { kind: "zcode" }>;
 
 /** Default payload used when creating a fresh claude-code agent. */
 export const DEFAULT_AGENT_RUNTIME_CONFIG_PAYLOAD: ClaudeCodeRuntimeConfigPayload = {
@@ -582,6 +596,18 @@ export const DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD: PiRuntimeConfigPayload = {
   resourceSkills: [],
 };
 
+/** Default payload for ZCode. Empty model inherits the host-local ZCode config. */
+export const DEFAULT_ZCODE_RUNTIME_CONFIG_PAYLOAD: ZcodeRuntimeConfigPayload = {
+  kind: "zcode",
+  prompt: { append: "" },
+  model: "",
+  mcpServers: [],
+  env: [],
+  gitRepos: [],
+  resourceSkills: [],
+  mode: "build",
+};
+
 /**
  * Default payload for a fresh grok agent. `model` is empty by default so the
  * spawn omits `--model`; `reasoningEffort` defaults to the inherit sentinel
@@ -624,6 +650,8 @@ export function defaultRuntimeConfigPayload(
       return { ...DEFAULT_OPENCODE_RUNTIME_CONFIG_PAYLOAD };
     case "pi":
       return { ...DEFAULT_PI_RUNTIME_CONFIG_PAYLOAD };
+    case "zcode":
+      return { ...DEFAULT_ZCODE_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code-tui":
       return { ...DEFAULT_CLAUDE_CODE_TUI_RUNTIME_CONFIG_PAYLOAD };
     case "claude-code":

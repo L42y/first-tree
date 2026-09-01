@@ -20,6 +20,7 @@ export const runtimeProviderSchema = z.enum([
   "kimi-code",
   "opencode",
   "pi",
+  "zcode",
 ]);
 
 export type RuntimeProvider = z.infer<typeof runtimeProviderSchema>;

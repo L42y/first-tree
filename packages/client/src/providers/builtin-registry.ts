@@ -11,6 +11,7 @@ import { createGrokHandler } from "./grok/index.js";
 import { createKimiCodeHandler } from "./kimi-code/index.js";
 import { createOpenCodeHandler } from "./opencode/index.js";
 import { createPiHandler } from "./pi/index.js";
+import { createZcodeHandler } from "./zcode/index.js";
 
 /** Narrow log seam — composition supplies cloud createLogger; providers never import it. */
 export type BuiltinRegistryLog = {
@@ -52,6 +53,7 @@ export function createBuiltinHandlerRegistry(deps: BuiltinHandlerRegistryDeps = 
     "kimi-code": (config) => createKimiCodeHandler(config),
     opencode: (config) => createOpenCodeHandler(config),
     pi: (config) => createPiHandler(config),
+    zcode: (config) => createZcodeHandler(config),
   } satisfies Record<RuntimeProvider, HandlerFactory>);
 }
 

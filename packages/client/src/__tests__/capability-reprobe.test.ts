@@ -86,6 +86,7 @@ describe("hasNonOkProvider", () => {
         "kimi-code": okEntry(),
         opencode: okEntry(),
         pi: okEntry(),
+        zcode: okEntry(),
         [LARK_CLI_CAPABILITY_KEY]: okEntry(),
       }),
     ).toBe(false);
