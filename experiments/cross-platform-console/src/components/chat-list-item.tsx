@@ -1,7 +1,6 @@
-import { Pressable, StyleSheet, Text, View } from "react-native";
-import { useRouter } from "expo-router";
-
 import type { MeChatRow } from "@first-tree/shared";
+import { useRouter } from "expo-router";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Avatar } from "~/components/avatar";
 import { colors } from "~/lib/theme";
 
@@ -19,21 +18,18 @@ export function ChatListItem({ chat, selfAgentId, onPressChat, onLongPressChat }
   const pinned = chat.pinnedAt !== null && chat.pinnedAt !== undefined;
   const hasOpenAsk = chat.openRequestCount > 0;
   const router = useRouter();
-  const preview = chat.description ?? chat.lastMessagePreview ?? "No messages yet";
+  const preview = chat.lastMessagePreview ?? chat.description ?? "No messages yet";
   const hasUnread = chat.unreadMentionCount > 0;
 
   // Direct chats show the peer; group chats lead with the first non-self
   // speaker. With no participants at all, fall back to a title-seeded disc.
-  const peer =
-    chat.participants.find((p) => p.agentId !== selfAgentId) ?? chat.participants[0] ?? null;
+  const peer = chat.participants.find((p) => p.agentId !== selfAgentId) ?? chat.participants[0] ?? null;
   const avatarName = peer?.displayName ?? chat.title;
   const avatarSeed = peer?.agentId ?? chat.chatId;
 
   return (
     <Pressable
-      onPress={() =>
-        onPressChat ? onPressChat(chat.chatId) : router.push(`/chat/${chat.chatId}`)
-      }
+      onPress={() => (onPressChat ? onPressChat(chat.chatId) : router.push(`/chat/${chat.chatId}`))}
       onLongPress={() => onLongPressChat?.(chat)}
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
@@ -52,10 +48,7 @@ export function ChatListItem({ chat, selfAgentId, onPressChat, onLongPressChat }
               <Text style={styles.pinGlyph}>📌</Text>
             </View>
           )}
-          <Text
-            style={[styles.title, hasUnread && styles.titleUnread]}
-            numberOfLines={1}
-          >
+          <Text style={[styles.title, hasUnread && styles.titleUnread]} numberOfLines={1}>
             {chat.title}
           </Text>
           {hasOpenAsk && (
