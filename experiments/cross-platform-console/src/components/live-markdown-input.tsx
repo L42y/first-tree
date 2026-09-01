@@ -4,6 +4,7 @@ import {
   type MarkdownTextInputProps,
   parseExpensiMark,
 } from "@expensify/react-native-live-markdown";
+import { type ComponentRef, forwardRef } from "react";
 import { type StyleProp, StyleSheet, type TextStyle } from "react-native";
 
 import { colors } from "~/lib/theme";
@@ -15,6 +16,8 @@ type LiveMarkdownInputProps = Omit<MarkdownTextInputProps, "markdownStyle" | "pa
   /** Upper bound while the composer is in its ordinary state. */
   maxLines?: number;
 };
+
+export type LiveMarkdownInputHandle = ComponentRef<typeof MarkdownTextInput>;
 
 const LINE_HEIGHT = 21;
 const VERTICAL_PADDING = 20;
@@ -62,10 +65,14 @@ const markdownStyle: MarkdownStyle = {
  * the editable text by its UI-thread parser; this wrapper only applies the
  * console theme and shared editor styles.
  */
-export function LiveMarkdownInput({ style, minLines = 1, maxLines = 3, ...inputProps }: LiveMarkdownInputProps) {
+export const LiveMarkdownInput = forwardRef<LiveMarkdownInputHandle, LiveMarkdownInputProps>(function LiveMarkdownInput(
+  { style, minLines = 1, maxLines = 3, ...inputProps },
+  ref,
+) {
   return (
     <MarkdownTextInput
       {...inputProps}
+      ref={ref}
       numberOfLines={inputProps.numberOfLines ?? maxLines}
       style={[
         styles.input,
@@ -79,7 +86,7 @@ export function LiveMarkdownInput({ style, minLines = 1, maxLines = 3, ...inputP
       markdownStyle={markdownStyle}
     />
   );
-}
+});
 
 const styles = StyleSheet.create({
   input: {

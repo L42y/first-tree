@@ -3,14 +3,33 @@ import { extractMentions } from "@first-tree/shared";
 import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  Keyboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { Avatar } from "~/components/avatar";
 import { ChatMessageBubble } from "~/components/chat-message-bubble";
-import { LiveMarkdownInput } from "~/components/live-markdown-input";
+import { LiveMarkdownInput, type LiveMarkdownInputHandle } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
 import { getChat, listChatMessages, markMeChatRead, type PaginatedMessages, sendChatMessage } from "~/lib/chats-api";
+import {
+  buildMentionCandidates,
+  buildMentionInsert,
+  computeRequiresMention,
+  findActiveMentionTrigger,
+  findSolePeerAgentId,
+  isSelfOnlySpeakerRoster,
+  rankMentionCandidates,
+} from "~/lib/mentions";
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
@@ -54,10 +73,12 @@ export function ChatDetailContent({
   const queryClient = useQueryClient();
   const listRef = useRef<FlatList<Message>>(null);
   const askModalRequestRef = useRef<string | null>(null);
+  const composerRef = useRef<LiveMarkdownInputHandle>(null);
   // Set when messages first arrive (or after sending) so the next
   // onContentSizeChange scrolls to the latest message exactly once.
   const pendingScrollRef = useRef(false);
   const [message, setMessage] = useState("");
+  const [caret, setCaret] = useState(0);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   // Deterministic keyboard avoidance: lift the composer by the exact
@@ -194,6 +215,53 @@ export function ChatDetailContent({
   const openAskId = openAsk?.message.id ?? null;
   const askModalVisible = pathname.includes("/ask/");
 
+  // Speaker-only chat roster. Routing uses immutable canonical names; the
+  // display label is only for the picker row.
+  const mentionCandidates = useMemo(
+    () => buildMentionCandidates(chatQuery.data?.participants ?? [], selfAgentId),
+    [chatQuery.data?.participants, selfAgentId],
+  );
+  const participantAgentIds = useMemo(
+    () => (chatQuery.data?.participants ?? []).map((participant) => participant.agentId),
+    [chatQuery.data?.participants],
+  );
+  const requiresMention = useMemo(
+    () => computeRequiresMention(participantAgentIds, selfAgentId),
+    [participantAgentIds, selfAgentId],
+  );
+  const selfOnlyRoster = useMemo(
+    () => isSelfOnlySpeakerRoster(participantAgentIds, selfAgentId),
+    [participantAgentIds, selfAgentId],
+  );
+  const solePeerAgentId = useMemo(
+    () => findSolePeerAgentId(chatQuery.data?.participants ?? [], selfAgentId),
+    [chatQuery.data?.participants, selfAgentId],
+  );
+  const draftMentions = useMemo(() => extractMentions(message, mentionCandidates), [message, mentionCandidates]);
+  const effectiveSendMentions = useMemo(
+    () => (solePeerAgentId ? [...new Set([...draftMentions, solePeerAgentId])] : draftMentions),
+    [draftMentions, solePeerAgentId],
+  );
+  const sendBlockedByMentionGate = requiresMention && draftMentions.length === 0;
+  const activeMentionTrigger = useMemo(() => findActiveMentionTrigger(message, caret), [message, caret]);
+  const visibleMentionCandidates = useMemo(
+    () => (activeMentionTrigger ? rankMentionCandidates(mentionCandidates, activeMentionTrigger.query) : []),
+    [activeMentionTrigger, mentionCandidates],
+  );
+
+  const applyMentionPick = useCallback(
+    (candidate: (typeof mentionCandidates)[number]) => {
+      if (!activeMentionTrigger) return;
+      const insertion = buildMentionInsert(message, activeMentionTrigger, candidate);
+      setMessage(insertion.text);
+      requestAnimationFrame(() => {
+        composerRef.current?.focus();
+        composerRef.current?.setSelection(insertion.cursor, insertion.cursor);
+      });
+    },
+    [activeMentionTrigger, message],
+  );
+
   const openAskModal = useCallback(
     (requestId: string) => {
       askModalRequestRef.current = requestId;
@@ -222,12 +290,11 @@ export function ChatDetailContent({
   }, [askModalVisible, openAskId, openAskModal]);
 
   const handleSend = useCallback(async () => {
-    if (sending || !message.trim() || !memberId || openAsk) return;
+    if (sending || !message.trim() || !memberId || openAsk || sendBlockedByMentionGate) return;
     const text = message.trim();
-    const mentions = extractMentions(
-      text,
-      chatQuery.data?.participants.map((p) => ({ agentId: p.agentId, name: p.displayName })) ?? [],
-    );
+    // Structured IDs—not visible display names—are the wire contract. The
+    // sole-peer default has already been folded into this list.
+    const mentions = effectiveSendMentions;
     const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const optimisticAt = new Date().toISOString();
     const optimisticMessage: Message = {
@@ -262,6 +329,7 @@ export function ChatDetailContent({
         : undefined,
     );
     setMessage("");
+    setCaret(0);
     setSending(true);
     setSendError(null);
     // Sending re-attaches the view to the bottom even if the reader had
@@ -302,7 +370,7 @@ export function ChatDetailContent({
     } finally {
       setSending(false);
     }
-  }, [message, memberId, chatId, chatQuery.data, queryClient, openAsk, sending]);
+  }, [effectiveSendMentions, message, memberId, openAsk, queryClient, sendBlockedByMentionGate, sending, chatId]);
   const isLoading = chatQuery.isLoading || messagesQuery.isLoading;
   const error = chatQuery.error ?? messagesQuery.error;
 
@@ -417,17 +485,57 @@ export function ChatDetailContent({
               Couldn't send: {sendError}
             </Text>
           )}
+          {sendBlockedByMentionGate && <Text style={styles.mentionHint}>In a group, @mention who this is for</Text>}
+          {activeMentionTrigger && visibleMentionCandidates.length > 0 && (
+            <View style={styles.mentionPicker}>
+              <ScrollView
+                keyboardShouldPersistTaps="handled"
+                style={styles.mentionList}
+                contentContainerStyle={styles.mentionListContent}
+              >
+                {visibleMentionCandidates.map((candidate) => (
+                  <Pressable
+                    key={candidate.agentId}
+                    onPress={() => applyMentionPick(candidate)}
+                    style={({ pressed }) => [styles.mentionRow, pressed && styles.mentionRowPressed]}
+                  >
+                    <Avatar name={candidate.displayName} seed={candidate.agentId} size={24} kind="agent" />
+                    <View style={styles.mentionLabels}>
+                      <Text style={styles.mentionDisplayName} numberOfLines={1}>
+                        {candidate.displayName}
+                      </Text>
+                      <Text style={styles.mentionName} numberOfLines={1}>
+                        @{candidate.name}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          )}
           <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
             <LiveMarkdownInput
+              ref={composerRef}
               style={styles.inputContainer}
               value={message}
               onChangeText={setMessage}
-              placeholder="Message…"
+              onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
+              placeholder={
+                selfOnlyRoster
+                  ? "Add a participant to send a message"
+                  : requiresMention
+                    ? "In a group, @mention who this is for"
+                    : "Message…"
+              }
               multiline
               maxLength={4000}
               returnKeyType="send"
               submitBehavior="submit"
-              onSubmitEditing={() => void handleSend()}
+              onSubmitEditing={() => {
+                const first = visibleMentionCandidates[0];
+                if (activeMentionTrigger && first) applyMentionPick(first);
+                else void handleSend();
+              }}
             />
           </View>
         </>
@@ -548,6 +656,50 @@ const styles = StyleSheet.create({
   sendError: {
     paddingHorizontal: 16,
     color: colors.danger,
+    fontSize: 12,
+  },
+  mentionHint: {
+    paddingHorizontal: 16,
+    paddingBottom: 4,
+    color: colors.textSecondary,
+    fontSize: 12,
+  },
+  mentionPicker: {
+    marginHorizontal: 8,
+    marginBottom: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceStrong,
+    overflow: "hidden",
+  },
+  mentionList: {
+    maxHeight: 168,
+  },
+  mentionListContent: {
+    paddingVertical: 4,
+  },
+  mentionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  mentionRowPressed: {
+    backgroundColor: colors.surface,
+  },
+  mentionLabels: {
+    flex: 1,
+    gap: 1,
+  },
+  mentionDisplayName: {
+    color: colors.text,
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  mentionName: {
+    color: colors.textSecondary,
     fontSize: 12,
   },
   inputContainer: {
