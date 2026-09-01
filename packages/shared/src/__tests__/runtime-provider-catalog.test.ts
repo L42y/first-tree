@@ -81,6 +81,7 @@ describe("runtime provider identity + catalog completeness", () => {
       "kimi-code",
       "opencode",
       "pi",
+      "zcode",
     ]);
     expect(PREFERRED_RUNTIME_PROVIDER).toBe("codex");
     expect(orderRuntimeProvidersByPreference(["pi", "opencode", "claude-code", "kimi-code", "codex"])).toEqual([
@@ -143,6 +144,7 @@ describe("runtime provider identity + catalog completeness", () => {
     expect(runtimeProviderShowsHostLoginOnSetup("pi")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("amp")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("deepseek-harness")).toBe(true);
+    expect(runtimeProviderShowsHostLoginOnSetup("zcode")).toBe(true);
     expect(runtimeProviderShowsHostLoginOnSetup("codex")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("claude-code")).toBe(false);
     expect(runtimeProviderShowsHostLoginOnSetup("claude-code-tui")).toBe(false);
