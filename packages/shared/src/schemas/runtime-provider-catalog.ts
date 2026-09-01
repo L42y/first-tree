@@ -24,9 +24,10 @@ export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
 export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
 /**
- * Exact ZCode wrapper/runtime pin. The npm wrapper vendors the desktop ZCode
- * runtime, so floating `latest` would let an upstream CLI contract change break
- * managed agents without a First Tree compatibility gate.
+ * Exact ZCode runtime/client pin. `zcode-app-cli` is an unofficial terminal
+ * client that vendors the official ZCode Desktop runtime kernel (`zcode.cjs`).
+ * Pinning freezes that extracted-runtime contract so an upstream client release
+ * cannot change managed-agent behavior without a First Tree compatibility gate.
  */
 export const ZCODE_NPM_PACKAGE = "zcode-app-cli@3.10.2-18";
 /**
