@@ -29,6 +29,7 @@ import {
   findSolePeerAgentId,
   isSelfOnlySpeakerRoster,
   rankMentionCandidates,
+  shouldPrimeMentionOnFocus,
 } from "~/lib/mentions";
 import { colors } from "~/lib/theme";
 
@@ -74,6 +75,8 @@ export function ChatDetailContent({
   const listRef = useRef<FlatList<Message>>(null);
   const askModalRequestRef = useRef<string | null>(null);
   const composerRef = useRef<LiveMarkdownInputHandle>(null);
+  const focusPrimedRef = useRef(false);
+  const autoPrimedDraftRef = useRef(false);
   // Set when messages first arrive (or after sending) so the next
   // onContentSizeChange scrolls to the latest message exactly once.
   const pendingScrollRef = useRef(false);
@@ -132,6 +135,8 @@ export function ChatDetailContent({
   // biome-ignore lint/correctness/useExhaustiveDependencies: chatId changes when the route switches chats.
   useEffect(() => {
     userScrolledRef.current = false;
+    focusPrimedRef.current = false;
+    autoPrimedDraftRef.current = false;
   }, [chatId]);
 
   const findParticipant = useCallback(
@@ -262,6 +267,27 @@ export function ChatDetailContent({
     [activeMentionTrigger, message],
   );
 
+  const handleComposerFocus = useCallback(() => {
+    if (
+      !shouldPrimeMentionOnFocus({
+        requiresMention,
+        dockActive: openAsk != null,
+        alreadyPrimed: focusPrimedRef.current,
+        draftLength: message.length,
+        mentionCandidateCount: mentionCandidates.length,
+      })
+    ) {
+      return;
+    }
+    focusPrimedRef.current = true;
+    autoPrimedDraftRef.current = true;
+    setMessage("@");
+    setCaret(1);
+    requestAnimationFrame(() => {
+      composerRef.current?.setSelection(1, 1);
+    });
+  }, [message.length, mentionCandidates.length, openAsk, requiresMention]);
+
   const openAskModal = useCallback(
     (requestId: string) => {
       askModalRequestRef.current = requestId;
@@ -288,6 +314,19 @@ export function ChatDetailContent({
     }
     if (askModalRequestRef.current !== openAskId) openAskModal(openAskId);
   }, [askModalVisible, openAskId, openAskModal]);
+
+  // The dock can arrive after the composer is focused. A question owns
+  // addressing at that point, so remove the untouched auto-prime token.
+  useEffect(() => {
+    if (!openAsk || message !== "@" || !autoPrimedDraftRef.current) return;
+    focusPrimedRef.current = false;
+    autoPrimedDraftRef.current = false;
+    setMessage("");
+    setCaret(0);
+    requestAnimationFrame(() => {
+      composerRef.current?.setSelection(0, 0);
+    });
+  }, [message, openAsk]);
 
   const handleSend = useCallback(async () => {
     if (sending || !message.trim() || !memberId || openAsk || sendBlockedByMentionGate) return;
@@ -520,6 +559,7 @@ export function ChatDetailContent({
               value={message}
               onChangeText={setMessage}
               onSelectionChange={({ nativeEvent: { selection } }) => setCaret(selection.start)}
+              onFocus={handleComposerFocus}
               placeholder={
                 selfOnlyRoster
                   ? "Add a participant to send a message"

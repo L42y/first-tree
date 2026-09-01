@@ -8,6 +8,7 @@ import {
   findSolePeerAgentId,
   isSelfOnlySpeakerRoster,
   rankMentionCandidates,
+  shouldPrimeMentionOnFocus,
 } from "../mentions";
 
 const participant = (agentId: string, name: string, displayName = name): ChatParticipantDetail => ({
@@ -61,6 +62,27 @@ describe("expo mention addressing", () => {
     ];
     expect(rankMentionCandidates(candidates, "deploy").map((candidate) => candidate.agentId)).toEqual(["3", "1", "2"]);
     expect(rankMentionCandidates(candidates, "y-helper").map((candidate) => candidate.agentId)).toEqual(["3"]);
+  });
+
+  it("primes an empty group composer once and skips docked asks", () => {
+    const args = {
+      requiresMention: true,
+      dockActive: false,
+      alreadyPrimed: false,
+      draftLength: 0,
+      mentionCandidateCount: 2,
+    };
+    expect(shouldPrimeMentionOnFocus(args)).toBe(true);
+    expect(shouldPrimeMentionOnFocus({ ...args, alreadyPrimed: true })).toBe(false);
+    expect(shouldPrimeMentionOnFocus({ ...args, draftLength: 1 })).toBe(false);
+    expect(shouldPrimeMentionOnFocus({ ...args, dockActive: true })).toBe(false);
+    expect(shouldPrimeMentionOnFocus({ ...args, mentionCandidateCount: 0 })).toBe(false);
+    expect(
+      shouldPrimeMentionOnFocus({
+        ...args,
+        requiresMention: false,
+      }),
+    ).toBe(false);
   });
 
   it("replaces the active query and leaves one word boundary", () => {

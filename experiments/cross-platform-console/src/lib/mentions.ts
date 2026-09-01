@@ -65,6 +65,27 @@ export function findSolePeerAgentId(
 }
 
 /**
+ * Put an unfinished `@` in an empty group composer once, so the recipient
+ * picker leads instead of letting the author type an unaddressed message.
+ * Clearing it must not bring it back until the next chat visit.
+ */
+export function shouldPrimeMentionOnFocus(args: {
+  requiresMention: boolean;
+  dockActive: boolean;
+  alreadyPrimed: boolean;
+  draftLength: number;
+  mentionCandidateCount: number;
+}): boolean {
+  return (
+    args.requiresMention &&
+    !args.dockActive &&
+    !args.alreadyPrimed &&
+    args.draftLength === 0 &&
+    args.mentionCandidateCount > 0
+  );
+}
+
+/**
  * Find an unfinished `@query` ending at the caret. The leading-boundary rule
  * intentionally matches the shared send-path parser, so what the picker
  * completes is the same class of token the server will resolve.
