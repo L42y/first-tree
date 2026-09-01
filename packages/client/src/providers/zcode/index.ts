@@ -41,13 +41,9 @@ import { chunkAssistantText } from "../handlers/assistant-text.js";
 import { formatAuthHint } from "../handlers/auth-error-hint.js";
 import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
-import {
-  buildZcodeTurnArgs,
-  readZcodeSetupPending,
-  resolveZcodeRuntimeBinary,
-  type ZcodeRuntimeBinaryResolution,
-} from "./binary.js";
+import { buildZcodeTurnArgs, resolveZcodeRuntimeBinary, type ZcodeRuntimeBinaryResolution } from "./binary.js";
 import { parseZcodeJsonOutput } from "./json.js";
+import { officialRuntimeLabel } from "./official-runtime.js";
 
 export const ZCODE_PENDING_SESSION_PREFIX = "zcode-pending-";
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
@@ -104,16 +100,8 @@ async function defaultZcodeRetrySleep(delayMs: number, signal: AbortSignal): Pro
 }
 
 function isAuthError(text: string): boolean {
-  return /authentication required|not (?:authenticated|logged in)|unauthorized|invalid api key|login required|provider_not_configured|model provider is missing an api key|missing an api key/i.test(
+  return /authentication required|not (?:authenticated|logged in)|unauthorized|invalid api key|login required|provider_not_configured|model provider is missing an api key|missing an api key|model config is missing|explicit model provider/i.test(
     text,
-  );
-}
-
-function isZcodeGenericSetupEnvelope(outcome: ProcessOutcome): boolean {
-  return (
-    outcome.exitCode === 1 &&
-    outcome.stdout.length === 0 &&
-    /^Error: Turn execution failed \(traceId: [^)]+\)/m.test(outcome.stderrTail)
   );
 }
 
@@ -163,13 +151,10 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       ? config.zcodeKillGraceMs
       : KILL_GRACE_MS;
   const retrySleep = (config.zcodeRetrySleep as ZcodeRetrySleep | undefined) ?? defaultZcodeRetrySleep;
-  const setupPendingProbe =
-    (config.zcodeSetupPendingProbe as ((env?: NodeJS.ProcessEnv) => boolean) | undefined) ?? readZcodeSetupPending;
-
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
   let activeConfig: AgentRuntimeConfig | null = null;
-  let binary: string | null = null;
+  let binary: ZcodeRuntimeBinaryResolution | null = null;
   let providerSessionId: string | null = null;
   let pendingSyntheticId: string | null = null;
   let sessionActive = false;
@@ -303,10 +288,10 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       let supervised: ReturnType<ProviderProcessSupervisor["spawn"]>;
       try {
         const resolvedBinary = binary;
-        if (!resolvedBinary) throw new Error("ZCode binary is not initialized");
+        if (!resolvedBinary?.ok) throw new Error("ZCode official runtime is not initialized");
         supervised = processSupervisor.spawn({
-          command: resolvedBinary,
-          args: input.args,
+          command: resolvedBinary.command,
+          args: [...resolvedBinary.args, ...input.args],
           label: input.label,
           timeoutMs: input.timeoutMs,
           options: {
@@ -623,12 +608,6 @@ export const createZcodeHandler: HandlerFactory = (config) => {
           outcome.exitCode === null ? `signal ${outcome.signal ?? "unknown"}` : `exit ${outcome.exitCode}`,
         );
       }
-      if (isZcodeGenericSetupEnvelope(outcome) && setupPendingProbe(env)) {
-        protocolErrors.unshift(
-          "provider_not_configured: the pinned ZCode launcher has pending model-access setup " +
-            "(model provider is missing an API key)",
-        );
-      }
       try {
         const result = parseZcodeJsonOutput(outcome.stdout);
         if (expectedSessionId && result.sessionId !== expectedSessionId) {
@@ -737,8 +716,8 @@ export const createZcodeHandler: HandlerFactory = (config) => {
     ctx = sessionCtx;
     const resolution = await resolveBinary(process.env);
     if (!resolution.ok) throw new Error(resolution.error);
-    binary = resolution.binary;
-    sessionCtx.log(`ZCode binary: ${resolution.binary}`);
+    binary = resolution;
+    sessionCtx.log(`ZCode official runtime: ${officialRuntimeLabel(resolution.runtimePath)}`);
     let runtimeConfig = activeConfig;
     if (agentConfigCache) runtimeConfig = await agentConfigCache.refresh(sessionCtx.agent.agentId);
     const payload =

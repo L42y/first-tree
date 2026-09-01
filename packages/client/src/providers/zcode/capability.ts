@@ -1,14 +1,12 @@
 import type { CapabilityEntry } from "@first-tree/shared";
 import { supportsDefaultProviderProcessSupervision } from "../../runtime/provider-support/index.js";
 import { type DetectOutcome, runDetect } from "../capabilities/detect.js";
-import { findZcodeExecutableOnPath, resolveZcodeRuntimeBinary } from "./binary.js";
+import { type ResolveZcodeRuntimeBinaryDeps, resolveZcodeRuntimeBinary } from "./binary.js";
 
 export type ZcodeProbeDeps = {
-  findOnPath?: (env?: Record<string, string | undefined>) => string | null;
   env?: NodeJS.ProcessEnv;
+  resolutionDeps?: Omit<ResolveZcodeRuntimeBinaryDeps, "platform">;
   platform?: NodeJS.Platform;
-  readVersion?: (binary: string) => Promise<string>;
-  nodeVersion?: () => string;
 };
 
 /**
@@ -18,22 +16,25 @@ export type ZcodeProbeDeps = {
  */
 export async function probeZcodeCapability(deps: ZcodeProbeDeps = {}): Promise<CapabilityEntry> {
   const env = deps.env ?? process.env;
+  if (!supportsDefaultProviderProcessSupervision(deps.platform ?? process.platform)) {
+    return {
+      state: "error",
+      available: false,
+      runtimeSource: "path",
+      latencyMs: 0,
+      detectedAt: new Date().toISOString(),
+      error:
+        "First Tree cannot supervise ZCode on Windows until the client-wide pre-admission " +
+        "Job Object supervisor is available.",
+    };
+  }
   const detected = await runDetect(async (): Promise<DetectOutcome> => {
     const resolution = await resolveZcodeRuntimeBinary(env, {
-      findOnPath: deps.findOnPath ?? findZcodeExecutableOnPath,
-      readVersion: deps.readVersion,
-      nodeVersion: deps.nodeVersion,
+      ...deps.resolutionDeps,
+      platform: deps.platform ?? process.platform,
     });
-    if (resolution.ok) return { installed: true, runtimeSource: "path", runtimePath: resolution.binary };
+    if (resolution.ok) return { installed: true, runtimeSource: "path", runtimePath: resolution.runtimePath };
     return { installed: false, error: resolution.error };
   });
-  if (detected.state !== "ok" || supportsDefaultProviderProcessSupervision(deps.platform)) return detected;
-  return {
-    ...detected,
-    state: "error",
-    available: false,
-    error:
-      "ZCode is installed, but First Tree cannot supervise it on Windows until the client-wide " +
-      "pre-admission Job Object supervisor is available.",
-  };
+  return detected;
 }

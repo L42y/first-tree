@@ -221,7 +221,12 @@ describe("ZCode production turn handler", () => {
       agentName: "zcode-test-agent",
       runtimeProvider: "zcode",
       agentConfigCache: cache(runtimeConfig()),
-      zcodeBinaryResolver: async () => ({ ok: true, binary: "/host/zcode" }),
+      zcodeBinaryResolver: async () => ({
+        ok: true,
+        command: "/node",
+        args: ["/managed/zcode.cjs"],
+        runtimePath: "/managed/zcode.cjs",
+      }),
       providerProcessSupervisor: detachedSupervisor(
         specs,
         DETACHED_PARENT_SCRIPT,
@@ -284,7 +289,12 @@ describe("ZCode production turn handler", () => {
       agentName: "zcode-test-agent",
       runtimeProvider: "zcode",
       agentConfigCache: cache(config),
-      zcodeBinaryResolver: async () => ({ ok: true, binary: "/host/zcode" }),
+      zcodeBinaryResolver: async () => ({
+        ok: true,
+        command: "/node",
+        args: ["/managed/zcode.cjs"],
+        runtimePath: "/managed/zcode.cjs",
+      }),
       providerProcessSupervisor: turnSupervisor(specs, []),
       zcodeTurnTimeoutMs: 5_000,
     });
@@ -309,7 +319,12 @@ describe("ZCode production turn handler", () => {
       agentName: "zcode-test-agent",
       runtimeProvider: "zcode",
       agentConfigCache: cache(runtimeConfig()),
-      zcodeBinaryResolver: async () => ({ ok: true, binary: "/host/zcode" }),
+      zcodeBinaryResolver: async () => ({
+        ok: true,
+        command: "/node",
+        args: ["/managed/zcode.cjs"],
+        runtimePath: "/managed/zcode.cjs",
+      }),
       providerProcessSupervisor: turnSupervisor(specs, [
         JSON.stringify({
           sessionId: "sess_confirmed",
@@ -326,10 +341,11 @@ describe("ZCode production turn handler", () => {
     expect(specs).toHaveLength(1);
     const spec = specs.at(0);
     if (!spec) throw new Error("expected one ZCode process");
-    expect(spec.command).toBe("/host/zcode");
+    expect(spec.command).toBe("/node");
+    expect(spec.args.slice(0, 1)).toEqual(["/managed/zcode.cjs"]);
     expect(spec.options.shell).toBe(false);
     expect(spec.options.stdio).toEqual(["ignore", "pipe", "pipe"]);
-    expect(spec.args.slice(0, 4)).toEqual(["--json", "--no-color", "--mode", "plan"]);
+    expect(spec.args.slice(1, 5)).toEqual(["--json", "--no-color", "--mode", "plan"]);
     expect(spec.args).toEqual(expect.arrayContaining(["--cwd", root]));
     const promptIndex = spec.args.indexOf("--prompt");
     const prompt = spec.args[promptIndex + 1];
@@ -369,7 +385,12 @@ describe("ZCode production turn handler", () => {
       agentName: "zcode-test-agent",
       runtimeProvider: "zcode",
       agentConfigCache: cache(config),
-      zcodeBinaryResolver: async () => ({ ok: true, binary: "/host/zcode" }),
+      zcodeBinaryResolver: async () => ({
+        ok: true,
+        command: "/node",
+        args: ["/managed/zcode.cjs"],
+        runtimePath: "/managed/zcode.cjs",
+      }),
       providerProcessSupervisor: turnSupervisor(specs, []),
       zcodeTurnTimeoutMs: 5_000,
     });
@@ -394,9 +415,15 @@ describe("ZCode production turn handler", () => {
       agentName: "zcode-test-agent",
       runtimeProvider: "zcode",
       agentConfigCache: cache(runtimeConfig()),
-      zcodeBinaryResolver: async () => ({ ok: true, binary: "/host/zcode" }),
-      providerProcessSupervisor: turnSupervisor(specs, ["Error: Turn execution failed (traceId: trace-1)\n"]),
-      zcodeSetupPendingProbe: () => true,
+      zcodeBinaryResolver: async () => ({
+        ok: true,
+        command: "/node",
+        args: ["/managed/zcode.cjs"],
+        runtimePath: "/managed/zcode.cjs",
+      }),
+      providerProcessSupervisor: turnSupervisor(specs, [
+        "Error: Model config is missing. Create the host-owned ZCode config with an explicit model provider.\n",
+      ]),
       zcodeTurnTimeoutMs: 5_000,
     });
 
@@ -407,8 +434,8 @@ describe("ZCode production turn handler", () => {
       .filter((message): message is string => typeof message === "string");
     expect(providerEvents.join("\n")).toContain("provider_failure_terminal");
     expect(providerEvents.join("\n")).toContain('"category":"credential"');
-    expect(providerEvents.join("\n")).toContain("zcode login --oauth");
-    expect(providerEvents.join("\n")).toContain("provider_not_configured");
+    expect(providerEvents.join("\n")).toContain("zcode login");
+    expect(providerEvents.join("\n")).toContain("provider_credential_required");
     expect(token.retry).not.toHaveBeenCalled();
     expect(token.complete).toHaveBeenCalledWith(
       [expect.objectContaining({ id: "m-auth" })],
