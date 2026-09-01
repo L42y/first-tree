@@ -24,12 +24,22 @@ export const OPENCODE_NPM_PACKAGE = `opencode-ai@^${OPENCODE_MINIMUM_VERSION}`;
 export const PI_NPM_PACKAGE = "@earendil-works/pi-coding-agent";
 export const KIMI_NPM_PACKAGE = "@moonshot-ai/kimi-code";
 /**
- * Exact ZCode runtime/client pin. `zcode-app-cli` is an unofficial terminal
- * client that vendors the official ZCode Desktop runtime kernel (`zcode.cjs`).
- * Pinning freezes that extracted-runtime contract so an upstream client release
- * cannot change managed-agent behavior without a First Tree compatibility gate.
+ * Exact official ZCode Desktop runtime contract. First Tree downloads the
+ * provider-published Linux artifact, verifies its immutable bytes, extracts the
+ * runtime kernel, and launches only that digest-checked file. This deliberately
+ * does not use a third-party terminal wrapper.
  */
-export const ZCODE_NPM_PACKAGE = "zcode-app-cli@3.10.2-18";
+export const ZCODE_OFFICIAL_RELEASE = "3.10.2";
+export const ZCODE_OFFICIAL_PACKAGE_VERSION = "3.10.2-6414";
+export const ZCODE_OFFICIAL_PLATFORM = "linux-x64";
+export const ZCODE_OFFICIAL_ARTIFACT_URL =
+  "https://cdn-zcode.z.ai/zcode/electron/releases/3.10.2/linux-x64/ZCode-3.10.2-linux-x64.deb";
+export const ZCODE_OFFICIAL_ARTIFACT_SHA256 = "b618cfa70c8f7c8a1a6e2950565cc441c298b801bb2389c292eb0d3add6bf0c0";
+export const ZCODE_OFFICIAL_ARTIFACT_BYTES = 146_822_580;
+export const ZCODE_OFFICIAL_RUNTIME_VERSION = "0.16.5";
+export const ZCODE_OFFICIAL_RUNTIME_SHA256 = "3597160465b67da248fa3fb919920ca30d4e093003a4d70cde2a2e33903cbabc";
+export const ZCODE_OFFICIAL_RUNTIME_BYTES = 12_557_830;
+export const ZCODE_MINIMUM_NODE_VERSION = "22.19.0";
 /**
  * Remediation package list when a Client/CLI install is missing the bundled
  * DeepSeek Harness closure. The portable First Tree CLI is expected to ship
@@ -51,7 +61,8 @@ export const DEEPSEEK_INSTALL_NPM_PACKAGE = [
 /** Provider-owned install metadata — npm package or official installer script. */
 export type RuntimeProviderInstall =
   | { kind: "npm"; package: string; args: readonly string[] }
-  | { kind: "script"; command: string };
+  | { kind: "script"; command: string }
+  | { kind: "managed-official-runtime"; platform: string };
 
 /**
  * Ordered login steps for chat auth-recovery / host-local surfaces.
@@ -236,8 +247,8 @@ export const RUNTIME_PROVIDER_CATALOG = {
     label: "ZCode",
     displayOrder: 85,
     selectionPriority: null,
-    install: { kind: "npm", package: ZCODE_NPM_PACKAGE, args: [] },
-    loginSteps: ["zcode login --oauth"],
+    install: { kind: "managed-official-runtime", platform: ZCODE_OFFICIAL_PLATFORM },
+    loginSteps: ["zcode login"],
     authRecovery: { kind: "host" },
     authOwnerLabel: "Z.AI",
   },
@@ -303,6 +314,9 @@ export function runtimeProviderInstallCommand(provider: RuntimeProvider): string
   if (install.kind === "npm") {
     const args = install.args.length > 0 ? `${install.args.join(" ")} ` : "";
     return `npm install -g ${args}${install.package}`;
+  }
+  if (install.kind === "managed-official-runtime") {
+    return `# First Tree extracts official ZCode ${ZCODE_OFFICIAL_RELEASE} automatically on ${install.platform}`;
   }
   return install.command;
 }

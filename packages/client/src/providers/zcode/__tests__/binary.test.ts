@@ -1,60 +1,68 @@
 import { describe, expect, it } from "vitest";
 import { buildZcodeTurnArgs, inspectZcodeVersion, resolveZcodeRuntimeBinary } from "../binary.js";
 
-const PINNED_VERSION_OUTPUT = "zcode-app-cli 3.10.2-18\nzcode-runtime 3.10.2-18";
+const managedRuntime = {
+  ok: true as const,
+  command: "/node",
+  args: ["/managed/zcode.cjs"],
+  runtimePath: "/managed/zcode.cjs",
+};
+
+const ensureRuntime = async () => managedRuntime;
 
 describe("inspectZcodeVersion", () => {
-  it("accepts only the exact wrapper and runtime pin", () => {
-    expect(inspectZcodeVersion(PINNED_VERSION_OUTPUT)).toEqual({
-      ok: true,
-      wrapperVersion: "3.10.2-18",
-      runtimeVersion: "3.10.2-18",
-    });
+  it("accepts only the official runtime's exact single-line pin", () => {
+    expect(inspectZcodeVersion("0.16.5\n")).toEqual({ ok: true, runtimeVersion: "0.16.5" });
   });
 
-  it("rejects malformed or incompatible version contracts", () => {
-    const malformed = inspectZcodeVersion("3.10.2-18");
-    expect(malformed.ok).toBe(false);
-    if (malformed.ok) throw new Error("expected malformed version output to fail");
-    expect(malformed.error).toContain("cannot verify");
-
-    const incompatible = inspectZcodeVersion("zcode-app-cli 3.10.2-17\nzcode-runtime 3.10.2-18");
-    expect(incompatible.ok).toBe(false);
-    if (incompatible.ok) throw new Error("expected incompatible version output to fail");
-    expect(incompatible.error).toContain("wrapper=3.10.2-17");
+  it("rejects wrapper-style, malformed, and incompatible version output", () => {
+    for (const output of ["", "0.16.5\nextra", "zcode 0.16.4"]) {
+      const result = inspectZcodeVersion(output);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("expected exactly 0.16.5");
+    }
   });
 });
 
 describe("resolveZcodeRuntimeBinary", () => {
-  it("admits the binary only after Node and both pinned components pass", async () => {
+  it("returns the exact managed command and runtime argv after Node admission", async () => {
     await expect(
-      resolveZcodeRuntimeBinary(
-        { PATH: "/test" },
-        {
-          findOnPath: () => "/host/zcode",
-          readVersion: async () => PINNED_VERSION_OUTPUT,
-          nodeVersion: () => "22.19.0",
+      resolveZcodeRuntimeBinary(process.env, {
+        ensureRuntime,
+        readVersion: async (command, args) => {
+          expect([command, ...args, "--version"]).toEqual(["/node", "/managed/zcode.cjs", "--version"]);
+          return "0.16.5";
         },
-      ),
-    ).resolves.toEqual({ ok: true, binary: "/host/zcode" });
+        nodeVersion: () => "22.19.0",
+      }),
+    ).resolves.toEqual(managedRuntime);
   });
 
-  it("fails closed before invoking the launcher below the supported Node floor", async () => {
-    const readVersion = async () => PINNED_VERSION_OUTPUT;
-    await expect(
-      resolveZcodeRuntimeBinary(
-        { PATH: "/test" },
-        {
-          findOnPath: () => "/host/zcode",
-          readVersion,
-          nodeVersion: () => "22.18.9",
-        },
-      ),
-    ).resolves.toMatchObject({
+  it("fails closed below the supported Node floor before invoking the runtime", async () => {
+    let readCalls = 0;
+    const result = await resolveZcodeRuntimeBinary(process.env, {
+      ensureRuntime,
+      readVersion: async () => {
+        readCalls += 1;
+        return "0.16.5";
+      },
+      nodeVersion: () => "22.18.9",
+    });
+    expect(result).toMatchObject({
       ok: false,
       transient: false,
       error: expect.stringContaining("Node.js 22.19.0+"),
     });
+    expect(readCalls).toBe(0);
+  });
+
+  it("fails closed when the official runtime answers with the wrong version", async () => {
+    const result = await resolveZcodeRuntimeBinary(process.env, {
+      ensureRuntime,
+      readVersion: async () => "0.16.4",
+      nodeVersion: () => "22.19.0",
+    });
+    expect(result).toMatchObject({ ok: false, transient: false });
   });
 });
 

@@ -115,7 +115,14 @@ describe("runtime provider identity + catalog completeness", () => {
           expect(install).toContain(arg);
         }
       } else {
-        expect(install).toBe(entry.install.command);
+        if (entry.install.kind === "script") {
+          expect(install).toBe(entry.install.command);
+        } else {
+          expect(entry.install.kind).toBe("managed-official-runtime");
+          expect(install).toBe(
+            `# First Tree extracts official ZCode 3.10.2 automatically on ${entry.install.platform}`,
+          );
+        }
       }
       if (runtimeProviderShowsHostLoginOnSetup(id)) {
         expect(entry.authRecovery).toEqual({ kind: "host" });

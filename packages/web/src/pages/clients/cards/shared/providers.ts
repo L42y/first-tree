@@ -204,7 +204,10 @@ export function providerInstallHint(
     case "pi":
       return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
     case "zcode":
-      return `Run \`${installCmd}\` on this ${device}, then ${loginCue}.`;
+      return (
+        `First Tree extracts the digest-pinned official ZCode runtime automatically on Linux x64. ` +
+        `Other host platforms fail closed. After extraction, ${loginCue}.`
+      );
     case "codex":
       // In-product browser-OAuth — computer row stays install-only.
       return `Run \`${installCmd}\` on this ${device}.`;

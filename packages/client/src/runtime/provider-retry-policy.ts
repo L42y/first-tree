@@ -583,13 +583,15 @@ function isCredential(
   ) {
     return true;
   }
-  // The pinned ZCode launcher's clean-host turn contract emits a generic
-  // local envelope; its provider-specific setup translation carries these
-  // exact phrases. Keep the rule provider-gated so the generic words do not
-  // turn unrelated runtime output into credential failures.
+  // The official ZCode runtime's clean-host turn contract emits this
+  // provider-owned configuration error before OAuth exists. Keep the rule
+  // provider-gated so the generic words do not turn unrelated runtime output
+  // into credential failures.
   return (
     provider === "zcode" &&
-    /provider_not_configured|model provider is missing an api key|zcode login --oauth/.test(text)
+    /provider_not_configured|model config is missing|model provider is missing an api key|explicit model provider/.test(
+      text,
+    )
   );
 }
 
