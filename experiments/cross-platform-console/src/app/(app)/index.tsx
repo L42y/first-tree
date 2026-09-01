@@ -22,6 +22,7 @@ import { getItem, setItem } from "~/lib/storage";
 import { useAuth } from "~/lib/auth-context";
 import { ChatListItem } from "~/components/chat-list-item";
 import { ChatDetailContent } from "~/components/chat-detail";
+import { TeamSwitcher } from "~/components/team-switcher";
 import { QuickActions } from "~/components/quick-actions";
 import { colors } from "~/lib/theme";
 
@@ -80,7 +81,7 @@ export default function ChatListScreen() {
   const isWide = width >= 1024;
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
-  const { teamDisplayName, user, agentId: selfAgentId } = useAuth();
+  const { user, agentId: selfAgentId } = useAuth();
   const [filter, setFilter] = useState<"all" | "unread">("all");
   const [view, setView] = useState<"active" | "archived">("active");
   const [search, setSearch] = useState("");
@@ -241,9 +242,7 @@ export default function ChatListScreen() {
         </Pressable>
         <View>
           <Text style={styles.title}>Chats</Text>
-          {teamDisplayName && (
-            <Text style={styles.subtitle}>{teamDisplayName}</Text>
-          )}
+          <TeamSwitcher />
         </View>
       </View>
 

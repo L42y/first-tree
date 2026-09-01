@@ -1,3 +1,5 @@
+import type { OrgBrief } from "@first-tree/shared";
+
 import { api, withOrg } from "./api";
 
 /**
@@ -23,12 +25,7 @@ export async function listManagedAgents(signal?: AbortSignal): Promise<ManagedAg
   return api.get<ManagedAgent[]>("/me/managed-agents", { signal });
 }
 
-export type MyOrganization = {
-  id: string;
-  name: string;
-  displayName: string;
-  role: string;
-};
+export type MyOrganization = OrgBrief;
 
 export type MeOrganizationsResponse = MyOrganization[];
 

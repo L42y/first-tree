@@ -8,6 +8,7 @@ import { TamaguiProvider, Theme } from "tamagui";
 
 import { AuthProvider } from "~/lib/auth-context";
 import { queryClient } from "~/lib/query-client";
+import { TeamSwitchOverlay } from "~/components/team-switcher";
 import { config } from "~/tamagui.config";
 
 export default function RootLayout() {
@@ -44,6 +45,7 @@ export default function RootLayout() {
               <Stack.Screen name="login" />
               <Stack.Screen name="(app)" />
             </Stack>
+            <TeamSwitchOverlay />
             <StatusBar style={themeName === "dark" ? "light" : "dark"} />
           </AuthProvider>
         </Theme>
