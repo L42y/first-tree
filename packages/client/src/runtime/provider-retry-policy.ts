@@ -577,9 +577,19 @@ function isCredential(
   // the shared classifier already covers, so they need a grok-only branch.
   if (provider === "grok" && /not logged in|grok login|auth\.json/.test(text)) return true;
   // Pi CLI logged-out / missing-key phrasings (kept in sync with isPiAuthError).
-  return (
+  if (
     provider === "pi" &&
     /missing credentials|no api key|\/login|auth[_ ]required|not authenticated|pi_auth_required/.test(text)
+  ) {
+    return true;
+  }
+  // The pinned ZCode launcher's clean-host turn contract emits a generic
+  // local envelope; its provider-specific setup translation carries these
+  // exact phrases. Keep the rule provider-gated so the generic words do not
+  // turn unrelated runtime output into credential failures.
+  return (
+    provider === "zcode" &&
+    /provider_not_configured|model provider is missing an api key|zcode login --oauth/.test(text)
   );
 }
 

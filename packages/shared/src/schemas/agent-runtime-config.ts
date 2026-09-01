@@ -350,10 +350,10 @@ const piRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
 
 const zcodeRuntimeConfigPayloadShape = agentRuntimeConfigPayloadShape.extend({
   kind: z.literal("zcode"),
-  // ZCode model identifiers are provider-native. Empty delegates to the
-  // desktop runtime's configured model; non-empty values are passed as one
-  // argv entry and fail visibly if ZCode rejects them.
-  model: z.string().default(""),
+  // V1 has no validated native selection handshake or effective-model ACK.
+  // The empty-value sentinel is preserved for wire compatibility, but a stale
+  // non-empty configuration fails closed instead of becoming prompt content.
+  model: z.literal("").default(""),
   // Intentionally excludes the desktop `yolo` mode: First Tree requires the
   // runtime's explicit build/edit/plan approval contract, never an unchecked
   // all-permissions mode.

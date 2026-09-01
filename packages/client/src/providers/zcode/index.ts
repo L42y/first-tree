@@ -41,12 +41,21 @@ import { chunkAssistantText } from "../handlers/assistant-text.js";
 import { formatAuthHint } from "../handlers/auth-error-hint.js";
 import { consumedErrorOutcome } from "../handlers/turn-settlement.js";
 import { PROVIDER_SKILL_ROOTS } from "../skill-roots.js";
-import { buildZcodeTurnArgs, resolveZcodeRuntimeBinary } from "./binary.js";
+import {
+  buildZcodeTurnArgs,
+  readZcodeSetupPending,
+  resolveZcodeRuntimeBinary,
+  type ZcodeRuntimeBinaryResolution,
+} from "./binary.js";
 import { parseZcodeJsonOutput } from "./json.js";
 
 export const ZCODE_PENDING_SESSION_PREFIX = "zcode-pending-";
 const DEFAULT_TURN_TIMEOUT_MS = 20 * 60_000;
 const STDERR_TAIL_LIMIT = 8_000;
+const MAX_STDOUT_BYTES = 2 * 1024 * 1024;
+const KILL_GRACE_MS = 5_000;
+const FINAL_CLOSE_WAIT_MS = 2_000;
+const TERMINATION_POLL_MS = 25;
 const PROVIDER_ATTEMPT_WINDOW_TTL_MS = 30 * 60_000;
 const MAX_PROVIDER_ATTEMPT_WINDOWS = 512;
 
@@ -95,9 +104,41 @@ async function defaultZcodeRetrySleep(delayMs: number, signal: AbortSignal): Pro
 }
 
 function isAuthError(text: string): boolean {
-  return /authentication required|not (?:authenticated|logged in)|unauthorized|invalid api key|login required/i.test(
+  return /authentication required|not (?:authenticated|logged in)|unauthorized|invalid api key|login required|provider_not_configured|model provider is missing an api key|missing an api key/i.test(
     text,
   );
+}
+
+function isZcodeGenericSetupEnvelope(outcome: ProcessOutcome): boolean {
+  return (
+    outcome.exitCode === 1 &&
+    outcome.stdout.length === 0 &&
+    /^Error: Turn execution failed \(traceId: [^)]+\)/m.test(outcome.stderrTail)
+  );
+}
+
+export type BoundedZcodeStdout = {
+  parts: Buffer[];
+  length: number;
+  overflow: boolean;
+};
+
+export function appendZcodeStdoutChunk(
+  state: BoundedZcodeStdout,
+  chunk: string | Buffer,
+  maximumBytes: number = MAX_STDOUT_BYTES,
+): void {
+  if (state.overflow) return;
+  const value = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
+  const remaining = maximumBytes - state.length;
+  if (remaining <= 0) {
+    state.overflow = true;
+    return;
+  }
+  const boundedChunk = value.length > remaining ? value.subarray(0, remaining) : value;
+  state.parts.push(boundedChunk);
+  state.length += boundedChunk.length;
+  state.overflow = value.length > boundedChunk.length;
 }
 
 export const createZcodeHandler: HandlerFactory = (config) => {
@@ -108,7 +149,8 @@ export const createZcodeHandler: HandlerFactory = (config) => {
   const contextSource = contextSourceFromHandlerConfig(config);
   const contextTree = preparationCoordinatesFromSource(contextSource);
   const resolveBinary =
-    (config.zcodeBinaryResolver as typeof resolveZcodeRuntimeBinary | undefined) ?? resolveZcodeRuntimeBinary;
+    (config.zcodeBinaryResolver as ((env?: NodeJS.ProcessEnv) => Promise<ZcodeRuntimeBinaryResolution>) | undefined) ??
+    resolveZcodeRuntimeBinary;
   const processSupervisor =
     (config.providerProcessSupervisor as ProviderProcessSupervisor | undefined) ??
     createDefaultProviderProcessSupervisor();
@@ -116,7 +158,13 @@ export const createZcodeHandler: HandlerFactory = (config) => {
     typeof config.zcodeTurnTimeoutMs === "number" && config.zcodeTurnTimeoutMs > 0
       ? config.zcodeTurnTimeoutMs
       : DEFAULT_TURN_TIMEOUT_MS;
+  const killGraceMs =
+    typeof config.zcodeKillGraceMs === "number" && config.zcodeKillGraceMs > 0
+      ? config.zcodeKillGraceMs
+      : KILL_GRACE_MS;
   const retrySleep = (config.zcodeRetrySleep as ZcodeRetrySleep | undefined) ?? defaultZcodeRetrySleep;
+  const setupPendingProbe =
+    (config.zcodeSetupPendingProbe as ((env?: NodeJS.ProcessEnv) => boolean) | undefined) ?? readZcodeSetupPending;
 
   let cwd: string | null = null;
   let ctx: SessionContext | null = null;
@@ -213,6 +261,12 @@ export const createZcodeHandler: HandlerFactory = (config) => {
           "configure MCP servers in provider-owned ZCode config instead",
       );
     }
+    if (zcodePayload.model.trim().length > 0) {
+      throw new Error(
+        "ZCode managed model selection is not supported in V1; " +
+          "configure the model in provider-owned ZCode configuration instead",
+      );
+    }
     const projected = await projectManagedWorkspace({
       sessionCtx,
       workspace: cwd,
@@ -276,30 +330,100 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       }
 
       const child = supervised.child;
-      let stdout = "";
-      let stdoutTooLarge = false;
+      const stdoutState: BoundedZcodeStdout = { parts: [], length: 0, overflow: false };
       let stderrTail = "";
       let closed: { exitCode: number | null; signal: NodeJS.Signals | null } | null = null;
       let stdoutEnded = false;
       let settled = false;
       let spawnError: Error | undefined;
+      let terminationStarted = false;
+      let hardKillTimer: NodeJS.Timeout | undefined;
+      let finalCloseTimer: NodeJS.Timeout | undefined;
+      let processGroupPoll: NodeJS.Timeout | undefined;
+
+      const clearTerminationTimers = (): void => {
+        clearTimeout(hardKillTimer);
+        clearTimeout(finalCloseTimer);
+        clearInterval(processGroupPoll);
+      };
 
       const finish = () => {
         if (settled || !closed || !stdoutEnded) return;
         settled = true;
-        resolveOutcome({ ...closed, stdout, stderrTail, spawnError });
+        clearTerminationTimers();
+        resolveOutcome({
+          ...closed,
+          stdout: Buffer.concat(stdoutState.parts, stdoutState.length).toString("utf8"),
+          stderrTail,
+          spawnError,
+        });
       };
+
+      const signalProcessTree = (signal: NodeJS.Signals): void => {
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+          else child.kill(signal);
+        } catch {
+          // The wrapper or its process group may already be gone.
+        }
+      };
+
+      const isProcessGroupGone = (): boolean => {
+        if (process.platform === "win32" || !child.pid) {
+          return child.exitCode !== null || child.signalCode !== null;
+        }
+        try {
+          process.kill(-child.pid, 0);
+          return false;
+        } catch (error) {
+          return (error as NodeJS.ErrnoException).code === "ESRCH";
+        }
+      };
+
+      const settleAfterTermination = (): void => {
+        closed ??= { exitCode: null, signal: "SIGKILL" };
+        stdoutEnded = true;
+        finish();
+      };
+
+      const terminateProcessGroup = (): void => {
+        if (terminationStarted) return;
+        terminationStarted = true;
+        signalProcessTree("SIGTERM");
+        hardKillTimer = setTimeout(() => signalProcessTree("SIGKILL"), killGraceMs);
+        hardKillTimer.unref?.();
+        if (child.pid && process.platform !== "win32") {
+          processGroupPoll = setInterval(() => {
+            if (!isProcessGroupGone()) return;
+            clearInterval(processGroupPoll);
+            processGroupPoll = undefined;
+            settleAfterTermination();
+          }, TERMINATION_POLL_MS);
+          processGroupPoll.unref?.();
+        }
+        finalCloseTimer = setTimeout(() => {
+          signalProcessTree("SIGKILL");
+          settleAfterTermination();
+        }, killGraceMs + FINAL_CLOSE_WAIT_MS);
+        finalCloseTimer.unref?.();
+      };
+
       child.on("error", (error) => {
         spawnError = error instanceof Error ? error : new Error(String(error));
+        if (!terminationStarted) {
+          closed ??= { exitCode: null, signal: null };
+          stdoutEnded = true;
+          finish();
+        }
       });
       child.stdout?.on("data", (chunk: string | Buffer) => {
-        const value = typeof chunk === "string" ? chunk : chunk.toString("utf8");
-        stdout += value;
-        if (Buffer.byteLength(stdout, "utf8") > 2 * 1024 * 1024) {
-          stdoutTooLarge = true;
+        appendZcodeStdoutChunk(stdoutState, chunk);
+        if (stdoutState.overflow) {
           input.sessionCtx.recordProviderActivity();
-          child.kill("SIGTERM");
+          terminateProcessGroup();
+          return;
         }
+        input.sessionCtx.recordProviderActivity();
       });
       child.stdout?.on("end", () => {
         stdoutEnded = true;
@@ -312,28 +436,22 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       });
       child.once("close", (exitCode, signal) => {
         closed = { exitCode, signal };
-        finish();
+        if (!terminationStarted) {
+          stdoutEnded = true;
+          finish();
+        }
       });
 
-      const onAbort = () => {
-        if (child.exitCode !== null || child.signalCode) return;
-        child.kill("SIGTERM");
-        const grace = setTimeout(() => {
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        }, 5_000);
-        grace.unref?.();
-      };
-      input.abortSignal.addEventListener("abort", onAbort, { once: true });
+      input.abortSignal.addEventListener("abort", terminateProcessGroup, { once: true });
       supervised.exited.finally(() => {
-        input.abortSignal.removeEventListener("abort", onAbort);
-        if (stdoutTooLarge && !closed) {
-          closed = { exitCode: null, signal: "SIGTERM" };
-          finish();
+        input.abortSignal.removeEventListener("abort", terminateProcessGroup);
+        if (!terminationStarted && !closed) {
+          closed = { exitCode: null, signal: null };
         }
         setTimeout(() => {
           stdoutEnded = true;
           finish();
-        }, 2_000).unref?.();
+        }, FINAL_CLOSE_WAIT_MS).unref?.();
       });
     });
   }
@@ -461,9 +579,6 @@ export const createZcodeHandler: HandlerFactory = (config) => {
 
       const runtimePrompt = pendingRuntimePrompt;
       const providerPromptParts = [runtimePrompt, prompt].filter(Boolean);
-      if (payload.model.trim()) {
-        providerPromptParts.unshift(`/model ${payload.model.trim()}`);
-      }
       const providerPrompt = providerPromptParts.join("\n\n");
       const expectedSessionId = providerSessionId;
       token.processingStarted(messages);
@@ -508,6 +623,12 @@ export const createZcodeHandler: HandlerFactory = (config) => {
           outcome.exitCode === null ? `signal ${outcome.signal ?? "unknown"}` : `exit ${outcome.exitCode}`,
         );
       }
+      if (isZcodeGenericSetupEnvelope(outcome) && setupPendingProbe(env)) {
+        protocolErrors.unshift(
+          "provider_not_configured: the pinned ZCode launcher has pending model-access setup " +
+            "(model provider is missing an API key)",
+        );
+      }
       try {
         const result = parseZcodeJsonOutput(outcome.stdout);
         if (expectedSessionId && result.sessionId !== expectedSessionId) {
@@ -523,7 +644,7 @@ export const createZcodeHandler: HandlerFactory = (config) => {
               kind: "token_usage",
               payload: {
                 provider: "zcode",
-                model: payload.model || "zcode-default",
+                model: "zcode-default",
                 inputTokens: result.usage.inputTokens,
                 cachedInputTokens: result.usage.cachedInputTokens,
                 outputTokens: result.usage.outputTokens,
@@ -614,7 +735,7 @@ export const createZcodeHandler: HandlerFactory = (config) => {
       throw new Error("landing campaign trial agents require the codex app-server runtime");
     }
     ctx = sessionCtx;
-    const resolution = resolveBinary(process.env);
+    const resolution = await resolveBinary(process.env);
     if (!resolution.ok) throw new Error(resolution.error);
     binary = resolution.binary;
     sessionCtx.log(`ZCode binary: ${resolution.binary}`);
@@ -633,6 +754,12 @@ export const createZcodeHandler: HandlerFactory = (config) => {
         mode: "build",
       } satisfies AgentRuntimeConfigPayload as Extract<AgentRuntimeConfigPayload, { kind: "zcode" }>);
     if (payload.kind !== "zcode") throw new Error(`ZCode handler received ${payload.kind} runtime config`);
+    if (payload.model.length > 0) {
+      throw new Error(
+        "ZCode managed model selection is not supported in V1; " +
+          "configure the model in provider-owned ZCode configuration instead",
+      );
+    }
     if (payload.mcpServers.length > 0) {
       throw new Error(
         "ZCode headless turn transport does not expose a safe non-interactive MCP projection contract; " +

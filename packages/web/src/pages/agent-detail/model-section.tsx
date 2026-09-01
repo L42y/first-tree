@@ -141,7 +141,7 @@ export const MODEL_HELP_BY_PROVIDER: Record<RuntimeProvider, string> = {
     "Enter an exact OpenCode provider/model id. It is passed through verbatim on the next turn; unset inherits the host-local OpenCode configuration.",
   pi: "Enter an exact Pi provider/model or provider/model:<thinking> id. It is passed through verbatim on the next turn. Leave empty to keep an existing Pi session's persisted model; a brand-new session uses Pi's local default.",
   zcode:
-    "Enter an exact Z.AI model id. It is passed to the next ZCode turn; unset uses the host-local ZCode configuration.",
+    "ZCode model selection is not available in First Tree V1. Configure the model in the provider-owned ZCode configuration.",
 };
 
 /** Extra note when discovery is unsupported / offline / timed out (`null` from the API helper). */
