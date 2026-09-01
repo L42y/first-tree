@@ -1,6 +1,6 @@
-import type { ChatDetail, Message } from "@first-tree/shared";
+import type { ChatDetail, ListMeChatsResponse, MeChatRow, Message } from "@first-tree/shared";
 import { extractMentions } from "@first-tree/shared";
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type InfiniteData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePathname, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, Keyboard, Platform, Pressable, StyleSheet, Text, View } from "react-native";
@@ -10,10 +10,35 @@ import { LiveMarkdownInput } from "~/components/live-markdown-input";
 import { MessageCard } from "~/components/message-card";
 import { ASK_MODAL_ROUTE, fetchOpenRequests, parseAskRequest } from "~/lib/ask";
 import { useAuth } from "~/lib/auth-context";
-import { getChat, listChatMessages, markMeChatRead, sendChatMessage } from "~/lib/chats-api";
+import { getChat, listChatMessages, markMeChatRead, type PaginatedMessages, sendChatMessage } from "~/lib/chats-api";
 import { colors } from "~/lib/theme";
 
 const PAGE_SIZE = 50;
+
+function patchChatRow(row: MeChatRow, chatId: string, preview: string, activityAt: string): MeChatRow {
+  if (row.chatId !== chatId) return row;
+  return {
+    ...row,
+    lastMessageAt: activityAt,
+    lastMessagePreview: preview,
+    activityAt,
+  };
+}
+
+type MessagesCache = InfiniteData<PaginatedMessages, string | undefined>;
+
+function patchFirstMessagePage(
+  previous: MessagesCache | undefined,
+  patchItems: (items: Message[]) => Message[],
+): MessagesCache | undefined {
+  if (!previous) return undefined;
+  return {
+    ...previous,
+    pages: previous.pages.map((page, pageIndex) =>
+      pageIndex === 0 ? { ...page, items: patchItems(page.items) } : page,
+    ),
+  };
+}
 
 export function ChatDetailContent({
   chatId,
@@ -34,6 +59,7 @@ export function ChatDetailContent({
   const pendingScrollRef = useRef(false);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   // Deterministic keyboard avoidance: lift the composer by the exact
   // keyboard height. Framework avoidance (KeyboardAvoidingView /
   // automaticallyAdjustKeyboardInsets) mis-measured or left the composer
@@ -198,19 +224,67 @@ export function ChatDetailContent({
   const handleSend = useCallback(async () => {
     if (sending || !message.trim() || !memberId || openAsk) return;
     const text = message.trim();
+    const mentions = extractMentions(
+      text,
+      chatQuery.data?.participants.map((p) => ({ agentId: p.agentId, name: p.displayName })) ?? [],
+    );
+    const optimisticId = `optimistic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const optimisticAt = new Date().toISOString();
+    const optimisticMessage: Message = {
+      id: optimisticId,
+      chatId,
+      senderId: memberId,
+      senderKind: "member",
+      senderProvider: null,
+      format: "text",
+      content: text,
+      metadata: mentions.length > 0 ? { mentions } : {},
+      inReplyTo: null,
+      source: "web",
+      createdAt: optimisticAt,
+    };
+    const messagesQueryKey = ["chats", chatId, "messages"];
+    queryClient.setQueryData<MessagesCache>(messagesQueryKey, (previous) =>
+      patchFirstMessagePage(previous, (items) => [optimisticMessage, ...items]),
+    );
+    // The list row is a projection of the server-side chat. Mirror the same
+    // fields optimistically so returning to Chats never shows stale content.
+    queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+      previous
+        ? {
+            ...previous,
+            priorityRows: {
+              ...previous.priorityRows,
+              pinned: previous.priorityRows.pinned.map((row) => patchChatRow(row, chatId, text, optimisticAt)),
+            },
+            rows: previous.rows.map((row) => patchChatRow(row, chatId, text, optimisticAt)),
+          }
+        : undefined,
+    );
     setMessage("");
     setSending(true);
+    setSendError(null);
     // Sending re-attaches the view to the bottom even if the reader had
     // scrolled up to look back through the thread.
     userScrolledRef.current = false;
 
     try {
-      const mentions = extractMentions(
-        text,
-        chatQuery.data?.participants.map((p) => ({ agentId: p.agentId, name: p.displayName })) ?? [],
+      const saved = await sendChatMessage(chatId, text, mentions);
+      queryClient.setQueryData<MessagesCache>(messagesQueryKey, (previous) =>
+        patchFirstMessagePage(previous, (items) => items.map((item) => (item.id === optimisticId ? saved : item))),
       );
-
-      await sendChatMessage(chatId, text, mentions);
+      queryClient.setQueriesData<ListMeChatsResponse>({ queryKey: ["me", "chats", "list"] }, (previous) =>
+        previous
+          ? {
+              ...previous,
+              priorityRows: {
+                ...previous.priorityRows,
+                pinned: previous.priorityRows.pinned.map((row) => patchChatRow(row, chatId, text, saved.createdAt)),
+              },
+              rows: previous.rows.map((row) => patchChatRow(row, chatId, text, saved.createdAt)),
+            }
+          : undefined,
+      );
       await queryClient.invalidateQueries({ queryKey: ["chats", chatId, "messages"] });
       await queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
       listRef.current?.scrollToEnd({ animated: true });
@@ -218,6 +292,11 @@ export function ChatDetailContent({
       const msg = err instanceof Error ? err.message : "Send failed";
       // Re-show the message so the user can retry.
       setMessage(text);
+      setSendError(msg);
+      queryClient.setQueryData<MessagesCache>(messagesQueryKey, (previous) =>
+        patchFirstMessagePage(previous, (items) => items.filter((item) => item.id !== optimisticId)),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["me", "chats", "list"] });
       // eslint-disable-next-line no-console
       console.error("Send failed:", msg);
     } finally {
@@ -332,19 +411,26 @@ export function ChatDetailContent({
       )}
 
       {!openAsk && (
-        <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
-          <LiveMarkdownInput
-            style={styles.inputContainer}
-            value={message}
-            onChangeText={setMessage}
-            placeholder="Message…"
-            multiline
-            maxLength={4000}
-            returnKeyType="send"
-            submitBehavior="submit"
-            onSubmitEditing={() => void handleSend()}
-          />
-        </View>
+        <>
+          {sendError && (
+            <Text style={styles.sendError} numberOfLines={2}>
+              Couldn't send: {sendError}
+            </Text>
+          )}
+          <View style={[styles.composer, keyboardHeight > 0 && { marginBottom: keyboardHeight }]}>
+            <LiveMarkdownInput
+              style={styles.inputContainer}
+              value={message}
+              onChangeText={setMessage}
+              placeholder="Message…"
+              multiline
+              maxLength={4000}
+              returnKeyType="send"
+              submitBehavior="submit"
+              onSubmitEditing={() => void handleSend()}
+            />
+          </View>
+        </>
       )}
     </View>
   );
@@ -458,6 +544,11 @@ const styles = StyleSheet.create({
     gap: 8,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
+  },
+  sendError: {
+    paddingHorizontal: 16,
+    color: colors.danger,
+    fontSize: 12,
   },
   inputContainer: {
     flex: 1,
