@@ -1,122 +1,78 @@
-import { useRef, useState } from "react";
 import {
-  type NativeSyntheticEvent,
-  ScrollView,
-  type StyleProp,
-  StyleSheet,
-  Text,
-  TextInput,
-  type TextInputContentSizeChangeEventData,
-  type TextInputProps,
-  View,
-  type ViewStyle,
-} from "react-native";
+  type MarkdownStyle,
+  MarkdownTextInput,
+  type MarkdownTextInputProps,
+  parseExpensiMark,
+} from "@expensify/react-native-live-markdown";
+import { type StyleProp, StyleSheet, type TextStyle } from "react-native";
 
-import { MarkdownText } from "~/components/markdown-text";
 import { colors } from "~/lib/theme";
 
-type LiveMarkdownInputProps = Omit<TextInputProps, "style"> & {
-  /** Outer sizing/background styles; the editable and rendered layers share it. */
-  style?: StyleProp<ViewStyle>;
-  placeholder?: string;
-  placeholderTextColor?: string;
-  /** Keep the invisible editing layer and visible Markdown layer aligned. */
-  paddingHorizontal?: number;
-  paddingVertical?: number;
+type LiveMarkdownInputProps = Omit<MarkdownTextInputProps, "markdownStyle" | "parser" | "style"> & {
+  style?: StyleProp<TextStyle>;
 };
 
-const MAX_EDITOR_HEIGHT = 120;
+const markdownStyle: MarkdownStyle = {
+  syntax: { color: colors.textMuted },
+  link: { color: colors.accent },
+  h1: { fontSize: 20 },
+  blockquote: {
+    borderColor: colors.accent,
+    borderWidth: 2,
+    marginLeft: 6,
+    paddingLeft: 6,
+  },
+  code: {
+    color: colors.text,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    fontFamily: "Menlo",
+    fontSize: 15,
+  },
+  pre: {
+    color: colors.text,
+    backgroundColor: colors.surface,
+    borderColor: colors.border,
+    fontFamily: "Menlo",
+    fontSize: 15,
+  },
+  mentionHere: {
+    color: colors.accent,
+    backgroundColor: colors.surface,
+  },
+  mentionUser: {
+    color: colors.accent,
+    backgroundColor: colors.surface,
+  },
+  mentionReport: {
+    color: colors.accent,
+    backgroundColor: colors.surface,
+  },
+};
 
 /**
- * Expo Go cannot host EnrichedMarkdownTextInput's native view, so the editor
- * keeps a real TextInput for interaction and renders its value with the same
- * MarkdownText used by messages. Content from either layer determines height;
- * once the editor reaches its maximum, TextInput scrolling drives the preview.
+ * Expensify's native live-markdown editor. Formatting is applied directly to
+ * the editable text by its UI-thread parser; this wrapper only applies the
+ * console theme and shared editor styles.
  */
-export function LiveMarkdownInput({
-  value,
-  onChangeText,
-  style,
-  placeholder,
-  placeholderTextColor = colors.textMuted,
-  paddingHorizontal = 16,
-  paddingVertical = 10,
-  ...inputProps
-}: LiveMarkdownInputProps) {
-  const previewRef = useRef<ScrollView>(null);
-  const [nativeContentHeight, setNativeContentHeight] = useState<number | null>(null);
-  const [previewContentHeight, setPreviewContentHeight] = useState<number | null>(null);
-  const minimumEditorHeight = paddingVertical * 2 + 21;
-  const editorHeight = Math.min(
-    Math.max(nativeContentHeight ?? 0, previewContentHeight ?? 0, minimumEditorHeight),
-    MAX_EDITOR_HEIGHT,
-  );
-
-  const updateNativeContentHeight = (event: NativeSyntheticEvent<TextInputContentSizeChangeEventData>) => {
-    setNativeContentHeight(event.nativeEvent.contentSize.height + paddingVertical * 2);
-  };
-
+export function LiveMarkdownInput({ style, ...inputProps }: LiveMarkdownInputProps) {
   return (
-    <View style={[styles.container, style]}>
-      <View style={[styles.editor, { height: editorHeight }]}>
-        <ScrollView
-          ref={previewRef}
-          style={StyleSheet.absoluteFill}
-          contentContainerStyle={[styles.previewContent, { paddingHorizontal, paddingVertical }]}
-          scrollEnabled={false}
-          pointerEvents="none"
-          onContentSizeChange={(_, height) => setPreviewContentHeight(height)}
-        >
-          {value ? <MarkdownText value={value} /> : null}
-          {!value && placeholder ? (
-            <Text style={[styles.placeholder, { color: placeholderTextColor }]}>{placeholder}</Text>
-          ) : null}
-        </ScrollView>
-
-        <TextInput
-          {...inputProps}
-          value={value}
-          onChangeText={onChangeText}
-          style={[
-            StyleSheet.absoluteFill,
-            styles.input,
-            {
-              paddingHorizontal,
-              paddingVertical,
-            },
-          ]}
-          selectionColor={colors.accent}
-          onContentSizeChange={updateNativeContentHeight}
-          onScroll={(event) => {
-            previewRef.current?.scrollTo({
-              y: event.nativeEvent.contentOffset.y,
-              animated: false,
-            });
-          }}
-        />
-      </View>
-    </View>
+    <MarkdownTextInput
+      {...inputProps}
+      style={[styles.input, style]}
+      parser={parseExpensiMark}
+      markdownStyle={markdownStyle}
+    />
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    overflow: "hidden",
-  },
-  editor: {
-    minHeight: 41,
-  },
-  previewContent: {
-    minHeight: "100%",
-  },
-  placeholder: {
-    fontSize: 16,
-    lineHeight: 21,
-  },
   input: {
-    backgroundColor: "transparent",
-    color: "transparent",
+    minHeight: 41,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     fontSize: 16,
     lineHeight: 21,
+    color: colors.text,
   },
 });

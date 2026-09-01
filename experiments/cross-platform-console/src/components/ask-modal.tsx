@@ -225,7 +225,6 @@ export function AskModal({ chatId, requestId }: { chatId: string; requestId: str
           onChangeText={setAnswer}
           placeholder={mode === "clarify" ? "Ask the agent for clarification…" : "Answer the ask…"}
           placeholderTextColor={colors.textMuted}
-          paddingHorizontal={14}
           multiline
           maxLength={4000}
           returnKeyType={mode === "clarify" ? "send" : "done"}
@@ -371,6 +370,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.bg,
+    paddingHorizontal: 14,
   },
   footer: {
     flexDirection: "row",

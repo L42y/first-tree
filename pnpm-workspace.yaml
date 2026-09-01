@@ -1,7 +1,8 @@
 packages:
-  - "apps/cli"
-  - "experiments/cross-platform-console"
-  - "packages/*"
+  - apps/cli
+  - experiments/cross-platform-console
+  - packages/*
 
 patchedDependencies:
   '@botiverse/kimi-code-sdk@0.26.0-botiverse.2': patches/@botiverse__kimi-code-sdk@0.26.0-botiverse.2.patch
+  html-entities@2.5.3: patches/html-entities@2.5.3.patch
