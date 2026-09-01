@@ -10,7 +10,17 @@ import { colors } from "~/lib/theme";
 
 type LiveMarkdownInputProps = Omit<MarkdownTextInputProps, "markdownStyle" | "parser" | "style"> & {
   style?: StyleProp<TextStyle>;
+  /** Lines kept visible even after the controlled value becomes empty. */
+  minLines?: number;
+  /** Upper bound while the composer is in its ordinary (collapsed) state. */
+  maxLines?: number;
+  /** Upper bound while the user has explicitly expanded the composer. */
+  expandedLines?: number;
+  expanded?: boolean;
 };
+
+const LINE_HEIGHT = 21;
+const VERTICAL_PADDING = 20;
 
 const markdownStyle: MarkdownStyle = {
   syntax: { color: colors.textMuted },
@@ -55,11 +65,28 @@ const markdownStyle: MarkdownStyle = {
  * the editable text by its UI-thread parser; this wrapper only applies the
  * console theme and shared editor styles.
  */
-export function LiveMarkdownInput({ style, ...inputProps }: LiveMarkdownInputProps) {
+export function LiveMarkdownInput({
+  style,
+  minLines = 3,
+  maxLines = 5,
+  expandedLines = 12,
+  expanded = false,
+  ...inputProps
+}: LiveMarkdownInputProps) {
+  const maximumLines = expanded ? expandedLines : maxLines;
+
   return (
     <MarkdownTextInput
       {...inputProps}
-      style={[styles.input, style]}
+      numberOfLines={inputProps.numberOfLines ?? maximumLines}
+      style={[
+        styles.input,
+        style,
+        {
+          minHeight: minLines * LINE_HEIGHT + VERTICAL_PADDING,
+          maxHeight: maximumLines * LINE_HEIGHT + VERTICAL_PADDING,
+        },
+      ]}
       parser={parseExpensiMark}
       markdownStyle={markdownStyle}
     />
